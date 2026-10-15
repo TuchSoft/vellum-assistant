@@ -1,0 +1,20 @@
+assistant/src/providers/__tests__/xml-tool-call-salvage.test.ts
+  h_a912520b04f25d 4,11,56,61-66,69,80,82,85,90-94,143-215,250-265
+assistant/src/providers/openai/__tests__/chat-completions-provider-xml-salvage.test.ts
+  h_a912520b04f25d 8-11,295-414
+assistant/src/providers/openai/chat-completions-provider.ts
+  h_a912520b04f25d 49,1419-1423,1425-1446,1448-1452
+assistant/src/providers/xml-tool-call-salvage.ts
+  h_a912520b04f25d 2-4,10-14,19-43,48-50,66,69-79,96-99,105,108,112-125,128-151,154-156,160-168,175,178-179,224-231,255,264,273-280,297-322
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "61d9dad9f4d3f3cc99cbb0be1ce7f8b7ff49a888",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

@@ -1,0 +1,24 @@
+assistant/src/__tests__/shell-tool-proxy-mode.test.ts
+  h_a912520b04f25d 188,253,258
+assistant/src/__tests__/terminal-tools.test.ts
+  h_a912520b04f25d 316
+assistant/src/tools/__tests__/credential-tag-substitution.test.ts
+  h_a912520b04f25d 1-10,17-21,23-26,33,37-72,74-94,96-100,103-111,115-120,124,134-140,150-152,154-158,160-164,167-171,173-177,179-186,189-191,193-194,196,198-206,209-218,220-233,235,238-249,251-255,257-263,265-280,282-286,288-295,298-300,304-306,309,312-314,318,320,322-378,380-384,386-387,389,391-394,397-409,411-420,422-426,428-429,431,433
+assistant/src/tools/credential-tag-substitution.ts
+  h_a912520b04f25d 1-216
+assistant/src/tools/executor.ts
+  h_a912520b04f25d 33-37,285-302,321-324
+assistant/src/tools/terminal/shell.ts
+  h_a912520b04f25d 69,72-78,132-141,163-166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8e2eb065ca61ea0248228e34aae7e7b9ca1e2d8f",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

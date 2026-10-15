@@ -1,0 +1,58 @@
+assistant/src/__tests__/conversation-runtime-assembly.test.ts
+  h_a912520b04f25d 873-880,890-891,900-901,918-919,1658-1666,1676-1684,1695-1696,2429,2434-2435,2437-2441,2719,2724-2730
+assistant/src/__tests__/conversation-runtime-workspace.test.ts
+  h_a912520b04f25d 97-99,101-104,113,115,131-134,152-153,156-158,161,182-187,206-207,209-213,227-228,230-234,249,251
+assistant/src/__tests__/conversation-usage.test.ts
+  h_a912520b04f25d 84-123
+assistant/src/__tests__/injector-chain.test.ts
+  h_a912520b04f25d 411-414,423-437
+assistant/src/__tests__/injector-disk-pressure.test.ts
+  h_a912520b04f25d 345-349
+assistant/src/__tests__/llm-context-route-provider.test.ts
+  h_a912520b04f25d 309-337
+assistant/src/__tests__/pricing.test.ts
+  h_a912520b04f25d 4,1133-1237
+assistant/src/__tests__/provider-usage-tracking.test.ts
+  h_a912520b04f25d 94-128
+assistant/src/cli/commands/__tests__/conversations-wake.test.ts
+  h_a912520b04f25d 18,99-102,162-205
+assistant/src/cli/commands/conversations.help.ts
+  h_a912520b04f25d 372-376,392-398
+assistant/src/cli/commands/conversations.ts
+  h_a912520b04f25d 551,574,580-582,605-610
+assistant/src/daemon/conversation-runtime-assembly.ts
+  h_a912520b04f25d 2427-2433,2445-2449
+assistant/src/daemon/conversation-usage.ts
+  h_a912520b04f25d 7-10,295
+assistant/src/permissions/gateway-threshold-reader.test.ts
+  h_a912520b04f25d 150,157-159,161,166-187,308-311,313
+assistant/src/permissions/gateway-threshold-reader.ts
+  h_a912520b04f25d 224-229,236,451-454,629
+assistant/src/runtime/__tests__/agent-wake.test.ts
+  h_a912520b04f25d 2191-2242
+assistant/src/runtime/agent-wake.ts
+  h_a912520b04f25d 578-590,592,1671-1678
+assistant/src/runtime/routes/__tests__/wake-conversation-routes.test.ts
+  h_a912520b04f25d 25,58,67-70,146-176
+assistant/src/runtime/routes/conversation-query-routes.ts
+  h_a912520b04f25d 137,281-294,328,332,340-343,416
+assistant/src/runtime/routes/wake-conversation-routes.ts
+  h_a912520b04f25d 11,17-18,23-26,60-62,69,81-89,108,112,119-136
+assistant/src/usage/pricing.ts
+  h_a912520b04f25d 133-188,228
+assistant/src/usage/types.ts
+  h_a912520b04f25d 32-38
+assistant/src/util/pricing.ts
+  h_a912520b04f25d 436-449,459-463,499-503
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "683117d9b12edd9e1fbbd5e3762358d29b68fed8",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

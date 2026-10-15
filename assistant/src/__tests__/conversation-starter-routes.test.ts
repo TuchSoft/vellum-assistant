@@ -117,24 +117,6 @@ function insertMemoryItem(scopeId = "default") {
   );
 }
 
-function setCheckpoint(key: string, value: string, updatedAt = Date.now()) {
-  getSqlite().run(
-    `INSERT OR REPLACE INTO memory_checkpoints (key, value, updated_at) VALUES (?, ?, ?)`,
-    [key, value, updatedAt],
-  );
-}
-
-function insertStarterJob(scopeId = "default", status = "pending") {
-  const now = Date.now();
-  getMemorySqlite()!.run(
-    `INSERT INTO memory_jobs (
-      id, type, payload, status, attempts, deferrals, run_after, last_error,
-      started_at, created_at, updated_at
-    ) VALUES (?, 'generate_conversation_starters', ?, ?, 0, 0, ?, NULL, NULL, ?, ?)`,
-    [uuid(), JSON.stringify({ scopeId }), status, now, now, now],
-  );
-}
-
 function countStarterJobs() {
   return (
     getMemorySqlite()!
@@ -150,23 +132,13 @@ beforeEach(() => {
 });
 
 describe("GET /v1/conversation-starters", () => {
-  test("returns ready status with starters when they exist", async () => {
-    const now = Date.now();
-    insertStarter({
-      label: "Draft a PR summary",
-      prompt: "Draft a summary for my latest PR",
-      category: "development",
-      createdAt: now,
-    });
-    insertStarter({
-      label: "Check Slack threads",
-      prompt: "Check my unread Slack threads",
-      category: "communication",
-      createdAt: now,
-    });
-    setCheckpoint("conversation_starters:last_gen_at:default", String(now));
-    setCheckpoint("conversation_starters:item_count_at_last_gen:default", "2");
-    insertMemoryItem();
+  // Conversation starter chips are disabled by custom patch 06: the list
+  // endpoint never serves persisted chips and never enqueues a generation
+  // job, so no LLM call happens for this feature.
+
+  test("returns empty status even when starter rows exist", async () => {
+    insertStarter({ label: "A", prompt: "p", category: "development" });
+    insertStarter({ label: "B", prompt: "p", category: "communication" });
     insertMemoryItem();
 
     const result = (await dispatch("conversation-starters")) as {
@@ -174,342 +146,22 @@ describe("GET /v1/conversation-starters", () => {
       total: number;
       status: string;
     };
-
-    expect(result.status).toBe("ready");
-    expect(result.starters).toHaveLength(2);
-    expect(result.total).toBe(2);
+    expect(result).toEqual({ starters: [], total: 0, status: "empty" });
   });
 
-  test("returns refreshing with existing starters when the batch is stale and enqueues one refresh job", async () => {
-    const now = Date.now();
-    insertStarter({
-      label: "Draft a PR summary",
-      prompt: "Draft a summary for my latest PR",
-      category: "development",
-      createdAt: now - 1_000,
-    });
-    insertStarter({
-      label: "Check Slack threads",
-      prompt: "Check my unread Slack threads",
-      category: "communication",
-      createdAt: now - 2_000,
-    });
-    setCheckpoint(
-      "conversation_starters:last_gen_at:default",
-      String(now - CONVERSATION_STARTERS_STALE_TTL_MS - 1_000),
-    );
-    setCheckpoint("conversation_starters:item_count_at_last_gen:default", "2");
-    insertMemoryItem();
+  test("never enqueues a generation job", async () => {
     insertMemoryItem();
 
-    const result = (await dispatch("conversation-starters")) as {
-      starters: unknown[];
-      total: number;
-      status: string;
-    };
+    await dispatch("conversation-starters");
 
-    expect(result.status).toBe("refreshing");
-    expect(result.starters).toHaveLength(2);
-    expect(countStarterJobs()).toBe(1);
-  });
-
-  test("returns refreshing with existing starters when the checkpoint count is ahead of active memory and enqueues one refresh job", async () => {
-    const now = Date.now();
-    insertStarter({
-      label: "Draft a PR summary",
-      prompt: "Draft a summary for my latest PR",
-      category: "development",
-      createdAt: now,
-    });
-    setCheckpoint("conversation_starters:last_gen_at:default", String(now));
-    setCheckpoint("conversation_starters:item_count_at_last_gen:default", "5");
-    insertMemoryItem();
-    insertMemoryItem();
-
-    const result = (await dispatch("conversation-starters")) as {
-      starters: unknown[];
-      total: number;
-      status: string;
-    };
-
-    expect(result.status).toBe("refreshing");
-    expect(result.starters).toHaveLength(1);
-    expect(countStarterJobs()).toBe(1);
-  });
-
-  test("does not enqueue duplicate refresh jobs when a starter job is already active", async () => {
-    const now = Date.now();
-    insertStarter({
-      label: "Draft a PR summary",
-      prompt: "Draft a summary for my latest PR",
-      category: "development",
-      createdAt: now,
-    });
-    setCheckpoint(
-      "conversation_starters:last_gen_at:default",
-      String(now - CONVERSATION_STARTERS_STALE_TTL_MS - 1_000),
-    );
-    setCheckpoint("conversation_starters:item_count_at_last_gen:default", "1");
-    insertMemoryItem();
-    insertStarterJob("default");
-
-    const result = (await dispatch("conversation-starters")) as {
-      starters: unknown[];
-      total: number;
-      status: string;
-    };
-
-    expect(result.status).toBe("refreshing");
-    expect(result.starters).toHaveLength(1);
-    expect(countStarterJobs()).toBe(1);
-  });
-
-  test("filters assistant-voice starters and refreshes the batch", async () => {
-    const now = Date.now();
-    insertStarter({
-      label: "Let me check calendar",
-      prompt: "Let me check what Alice has today.",
-      category: "productivity",
-      createdAt: now,
-    });
-    insertStarter({
-      label: "Plan my morning",
-      prompt: "Can you help me plan my morning?",
-      category: "productivity",
-      createdAt: now - 1,
-    });
-    setCheckpoint(
-      "conversation_starters:last_gen_at:default",
-      String(now - 90_000),
-    );
-    setCheckpoint("conversation_starters:item_count_at_last_gen:default", "1");
-    insertMemoryItem();
-
-    const result = (await dispatch("conversation-starters")) as {
-      starters: Array<{ label: string }>;
-      total: number;
-      status: string;
-    };
-
-    expect(result.status).toBe("refreshing");
-    expect(result.total).toBe(1);
-    expect(result.starters.map((starter) => starter.label)).toEqual([
-      "Plan my morning",
-    ]);
-    expect(countStarterJobs()).toBe(1);
-  });
-
-  test("filters current-user third-person starters", async () => {
-    const now = Date.now();
-    insertStarter({
-      label: "Catch up with Alice",
-      prompt: "What has Alice been thinking about today?",
-      category: "communication",
-      createdAt: now,
-    });
-    insertStarter({
-      label: "Catch me up",
-      prompt: "Can you catch me up on what you've been thinking about today?",
-      category: "communication",
-      createdAt: now - 1,
-    });
-    setCheckpoint(
-      "conversation_starters:last_gen_at:default",
-      String(now - 90_000),
-    );
-    setCheckpoint("conversation_starters:item_count_at_last_gen:default", "1");
-    insertMemoryItem();
-
-    const result = (await dispatch("conversation-starters")) as {
-      starters: Array<{ label: string }>;
-      total: number;
-      status: string;
-    };
-
-    expect(result.status).toBe("refreshing");
-    expect(result.total).toBe(1);
-    expect(result.starters.map((starter) => starter.label)).toEqual([
-      "Catch me up",
-    ]);
-    expect(countStarterJobs()).toBe(1);
-  });
-
-  test("does not re-enqueue for invalid items when within cooldown period", async () => {
-    const now = Date.now();
-    // Last attempt 30 seconds ago (within the 5-minute cooldown)
-    const recentAttemptAt = now - 30_000;
-    insertStarter({
-      label: "Let me check calendar",
-      prompt: "Let me check what Alice has today.",
-      category: "productivity",
-      createdAt: now,
-    });
-    insertStarter({
-      label: "Plan my morning",
-      prompt: "Can you help me plan my morning?",
-      category: "productivity",
-      createdAt: now - 1,
-    });
-    setCheckpoint(
-      "conversation_starters:last_attempt_at:default",
-      String(recentAttemptAt),
-    );
-    setCheckpoint(
-      "conversation_starters:last_gen_at:default",
-      String(recentAttemptAt),
-    );
-    setCheckpoint("conversation_starters:item_count_at_last_gen:default", "1");
-    insertMemoryItem();
-
-    const result = (await dispatch("conversation-starters")) as {
-      starters: unknown[];
-      total: number;
-      status: string;
-    };
-
-    // The invalid "assistant-voice" starter triggers invalidItemCount > 0,
-    // but the cooldown prevents re-enqueueing — status should be "ready".
-    expect(result.status).toBe("ready");
-    expect(result.total).toBe(1);
     expect(countStarterJobs()).toBe(0);
   });
 
-  test("re-enqueues for invalid items after cooldown expires", async () => {
-    const now = Date.now();
-    // Last attempt 6 minutes ago (past the 5-minute cooldown)
-    const oldAttemptAt = now - 6 * 60_000;
-    insertStarter({
-      label: "Let me check calendar",
-      prompt: "Let me check what Alice has today.",
-      category: "productivity",
-      createdAt: now,
-    });
-    insertStarter({
-      label: "Plan my morning",
-      prompt: "Can you help me plan my morning?",
-      category: "productivity",
-      createdAt: now - 1,
-    });
-    setCheckpoint(
-      "conversation_starters:last_attempt_at:default",
-      String(oldAttemptAt),
-    );
-    setCheckpoint(
-      "conversation_starters:last_gen_at:default",
-      String(oldAttemptAt),
-    );
-    setCheckpoint("conversation_starters:item_count_at_last_gen:default", "1");
-    insertMemoryItem();
-
-    const result = (await dispatch("conversation-starters")) as {
-      starters: unknown[];
-      total: number;
-      status: string;
-    };
-
-    // Past the cooldown — should re-enqueue and return refreshing.
-    expect(result.status).toBe("refreshing");
-    expect(result.total).toBe(1);
-    expect(countStarterJobs()).toBe(1);
-  });
-
-  test("returns empty status when no memory items exist", async () => {
-    const result = (await dispatch("conversation-starters")) as {
-      starters: unknown[];
-      total: number;
-      status: string;
-    };
-
-    expect(result.status).toBe("empty");
-    expect(result.starters).toHaveLength(0);
-  });
-
-  test("returns generating status when memory items exist but no starters", async () => {
-    insertMemoryItem();
-
-    const result = (await dispatch("conversation-starters")) as {
-      starters: unknown[];
-      total: number;
-      status: string;
-    };
-
-    expect(result.status).toBe("generating");
-    expect(result.starters).toHaveLength(0);
-  });
-
-  test("respects limit parameter", async () => {
-    for (let i = 0; i < 6; i++) {
-      insertStarter({
-        label: `Starter ${i}`,
-        prompt: `Prompt ${i}`,
-        category: [
-          "development",
-          "communication",
-          "productivity",
-          "media",
-          "automation",
-          "knowledge",
-        ][i]!,
-        createdAt: Date.now() + i,
-      });
-    }
-
-    const result = (await dispatch("conversation-starters?limit=3")) as {
-      starters: unknown[];
-      total: number;
-    };
-
-    expect(result.starters).toHaveLength(3);
-    expect(result.total).toBe(6);
-  });
-
-  test("surfaces category-diverse starters first", async () => {
-    const now = Date.now();
-    insertStarter({
-      label: "Dev 1",
-      prompt: "p1",
-      category: "development",
-      createdAt: now + 5,
-    });
-    insertStarter({
-      label: "Dev 2",
-      prompt: "p2",
-      category: "development",
-      createdAt: now + 4,
-    });
-    insertStarter({
-      label: "Comm 1",
-      prompt: "p3",
-      category: "communication",
-      createdAt: now + 3,
-    });
-    insertStarter({
-      label: "Prod 1",
-      prompt: "p4",
-      category: "productivity",
-      createdAt: now + 2,
-    });
-
-    const result = (await dispatch("conversation-starters?limit=4")) as {
-      starters: Array<{ label: string; category: string }>;
-    };
-
-    const firstThreeCategories = result.starters
-      .slice(0, 3)
-      .map((starter) => starter.category);
-    expect(new Set(firstThreeCategories).size).toBe(3);
-  });
-
-  test("deletes a starter and excludes it from subsequent list responses", async () => {
+  test("deletes a starter row on request", async () => {
     const deletedId = insertStarter({
       label: "Draft a PR summary",
       prompt: "Draft a summary for my latest PR",
       category: "development",
-    });
-    const keptId = insertStarter({
-      label: "Check Slack threads",
-      prompt: "Check my unread Slack threads",
-      category: "communication",
     });
 
     const deleteResult = (await dispatch(
@@ -519,12 +171,10 @@ describe("GET /v1/conversation-starters", () => {
     expect(deleteResult).toEqual({ deleted: true, id: deletedId });
     expect(countStarterJobs()).toBe(0);
 
-    const listResult = (await dispatch("conversation-starters")) as {
-      starters: Array<{ id: string }>;
-      total: number;
-    };
-    expect(listResult.total).toBe(1);
-    expect(listResult.starters.map((starter) => starter.id)).toEqual([keptId]);
+    const remaining = getSqlite()
+      .prepare("SELECT COUNT(*) AS c FROM conversation_starters WHERE id = ?")
+      .get(deletedId) as { c: number };
+    expect(remaining.c).toBe(0);
   });
 
   test("throws NotFoundError when deleting an unknown starter", async () => {

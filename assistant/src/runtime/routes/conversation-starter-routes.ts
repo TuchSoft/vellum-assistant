@@ -1,43 +1,21 @@
 /**
  * Route handlers for conversation starter endpoints.
  *
- * GET    /v1/conversation-starters     — list conversation starters (chips)
- * DELETE /v1/conversation-starters/:id — remove a conversation starter chip
+ * Conversation starter chips are permanently disabled by custom patch 06:
+ * the list endpoint returns an empty set and never enqueues a generation
+ * job, so no LLM call happens for this feature. DELETE is kept for API
+ * compatibility so stale rows persisted by earlier versions can still be
+ * removed.
  */
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
-import {
-  checkpointKey,
-  CK_ITEM_COUNT,
-  CK_LAST_ATTEMPT_AT,
-  CK_LAST_GEN_AT,
-  countActiveMemoryNodes,
-  getCheckpointValue,
-  parseCheckpointInt,
-} from "../../home/conversation-starter-checkpoints.js";
-import {
-  buildConversationStarterValidationContext,
-  isValidConversationStarterText,
-} from "../../home/conversation-starter-validation.js";
-import { getDb, getMemoryDb } from "../../persistence/db-connection.js";
-import {
-  enqueueMemoryJob,
-  isMemoryEnabled,
-} from "../../persistence/jobs-store.js";
-import {
-  conversationStarters,
-  memoryJobs,
-} from "../../persistence/schema/index.js";
+import { getDb } from "../../persistence/db-connection.js";
+import { conversationStarters } from "../../persistence/schema/index.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { NotFoundError } from "./errors.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
-
-// ---------------------------------------------------------------------------
-// Strongest-first ordering — maximize category diversity so the top four
-// chips form a coherent, non-repetitive row.
-// ---------------------------------------------------------------------------
 
 const starterItemSchema = z.object({
   id: z.string(),
@@ -49,35 +27,16 @@ const starterItemSchema = z.object({
 
 type StarterItem = z.infer<typeof starterItemSchema>;
 
+/**
+ * Stale-after TTL for a conversation starter batch. Kept exported for API
+ * compatibility; generation is disabled, so nothing refreshes against it.
+ */
 export const CONVERSATION_STARTERS_STALE_TTL_MS = 4 * 60 * 60 * 1000;
-
-/** Minimum interval between re-enqueue attempts (prevents tight retry loops
- *  when generation repeatedly fails or produces 0 valid starters). */
-const REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
-
-function hasActiveConversationStarterJob(): boolean {
-  const memoryDb = getMemoryDb();
-  if (!memoryDb) {
-    return false;
-  }
-  return (
-    memoryDb
-      .select({ id: memoryJobs.id })
-      .from(memoryJobs)
-      .where(
-        and(
-          eq(memoryJobs.type, "generate_conversation_starters"),
-          inArray(memoryJobs.status, ["pending", "running"]),
-        ),
-      )
-      .get() != null
-  );
-}
 
 /**
  * Re-order starters so adjacent items have distinct categories wherever
  * possible. Within each category, preserve the original (batch-desc) order.
- * This is deterministic — same input always produces the same output.
+ * This is deterministic; same input always produces the same output.
  */
 export function orderStrongestFirst<T extends StarterItem>(items: T[]): T[] {
   if (items.length <= 1) {
@@ -163,88 +122,12 @@ export function orderStrongestFirst<T extends StarterItem>(items: T[]): T[] {
 // Handlers
 // ---------------------------------------------------------------------------
 
-function handleListConversationStarters({
-  queryParams = {},
-}: RouteHandlerArgs) {
-  const limitParam = Math.min(Math.max(1, Number(queryParams.limit ?? 4)), 20);
-  const offsetParam = Math.max(0, Number(queryParams.offset ?? 0));
-
-  const db = getDb();
-
-  const allItems = db
-    .select({
-      id: conversationStarters.id,
-      label: conversationStarters.label,
-      prompt: conversationStarters.prompt,
-      category: conversationStarters.category,
-      batch: conversationStarters.generationBatch,
-    })
-    .from(conversationStarters)
-    .where(eq(conversationStarters.cardType, "chip"))
-    .orderBy(
-      desc(conversationStarters.generationBatch),
-      desc(conversationStarters.createdAt),
-    )
-    .all();
-
-  const validationContext = buildConversationStarterValidationContext();
-  const validItems = allItems.filter((item) =>
-    isValidConversationStarterText(item, validationContext),
-  );
-  const invalidItemCount = allItems.length - validItems.length;
-  const total = validItems.length;
-
-  if (allItems.length > 0) {
-    const totalActive = countActiveMemoryNodes();
-    const lastCount = parseCheckpointInt(
-      getCheckpointValue(checkpointKey(CK_ITEM_COUNT)),
-    );
-    const lastGenAt = parseCheckpointInt(
-      getCheckpointValue(checkpointKey(CK_LAST_GEN_AT)),
-    );
-    const staleByAge =
-      lastGenAt == null ||
-      Date.now() - lastGenAt >= CONVERSATION_STARTERS_STALE_TTL_MS;
-    const checkpointAhead = lastCount != null && totalActive < lastCount;
-    let hasActiveJob = hasActiveConversationStarterJob();
-    const lastAttemptAt = parseCheckpointInt(
-      getCheckpointValue(checkpointKey(CK_LAST_ATTEMPT_AT)),
-    );
-    const withinCooldown =
-      lastAttemptAt != null && Date.now() - lastAttemptAt < REFRESH_COOLDOWN_MS;
-    const shouldRefresh =
-      !withinCooldown &&
-      (staleByAge ||
-        checkpointAhead ||
-        (invalidItemCount > 0 && totalActive > 0));
-
-    if (shouldRefresh && !hasActiveJob && isMemoryEnabled()) {
-      enqueueMemoryJob("generate_conversation_starters", {});
-      hasActiveJob = true;
-    }
-
-    const ordered = orderStrongestFirst(validItems);
-    const page = ordered.slice(offsetParam, offsetParam + limitParam);
-    return {
-      starters: page,
-      total,
-      status: hasActiveJob ? "refreshing" : "ready",
-    };
-  }
-
-  const memoryCount = countActiveMemoryNodes();
-
-  if (memoryCount === 0) {
-    return { starters: [], total: 0, status: "empty" };
-  }
-
-  const existing = hasActiveConversationStarterJob();
-
-  if (!existing && isMemoryEnabled()) {
-    enqueueMemoryJob("generate_conversation_starters", {});
-  }
-
-  return { starters: [], total: 0, status: "generating" };
+function handleListConversationStarters(_args: RouteHandlerArgs) {
+  // Permanently disabled (custom patch 06): never serve starter chips and
+  // never enqueue a generation job, so no LLM call happens for this feature.
+  // Rows persisted by earlier versions are left untouched but are never
+  // listed.
+  return { starters: [], total: 0, status: "empty" };
 }
 
 function handleDeleteConversationStarter({

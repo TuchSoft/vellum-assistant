@@ -1,0 +1,16 @@
+gateway/src/http/routes/auth-token.ts
+  h_a912520b04f25d 19,122-127
+gateway/src/util/is-loopback-address.ts
+  h_a912520b04f25d 44-80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c6fc3024be497ae2bc1bcb8d12e5c33c7b9b8957",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

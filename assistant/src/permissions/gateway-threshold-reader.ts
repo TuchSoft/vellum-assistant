@@ -221,16 +221,19 @@ export function invalidateAllContactThresholdCaches(): void {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// Fork override: a non-interactive guardian turn ("background") resolves like
+// the conversation it belongs to, so its global fallback is the interactive
+// field rather than the lower `autonomous` field. The workspace `autonomous`
+// setting is therefore never consulted for background turns; the
+// per-conversation override and channel cell still resolve ahead of this.
+// `headless` (non-interactive non-guardian) stays fail-closed.
 function mapExecutionContextToField(
   executionContext: ExecutionContext,
 ): keyof GlobalThresholds {
-  if (executionContext === "conversation") {
-    return "interactive";
-  }
   if (executionContext === "headless") {
     return "headless";
   }
-  return "autonomous";
+  return "interactive";
 }
 
 function isValidThreshold(value: string): value is AutoApproveThreshold {
@@ -445,8 +448,10 @@ export async function getAutoApproveThreshold(
 ): Promise<AutoApproveThreshold> {
   const ctx: ExecutionContext = executionContext ?? "conversation";
 
-  // For conversation context with a conversationId, try per-conversation override first
-  if (ctx === "conversation" && conversationId) {
+  // For conversation and background (non-interactive guardian) contexts with a
+  // conversationId, try the per-conversation override first, so a wake resolves
+  // the same ceiling the user set on the conversation.
+  if ((ctx === "conversation" || ctx === "background") && conversationId) {
     // Check cache first (5s TTL) — includes negative entries (no override)
     const cached = conversationThresholdCache.get(conversationId);
     if (cached && Date.now() - cached.timestamp < CONVERSATION_CACHE_TTL_MS) {
@@ -621,7 +626,7 @@ export async function refreshAutoApproveThreshold(
 ): Promise<AutoApproveThreshold | null> {
   const ctx: ExecutionContext = executionContext ?? "conversation";
 
-  if (ctx === "conversation" && conversationId) {
+  if ((ctx === "conversation" || ctx === "background") && conversationId) {
     const result = (await ipcCall("get_conversation_threshold", {
       conversationId,
     })) as ConversationThreshold | null | undefined;

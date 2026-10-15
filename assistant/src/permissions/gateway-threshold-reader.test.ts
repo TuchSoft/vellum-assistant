@@ -147,21 +147,44 @@ describe("refreshAutoApproveThreshold", () => {
   });
 
   test("resolves the context-appropriate global field", async () => {
+    ipcHandlers.set("get_conversation_threshold", () => null);
     ipcHandlers.set("get_global_thresholds", () => ({
       interactive: "high",
       autonomous: "medium",
       headless: "none",
     }));
 
+    // Fork: a background (non-interactive guardian) turn resolves like the
+    // conversation it belongs to: the per-conversation override first, then
+    // the global interactive field, never the lower global autonomous field.
     expect(await refreshAutoApproveThreshold("conv-5", "background")).toBe(
-      "medium",
+      "high",
     );
     expect(await refreshAutoApproveThreshold("conv-5", "headless")).toBe(
       "none",
     );
-    // Background/headless contexts never consult the per-conversation
-    // override, mirroring getAutoApproveThreshold.
-    expect(countCalls("get_conversation_threshold")).toBe(0);
+    // Background consults the per-conversation override; headless does not.
+    expect(countCalls("get_conversation_threshold")).toBe(1);
+  });
+
+  test("background honors the per-conversation override", async () => {
+    ipcHandlers.set("get_conversation_threshold", () => ({
+      threshold: "none",
+    }));
+    ipcHandlers.set("get_global_thresholds", () => ({
+      interactive: "high",
+      autonomous: "low",
+      headless: "none",
+    }));
+
+    // A wake of a conversation whose picker override is stricter than the
+    // global resolves to that override, exactly like an interactive turn.
+    expect(await getAutoApproveThreshold("conv-6", "background")).toBe(
+      "none",
+    );
+    expect(await refreshAutoApproveThreshold("conv-6", "background")).toBe(
+      "none",
+    );
   });
 
   test("returns null when the global read fails", async () => {
@@ -282,10 +305,12 @@ describe("channel-permission cell layer", () => {
   });
 
   test("the cell governs background and headless contexts, not just conversation", async () => {
-    // Non-interactive guardian sessions (background jobs, headless runs)
-    // read the "background"/"headless" global fields — but a strict channel
-    // cell must still beat them. Gating the cell branch on the conversation
+    // Non-interactive guardian sessions (background jobs) and headless runs
+    // resolve through the same cascade as a conversation turn: the
+    // per-conversation override is consulted first (none here), then a strict
+    // channel cell beats the global. Gating the cell branch on the conversation
     // context would reintroduce the guardian background auto-approve bypass.
+    ipcHandlers.set("get_conversation_threshold", () => null);
     ipcHandlers.set("resolve_channel_permission_threshold", () => ({
       resolved: { threshold: "none", scope: "channel" },
     }));

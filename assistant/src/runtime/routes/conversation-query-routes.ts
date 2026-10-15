@@ -134,6 +134,7 @@ import { initializeProviders } from "../../providers/registry.js";
 import { MANAGED_ROUTABLE_PROVIDERS } from "../../providers/vellum-model-routing.js";
 import { credentialKey } from "../../security/credential-key.js";
 import { validateAllowlistFile } from "../../security/secret-allowlist.js";
+import { extractReportedCostUsd } from "../../usage/pricing.js";
 import {
   resolvePricingForUsage,
   usesAnthropicPricingRules,
@@ -277,7 +278,20 @@ function replaceInferenceProfileConfig(
   );
 }
 
-function attachEstimatedCost(summary: LlmContextSummary): LlmContextSummary {
+function attachEstimatedCost(
+  summary: LlmContextSummary,
+  responsePayload?: unknown,
+): LlmContextSummary {
+  // A cost the provider reported for this request is authoritative, so it
+  // supersedes the token-based estimate and is used even when token counts
+  // are absent from the summary.
+  if (responsePayload !== undefined) {
+    const reportedCostUsd = extractReportedCostUsd(responsePayload);
+    if (reportedCostUsd !== null) {
+      return { ...summary, estimatedCostUsd: reportedCostUsd };
+    }
+  }
+
   const { provider, model, inputTokens, outputTokens } = summary;
   if (!model || inputTokens == null || outputTokens == null) {
     return summary;
@@ -311,10 +325,11 @@ function attachEstimatedCost(summary: LlmContextSummary): LlmContextSummary {
 function applyStoredProviderToLlmContextResult(
   normalized: LlmContextNormalizationResult,
   provider: string | null,
+  responsePayload?: unknown,
 ): LlmContextRouteResult {
   if (!provider) {
     const summary = normalized.summary
-      ? attachEstimatedCost(normalized.summary)
+      ? attachEstimatedCost(normalized.summary, responsePayload)
       : undefined;
     return { ...normalized, summary } as LlmContextRouteResult;
   }
@@ -322,7 +337,10 @@ function applyStoredProviderToLlmContextResult(
   const mergedSummary = normalized.summary
     ? { ...normalized.summary, provider }
     : { provider };
-  const summary = attachEstimatedCost(mergedSummary as LlmContextSummary);
+  const summary = attachEstimatedCost(
+    mergedSummary as LlmContextSummary,
+    responsePayload,
+  );
   return { ...normalized, summary };
 }
 
@@ -395,6 +413,7 @@ function normalizeLlmContextLog(
   const result = applyStoredProviderToLlmContextResult(
     normalized,
     log.provider,
+    responsePayload,
   );
   return {
     id: log.id,

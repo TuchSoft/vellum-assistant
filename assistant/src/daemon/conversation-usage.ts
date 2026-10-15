@@ -4,7 +4,10 @@ import { updateConversationUsage } from "../persistence/conversation-crud.js";
 import { recordUsageEvent } from "../persistence/llm-usage-store.js";
 import type { UsageActor } from "../usage/actors.js";
 import { resolveUsageAttribution } from "../usage/attribution.js";
-import { extractRawUsage } from "../usage/pricing.js";
+import {
+  extractRawUsage,
+  extractReportedCostUsd,
+} from "../usage/pricing.js";
 import type {
   AnthropicCacheCreationTokenDetails,
   PricingResult,
@@ -289,6 +292,7 @@ export function recordUsage(
       ? extractAnthropicCacheCreation(rawResponse)
       : null,
     speed: useAnthropicRules ? extractAnthropicSpeed(rawResponse) : null,
+    reportedCostUsd: extractReportedCostUsd(rawResponse),
   };
   const pricing = resolveStructuredPricing(
     ctx.providerName,

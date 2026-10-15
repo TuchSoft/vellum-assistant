@@ -434,6 +434,20 @@ function createDirectUsage(
 }
 
 /**
+ * When the provider reported the actual USD cost of a request, that value is
+ * authoritative and supersedes any token-based estimate (catalog rates or a
+ * user pricing override). Returns `null` when no usable reported cost is
+ * present, so callers fall through to the estimate.
+ */
+function resolveReportedCost(usage: PricingUsage): PricingResult | null {
+  const reported = usage.reportedCostUsd;
+  if (reported != null && Number.isFinite(reported) && reported > 0) {
+    return { estimatedCostUsd: reported, pricingStatus: "priced" };
+  }
+  return null;
+}
+
+/**
  * Resolve pricing for a normalized usage breakdown using the built-in catalog.
  * Returns a PricingResult with explicit priced/unpriced status.
  */
@@ -442,6 +456,11 @@ export function resolvePricingForUsage(
   model: string,
   usage: PricingUsage,
 ): PricingResult {
+  const reported = resolveReportedCost(usage);
+  if (reported) {
+    return reported;
+  }
+
   // Anthropic models routed through OpenRouter or the Vercel AI Gateway: look
   // up against the Anthropic catalog using the normalized bare slug. Both
   // gateways bill these calls at Anthropic's rates and the underlying Messages
@@ -477,6 +496,11 @@ export function resolvePricingForUsageWithOverrides(
   usage: PricingUsage,
   overrides?: ModelPricingOverride[],
 ): PricingResult {
+  const reported = resolveReportedCost(usage);
+  if (reported) {
+    return reported;
+  }
+
   const bestOverride = findOverride(overrides, provider, model);
   if (bestOverride) {
     return {

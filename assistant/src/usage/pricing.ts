@@ -130,6 +130,62 @@ function extractAnthropicSpeed(
   return foundStandard ? "standard" : null;
 }
 
+/**
+ * Keys a provider may use to report the actual USD cost of a request inside
+ * its `usage` block. Checked in order; the first positive, finite value wins.
+ * Covers OpenRouter and llmgateway (`cost`) plus common aggregator variants.
+ */
+const REPORTED_COST_USD_KEYS = ["cost", "total_cost", "cost_usd"] as const;
+
+function readReportedCostFromUsage(
+  usage: Record<string, unknown>,
+): number | null {
+  for (const key of REPORTED_COST_USD_KEYS) {
+    const value = usage[key];
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      return value;
+    }
+  }
+  const costDetails = asRecord(usage.cost_details);
+  const upstreamCost = costDetails?.upstream_inference_cost;
+  if (
+    typeof upstreamCost === "number" &&
+    Number.isFinite(upstreamCost) &&
+    upstreamCost > 0
+  ) {
+    return upstreamCost;
+  }
+  return null;
+}
+
+/**
+ * Sum the USD cost a provider reported for its response by reading each
+ * response's `usage` block. `rawResponse` is either a single provider
+ * response object or, for a multi-call turn, an array of them. Returns
+ * `null` when no provider reported a usable (positive, finite) cost so
+ * callers fall back to the token-based estimate.
+ */
+export function extractReportedCostUsd(rawResponse: unknown): number | null {
+  if (rawResponse == null) {
+    return null;
+  }
+  const responses = Array.isArray(rawResponse) ? rawResponse : [rawResponse];
+  let total = 0;
+  let found = false;
+  for (const response of responses) {
+    const usage = asRecord(asRecord(response)?.usage);
+    if (!usage) {
+      continue;
+    }
+    const reported = readReportedCostFromUsage(usage);
+    if (reported !== null) {
+      total += reported;
+      found = true;
+    }
+  }
+  return found ? total : null;
+}
+
 export function buildPricingUsage(input: {
   providerName: string;
   model: string;
@@ -169,6 +225,7 @@ export function buildPricingUsage(input: {
       ? extractAnthropicCacheCreation(input.rawResponse)
       : null,
     speed: useAnthropicRules ? extractAnthropicSpeed(input.rawResponse) : null,
+    reportedCostUsd: extractReportedCostUsd(input.rawResponse),
   };
 }
 

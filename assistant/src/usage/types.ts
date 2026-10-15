@@ -29,6 +29,13 @@ export interface PricingUsage {
   anthropicCacheCreation: AnthropicCacheCreationTokenDetails | null;
   /** Anthropic fast mode speed indicator from the API response. */
   speed?: "fast" | "standard" | null;
+  /**
+   * Cost the provider reported for this request in its API response, in USD
+   * (e.g. OpenRouter/llmgateway `usage.cost`). When a positive, finite value
+   * is present the pricing resolvers use it verbatim instead of estimating
+   * from token counts; `null`/absent when the provider reports no cost.
+   */
+  reportedCostUsd?: number | null;
 }
 
 /**

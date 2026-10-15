@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { ModelPricingOverride } from "../config/schema.js";
+import { extractReportedCostUsd } from "../usage/pricing.js";
 import type { PricingUsage } from "../usage/types.js";
 import {
   resolvePricing,
@@ -1127,5 +1128,110 @@ describe("usesAnthropicPricingRules", () => {
   test("returns false for other providers", () => {
     expect(usesAnthropicPricingRules("openai", "gpt-4o")).toBe(false);
     expect(usesAnthropicPricingRules("gemini", "gemini-2.5-pro")).toBe(false);
+  });
+});
+
+
+describe("extractReportedCostUsd", () => {
+  test("reads a positive usage.cost (llmgateway/OpenRouter shape)", () => {
+    expect(
+      extractReportedCostUsd({
+        usage: { prompt_tokens: 41, completion_tokens: 428, cost: 0.0002181 },
+      }),
+    ).toBeCloseTo(0.0002181, 10);
+  });
+
+  test("falls back to total_cost then cost_usd", () => {
+    expect(extractReportedCostUsd({ usage: { total_cost: 0.5 } })).toBe(0.5);
+    expect(extractReportedCostUsd({ usage: { cost_usd: 0.25 } })).toBe(0.25);
+  });
+
+  test("prefers cost over the other keys", () => {
+    expect(
+      extractReportedCostUsd({
+        usage: { cost: 0.1, total_cost: 9, cost_usd: 9 },
+      }),
+    ).toBe(0.1);
+  });
+
+  test("reads a nested cost_details.upstream_inference_cost", () => {
+    expect(
+      extractReportedCostUsd({
+        usage: { cost_details: { upstream_inference_cost: 0.0009 } },
+      }),
+    ).toBe(0.0009);
+  });
+
+  test("sums the reported cost across an array of responses", () => {
+    expect(
+      extractReportedCostUsd([
+        { usage: { cost: 0.1 } },
+        { usage: { cost: 0.2 } },
+        { usage: { prompt_tokens: 5 } },
+      ]),
+    ).toBeCloseTo(0.3, 10);
+  });
+
+  test("ignores zero, negative, and non-numeric values", () => {
+    expect(extractReportedCostUsd({ usage: { cost: 0 } })).toBeNull();
+    expect(extractReportedCostUsd({ usage: { cost: -1 } })).toBeNull();
+    expect(extractReportedCostUsd({ usage: { cost: "0.5" } })).toBeNull();
+    expect(
+      extractReportedCostUsd({ usage: { cost: Number.POSITIVE_INFINITY } }),
+    ).toBeNull();
+  });
+
+  test("returns null when no usage block is present", () => {
+    expect(extractReportedCostUsd({ model: "x" })).toBeNull();
+    expect(extractReportedCostUsd(null)).toBeNull();
+    expect(extractReportedCostUsd(undefined)).toBeNull();
+  });
+});
+
+describe("reported cost precedence", () => {
+  const baseUsage: PricingUsage = {
+    directInputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    anthropicCacheCreation: null,
+  };
+
+  test("resolvePricingForUsage prefers the reported cost over the catalog estimate", () => {
+    const result = resolvePricingForUsage("anthropic", "claude-opus-4-6", {
+      ...baseUsage,
+      reportedCostUsd: 0.42,
+    });
+    expect(result.pricingStatus).toBe("priced");
+    expect(result.estimatedCostUsd).toBeCloseTo(0.42, 10);
+  });
+
+  test("resolvePricingForUsageWithOverrides lets the reported cost supersede a user override", () => {
+    const overrides: ModelPricingOverride[] = [
+      {
+        provider: "anthropic",
+        modelPattern: "claude-opus-4-6",
+        inputPer1M: 10,
+        outputPer1M: 20,
+      },
+    ];
+    const result = resolvePricingForUsageWithOverrides(
+      "anthropic",
+      "claude-opus-4-6",
+      { ...baseUsage, reportedCostUsd: 0.42 },
+      overrides,
+    );
+    expect(result.estimatedCostUsd).toBeCloseTo(0.42, 10);
+  });
+
+  test("falls back to the token estimate when no reported cost is present", () => {
+    const result = resolvePricingForUsage(
+      "anthropic",
+      "claude-opus-4-6",
+      baseUsage,
+    );
+    expect(result.pricingStatus).toBe("priced");
+    // 1M input at $5/M + 1M output at $25/M.
+    expect(result.estimatedCostUsd).toBeCloseTo(30, 5);
   });
 });

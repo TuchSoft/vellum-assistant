@@ -91,6 +91,41 @@ describe("UsageTrackingProvider", () => {
     expect(events[0].estimatedCostUsd ?? 0).toBeCloseTo(0.00975, 10);
   });
 
+  test("uses the provider-reported cost from rawResponse when present", async () => {
+    const provider = new UsageTrackingProvider(
+      makeProvider({
+        content: [{ type: "text", text: "Title" }],
+        model: "some-unlisted-model",
+        usage: {
+          inputTokens: 41,
+          outputTokens: 428,
+        },
+        stopReason: "end_turn",
+        rawResponse: {
+          usage: { prompt_tokens: 41, completion_tokens: 428, cost: 0.0002181 },
+        },
+      }),
+    );
+
+    await provider.sendMessage(
+      [{ role: "user", content: [{ type: "text", text: "Summarize" }] }],
+      {
+        config: {
+          callSite: "conversationTitle",
+        },
+      },
+    );
+
+    const events = listUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      provider: "openai",
+      model: "some-unlisted-model",
+      pricingStatus: "priced",
+    });
+    expect(events[0].estimatedCostUsd ?? 0).toBeCloseTo(0.0002181, 10);
+  });
+
   test("stamps the triggering conversation id when the config carries one", async () => {
     const provider = new UsageTrackingProvider(
       makeProvider({

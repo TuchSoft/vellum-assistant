@@ -306,6 +306,35 @@ describe("GET /v1/messages/:id/llm-context estimated cost cache accounting", () 
       5,
     );
   });
+
+  test("prefers the provider-reported cost over the token estimate", async () => {
+    const reportedResponsePayload = JSON.stringify({
+      model: "claude-opus-4-6",
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: "Hello back." }],
+      usage: {
+        input_tokens: 19091,
+        cache_read_input_tokens: 17096,
+        output_tokens: 440,
+        cost: 0.0002181,
+      },
+    });
+
+    seedRequestLog({
+      id: "log-cost-reported",
+      messageId: "msg-cost-reported",
+      provider: "anthropic",
+      requestPayload: anthropicRequestPayload,
+      responsePayload: reportedResponsePayload,
+    });
+
+    const body = (await dispatchLlmContext("msg-cost-reported")) as {
+      logs: Array<{ summary?: { estimatedCostUsd?: number | null } }>;
+    };
+
+    // The reported value wins over the ~$0.115 token-based estimate.
+    expect(body.logs[0]?.summary?.estimatedCostUsd).toBeCloseTo(0.0002181, 10);
+  });
 });
 
 describe("GET /v1/llm-request-logs/:id/payload", () => {

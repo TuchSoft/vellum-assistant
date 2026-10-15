@@ -81,6 +81,46 @@ describe("recordUsage", () => {
     updateConversationUsageFailureCode = "SQLITE_BUSY";
   });
 
+  test("uses the provider-reported cost from the response over the token estimate", () => {
+    const usageStats = {
+      inputTokens: 0,
+      outputTokens: 0,
+      estimatedCost: 0,
+    };
+    const onEventMessages: unknown[] = [];
+
+    recordUsage(
+      {
+        conversationId: "conv-reported-cost",
+        providerName: "openai",
+        usageStats,
+      },
+      41,
+      428,
+      "some-unlisted-model",
+      (msg) => onEventMessages.push(msg),
+      "main_agent",
+      "req-reported-cost",
+      0,
+      0,
+      { usage: { prompt_tokens: 41, completion_tokens: 428, cost: 0.0002181 } },
+    );
+
+    const events = listUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].pricingStatus).toBe("priced");
+    expect(events[0].estimatedCostUsd ?? 0).toBeCloseTo(0.0002181, 10);
+    expect(usageStats.estimatedCost).toBeCloseTo(0.0002181, 10);
+
+    const update = onEventMessages.find(
+      (m): m is { type: string; estimatedCost: number } =>
+        typeof m === "object" &&
+        m !== null &&
+        (m as { type?: string }).type === "usage_update",
+    );
+    expect(update?.estimatedCost).toBeCloseTo(0.0002181, 10);
+  });
+
   test("applies fast mode pricing when any response has speed: fast", () => {
     const usageStats = {
       inputTokens: 0,

@@ -1,0 +1,16 @@
+assistant/src/__tests__/mcp-client-reconnect.test.ts
+  h_a912520b04f25d 1-212
+assistant/src/mcp/client.ts
+  h_a912520b04f25d 5-12,68-71,94-98,106,112-117,122-125,129-130,137-139,141-143,197-199,207,287-329,331-347,349-353,408-411,448-469
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "06d621eebfca0e53620d08fe8d3ba19124d651a1",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

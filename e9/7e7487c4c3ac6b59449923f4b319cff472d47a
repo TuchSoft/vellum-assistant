@@ -1,0 +1,16 @@
+assistant/src/__tests__/conversation-tool-setup-attribution.test.ts
+  h_a912520b04f25d 380-381,390-392,395,408-410
+assistant/src/daemon/conversation-tool-setup.ts
+  h_a912520b04f25d 263-269
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e97e7487c4c3ac6b59449923f4b319cff472d47a",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

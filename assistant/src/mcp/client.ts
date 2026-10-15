@@ -2,8 +2,14 @@ import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  McpError,
+  type ToolAnnotations,
+} from "@modelcontextprotocol/sdk/types.js";
 
 import type {
   McpServerSource,
@@ -59,6 +65,10 @@ export class McpClient {
   private connected = false;
   private oauthProvider: McpOAuthProvider | null = null;
   private _lastError: Error | null = null;
+  /** Transport config of the last connect(), used by self-healing reconnects. */
+  private lastTransportConfig: McpTransport | null = null;
+  /** Single-flight guard: concurrent callers share one reconnect attempt. */
+  private reconnectInFlight: Promise<boolean> | null = null;
 
   /** The last connection error, if any. Null when connected or not yet attempted. */
   get lastError(): Error | null {
@@ -81,7 +91,11 @@ export class McpClient {
         : sourceOrConfig.source;
     this.serverConfig =
       typeof sourceOrConfig === "string" ? null : sourceOrConfig;
-    this.client = new Client({
+    this.client = this.createSdkClient();
+  }
+
+  private createSdkClient(): Client {
+    const client = new Client({
       name: "vellum-assistant",
       version: "1.0.0",
     });
@@ -89,27 +103,44 @@ export class McpClient {
     // Prevent SDK-internal transport errors (e.g. SSE reconnection auth
     // failures) from surfacing as unhandled rejections that crash the daemon
     // via the global unhandledRejection → shutdown handler.
-    this.client.onerror = (error) => {
+    client.onerror = (error) => {
       log.warn(
         { serverId: this.serverId, err: error },
         "MCP SDK transport error (non-fatal)",
       );
     };
-    this.client.onclose = () => {
+
+    // A close initiated by the remote peer or a fatal transport error marks
+    // the client dead so the next call lazily reconnects. disconnect() nulls
+    // `connected` before closing, which distinguishes an intentional teardown
+    // from a lost connection here.
+    client.onclose = () => {
       const wasConnected = this.connected;
       this.connected = false;
       this.transport = null;
       if (wasConnected) {
+        log.warn(
+          { serverId: this.serverId },
+          "MCP connection closed; will reconnect on next use",
+        );
         this.onUnexpectedClose?.();
       }
     };
+
+    return client;
   }
 
   async connect(transportConfig: McpTransport): Promise<void> {
     if (this.connected) {
       return;
     }
+    this.lastTransportConfig = transportConfig;
+    await this.establishConnection(transportConfig);
+  }
 
+  private async establishConnection(
+    transportConfig: McpTransport,
+  ): Promise<void> {
     const isHttpTransport =
       transportConfig.type === "sse" ||
       transportConfig.type === "streamable-http";
@@ -163,15 +194,17 @@ export class McpClient {
         ),
       ]);
     } catch (err) {
+      // Null the transport before closing so the onclose handler does not
+      // report a failed connect as a lost connection.
+      this.transport = null;
       try {
         await this.client.close();
       } catch {
         /* ignore cleanup errors */
       }
-      this.transport = null;
 
       if (isHttpTransport && isAuthRelatedError(err)) {
-        // Auth-related — user can run `assistant mcp auth <name>` to authenticate.
+        // Auth-related. User can run `assistant mcp auth <name>` to authenticate.
         log.info(
           { serverId: this.serverId, err },
           "MCP server requires authentication",
@@ -251,9 +284,73 @@ export class McpClient {
     signal?: AbortSignal,
   ): Promise<McpCallResult> {
     if (!this.connected) {
-      throw new Error(`MCP client "${this.serverId}" is not connected`);
+      const revived = await this.reconnect();
+      if (!revived) {
+        throw new Error(`MCP client "${this.serverId}" is not connected`);
+      }
     }
 
+    try {
+      return await this.invokeTool(name, args, signal);
+    } catch (err) {
+      // Tool-level failures arrive as isError results, so a throw here means
+      // the transport or the protocol broke. HTTP sessions expire server-side
+      // (idle TTLs, server restarts, proxy timeouts) without any close event
+      // reaching this client, so a dead session is often first observed as a
+      // failed call. Reconnect once and retry the call on the fresh session.
+      if (signal?.aborted || !isRetryableConnectionError(err)) {
+        throw err;
+      }
+      log.warn(
+        { serverId: this.serverId, toolName: name, err },
+        "MCP tool call failed with a connection-level error; reconnecting and retrying once",
+      );
+      const revived = await this.reconnect();
+      if (!revived) {
+        throw err;
+      }
+      return this.invokeTool(name, args, signal);
+    }
+  }
+
+  /**
+   * Tear down the current connection and re-run the full connect pipeline
+   * (credential-store headers, OAuth tokens) on a fresh SDK client. The SDK
+   * does not support resuming a streamable-HTTP session without an event
+   * store, so recovery is a new initialize handshake. Concurrent callers
+   * share one attempt; resolves to whether a connection was established.
+   */
+  private reconnect(): Promise<boolean> {
+    if (this.reconnectInFlight) {
+      return this.reconnectInFlight;
+    }
+    const config = this.lastTransportConfig;
+    if (!config) {
+      return Promise.resolve(false);
+    }
+    this.reconnectInFlight = (async () => {
+      log.info({ serverId: this.serverId }, "Reconnecting MCP client");
+      this.transport = null;
+      this.connected = false;
+      try {
+        await this.client.close();
+      } catch {
+        /* ignore cleanup errors */
+      }
+      this.client = this.createSdkClient();
+      await this.establishConnection(config);
+      return this.connected;
+    })().finally(() => {
+      this.reconnectInFlight = null;
+    });
+    return this.reconnectInFlight;
+  }
+
+  private async invokeTool(
+    name: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<McpCallResult> {
     const result = await this.client.callTool(
       { name, arguments: args },
       undefined,
@@ -308,6 +405,10 @@ export class McpClient {
       return;
     }
 
+    // An intentionally disconnected client must not self-heal: the manager
+    // tears clients down during reload and shutdown, and a lazy reconnect
+    // would resurrect a server that was deliberately stopped.
+    this.lastTransportConfig = null;
     this.connected = false;
     try {
       await this.client.close();
@@ -342,6 +443,28 @@ export class McpClient {
         });
     }
   }
+}
+
+/**
+ * Returns true when a thrown `callTool` error means the transport or session
+ * is broken, making a reconnect worth attempting. `McpError` carries a
+ * JSON-RPC error the server actively answered, so the connection is alive
+ * and the failure belongs to the call itself. HTTP 401/403 are auth
+ * failures a plain reconnect cannot fix; 404/410 are the expired-session
+ * responses streamable-HTTP servers send, and anything else at this layer
+ * (fetch failures, resets, premature close) is transport-level.
+ */
+function isRetryableConnectionError(err: unknown): boolean {
+  if (err instanceof McpError) {
+    return false;
+  }
+  if (err instanceof Error && err.name === "AbortError") {
+    return false;
+  }
+  if (err instanceof StreamableHTTPError) {
+    return err.code !== 401 && err.code !== 403;
+  }
+  return true;
 }
 
 /**

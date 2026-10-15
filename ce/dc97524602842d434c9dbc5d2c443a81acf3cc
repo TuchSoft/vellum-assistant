@@ -1,0 +1,24 @@
+assistant/src/cli/commands/host-exec.help.ts
+  h_a912520b04f25d 1-39
+assistant/src/cli/commands/host-exec.ts
+  h_a912520b04f25d 1-71
+assistant/src/cli/program.ts
+  h_a912520b04f25d 31,130
+assistant/src/ipc/assistant-server.ts
+  h_a912520b04f25d 70,229
+assistant/src/ipc/host-exec-client.ts
+  h_a912520b04f25d 1-41
+assistant/src/ipc/routes/host-exec-ipc-routes.ts
+  h_a912520b04f25d 1-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cedc97524602842d434c9dbc5d2c443a81acf3cc",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

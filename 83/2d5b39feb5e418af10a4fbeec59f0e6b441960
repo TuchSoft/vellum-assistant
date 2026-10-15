@@ -1,0 +1,20 @@
+assistant/src/runtime/__tests__/agent-wake.test.ts
+  h_a912520b04f25d 2191-2242
+assistant/src/runtime/agent-wake.ts
+  h_a912520b04f25d 578-590,592,1671-1678
+assistant/src/runtime/routes/__tests__/wake-conversation-routes.test.ts
+  h_a912520b04f25d 58,67-70,160-161
+assistant/src/runtime/routes/wake-conversation-routes.ts
+  h_a912520b04f25d 81-89,112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "832d5b39feb5e418af10a4fbeec59f0e6b441960",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

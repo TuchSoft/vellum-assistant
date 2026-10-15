@@ -20,6 +20,7 @@ import { githubProvider } from "../watcher/providers/github.js";
 import { gmailProvider } from "../watcher/providers/gmail.js";
 import { googleCalendarProvider } from "../watcher/providers/google-calendar.js";
 import { linearProvider } from "../watcher/providers/linear.js";
+import { startMcpHealthScheduler } from "./mcp-health-scheduler.js";
 import { outlookProvider } from "../watcher/providers/outlook.js";
 import { outlookCalendarProvider } from "../watcher/providers/outlook-calendar.js";
 const log = getLogger("lifecycle");
@@ -68,6 +69,10 @@ export async function initializeProvidersAndTools(
   getMcpServerManager().setUnexpectedCloseHandler(() => publishMcpChanged());
   await startConfiguredMcpServers();
   publishMcpChanged();
+
+  // Periodic reconcile so silently-dead MCP connections recover without a
+  // manual reload. A passing tick is a no-op while everything is healthy.
+  startMcpHealthScheduler();
 
   log.info("Daemon startup: providers and tools initialized");
 }

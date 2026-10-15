@@ -11,16 +11,25 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, jest, mock, test } from "bun:test";
 
-const start = jest.fn(async () => []);
-const stop = jest.fn(async () => {});
+const reconcile = jest.fn(async (_config, applyDelta) => {
+  const outcome = {
+    connected: [],
+    kept: [],
+    failed: [],
+    removed: [],
+  };
+  await applyDelta?.(outcome);
+  return outcome;
+});
 const publishMcpChanged = jest.fn();
 const realResourceSync =
   await import("../../runtime/sync/resource-sync-events.js");
 
 mock.module("../manager.js", () => ({
   getMcpServerManager: () => ({
-    start,
-    stop,
+    reconcile,
+    start: jest.fn(async () => []),
+    stop: jest.fn(async () => {}),
     callTool: jest.fn(),
     getClient: () => undefined,
   }),
@@ -47,10 +56,17 @@ const { reloadMcpServers } = await import("../../daemon/mcp-reload-service.js");
 const signalPath = () => join(getSignalsDir(), MCP_RELOAD_SIGNAL_FILE);
 
 beforeEach(() => {
-  start.mockReset();
-  start.mockResolvedValue([]);
-  stop.mockReset();
-  stop.mockResolvedValue(undefined);
+  reconcile.mockReset();
+  reconcile.mockImplementation(async (_config, applyDelta) => {
+    const outcome = {
+      connected: [],
+      kept: [],
+      failed: [],
+      removed: [],
+    };
+    await applyDelta?.(outcome);
+    return outcome;
+  });
   publishMcpChanged.mockReset();
   rmSync(signalPath(), { force: true });
 });
@@ -69,21 +85,22 @@ describe("reloadMcpServers", () => {
   });
 
   test("publishes status only after a slow reload settles", async () => {
-    let finishStop: (() => void) | undefined;
-    stop.mockImplementationOnce(
+    let finishReconcile: (() => void) | undefined;
+    reconcile.mockImplementationOnce(
       () =>
-        new Promise<void>((resolve) => {
-          finishStop = resolve;
+        new Promise((resolve) => {
+          finishReconcile = () =>
+            resolve({ connected: [], kept: [], failed: [], removed: [] });
         }),
     );
 
     const reload = reloadMcpServers();
-    while (!finishStop) {
+    while (!finishReconcile) {
       await Promise.resolve();
     }
     expect(publishMcpChanged).not.toHaveBeenCalled();
 
-    finishStop!();
+    finishReconcile!();
     await reload;
 
     expect(publishMcpChanged).toHaveBeenCalledTimes(1);

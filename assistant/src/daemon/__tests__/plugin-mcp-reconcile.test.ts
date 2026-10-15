@@ -9,16 +9,20 @@
  * upgrade / enable / disable already funnels through.
  *
  * The guard is equally load-bearing: a reconcile also fires for plugin
- * edits that touch no `mcp.json`, and reloading on those would tear down
- * every healthy workspace connection to rebuild it for nothing.
+ * edits that touch no `mcp.json`, and reloading on those would reconnect
+ * every healthy workspace server to rebuild it for nothing.
  */
 
 import { beforeEach, describe, expect, jest, mock, test } from "bun:test";
 
 let pluginServersChanged = true;
 
-const managerStop = jest.fn(async () => {});
-const managerStart = jest.fn(async () => []);
+const managerReconcile = jest.fn(async () => ({
+  connected: [],
+  kept: [],
+  failed: [],
+  removed: [],
+}));
 
 mock.module("../../mcp/effective-config.js", () => ({
   buildEffectiveMcpConfig: () => ({
@@ -33,7 +37,7 @@ mock.module("../../mcp/effective-config.js", () => ({
 }));
 
 mock.module("../../mcp/manager.js", () => ({
-  getMcpServerManager: () => ({ stop: managerStop, start: managerStart }),
+  getMcpServerManager: () => ({ reconcile: managerReconcile }),
 }));
 
 mock.module("../../mcp/mcp-header-store.js", () => ({
@@ -52,14 +56,16 @@ mock.module("../../mcp/workspace-mcp-config.js", () => ({
 mock.module("../../tools/registry.js", () => ({
   registerMcpTools: () => [],
   unregisterAllMcpTools: () => {},
+  getMcpToolNamesForServer: () => [],
+  unregisterMcpToolsForServer: () => [],
+  replaceMcpToolsForServer: () => [],
 }));
 
 const { reconcilePluginMcpServers } = await import("../mcp-reload-service.js");
 
 describe("reconcilePluginMcpServers", () => {
   beforeEach(() => {
-    managerStop.mockClear();
-    managerStart.mockClear();
+    managerReconcile.mockClear();
   });
 
   test("reloads when the plugin-declared set changed", async () => {
@@ -67,8 +73,7 @@ describe("reconcilePluginMcpServers", () => {
 
     await reconcilePluginMcpServers();
 
-    expect(managerStop).toHaveBeenCalledTimes(1);
-    expect(managerStart).toHaveBeenCalledTimes(1);
+    expect(managerReconcile).toHaveBeenCalledTimes(1);
   });
 
   test("does nothing when no plugin changed the set", async () => {
@@ -76,7 +81,6 @@ describe("reconcilePluginMcpServers", () => {
 
     await reconcilePluginMcpServers();
 
-    expect(managerStop).not.toHaveBeenCalled();
-    expect(managerStart).not.toHaveBeenCalled();
+    expect(managerReconcile).not.toHaveBeenCalled();
   });
 });

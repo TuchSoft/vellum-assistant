@@ -638,6 +638,70 @@ export function unregisterAllMcpTools(): void {
 }
 
 /**
+ * Names of the tools currently registered by the given MCP server.
+ */
+export function getMcpToolNamesForServer(serverId: string): string[] {
+  const names: string[] = [];
+  for (const [name, owner] of ownersByName) {
+    if (owner.kind === "mcp" && owner.id === serverId) {
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+/**
+ * Unregister every tool owned by the given MCP server. Returns the removed
+ * tool names.
+ */
+export function unregisterMcpToolsForServer(serverId: string): string[] {
+  const removed: string[] = [];
+  for (const [name, owner] of ownersByName) {
+    if (owner.kind === "mcp" && owner.id === serverId) {
+      tools.delete(name);
+      ownersByName.delete(name);
+      removed.push(name);
+      log.info({ name, ownerMcpServerId: serverId }, "MCP tool unregistered");
+    }
+  }
+  return removed;
+}
+
+/**
+ * Publish a server's tool set, touching the registry only when it moved.
+ * When the new set has the same names and identical schemas and
+ * descriptions as what is registered, the registry (and with it the
+ * provider-facing tool list and its cache key) is left untouched and the
+ * existing entries are returned. Any drift unregisters the server's old
+ * tools and registers the new ones in one step. Returns the live tool set.
+ */
+export function replaceMcpToolsForServer(
+  serverId: string,
+  newTools: Tool[],
+): Tool[] {
+  const existingNames = getMcpToolNamesForServer(serverId);
+  if (existingNames.length === newTools.length) {
+    const unchanged = newTools.every((t) => {
+      const current = tools.get(t.name);
+      const owner = ownersByName.get(t.name);
+      return (
+        current !== undefined &&
+        owner?.kind === "mcp" &&
+        owner.id === serverId &&
+        JSON.stringify(current.input_schema) === JSON.stringify(t.input_schema) &&
+        current.description === t.description
+      );
+    });
+    if (unchanged) {
+      return newTools.map((t) => tools.get(t.name)!);
+    }
+  }
+  unregisterMcpToolsForServer(serverId);
+  registerMcpTools(serverId, newTools);
+  return newTools;
+}
+
+/**
  * Return tool definitions for all currently registered MCP-origin tools.
  * Used by the session resolver to dynamically pick up MCP tools that
  * were registered after session creation (e.g. via `vellum mcp reload`).

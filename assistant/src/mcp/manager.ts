@@ -39,12 +39,40 @@ export type McpConnectionState =
 
 export type McpUnexpectedCloseHandler = () => void;
 
+export interface McpReconcileServerFailure {
+  id: string;
+}
+
+export interface McpReconcileResult {
+  /** Servers with a freshly connected client and a current tool list. */
+  connected: McpServerToolInfo[];
+  /** Servers kept as-is: the existing healthy client was reused. */
+  kept: string[];
+  /** Servers present in config but with no working connection. */
+  failed: McpReconcileServerFailure[];
+  /** Servers that were connected before and no longer appear in config. */
+  removed: string[];
+}
+
+/** How long a swap waits for in-flight tool calls before proceeding anyway. */
+const WRITE_LEASE_DRAIN_TIMEOUT_MS = 30_000;
+
 export class McpServerManager {
   private clients = new Map<string, McpClient>();
+  private serverConfigs = new Map<string, ResolvedMcpServerConfig>();
   private connectionStates = new Map<
     string,
     { source: ResolvedMcpServerConfig["source"]; state: McpConnectionState }
   >();
+
+  /** In-flight tool calls holding the read side of the gate. */
+  private inFlightCalls = 0;
+  /** True while a reconcile holds the write lease: new calls queue. */
+  private writeLeaseHeld = false;
+  /** Resolvers for calls queued behind the write lease. */
+  private leaseWaiters: Array<() => void> = [];
+  /** Resolvers waiting for in-flight calls to drain. */
+  private drainWaiters: Array<() => void> = [];
 
   constructor(private onUnexpectedClose?: McpUnexpectedCloseHandler) {}
 
@@ -183,10 +211,12 @@ export class McpServerManager {
       }
 
       this.clients.set(serverId, client);
+      this.serverConfigs.set(serverId, serverConfig);
 
       const tools = await client.listTools();
       if (!client.isConnected || this.clients.get(serverId) !== client) {
         this.clients.delete(serverId);
+        this.serverConfigs.delete(serverId);
         this.connectionStates.set(serverId, {
           source: serverConfig.source,
           state: "error",
@@ -218,6 +248,7 @@ export class McpServerManager {
           /* ignore */
         }
         this.clients.delete(serverId);
+        this.serverConfigs.delete(serverId);
       }
       return null;
     }
@@ -234,6 +265,7 @@ export class McpServerManager {
     );
     await Promise.all(disconnects);
     this.clients.clear();
+    this.serverConfigs.clear();
     this.connectionStates.clear();
     log.info("All MCP servers disconnected");
   }
@@ -244,11 +276,258 @@ export class McpServerManager {
     args: Record<string, unknown>,
     signal?: AbortSignal,
   ) {
-    const client = this.clients.get(serverId);
-    if (!client) {
-      throw new Error(`MCP server "${serverId}" not found`);
+    // Queued behind a running swap: released once the new client map (and,
+    // via the reconcile delta callback, the registry) already reflect the
+    // new state, so a call never lands in the teardown window.
+    await this.enterCall();
+    try {
+      if (signal?.aborted) {
+        throw new DOMException("The operation was aborted", "AbortError");
+      }
+      const client = this.clients.get(serverId);
+      if (!client) {
+        throw new Error(`MCP server "${serverId}" not found`);
+      }
+      return await client.callTool(toolName, args, signal);
+    } finally {
+      this.exitCall();
     }
-    return client.callTool(toolName, args, signal);
+  }
+
+  /**
+   * Bring the live client set in line with the given config without tearing
+   * down healthy servers. A server whose config is unchanged and whose
+   * client is still connected is reused untouched, so neither its connection
+   * nor its registered tools move. Servers that died, changed config, or are
+   * new get a fresh client.
+   *
+   * The reconcile runs under the write lease for its whole duration:
+   * in-flight calls drain first, and calls arriving while new connections
+   * are being built queue instead of hitting a server mid-replacement.
+   * `applyDelta` runs after the client-map swap while the write lease is
+   * still held. Registry updates belong there so they publish atomically
+   * with the swap: a call released from the queue sees both or neither.
+   * `applyDelta` must not call back into `callTool` (the lease is held).
+   */
+  async reconcile(
+    config: ResolvedMcpConfig,
+    applyDelta?: (result: McpReconcileResult) => void | Promise<void>,
+  ): Promise<McpReconcileResult> {
+    await this.acquireWriteLease();
+
+    const connected: McpServerToolInfo[] = [];
+    const kept: string[] = [];
+    const failed: McpReconcileServerFailure[] = [];
+    const removed: string[] = [];
+    const nextClients = new Map<string, McpClient>();
+    const nextConfigs = new Map<string, ResolvedMcpServerConfig>();
+    const replacedClients = new Set<McpClient>();
+
+    try {
+      for (const [serverId, serverConfig] of Object.entries(config.servers)) {
+        const existing = this.clients.get(serverId);
+        const existingConfig = this.serverConfigs.get(serverId);
+        if (
+          existing &&
+          existing.isConnected &&
+          existingConfig &&
+          JSON.stringify(existingConfig) === JSON.stringify(serverConfig)
+        ) {
+          kept.push(serverId);
+          nextClients.set(serverId, existing);
+          nextConfigs.set(serverId, serverConfig);
+          continue;
+        }
+
+        try {
+          const client = new McpClient(serverId, serverConfig, () => {
+            if (this.clients.get(serverId) !== client) {
+              return;
+            }
+            this.connectionStates.set(serverId, {
+              source: serverConfig.source,
+              state: "error",
+            });
+            this.onUnexpectedClose?.();
+          });
+          await client.connect(serverConfig.transport);
+          if (!client.isConnected) {
+            await client.disconnect().catch(() => {
+              /* ignore cleanup errors */
+            });
+            if (existing && existing.isConnected) {
+              // The refreshed connection failed but the old one still works:
+              // keep serving through it rather than dropping the server.
+              kept.push(serverId);
+              nextClients.set(serverId, existing);
+              if (existingConfig) {
+                nextConfigs.set(serverId, existingConfig);
+              }
+            } else {
+              failed.push({ id: serverId });
+              this.connectionStates.set(serverId, {
+                source: serverConfig.source,
+                state: client.lastError ? "error" : "needs-auth",
+              });
+              if (existing) {
+                replacedClients.add(existing);
+              }
+            }
+            continue;
+          }
+
+          const tools = await client.listTools();
+          connected.push({ serverId, serverConfig, tools });
+          nextClients.set(serverId, client);
+          nextConfigs.set(serverId, serverConfig);
+          this.connectionStates.set(serverId, {
+            source: serverConfig.source,
+            state: "connected",
+          });
+          if (existing) {
+            replacedClients.add(existing);
+          }
+        } catch (err) {
+          log.error(
+            { err, serverId },
+            "Failed to connect to MCP server during reconcile",
+          );
+          if (existing && existing.isConnected) {
+            kept.push(serverId);
+            nextClients.set(serverId, existing);
+            if (existingConfig) {
+              nextConfigs.set(serverId, existingConfig);
+            }
+          } else {
+            failed.push({ id: serverId });
+            this.connectionStates.set(serverId, {
+              source: serverConfig.source,
+              state: "error",
+            });
+            if (existing) {
+              replacedClients.add(existing);
+            }
+          }
+        }
+      }
+
+      // Apply the shared fair cap across freshly connected servers; kept
+      // servers already carry the capped set they connected with.
+      const capped = applyMcpToolCaps(
+        connected.map((result) => ({
+          serverId: result.serverId,
+          tools: result.tools,
+        })),
+        { globalMax: resolveMcpGlobalMaxTools(getConfig().tools) },
+      );
+      const keptByServer = new Map(
+        capped.servers.map((server) => [server.serverId, server.tools]),
+      );
+      for (const result of connected) {
+        result.tools = keptByServer.get(result.serverId) ?? [];
+      }
+      if (capped.droppedToolCount > 0) {
+        const truncatedServerIds = truncatedServerIdsFromCaps(capped.decisions);
+        log.warn(
+          { droppedToolCount: capped.droppedToolCount, truncatedServerIds },
+          "MCP reconcile dropped tools under the global cap",
+        );
+      }
+
+      for (const [serverId, client] of this.clients) {
+        if (!nextClients.has(serverId)) {
+          // A server already reported as failed owns its own removal; listing
+          // it here too would double-report it to the delta callback.
+          if (!failed.some((f) => f.id === serverId)) {
+            removed.push(serverId);
+          }
+          replacedClients.add(client);
+          this.connectionStates.delete(serverId);
+        }
+      }
+
+      const result: McpReconcileResult = { connected, kept, failed, removed };
+
+      this.clients = nextClients;
+      this.serverConfigs = nextConfigs;
+      if (applyDelta) {
+        await applyDelta(result);
+      }
+
+      return result;
+    } finally {
+      this.releaseWriteLease();
+      // Disconnect replaced clients after the swap: nothing routes to them
+      // anymore, and any in-flight work that outlived the drain timeout
+      // errors out instead of hanging.
+      for (const client of replacedClients) {
+        client.disconnect().catch((err) => {
+          log.warn(
+            { err, serverId: client.serverId },
+            "Error disconnecting replaced MCP client",
+          );
+        });
+      }
+    }
+  }
+
+  private async enterCall(): Promise<void> {
+    while (this.writeLeaseHeld) {
+      await new Promise<void>((resolve) => {
+        this.leaseWaiters.push(resolve);
+      });
+    }
+    this.inFlightCalls++;
+  }
+
+  private exitCall(): void {
+    this.inFlightCalls--;
+    if (this.inFlightCalls === 0 && this.drainWaiters.length > 0) {
+      const waiters = this.drainWaiters.splice(0);
+      for (const resolve of waiters) {
+        resolve();
+      }
+    }
+  }
+
+  /**
+   * Take the write lease. Sets the flag before inspecting the in-flight
+   * count, so a call is either already counted or queues on the flag; there
+   * is no window where it slips in between. Waits for in-flight calls to
+   * drain, giving up after {@link WRITE_LEASE_DRAIN_TIMEOUT_MS} so a hung
+   * call cannot block the swap forever.
+   */
+  private async acquireWriteLease(): Promise<boolean> {
+    this.writeLeaseHeld = true;
+    if (this.inFlightCalls === 0) {
+      return true;
+    }
+    return await new Promise<boolean>((resolve) => {
+      const waiter = () => {
+        clearTimeout(timeout);
+        resolve(true);
+      };
+      const timeout = setTimeout(() => {
+        const index = this.drainWaiters.indexOf(waiter);
+        if (index >= 0) {
+          this.drainWaiters.splice(index, 1);
+        }
+        log.warn(
+          { inFlightCalls: this.inFlightCalls },
+          "Timed out waiting for in-flight MCP calls to drain; swapping anyway",
+        );
+        resolve(false);
+      }, WRITE_LEASE_DRAIN_TIMEOUT_MS);
+      this.drainWaiters.push(waiter);
+    });
+  }
+
+  private releaseWriteLease(): void {
+    this.writeLeaseHeld = false;
+    const waiters = this.leaseWaiters.splice(0);
+    for (const resolve of waiters) {
+      resolve();
+    }
   }
 
   getClient(serverId: string): McpClient | undefined {

@@ -1,0 +1,16 @@
+assistant/src/permissions/gateway-threshold-reader.test.ts
+  h_a912520b04f25d 150,157-159,161,166-187,308-311,313
+assistant/src/permissions/gateway-threshold-reader.ts
+  h_a912520b04f25d 224-229,236,451-454,629
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4d939eba46da4a6c76f3b455c437f9049b323f8a",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

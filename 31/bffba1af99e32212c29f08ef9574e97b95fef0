@@ -1,0 +1,24 @@
+assistant/src/__tests__/conversation-title-service.test.ts
+  h_a912520b04f25d 6-16,23,77-85,94-99,130-131,167-175,720-1013
+assistant/src/__tests__/title-generate-hook.test.ts
+  h_a912520b04f25d 31,39,183-185,190,274-275,279
+assistant/src/persistence/conversation-title-service.ts
+  h_a912520b04f25d 13,18-21,26,28,34-35,166-171,181-188,196-201,216,220,233,327-333,344-345,367-371,378,382,402,436-439,441-444,457,459-471,490-502,506-519,521,525,527-528,532,539-625,632,671-682,798-829,846-857
+assistant/src/plugins/defaults/title-generate/hooks/stop.ts
+  h_a912520b04f25d 113-116
+assistant/src/plugins/defaults/title-generate/hooks/user-prompt-submit.ts
+  h_a912520b04f25d 56-60
+assistant/src/providers/forced-tool-label.ts
+  h_a912520b04f25d 19,27-33,37-48,54,60-69,79,102,107-165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "31bffba1af99e32212c29f08ef9574e97b95fef0",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

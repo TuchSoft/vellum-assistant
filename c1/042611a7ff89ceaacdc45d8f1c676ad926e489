@@ -1,0 +1,148 @@
+assistant/src/__tests__/config-schema.test.ts
+  h_a912520b04f25d 1300-1322
+assistant/src/__tests__/conversation-starter-routes.test.ts
+  h_a912520b04f25d 135-137,139-141,149,152,155,160,174-177
+assistant/src/__tests__/conversation-title-service.test.ts
+  h_a912520b04f25d 6-16,23,77-85,94-99,130-131,167-175,720-1013
+assistant/src/__tests__/conversation-tool-setup-attribution.test.ts
+  h_a912520b04f25d 380-381,390-392,395,408-410
+assistant/src/__tests__/exploration-drift-hook.test.ts
+  h_a912520b04f25d 117
+assistant/src/__tests__/llm-context-resolution.test.ts
+  h_a912520b04f25d 171-174,177-181,191-193,213,229-230,233-252
+assistant/src/__tests__/mcp-client-reconnect.test.ts
+  h_a912520b04f25d 1-212
+assistant/src/__tests__/secret-scanner.test.ts
+  h_a912520b04f25d 391-414
+assistant/src/__tests__/shell-tool-proxy-mode.test.ts
+  h_a912520b04f25d 188,253,258
+assistant/src/__tests__/task-progress-nudge-hook.test.ts
+  h_a912520b04f25d 94
+assistant/src/__tests__/terminal-tools.test.ts
+  h_a912520b04f25d 316
+assistant/src/__tests__/title-generate-hook.test.ts
+  h_a912520b04f25d 31,39,183-185,190,274-275,279
+assistant/src/__tests__/tool-error-hook.test.ts
+  h_a912520b04f25d 83
+assistant/src/__tests__/tool-result-truncate-hook.test.ts
+  h_a912520b04f25d 52
+assistant/src/agent/loop.ts
+  h_a912520b04f25d 1630
+assistant/src/cli/commands/host-exec.help.ts
+  h_a912520b04f25d 1-39
+assistant/src/cli/commands/host-exec.ts
+  h_a912520b04f25d 1-71
+assistant/src/cli/program.ts
+  h_a912520b04f25d 31,130
+assistant/src/config/llm-context-resolution.ts
+  h_a912520b04f25d 74-80,82-85
+assistant/src/config/schema.ts
+  h_a912520b04f25d 35,107
+assistant/src/config/schemas/host-shell.ts
+  h_a912520b04f25d 1-25
+assistant/src/daemon/__tests__/mcp-health-scheduler.test.ts
+  h_a912520b04f25d 1-80
+assistant/src/daemon/__tests__/plugin-mcp-reconcile.test.ts
+  h_a912520b04f25d 12-13,20-25,40,59-61,68,76,84
+assistant/src/daemon/conversation-tool-setup.ts
+  h_a912520b04f25d 263-269
+assistant/src/daemon/mcp-health-scheduler.ts
+  h_a912520b04f25d 1-48
+assistant/src/daemon/mcp-reload-service.ts
+  h_a912520b04f25d 4-12,26-30,54-55,57,80-81,83,95,105,108-109,113,117-121,125-136,143-144,148-149,152-160,162-173,176,179-182,185,188,194
+assistant/src/daemon/providers-setup.ts
+  h_a912520b04f25d 23,73-76
+assistant/src/home/__tests__/suggested-prompts.test.ts
+  h_a912520b04f25d 24,35-39,42,46,50,54,56,59,62,65,67
+assistant/src/home/home-greeting.ts
+  h_a912520b04f25d 4-6,10
+assistant/src/home/job-handlers/conversation-starters.ts
+  h_a912520b04f25d 4-6,14
+assistant/src/home/suggested-prompts.ts
+  h_a912520b04f25d 4-6,12,16
+assistant/src/hooks/types.ts
+  h_a912520b04f25d 323-326,329-338
+assistant/src/ipc/assistant-server.ts
+  h_a912520b04f25d 70,229
+assistant/src/ipc/host-exec-client.ts
+  h_a912520b04f25d 1-41
+assistant/src/ipc/routes/host-exec-ipc-routes.ts
+  h_a912520b04f25d 1-106
+assistant/src/mcp/__tests__/manager-reconcile.test.ts
+  h_a912520b04f25d 1-253
+assistant/src/mcp/__tests__/reload-signal-emission.test.ts
+  h_a912520b04f25d 14-23,30-32,59-69,88-89,91-93,98,103
+assistant/src/mcp/client.ts
+  h_a912520b04f25d 5-12,68-71,94-98,106,112-117,122-125,129-130,137-139,141-143,197-199,207,287-329,331-347,349-353,408-411,448-469
+assistant/src/mcp/manager.ts
+  h_a912520b04f25d 42-59,62,68-76,214,219,251,268,279-529
+assistant/src/notifications/adapters/macos.ts
+  h_a912520b04f25d 7-10,103-104
+assistant/src/persistence/conversation-title-service.ts
+  h_a912520b04f25d 13,18-21,26,28,34-35,166-171,181-188,196-201,216,220,233,327-333,344-345,367-371,378,382,402,436-439,441-444,457,459-471,490-502,506-519,521,525,527-528,532,539-625,632,671-682,798-829,846-857
+assistant/src/plugins/defaults/image-fallback/__tests__/image-fallback.test.ts
+  h_a912520b04f25d 27-29,224,235-236,923,925-938,1015-1020,1022
+assistant/src/plugins/defaults/image-fallback/hooks/post-tool-use.ts
+  h_a912520b04f25d 12-19,27-30,41-42
+assistant/src/plugins/defaults/title-generate/hooks/stop.ts
+  h_a912520b04f25d 113-116
+assistant/src/plugins/defaults/title-generate/hooks/user-prompt-submit.ts
+  h_a912520b04f25d 56-60
+assistant/src/providers/__tests__/xml-tool-call-salvage.test.ts
+  h_a912520b04f25d 4,11,56,61-66,69,80,82,85,90-94,143-215,250-265
+assistant/src/providers/forced-tool-label.ts
+  h_a912520b04f25d 19,27-33,37-48,54,60-69,79,102,107-165
+assistant/src/providers/openai/__tests__/chat-completions-provider-xml-salvage.test.ts
+  h_a912520b04f25d 8-11,295-414
+assistant/src/providers/openai/chat-completions-provider.ts
+  h_a912520b04f25d 48,1395-1399,1401-1422,1424-1428
+assistant/src/providers/xml-tool-call-salvage.ts
+  h_a912520b04f25d 2-4,10-14,19-43,48-50,66,69-79,96-99,105,108,112-125,128-151,154-156,160-168,175,178-179,224-231,255,264,273-280,297-322
+assistant/src/runtime/routes/conversation-starter-routes.ts
+  h_a912520b04f25d 4-8,11,14-15,30-33,39,125-130
+assistant/src/security/__tests__/tool-output-redaction.test.ts
+  h_a912520b04f25d 1-159
+assistant/src/security/__tests__/vault-secret-registry.test.ts
+  h_a912520b04f25d 1-111
+assistant/src/security/secret-scanner.ts
+  h_a912520b04f25d 118-120,124,126-127,131
+assistant/src/security/tool-output-redaction.ts
+  h_a912520b04f25d 1-233
+assistant/src/security/vault-secret-registry.ts
+  h_a912520b04f25d 1-148
+assistant/src/tools/__tests__/credential-tag-substitution.test.ts
+  h_a912520b04f25d 1-10,17-21,23-26,33,37-72,74-94,96-100,103-111,115-120,124,134-140,150-152,154-158,160-164,167-171,173-177,179-186,189-191,193-194,196,198-206,209-218,220-233,235,238-249,251-255,257-263,265-280,282-286,288-295,298-300,304-306,309,312-314,318,320,322-378,380-384,386-387,389,391-394,397-409,411-420,422-426,428-429,431,433
+assistant/src/tools/__tests__/prompt-promotion.test.ts
+  h_a912520b04f25d 1-93
+assistant/src/tools/__tests__/unredacted-output-consent.test.ts
+  h_a912520b04f25d 1-45
+assistant/src/tools/credential-tag-substitution.ts
+  h_a912520b04f25d 1-216
+assistant/src/tools/executor.ts
+  h_a912520b04f25d 20,27,33-37,54-56,86-101,285-302,321-324,353-386,489-490,492,495-497
+assistant/src/tools/host-terminal/host-shell.ts
+  h_a912520b04f25d 77,79-84,89-115,126-130
+assistant/src/tools/permission-checker.ts
+  h_a912520b04f25d 85-137,249-258,260,263-270,340,372,449,486
+assistant/src/tools/registry.ts
+  h_a912520b04f25d 640-703
+assistant/src/tools/terminal/shell.ts
+  h_a912520b04f25d 69,72-78,132-141,163-166
+assistant/src/tools/tool-types.ts
+  h_a912520b04f25d 276-282
+assistant/src/tools/types.ts
+  h_a912520b04f25d 330-337
+assistant/src/tools/unredacted-output-consent.ts
+  h_a912520b04f25d 1-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c1042611a7ff89ceaacdc45d8f1c676ad926e489",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

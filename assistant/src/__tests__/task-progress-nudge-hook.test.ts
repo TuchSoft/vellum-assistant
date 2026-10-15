@@ -91,6 +91,7 @@ function makeCtx(
     messages,
     additionalContext: null,
     model: opts.model ?? TARGET_MODEL,
+    modelProfileKey: opts.model ?? TARGET_MODEL,
     maxInputTokens: 10_000,
     callSite: opts.callSite ?? "mainAgent",
     supportsDynamicUi: opts.supportsDynamicUi ?? true,

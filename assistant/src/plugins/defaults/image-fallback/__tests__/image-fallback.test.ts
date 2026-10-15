@@ -24,9 +24,9 @@ import { isVisionNotSupportedError } from "../../../../util/provider-error-patte
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
-// Control doesSupportVision from the test: by profile key for the
-// user-prompt-submit path (ModelProfileInfo) and by model id for the
-// post-tool-use path (bare string).
+// Control doesSupportVision from the test: by profile key when a hook passes
+// a ModelProfileInfo or a resolvable profile key, and by model id for the
+// profileless fallback (a bare string that names no profile).
 let visionProfiles: Set<string>;
 let visionModels: Set<string>;
 let mockProfiles: ModelProfileInfo[];
@@ -221,6 +221,7 @@ function makeToolCtx(
     messages: [],
     additionalContext: null,
     model: "text-only-model",
+    modelProfileKey: "text-only",
     maxInputTokens: 100_000,
     logger,
     ...overrides,
@@ -231,8 +232,8 @@ function makeToolCtx(
 
 beforeEach(() => {
   visionProfiles = new Set<string>(["vision-profile"]);
-  // "text-only-model" (the default post-tool-use ctx.model) is absent, so it
-  // reads as text-only; a vision model id is added per-test.
+  // The default fixtures ("text-only") are absent from both sets, so they
+  // read as text-only; a vision profile or model id is added per-test.
   visionModels = new Set<string>();
   mockProfiles = [
     profile("text-only", { label: "Text Only", isActive: true }),
@@ -919,10 +920,22 @@ describe("image-fallback post-tool-use hook", () => {
     );
   });
 
-  test("is a no-op when the model that ran supports vision", async () => {
-    visionModels = new Set(["vision-model"]);
+  test("is a no-op when the turn profile supports vision", async () => {
     const ctx = makeToolCtx({
-      model: "vision-model",
+      modelProfileKey: "vision-profile",
+      toolResponse: toolResult([imageBlock("shot1")]),
+    });
+    await postToolUse(ctx);
+    expect(ctx.toolResponse.contentBlocks![0].type).toBe("image");
+  });
+
+  test("is a no-op when the profile supports vision but the provider reports a rewritten model id", async () => {
+    // An aggregator may echo a `vendor/model` alias for a profile that names a
+    // bare model. The alias matches no catalog entry and no profile `model`,
+    // so capability has to come from the profile key, not the reported id.
+    const ctx = makeToolCtx({
+      modelProfileKey: "vision-profile",
+      model: "consensusprotocol/deepseek-v4.1-flash",
       toolResponse: toolResult([imageBlock("shot1")]),
     });
     await postToolUse(ctx);
@@ -999,18 +1012,14 @@ describe("image-fallback post-tool-use hook", () => {
     expect(ctx.toolResponse.contentBlocks![0]).toEqual(textBlock);
   });
 
-  test("gates on ctx.model, not the workspace active profile", async () => {
-    // The active profile is vision-capable, but the model that actually ran
-    // (ctx.model) is text-only — the model that ran must win, so the image is
-    // captioned.
-    mockProfiles = [
-      profile("vision-active", { isActive: true }),
-      profile("vision-profile", {}),
-    ];
-    visionProfiles = new Set(["vision-active", "vision-profile"]);
-    visionModels = new Set<string>(); // "text-only-model" is text-only
+  test("gates on the turn profile, not the provider-reported model id", async () => {
+    // The reported id is vision-capable, but the turn's profile is text-only:
+    // the configured profile decides, so the image is captioned.
+    mockProfiles = [profile("text-only", { isActive: true })];
+    visionProfiles = new Set<string>();
+    visionModels = new Set(["vision-model"]);
     const ctx = makeToolCtx({
-      model: "text-only-model",
+      model: "vision-model",
       toolResponse: toolResult([imageBlock("shot1")]),
     });
     await postToolUse(ctx);

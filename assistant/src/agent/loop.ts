@@ -1678,6 +1678,7 @@ export class AgentLoop {
           messages,
           additionalContext: null,
           model,
+          modelProfileKey: options.modelProfileKey ?? model,
           maxInputTokens: contextWindowTokens,
           callSite: callSite ?? null,
           supportsDynamicUi,

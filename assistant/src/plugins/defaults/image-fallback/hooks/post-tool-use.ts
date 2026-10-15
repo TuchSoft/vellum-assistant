@@ -9,21 +9,25 @@
  * rather than the message-level sweep the `user-prompt-submit` and
  * `post-compact` hooks run. All three share {@link captionImageBlocks}.
  *
- * Capability is read straight off `ctx.model` — the provider-reported model id
- * for the turn that issued this tool call — so the decision tracks the model
- * that actually ran, including a text-only override. The hook receives a deep
- * clone of the tool result, so the caption reaches the provider-bound history
- * only — the persisted/displayed tool result keeps the original image, and
- * later rebuild-from-persistence sweeps re-caption it from the cache.
+ * Capability is read from the turn's effective profile key
+ * (`ctx.modelProfileKey`), the same input the `user-prompt-submit` and
+ * `post-compact` hooks judge, so the profile's authored `inputModalities`
+ * policy decides and a rewritten provider-reported model id cannot force a
+ * caption. The hook receives a deep clone of the tool result, so the caption
+ * reaches the provider-bound history only (the persisted/displayed tool
+ * result keeps the original image), and later rebuild-from-persistence sweeps
+ * re-caption it from the cache.
  */
 
 import {
-  doesSupportVision,
   type HookFunction,
   type PostToolUseContext,
 } from "@vellumai/plugin-api";
 
-import { captionImageBlocks } from "../src/caption-blocks.js";
+import {
+  captionImageBlocks,
+  needsImageFallback,
+} from "../src/caption-blocks.js";
 import { findVisionProfile } from "../src/vision-caption.js";
 
 const postToolUse: HookFunction<PostToolUseContext> = async (ctx) => {
@@ -34,8 +38,8 @@ const postToolUse: HookFunction<PostToolUseContext> = async (ctx) => {
     return;
   }
 
-  // If the model that ran already supports vision, leave the image in place.
-  if (doesSupportVision(ctx.model)) {
+  // If the turn's profile supports vision, leave the image in place.
+  if (!needsImageFallback(ctx.modelProfileKey)) {
     return;
   }
 

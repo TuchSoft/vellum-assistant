@@ -320,10 +320,22 @@ export interface PostToolUseInputContext {
    * Model id reported by the provider for the assistant turn that issued
    * this tool call (e.g. `claude-opus-4-8`,
    * `accounts/fireworks/models/kimi-k2p6`). Hooks use it to vary coaching by
-   * model family — each plugin owns its own model policy (e.g. which families
-   * need firmer steering) and matches against this string directly.
+   * model family (each plugin owns its own model policy, e.g. which families
+   * need firmer steering, and matches against this string directly). It is
+   * not the source for capability decisions: an aggregator can report a
+   * rewritten alias, so read {@link modelProfileKey} instead.
    */
   readonly model: string;
+  /**
+   * Effective inference-profile key for the turn that issued this tool call,
+   * mirroring {@link UserPromptSubmitContext.modelProfileKey}. This is the
+   * authoritative input for capability decisions: it resolves through
+   * `llm.profiles` to the profile's authored `inputModalities` policy, which
+   * a provider-reported model id cannot (an aggregator may echo a rewritten
+   * `vendor/model` alias for a profile that names a bare model). Raw loop
+   * runs that carry no profile fall back to the reported model id here.
+   */
+  readonly modelProfileKey: string;
   /**
    * The LLM call site driving this turn — `mainAgent` for a live user-facing
    * turn, `subagentSpawn` for a subagent, or a background site (e.g.

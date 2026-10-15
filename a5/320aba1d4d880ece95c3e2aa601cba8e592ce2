@@ -1,0 +1,16 @@
+assistant/src/__tests__/llm-context-resolution.test.ts
+  h_a912520b04f25d 171-174,177-181,191-193,213,229-230,233-252
+assistant/src/config/llm-context-resolution.ts
+  h_a912520b04f25d 74-80,82-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a5320aba1d4d880ece95c3e2aa601cba8e592ce2",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

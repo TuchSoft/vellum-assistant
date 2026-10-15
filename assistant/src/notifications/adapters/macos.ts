@@ -4,9 +4,10 @@
  *
  * The adapter broadcasts a `notification_intent` message that the client
  * turns into an OS notification (`use-notification-intent-sync.ts` in the
- * web client, which every first-party app runs). Completion alerts and urgent
- * signals may banner. Other low/medium signals reach their conversation and
- * feed without a banner. The broadcaster owns this presentation policy.
+ * web client, which every first-party app runs). Every notification posts
+ * the OS banner regardless of urgency: the `silent` flag is always false, so
+ * low/medium signals surface the same way as urgent ones. The
+ * notification-center entry is written identically either way.
  *
  * Guardian-sensitive notifications (approval requests, access requests)
  * are delivered only to connections authenticated as the guardian: the hub
@@ -27,7 +28,6 @@ import { getLogger } from "../../util/logger.js";
 import {
   isCompletionNotification,
   isCompletionRecipientUnavailable,
-  isLocalNotificationSilent,
   resolveCompletionRecipient,
 } from "../completion-policy.js";
 import type {
@@ -100,7 +100,8 @@ export class VellumAdapter implements ChannelAdapter {
         return { success: false, error: "completion recipient unavailable" };
       }
 
-      const silent = payload.silent ?? isLocalNotificationSilent(payload);
+      // Always post the OS banner, regardless of urgency.
+      const silent = false;
       const assistantName = getAssistantName()?.trim() || undefined;
 
       this.broadcast(

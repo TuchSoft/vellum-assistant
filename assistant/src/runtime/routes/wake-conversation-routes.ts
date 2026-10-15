@@ -6,7 +6,6 @@
 
 import { z } from "zod";
 
-import { INTERNAL_GUARDIAN_TRUST_CONTEXT } from "../../daemon/trust-context.js";
 import { getConversation } from "../../persistence/conversation-crud.js";
 import { getSchedule } from "../../schedule/schedule-store.js";
 import { getLogger } from "../../util/logger.js";
@@ -79,14 +78,15 @@ export const ROUTES: RouteDefinition[] = [
         throw new NotFoundError(`Conversation not found: ${conversationId}`);
       }
 
-      // A local IPC caller is already guardian-capable, so its wake runs as a
-      // non-interactive guardian: `clientless` makes the turn derive
-      // `isInteractive: false` (mapped to the `background` policy context), so
-      // read-only/reasoning tools stay available while side-effecting tools are
-      // denied at the default threshold rather than stalling on an absent
-      // client. A remote `actor` (reachable via the gateway) stays
-      // `unknown`/interactive. The body's `cronRunId` is trusted only from a
-      // local caller.
+      // A local IPC caller holds the owner's authority for the wake, but the
+      // wake imposes no trust class of its own: `clientless` makes the turn
+      // derive `isInteractive: false` (mapped to the `background` policy
+      // context) so a side-effecting tool that would prompt is denied instead of
+      // stalling on an absent client, while the turn runs under the target
+      // conversation's own resting trust (`wakeAgentForOpportunity` recovers
+      // it), so a wake never changes the permission model it lands in. A remote
+      // `actor` (reachable via the gateway) stays `unknown`. The body's
+      // `cronRunId` is trusted only from a local caller.
       const isLocal = headers?.["x-vellum-principal-type"] === "local";
 
       // A script-mode schedule hands off to the agent loop through this route,
@@ -109,9 +109,7 @@ export const ROUTES: RouteDefinition[] = [
         conversationId,
         hint,
         source,
-        ...(isLocal
-          ? { trustContext: INTERNAL_GUARDIAN_TRUST_CONTEXT, clientless: true }
-          : {}),
+        ...(isLocal ? { clientless: true } : {}),
         ...(isLocal && cronRunId ? { cronRunId } : {}),
         ...(scheduleProfile ? { forceOverrideProfile: scheduleProfile } : {}),
         ...(persist ? { persistTriggerAsEvent: true } : {}),

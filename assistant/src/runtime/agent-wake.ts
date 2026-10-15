@@ -575,8 +575,21 @@ async function defaultResolveTarget(
     // snapshot reads. Without this, fork-based memory retrospectives see
     // an empty history because loadFromDb ran with trustClass="unknown"
     // and filtered out every guardian-provenance message.
+    //
+    // A wake that names no actor continues the conversation it lands in, so
+    // it runs under that conversation's own resting trust rather than an
+    // invented one: `recoverRestingTrustContext` returns guardian for a local
+    // (owner) conversation and null for a remote-channel one, so a wake never
+    // raises a conversation above the model it already has, and never drops a
+    // local one to `unknown`.
+    const { recoverRestingTrustContext } =
+      await import("../daemon/conversation-resting-trust.js");
+    const wakeTrust =
+      opts.trustContext ??
+      recoverRestingTrustContext(conversationId) ??
+      undefined;
     return await getOrCreateConversation(conversationId, {
-      trustContext: opts.trustContext,
+      trustContext: wakeTrust,
     });
   } catch (err) {
     log.warn(
@@ -1655,10 +1668,14 @@ export async function wakeAgentForOpportunity(
         // present for the duration of its dispatch.
         conversation.currentTurnIsNonInteractive = true;
       }
-      // Per-turn guardian elevation for the wake's tools, set after the pre-run
-      // reads so a pre-run failure can't leak it; restored in the finally.
-      if (opts.trustContext) {
-        conversation.currentTurnTrustContext = opts.trustContext;
+      // Per-turn trust for the wake's tools. An explicit `trustContext` wins;
+      // otherwise the wake continues under the conversation's own resting trust
+      // (applied by the hydration in `defaultResolveTarget`), so a re-wake
+      // keeps the permission model it was started with instead of falling back
+      // to `unknown`. Restored in the finally.
+      const turnTrust = opts.trustContext ?? conversation.trustContext;
+      if (turnTrust) {
+        conversation.currentTurnTrustContext = turnTrust;
       }
 
       // Rebuild the prompt under the allowlist and the stamps just applied,

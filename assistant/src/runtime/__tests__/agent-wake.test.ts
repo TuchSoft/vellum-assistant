@@ -2188,6 +2188,58 @@ describe("wakeAgentForOpportunity", () => {
     trustClass: "guardian",
   } as const;
 
+  test("a wake with no trustContext runs under the conversation's own resting trust", async () => {
+    // A re-wake continues the conversation it lands in: with no explicit actor,
+    // the turn keeps the conversation's own model instead of falling back to
+    // `unknown`, so a background command's completion cannot downgrade the
+    // conversation that launched it.
+    const conversation = makeWakeConversation({
+      conversationId: "conv-inherit-trust",
+      initialTrustContext: GUARDIAN_TRUST,
+    });
+
+    await wakeAgentForOpportunity(
+      {
+        conversationId: "conv-inherit-trust",
+        hint: "background command finished",
+        source: "background-tool",
+      },
+      { resolveTarget: async () => conversation },
+    );
+
+    const applied = conversation.turnTrustContextSets.filter(
+      (s) => s.ctx != null,
+    );
+    expect(applied).toHaveLength(1);
+    expect(applied[0]!.ctx).toEqual(GUARDIAN_TRUST);
+  });
+
+  test("a wake never raises a conversation above the model it already holds", async () => {
+    const contactTrust = {
+      sourceChannel: "slack",
+      trustClass: "trusted_contact",
+    } as const;
+    const conversation = makeWakeConversation({
+      conversationId: "conv-contact-trust",
+      initialTrustContext: contactTrust,
+    });
+
+    await wakeAgentForOpportunity(
+      {
+        conversationId: "conv-contact-trust",
+        hint: "x",
+        source: "background-tool",
+      },
+      { resolveTarget: async () => conversation },
+    );
+
+    const applied = conversation.turnTrustContextSets.filter(
+      (s) => s.ctx != null,
+    );
+    expect(applied).toHaveLength(1);
+    expect(applied[0]!.ctx).toEqual(contactTrust);
+  });
+
   // The wake reads the prior trust from the live registry, so a test that
   // wants to exercise the restore registers its double there and simulates
   // the resolver's write by setting the trust in resolveTarget.

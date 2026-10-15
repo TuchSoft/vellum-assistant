@@ -55,7 +55,7 @@ function makeConversation(): string {
 }
 
 describe("wake_conversation principal-gated elevation", () => {
-  test("local principal → non-interactive guardian, honors body cronRunId", async () => {
+  test("local principal → non-interactive clientless wake that imposes no trust of its own", async () => {
     wakeCalls.length = 0;
     const conversationId = makeConversation();
     const result = await handler({
@@ -64,10 +64,10 @@ describe("wake_conversation principal-gated elevation", () => {
     });
     expect(result).toEqual({ invoked: true, producedToolCalls: false });
     expect(wakeCalls).toHaveLength(1);
-    expect(wakeCalls[0].trustContext).toEqual({
-      sourceChannel: "vellum",
-      trustClass: "guardian",
-    });
+    // The route imposes no trust class of its own: the woken turn runs under
+    // the target conversation's own resting trust (recovered inside the wake),
+    // so a wake never changes the permission model it lands in.
+    expect(wakeCalls[0].trustContext).toBeUndefined();
     expect(wakeCalls[0].clientless).toBe(true);
     expect(wakeCalls[0].cronRunId).toBe("run-1");
   });
@@ -157,10 +157,8 @@ describe("wake_conversation background dispatch", () => {
       dispatched: true,
     });
     expect(wakeCalls).toHaveLength(1);
-    expect(wakeCalls[0].trustContext).toEqual({
-      sourceChannel: "vellum",
-      trustClass: "guardian",
-    });
+    // No trust class is forced; the wake inherits the conversation's own model.
+    expect(wakeCalls[0].trustContext).toBeUndefined();
     expect(wakeCalls[0].clientless).toBe(true);
   });
 

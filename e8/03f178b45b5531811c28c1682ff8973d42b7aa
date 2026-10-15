@@ -1,0 +1,14 @@
+assistant/src/notifications/adapters/macos.ts
+  h_a912520b04f25d 7-10,103-104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e803f178b45b5531811c28c1682ff8973d42b7aa",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

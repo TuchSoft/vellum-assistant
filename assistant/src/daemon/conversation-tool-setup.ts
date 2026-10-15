@@ -260,24 +260,13 @@ export function createToolExecutor(
   // see {@link SubagentToolGateMode}): rejects non-allowlisted calls BEFORE
   // any executor dispatch, so a non-allowlisted tool's executor never runs.
   // The error tool_result lets the model continue or finish.
-  const rejectUnattendedHostTool = (
-    toolName: string,
-  ): ToolExecutionResult | null => {
-    const { transportInterface } = resolveTurnClientOs(ctx);
-    const isUnattended = ctx.currentTurnIsNonInteractive ?? ctx.hasNoClient;
-    if (
-      HOST_TOOL_NAMES.has(toolName) &&
-      isUnattended &&
-      transportInterface !== "chrome-extension"
-    ) {
-      return {
-        content: `The "${toolName}" tool requires an interactive user turn and cannot run in the background.`,
-        isError: true,
-      };
-    }
-    return null;
-  };
-
+  //
+  // Host tools (host_bash, host_file_*, host_browser) are deliberately NOT
+  // gated on turn interactivity in this fork: an unattended turn (subagent run,
+  // wake or notification continuation) may invoke them, and the host proxy
+  // routes the call to a connected same-user client. Approval follows the
+  // standard permission path (auto-approved at full access). The tradeoff is
+  // the loss of the fail-closed guard against unattended host execution.
   const rejectNonAllowlistedTool = (
     toolName: string,
   ): ToolExecutionResult | null => {
@@ -404,10 +393,6 @@ export function createToolExecutor(
       const rejection = rejectNonAllowlistedTool(executionName);
       if (rejection) {
         return rejection;
-      }
-      const unattendedRejection = rejectUnattendedHostTool(executionName);
-      if (unattendedRejection) {
-        return unattendedRejection;
       }
     }
 
@@ -555,10 +540,6 @@ export function createToolExecutor(
       const innerRejection = rejectNonAllowlistedTool(toolName);
       if (innerRejection) {
         return innerRejection;
-      }
-      const unattendedRejection = rejectUnattendedHostTool(toolName);
-      if (unattendedRejection) {
-        return unattendedRejection;
       }
 
       // Per-chat plugin scope: reject the resolved inner tool when it belongs

@@ -377,8 +377,8 @@ describe("createToolExecutor isInteractive threading", () => {
   });
 });
 
-describe("createToolExecutor unattended host-tool gate", () => {
-  test("rejects a direct host tool in a background turn before dispatch", async () => {
+describe("createToolExecutor host-tool dispatch (fork: no interactivity gate)", () => {
+  test("dispatches a direct host tool in a background turn", async () => {
     const { executor, calls } = makeCapturingExecutor();
     const toolFn = makeToolFn(
       executor,
@@ -387,12 +387,12 @@ describe("createToolExecutor unattended host-tool gate", () => {
 
     const result = await toolFn("host_bash", { command: "pwd" });
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.content).toContain("requires an interactive user turn");
-    expect(calls).toHaveLength(0);
+    expect(result).toMatchObject({ isError: false });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe("host_bash");
   });
 
-  test("rejects a skill-dispatched host tool in a background turn before dispatch", async () => {
+  test("dispatches a skill-dispatched host tool in a background turn", async () => {
     const { executor, calls } = makeCapturingExecutor();
     const toolFn = makeToolFn(
       executor,
@@ -405,9 +405,9 @@ describe("createToolExecutor unattended host-tool gate", () => {
       activity: "testing",
     });
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.content).toContain("requires an interactive user turn");
-    expect(calls).toHaveLength(0);
+    expect(result).toMatchObject({ isError: false });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe("host_file_read");
   });
 
   test("dispatches a host tool during an interactive turn", async () => {

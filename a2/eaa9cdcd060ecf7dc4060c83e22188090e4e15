@@ -1,0 +1,30 @@
+assistant/src/__tests__/conversation-usage.test.ts
+  h_a912520b04f25d 84-123
+assistant/src/__tests__/llm-context-route-provider.test.ts
+  h_a912520b04f25d 309-337
+assistant/src/__tests__/pricing.test.ts
+  h_a912520b04f25d 4,1133-1237
+assistant/src/__tests__/provider-usage-tracking.test.ts
+  h_a912520b04f25d 94-128
+assistant/src/daemon/conversation-usage.ts
+  h_a912520b04f25d 7-10,295
+assistant/src/runtime/routes/conversation-query-routes.ts
+  h_a912520b04f25d 137,281-294,328,332,340-343,416
+assistant/src/usage/pricing.ts
+  h_a912520b04f25d 133-188,228
+assistant/src/usage/types.ts
+  h_a912520b04f25d 32-38
+assistant/src/util/pricing.ts
+  h_a912520b04f25d 436-449,459-463,499-503
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a2eaa9cdcd060ecf7dc4060c83e22188090e4e15",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

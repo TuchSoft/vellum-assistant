@@ -3,6 +3,7 @@ import {
   ORDERING_ERROR_PATTERNS,
   WEB_SEARCH_ORDERING_PATTERNS,
 } from "../agent/history-repair/history-repair.js";
+import { LoopDetectedError } from "../agent/loop-guard.js";
 import type {
   ConversationErrorCode,
   ConversationErrorEvent,
@@ -269,6 +270,20 @@ export function classifyConversationError(
   const rawDetails =
     (error instanceof Error ? error.stack : undefined) ?? message;
   const debugDetails = truncateDebugDetails(rawDetails);
+
+  // Repetition guard: the turn was ended because the model started looping.
+  // This is a deliberate stop, not a provider or processing failure, so it
+  // gets its own copy and a non-retryable classification.
+  if (error instanceof LoopDetectedError) {
+    return {
+      code: "CONVERSATION_PROCESSING_FAILED",
+      userMessage:
+        "I stopped because I noticed I had started repeating the same output in a loop. Send a message to continue.",
+      retryable: false,
+      errorCategory: "repetition_loop",
+      debugDetails,
+    };
+  }
 
   // Extract optional attribution (connection / profile names) so
   // credential-related classifications can name the exact slot to fix.

@@ -84,6 +84,11 @@ import { getLogger } from "../util/logger.js";
 import { joinDeliveredMessages } from "../util/text-spacing.js";
 import { CompactionCircuit } from "./compaction-circuit.js";
 import {
+  LoopDetectedError,
+  LoopGuard,
+  type LoopDetection,
+} from "./loop-guard.js";
+import {
   deepRepairHistory,
   isRepairableOrderingError,
   isUserTerminalHistoryError,
@@ -1527,6 +1532,8 @@ export class AgentLoop {
     // watchdog rejects must not pick up a later turn's prompt on its next
     // provider call.
     const runSystemPrompt = this.systemPrompt;
+    const loopGuardConfig = getConfig().loopGuard;
+    const loopGuardEnabled = loopGuardConfig.enabled;
     let history = [...messages];
     // Index into `history` where this run's appended output begins. It starts
     // after the input and resets to the new base whenever the loop rewrites the
@@ -1794,6 +1801,12 @@ export class AgentLoop {
       // catch can reach it.
       let streamedTokens = false;
       let unparseableToolRetryLimitReached = false;
+      // Set when the repetition guard trips this iteration's call. Held in an
+      // object because the assignment happens inside the streaming callback,
+      // which TypeScript's control-flow analysis does not track; the outer
+      // catch reads it to end the turn with a repetition error instead of
+      // synthesizing a cancellation or resuming the failed call.
+      const loopGuardState: { trip: LoopDetection | null } = { trip: null };
 
       try {
         // ── Pre-call budget gate ─────────────────────────────────────
@@ -2170,6 +2183,12 @@ export class AgentLoop {
         // the client would otherwise see nothing.
         let streamedVisibleText = false;
 
+        // One repetition guard per model call: it accumulates the streamed
+        // text and lets the loop end the turn when the model starts looping.
+        const loopGuard = loopGuardEnabled
+          ? new LoopGuard(loopGuardConfig)
+          : null;
+
         // The `onEvent` wrapping below applies sensitive-output placeholder
         // substitution to streamed text while forwarding every other event
         // type through unchanged.
@@ -2188,6 +2207,15 @@ export class AgentLoop {
               );
             }
             if (event.type === "text_delta") {
+              // Scan the raw text before the defer/suppress early returns so
+              // the guard sees the output regardless of how it is surfaced.
+              if (loopGuard) {
+                const detection = loopGuard.push(event.text);
+                if (detection) {
+                  loopGuardState.trip = detection;
+                  throw new LoopDetectedError(detection);
+                }
+              }
               // Held when the turn's output is deferred — the final text is
               // emitted once, after the `post-model-call` hook runs.
               if (deferAssistantOutput) {
@@ -2219,6 +2247,13 @@ export class AgentLoop {
                 onEvent({ type: "text_delta", text: event.text });
               }
             } else if (event.type === "thinking_delta") {
+              if (loopGuard && loopGuardConfig.includeThinking) {
+                const detection = loopGuard.push(event.thinking);
+                if (detection) {
+                  loopGuardState.trip = detection;
+                  throw new LoopDetectedError(detection);
+                }
+              }
               // Same reasoning as the plain text above, one level down: under
               // the tool-gated reply surface the model's reasoning is private
               // working notes. Streaming it would put a "Thinking" row above
@@ -2412,8 +2447,9 @@ export class AgentLoop {
         } catch (llmCallError) {
           // Skip recording on abort — the user cancelled the request and
           // there's no provider rejection worth a log row. The outer catch
-          // still synthesizes cancellation tool_results.
-          if (!signal?.aborted) {
+          // still synthesizes cancellation tool_results. A loop-guard trip is
+          // likewise not a provider rejection.
+          if (!signal?.aborted && !loopGuardState.trip) {
             const errInstance =
               llmCallError instanceof Error
                 ? llmCallError
@@ -2434,6 +2470,12 @@ export class AgentLoop {
           }
           providerCallError = llmCallError;
           throw llmCallError;
+        }
+
+        // A provider that swallowed the guard's throw would leave the loop
+        // holding a looping response; end the turn here instead.
+        if (loopGuardState.trip) {
+          throw new LoopDetectedError(loopGuardState.trip);
         }
 
         const providerDurationMs = Date.now() - providerStart;
@@ -3214,6 +3256,25 @@ export class AgentLoop {
         // before that iteration's provider call.
         budgetGateArmed = true;
       } catch (error) {
+        // The repetition guard ended the turn: surface a single terminal error
+        // and stop, without cancellation synthesis or a mid-generation resume.
+        const loopTrip = loopGuardState.trip;
+        if (loopTrip) {
+          const loopError = new LoopDetectedError(loopTrip);
+          rlog.warn(
+            {
+              turn: toolUseTurns,
+              blockLength: loopTrip.blockLength,
+              repeats: loopTrip.repeats,
+              sample: loopTrip.sample,
+            },
+            "Repetition loop detected; ending the turn",
+          );
+          onEvent({ type: "error", error: loopError });
+          await stopTurn("error", loopError);
+          break;
+        }
+
         // Abort errors are expected when user cancels — synthesize
         // cancellation tool_results so the history stays valid for the
         // Anthropic API (every tool_use must have a matching tool_result).

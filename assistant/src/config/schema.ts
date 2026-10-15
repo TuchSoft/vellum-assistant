@@ -42,6 +42,7 @@ import {
   AuditLogConfigSchema,
   LogFileConfigSchema,
 } from "./schemas/logging.js";
+import { LoopGuardConfigSchema } from "./schemas/loop-guard.js";
 import { MemoryConfigSchema } from "./schemas/memory.js";
 import { MigrationsConfigSchema } from "./schemas/migrations.js";
 import { MonitoringConfigSchema } from "./schemas/monitoring.js";
@@ -99,6 +100,7 @@ export const AssistantConfigSchema = z.object({
   // invalid `llm` block without falling back to `cloneDefaultConfig()`.
   llm: LLMSchema.default(LLMSchema.parse({})),
   llmRequestLogs: LlmRequestLogsConfigSchema,
+  loopGuard: LoopGuardConfigSchema.default(LoopGuardConfigSchema.parse({})),
   filing: FilingConfigSchema.default(FilingConfigSchema.parse({})),
   heartbeat: HeartbeatConfigSchema.default(HeartbeatConfigSchema.parse({})),
   hostBrowser: HostBrowserConfigSchema.default(

@@ -342,7 +342,11 @@ Unrelated work remains blocked until disk usage drops below the critical thresho
       ...makeContext(),
     });
     const stripped = stripInjectionsForCompaction(first.messages);
-    expect(tailTexts(stripped)).toEqual(["find large files"]);
+    // `<turn_context>` is intentionally preserved by the compaction strip, so
+    // it remains alongside the user text; the disk-pressure warning is removed.
+    const strippedTail = tailTexts(stripped);
+    expect(strippedTail).toContain("find large files");
+    expect(strippedTail).not.toContain(DISK_PRESSURE_WARNING_PROMPT);
 
     const second = await applyRuntimeInjections(stripped, {
       ...makeContext(),

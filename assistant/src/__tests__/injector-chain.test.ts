@@ -408,11 +408,10 @@ describe("injector chain", () => {
   // the expected content in the correct position in the final user-tail
   // content.
 
-  test("applyRuntimeInjections leaves injectorChainBlock undefined when defaults opt out", async () => {
-    // Golden-path snapshot: with the static chain (all defaults returning
-    // `null`), `applyRuntimeInjections` reports no chain output, so the
-    // historical `blocks` shape is preserved byte-for-byte for any
-    // conversation that doesn't drive a known injector.
+  test("applyRuntimeInjections reports the always-on unified turn context when other defaults opt out", async () => {
+    // The unified-turn-context injector emits on every turn now (its
+    // `current_time` is computed unconditionally), so with every other default
+    // opting out the chain still contributes exactly that one block.
     const runMessages: Message[] = [
       { role: "user", content: [{ type: "text", text: "hello" }] },
     ];
@@ -421,10 +420,21 @@ describe("injector chain", () => {
       ...makeTurnContext(),
     });
 
-    expect(result.blocks.injectorChainBlock).toBeUndefined();
-    // Sanity: the message array is untouched when no options fire (no
-    // hardcoded branches apply, and the chain contributed nothing).
-    expect(result.messages).toEqual(runMessages);
+    const turnContext = buildUnifiedTurnContextBlock({
+      timestamp: FIXED_TURN_TIMESTAMP,
+    });
+    expect(result.blocks.injectorChainBlock).toBe(turnContext);
+    // The tail carries the always-on `<turn_context>` block ahead of the
+    // user's typed text, and nothing else.
+    expect(result.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: turnContext },
+          { type: "text", text: "hello" },
+        ],
+      },
+    ]);
   });
 
   test("applyRuntimeInjections without turnContext still runs the chain under a synthesized context", async () => {

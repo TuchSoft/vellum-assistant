@@ -2424,11 +2424,13 @@ export async function applyRuntimeInjections(
   // configured and client timezones to surface a mismatch affordance.
   //
   // `current_time` is computed fresh here from those timezone inputs rather
-  // than frozen, so every assembly — including post-compaction re-injections
-  // later in a long turn — reflects the current wall clock. The snapshot's
-  // presence gates the block: the timestamp (and therefore the whole
-  // `<turn_context>` injection) is only produced for turns the loop has frozen
-  // a snapshot for.
+  // than frozen, so every assembly (including post-compaction re-injections
+  // later in a long turn) reflects the current wall clock. It is emitted
+  // unconditionally: the client timezone and long-absence gap still prefer the
+  // turn's frozen snapshot when present, but a missing snapshot no longer
+  // suppresses the block, so every provider call carries a fresh temporal
+  // anchor instead of leaving the model to read a stale historical
+  // `<turn_context>`.
   const uiConfig = getConfig().ui;
   const configuredUserTimezone = canonicalizeTimeZone(
     uiConfig?.userTimezone ?? null,
@@ -2440,13 +2442,11 @@ export async function applyRuntimeInjections(
   const clientTimezone = canonicalizeTimeZone(
     temporalSnapshot?.clientTimezone ?? null,
   );
-  const timestamp = temporalSnapshot
-    ? formatTurnTimestamp({
-        configuredUserTimeZone: configuredUserTimezone,
-        clientTimezone,
-        detectedTimezone,
-      })
-    : undefined;
+  const timestamp = formatTurnTimestamp({
+    configuredUserTimeZone: configuredUserTimezone,
+    clientTimezone,
+    detectedTimezone,
+  });
   const timeSinceLastMessage = temporalSnapshot?.timeSinceLastMessage ?? null;
 
   // The `<active_subagents>` status block is sourced from the live

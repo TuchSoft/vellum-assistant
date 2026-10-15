@@ -870,11 +870,14 @@ describe("applyRuntimeInjections with channelCapabilities", () => {
     });
 
     expect(result.length).toBe(1);
-    expect(result[0].content.length).toBe(2);
-    const injected = result[0].content[0];
-    expect((injected as { type: "text"; text: string }).text).toContain(
-      "<channel_capabilities>",
-    );
+    // The always-emitted `<turn_context>` block, then the channel-capability
+    // block, then the user's original text.
+    expect(result[0].content.length).toBe(3);
+    const allText = result[0].content
+      .filter((b): b is { type: "text"; text: string } => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
+    expect(allText).toContain("<channel_capabilities>");
   });
 
   test("does not inject when channelCapabilities is null", async () => {
@@ -884,7 +887,8 @@ describe("applyRuntimeInjections with channelCapabilities", () => {
     });
 
     expect(result.length).toBe(1);
-    expect(result[0].content.length).toBe(1);
+    // Only the always-present `<turn_context>` block and the user text.
+    expect(result[0].content.length).toBe(2);
   });
 
   test("does not inject when channelCapabilities is omitted", async () => {
@@ -893,7 +897,8 @@ describe("applyRuntimeInjections with channelCapabilities", () => {
     });
 
     expect(result.length).toBe(1);
-    expect(result[0].content.length).toBe(1);
+    // Only the always-present `<turn_context>` block and the user text.
+    expect(result[0].content.length).toBe(2);
   });
 
   test("combines with other injections", async () => {
@@ -910,8 +915,8 @@ describe("applyRuntimeInjections with channelCapabilities", () => {
     });
 
     expect(result.length).toBe(1);
-    // channelCapabilities prepends
-    expect(result[0].content.length).toBe(2);
+    // `<turn_context>` always prepends, then channelCapabilities.
+    expect(result[0].content.length).toBe(3);
   });
 });
 
@@ -1650,11 +1655,15 @@ describe("applyRuntimeInjections with nowScratchpad", () => {
     });
 
     expect(result.length).toBe(1);
-    expect(result[0].content.length).toBe(2);
-    const injected = result[0].content[0];
-    const text = (injected as { type: "text"; text: string }).text;
-    expect(text).toContain("<NOW.md");
-    expect(text).toContain("Current focus: fix the bug");
+    // The always-emitted `<turn_context>` block and the NOW.md block both
+    // prepend the user text.
+    expect(result[0].content.length).toBe(3);
+    const allText = result[0].content
+      .filter((b): b is { type: "text"; text: string } => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
+    expect(allText).toContain("<NOW.md");
+    expect(allText).toContain("Current focus: fix the bug");
   });
 
   test("scratchpad appears before user's original text content", async () => {
@@ -1664,13 +1673,15 @@ describe("applyRuntimeInjections with nowScratchpad", () => {
       trust: GUARDIAN_TRUST_FIXTURE,
     });
 
-    // Scratchpad comes first (before user content)
-    expect(
-      (result[0].content[0] as { type: "text"; text: string }).text,
-    ).toContain("<NOW.md");
-    // Original text is last
-    expect((result[0].content[1] as { type: "text"; text: string }).text).toBe(
-      "What should I do?",
+    // The scratchpad and the always-present `<turn_context>` block both
+    // precede the user's original text, which stays last.
+    const texts = result[0].content
+      .filter((b): b is { type: "text"; text: string } => b.type === "text")
+      .map((b) => b.text);
+    expect(texts.join("\n")).toContain("<NOW.md");
+    expect(texts[texts.length - 1]).toBe("What should I do?");
+    expect(texts.findIndex((t) => t.includes("<NOW.md"))).toBeLessThan(
+      texts.indexOf("What should I do?"),
     );
   });
 
@@ -1681,7 +1692,8 @@ describe("applyRuntimeInjections with nowScratchpad", () => {
     });
 
     expect(result.length).toBe(1);
-    expect(result[0].content.length).toBe(1);
+    // Only the always-present `<turn_context>` block and the user text.
+    expect(result[0].content.length).toBe(2);
   });
 
   test("skipped in minimal mode", async () => {
@@ -2414,13 +2426,19 @@ describe("applyRuntimeInjections with unifiedTurnContext", () => {
     );
   });
 
-  test("does not inject when the timestamp snapshot is absent", async () => {
+  test("injects the turn-context block even when the timestamp snapshot is absent", async () => {
     const { messages: result } = await applyRuntimeInjections(baseMessages, {
       conversationId: FALLBACK_CONVERSATION_ID,
     });
 
+    // `current_time` is computed unconditionally, so the block is emitted
+    // even without a frozen snapshot.
     expect(result).toHaveLength(1);
-    expect(result[0].content).toHaveLength(1);
+    expect(result[0].content).toHaveLength(2);
+    const injected = (result[0].content[0] as { type: "text"; text: string })
+      .text;
+    expect(injected).toContain("<turn_context>");
+    expect(injected).toContain(`current_time: ${FIXED_TURN_TIMESTAMP}`);
   });
 
   test("injected in full mode", async () => {
@@ -2698,12 +2716,18 @@ describe("applyRuntimeInjections blocks.unifiedTurnContext", () => {
     expect(result.blocks.unifiedTurnContext).toBeUndefined();
   });
 
-  test("does not capture when unifiedTurnContext option is absent", async () => {
+  test("captures unifiedTurnContext even without a frozen temporal snapshot", async () => {
     const result = await applyRuntimeInjections(userTailMessages, {
       conversationId: FALLBACK_CONVERSATION_ID,
     });
 
-    expect(result.blocks.unifiedTurnContext).toBeUndefined();
+    // `current_time` is computed unconditionally, so a turn whose conversation
+    // carries no frozen snapshot still gets a fresh temporal anchor instead of
+    // leaving the model to read a stale historical `<turn_context>`.
+    expect(result.blocks.unifiedTurnContext).toContain("<turn_context>");
+    expect(result.blocks.unifiedTurnContext).toContain(
+      `current_time: ${FIXED_TURN_TIMESTAMP}`,
+    );
   });
 });
 

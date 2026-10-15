@@ -94,9 +94,14 @@ describe("applyRuntimeInjections — workspace top-level context", () => {
     });
 
     expect(result).toHaveLength(1);
-    expect(result[0].content).toHaveLength(2);
+    // The always-emitted `<turn_context>` block lands between the workspace
+    // block (prepend order 10) and the user text.
+    expect(result[0].content).toHaveLength(3);
     expect((result[0].content[0] as { text: string }).text).toBe(sampleContext);
-    expect((result[0].content[1] as { text: string }).text).toBe("Hello");
+    expect((result[0].content[1] as { text: string }).text).toContain(
+      "<turn_context>",
+    );
+    expect((result[0].content[2] as { text: string }).text).toBe("Hello");
   });
 
   test("does not inject when no workspace context is registered", async () => {
@@ -105,8 +110,9 @@ describe("applyRuntimeInjections — workspace top-level context", () => {
       conversationId: FALLBACK_CONVERSATION_ID,
     });
 
+    // Only the always-present `<turn_context>` block and the user text.
     expect(result).toHaveLength(1);
-    expect(result[0].content).toHaveLength(1);
+    expect(result[0].content).toHaveLength(2);
   });
 
   test("does not re-inject when the workspace block is already present", async () => {
@@ -122,8 +128,10 @@ describe("applyRuntimeInjections — workspace top-level context", () => {
 
     // THEN presence detection skips the block to keep the prefix stable.
     expect(result).toHaveLength(2);
-    expect(result[1].content).toHaveLength(1);
-    expect((result[1].content[0] as { text: string }).text).toBe("Hello");
+    // The tail carries the always-on `<turn_context>` block ahead of the user
+    // text; the workspace block is not re-injected.
+    expect(result[1].content).toHaveLength(2);
+    expect((result[1].content[1] as { text: string }).text).toBe("Hello");
   });
 
   test("workspace context appears before active surface context in content", async () => {
@@ -141,12 +149,16 @@ describe("applyRuntimeInjections — workspace top-level context", () => {
     // Workspace is injected last (in applyRuntimeInjections order) so it
     // prepends to whatever was already prepended by activeSurface.
     // Result: [workspace, activeSurface, original]
-    expect(result[0].content).toHaveLength(3);
+    // Result: [workspace, turn_context, activeSurface, original]
+    expect(result[0].content).toHaveLength(4);
     expect((result[0].content[0] as { text: string }).text).toBe(sampleContext);
     expect((result[0].content[1] as { text: string }).text).toContain(
+      "<turn_context>",
+    );
+    expect((result[0].content[2] as { text: string }).text).toContain(
       "<active_workspace>",
     );
-    expect((result[0].content[2] as { text: string }).text).toBe("Hello");
+    expect((result[0].content[3] as { text: string }).text).toBe("Hello");
   });
 
   test("app-backed active surface tells the model to load app-builder with the right argument", async () => {
@@ -167,7 +179,12 @@ describe("applyRuntimeInjections — workspace top-level context", () => {
       conversationId: FALLBACK_CONVERSATION_ID,
     });
 
-    const activeWorkspaceText = (result[0].content[0] as { text: string }).text;
+    const texts = result[0].content
+      .filter((b): b is { type: "text"; text: string } => b.type === "text")
+      .map((b) => b.text);
+    const activeWorkspaceText = texts.find((t) =>
+      t.includes("<active_workspace>"),
+    )!;
     expect(activeWorkspaceText).toContain('skill: "app-builder"');
     expect(activeWorkspaceText).not.toContain('id: "app-builder"');
   });
@@ -186,9 +203,14 @@ describe("applyRuntimeInjections — minimal mode skips workspace blocks", () =>
       mode: "minimal",
     });
 
+    // Minimal mode still carries the safety-critical `<turn_context>` block,
+    // but skips the workspace block.
     expect(result).toHaveLength(1);
-    expect(result[0].content).toHaveLength(1);
-    expect((result[0].content[0] as { text: string }).text).toBe("Hello");
+    expect(result[0].content).toHaveLength(2);
+    expect((result[0].content[0] as { text: string }).text).toContain(
+      "<turn_context>",
+    );
+    expect((result[0].content[1] as { text: string }).text).toBe("Hello");
   });
 
   test("minimal mode skips active surface context", async () => {
@@ -202,9 +224,14 @@ describe("applyRuntimeInjections — minimal mode skips workspace blocks", () =>
       mode: "minimal",
     });
 
+    // Minimal mode still carries the safety-critical `<turn_context>` block,
+    // but skips the active-surface block.
     expect(result).toHaveLength(1);
-    expect(result[0].content).toHaveLength(1);
-    expect((result[0].content[0] as { text: string }).text).toBe("Hello");
+    expect(result[0].content).toHaveLength(2);
+    expect((result[0].content[0] as { text: string }).text).toContain(
+      "<turn_context>",
+    );
+    expect((result[0].content[1] as { text: string }).text).toBe("Hello");
   });
 
   test("full mode (default) still includes workspace blocks", async () => {
@@ -219,9 +246,9 @@ describe("applyRuntimeInjections — minimal mode skips workspace blocks", () =>
       conversationId: FALLBACK_CONVERSATION_ID,
     });
 
-    expect(result[0].content).toHaveLength(3);
+    expect(result[0].content).toHaveLength(4);
     expect((result[0].content[0] as { text: string }).text).toBe(sampleContext);
-    expect((result[0].content[1] as { text: string }).text).toContain(
+    expect((result[0].content[2] as { text: string }).text).toContain(
       "<active_workspace>",
     );
   });

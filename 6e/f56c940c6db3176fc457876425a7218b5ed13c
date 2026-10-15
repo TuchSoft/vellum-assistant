@@ -1,0 +1,24 @@
+assistant/src/__tests__/conversation-starter-routes.test.ts
+  h_a912520b04f25d 135-137,139-141,149,152,155,160,174-177
+assistant/src/home/__tests__/suggested-prompts.test.ts
+  h_a912520b04f25d 24,35-39,42,46,50,54,56,59,62,65,67
+assistant/src/home/home-greeting.ts
+  h_a912520b04f25d 4-6,10
+assistant/src/home/job-handlers/conversation-starters.ts
+  h_a912520b04f25d 4-6,14
+assistant/src/home/suggested-prompts.ts
+  h_a912520b04f25d 4-6,12,16
+assistant/src/runtime/routes/conversation-starter-routes.ts
+  h_a912520b04f25d 4-8,11,14-15,30-33,39,125-130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6ef56c940c6db3176fc457876425a7218b5ed13c",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

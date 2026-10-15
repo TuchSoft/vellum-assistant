@@ -82,6 +82,59 @@ export type PermissionDecision =
       riskThreshold?: RiskThreshold;
     };
 
+export interface PromptPromotion {
+  promote: boolean;
+  reason?: string;
+}
+
+/**
+ * Prompt-promotion matrix for the unredacted-output consent flag and
+ * requireFreshApproval. Extracted as a pure function so the condition
+ * matrix (force vs fresh, threshold posture) is unit-testable without the
+ * gateway. forceFreshApproval promotes at every threshold, including full
+ * access: revealing secrets to the model never auto-approves.
+ */
+export function evaluatePromptPromotion(
+  context: Pick<ToolContext, "requireFreshApproval" | "forceFreshApproval">,
+  decision: string,
+  riskThreshold: RiskThreshold | undefined,
+): PromptPromotion {
+  if (decision !== "allow") {
+    return { promote: false };
+  }
+  if (context.forceFreshApproval === true) {
+    return {
+      promote: true,
+      reason: "Unredacted output requested: explicit human review enforced",
+    };
+  }
+  if (
+    context.requireFreshApproval === true &&
+    !isFullAccessThreshold(riskThreshold ?? "none")
+  ) {
+    return {
+      promote: true,
+      reason: "Fresh approval required: per-invocation human review enforced",
+    };
+  }
+  return { promote: false };
+}
+
+/**
+ * Whether this invocation's approval flags block non-interactive
+ * auto-approve shortcuts (platform-hosted bash auto-approve, background
+ * guardian auto-approve) and persistent prompt decisions. The unredacted-
+ * output consent flag blocks them at every threshold.
+ */
+export function approvalFlagsBlockAutoApprove(
+  context: Pick<ToolContext, "requireFreshApproval" | "forceFreshApproval">,
+): boolean {
+  return (
+    context.requireFreshApproval === true ||
+    context.forceFreshApproval === true
+  );
+}
+
 export class PermissionChecker {
   private prompter: PermissionPrompter;
 
@@ -193,20 +246,27 @@ export class PermissionChecker {
 
       // requireFreshApproval independently promotes allow → prompt so that
       // cached grants, persistent trust rules, and auto-approve shortcuts
-      // cannot bypass the interactive prompt. This is separate from the
-      // forcePromptSideEffects path above to ensure requireFreshApproval
-      // is self-sufficient without relying on SIDE_EFFECT_TOOLS membership.
-      // At a full-access posture the user has opted into auto-approving even
-      // high-risk tools, so the promotion is skipped.
-      if (
-        context.requireFreshApproval &&
-        result.decision === "allow" &&
-        !isFullAccessThreshold(riskThreshold)
-      ) {
+      // cannot bypass the interactive prompt. forceFreshApproval (the
+      // unredacted-output consent) promotes at every threshold, including
+      // full access. The matrix lives in evaluatePromptPromotion so it is
+      // unit-testable without the gateway.
+      const promotion = evaluatePromptPromotion(
+        context,
+        result.decision,
+        conversationThreshold,
+      );
+      if (promotion.promote) {
         result.decision = "prompt";
-        result.reason =
-          "Fresh approval required: per-invocation human review enforced";
+        result.reason = promotion.reason ?? result.reason;
       }
+
+      // Surface the consent rationale in the prompt itself when the
+      // unredacted-output flag forced it: the confirmation_request event
+      // carries riskReason to the client's consent UI.
+      const promptRiskReason =
+        context.forceFreshApproval === true
+          ? "The assistant asked to disable secret redaction for this tool result. Approve only if you explicitly want the assistant to see any secrets this output contains."
+          : riskReason;
 
       if (result.decision === "deny") {
         recordToolDenied({
@@ -277,7 +337,7 @@ export class PermissionChecker {
         context.isPlatformHosted &&
         name === "bash" &&
         resolveCapabilities(context.trustClass).canSelfApproveTools &&
-        !context.requireFreshApproval
+        !approvalFlagsBlockAutoApprove(context)
       ) {
         log.info(
           { toolName: name, riskLevel },
@@ -309,7 +369,7 @@ export class PermissionChecker {
         if (
           context.isInteractive === false &&
           resolveCapabilities(context.trustClass).canSelfApproveTools &&
-          !context.requireFreshApproval
+          !approvalFlagsBlockAutoApprove(context)
         ) {
           // getAutoApproveThreshold returns from cache (populated by check() above).
           // Deferred inside the non-interactive branch so interactive prompts
@@ -386,7 +446,7 @@ export class PermissionChecker {
         const promptOptions = {
           allowlistOptions: classification.allowlistOptions ?? [],
           scopeOptions: generateScopeOptions(context.workingDir, name),
-          persistentDecisionsAllowed: !context.requireFreshApproval,
+          persistentDecisionsAllowed: !approvalFlagsBlockAutoApprove(context),
         };
 
         // Grouping dimensions shared by this prompt and its decision, so the
@@ -423,7 +483,7 @@ export class PermissionChecker {
             promptOptions.persistentDecisionsAllowed,
             context.signal,
             context.toolUseId,
-            riskReason,
+            promptRiskReason,
             getIsContainerized(),
             classification.directoryScopeOptions,
           );

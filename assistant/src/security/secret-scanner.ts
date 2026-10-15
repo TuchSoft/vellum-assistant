@@ -115,17 +115,20 @@ const SCANNER_ONLY_PATTERNS: SecretPattern[] = [
       /((?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|mssql|redis|amqp|amqps):\/\/[^\s'"]+)/g,
   },
 
-  // Generic "password" / "secret" / "token" assignments (quoted)
+  // Generic "password" / "secret" / "token" assignments (quoted). Values
+  // that open a vellum tag reference (<vellum-credential ... />) carry no
+  // secret; the lookahead keeps the tag form intact for any <vellum-* tag.
   {
     type: "Generic Secret Assignment",
     regex:
-      /(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|auth[_-]?token|credentials)\s*[:=]\s*['"]([^'"]{8,})['"]/gi,
+      /(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|auth[_-]?token|credentials)\s*[:=]\s*['"]((?!<vellum)[^'"]{8,})['"]/gi,
   },
-  // Generic assignments (unquoted, e.g. .env files)
+  // Generic assignments (unquoted, e.g. .env files). Same <vellum-* tag
+  // exclusion as the quoted variant above.
   {
     type: "Generic Secret Assignment",
     regex:
-      /(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|auth[_-]?token|credentials)\s*=\s*([^\s'"]{8,})/gi,
+      /(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|auth[_-]?token|credentials)\s*=\s*((?!<vellum)[^\s'"]{8,})/gi,
   },
 ];
 

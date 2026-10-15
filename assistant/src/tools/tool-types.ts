@@ -273,6 +273,13 @@ export interface ToolContext {
    * side-effecting tools.
    */
   requireFreshApproval?: boolean;
+  /**
+   * Stronger form of requireFreshApproval: promotes allow → prompt at every
+   * risk threshold, including full access, and blocks every non-interactive
+   * auto-approve shortcut. Set when a tool invocation requests unredacted
+   * output, so a human always consents before secrets can reach the model.
+   */
+  forceFreshApproval?: boolean;
   /** Approval callback for proxy policy decisions that require user confirmation. */
   proxyApprovalCallback?: ProxyApprovalCallback;
   /** Optional principal identifier propagated to sub-tool confirmation flows. */

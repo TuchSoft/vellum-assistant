@@ -388,6 +388,30 @@ describe("generic secret assignments", () => {
     );
     expect(generic).toHaveLength(0);
   });
+
+  test("ignores vellum credential tags (unquoted)", () => {
+    // The tag is a reference, not a secret; the assignment shape
+    // `token=<vellum-...` must stay untouched.
+    const matches = scanText(
+      'token=<vellum-credential service="smoketest" field="dummy" />',
+    );
+    const generic = matches.filter(
+      (m) => m.type === "Generic Secret Assignment",
+    );
+    expect(generic).toHaveLength(0);
+  });
+
+  test("ignores vellum tag-prefixed values (quoted)", () => {
+    const matches = scanText('token = "<vellum-other-tag-shape"');
+    const generic = matches.filter(
+      (m) => m.type === "Generic Secret Assignment",
+    );
+    expect(generic).toHaveLength(0);
+  });
+
+  test("still detects non-vellum values starting with <", () => {
+    expectMatch("token=<real-secret-value-12345>", "Generic Secret Assignment");
+  });
 });
 
 // ---------------------------------------------------------------------------

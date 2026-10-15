@@ -17,13 +17,14 @@ import {
   runOutsidePluginContext,
 } from "../plugins/plugin-execution-context.js";
 import { TokenExpiredError } from "../security/token-manager.js";
+import { redactToolOutput } from "../security/tool-output-redaction.js";
 import {
   recordToolError,
   recordToolExecuted,
 } from "../telemetry/tool-audit.js";
 import { PermissionDeniedError, ToolError } from "../util/errors.js";
 import { pathExists, safeStatSync } from "../util/fs.js";
-import { truncateForLog } from "../util/logger.js";
+import { getLogger, truncateForLog } from "../util/logger.js";
 import {
   callerOwnsWorkflowRun,
   manifestGrantsSideEffects,
@@ -45,6 +46,9 @@ import { resolveToolInvocationAlias } from "./tool-name-aliases.js";
 import { recordToolCompletion } from "./tool-profiler.js";
 import { RISK_LEVEL_UNCLASSIFIED } from "./tool-types.js";
 import { type ToolContext, type ToolExecutionResult } from "./types.js";
+import { extractUnredactedOutputConsent } from "./unredacted-output-consent.js";
+
+const log = getLogger("tool-executor");
 
 export class ToolExecutor {
   private prompter: PermissionPrompter;
@@ -74,6 +78,22 @@ export class ToolExecutor {
   ): Promise<ToolExecutionResult> {
     const startTime = Date.now();
     let decision = "allow";
+    // The model may request unredacted tool output by setting a consent key
+    // on the raw input. Intercept it before classification, gate
+    // evaluation, and schema parsing: no tool schema needs to know the key,
+    // the forced interactive consent cannot be skipped by any auto-approve
+    // path, and the tool never sees the key. Redaction is skipped only when
+    // the user explicitly approves the forced prompt for this invocation.
+    const consent = extractUnredactedOutputConsent(input);
+    if (consent.requested) {
+      input = consent.input;
+      context.forceFreshApproval = true;
+      context.requireFreshApproval = true;
+      log.warn(
+        { toolName: name },
+        "Unredacted tool output requested; forcing interactive user consent",
+      );
+    }
     // The invocation's one classification, taken before the gates so every
     // audit row this call can produce (gate denial, gate error, grant-consumed
     // execution, permission decision) records the risk of what the model asked
@@ -305,6 +325,40 @@ export class ToolExecutor {
         };
       }
 
+      // Secret redaction: scan every tool result for secrets before the
+      // model sees it. Skipped only when the user disabled redaction via
+      // environment, or when this invocation carried the unredacted-output
+      // consent key and the user explicitly approved the forced prompt.
+      const redactionEnvDisabled =
+        process.env.VELLUM_TOOL_OUTPUT_REDACTION === "off";
+      const unredactedConsentGranted =
+        consent.requested && context.approvedViaPrompt === true;
+      if (redactionEnvDisabled) {
+        log.warn(
+          { toolName: name },
+          "Tool output redaction disabled via VELLUM_TOOL_OUTPUT_REDACTION=off",
+        );
+      }
+      if (!redactionEnvDisabled && !unredactedConsentGranted) {
+        const redaction = redactToolOutput(execResult.content);
+        if (redaction.redactedCount > 0) {
+          log.info(
+            {
+              toolName: name,
+              redactedCount: redaction.redactedCount,
+              vaultCount: redaction.vaultCount,
+            },
+            "Redacted secrets from tool output",
+          );
+          execResult = { ...execResult, content: redaction.text };
+        }
+      } else if (unredactedConsentGranted) {
+        log.warn(
+          { toolName: name },
+          "Tool output returned unredacted: user approved the consent prompt",
+        );
+      }
+
       const durationMs = Date.now() - startTime;
       // Strip sensitiveBindings before auditing to prevent raw values leaking.
       const { sensitiveBindings: _sb, ...safeResult } = execResult;
@@ -407,11 +461,15 @@ export class ToolExecutor {
       });
       recordToolCompletion(context.conversationId, name, durationMs, true);
 
+      // Error text reaches the model as the tool result, so it crosses the
+      // same redaction pass (tool errors frequently echo command output).
       if (isExpected) {
-        return { content: msg, isError: true };
+        return { content: redactToolOutput(msg).text, isError: true };
       }
       return {
-        content: `Tool "${name}" encountered an unexpected error: ${msg}`,
+        content: redactToolOutput(
+          `Tool "${name}" encountered an unexpected error: ${msg}`,
+        ).text,
         isError: true,
       };
     }

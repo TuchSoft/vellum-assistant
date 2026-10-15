@@ -67,6 +67,7 @@ import { type DbProxyParams, handleDbProxy } from "./routes/db-proxy.js";
 import { DOCUMENTS_SYNC_IPC_METHODS } from "./routes/documents-sync-ipc-routes.js";
 import { EVENTS_IPC_METHODS } from "./routes/events-ipc-routes.js";
 import { GUARDIAN_LABEL_IPC_METHODS } from "./routes/guardian-label-ipc-routes.js";
+import { HOST_EXEC_IPC_METHODS } from "./routes/host-exec-ipc-routes.js";
 import { INVITE_IPC_METHODS } from "./routes/invite-ipc-routes.js";
 import { routeDefinitionsToIpcMethods } from "./routes/route-adapter.js";
 import { ensureSocketPathFree } from "./socket-cleanup.js";
@@ -225,6 +226,7 @@ export class AssistantIpcServer {
       DOCUMENTS_SYNC_IPC_METHODS,
       ACTIVATION_SYNC_IPC_METHODS,
       EVENTS_IPC_METHODS,
+      HOST_EXEC_IPC_METHODS,
     ]) {
       for (const [operationId, handler] of Object.entries(methodMap)) {
         this.methods.set(operationId, handler);

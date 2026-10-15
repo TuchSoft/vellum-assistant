@@ -1,0 +1,24 @@
+assistant/src/agent/loop.ts
+  h_a912520b04f25d 91-95
+assistant/src/daemon/providers-setup.ts
+  h_a912520b04f25d 25
+assistant/src/ipc/host-exec-client.ts
+  h_a912520b04f25d 11
+assistant/src/ipc/routes/host-exec-ipc-routes.ts
+  h_a912520b04f25d 26
+assistant/src/providers/openai/__tests__/chat-completions-provider-xml-salvage.test.ts
+  h_a912520b04f25d 3
+assistant/src/providers/openai/chat-completions-provider.ts
+  h_a912520b04f25d 47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eec998999611ca36aa830aab3ee19bc8286a63fe",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

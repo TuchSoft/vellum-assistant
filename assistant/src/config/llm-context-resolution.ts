@@ -71,9 +71,18 @@ export function resolveEffectiveContextWindow({
     (provider) => provider.id === catalogProviderId,
   )?.models.find((model) => model.id === resolved.model);
 
+  // A catalog-listed model is bounded by its known native window (or the
+  // conservative default when the entry carries none). A custom (unlisted)
+  // model has no catalog entry to consult, so the configured budget itself
+  // is the model ceiling: BYO profiles honor `contextWindow.maxInputTokens`
+  // as written instead of being clamped to the 200k conservative default.
+  // The schema default still applies when the profile declares nothing, so
+  // unconfigured custom models stay at 200k.
   const modelMaxInputTokens =
-    catalogModel?.contextWindowTokens ??
-    DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS;
+    catalogModel != null
+      ? (catalogModel.contextWindowTokens ??
+        DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS)
+      : resolved.contextWindow.maxInputTokens;
   const defaultInputTokens =
     catalogModel?.defaultContextWindowTokens ??
     DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS;

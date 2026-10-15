@@ -168,12 +168,17 @@ describe("resolveEffectiveContextWindow", () => {
     expect(resolved.maxOutputTokens).toBeDefined();
   });
 
-  test("a custom-endpoint entry keeps the conservative default for a catalog-colliding model id", () => {
-    // An openai-compatible endpoint's "gpt-5.5" is not OpenAI's; inheriting
-    // the built-in 1.05M limit would let oversized requests through.
+  test("a custom-endpoint entry honors the configured budget for a catalog-colliding model id", () => {
+    // An openai-compatible endpoint's "gpt-5.5" is not OpenAI's, so it does
+    // not inherit the catalog's limits; its ceiling is the budget the user
+    // declared on the profile.
     const llm = LLMSchema.parse({
       profiles: {
-        custom: { provider: "my-endpoint", model: "gpt-5.5" },
+        custom: {
+          provider: "my-endpoint",
+          model: "gpt-5.5",
+          contextWindow: { maxInputTokens: 1_000_000 },
+        },
       },
       activeProfile: "custom",
     });
@@ -183,7 +188,9 @@ describe("resolveEffectiveContextWindow", () => {
       callSite: "mainAgent",
     });
 
-    expect(resolved.modelMaxInputTokens).toBe(200000);
+    expect(resolved.maxInputTokens).toBe(1_000_000);
+    expect(resolved.modelMaxInputTokens).toBe(1_000_000);
+    expect(resolved.isLongContextEnabled).toBe(true);
     expect(resolved.maxOutputTokens).toBeUndefined();
   });
 
@@ -203,7 +210,7 @@ describe("resolveEffectiveContextWindow", () => {
     expect(resolved.modelMaxInputTokens).toBe(1050000);
   });
 
-  test("unknown catalog model falls back safely to the default 200k cap", () => {
+  test("an unknown model honors the configured budget instead of clamping to 200k", () => {
     const llm = LLMSchema.parse({
       callSites: {
         mainAgent: {
@@ -219,10 +226,30 @@ describe("resolveEffectiveContextWindow", () => {
       callSite: "mainAgent",
     });
 
-    expect(resolved.maxInputTokens).toBe(200000);
-    expect(resolved.modelMaxInputTokens).toBe(200000);
+    expect(resolved.maxInputTokens).toBe(300000);
+    expect(resolved.modelMaxInputTokens).toBe(300000);
     expect(resolved.defaultInputTokens).toBe(200000);
     expect(resolved.maxOutputTokens).toBeUndefined();
+    expect(resolved.isLongContextEnabled).toBe(true);
+  });
+
+  test("an unknown model without a configured override stays at the schema default 200k", () => {
+    const llm = LLMSchema.parse({
+      callSites: {
+        mainAgent: {
+          provider: "openai",
+          model: "custom-model",
+        },
+      },
+    });
+
+    const resolved = resolveEffectiveContextWindow({
+      llm,
+      callSite: "mainAgent",
+    });
+
+    expect(resolved.maxInputTokens).toBe(200000);
+    expect(resolved.modelMaxInputTokens).toBe(200000);
     expect(resolved.isLongContextEnabled).toBe(false);
   });
 

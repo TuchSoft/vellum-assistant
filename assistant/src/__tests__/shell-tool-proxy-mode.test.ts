@@ -176,7 +176,6 @@ describe("shell tool proxy mode", () => {
       {
         command: "echo proxied",
         network_mode: "proxied",
-        credential_ids: ["cred-1"],
       },
       makeContext(),
     );
@@ -186,7 +185,7 @@ describe("shell tool proxy mode", () => {
     // Conversation acquired via getOrStartSession
     expect(getOrStartSessionCalls).toHaveLength(1);
     expect(getOrStartSessionCalls[0].conversationId).toBe("test-conv");
-    expect(getOrStartSessionCalls[0].credentialIds).toEqual(["cred-1"]);
+    expect(getOrStartSessionCalls[0].credentialIds).toEqual([]);
 
     // Env injection
     const lastCall = spawnCalls[spawnCalls.length - 1];
@@ -236,7 +235,6 @@ describe("shell tool proxy mode", () => {
       {
         command: "echo env-merge",
         network_mode: "proxied",
-        credential_ids: ["cred-x"],
       },
       makeContext(),
     );
@@ -252,11 +250,11 @@ describe("shell tool proxy mode", () => {
     expect(lastCall.env?.HTTPS_PROXY).toBeDefined();
   });
 
-  test("schema includes network_mode and credential_ids", () => {
+  test("schema includes network_mode and not credential_ids", () => {
     const def = shellTool;
     const props = (def.input_schema as { properties: Record<string, unknown> })
       .properties;
     expect(props.network_mode).toBeDefined();
-    expect(props.credential_ids).toBeDefined();
+    expect(props.credential_ids).toBeUndefined();
   });
 });

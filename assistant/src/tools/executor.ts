@@ -30,6 +30,11 @@ import {
   manifestGrantsSideEffects,
 } from "../workflows/capabilities.js";
 import { getWorkflowRunManager } from "../workflows/run-manager.js";
+import {
+  type CredentialSubstitutionMode,
+  hasCredentialTag,
+  substituteCredentialTags,
+} from "./credential-tag-substitution.js";
 import { executeWithTimeout, safeTimeoutMs } from "./execution-timeout.js";
 import { fileEditInputSchema } from "./filesystem/edit.js";
 import { fileWriteInputSchema } from "./filesystem/write.js";
@@ -277,6 +282,24 @@ export class ToolExecutor {
         permApprovalReason = "grant_scoped_consumed";
       }
 
+      // Credential tag substitution. Runs after classification, the
+      // permission check, and every audit-input capture, on a transient
+      // copy: the tool sees the substituted input while `input` (the form
+      // recorded by recordToolExecuted, guardian summaries, and the
+      // transcript) keeps the `<vellum-credential ... />` tag. Bash-family
+      // tools get a wrapper reveal call; every other tool gets the resolved
+      // value inline.
+      let execInput = input;
+      if (hasCredentialTag(input)) {
+        const mode: CredentialSubstitutionMode =
+          name === "bash" || name === "host_bash" ? "bash-rewrite" : "inline";
+        const substitution = await substituteCredentialTags(name, input, mode);
+        if (!substitution.ok) {
+          return { content: substitution.error, isError: true };
+        }
+        execInput = substitution.input;
+      }
+
       // Execute the tool. Tools that forward to an external resolver
       // (computer-use, ui-surface, apps, meet) handle that dispatch in
       // their own `execute()` body — the executor no longer special-cases
@@ -295,8 +318,10 @@ export class ToolExecutor {
       const owner = getToolOwner(name);
       const execPromise =
         owner?.kind === "plugin"
-          ? runInPluginContext(owner.id, () => tool.execute(input, execContext))
-          : runOutsidePluginContext(() => tool.execute(input, execContext));
+          ? runInPluginContext(owner.id, () =>
+              tool.execute(execInput, execContext),
+            )
+          : runOutsidePluginContext(() => tool.execute(execInput, execContext));
 
       let execResult: ToolExecutionResult = await executeWithTimeout(
         execPromise,

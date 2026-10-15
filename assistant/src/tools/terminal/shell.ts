@@ -66,10 +66,16 @@ const log = getLogger("shell-tool");
  * `TOOL_INPUT_SCHEMAS`) and the advertised `input_schema` below. Optional
  * fields catch to `undefined` so a malformed value degrades to its
  * default: `timeout_seconds` falls back to the configured
- * default (it is also read defensively pre-execution by
+ * default (120s). It is also read defensively pre-execution by
  * `computePerToolTimeoutMs`), `network_mode` falls back to "off" (the
  * `=== "proxied"` coercion), `background` to foreground (the `=== true`
- * coercion), `credential_ids` to none, and `activity` is status-only.
+ * coercion), and `activity` is status-only.
+ *
+ * `credential_ids` was removed: credential injection moved to the unified
+ * `<vellum-credential service="..." field="..." />` tag, which the
+ * executor rewrites to a wrapper reveal call. Passing `credential_ids`
+ * is a hard error (see the execute() guard) so stale model habits surface
+ * as a clear redirect instead of silently stripping the field.
  */
 export const shellInputSchema = z.looseObject({
   command: z.string().min(1).describe("The shell command to execute"),
@@ -91,13 +97,6 @@ export const shellInputSchema = z.looseObject({
     .enum(["off", "proxied"])
     .describe(
       'Network access mode for the command. "off" (default) blocks network access; "proxied" routes traffic through the credential proxy.',
-    )
-    .optional()
-    .catch(undefined),
-  credential_ids: z
-    .array(z.string())
-    .describe(
-      'Optional list of credential IDs to inject via the proxy when network_mode is "proxied".',
     )
     .optional()
     .catch(undefined),
@@ -130,6 +129,16 @@ export const shellTool = {
     if (!parsed.success) {
       return invalidToolInputResult("bash", parsed.error);
     }
+    // Removed field, still rejected: a caller passing `credential_ids`
+    // (looseObject passes unknown keys through) gets an explicit redirect
+    // to the tag instead of a silent no-op that would mask model confusion.
+    if ((parsed.data as Record<string, unknown>).credential_ids !== undefined) {
+      return {
+        content:
+          'Error: `credential_ids` is no longer supported. Reference a credential inline in the command instead, e.g. curl -H "Authorization: Bearer <vellum-credential service=\"my-service\" field=\"api_key\" />" https://example.com — the executor rewrites the tag to a credential reveal call before running.',
+        isError: true,
+      };
+    }
     const command = parsed.data.command;
 
     // Reject commands containing null bytes - they cause truncation at the
@@ -151,12 +160,11 @@ export const shellTool = {
 
     const networkMode: "off" | "proxied" = parsed.data.network_mode ?? "off";
 
+    // `credential_ids` was removed from the schema (tag substitution
+    // replaced it), so no credential refs can arrive here; the proxied
+    // proxy-session machinery below is retained for network_mode
+    // "proxied" without credential injection.
     const rawCredentialRefs: string[] = [];
-    for (const id of parsed.data.credential_ids ?? []) {
-      if (id.length > 0) {
-        rawCredentialRefs.push(id);
-      }
-    }
 
     // Resolve credential refs (UUID or service/field) to canonical UUIDs.
     // Fail fast if any ref is unresolvable - partial execution with missing

@@ -313,7 +313,7 @@ describe("Shell tool input validation", () => {
     expect(schema.properties.command).toBeDefined();
     expect(schema.properties.timeout_seconds).toBeDefined();
     expect(schema.properties.network_mode).toBeDefined();
-    expect(schema.properties.credential_ids).toBeDefined();
+    expect(schema.properties.credential_ids).toBeUndefined();
   });
 });
 

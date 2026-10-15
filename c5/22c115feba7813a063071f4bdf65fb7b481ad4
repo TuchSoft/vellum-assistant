@@ -1,0 +1,30 @@
+assistant/src/daemon/__tests__/mcp-health-scheduler.test.ts
+  h_a912520b04f25d 1-80
+assistant/src/daemon/__tests__/plugin-mcp-reconcile.test.ts
+  h_a912520b04f25d 12-13,20-25,40,59-61,68,76,84
+assistant/src/daemon/mcp-health-scheduler.ts
+  h_a912520b04f25d 1-48
+assistant/src/daemon/mcp-reload-service.ts
+  h_a912520b04f25d 4-12,26-30,54-55,57,80-81,83,95,105,108-109,113,117-121,125-136,143-144,148-149,152-160,162-173,176,179-182,185,188,194
+assistant/src/daemon/providers-setup.ts
+  h_a912520b04f25d 23,73-76
+assistant/src/mcp/__tests__/manager-reconcile.test.ts
+  h_a912520b04f25d 1-253
+assistant/src/mcp/__tests__/reload-signal-emission.test.ts
+  h_a912520b04f25d 14-23,30-32,59-69,88-89,91-93,98,103
+assistant/src/mcp/manager.ts
+  h_a912520b04f25d 42-59,62,68-76,214,219,251,268,279-529
+assistant/src/tools/registry.ts
+  h_a912520b04f25d 640-703
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c522c115feba7813a063071f4bdf65fb7b481ad4",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

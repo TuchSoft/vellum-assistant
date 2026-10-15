@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  SALVAGE_ERROR_TOOL_NAME,
   salvageXmlToolCalls,
   shouldSalvageXmlToolCalls,
   splitXmlToolCallHoldback,
 } from "../xml-tool-call-salvage.js";
 
 const OFFERED = new Set(["bash", "file_read", "ui_show"]);
+const FW = "\uFF5C";
 
 describe("salvageXmlToolCalls", () => {
   test("converts a DeepSeek-style bash invoke into a structured call", () => {
@@ -51,15 +53,20 @@ describe("salvageXmlToolCalls", () => {
     ]);
   });
 
-  test("leaves unknown tool names as text", () => {
+  test("emits a call with the raw name for an unknown tool so the executor errors", () => {
     const text = `<invoke name="not_a_real_tool">
 <parameter name="command">rm -rf /</parameter>
 </invoke>`;
 
-    expect(salvageXmlToolCalls(text, OFFERED)).toBeNull();
+    const salvaged = salvageXmlToolCalls(text, OFFERED);
+    expect(salvaged).not.toBeNull();
+    expect(salvaged!.calls).toEqual([
+      { name: "not_a_real_tool", input: { command: "rm -rf /" } },
+    ]);
+    expect(salvaged!.text).toBe("");
   });
 
-  test("salvages offered tools and leaves unknown invokes in the leftover text", () => {
+  test("salvages every invoke, keeping unresolved names for an error result", () => {
     const text = `<invoke name="bash">
 <parameter name="command">pwd</parameter>
 </invoke>
@@ -70,17 +77,21 @@ describe("salvageXmlToolCalls", () => {
     const salvaged = salvageXmlToolCalls(text, OFFERED);
     expect(salvaged!.calls).toEqual([
       { name: "bash", input: { command: "pwd" } },
+      { name: "not_a_real_tool", input: { command: "nope" } },
     ]);
-    expect(salvaged!.text).toContain('name="not_a_real_tool"');
-    expect(salvaged!.text).not.toContain('name="bash"');
+    expect(salvaged!.text).toBe("");
   });
 
-  test("does not salvage a truncated invoke", () => {
+  test("emits an error-named call for a truncated invoke instead of ending silently", () => {
     const text = `<invoke name="bash">
 <parameter name="command">git status</parameter>
 <parameter name="activity">Checking`;
 
-    expect(salvageXmlToolCalls(text, OFFERED)).toBeNull();
+    const salvaged = salvageXmlToolCalls(text, OFFERED);
+    expect(salvaged).not.toBeNull();
+    expect(salvaged!.calls).toEqual([
+      { name: SALVAGE_ERROR_TOOL_NAME, input: {} },
+    ]);
   });
 
   test("matches offered tool names case-insensitively", () => {
@@ -129,6 +140,79 @@ describe("salvageXmlToolCalls", () => {
   });
 });
 
+describe("salvageXmlToolCalls DSML dialects", () => {
+  test("parses a DeepSeek V4 double-bar DSML block and honors string typing", () => {
+    const text = `On it.
+<${FW}DSML${FW}tool_calls>
+<${FW}DSML${FW}invoke name="bash">
+<${FW}DSML${FW}parameter name="command" string="true">cd /workspace/example && git status</${FW}DSML${FW}parameter>
+<${FW}DSML${FW}parameter name="timeout_seconds" string="false">60</${FW}DSML${FW}parameter>
+</${FW}DSML${FW}invoke>
+</${FW}DSML${FW}tool_calls>`;
+
+    const salvaged = salvageXmlToolCalls(text, OFFERED);
+    expect(salvaged).not.toBeNull();
+    expect(salvaged!.text).toBe("On it.");
+    expect(salvaged!.calls).toEqual([
+      {
+        name: "bash",
+        input: {
+          command: "cd /workspace/example && git status",
+          timeout_seconds: 60,
+        },
+      },
+    ]);
+  });
+
+  test("parses a V3.2 single-bar function_calls block", () => {
+    const text = `<${FW}function_calls>
+<${FW}invoke name="file_read">
+<${FW}parameter name="path" string="true">/workspace/README.md</${FW}parameter>
+</${FW}invoke>
+</${FW}function_calls>`;
+
+    const salvaged = salvageXmlToolCalls(text, OFFERED);
+    expect(salvaged!.text).toBe("");
+    expect(salvaged!.calls).toEqual([
+      { name: "file_read", input: { path: "/workspace/README.md" } },
+    ]);
+  });
+
+  test("parses an ASCII-pipe DSML block", () => {
+    const text = `<||DSML||tool_calls>
+<||DSML||invoke name="bash">
+<||DSML||parameter name="command" string="true">pwd</||DSML||parameter>
+</||DSML||invoke>
+</||DSML||tool_calls>`;
+
+    const salvaged = salvageXmlToolCalls(text, OFFERED);
+    expect(salvaged!.calls).toEqual([{ name: "bash", input: { command: "pwd" } }]);
+  });
+
+  test("strips a wrapper-only DSML block and emits an error call", () => {
+    const text = `<${FW}DSML${FW}tool_calls>
+</${FW}DSML${FW}tool_calls>`;
+
+    const salvaged = salvageXmlToolCalls(text, OFFERED);
+    expect(salvaged).not.toBeNull();
+    expect(salvaged!.calls).toEqual([
+      { name: SALVAGE_ERROR_TOOL_NAME, input: {} },
+    ]);
+    expect(salvaged!.text).toBe("");
+  });
+
+  test("emits an error call for a truncated DSML invoke", () => {
+    const text = `<${FW}DSML${FW}tool_calls>
+<${FW}DSML${FW}invoke name="bash">
+<${FW}DSML${FW}parameter name="command" string="true">git status`;
+
+    const salvaged = salvageXmlToolCalls(text, OFFERED);
+    expect(salvaged!.calls).toEqual([
+      { name: SALVAGE_ERROR_TOOL_NAME, input: {} },
+    ]);
+  });
+});
+
 describe("shouldSalvageXmlToolCalls", () => {
   test("is true for DeepSeek model ids", () => {
     expect(
@@ -160,6 +244,22 @@ describe("splitXmlToolCallHoldback", () => {
     expect(splitXmlToolCallHoldback("Okay.<inv")).toEqual({
       visible: "Okay.",
       held: "<inv",
+    });
+  });
+
+  test("holds a fullwidth DSML opener", () => {
+    expect(
+      splitXmlToolCallHoldback(`Sure.\n<${FW}DSML${FW}invoke name="bash">`),
+    ).toEqual({
+      visible: "Sure.\n",
+      held: `<${FW}DSML${FW}invoke name="bash">`,
+    });
+  });
+
+  test("holds a partial fullwidth opener split across chunks", () => {
+    expect(splitXmlToolCallHoldback(`Okay.<${FW}`)).toEqual({
+      visible: "Okay.",
+      held: `<${FW}`,
     });
   });
 

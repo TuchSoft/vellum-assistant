@@ -5,6 +5,10 @@ import {
   type OpenAIChatCompletionsProviderOptions,
 } from "../chat-completions-provider.js";
 
+import { SALVAGE_ERROR_TOOL_NAME } from "../../xml-tool-call-salvage.js";
+
+const FW = "\uFF5C";
+
 type MockChunkDelta = {
   content?: string | null;
   tool_calls?: Array<{
@@ -287,5 +291,125 @@ describe("OpenAIChatCompletionsProvider XML tool-call salvage", () => {
       | { type: "text"; text: string }
       | undefined;
     expect(textBlock?.text).toContain("<invoke");
+  });
+
+  test("salvages a streamed DeepSeek DSML block and holds it back from text_delta", async () => {
+    const { provider, events } = stubProvider(
+      contentChunks([
+        `Let me actually run the check.\n\n<${FW}DSML${FW}tool_calls>\n`,
+        `<${FW}DSML${FW}invoke name="bash">\n`,
+        `<${FW}DSML${FW}parameter name="command" string="true">cd /workspace/example && git status</${FW}DSML${FW}parameter>\n`,
+        `</${FW}DSML${FW}invoke>\n`,
+        `</${FW}DSML${FW}tool_calls>`,
+      ]),
+      { salvageXmlToolCalls: true },
+    );
+
+    const response = await provider.sendMessage(
+      [{ role: "user", content: [{ type: "text", text: "check the repo" }] }],
+      {
+        tools: [BASH_TOOL],
+        onEvent: (e) => {
+          events.push(e as { type: string; text?: string });
+        },
+      },
+    );
+
+    const textDeltas = events
+      .filter((e) => e.type === "text_delta")
+      .map((e) => e.text ?? "")
+      .join("");
+    expect(textDeltas).toBe("Let me actually run the check.\n\n");
+    expect(textDeltas).not.toContain(FW);
+
+    const toolUse = response.content.filter((b) => b.type === "tool_use");
+    expect(toolUse).toEqual([
+      {
+        type: "tool_use",
+        id: expect.stringMatching(/^call_/),
+        name: "bash",
+        input: { command: "cd /workspace/example && git status" },
+      },
+    ]);
+    expect(response.stopReason).toBe("tool_calls");
+  });
+
+  test("turns a truncated DSML block into an error tool call instead of ending the turn", async () => {
+    const { provider } = stubProvider(
+      contentChunks([
+        `<${FW}DSML${FW}tool_calls>\n<${FW}DSML${FW}invoke name="bash">\n<${FW}DSML${FW}parameter name="command" string="true">git status`,
+      ]),
+      { salvageXmlToolCalls: true },
+    );
+
+    const response = await provider.sendMessage(
+      [{ role: "user", content: [{ type: "text", text: "check the repo" }] }],
+      { tools: [BASH_TOOL] },
+    );
+
+    const toolUse = response.content.filter((b) => b.type === "tool_use");
+    expect(toolUse).toEqual([
+      {
+        type: "tool_use",
+        id: expect.stringMatching(/^call_/),
+        name: SALVAGE_ERROR_TOOL_NAME,
+        input: {},
+      },
+    ]);
+    expect(response.stopReason).toBe("tool_calls");
+  });
+
+  test("drops leaked DSML markup when native tool_calls are present", async () => {
+    const { provider } = stubProvider(
+      [
+        {
+          choices: [
+            {
+              delta: {
+                content: `Thinking...\n<${FW}DSML${FW}tool_calls>\n<${FW}DSML${FW}invoke name="bash">\n</${FW}DSML${FW}invoke>\n</${FW}DSML${FW}tool_calls>`,
+              },
+            },
+          ],
+        },
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_native",
+                    function: { name: "bash", arguments: '{"command":"pwd"}' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          choices: [{ delta: {}, finish_reason: "tool_calls" }],
+          usage: { prompt_tokens: 1, completion_tokens: 2 },
+        },
+      ],
+      { salvageXmlToolCalls: true },
+    );
+
+    const response = await provider.sendMessage(
+      [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      { tools: [BASH_TOOL] },
+    );
+
+    const toolUse = response.content.filter((b) => b.type === "tool_use");
+    expect(toolUse).toHaveLength(1);
+    expect(toolUse[0]).toMatchObject({
+      id: "call_native",
+      name: "bash",
+      input: { command: "pwd" },
+    });
+    const textBlock = response.content.find((b) => b.type === "text") as
+      | { type: "text"; text: string }
+      | undefined;
+    expect(textBlock?.text ?? "").not.toContain(FW);
+    expect(textBlock?.text ?? "").not.toContain("tool_calls");
   });
 });

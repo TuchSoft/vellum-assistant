@@ -46,6 +46,7 @@ import {
 import {
   salvageXmlToolCalls,
   shouldSalvageXmlToolCalls,
+  isDsmlToolMarkup,
   splitXmlToolCallHoldback,
 } from "../xml-tool-call-salvage.js";
 import {
@@ -1415,31 +1416,40 @@ export class OpenAIChatCompletionsProvider implements Provider {
       // `<invoke>` XML as assistant text instead of native `tool_calls`.
       // Convert complete offered-tool invokes into tool_use blocks so the
       // agent loop can execute them. Native tool_calls win.
-      if (xmlToolCallSalvageEnabled && toolCallMap.size === 0) {
-        const salvaged = salvageXmlToolCalls(
-          contentText + xmlHeld,
-          offeredToolNames,
-        );
-        if (salvaged) {
-          contentText = salvaged.text;
-          xmlHeld = "";
-          log.info(
-            {
-              salvagedToolCount: salvaged.calls.length,
-              salvagedToolNames: salvaged.calls.map((call) => call.name),
-            },
-            "Converted XML-formatted assistant text into native tool calls",
+      if (xmlToolCallSalvageEnabled) {
+        if (toolCallMap.size === 0) {
+          const salvaged = salvageXmlToolCalls(
+            contentText + xmlHeld,
+            offeredToolNames,
           );
-          for (const [index, call] of salvaged.calls.entries()) {
-            toolCallMap.set(index, {
-              id: `call_${randomUUID()}`,
-              name: call.name,
-              args: JSON.stringify(call.input),
-            });
+          if (salvaged) {
+            contentText = salvaged.text;
+            xmlHeld = "";
+            log.info(
+              {
+                salvagedToolCount: salvaged.calls.length,
+                salvagedToolNames: salvaged.calls.map((call) => call.name),
+              },
+              "Converted XML-formatted assistant text into native tool calls",
+            );
+            for (const [index, call] of salvaged.calls.entries()) {
+              toolCallMap.set(index, {
+                id: `call_${randomUUID()}`,
+                name: call.name,
+                args: JSON.stringify(call.input),
+              });
+            }
+            if (finishReason === "stop" || finishReason === "unknown") {
+              finishReason = "tool_calls";
+            }
+          } else {
+            flushHeldXmlAsText();
           }
-          if (finishReason === "stop" || finishReason === "unknown") {
-            finishReason = "tool_calls";
-          }
+        } else if (isDsmlToolMarkup(xmlHeld)) {
+          // Native tool_calls already arrived and a redundant DSML block was
+          // held back: it is protocol markup, not content. Drop it instead of
+          // leaking it as assistant text. Bare XML stays as text.
+          xmlHeld = "";
         } else {
           flushHeldXmlAsText();
         }

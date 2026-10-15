@@ -1,0 +1,20 @@
+assistant/src/agent/__tests__/loop-guard.test.ts
+  h_a912520b04f25d 4,14,38,118-161
+assistant/src/agent/loop-guard.ts
+  h_a912520b04f25d 23-28,40-41,107-126,157-162,179-184
+assistant/src/agent/loop-repetition-guard.test.ts
+  h_a912520b04f25d 103-137
+assistant/src/config/schemas/loop-guard.ts
+  h_a912520b04f25d 31-42,74-76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c450a251bd2339359cdf797c1d09afa98f64b993",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

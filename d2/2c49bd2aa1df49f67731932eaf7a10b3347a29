@@ -1,0 +1,22 @@
+assistant/src/__tests__/conversation-runtime-assembly.test.ts
+  h_a912520b04f25d 873-880,890-891,900-901,918-919,1658-1666,1676-1684,1695-1696,2429,2434-2435,2437-2441,2719,2724-2730
+assistant/src/__tests__/conversation-runtime-workspace.test.ts
+  h_a912520b04f25d 97-99,101-104,113,115,131-134,152-153,156-158,161,182-187,206-207,209-213,227-228,230-234,249,251
+assistant/src/__tests__/injector-chain.test.ts
+  h_a912520b04f25d 411-414,423-437
+assistant/src/__tests__/injector-disk-pressure.test.ts
+  h_a912520b04f25d 345-349
+assistant/src/daemon/conversation-runtime-assembly.ts
+  h_a912520b04f25d 2427-2433,2445-2449
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d22c49bd2aa1df49f67731932eaf7a10b3347a29",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

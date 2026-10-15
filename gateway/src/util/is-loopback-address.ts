@@ -41,6 +41,43 @@ export function isLoopbackPeer(
  * Use this instead of isPrivateNetworkPeer for endpoints that must be
  * restricted to the local machine (e.g. token minting).
  */
+/**
+
+ * Accept an RFC1918 private or loopback address so the host app can reach the
+ * Dockerized gateway across the private bridge network, while still rejecting
+ * genuinely public/remote peers.
+ */
+export function isPrivateNetworkPeer(
+  server: Server<unknown>,
+  req: Request,
+): boolean {
+  const peer = server.requestIP(req);
+  return peer ? isPrivateNetworkAddress(peer.address) : false;
+}
+
+export function isPrivateNetworkAddress(addr: string): boolean {
+  const v4Mapped = addr.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+  const normalized = v4Mapped ? v4Mapped[1] : addr;
+  if (normalized.includes(".")) return isLocalIpv4(normalized);
+  return isLocalIpv6(normalized.toLowerCase());
+}
+
+function isLocalIpv4(addr: string): boolean {
+  const parts = addr.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((p) => Number.isNaN(p) || p < 0 || p > 255)) return false;
+  const [a, b] = parts;
+  if (a === 127) return true; // loopback
+  if (a === 10) return true; // 10/8
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16/12
+  if (a === 192 && b === 168) return true; // 192.168/16
+  if (a === 169 && b === 254) return true; // link-local
+  return false;
+}
+
+function isLocalIpv6(addr: string): boolean {
+  return addr === "::1" || addr.startsWith("fc") || addr.startsWith("fd") || addr.startsWith("fe80:");
+}
+
 export function isLoopbackAddress(addr: string): boolean {
   const v4Mapped = addr.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
   const normalized = v4Mapped ? v4Mapped[1] : addr;

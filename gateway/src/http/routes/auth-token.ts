@@ -16,7 +16,7 @@ import { mintToken, verifyToken } from "../../auth/token-service.js";
 import { getGatewayDb } from "../../db/connection.js";
 import { actorTokenRecords } from "../../db/schema.js";
 import { getLogger } from "../../logger.js";
-import { isLoopbackPeer } from "../../util/is-loopback-address.js";
+import { isLoopbackPeer, isPrivateNetworkPeer } from "../../util/is-loopback-address.js";
 
 const log = getLogger("auth-token");
 
@@ -119,8 +119,12 @@ export async function handleCreateToken(
   // client IP (first X-Forwarded-For entry) rather than the raw socket peer,
   // which is always 127.0.0.1 behind a same-host proxy/tunnel. Defaults false,
   // so direct-loopback callers are unaffected.
-  if (!server || !isLoopbackPeer(server, req, { trustProxy })) {
-    log.warn("Token create rejected: not a loopback peer");
+  const isLoopback = server
+    ? isLoopbackPeer(server, req, { trustProxy })
+    : false;
+  const isPrivate = server ? isPrivateNetworkPeer(server, req) : false;
+  if (!isLoopback && !isPrivate) {
+    log.warn("Token create rejected: not a loopback/private peer");
     return Response.json({ error: "Forbidden" }, { status: 403 });
   }
 

@@ -1298,6 +1298,29 @@ describe("AssistantConfigSchema", () => {
     expect(result.calls.callerIdentity.allowPerCallOverride).toBe(true);
   });
 
+  // ── hostShell config ──────────────────────────────────────────────
+
+  test("applies hostShell defaults", () => {
+    const result = AssistantConfigSchema.parse({});
+    expect(result.hostShell).toEqual({
+      extraPath: [],
+    });
+  });
+
+  test("accepts hostShell.extraPath entries", () => {
+    const result = AssistantConfigSchema.parse({
+      hostShell: { extraPath: ["/usr/local/bin", "/opt/bin"] },
+    });
+    expect(result.hostShell.extraPath).toEqual(["/usr/local/bin", "/opt/bin"]);
+  });
+
+  test("rejects non-string hostShell.extraPath entries", () => {
+    const result = AssistantConfigSchema.safeParse({
+      hostShell: { extraPath: ["/usr/local/bin", 42] },
+    });
+    expect(result.success).toBe(false);
+  });
+
   // ── hostBrowser.cdpInspect config ─────────────────────────────────
 
   test("applies hostBrowser.cdpInspect defaults", () => {

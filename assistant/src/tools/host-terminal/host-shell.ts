@@ -74,10 +74,43 @@ function buildHostShellEnv(): Record<string, string> {
   const env = buildSanitizedEnv();
   // Ensure ~/.local/bin and ~/.bun/bin are in PATH so `vellum` and `bun` are
   // reachable when a desktop app launches the assistant with a minimal PATH.
+  // Workspace-configured extraPath entries take precedence over both.
   const home = homedir();
-  const extraDirs = [join(home, ".local", "bin"), join(home, ".bun", "bin")];
+  const { extraPath } = getConfig().hostShell;
+  const extraDirs = [
+    ...extraPath,
+    join(home, ".local", "bin"),
+    join(home, ".bun", "bin"),
+  ];
   env.PATH = prependUniquePathEntries(env.PATH, extraDirs);
   return env;
+}
+
+/**
+ * Baseline host PATH directories appended after `hostShell.extraPath` when a
+ * PATH is forwarded to a connected desktop host.
+ */
+const HOST_SHELL_PATH_BASELINE = [
+  "/usr/local/bin",
+  "/usr/bin",
+  "/bin",
+  "/usr/sbin",
+  "/sbin",
+];
+
+/**
+ * PATH to forward to a connected desktop host for proxied commands, or
+ * `undefined` when `hostShell.extraPath` is unset. A desktop app launched from
+ * the GUI inherits a minimal PATH, and the host merges the request env over its
+ * own process env, so an explicit PATH replaces that minimal value with the
+ * configured directories.
+ */
+export function buildHostProxyPath(): string | undefined {
+  const { extraPath } = getConfig().hostShell;
+  if (extraPath.length === 0) {
+    return undefined;
+  }
+  return [...extraPath, ...HOST_SHELL_PATH_BASELINE].join(":");
 }
 
 function buildHostBashProxyEnv(conversationId: string): Record<string, string> {
@@ -88,6 +121,11 @@ function buildHostBashProxyEnv(conversationId: string): Record<string, string> {
     if (value != null && value.length > 0) {
       env[key] = value;
     }
+  }
+
+  const proxyPath = buildHostProxyPath();
+  if (proxyPath != null) {
+    env.PATH = proxyPath;
   }
 
   // Keep nested `assistant` CLI calls in host_bash aligned with the

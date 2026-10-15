@@ -32,6 +32,7 @@ import { ConversationsConfigSchema } from "./schemas/conversations.js";
 import { FilingConfigSchema } from "./schemas/filing.js";
 import { HeartbeatConfigSchema } from "./schemas/heartbeat.js";
 import { HostBrowserConfigSchema } from "./schemas/host-browser.js";
+import { HostShellConfigSchema } from "./schemas/host-shell.js";
 import { IngressConfigSchema } from "./schemas/ingress.js";
 import { JournalConfigSchema } from "./schemas/journal.js";
 import { LiveVoiceConfigSchema } from "./schemas/live-voice.js";
@@ -103,6 +104,7 @@ export const AssistantConfigSchema = z.object({
   hostBrowser: HostBrowserConfigSchema.default(
     HostBrowserConfigSchema.parse({}),
   ),
+  hostShell: HostShellConfigSchema.default(HostShellConfigSchema.parse({})),
   conversations: ConversationsConfigSchema.default(
     ConversationsConfigSchema.parse({}),
   ),

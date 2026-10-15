@@ -1,0 +1,28 @@
+assistant/src/__tests__/exploration-drift-hook.test.ts
+  h_a912520b04f25d 117
+assistant/src/__tests__/task-progress-nudge-hook.test.ts
+  h_a912520b04f25d 94
+assistant/src/__tests__/tool-error-hook.test.ts
+  h_a912520b04f25d 83
+assistant/src/__tests__/tool-result-truncate-hook.test.ts
+  h_a912520b04f25d 52
+assistant/src/agent/loop.ts
+  h_a912520b04f25d 1681
+assistant/src/hooks/types.ts
+  h_a912520b04f25d 323-326,329-338
+assistant/src/plugins/defaults/image-fallback/__tests__/image-fallback.test.ts
+  h_a912520b04f25d 27-29,224,235-236,923,925-938,1015-1020,1022
+assistant/src/plugins/defaults/image-fallback/hooks/post-tool-use.ts
+  h_a912520b04f25d 12-19,27-30,41-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2d45c18929ba3ac5a8ed05116cc3e5ec741adf77",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

@@ -110,7 +110,10 @@ const stop: HookFunction<StopContext> = async (ctx) => {
     // service is itself fire-and-forget and re-checks replaceability, owning
     // provider resolution, persistence, and the resulting broadcast.
     setTimeout(() => {
-      queueRegenerateConversationTitle({ conversationId });
+      queueRegenerateConversationTitle({
+        conversationId,
+        allowGroupAssignment: true,
+      });
     }, 0);
     return;
   }

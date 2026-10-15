@@ -53,6 +53,11 @@ const userPromptSubmit: HookFunction<UserPromptSubmitContext> = async (ctx) => {
     queueGenerateConversationTitle({
       conversationId: ctx.conversationId,
       userMessage: ctx.prompt,
+      // The opening prompt usually names the project or topic outright, so
+      // the first pass is a good filing opportunity too. The service still
+      // gates on confidence, a valid custom group, and the conversation
+      // never having been grouped.
+      allowGroupAssignment: true,
     });
   }, 0);
 };

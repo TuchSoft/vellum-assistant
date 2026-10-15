@@ -16,7 +16,7 @@ import {
   extractToolUse,
   userMessage,
 } from "./provider-send-message.js";
-import type { Provider, ToolDefinition } from "./types.js";
+import type { Provider, ProviderResponse, ToolDefinition } from "./types.js";
 
 export interface ShortLabelTool {
   name: string;
@@ -24,26 +24,49 @@ export interface ShortLabelTool {
   /** The single string argument the model fills in. */
   argument: string;
   argumentDescription: string;
+  /** Optional extra arguments the model may fill in (never required). */
+  optionalArguments?: Array<{
+    name: string;
+    description: string;
+    /** JSON-schema scalar type; defaults to "string". */
+    type?: "string" | "number";
+  }>;
 }
 
 export function buildShortLabelTool(tool: ShortLabelTool): ToolDefinition {
+  const properties: Record<string, unknown> = {
+    [tool.argument]: {
+      type: "string",
+      description: tool.argumentDescription,
+    },
+  };
+  for (const extra of tool.optionalArguments ?? []) {
+    properties[extra.name] = {
+      type: extra.type ?? "string",
+      description: extra.description,
+    };
+  }
   return {
     name: tool.name,
     description: tool.description,
     input_schema: {
       type: "object",
-      properties: {
-        [tool.argument]: {
-          type: "string",
-          description: tool.argumentDescription,
-        },
-      },
+      properties,
       required: [tool.argument],
     },
   };
 }
 
-export async function requestShortLabel(args: {
+/**
+ * Like {@link requestShortLabel}, but returns every declared argument the
+ * model filled in, keyed by argument name. Only args declared on the tool
+ * (the required one plus any `optionalArguments`) are returned; undeclared
+ * values are dropped, and a value is kept only when it matches the argument's
+ * declared type ("string" or "number"). The required argument is still passed
+ * through `normalizeTitle`; extras are returned verbatim for the caller to
+ * validate. Resolves to `{}` when the model declines or misbehaves.
+ */
+export async function requestStructuredLabel(args: {
   provider: Provider;
   callSite: LLMCallSite;
   conversationId?: string;
@@ -53,7 +76,7 @@ export async function requestShortLabel(args: {
   timeoutMs: number;
   maxTokens: number;
   signal?: AbortSignal;
-}): Promise<string> {
+}): Promise<Record<string, string | number>> {
   const { signal: timeoutSignal, cleanup } = createTimeout(args.timeoutMs);
   const combinedSignal = args.signal
     ? AbortSignal.any([args.signal, timeoutSignal])
@@ -76,17 +99,67 @@ export async function requestShortLabel(args: {
         signal: combinedSignal,
       },
     );
-    const toolBlock = extractToolUse(response);
-    const input = toolBlock?.input as Record<string, unknown> | undefined;
-    const value = input?.[args.tool.argument];
-    if (toolBlock?.name === args.tool.name && typeof value === "string") {
-      return normalizeTitle(value);
-    }
-    // The provider ignored the forced tool, or the model answered in prose.
-    // `normalizeTitle`'s prose guard rejects a ramble while keeping a compliant
-    // plain-text label.
-    return normalizeTitle(extractAllText(response));
+    return structuredLabelFromResponse(response, args.tool);
   } finally {
     cleanup();
   }
+}
+
+export async function requestShortLabel(args: {
+  provider: Provider;
+  callSite: LLMCallSite;
+  conversationId?: string;
+  systemPrompt: string;
+  prompt: string;
+  tool: ShortLabelTool;
+  timeoutMs: number;
+  maxTokens: number;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const result = await requestStructuredLabel(args);
+  const value = result[args.tool.argument];
+  return typeof value === "string" ? value : "";
+}
+
+/** Extract and validate the declared tool arguments from a provider response. */
+function structuredLabelFromResponse(
+  response: ProviderResponse,
+  tool: ShortLabelTool,
+): Record<string, string | number> {
+  const toolBlock = extractToolUse(response);
+  const input = toolBlock?.input as Record<string, unknown> | undefined;
+  if (toolBlock?.name === tool.name && input) {
+    const declared = new Set([
+      tool.argument,
+      ...(tool.optionalArguments ?? []).map((extra) => extra.name),
+    ]);
+    const out: Record<string, string | number> = {};
+    for (const [key, value] of Object.entries(input)) {
+      if (!declared.has(key) || value === null || value === undefined) {
+        continue;
+      }
+      const type =
+        tool.optionalArguments?.find((extra) => extra.name === key)?.type ??
+        "string";
+      if (type === "number") {
+        if (typeof value === "number" && Number.isFinite(value)) {
+          out[key] = value;
+        }
+        continue;
+      }
+      if (typeof value === "string" && value.trim()) {
+        out[key] = value.trim();
+      }
+    }
+    const required = out[tool.argument];
+    if (typeof required === "string" && required) {
+      out[tool.argument] = normalizeTitle(required);
+    }
+    return out;
+  }
+  // The provider ignored the forced tool, or the model answered in prose.
+  // `normalizeTitle`'s prose guard rejects a ramble while keeping a compliant
+  // plain-text label.
+  const label = normalizeTitle(extractAllText(response));
+  return label ? { [tool.argument]: label } : {};
 }

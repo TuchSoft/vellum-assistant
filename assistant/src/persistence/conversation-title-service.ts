@@ -10,22 +10,29 @@
 import { SEND_USER_MESSAGE_DELIVERED_ACK } from "../config/send-user-message-constants.js";
 import { MESSAGE_KEYS } from "../i18n/index.js";
 import {
-  requestShortLabel,
+  requestStructuredLabel,
   type ShortLabelTool,
 } from "../providers/forced-tool-label.js";
 import { getConfiguredProvider } from "../providers/provider-send-message.js";
 import type { Provider } from "../providers/types.js";
-import { publishConversationTitleChanged } from "../runtime/sync/resource-sync-events.js";
+import {
+  publishConversationListAndMetadataChanged,
+  publishConversationTitleChanged,
+} from "../runtime/sync/resource-sync-events.js";
 import { getLogger } from "../util/logger.js";
 import { Mutex } from "../util/mutex.js";
 import { stripThinkingTags, truncateTitle } from "../util/short-title.js";
 import {
+  batchSetConversationPlacement,
   getConversation,
+  getDisplayMetaForConversations,
   getMessages,
   type MessageRow,
   updateConversationTitle,
 } from "./conversation-crud.js";
 import { isReplaceableTitle } from "./conversation-title-placeholders.js";
+import { UNGROUPED_GROUP_ID } from "./conversation-types.js";
+import { listGroups } from "./group-crud.js";
 import { projectPersistedAssistantContent } from "./user-facing-content.js";
 
 export { isReplaceableTitle } from "./conversation-title-placeholders.js";
@@ -156,6 +163,12 @@ export interface GenerateTitleParams {
   assistantResponse?: string;
   /** Abort signal. */
   signal?: AbortSignal;
+  /**
+   * First-pass group filing: offer the model the existing custom groups and
+   * let it file the conversation into one via the tool's optional `group_id`
+   * argument. Same one-shot, confidence-gated guards as the turn-3 pass.
+   */
+  allowGroupAssignment?: boolean;
 }
 
 /**
@@ -165,8 +178,14 @@ export interface GenerateTitleParams {
 export async function generateAndPersistConversationTitle(
   params: GenerateTitleParams,
 ): Promise<{ title: string; updated: boolean }> {
-  const { conversationId, context, userMessage, assistantResponse, signal } =
-    params;
+  const {
+    conversationId,
+    context,
+    userMessage,
+    assistantResponse,
+    allowGroupAssignment,
+    signal,
+  } = params;
 
   // Check current title is replaceable
   const conversation = getConversation(conversationId);
@@ -174,7 +193,12 @@ export async function generateAndPersistConversationTitle(
     return { title: conversation.title!, updated: false };
   }
 
-  const prompt = buildTitlePrompt(context, userMessage, assistantResponse);
+  const prompt = buildTitlePrompt(
+    context,
+    userMessage,
+    assistantResponse,
+    allowGroupAssignment,
+  );
   // A prompt carrying no text gives the model nothing to title from: an
   // image-only turn submits an empty prompt, and the forced title tool makes
   // the model fabricate a topic rather than decline.
@@ -189,10 +213,11 @@ export async function generateAndPersistConversationTitle(
     return settleForDeterministicTitle(conversationId, context);
   }
 
-  const title = await generateTitleViaLLM(
+  const { title, groupId, confidence } = await callTitleLabelLLM(
     provider,
     prompt,
     conversationId,
+    allowGroupAssignment === true,
     signal,
   );
   if (title) {
@@ -205,6 +230,7 @@ export async function generateAndPersistConversationTitle(
     updateConversationTitle(conversationId, title, AUTO_TITLE_LLM);
     publishConversationTitleChanged(conversationId, title);
     log.info({ conversationId, title }, "Auto-generated conversation title");
+    maybeAssignConversationGroup(conversationId, groupId, confidence);
     return { title, updated: true };
   }
 
@@ -298,6 +324,13 @@ export interface RegenerateTitleParams {
    * failed initial generation without racing against a successful initial title.
    */
   onlyIfReplaceable?: boolean;
+  /**
+   * Turn-3 second pass only: also offer the model the existing custom groups
+   * and let it file the conversation into one via the tool's optional
+   * `group_id` argument. Group assignment is one-shot: it only happens here,
+   * and only while the conversation has never been grouped.
+   */
+  allowGroupAssignment?: boolean;
 }
 
 /**
@@ -308,7 +341,8 @@ export interface RegenerateTitleParams {
 export async function regenerateConversationTitle(
   params: RegenerateTitleParams,
 ): Promise<{ title: string; updated: boolean }> {
-  const { conversationId, onlyIfReplaceable, signal } = params;
+  const { conversationId, onlyIfReplaceable, allowGroupAssignment, signal } =
+    params;
 
   const conversation = getConversation(conversationId);
   if (!conversation || !conversation.isAutoTitle) {
@@ -330,17 +364,22 @@ export async function regenerateConversationTitle(
     return { title: conversation.title ?? UNTITLED_FALLBACK, updated: false };
   }
 
-  const prompt = buildRegenerationPrompt(recentMessages);
+  const prompt = buildRegenerationPrompt(recentMessages, {
+    currentTitle: conversation.title,
+    firstMessage: allMessages[0],
+    allowGroupAssignment,
+  });
   // Skip the LLM call if no messages yielded extractable text — the prompt
   // would be just the "Recent messages:" header, and the model tends to
   // fabricate a meta-title about the emptiness rather than decline.
   if (!/\n(?:User|Assistant): /.test(prompt)) {
     return { title: conversation.title ?? UNTITLED_FALLBACK, updated: false };
   }
-  const title = await generateTitleViaLLM(
+  const { title, groupId, confidence } = await callTitleLabelLLM(
     provider,
     prompt,
     conversationId,
+    allowGroupAssignment === true,
     signal,
   );
   if (title) {
@@ -360,6 +399,7 @@ export async function regenerateConversationTitle(
       { conversationId, title },
       "Re-generated conversation title (second pass)",
     );
+    maybeAssignConversationGroup(conversationId, groupId, confidence);
     return { title, updated: true };
   }
 
@@ -393,9 +433,15 @@ export function queueRegenerateConversationTitle(
  * assistant system prompt that btw-sidechain would otherwise inject,
  * which caused the model to respond to the conversation content instead
  * of titling it.
+ *
+ * When `groupAssignment` is set (the turn-3 second pass), the prompt also
+ * covers the optional `group_id` tool argument: the model may file the
+ * conversation into an existing group, but only when it is certain.
  */
-function buildTitleSystemPrompt(): string {
-  return [
+function buildTitleSystemPrompt(
+  options?: { groupAssignment?: boolean },
+): string {
+  const lines = [
     "You generate ultra-concise conversation titles. Output ONLY the title text — no explanation, no quotes, no markdown, no preamble.",
     "",
     "Rules:",
@@ -408,8 +454,21 @@ function buildTitleSystemPrompt(): string {
     "- Do NOT respond to the conversation content",
     "- Write the title in the same language as the conversation content",
     "- Do NOT assess feasibility or comment on capabilities",
+    "- The conversation's real topic lives in the FIRST user message and the current title; the recent messages are only the latest activity. Refine the current title, never pivot it onto whatever the last few messages happened to discuss",
     "- If input is sparse or references external context, extract a topic from the words that ARE present (e.g. 'so about that t-shirt...' → 'T-Shirt Discussion'). Never describe the absence, emptiness, or insufficiency of context — titles like 'Missing Context', 'Unclear Request', 'No Topic' are forbidden",
-  ].join("\n");
+  ];
+  if (options?.groupAssignment) {
+    lines.push(
+      "",
+      "Grouping rules:",
+      "- The tool also accepts an optional `group_id` argument, taken from the list of existing groups in the prompt, plus a `confidence` score (0-100) for that choice",
+      "- `confidence` is your honest certainty that the chosen group is the right one for this conversation as a whole (a project, client, or topic it is actually about). The group is applied only when confidence is 80 or higher; below that the assignment is discarded, so a low-confidence guess is never better than omitting `group_id`",
+      "- Include `group_id` only when genuinely confident; when in any doubt, omit both arguments. An ungrouped conversation is always acceptable",
+      "- Never invent or guess a group id; use only an id from the list, exactly as written",
+      "- If the list of existing groups is empty or none clearly applies, omit `group_id`",
+    );
+  }
+  return lines.join("\n");
 }
 
 const TITLE_TOOL_NAME = "record_conversation_title";
@@ -428,36 +487,149 @@ const TITLE_TOOL: ShortLabelTool = {
   argument: "title",
   argumentDescription:
     "2–5 words, 40 characters max. A scannable sidebar label naming the topic (e.g. 'Auth Middleware Rewrite', 'Docker Volume Mounts'). No quotes, markdown, or trailing punctuation.",
+  optionalArguments: [
+    {
+      name: "group_id",
+      description:
+        "Optional. The id of ONE existing group this conversation clearly belongs to (from the list in the prompt). Omit when no listed group clearly applies.",
+    },
+    {
+      name: "confidence",
+      type: "number",
+      description:
+        "Required whenever group_id is given: your certainty (0-100) that the chosen group is correct for this conversation. Be honest; the group is applied only at 80 or higher.",
+    },
+  ],
 };
 
 /**
- * Run the title LLM call through the shared forced-tool label helper. Returns
- * a normalized title, or "" when the model declines or misbehaves — callers
- * fall back to a deterministic title.
+ * Minimum model-reported confidence (0-100) for an auto group assignment to
+ * be applied. Below this the assignment is discarded and the conversation
+ * stays ungrouped. A wrong filing is worse than no filing.
  */
-async function generateTitleViaLLM(
+const GROUP_ASSIGNMENT_MIN_CONFIDENCE = 80;
+
+/**
+ * Run the title LLM call through the shared forced-tool label helper. Same
+ * forced tool for both the first pass and the turn-3 regeneration; when
+ * `groupAssignment` is set the grouping rules are enabled in the system
+ * prompt and the optional `group_id`/`confidence` arguments are read.
+ * `title` is "" when the model declines or misbehaves; callers fall back to
+ * a deterministic title. `groupId`/`confidence` are undefined when the model
+ * omitted them or the caller did not enable group assignment.
+ */
+async function callTitleLabelLLM(
   provider: Provider,
   prompt: string,
   conversationId: string,
+  groupAssignment: boolean,
   signal?: AbortSignal,
-): Promise<string> {
-  return requestShortLabel({
+): Promise<{ title: string; groupId?: string; confidence?: number }> {
+  const result = await requestStructuredLabel({
     provider,
     callSite: "conversationTitle",
     conversationId,
-    systemPrompt: buildTitleSystemPrompt(),
+    systemPrompt: buildTitleSystemPrompt({ groupAssignment }),
     prompt,
     tool: TITLE_TOOL,
     timeoutMs: 15_000,
     maxTokens: 256,
     signal,
   });
+  const rawTitle = result[TITLE_TOOL.argument];
+  const title = typeof rawTitle === "string" ? rawTitle : "";
+  if (!title) {
+    return { title: "" };
+  }
+  if (!groupAssignment) {
+    return { title };
+  }
+  const rawGroupId = result.group_id;
+  const groupId =
+    typeof rawGroupId === "string" && rawGroupId.trim()
+      ? rawGroupId.trim()
+      : undefined;
+  const rawConfidence = result.confidence;
+  const confidence =
+    typeof rawConfidence === "number" &&
+    Number.isFinite(rawConfidence) &&
+    rawConfidence >= 0 &&
+    rawConfidence <= 100
+      ? rawConfidence
+      : undefined;
+  return { title, groupId, confidence };
+}
+
+/**
+ * One-shot group assignment shared by the first title pass and the turn-3
+ * regeneration. Files the conversation into `groupId` only when every guard
+ * passes: the model reported `confidence` at or above
+ * {@link GROUP_ASSIGNMENT_MIN_CONFIDENCE}, the id names an existing custom
+ * (non-system) group, and the conversation has never been grouped (`group_id`
+ * NULL or the Recents sentinel). A manually filed conversation is never
+ * re-filed, a low-confidence guess is discarded, and a model-hallucinated id
+ * is rejected against the group table. Best-effort: failures are logged and
+ * leave the conversation ungrouped.
+ */
+function maybeAssignConversationGroup(
+  conversationId: string,
+  groupId: string | undefined,
+  confidence: number | undefined,
+): void {
+  if (!groupId) {
+    return;
+  }
+  if (
+    confidence === undefined ||
+    confidence < GROUP_ASSIGNMENT_MIN_CONFIDENCE
+  ) {
+    log.info(
+      { conversationId, groupId, confidence },
+      "Ignored group assignment: below confidence threshold",
+    );
+    return;
+  }
+  try {
+    const group = listGroups().find(
+      (g) => g.id === groupId && !g.isSystemGroup,
+    );
+    if (!group) {
+      log.info(
+        { conversationId, groupId },
+        "Ignored group assignment: unknown or system group id",
+      );
+      return;
+    }
+    const meta = getDisplayMetaForConversations([conversationId]).get(
+      conversationId,
+    );
+    const currentGroupId = meta?.groupId ?? null;
+    if (currentGroupId !== null && currentGroupId !== UNGROUPED_GROUP_ID) {
+      log.info(
+        { conversationId, groupId, currentGroupId },
+        "Ignored group assignment: conversation already grouped",
+      );
+      return;
+    }
+    batchSetConversationPlacement([{ id: conversationId, groupId: group.id }]);
+    publishConversationListAndMetadataChanged("reordered", [conversationId]);
+    log.info(
+      { conversationId, groupId: group.id, groupName: group.name, confidence },
+      "Auto-assigned conversation group",
+    );
+  } catch (err) {
+    log.warn(
+      { err, conversationId, groupId },
+      "Group assignment during title regeneration failed (non-fatal)",
+    );
+  }
 }
 
 function buildTitlePrompt(
   context?: TitleContext,
   userMessage?: string,
   assistantResponse?: string,
+  allowGroupAssignment?: boolean,
 ): string {
   const parts: string[] = [];
 
@@ -494,6 +666,18 @@ function buildTitlePrompt(
     : "";
   if (assistantText) {
     parts.push(`Assistant: ${assistantText}`);
+  }
+
+  if (allowGroupAssignment) {
+    const customGroups = listGroups().filter((g) => !g.isSystemGroup);
+    parts.push("", "Existing groups:");
+    if (customGroups.length === 0) {
+      parts.push("(none)");
+    } else {
+      for (const group of customGroups) {
+        parts.push(`- ${group.name} (id: ${group.id})`);
+      }
+    }
   }
 
   return parts.join("\n");
@@ -611,8 +795,38 @@ function extractTextForTitle(raw: string | Array<{ type: string }>): string {
   }
 }
 
-function buildRegenerationPrompt(recentMessages: MessageRow[]): string {
-  const parts: string[] = ["Recent messages:"];
+function buildRegenerationPrompt(
+  recentMessages: MessageRow[],
+  options?: {
+    currentTitle?: string | null;
+    firstMessage?: MessageRow;
+    allowGroupAssignment?: boolean;
+  },
+): string {
+  const parts: string[] = [];
+
+  // The first user message carries the conversation's real topic; the recent
+  // messages are only the latest activity. Anchoring on both keeps the
+  // second-pass title from pivoting onto whatever the last few messages
+  // happened to discuss in a long conversation.
+  const firstText = options?.firstMessage
+    ? stripThinkingTags(
+        extractTextForTitle(
+          projectPersistedAssistantContent(
+            options.firstMessage.content,
+            options.firstMessage.metadata,
+          ),
+        ),
+      ).trim()
+    : "";
+  if (firstText) {
+    parts.push("First user message:", `User: ${firstText}`, "");
+  }
+  if (options?.currentTitle && !isReplaceableTitle(options.currentTitle)) {
+    parts.push("Current title:", options.currentTitle, "");
+  }
+
+  parts.push("Recent messages:");
 
   for (const msg of recentMessages) {
     // Read each row the way a user reads it. On a turn that routed its reply
@@ -627,6 +841,18 @@ function buildRegenerationPrompt(recentMessages: MessageRow[]): string {
     }
     const role = msg.role === "user" ? "User" : "Assistant";
     parts.push(`${role}: ${stripThinkingTags(text)}`);
+  }
+
+  if (options?.allowGroupAssignment) {
+    const customGroups = listGroups().filter((g) => !g.isSystemGroup);
+    parts.push("", "Existing groups:");
+    if (customGroups.length === 0) {
+      parts.push("(none)");
+    } else {
+      for (const group of customGroups) {
+        parts.push(`- ${group.name} (id: ${group.id})`);
+      }
+    }
   }
 
   return parts.join("\n");

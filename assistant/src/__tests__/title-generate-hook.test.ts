@@ -28,6 +28,7 @@ const queueGenerateConversationTitleMock = mock(
     conversationId: string;
     provider?: unknown;
     userMessage?: string;
+    allowGroupAssignment?: boolean;
   }): void => undefined,
 );
 const queueRegenerateConversationTitleMock = mock(
@@ -35,6 +36,7 @@ const queueRegenerateConversationTitleMock = mock(
     conversationId: string;
     provider?: unknown;
     onlyIfReplaceable?: boolean;
+    allowGroupAssignment?: boolean;
   }): void => undefined,
 );
 mock.module("../persistence/conversation-title-service.js", () => ({
@@ -178,12 +180,14 @@ describe("title-generate user-prompt-submit hook", () => {
     await userPromptSubmit(ctx);
     await flushMacrotasks();
 
-    // THEN the title service is invoked with just the conversation id and the
-    // submitted prompt — provider resolution and emit are owned by the service.
+    // THEN the title service is invoked with just the conversation id, the
+    // submitted prompt, and the group-assignment gate — provider resolution
+    // and emit are owned by the service.
     expect(queueGenerateConversationTitleMock).toHaveBeenCalledTimes(1);
     const call = queueGenerateConversationTitleMock.mock.calls[0]?.[0];
     expect(call?.conversationId).toBe("conv-1");
     expect(call?.userMessage).toBe("first message");
+    expect(call?.allowGroupAssignment).toBe(true);
     expect(call).not.toHaveProperty("provider");
     expect(call).not.toHaveProperty("onTitleUpdated");
   });
@@ -267,10 +271,12 @@ describe("title-generate stop hook", () => {
     await flushMacrotasks();
 
     // THEN the second-pass regeneration is triggered with just the
-    // conversation id — provider resolution and emit are owned by the service.
+    // conversation id plus the one-shot group-assignment gate — provider
+    // resolution and emit are owned by the service.
     expect(queueRegenerateConversationTitleMock).toHaveBeenCalledTimes(1);
     const call = queueRegenerateConversationTitleMock.mock.calls[0]?.[0];
     expect(call?.conversationId).toBe("conv-1");
+    expect(call?.allowGroupAssignment).toBe(true);
     expect(call).not.toHaveProperty("provider");
     expect(call).not.toHaveProperty("signal");
     expect(call).not.toHaveProperty("onlyIfReplaceable");

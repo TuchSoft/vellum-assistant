@@ -3,14 +3,24 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 const TITLE_TOOL_NAME = "record_conversation_title";
 
 /** A forced-tool response: the model called `record_conversation_title`. */
-function toolResponse(title: string) {
+function toolResponse(
+  title: string,
+  extra?: { groupId?: string; confidence?: number },
+) {
+  const input: Record<string, unknown> = { title };
+  if (extra?.groupId) {
+    input.group_id = extra.groupId;
+  }
+  if (extra?.confidence !== undefined) {
+    input.confidence = extra.confidence;
+  }
   return {
     content: [
       {
         type: "tool_use",
         id: "toolu_title",
         name: TITLE_TOOL_NAME,
-        input: { title },
+        input,
       },
     ],
     model: "test-model",
@@ -64,6 +74,15 @@ const mockGetMessages = mock((): TitleTestRow[] => [
 ]);
 const mockUpdateConversationTitle = mock(() => {});
 const mockGetConfiguredProvider = mock(async () => null);
+const mockBatchSetConversationPlacement = mock(() => {});
+const mockGetDisplayMetaForConversations = mock(
+  (ids: string[]) =>
+    new Map(ids.map((id) => [id, { groupId: null as string | null }])),
+);
+const mockPublishConversationListAndMetadataChanged = mock(
+  (_action: string, _ids: string[]) => {},
+);
+const mockListGroups = mock((): Array<Record<string, unknown>> => []);
 
 mock.module("../persistence/conversation-crud.js", () => ({
   setConversationProcessingStartedAt: () => {},
@@ -72,6 +91,12 @@ mock.module("../persistence/conversation-crud.js", () => ({
   getMessages: mockGetMessages,
   updateConversationTitle: mockUpdateConversationTitle,
   reserveMessage: mock(async () => ({ id: "msg-reserve" })),
+  batchSetConversationPlacement: mockBatchSetConversationPlacement,
+  getDisplayMetaForConversations: mockGetDisplayMetaForConversations,
+}));
+
+mock.module("../persistence/group-crud.js", () => ({
+  listGroups: mockListGroups,
 }));
 
 // The title service imports `getConfiguredProvider` plus the pure response
@@ -102,6 +127,8 @@ const mockPublishConversationTitleChanged = mock(
 );
 mock.module("../runtime/sync/resource-sync-events.js", () => ({
   publishConversationTitleChanged: mockPublishConversationTitleChanged,
+  publishConversationListAndMetadataChanged:
+    mockPublishConversationListAndMetadataChanged,
 }));
 
 import { MESSAGE_KEYS } from "../i18n/index.js";
@@ -137,6 +164,15 @@ describe("conversation-title-service", () => {
     mockGetConfiguredProvider.mockClear();
     mockGetConfiguredProvider.mockImplementation(async () => null);
     mockPublishConversationTitleChanged.mockClear();
+    mockBatchSetConversationPlacement.mockClear();
+    mockGetDisplayMetaForConversations.mockClear();
+    mockGetDisplayMetaForConversations.mockImplementation(
+      (ids: string[]) =>
+        new Map(ids.map((id) => [id, { groupId: null as string | null }])),
+    );
+    mockPublishConversationListAndMetadataChanged.mockClear();
+    mockListGroups.mockClear();
+    mockListGroups.mockImplementation(() => []);
   });
 
   test("forces the title tool and persists the extracted title", async () => {
@@ -681,6 +717,300 @@ describe("conversation-title-service", () => {
  * the bare receipt "Delivered.". Titling from the raw rows named these
  * conversations "Delivery Confirmation" instead of what they were about.
  */
+describe("turn-3 group assignment", () => {
+  beforeEach(() => {
+    mockGetConversation.mockClear();
+    mockGetConversation.mockImplementation(
+      (_conversationId: string) =>
+        ({ title: "Generating title...", isAutoTitle: 1 }) as {
+          title: string;
+          isAutoTitle: number;
+        },
+    );
+    mockGetMessages.mockClear();
+    mockGetMessages.mockImplementation(() => [
+      { role: "user", content: "first message" },
+      { role: "assistant", content: "first reply" },
+      { role: "user", content: "follow-up" },
+    ]);
+    mockUpdateConversationTitle.mockClear();
+    mockBatchSetConversationPlacement.mockClear();
+    mockGetDisplayMetaForConversations.mockClear();
+    mockGetDisplayMetaForConversations.mockImplementation(
+      (ids: string[]) =>
+        new Map(ids.map((id) => [id, { groupId: null as string | null }])),
+    );
+    mockPublishConversationTitleChanged.mockClear();
+    mockPublishConversationListAndMetadataChanged.mockClear();
+    mockListGroups.mockClear();
+    mockListGroups.mockImplementation(() => []);
+  });
+
+  const ACME_GROUP = {
+    id: "grp-acme",
+    name: "Acme",
+    icon: null,
+    sortPosition: 0,
+    isSystemGroup: false,
+  };
+
+  function providerReturningGroup(
+    groupId?: string,
+    confidence?: number,
+  ) {
+    return makeProvider(async () =>
+      toolResponse("Project kickoff", { groupId, confidence }),
+    );
+  }
+
+  test("assigns a valid custom group when allowed", async () => {
+    mockListGroups.mockImplementation(() => [ACME_GROUP]);
+    const provider = providerReturningGroup("grp-acme", 95);
+
+    const result = await regenerateConversationTitle({
+      conversationId: "conv-1",
+      provider,
+      allowGroupAssignment: true,
+    });
+
+    expect(result).toEqual({ title: "Project kickoff", updated: true });
+    expect(mockBatchSetConversationPlacement).toHaveBeenCalledWith([
+      { id: "conv-1", groupId: "grp-acme" },
+    ]);
+    expect(mockPublishConversationListAndMetadataChanged).toHaveBeenCalledWith(
+      "reordered",
+      ["conv-1"],
+    );
+  });
+
+  test("does not reassign a conversation that already has a group", async () => {
+    mockListGroups.mockImplementation(() => [ACME_GROUP]);
+    mockGetDisplayMetaForConversations.mockImplementation(
+      (ids: string[]) =>
+        new Map(ids.map((id) => [id, { groupId: "grp-existing" }])),
+    );
+    const provider = providerReturningGroup("grp-acme", 95);
+
+    const result = await regenerateConversationTitle({
+      conversationId: "conv-1",
+      provider,
+      allowGroupAssignment: true,
+    });
+
+    expect(result).toEqual({ title: "Project kickoff", updated: true });
+    expect(mockBatchSetConversationPlacement).not.toHaveBeenCalled();
+    expect(
+      mockPublishConversationListAndMetadataChanged,
+    ).not.toHaveBeenCalled();
+  });
+
+  test("ignores unknown group ids but still persists the title", async () => {
+    mockListGroups.mockImplementation(() => [ACME_GROUP]);
+    const provider = providerReturningGroup("grp-nope", 95);
+
+    const result = await regenerateConversationTitle({
+      conversationId: "conv-1",
+      provider,
+      allowGroupAssignment: true,
+    });
+
+    expect(result).toEqual({ title: "Project kickoff", updated: true });
+    expect(mockBatchSetConversationPlacement).not.toHaveBeenCalled();
+  });
+
+  test("ignores system group ids", async () => {
+    mockListGroups.mockImplementation(() => [
+      { ...ACME_GROUP, id: "system:pinned", isSystemGroup: true },
+    ]);
+    const provider = providerReturningGroup("system:pinned", 95);
+
+    const result = await regenerateConversationTitle({
+      conversationId: "conv-1",
+      provider,
+      allowGroupAssignment: true,
+    });
+
+    expect(result).toEqual({ title: "Project kickoff", updated: true });
+    expect(mockBatchSetConversationPlacement).not.toHaveBeenCalled();
+  });
+
+  test("never assigns a group without allowGroupAssignment", async () => {
+    mockListGroups.mockImplementation(() => [ACME_GROUP]);
+    const provider = providerReturningGroup("grp-acme", 95);
+
+    const result = await regenerateConversationTitle({
+      conversationId: "conv-1",
+      provider,
+    });
+
+    expect(result).toEqual({ title: "Project kickoff", updated: true });
+    expect(mockBatchSetConversationPlacement).not.toHaveBeenCalled();
+  });
+
+  test("ignores a group below the confidence threshold", async () => {
+    mockListGroups.mockImplementation(() => [ACME_GROUP]);
+    const provider = providerReturningGroup("grp-acme", 50);
+
+    const result = await regenerateConversationTitle({
+      conversationId: "conv-1",
+      provider,
+      allowGroupAssignment: true,
+    });
+
+    expect(result).toEqual({ title: "Project kickoff", updated: true });
+    expect(mockBatchSetConversationPlacement).not.toHaveBeenCalled();
+  });
+
+  test("ignores a group without a confidence score", async () => {
+    mockListGroups.mockImplementation(() => [ACME_GROUP]);
+    const provider = providerReturningGroup("grp-acme");
+
+    const result = await regenerateConversationTitle({
+      conversationId: "conv-1",
+      provider,
+      allowGroupAssignment: true,
+    });
+
+    expect(result).toEqual({ title: "Project kickoff", updated: true });
+    expect(mockBatchSetConversationPlacement).not.toHaveBeenCalled();
+  });
+
+  test("prompt anchors on the first message and lists existing groups", async () => {
+    mockListGroups.mockImplementation(() => [ACME_GROUP]);
+    mockGetConversation.mockImplementation(
+      (_conversationId: string) =>
+        ({ title: "Kickoff plans", isAutoTitle: 1 }) as {
+          title: string;
+          isAutoTitle: number;
+        },
+    );
+    const provider = providerReturningGroup("grp-acme");
+
+    await regenerateConversationTitle({
+      conversationId: "conv-1",
+      provider,
+      allowGroupAssignment: true,
+    });
+
+    const [messages, options] = provider.sendMessage.mock.calls[0] as [
+      unknown,
+      { systemPrompt: string },
+    ];
+    const prompt = (messages as Array<{ content: string }>)[0].content;
+    expect(prompt).toContain("First user message:");
+    expect(prompt).toContain("first message");
+    expect(prompt).toContain("Current title:");
+    expect(prompt).toContain("Kickoff plans");
+    expect(prompt).toContain("Existing groups:");
+    expect(prompt).toContain("Acme (id: grp-acme)");
+    expect(prompt).not.toContain("system:");
+    expect(options.systemPrompt).toContain("Grouping rules");
+  });
+
+  test("omits group list and grouping rules without allowGroupAssignment", async () => {
+    mockListGroups.mockImplementation(() => [ACME_GROUP]);
+    const provider = providerReturningGroup("grp-acme");
+
+    await regenerateConversationTitle({ conversationId: "conv-1", provider });
+
+    const [messages, options] = provider.sendMessage.mock.calls[0] as [
+      unknown,
+      { systemPrompt: string },
+    ];
+    const prompt = (messages as Array<{ content: string }>)[0].content;
+    expect(prompt).not.toContain("Existing groups:");
+    expect(prompt).toContain("First user message:");
+    expect(options.systemPrompt).not.toContain("Grouping rules");
+  });
+});
+
+describe("first-pass group assignment", () => {
+  const ACME_GROUP = {
+    id: "grp-acme",
+    name: "Acme",
+    icon: null,
+    sortPosition: 0,
+    isSystemGroup: false,
+  };
+
+  beforeEach(() => {
+    mockBatchSetConversationPlacement.mockClear();
+    mockGetDisplayMetaForConversations.mockClear();
+    mockGetDisplayMetaForConversations.mockImplementation(
+      (ids: string[]) =>
+        new Map(ids.map((id) => [id, { groupId: null as string | null }])),
+    );
+    mockPublishConversationListAndMetadataChanged.mockClear();
+    mockListGroups.mockClear();
+    mockListGroups.mockImplementation(() => [ACME_GROUP]);
+  });
+
+  test("assigns a confident group from the opening prompt", async () => {
+    const provider = makeProvider(async () =>
+      toolResponse("Acme kickoff", { groupId: "grp-acme", confidence: 95 }),
+    );
+
+    const result = await generateAndPersistConversationTitle({
+      conversationId: "conv-1",
+      provider,
+      userMessage: "Help me plan the Acme kickoff",
+      allowGroupAssignment: true,
+    });
+
+    expect(result).toEqual({ title: "Acme kickoff", updated: true });
+    expect(mockBatchSetConversationPlacement).toHaveBeenCalledWith([
+      { id: "conv-1", groupId: "grp-acme" },
+    ]);
+    expect(mockPublishConversationListAndMetadataChanged).toHaveBeenCalledWith(
+      "reordered",
+      ["conv-1"],
+    );
+
+    const [, options] = provider.sendMessage.mock.calls[0] as [
+      unknown,
+      { systemPrompt: string },
+    ];
+    const [messages] = provider.sendMessage.mock.calls[0] as unknown as [
+      Array<{ content: string }>,
+    ];
+    expect(options.systemPrompt).toContain("Grouping rules");
+    expect(messages[0].content).toContain("Existing groups:");
+    expect(messages[0].content).toContain("Acme (id: grp-acme)");
+  });
+
+  test("ignores a low-confidence group from the opening prompt", async () => {
+    const provider = makeProvider(async () =>
+      toolResponse("Acme kickoff", { groupId: "grp-acme", confidence: 40 }),
+    );
+
+    const result = await generateAndPersistConversationTitle({
+      conversationId: "conv-1",
+      provider,
+      userMessage: "Help me plan the Acme kickoff",
+      allowGroupAssignment: true,
+    });
+
+    expect(result).toEqual({ title: "Acme kickoff", updated: true });
+    expect(mockBatchSetConversationPlacement).not.toHaveBeenCalled();
+  });
+
+  test("never assigns a group without allowGroupAssignment on the first pass", async () => {
+    const provider = makeProvider(async () =>
+      toolResponse("Acme kickoff", { groupId: "grp-acme", confidence: 95 }),
+    );
+
+    const result = await generateAndPersistConversationTitle({
+      conversationId: "conv-1",
+      provider,
+      userMessage: "Help me plan the Acme kickoff",
+    });
+
+    expect(result).toEqual({ title: "Acme kickoff", updated: true });
+    expect(mockBatchSetConversationPlacement).not.toHaveBeenCalled();
+  });
+});
+
+
 describe("titles on a tool-gated turn", () => {
   const PRIVATE = JSON.stringify({ assistantTextVisibility: "private" });
 

@@ -1,0 +1,38 @@
+assistant/src/__tests__/secret-scanner.test.ts
+  h_a912520b04f25d 391-414
+assistant/src/security/__tests__/tool-output-redaction.test.ts
+  h_a912520b04f25d 1-159
+assistant/src/security/__tests__/vault-secret-registry.test.ts
+  h_a912520b04f25d 1-111
+assistant/src/security/secret-scanner.ts
+  h_a912520b04f25d 118-120,124,126-127,131
+assistant/src/security/tool-output-redaction.ts
+  h_a912520b04f25d 1-233
+assistant/src/security/vault-secret-registry.ts
+  h_a912520b04f25d 1-148
+assistant/src/tools/__tests__/prompt-promotion.test.ts
+  h_a912520b04f25d 1-93
+assistant/src/tools/__tests__/unredacted-output-consent.test.ts
+  h_a912520b04f25d 1-45
+assistant/src/tools/executor.ts
+  h_a912520b04f25d 20,27,49-51,81-96,328-361,464-465,467,470-472
+assistant/src/tools/permission-checker.ts
+  h_a912520b04f25d 85-137,249-258,260,263-270,340,372,449,486
+assistant/src/tools/tool-types.ts
+  h_a912520b04f25d 276-282
+assistant/src/tools/types.ts
+  h_a912520b04f25d 330-337
+assistant/src/tools/unredacted-output-consent.ts
+  h_a912520b04f25d 1-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a32c51720b8aa354d331f4a3991849d95b879112",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+assistant/src/cli/commands/__tests__/conversations-wake.test.ts
+  h_a912520b04f25d 18,99-102,162-205
+assistant/src/cli/commands/conversations.help.ts
+  h_a912520b04f25d 372-376,392-398
+assistant/src/cli/commands/conversations.ts
+  h_a912520b04f25d 551,574,580-582,605-610
+assistant/src/runtime/routes/__tests__/wake-conversation-routes.test.ts
+  h_a912520b04f25d 25,146-178
+assistant/src/runtime/routes/wake-conversation-routes.ts
+  h_a912520b04f25d 12,18-19,24-27,61-63,70,108,121-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "03b5796543ccff54c431b72a3de8a1187ff06d5d",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

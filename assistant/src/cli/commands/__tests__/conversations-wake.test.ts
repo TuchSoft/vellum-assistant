@@ -15,7 +15,7 @@ import { Command } from "commander";
 let lastIpcCall: { method: string; params?: Record<string, unknown> } | null =
   null;
 const loggerCalls: { level: string; msg: string }[] = [];
-const mockIpcResult = {
+let mockIpcResult: { ok: boolean; result: Record<string, unknown> } = {
   ok: true,
   result: { invoked: true, producedToolCalls: false },
 };
@@ -96,6 +96,10 @@ beforeEach(() => {
   lastIpcCall = null;
   loggerCalls.length = 0;
   process.exitCode = 0;
+  mockIpcResult = {
+    ok: true,
+    result: { invoked: true, producedToolCalls: false },
+  };
   // The wake action reads __SCHEDULE_RUN_ID for cost attribution and
   // __SCHEDULE_ID for the schedule's pinned inference profile; clear both so
   // they never leak into the captured body.
@@ -152,6 +156,50 @@ describe("conversations wake untrusted-content input", () => {
     expect(code).toBe(0);
     expect(lastBody().persist).toBeUndefined();
     expect(lastBody().externalContent).toBeUndefined();
+  });
+});
+
+describe("conversations wake background dispatch", () => {
+  test("defaults to background dispatch (no flag → background:true)", async () => {
+    const code = await runWake([
+      "wake",
+      "conv-8",
+      "--hint",
+      "wake up",
+      "--json",
+    ]);
+    expect(code).toBe(0);
+    expect(lastBody()).toMatchObject({ background: true });
+  });
+
+  test("--no-background runs synchronously (background:false)", async () => {
+    const code = await runWake([
+      "wake",
+      "conv-9",
+      "--hint",
+      "wake up",
+      "--no-background",
+      "--json",
+    ]);
+    expect(code).toBe(0);
+    expect(lastBody()).toMatchObject({ background: false });
+  });
+
+  test("dispatched result logs the confirmation and exits 0", async () => {
+    mockIpcResult = {
+      ok: true,
+      result: { invoked: false, producedToolCalls: false, dispatched: true },
+    };
+    const code = await runWake(["wake", "conv-10", "--hint", "wake up"]);
+    expect(code).toBe(0);
+    expect(
+      loggerCalls.some(
+        (c) =>
+          c.level === "info" &&
+          c.msg ===
+            "Wake dispatched to conversation conv-10 (running in background)",
+      ),
+    ).toBe(true);
   });
 });
 

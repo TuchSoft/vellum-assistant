@@ -22,7 +22,7 @@ interface CapturedWake {
 }
 const wakeCalls: CapturedWake[] = [];
 mock.module("../../agent-wake.js", () => ({
-  wakeAgentForOpportunity: (opts: CapturedWake) => {
+  wakeAgentForOpportunity: async (opts: CapturedWake) => {
     wakeCalls.push(opts);
     return { invoked: true, producedToolCalls: false };
   },
@@ -140,6 +140,39 @@ describe("wake_conversation schedule profile pin", () => {
       headers: { "x-vellum-principal-type": "actor" },
     });
     expect(wakeCalls[0].forceOverrideProfile).toBeUndefined();
+  });
+});
+
+describe("wake_conversation background dispatch", () => {
+  test("local principal + background:true → returns dispatched without awaiting the turn", async () => {
+    wakeCalls.length = 0;
+    const conversationId = makeConversation();
+    const result = await handler({
+      body: { conversationId, hint: "poll result", background: true },
+      headers: { "x-vellum-principal-type": "local" },
+    });
+    expect(result).toEqual({
+      invoked: false,
+      producedToolCalls: false,
+      dispatched: true,
+    });
+    expect(wakeCalls).toHaveLength(1);
+    expect(wakeCalls[0].trustContext).toEqual({
+      sourceChannel: "vellum",
+      trustClass: "guardian",
+    });
+    expect(wakeCalls[0].clientless).toBe(true);
+  });
+
+  test("actor principal + background:true → runs synchronously (no dispatcher)", async () => {
+    wakeCalls.length = 0;
+    const conversationId = makeConversation();
+    const result = await handler({
+      body: { conversationId, hint: "poll result", background: true },
+      headers: { "x-vellum-principal-type": "actor" },
+    });
+    expect(result).toEqual({ invoked: true, producedToolCalls: false });
+    expect(wakeCalls).toHaveLength(1);
   });
 });
 

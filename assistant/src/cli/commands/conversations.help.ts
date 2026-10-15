@@ -370,6 +370,11 @@ Examples:
             "Raw third-party data to fence as untrusted content (implies --persist). The caller reads the data and passes it as a string. Visible in the process table (ps) and bounded by ARG_MAX",
         },
         {
+          flags: "--no-background",
+          description:
+            "Wait for the agent turn to finish before returning (default: dispatch the wake and return immediately)",
+        },
+        {
           flags: "--json",
           description: "Output result as JSON",
         },
@@ -383,6 +388,13 @@ message. The hint is injected as a non-persisted internal message visible
 only to the LLM — it never appears in the transcript or SSE feed. If the
 agent produces output (text or tool calls), it is persisted and emitted to
 connected clients. Otherwise the wake is a silent no-op.
+
+By default the wake is dispatched in the background: the command returns as
+soon as the assistant accepts it, prints a dispatch confirmation, and exits 0
+while the turn runs in the daemon. Because the turn runs asynchronously, the
+command cannot report whether the conversation was busy, archived, or produced
+output. Pass --no-background to wait for the turn and get that detailed result
+(and to keep the turn within the IPC call budget).
 
 --hint is TRUSTED framing authored by you. Any attacker-influenceable data
 (email bodies, PR text, fetched web pages, notification payloads) MUST be

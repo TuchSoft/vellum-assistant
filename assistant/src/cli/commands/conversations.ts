@@ -548,6 +548,7 @@ export function registerConversationsCommand(program: Command): void {
           opts: {
             hint: string;
             source: string;
+            background?: boolean;
             persist?: boolean;
             externalContent?: string;
             json?: boolean;
@@ -570,11 +571,15 @@ export function registerConversationsCommand(program: Command): void {
             invoked: boolean;
             producedToolCalls: boolean;
             reason?: "not_found" | "archived" | "timeout" | "no_resolver";
+            dispatched?: boolean;
           }>("wake_conversation", {
             body: {
               conversationId,
               hint: opts.hint,
               source: opts.source,
+              ...(opts.background === undefined
+                ? {}
+                : { background: opts.background }),
               ...(cronRunId ? { cronRunId } : {}),
               ...(scheduleId ? { scheduleId } : {}),
               ...(persist ? { persist: true } : {}),
@@ -595,6 +600,12 @@ export function registerConversationsCommand(program: Command): void {
           const wake = result.result!;
           if (opts.json) {
             log.info(JSON.stringify({ ok: true, ...wake }));
+            return;
+          }
+          if (wake.dispatched) {
+            log.info(
+              `Wake dispatched to conversation ${conversationId} (running in background)`,
+            );
             return;
           }
           if (wake.invoked) {

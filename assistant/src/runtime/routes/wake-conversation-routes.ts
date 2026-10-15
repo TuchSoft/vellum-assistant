@@ -9,15 +9,22 @@ import { z } from "zod";
 import { INTERNAL_GUARDIAN_TRUST_CONTEXT } from "../../daemon/trust-context.js";
 import { getConversation } from "../../persistence/conversation-crud.js";
 import { getSchedule } from "../../schedule/schedule-store.js";
+import { getLogger } from "../../util/logger.js";
 import { wakeAgentForOpportunity } from "../agent-wake.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { NotFoundError } from "./errors.js";
 import type { RouteDefinition } from "./types.js";
 
+const log = getLogger("wake-conversation-routes");
+
 const WakeConversationBody = z.object({
   conversationId: z.string().min(1),
   hint: z.string().min(1),
   source: z.string().default("cli"),
+  // Dispatch the wake and return before the agent turn finishes. Honored only
+  // for a `local` caller (see handler): a remote `actor` runs synchronously so
+  // its response keeps carrying the turn's outcome.
+  background: z.boolean().optional(),
   // Honored only for a `local` caller (see handler) — a remote `actor` could
   // otherwise attribute its wake's cost to an arbitrary firing.
   cronRunId: z.string().min(1).optional(),
@@ -51,12 +58,16 @@ export const ROUTES: RouteDefinition[] = [
       invoked: z.boolean(),
       producedToolCalls: z.boolean(),
       reason: z.string().optional(),
+      // Present and true when the wake was accepted for background execution
+      // and this response returned before the turn ran.
+      dispatched: z.boolean().optional(),
     }),
     handler: async ({ body, headers }) => {
       const {
         conversationId,
         hint,
         source,
+        background,
         cronRunId,
         scheduleId,
         persist,
@@ -94,7 +105,7 @@ export const ROUTES: RouteDefinition[] = [
           ? (getSchedule(scheduleId)?.inferenceProfile ?? null)
           : null;
 
-      const result = await wakeAgentForOpportunity({
+      const wakeOptions: Parameters<typeof wakeAgentForOpportunity>[0] = {
         conversationId,
         hint,
         source,
@@ -107,7 +118,24 @@ export const ROUTES: RouteDefinition[] = [
         ...(externalContent !== undefined
           ? { untrustedOutput: { content: externalContent, source: "webhook" } }
           : {}),
-      });
+      };
+
+      // Background dispatch hands the wake to the agent loop without awaiting
+      // the turn, so the caller returns before the turn's runtime can exceed
+      // its transport budget. The turn keeps running in the daemon and its
+      // outcome is observable through the conversation, not this response.
+      // Honored only for a `local` caller (see `isLocal` above).
+      if (background && isLocal) {
+        void wakeAgentForOpportunity(wakeOptions).catch((err) => {
+          log.warn(
+            { err, conversationId },
+            "wake_conversation: background dispatch failed",
+          );
+        });
+        return { invoked: false, producedToolCalls: false, dispatched: true };
+      }
+
+      const result = await wakeAgentForOpportunity(wakeOptions);
       // Pin the wire shape to the declared responseBody: WakeResult carries
       // in-process diagnostics (exitReason) beyond this route's contract.
       return {

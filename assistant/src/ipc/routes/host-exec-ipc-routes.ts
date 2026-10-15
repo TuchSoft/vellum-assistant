@@ -23,9 +23,9 @@ import { z } from "zod";
 
 import { HostBashProxy } from "../../daemon/host-bash-proxy.js";
 import { HostProxyRequestError } from "../../daemon/host-proxy-base.js";
+import type { RouteHandlerArgs } from "../../runtime/routes/types.js";
 import { buildHostProxyPath } from "../../tools/host-terminal/host-shell.js";
 import { getLogger } from "../../util/logger.js";
-import type { RouteHandlerArgs } from "../../runtime/routes/types.js";
 import { HOST_EXEC_IPC_METHOD } from "../host-exec-client.js";
 
 const log = getLogger("host-exec-ipc-routes");

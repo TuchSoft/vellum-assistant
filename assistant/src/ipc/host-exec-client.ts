@@ -7,8 +7,8 @@
  * graph (the host proxies and their daemon wiring).
  */
 
-import type { HostExecResult } from "./routes/host-exec-ipc-routes.js";
 import { cliIpcCall } from "./cli-client.js";
+import type { HostExecResult } from "./routes/host-exec-ipc-routes.js";
 
 /** IPC method name — host command execution transport for local processes. */
 export const HOST_EXEC_IPC_METHOD = "/host/exec";

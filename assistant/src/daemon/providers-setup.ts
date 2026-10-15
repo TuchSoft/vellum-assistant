@@ -20,9 +20,9 @@ import { githubProvider } from "../watcher/providers/github.js";
 import { gmailProvider } from "../watcher/providers/gmail.js";
 import { googleCalendarProvider } from "../watcher/providers/google-calendar.js";
 import { linearProvider } from "../watcher/providers/linear.js";
-import { startMcpHealthScheduler } from "./mcp-health-scheduler.js";
 import { outlookProvider } from "../watcher/providers/outlook.js";
 import { outlookCalendarProvider } from "../watcher/providers/outlook-calendar.js";
+import { startMcpHealthScheduler } from "./mcp-health-scheduler.js";
 const log = getLogger("lifecycle");
 
 export async function initializeProvidersAndTools(

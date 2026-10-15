@@ -10,7 +10,6 @@ mock.module("../prompts/user-reference.js", () => ({
 import { getMemorySqlite, getSqlite } from "../persistence/db-connection.js";
 import { initializeDb } from "../persistence/db-init.js";
 import {
-  CONVERSATION_STARTERS_STALE_TTL_MS,
   orderStrongestFirst,
   ROUTES,
 } from "../runtime/routes/conversation-starter-routes.js";

@@ -102,7 +102,6 @@ export function salvageXmlToolCalls(
     end: number;
     call: SalvagedXmlToolCall;
   }> = [];
-  let detected = false;
 
   const invokeOpenRe = /<invoke\b[^>]*>/gi;
   let openMatch: RegExpExecArray | null = invokeOpenRe.exec(normalized);
@@ -126,7 +125,6 @@ export function salvageXmlToolCalls(
     }
 
     if (!isInsideMarkdownFence(normalized, openMatch.index)) {
-      detected = true;
       const rawName = parseNameAttr(openTag);
       const canonicalName = rawName
         ? resolveOfferedName(rawName, offeredToolNames)

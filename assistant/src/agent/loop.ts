@@ -84,15 +84,15 @@ import { getLogger } from "../util/logger.js";
 import { joinDeliveredMessages } from "../util/text-spacing.js";
 import { CompactionCircuit } from "./compaction-circuit.js";
 import {
-  LoopDetectedError,
-  LoopGuard,
-  type LoopDetection,
-} from "./loop-guard.js";
-import {
   deepRepairHistory,
   isRepairableOrderingError,
   isUserTerminalHistoryError,
 } from "./history-repair/history-repair.js";
+import {
+  LoopDetectedError,
+  type LoopDetection,
+  LoopGuard,
+} from "./loop-guard.js";
 import { buildToolResultFollowUp } from "./tool-result-follow-up.js";
 
 const log = getLogger("agent-loop");

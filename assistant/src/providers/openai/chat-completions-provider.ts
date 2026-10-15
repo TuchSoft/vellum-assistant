@@ -44,9 +44,9 @@ import {
   wrapUnparseableToolArgs,
 } from "../unparseable-tool-args.js";
 import {
+  isDsmlToolMarkup,
   salvageXmlToolCalls,
   shouldSalvageXmlToolCalls,
-  isDsmlToolMarkup,
   splitXmlToolCallHoldback,
 } from "../xml-tool-call-salvage.js";
 import {

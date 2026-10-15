@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
+import { SALVAGE_ERROR_TOOL_NAME } from "../../xml-tool-call-salvage.js";
 import {
   OpenAIChatCompletionsProvider,
   type OpenAIChatCompletionsProviderOptions,
 } from "../chat-completions-provider.js";
-
-import { SALVAGE_ERROR_TOOL_NAME } from "../../xml-tool-call-salvage.js";
 
 const FW = "\uFF5C";
 

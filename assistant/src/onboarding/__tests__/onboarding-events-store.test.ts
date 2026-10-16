@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 
 import { getTelemetrySqlite } from "../../persistence/db-connection.js";
 import {
-  pendingOutboxPayloads,
+  pendingOutboxPayloads as harnessPendingPayloads,
   resetOutboxTable,
   setShareAnalytics,
   withTelemetryDbUnavailable,
@@ -16,24 +16,26 @@ import {
 } from "../onboarding-events-store.js";
 
 /** Pending onboarding outbox payloads, parsed, in `(created_at, id)` order. */
-function pendingOnboardingPayloads(): OnboardingTelemetryEvent[] {
-  return pendingOutboxPayloads<OnboardingTelemetryEvent>("onboarding", 10);
+async function pendingOnboardingPayloads(): Promise<
+  OnboardingTelemetryEvent[]
+> {
+  return harnessPendingPayloads<OnboardingTelemetryEvent>("onboarding", 10);
 }
 
 describe("onboarding-events-store: recordActivationEvent", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setShareAnalytics(true);
-    resetOutboxTable();
+    await resetOutboxTable();
   });
 
-  test("stores the full wire payload with the deterministic activation daemon_event_id", () => {
-    const event = recordActivationEvent({
+  test("stores the full wire payload with the deterministic activation daemon_event_id", async () => {
+    const event = await recordActivationEvent({
       stepName: "activation_moment_1_complete",
       sessionId: "conv-1",
     });
     expect(event).not.toBeNull();
 
-    const payloads = pendingOnboardingPayloads();
+    const payloads = await pendingOnboardingPayloads();
     expect(payloads).toHaveLength(1);
     expect(payloads[0]).toEqual({
       type: "onboarding",
@@ -50,8 +52,8 @@ describe("onboarding-events-store: recordActivationEvent", () => {
     });
   });
 
-  test("outbox row id stays a UUID distinct from the payload daemon_event_id", () => {
-    const event = recordActivationEvent({
+  test("outbox row id stays a UUID distinct from the payload daemon_event_id", async () => {
+    const event = await recordActivationEvent({
       stepName: "activation_moment_1_complete",
       sessionId: "conv-telemetry",
     });
@@ -61,55 +63,55 @@ describe("onboarding-events-store: recordActivationEvent", () => {
       .query(`SELECT id, name FROM telemetry_events`)
       .all() as Array<{ id: string; name: string }>;
     expect(raw).toEqual([{ id: event!.id, name: "onboarding" }]);
-    const payload = pendingOnboardingPayloads()[0]!;
+    const payload = (await pendingOnboardingPayloads())[0]!;
     expect(payload.daemon_event_id).not.toBe(event!.id);
   });
 
-  test("honors an explicit abVariant override", () => {
-    recordActivationEvent({
+  test("honors an explicit abVariant override", async () => {
+    await recordActivationEvent({
       stepName: "activation_moment_2_complete",
       sessionId: "conv-2",
       abVariant: "variant-b",
     });
 
-    const payloads = pendingOnboardingPayloads();
+    const payloads = await pendingOnboardingPayloads();
     expect(payloads).toHaveLength(1);
     expect(payloads[0]!.ab_variant).toBe("variant-b");
     expect(payloads[0]!.step_index).toBe(2);
   });
 
-  test("returns null and writes no row when share_analytics is disabled", () => {
+  test("returns null and writes no row when share_analytics is disabled", async () => {
     setShareAnalytics(false);
-    const event = recordActivationEvent({
+    const event = await recordActivationEvent({
       stepName: "activation_moment_1_complete",
       sessionId: "conv-3",
     });
     expect(event).toBeNull();
 
-    expect(pendingOnboardingPayloads()).toHaveLength(0);
+    expect(await pendingOnboardingPayloads()).toHaveLength(0);
   });
 
-  test("returns null when the telemetry database is unavailable", () => {
-    withTelemetryDbUnavailable(() => {
-      const event = recordActivationEvent({
+  test("returns null when the telemetry database is unavailable", async () => {
+    await withTelemetryDbUnavailable(async () => {
+      const event = await recordActivationEvent({
         stepName: "activation_moment_1_complete",
         sessionId: "conv-4",
       });
       expect(event).toBeNull();
     });
 
-    expect(pendingOnboardingPayloads()).toHaveLength(0);
+    expect(await pendingOnboardingPayloads()).toHaveLength(0);
   });
 });
 
 describe("onboarding-events-store: recordOnboardingEvent", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setShareAnalytics(true);
-    resetOutboxTable();
+    await resetOutboxTable();
   });
 
-  test("stores a pre-chat wire payload with daemon_event_id = row id and no funnel fields", () => {
-    const event = recordOnboardingEvent({
+  test("stores a pre-chat wire payload with daemon_event_id = row id and no funnel fields", async () => {
+    const event = await recordOnboardingEvent({
       screen: "tools",
       tools: ["gmail", "calendar"],
       tone: "warm",
@@ -117,7 +119,7 @@ describe("onboarding-events-store: recordOnboardingEvent", () => {
     });
     expect(event).not.toBeNull();
 
-    const payloads = pendingOnboardingPayloads();
+    const payloads = await pendingOnboardingPayloads();
     expect(payloads).toHaveLength(1);
     expect(payloads[0]).toEqual({
       type: "onboarding",
@@ -142,17 +144,17 @@ describe("onboarding-events-store: recordOnboardingEvent", () => {
     ]);
   });
 
-  test("returns null and writes no row when share_analytics is disabled", () => {
+  test("returns null and writes no row when share_analytics is disabled", async () => {
     setShareAnalytics(false);
-    expect(recordOnboardingEvent({ screen: "tools" })).toBeNull();
-    expect(pendingOnboardingPayloads()).toHaveLength(0);
+    expect(await recordOnboardingEvent({ screen: "tools" })).toBeNull();
+    expect(await pendingOnboardingPayloads()).toHaveLength(0);
   });
 
-  test("returns null when the telemetry database is unavailable", () => {
-    withTelemetryDbUnavailable(() => {
-      expect(recordOnboardingEvent({ screen: "tools" })).toBeNull();
+  test("returns null when the telemetry database is unavailable", async () => {
+    await withTelemetryDbUnavailable(async () => {
+      expect(await recordOnboardingEvent({ screen: "tools" })).toBeNull();
     });
 
-    expect(pendingOnboardingPayloads()).toHaveLength(0);
+    expect(await pendingOnboardingPayloads()).toHaveLength(0);
   });
 });

@@ -5,12 +5,14 @@
  * `recordTelemetryOutboxEvent` is the consent-owning record layer; the
  * storage seam functions carry no consent logic — their call sites own
  * gating.
+ *
+ * All access goes through the async `AsyncDb` facade with positional `?`
+ * placeholders, so the slice runs unchanged on the SQLite and Postgres
+ * backends (see `docs/pg-port-translation.md`).
  */
-import { asc, eq, inArray } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
-import { getSqliteFrom, getTelemetryDb } from "../persistence/db-connection.js";
-import { telemetryEvents } from "../persistence/schema/index.js";
+import { getTelemetryAsyncDb } from "../persistence/db-facade.js";
 import { getRawShareAnalytics } from "../platform/consent-cache.js";
 import { APP_VERSION } from "../version.js";
 import type {
@@ -20,7 +22,7 @@ import type {
   TelemetryEventBase,
 } from "./types.js";
 
-/** Ids per DELETE chunk — stays under SQLite's bound-variable limit. */
+/** Ids per DELETE chunk — stays under the bound-variable limit. */
 const DELETE_CHUNK_SIZE = 500;
 
 /**
@@ -53,27 +55,30 @@ export interface TelemetryOutboxInsert {
  * committed. Returns false when the telemetry DB is unavailable (degraded
  * mode), true once every row is inserted (or the batch is empty).
  */
-export function insertTelemetryOutboxEvents(
+export async function insertTelemetryOutboxEvents(
   rows: TelemetryOutboxInsert[],
-): boolean {
-  const db = getTelemetryDb();
+): Promise<boolean> {
+  const db = getTelemetryAsyncDb();
   if (!db) {
     return false;
   }
   if (rows.length === 0) {
     return true;
   }
-  db.insert(telemetryEvents)
-    .values(
-      rows.map((row) => ({
-        id: row.id,
-        name: row.name,
-        createdAt: row.createdAt,
-        conversationId: row.conversationId ?? null,
-        payload: JSON.stringify(row.event),
-      })),
-    )
-    .run();
+  const placeholders = rows.map(() => "(?, ?, ?, ?, ?)").join(", ");
+  const params = rows.flatMap((row) => [
+    row.id,
+    row.name,
+    row.createdAt,
+    row.conversationId ?? null,
+    JSON.stringify(row.event),
+  ]);
+  await db
+    .label("telemetry:outbox:insert")
+    .run(
+      `INSERT INTO telemetry_events (id, name, created_at, conversation_id, payload) VALUES ${placeholders}`,
+      params,
+    );
   return true;
 }
 
@@ -81,9 +86,9 @@ export function insertTelemetryOutboxEvents(
  * Insert one pending telemetry event. Returns false when the telemetry DB is
  * unavailable (degraded mode), true once the row is inserted.
  */
-export function insertTelemetryOutboxEvent(
+export async function insertTelemetryOutboxEvent(
   row: TelemetryOutboxInsert,
-): boolean {
+): Promise<boolean> {
   return insertTelemetryOutboxEvents([row]);
 }
 
@@ -103,17 +108,17 @@ export function insertTelemetryOutboxEvent(
  * (degraded mode). Prefer `recordTelemetryEvent` when the payload doesn't
  * need them.
  */
-export function recordTelemetryOutboxEvent(
+export async function recordTelemetryOutboxEvent(
   name: string,
   buildEvent: (id: string, createdAt: number) => TelemetryEvent,
   opts?: { conversationId?: string | null },
-): { id: string; createdAt: number } | null {
+): Promise<{ id: string; createdAt: number } | null> {
   if (getRawShareAnalytics() === false) {
     return null;
   }
   const id = uuid();
   const createdAt = Date.now();
-  const inserted = insertTelemetryOutboxEvent({
+  const inserted = await insertTelemetryOutboxEvent({
     id,
     name,
     createdAt,
@@ -133,7 +138,7 @@ export function recordTelemetryEvent<N extends OutboxTelemetryEventName>(
   name: N,
   fields: Omit<OutboxTelemetryEventOf<N>, keyof TelemetryEventBase>,
   opts?: { conversationId?: string | null },
-): { id: string; createdAt: number } | null {
+): Promise<{ id: string; createdAt: number } | null> {
   return recordTelemetryOutboxEvent(
     name,
     (id, createdAt) =>
@@ -156,37 +161,36 @@ export function recordTelemetryEvent<N extends OutboxTelemetryEventName>(
  * Read the oldest pending rows for one event name in `(created_at, id)`
  * order. Empty when the telemetry DB is unavailable.
  */
-export function queryTelemetryOutboxBatch(
+export async function queryTelemetryOutboxBatch(
   name: string,
   limit: number,
-): TelemetryOutboxRow[] {
-  const db = getTelemetryDb();
+): Promise<TelemetryOutboxRow[]> {
+  const db = getTelemetryAsyncDb();
   if (!db) {
     return [];
   }
   return db
-    .select({
-      id: telemetryEvents.id,
-      createdAt: telemetryEvents.createdAt,
-      payload: telemetryEvents.payload,
-    })
-    .from(telemetryEvents)
-    .where(eq(telemetryEvents.name, name))
-    .orderBy(asc(telemetryEvents.createdAt), asc(telemetryEvents.id))
-    .limit(limit)
-    .all();
+    .label("telemetry:outbox:query")
+    .all<TelemetryOutboxRow>(
+      'SELECT id, created_at AS "createdAt", payload FROM telemetry_events WHERE name = ? ORDER BY created_at ASC, id ASC LIMIT ?',
+      [name, limit],
+    );
 }
 
 /** Delete flushed rows by id, in chunks. No-op when db null or ids empty. */
-export function deleteTelemetryOutboxEvents(ids: string[]): void {
-  const db = getTelemetryDb();
+export async function deleteTelemetryOutboxEvents(
+  ids: string[],
+): Promise<void> {
+  const db = getTelemetryAsyncDb();
   if (!db || ids.length === 0) {
     return;
   }
   for (let i = 0; i < ids.length; i += DELETE_CHUNK_SIZE) {
-    db.delete(telemetryEvents)
-      .where(inArray(telemetryEvents.id, ids.slice(i, i + DELETE_CHUNK_SIZE)))
-      .run();
+    const chunk = ids.slice(i, i + DELETE_CHUNK_SIZE);
+    const placeholders = chunk.map(() => "?").join(", ");
+    await db
+      .label("telemetry:outbox:delete")
+      .run(`DELETE FROM telemetry_events WHERE id IN (${placeholders})`, chunk);
   }
 }
 
@@ -195,27 +199,31 @@ export function deleteTelemetryOutboxEvents(ids: string[]): void {
  * (age-bound prune). Returns the deleted row count; 0 when the telemetry DB
  * is unavailable.
  */
-export function deleteTelemetryOutboxEventsBefore(
+export async function deleteTelemetryOutboxEventsBefore(
   cutoffCreatedAt: number,
-): number {
-  const db = getTelemetryDb();
+): Promise<number> {
+  const db = getTelemetryAsyncDb();
   if (!db) {
     return 0;
   }
-  // Raw statement: drizzle's bun-sqlite `.run()` is typed void, and the
-  // prune's only output is the changed-row count.
-  return getSqliteFrom(db)
-    .prepare("DELETE FROM telemetry_events WHERE created_at < ?")
-    .run(cutoffCreatedAt).changes;
+  return db
+    .label("telemetry:outbox:prune")
+    .run("DELETE FROM telemetry_events WHERE created_at < ?", [
+      cutoffCreatedAt,
+    ]);
 }
 
 /** Drop all pending rows for one event name (telemetry opt-out). */
-export function discardPendingTelemetryOutboxEvents(name: string): void {
-  const db = getTelemetryDb();
+export async function discardPendingTelemetryOutboxEvents(
+  name: string,
+): Promise<void> {
+  const db = getTelemetryAsyncDb();
   if (!db) {
     return;
   }
-  db.delete(telemetryEvents).where(eq(telemetryEvents.name, name)).run();
+  await db
+    .label("telemetry:outbox:discard")
+    .run("DELETE FROM telemetry_events WHERE name = ?", [name]);
 }
 
 /**
@@ -224,14 +232,13 @@ export function discardPendingTelemetryOutboxEvents(name: string): void {
  * (e.g. recorded before the platform removed/renamed a type) so they can be
  * flushed instead of stranded. Empty when the telemetry DB is unavailable.
  */
-export function queryDistinctOutboxEventNames(): string[] {
-  const db = getTelemetryDb();
+export async function queryDistinctOutboxEventNames(): Promise<string[]> {
+  const db = getTelemetryAsyncDb();
   if (!db) {
     return [];
   }
-  return db
-    .selectDistinct({ name: telemetryEvents.name })
-    .from(telemetryEvents)
-    .all()
-    .map((row) => row.name);
+  const rows = await db
+    .label("telemetry:outbox:distinct")
+    .all<{ name: string }>("SELECT DISTINCT name FROM telemetry_events");
+  return rows.map((row) => row.name);
 }

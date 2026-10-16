@@ -12,7 +12,7 @@ import {
 } from "../telemetry/__tests__/outbox-test-harness.js";
 import type { OnboardingResearchTelemetryEvent } from "../telemetry/types.js";
 
-function pendingPayloads(): OnboardingResearchTelemetryEvent[] {
+function pendingPayloads(): Promise<OnboardingResearchTelemetryEvent[]> {
   return pendingOutboxPayloads<OnboardingResearchTelemetryEvent>(
     "onboarding_research",
   );
@@ -51,10 +51,10 @@ const VALID_BODY = {
 };
 
 describe("telemetry-routes: ingest", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setShareAnalytics(true);
     setShareDiagnostics(true);
-    resetOutboxTable();
+    await resetOutboxTable();
   });
 
   test("route policy matches the other client-facing telemetry routes", () => {
@@ -65,11 +65,11 @@ describe("telemetry-routes: ingest", () => {
     expect(route?.policy?.requiredScopes).toEqual(["settings.write"]);
   });
 
-  test("valid body is persisted to the outbox as a wire event", () => {
-    const result = call(VALID_BODY);
+  test("valid body is persisted to the outbox as a wire event", async () => {
+    const result = await call(VALID_BODY);
     expect(result).toEqual({ id: expect.any(String) });
 
-    const payloads = pendingPayloads();
+    const payloads = await pendingPayloads();
     expect(payloads.length).toBe(1);
     expect(payloads[0]).toMatchObject({
       type: "onboarding_research",
@@ -87,51 +87,58 @@ describe("telemetry-routes: ingest", () => {
     expect(payloads[0]?.assistant_version).toEqual(expect.any(String));
   });
 
-  test("stamps a fresh daemon_event_id by default", () => {
-    call(VALID_BODY);
+  test("stamps a fresh daemon_event_id by default", async () => {
+    await call(VALID_BODY);
     // No override → the collapse key falls back to the row id (a uuid), not the
     // conversation-scoped key.
-    expect(pendingPayloads()[0]?.daemon_event_id).not.toBe(
+    expect((await pendingPayloads())[0]?.daemon_event_id).not.toBe(
       "onboarding_research:conv-xyz",
     );
   });
 
-  test("honors a client-supplied daemon_event_id collapse key", () => {
-    call({ ...VALID_BODY, daemon_event_id: "onboarding_research:conv-xyz" });
-    expect(pendingPayloads()[0]?.daemon_event_id).toBe(
+  test("honors a client-supplied daemon_event_id collapse key", async () => {
+    await call({
+      ...VALID_BODY,
+      daemon_event_id: "onboarding_research:conv-xyz",
+    });
+    expect((await pendingPayloads())[0]?.daemon_event_id).toBe(
       "onboarding_research:conv-xyz",
     );
   });
 
-  test("returns skipped and persists nothing under the analytics opt-out", () => {
+  test("returns skipped and persists nothing under the analytics opt-out", async () => {
     setShareAnalytics(false);
-    expect(call(VALID_BODY)).toEqual({ skipped: true });
-    expect(pendingPayloads().length).toBe(0);
+    expect(await call(VALID_BODY)).toEqual({ skipped: true });
+    expect((await pendingPayloads()).length).toBe(0);
   });
 
-  test("persists regardless of the diagnostics opt-out (rides analytics only)", () => {
+  test("persists regardless of the diagnostics opt-out (rides analytics only)", async () => {
     setShareDiagnostics(false, "2000-01-01");
-    expect(call(VALID_BODY)).toEqual({ id: expect.any(String) });
-    expect(pendingPayloads().length).toBe(1);
+    expect(await call(VALID_BODY)).toEqual({ id: expect.any(String) });
+    expect((await pendingPayloads()).length).toBe(1);
   });
 
-  test("rejects a non-outbox (watermark) or unknown type", () => {
+  test("rejects a non-outbox (watermark) or unknown type", async () => {
     // `turn` is a real wire type but watermark-flushed, not outbox-backed, so it
     // has no ingest variant and a client can't inject it.
-    expect(() => call({ type: "turn", fields: {} })).toThrow(RouteError);
+    await expect(call({ type: "turn", fields: {} })).rejects.toThrow(
+      RouteError,
+    );
     // An unknown type is rejected the same way.
-    expect(() => call({ type: "not_a_type", fields: {} })).toThrow(RouteError);
-    expect(pendingPayloads().length).toBe(0);
+    await expect(call({ type: "not_a_type", fields: {} })).rejects.toThrow(
+      RouteError,
+    );
+    expect((await pendingPayloads()).length).toBe(0);
   });
 
-  test("accepts any outbox-backed type, e.g. config_setting", () => {
-    const result = call({
+  test("accepts any outbox-backed type, e.g. config_setting", async () => {
+    const result = await call({
       type: "config_setting",
       fields: { config_key: "voice.provider", config_value: "elevenlabs" },
     });
     expect(result).toEqual({ id: expect.any(String) });
 
-    const payloads = pendingOutboxPayloads<{ config_key: string }>(
+    const payloads = await pendingOutboxPayloads<{ config_key: string }>(
       "config_setting",
     );
     expect(payloads.length).toBe(1);
@@ -142,40 +149,42 @@ describe("telemetry-routes: ingest", () => {
     });
   });
 
-  test("rejects malformed fields (missing or mistyped) without persisting", () => {
+  test("rejects malformed fields (missing or mistyped) without persisting", async () => {
     // Missing the required derived counts.
     const {
       claim_count: _c,
       suggestion_count: _s,
       ...missingCounts
     } = VALID_FIELDS;
-    expect(() =>
+    await expect(
       call({ type: "onboarding_research", fields: missingCounts }),
-    ).toThrow(RouteError);
+    ).rejects.toThrow(RouteError);
 
     // Wrong type for a numeric field.
-    expect(() =>
+    await expect(
       call({
         type: "onboarding_research",
         fields: { ...VALID_FIELDS, claim_count: "one" },
       }),
-    ).toThrow(RouteError);
+    ).rejects.toThrow(RouteError);
 
-    expect(pendingPayloads().length).toBe(0);
+    expect((await pendingPayloads()).length).toBe(0);
   });
 
-  test("rejects a structurally invalid request body", () => {
-    expect(() => call({ type: "onboarding_research" })).toThrow(RouteError);
-    expect(() => call({ fields: VALID_FIELDS })).toThrow(RouteError);
-    expect(pendingPayloads().length).toBe(0);
+  test("rejects a structurally invalid request body", async () => {
+    await expect(call({ type: "onboarding_research" })).rejects.toThrow(
+      RouteError,
+    );
+    await expect(call({ fields: VALID_FIELDS })).rejects.toThrow(RouteError);
+    expect((await pendingPayloads()).length).toBe(0);
   });
 
-  test("strips unknown fields keys (typed schema, not a passthrough record)", () => {
-    call({
+  test("strips unknown fields keys (typed schema, not a passthrough record)", async () => {
+    await call({
       type: "onboarding_research",
       fields: { ...VALID_FIELDS, bogus_extra: "nope" },
     });
-    const payloads = pendingPayloads();
+    const payloads = await pendingPayloads();
     expect(payloads.length).toBe(1);
     expect(payloads[0]).not.toHaveProperty("bogus_extra");
   });

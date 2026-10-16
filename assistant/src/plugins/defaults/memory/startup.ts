@@ -49,6 +49,7 @@ import {
   enqueueMemoryJob,
   isMemoryEnabled,
 } from "../../../persistence/jobs-store.js";
+import { fireAndForgetTelemetry } from "../../../telemetry/fire-and-forget.js";
 import { recordWatchdogEvent } from "../../../telemetry/watchdog-events-store.js";
 import { resolveQdrantUrl } from "./embeddings.js";
 import { startMemoryJobsWorker } from "./jobs-worker.js";
@@ -101,18 +102,14 @@ export async function runMemoryStartup(config: AssistantConfig): Promise<void> {
         // `describeQdrantStartFailure`. Observational only: the outbox insert
         // can throw on a locked or half-migrated telemetry DB, and this path
         // must still reach the worker start below.
-        try {
+        fireAndForgetTelemetry(
           recordWatchdogEvent({
             checkName: "qdrant_start_failed",
             value: attempt,
             detail: { attempts: attempt, ...describeQdrantStartFailure(err) },
-          });
-        } catch (telemetryErr) {
-          log.warn(
-            { err: telemetryErr },
-            "Qdrant start failure could not be recorded to telemetry",
-          );
-        }
+          }),
+          "qdrant-start-failed",
+        );
       }
     }
   }

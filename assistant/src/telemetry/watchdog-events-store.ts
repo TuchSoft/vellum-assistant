@@ -22,7 +22,7 @@ export interface WatchdogEventRecord {
  */
 export function recordWatchdogEvent(
   record: WatchdogEventRecord,
-): { id: string; createdAt: number } | null {
+): Promise<{ id: string; createdAt: number } | null> {
   return recordTelemetryEvent("watchdog", {
     check_name: record.checkName,
     value: record.value ?? null,

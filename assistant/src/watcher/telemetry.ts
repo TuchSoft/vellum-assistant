@@ -25,6 +25,7 @@ import {
 } from "../persistence/checkpoints.js";
 import { recordLifecycleEvent } from "../persistence/lifecycle-events-store.js";
 import { getRawShareAnalytics } from "../platform/consent-cache.js";
+import { fireAndForgetTelemetry } from "../telemetry/fire-and-forget.js";
 import { getLogger } from "../util/logger.js";
 import { listWatchers } from "./watcher-store.js";
 
@@ -46,14 +47,14 @@ let warnedInventoryDbUnavailable = false;
  * an acceptable overcount for best-effort telemetry, where losing a full
  * day's inventory would not be.
  */
-export function recordWatcherInventoryIfDue(now: number): void {
+export async function recordWatcherInventoryIfDue(now: number): Promise<void> {
   try {
     const last = Number(getMemoryCheckpoint(INVENTORY_CHECKPOINT_KEY) ?? "0");
     if (now - last < WATCHER_INVENTORY_INTERVAL_MS) {
       return;
     }
     for (const watcher of listWatchers({ enabledOnly: true })) {
-      const recorded = recordLifecycleEvent(
+      const recorded = await recordLifecycleEvent(
         `watcher_enabled:${watcher.providerId}`,
       );
       if (recorded === null && getRawShareAnalytics() !== false) {
@@ -83,11 +84,10 @@ export function recordWatcherLlmProcessed(
   providerId: string,
   conversationId: string,
 ): void {
-  try {
+  fireAndForgetTelemetry(
     recordLifecycleEvent(
       `watcher_llm_processed:${providerId}:${conversationId}`,
-    );
-  } catch (err) {
-    log.warn({ err }, "Failed to record watcher LLM-processed telemetry");
-  }
+    ),
+    "watcher-llm-processed",
+  );
 }

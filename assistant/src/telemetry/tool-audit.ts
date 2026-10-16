@@ -41,6 +41,7 @@ import {
   type UsageAttributionSnapshot,
 } from "../usage/attribution.js";
 import { getLogger } from "../util/logger.js";
+import { fireAndForgetTelemetry } from "./fire-and-forget.js";
 import {
   recordToolInvocation,
   type ToolInvocationRecord,
@@ -200,16 +201,15 @@ function permissionEventName(
 function recordPermissionLifecycleEvent(
   eventName: string,
   entry: PermissionPromptTelemetry,
-  failureMessage: string,
+  _failureMessage: string,
 ): void {
-  try {
+  fireAndForgetTelemetry(
     recordLifecycleEvent(eventName, {
       ...entry,
       toolName: entry.toolName.slice(0, LIFECYCLE_TOOL_NAME_LIMIT),
-    });
-  } catch (err) {
-    log.warn({ err, eventName, toolName: entry.toolName }, failureMessage);
-  }
+    }),
+    "permission-lifecycle",
+  );
 }
 
 /** Record the consent-gated telemetry row for an interactive permission prompt. */

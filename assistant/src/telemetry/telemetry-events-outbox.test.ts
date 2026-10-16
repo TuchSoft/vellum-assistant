@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
-import { getTelemetryDb } from "../persistence/db-connection.js";
-import { telemetryEvents } from "../persistence/schema/index.js";
+import { getTelemetryAsyncDb } from "../persistence/db-facade.js";
 import { APP_VERSION } from "../version.js";
 import {
   resetOutboxTable,
@@ -37,7 +36,7 @@ function insert(
   createdAt: number,
   name = "lifecycle",
   conversationId?: string | null,
-): boolean {
+): Promise<boolean> {
   return insertTelemetryOutboxEvent({
     id,
     name,
@@ -47,27 +46,40 @@ function insert(
   });
 }
 
-function allIds(): string[] {
-  return queryTelemetryOutboxBatch("lifecycle", 10_000).map((r) => r.id);
+async function allIds(): Promise<string[]> {
+  return (await queryTelemetryOutboxBatch("lifecycle", 10_000)).map(
+    (r) => r.id,
+  );
+}
+
+/** Read rows through the async facade so the assertion is backend-portable. */
+function outboxRows() {
+  const db = getTelemetryAsyncDb();
+  if (!db) {
+    throw new Error("telemetry DB unavailable in test");
+  }
+  return db.all<{ id: string; conversationId: string | null }>(
+    'SELECT id, conversation_id AS "conversationId" FROM telemetry_events ORDER BY id',
+  );
 }
 
 describe("telemetry-events-outbox", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setShareAnalytics(true);
-    resetOutboxTable();
+    await resetOutboxTable();
   });
 
-  test("insert + query round-trips the wire payload", () => {
-    expect(insert("evt-1", 1000)).toBe(true);
+  test("insert + query round-trips the wire payload", async () => {
+    expect(await insert("evt-1", 1000)).toBe(true);
 
-    const rows = queryTelemetryOutboxBatch("lifecycle", 10);
+    const rows = await queryTelemetryOutboxBatch("lifecycle", 10);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ id: "evt-1", createdAt: 1000 });
     expect(JSON.parse(rows[0]!.payload)).toEqual(lifecycleEvent("evt-1", 1000));
   });
 
-  test("batch insert lands every row", () => {
-    const inserted = insertTelemetryOutboxEvents([
+  test("batch insert lands every row", async () => {
+    const inserted = await insertTelemetryOutboxEvents([
       {
         id: "evt-1",
         name: "lifecycle",
@@ -88,13 +100,13 @@ describe("telemetry-events-outbox", () => {
       },
     ]);
     expect(inserted).toBe(true);
-    expect(allIds()).toEqual(["evt-1", "evt-2", "evt-3"]);
+    expect(await allIds()).toEqual(["evt-1", "evt-2", "evt-3"]);
   });
 
-  test("batch insert is all-or-nothing on a mid-batch failure", () => {
-    insert("evt-dup", 500);
+  test("batch insert is all-or-nothing on a mid-batch failure", async () => {
+    await insert("evt-dup", 500);
 
-    expect(() =>
+    await expect(
       insertTelemetryOutboxEvents([
         {
           id: "evt-new-1",
@@ -115,16 +127,16 @@ describe("telemetry-events-outbox", () => {
           event: lifecycleEvent("evt-new-2", 3000),
         },
       ]),
-    ).toThrow();
+    ).rejects.toThrow();
 
     // The primary-key conflict aborts the whole statement — no partial batch.
-    expect(allIds()).toEqual(["evt-dup"]);
+    expect(await allIds()).toEqual(["evt-dup"]);
   });
 
-  test("batch insert returns false when the telemetry DB is unavailable", () => {
-    withTelemetryDbUnavailable(() => {
+  test("batch insert returns false when the telemetry DB is unavailable", async () => {
+    await withTelemetryDbUnavailable(async () => {
       expect(
-        insertTelemetryOutboxEvents([
+        await insertTelemetryOutboxEvents([
           {
             id: "evt-1",
             name: "lifecycle",
@@ -134,102 +146,94 @@ describe("telemetry-events-outbox", () => {
         ]),
       ).toBe(false);
     });
-    expect(allIds()).toEqual([]);
+    expect(await allIds()).toEqual([]);
   });
 
-  test("empty batch is a successful no-op", () => {
-    expect(insertTelemetryOutboxEvents([])).toBe(true);
-    expect(allIds()).toEqual([]);
+  test("empty batch is a successful no-op", async () => {
+    expect(await insertTelemetryOutboxEvents([])).toBe(true);
+    expect(await allIds()).toEqual([]);
   });
 
-  test("conversation_id persists in its dedicated column", () => {
-    insert("evt-conv", 1000, "lifecycle", "conv-1");
-    insert("evt-null", 2000, "lifecycle");
+  test("conversation_id persists in its dedicated column", async () => {
+    await insert("evt-conv", 1000, "lifecycle", "conv-1");
+    await insert("evt-null", 2000, "lifecycle");
 
-    const rows = getTelemetryDb()!
-      .select({
-        id: telemetryEvents.id,
-        conversationId: telemetryEvents.conversationId,
-      })
-      .from(telemetryEvents)
-      .all()
-      .sort((a, b) => a.id.localeCompare(b.id));
-    expect(rows).toEqual([
+    expect(await outboxRows()).toEqual([
       { id: "evt-conv", conversationId: "conv-1" },
       { id: "evt-null", conversationId: null },
     ]);
   });
 
-  test("orders by (created_at, id) with id as tiebreaker", () => {
-    insert("evt-b", 2000);
-    insert("evt-c", 1000);
-    insert("evt-a", 1000);
+  test("orders by (created_at, id) with id as tiebreaker", async () => {
+    await insert("evt-b", 2000);
+    await insert("evt-c", 1000);
+    await insert("evt-a", 1000);
 
-    expect(allIds()).toEqual(["evt-a", "evt-c", "evt-b"]);
+    expect(await allIds()).toEqual(["evt-a", "evt-c", "evt-b"]);
   });
 
-  test("honors the limit", () => {
-    insert("evt-1", 1000);
-    insert("evt-2", 2000);
-    insert("evt-3", 3000);
+  test("honors the limit", async () => {
+    await insert("evt-1", 1000);
+    await insert("evt-2", 2000);
+    await insert("evt-3", 3000);
 
-    const rows = queryTelemetryOutboxBatch("lifecycle", 2);
+    const rows = await queryTelemetryOutboxBatch("lifecycle", 2);
     expect(rows.map((r) => r.id)).toEqual(["evt-1", "evt-2"]);
   });
 
-  test("queries are isolated per event name", () => {
-    insert("evt-life", 1000, "lifecycle");
-    insert("evt-watch", 1000, "watchdog");
+  test("queries are isolated per event name", async () => {
+    await insert("evt-life", 1000, "lifecycle");
+    await insert("evt-watch", 1000, "watchdog");
 
-    expect(allIds()).toEqual(["evt-life"]);
-    expect(queryTelemetryOutboxBatch("watchdog", 10).map((r) => r.id)).toEqual([
-      "evt-watch",
-    ]);
-    expect(queryTelemetryOutboxBatch("onboarding", 10)).toEqual([]);
+    expect(await allIds()).toEqual(["evt-life"]);
+    expect(
+      (await queryTelemetryOutboxBatch("watchdog", 10)).map((r) => r.id),
+    ).toEqual(["evt-watch"]);
+    expect(await queryTelemetryOutboxBatch("onboarding", 10)).toEqual([]);
   });
 
-  test("deletes rows by id", () => {
-    insert("evt-1", 1000);
-    insert("evt-2", 2000);
-    insert("evt-3", 3000);
+  test("deletes rows by id", async () => {
+    await insert("evt-1", 1000);
+    await insert("evt-2", 2000);
+    await insert("evt-3", 3000);
 
-    deleteTelemetryOutboxEvents(["evt-1", "evt-3"]);
+    await deleteTelemetryOutboxEvents(["evt-1", "evt-3"]);
 
-    expect(allIds()).toEqual(["evt-2"]);
+    expect(await allIds()).toEqual(["evt-2"]);
   });
 
-  test("delete with an empty id list is a no-op", () => {
-    insert("evt-1", 1000);
+  test("delete with an empty id list is a no-op", async () => {
+    await insert("evt-1", 1000);
 
-    deleteTelemetryOutboxEvents([]);
+    await deleteTelemetryOutboxEvents([]);
 
-    expect(allIds()).toEqual(["evt-1"]);
+    expect(await allIds()).toEqual(["evt-1"]);
   });
 
-  test("deletes more than one chunk of ids", () => {
+  test("deletes more than one chunk of ids", async () => {
     const ids: string[] = [];
     for (let i = 0; i < 501; i++) {
       const id = `evt-${String(i).padStart(4, "0")}`;
       ids.push(id);
-      insert(id, i);
+      await insert(id, i);
     }
-    insert("evt-keep", 9999);
+    await insert("evt-keep", 9999);
 
-    deleteTelemetryOutboxEvents(ids);
+    await deleteTelemetryOutboxEvents(ids);
 
-    expect(allIds()).toEqual(["evt-keep"]);
+    expect(await allIds()).toEqual(["evt-keep"]);
   });
 
-  test("recordTelemetryEvent stamps the base fields", () => {
+  test("recordTelemetryEvent stamps the base fields", async () => {
     const fields = {
       check_name: "db_size",
       value: 42,
       detail: { table: "messages" },
     };
-    const recorded = recordTelemetryEvent("watchdog", fields);
+    const recorded = await recordTelemetryEvent("watchdog", fields);
     expect(recorded).not.toBeNull();
 
-    const rows = queryTelemetryOutboxBatch("watchdog", 10);
+    const rows = await queryTelemetryOutboxBatch("watchdog", 10);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.id).toBe(recorded!.id);
     expect(JSON.parse(rows[0]!.payload)).toEqual({
@@ -241,7 +245,7 @@ describe("telemetry-events-outbox", () => {
     });
   });
 
-  test("recordTelemetryEvent stamps win over base keys smuggled in via a widened fields value", () => {
+  test("recordTelemetryEvent stamps win over base keys smuggled in via a widened fields value", async () => {
     // A variable (not a literal) skips excess-property checking, so base
     // keys can reach the helper structurally. The stamps must still win.
     const widened = {
@@ -252,36 +256,30 @@ describe("telemetry-events-outbox", () => {
       recorded_at: 1,
       assistant_version: "0.0.0-spoof",
     };
-    const recorded = recordTelemetryEvent("watchdog", widened);
+    const recorded = await recordTelemetryEvent("watchdog", widened);
     expect(recorded).not.toBeNull();
 
     const payload = JSON.parse(
-      queryTelemetryOutboxBatch("watchdog", 10)[0]!.payload,
+      (await queryTelemetryOutboxBatch("watchdog", 10))[0]!.payload,
     ) as Record<string, unknown>;
     expect(payload.daemon_event_id).toBe(recorded!.id);
     expect(payload.recorded_at).toBe(recorded!.createdAt);
     expect(payload.assistant_version).toBe(APP_VERSION);
   });
 
-  test("recordTelemetryEvent persists conversation_id in its column", () => {
-    const withConv = recordTelemetryEvent(
+  test("recordTelemetryEvent persists conversation_id in its column", async () => {
+    const withConv = await recordTelemetryEvent(
       "watchdog",
       { check_name: "c1", value: null, detail: null },
       { conversationId: "conv-1" },
     );
-    const withoutConv = recordTelemetryEvent("watchdog", {
+    const withoutConv = await recordTelemetryEvent("watchdog", {
       check_name: "c2",
       value: null,
       detail: null,
     });
 
-    const rows = getTelemetryDb()!
-      .select({
-        id: telemetryEvents.id,
-        conversationId: telemetryEvents.conversationId,
-      })
-      .from(telemetryEvents)
-      .all();
+    const rows = await outboxRows();
     expect(rows).toHaveLength(2);
     expect(rows.find((r) => r.id === withConv!.id)!.conversationId).toBe(
       "conv-1",
@@ -291,85 +289,85 @@ describe("telemetry-events-outbox", () => {
     );
   });
 
-  test("recordTelemetryEvent honors a confirmed share_analytics opt-out", () => {
+  test("recordTelemetryEvent honors a confirmed share_analytics opt-out", async () => {
     setShareAnalytics(false);
     expect(
-      recordTelemetryEvent("watchdog", {
+      await recordTelemetryEvent("watchdog", {
         check_name: "c",
         value: null,
         detail: null,
       }),
     ).toBeNull();
-    expect(queryTelemetryOutboxBatch("watchdog", 10)).toEqual([]);
+    expect(await queryTelemetryOutboxBatch("watchdog", 10)).toEqual([]);
   });
 
-  test("recordTelemetryEvent records while consent is unknown (cold cache)", () => {
+  test("recordTelemetryEvent records while consent is unknown (cold cache)", async () => {
     setShareAnalytics("unknown");
-    const recorded = recordTelemetryEvent("watchdog", {
+    const recorded = await recordTelemetryEvent("watchdog", {
       check_name: "c",
       value: null,
       detail: null,
     });
     expect(recorded).not.toBeNull();
-    expect(queryTelemetryOutboxBatch("watchdog", 10).map((r) => r.id)).toEqual([
-      recorded!.id,
-    ]);
+    expect(
+      (await queryTelemetryOutboxBatch("watchdog", 10)).map((r) => r.id),
+    ).toEqual([recorded!.id]);
   });
 
-  test("recordTelemetryEvent returns null when the telemetry DB is unavailable", () => {
-    withTelemetryDbUnavailable(() => {
+  test("recordTelemetryEvent returns null when the telemetry DB is unavailable", async () => {
+    await withTelemetryDbUnavailable(async () => {
       expect(
-        recordTelemetryEvent("watchdog", {
+        await recordTelemetryEvent("watchdog", {
           check_name: "c",
           value: null,
           detail: null,
         }),
       ).toBeNull();
     });
-    expect(queryTelemetryOutboxBatch("watchdog", 10)).toEqual([]);
+    expect(await queryTelemetryOutboxBatch("watchdog", 10)).toEqual([]);
   });
 
-  test("prune deletes rows strictly older than the cutoff across every name and returns the count", () => {
-    insert("evt-old-life", 1000, "lifecycle");
-    insert("evt-old-watch", 1500, "watchdog");
-    insert("evt-at-cutoff", 2000, "lifecycle");
-    insert("evt-fresh", 3000, "lifecycle");
+  test("prune deletes rows strictly older than the cutoff across every name and returns the count", async () => {
+    await insert("evt-old-life", 1000, "lifecycle");
+    await insert("evt-old-watch", 1500, "watchdog");
+    await insert("evt-at-cutoff", 2000, "lifecycle");
+    await insert("evt-fresh", 3000, "lifecycle");
 
-    expect(deleteTelemetryOutboxEventsBefore(2000)).toBe(2);
+    expect(await deleteTelemetryOutboxEventsBefore(2000)).toBe(2);
 
     // Strictly-before semantics: the row AT the cutoff is retained.
-    expect(allIds()).toEqual(["evt-at-cutoff", "evt-fresh"]);
-    expect(queryTelemetryOutboxBatch("watchdog", 10)).toEqual([]);
+    expect(await allIds()).toEqual(["evt-at-cutoff", "evt-fresh"]);
+    expect(await queryTelemetryOutboxBatch("watchdog", 10)).toEqual([]);
   });
 
-  test("prune with nothing expired deletes nothing and returns 0", () => {
-    insert("evt-1", 5000);
+  test("prune with nothing expired deletes nothing and returns 0", async () => {
+    await insert("evt-1", 5000);
 
-    expect(deleteTelemetryOutboxEventsBefore(5000)).toBe(0);
+    expect(await deleteTelemetryOutboxEventsBefore(5000)).toBe(0);
 
-    expect(allIds()).toEqual(["evt-1"]);
+    expect(await allIds()).toEqual(["evt-1"]);
   });
 
-  test("prune returns 0 when the telemetry DB is unavailable", () => {
-    insert("evt-1", 1000);
+  test("prune returns 0 when the telemetry DB is unavailable", async () => {
+    await insert("evt-1", 1000);
 
-    withTelemetryDbUnavailable(() => {
-      expect(deleteTelemetryOutboxEventsBefore(2000)).toBe(0);
+    await withTelemetryDbUnavailable(async () => {
+      expect(await deleteTelemetryOutboxEventsBefore(2000)).toBe(0);
     });
 
-    expect(allIds()).toEqual(["evt-1"]);
+    expect(await allIds()).toEqual(["evt-1"]);
   });
 
-  test("discards all pending rows for one name only", () => {
-    insert("evt-1", 1000, "lifecycle");
-    insert("evt-2", 2000, "lifecycle");
-    insert("evt-other", 1000, "watchdog");
+  test("discards all pending rows for one name only", async () => {
+    await insert("evt-1", 1000, "lifecycle");
+    await insert("evt-2", 2000, "lifecycle");
+    await insert("evt-other", 1000, "watchdog");
 
-    discardPendingTelemetryOutboxEvents("lifecycle");
+    await discardPendingTelemetryOutboxEvents("lifecycle");
 
-    expect(allIds()).toEqual([]);
-    expect(queryTelemetryOutboxBatch("watchdog", 10).map((r) => r.id)).toEqual([
-      "evt-other",
-    ]);
+    expect(await allIds()).toEqual([]);
+    expect(
+      (await queryTelemetryOutboxBatch("watchdog", 10)).map((r) => r.id),
+    ).toEqual(["evt-other"]);
   });
 });

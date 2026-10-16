@@ -162,7 +162,7 @@ describe("createOomKillReporter", () => {
       readBootId: () => bootId,
       shareAnalytics: () => consent,
       cursorPath: join(dir, "cursor.json"),
-      record: (record) => {
+      record: async (record) => {
         if (!recordOk) {
           return null;
         }

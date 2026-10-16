@@ -30,13 +30,13 @@ function outboxRows(): RawOutboxRow[] {
 }
 
 describe("lifecycle-events-store", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setShareAnalytics(true);
-    resetOutboxTable();
+    await resetOutboxTable();
   });
 
-  test("record writes a telemetry_events outbox row carrying the wire payload", () => {
-    const event = recordLifecycleEvent("app_open");
+  test("record writes a telemetry_events outbox row carrying the wire payload", async () => {
+    const event = await recordLifecycleEvent("app_open");
     expect(event).not.toBeNull();
     expect(event!.eventName).toBe("app_open");
     expect(event!.createdAt).toBeGreaterThan(0);
@@ -58,8 +58,8 @@ describe("lifecycle-events-store", () => {
     });
   });
 
-  test("carries the optional attributes onto the wire payload", () => {
-    const event = recordLifecycleEvent("permission_prompt:bash", {
+  test("carries the optional attributes onto the wire payload", async () => {
+    const event = await recordLifecycleEvent("permission_prompt:bash", {
       toolName: "bash",
       riskLevel: "high",
       riskThreshold: "low",
@@ -87,10 +87,10 @@ describe("lifecycle-events-store", () => {
     });
   });
 
-  test("omits attributes that are unset or empty", () => {
+  test("omits attributes that are unset or empty", async () => {
     // The wire schema requires at least one character, and one failing field
     // makes the server drop the whole event.
-    const event = recordLifecycleEvent("permission_prompt:bash", {
+    const event = await recordLifecycleEvent("permission_prompt:bash", {
       toolName: "bash",
       riskLevel: "high",
       surface: "",
@@ -118,15 +118,15 @@ describe("lifecycle-events-store", () => {
     });
   });
 
-  test("returns null and writes no row when share_analytics is disabled", () => {
+  test("returns null and writes no row when share_analytics is disabled", async () => {
     setShareAnalytics(false);
-    expect(recordLifecycleEvent("app_open")).toBeNull();
+    expect(await recordLifecycleEvent("app_open")).toBeNull();
     expect(outboxRows()).toHaveLength(0);
   });
 
-  test("degrades when the telemetry database is unavailable", () => {
-    withTelemetryDbUnavailable(() => {
-      expect(recordLifecycleEvent("app_open")).toBeNull();
+  test("degrades when the telemetry database is unavailable", async () => {
+    await withTelemetryDbUnavailable(async () => {
+      expect(await recordLifecycleEvent("app_open")).toBeNull();
     });
 
     expect(outboxRows()).toHaveLength(0);

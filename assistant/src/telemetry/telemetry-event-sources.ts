@@ -79,7 +79,7 @@ export interface TelemetryEventSource {
     afterCreatedAt: number,
     afterId: string | undefined,
     limit: number,
-  ): TelemetryEventSourceBatch;
+  ): Promise<TelemetryEventSourceBatch>;
   /**
    * Delete-on-flush mode. Both operations are required together: `acknowledge`
    * deletes the rows behind {@link TelemetryEventSourceBatch.rowIds} after a
@@ -88,8 +88,8 @@ export interface TelemetryEventSource {
    * sources, so they never touch `flush_checkpoints`).
    */
   ack?: {
-    acknowledge(rowIds: string[]): void;
-    discardPending(): void;
+    acknowledge(rowIds: string[]): Promise<void>;
+    discardPending(): Promise<void>;
   };
 }
 
@@ -120,8 +120,8 @@ function simpleSource<Row extends { id: string; createdAt: number }>(
 ): TelemetryEventSource {
   return {
     id,
-    collect(afterCreatedAt, afterId, limit) {
-      const rows = query(afterCreatedAt, afterId, limit);
+    async collect(afterCreatedAt, afterId, limit) {
+      const rows = await query(afterCreatedAt, afterId, limit);
       const last = rows.length > 0 ? rows[rows.length - 1] : null;
       return {
         events: rows.map(toEvent),
@@ -140,12 +140,12 @@ function simpleSource<Row extends { id: string; createdAt: number }>(
  * head of the queue forever. Shared by {@link outboxSource} and the
  * orphan-drain source.
  */
-function collectOutboxName(
+async function collectOutboxName(
   name: string,
   limit: number,
   into: { events: TelemetryEvent[]; rowIds: string[]; corruptIds: string[] },
-): { queried: number } {
-  const rows = queryTelemetryOutboxBatch(name, limit);
+): Promise<{ queried: number }> {
+  const rows = await queryTelemetryOutboxBatch(name, limit);
   for (const row of rows) {
     let event: TelemetryEvent | null = null;
     try {
@@ -180,15 +180,15 @@ export function outboxSource(
 ): TelemetryEventSource {
   return {
     id: name,
-    collect(_afterCreatedAt, _afterId, limit) {
+    async collect(_afterCreatedAt, _afterId, limit) {
       const acc = {
         events: [] as TelemetryEvent[],
         rowIds: [] as string[],
         corruptIds: [] as string[],
       };
-      const { queried } = collectOutboxName(name, limit, acc);
+      const { queried } = await collectOutboxName(name, limit, acc);
       if (acc.corruptIds.length > 0) {
-        deleteTelemetryOutboxEvents(acc.corruptIds);
+        await deleteTelemetryOutboxEvents(acc.corruptIds);
       }
       return {
         events: acc.events,
@@ -222,24 +222,24 @@ export const ORPHAN_OUTBOX_DRAIN_SOURCE_ID = "__orphan_outbox_drain";
  */
 export function orphanOutboxDrainSource(): TelemetryEventSource {
   const known = new Set<string>(OUTBOX_TELEMETRY_EVENT_NAMES);
-  const orphanNames = (): string[] =>
-    queryDistinctOutboxEventNames().filter((name) => !known.has(name));
+  const orphanNames = async (): Promise<string[]> =>
+    (await queryDistinctOutboxEventNames()).filter((name) => !known.has(name));
   return {
     id: ORPHAN_OUTBOX_DRAIN_SOURCE_ID,
-    collect(_afterCreatedAt, _afterId, limit) {
+    async collect(_afterCreatedAt, _afterId, limit) {
       const acc = {
         events: [] as TelemetryEvent[],
         rowIds: [] as string[],
         corruptIds: [] as string[],
       };
-      for (const name of orphanNames()) {
+      for (const name of await orphanNames()) {
         if (acc.events.length >= limit) {
           break;
         }
-        collectOutboxName(name, limit - acc.events.length, acc);
+        await collectOutboxName(name, limit - acc.events.length, acc);
       }
       if (acc.corruptIds.length > 0) {
-        deleteTelemetryOutboxEvents(acc.corruptIds);
+        await deleteTelemetryOutboxEvents(acc.corruptIds);
       }
       return {
         events: acc.events,
@@ -252,9 +252,9 @@ export function orphanOutboxDrainSource(): TelemetryEventSource {
     },
     ack: {
       acknowledge: (rowIds) => deleteTelemetryOutboxEvents(rowIds),
-      discardPending: () => {
-        for (const name of orphanNames()) {
-          discardPendingTelemetryOutboxEvents(name);
+      discardPending: async () => {
+        for (const name of await orphanNames()) {
+          await discardPendingTelemetryOutboxEvents(name);
         }
       },
     },
@@ -320,8 +320,8 @@ const usageSource = simpleSource(
  */
 const turnSource: TelemetryEventSource = {
   id: "turns",
-  collect(afterCreatedAt, afterId, limit) {
-    const turnEvents = queryUnreportedTurnEvents(
+  async collect(afterCreatedAt, afterId, limit) {
+    const turnEvents = await queryUnreportedTurnEvents(
       afterCreatedAt,
       afterId,
       limit,

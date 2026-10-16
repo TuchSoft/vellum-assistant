@@ -163,6 +163,7 @@ import { getConfiguredProvider } from "../../providers/provider-send-message.js"
 import type { Provider } from "../../providers/types.js";
 import { checkIngressForSecrets } from "../../security/secret-ingress.js";
 import { getSubagentManager } from "../../subagent/index.js";
+import { fireAndForgetTelemetry } from "../../telemetry/fire-and-forget.js";
 import {
   isHeicFilename,
   normalizeImageBase64,
@@ -2270,7 +2271,7 @@ export async function handleSendMessage(
 
       if (isFirstOnboarding) {
         persistOnboardingArtifacts(body.onboarding!);
-        try {
+        fireAndForgetTelemetry(
           recordOnboardingEvent({
             screen: "complete",
             tools: body.onboarding!.tools,
@@ -2278,10 +2279,9 @@ export async function handleSendMessage(
             tone: body.onboarding!.tone,
             googleConnected: body.onboarding!.googleConnected,
             googleScopes: body.onboarding!.googleScopes,
-          });
-        } catch (err) {
-          log.warn({ err }, "Failed to record onboarding telemetry event");
-        }
+          }),
+          "onboarding_complete",
+        );
       }
 
       scheduleCannedReplyRelease({
@@ -2363,7 +2363,7 @@ export async function handleSendMessage(
 
   if (isFirstOnboarding) {
     persistOnboardingArtifacts(body.onboarding!);
-    try {
+    fireAndForgetTelemetry(
       recordOnboardingEvent({
         screen: "complete",
         tools: body.onboarding!.tools,
@@ -2371,10 +2371,9 @@ export async function handleSendMessage(
         tone: body.onboarding!.tone,
         googleConnected: body.onboarding!.googleConnected,
         googleScopes: body.onboarding!.googleScopes,
-      });
-    } catch (err) {
-      log.warn({ err }, "Failed to record onboarding telemetry event");
-    }
+      }),
+      "onboarding_complete",
+    );
   }
 
   // When the scan path rewrote the first message, prefer the rewritten

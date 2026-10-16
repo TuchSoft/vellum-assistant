@@ -29,6 +29,7 @@
  *    time. Marks record only static labels, never content.
  */
 
+import { fireAndForgetTelemetry } from "../telemetry/fire-and-forget.js";
 import { getLogger } from "../util/logger.js";
 
 const log = getLogger("slow-sync");
@@ -163,17 +164,18 @@ export function reportSlowSync(
   // of the loader leaks across the shared test process and breaks unrelated
   // files at eval time. Loading it only on the rare slow path keeps that chain
   // off the hot path's static graph; best-effort, so a failure is swallowed.
-  void import("../telemetry/watchdog-events-store.js")
-    .then(({ recordWatchdogEvent }) => {
-      recordWatchdogEvent({
-        checkName: SLOW_SYNC_CHECK_NAME,
-        value: elapsedMs,
-        detail: { label, ...detail },
-      });
-    })
-    .catch(() => {
-      // Telemetry is best-effort — never let it escape the timed section.
-    });
+  void import("../telemetry/watchdog-events-store.js").then(
+    ({ recordWatchdogEvent }) => {
+      fireAndForgetTelemetry(
+        recordWatchdogEvent({
+          checkName: SLOW_SYNC_CHECK_NAME,
+          value: elapsedMs,
+          detail: { label, ...detail },
+        }),
+        "slow-sync",
+      );
+    },
+  );
 }
 
 /**

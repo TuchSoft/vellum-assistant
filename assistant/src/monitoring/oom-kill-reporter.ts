@@ -15,7 +15,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { getRawShareAnalytics } from "../platform/consent-cache.js";
-import { recordWatchdogEvent } from "../telemetry/watchdog-events-store.js";
+import {
+  recordWatchdogEvent,
+  type WatchdogEventRecord,
+} from "../telemetry/watchdog-events-store.js";
 import { getContainerMemoryEvents } from "../util/cgroup-memory.js";
 import { getLogger } from "../util/logger.js";
 import { DAEMON_OOM_SCORE_ADJ } from "../util/oom-priority.js";
@@ -233,7 +236,10 @@ export interface OomKillReporterOptions {
   readBootId?: () => string | null;
   shareAnalytics?: () => boolean | null;
   cursorPath?: string;
-  record?: typeof recordWatchdogEvent;
+  record?: (record: WatchdogEventRecord) => Promise<{
+    id: string;
+    createdAt: number;
+  } | null>;
 }
 
 export interface OomKillReport {
@@ -287,12 +293,12 @@ export function createOomKillReporter(
     cursor: Cursor;
   } | null = null;
 
-  const queue = (
+  const queue = async (
     report: OomKillReport,
     sample: ResourceSample,
     daemonPid: number | null,
     cursor: Cursor,
-  ): boolean => {
+  ): Promise<boolean> => {
     if (shareAnalytics() === false) {
       writeCursor(cursorPath, cursor);
       return true;
@@ -319,7 +325,7 @@ export function createOomKillReporter(
       memory_limit_bytes: sample.memory?.limitBytes ?? null,
       memory_peak_bytes: sample.memory?.peakBytes ?? null,
     };
-    const queued = record({
+    const queued = await record({
       checkName: OOM_KILL_CHECK_NAME,
       value: detail.victim_count,
       detail,
@@ -336,12 +342,12 @@ export function createOomKillReporter(
     async check(sample, now, daemonPid) {
       if (pending) {
         if (
-          !queue(
+          !(await queue(
             pending.report,
             pending.sample,
             pending.daemonPid,
             pending.cursor,
-          )
+          ))
         ) {
           return null;
         }
@@ -374,7 +380,7 @@ export function createOomKillReporter(
           unnamed: sampleDelta,
         };
         const cursor = { bootId: currentBootId, lastTime: 0 };
-        if (!queue(report, sample, daemonPid, cursor)) {
+        if (!(await queue(report, sample, daemonPid, cursor))) {
           pending = { report, sample, daemonPid, cursor };
         }
         return report;
@@ -460,7 +466,7 @@ export function createOomKillReporter(
         }
         return null;
       }
-      if (!queue(report, sample, daemonPid, cursor)) {
+      if (!(await queue(report, sample, daemonPid, cursor))) {
         pending = { report, sample, daemonPid, cursor };
       }
       return report;

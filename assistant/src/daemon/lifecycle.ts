@@ -747,7 +747,7 @@ export async function runDaemon(): Promise<void> {
     log.warn({ err }, "Guardian principal cache warm failed — continuing"),
   );
 
-  startUsageTelemetryReporter();
+  await startUsageTelemetryReporter();
   startDiskPressureGuardForLifecycle();
   startResourcePressureGuardForLifecycle();
   startOrphanReaper();

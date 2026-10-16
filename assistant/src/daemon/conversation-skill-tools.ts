@@ -27,6 +27,7 @@ import { readInstallMeta, touchSkillLastUsed } from "../skills/install-meta.js";
 import { isSkillCompatibleWithPlatform } from "../skills/platform-compatibility.js";
 import { parseToolManifestFile } from "../skills/tool-manifest.js";
 import { computeSkillVersionHash } from "../skills/version-hash.js";
+import { fireAndForgetTelemetry } from "../telemetry/fire-and-forget.js";
 import { recordSkillLoadedEvent } from "../telemetry/skill-loaded-events-store.js";
 import {
   getTool,
@@ -196,12 +197,15 @@ function recordSkillLoadedTelemetry(
       return;
     }
     const catalogEntry = getCachedCatalogSync().find((s) => s.id === skill.id);
-    recordSkillLoadedEvent({
-      conversationId: telemetry.conversationId,
-      skillName: skill.id,
-      skillUpdatedAt: catalogEntry?.updatedAt,
-      ...toAttributionColumns(telemetry.attribution),
-    });
+    fireAndForgetTelemetry(
+      recordSkillLoadedEvent({
+        conversationId: telemetry.conversationId,
+        skillName: skill.id,
+        skillUpdatedAt: catalogEntry?.updatedAt,
+        ...toAttributionColumns(telemetry.attribution),
+      }),
+      "skill_loaded",
+    );
   } catch (err) {
     log.debug(
       { err, skillId: skill.id },

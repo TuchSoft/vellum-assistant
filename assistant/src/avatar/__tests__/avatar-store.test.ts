@@ -53,7 +53,13 @@ const recorded: Array<{ name: string; fields: Record<string, unknown> }> = [];
 /** When set, the outbox throws it instead of recording (an unmigrated DB). */
 let recordFailure: Error | null = null;
 mock.module("../../telemetry/telemetry-events-outbox.js", () => ({
-  recordTelemetryEvent: (name: string, fields: Record<string, unknown>) => {
+  // Async, mirroring the real recorder: the body still runs synchronously up
+  // to the first await, so the push is observed immediately, but a thrown
+  // failure becomes a rejection (what the real Promise-returning store does).
+  recordTelemetryEvent: async (
+    name: string,
+    fields: Record<string, unknown>,
+  ) => {
     if (recordFailure) {
       throw recordFailure;
     }

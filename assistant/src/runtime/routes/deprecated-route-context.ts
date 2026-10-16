@@ -22,6 +22,7 @@
 
 import { runConversationTurn } from "../../plugin-api/conversation-turn.js";
 import { publishEvent } from "../../plugin-api/publish-event.js";
+import { fireAndForgetTelemetry } from "../../telemetry/fire-and-forget.js";
 import { recordWatchdogEvent } from "../../telemetry/watchdog-events-store.js";
 
 /**
@@ -70,15 +71,18 @@ function recordDeprecatedUse(
     return;
   }
   reportedUses.add(key);
-  recordWatchdogEvent({
-    checkName: DEPRECATED_API_CHECK_NAME,
-    detail: {
-      surface: "custom_route",
-      api,
-      replacement,
-      route_path: routePath,
-    },
-  });
+  fireAndForgetTelemetry(
+    recordWatchdogEvent({
+      checkName: DEPRECATED_API_CHECK_NAME,
+      detail: {
+        surface: "custom_route",
+        api,
+        replacement,
+        route_path: routePath,
+      },
+    }),
+    "deprecated_api_use",
+  );
 }
 
 /**

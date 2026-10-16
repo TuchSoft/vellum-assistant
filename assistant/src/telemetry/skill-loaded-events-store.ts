@@ -21,8 +21,10 @@ export interface SkillLoadedEventRecord extends Partial<UsageAttributionColumns>
  * column so conversation deletion redacts pending rows via an indexed delete.
  * Consent gating and degraded-mode behavior are `recordTelemetryEvent`'s.
  */
-export function recordSkillLoadedEvent(record: SkillLoadedEventRecord): void {
-  recordTelemetryEvent(
+export function recordSkillLoadedEvent(
+  record: SkillLoadedEventRecord,
+): Promise<void> {
+  return recordTelemetryEvent(
     "skill_loaded",
     {
       skill_name: record.skillName,
@@ -35,5 +37,5 @@ export function recordSkillLoadedEvent(record: SkillLoadedEventRecord): void {
         null) as UsageAttributionProfileSource | null,
     },
     { conversationId: record.conversationId ?? null },
-  );
+  ).then(() => undefined);
 }

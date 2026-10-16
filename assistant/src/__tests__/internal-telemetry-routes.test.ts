@@ -40,16 +40,19 @@ import {
 import { ROUTES } from "../runtime/routes/internal-telemetry-routes.js";
 import type { RouteHandlerArgs } from "../runtime/routes/types.js";
 import {
-  discardPendingTelemetryOutboxEvents,
-  queryTelemetryOutboxBatch,
+  discardPendingTelemetryOutboxEvents as discardPending,
+  queryTelemetryOutboxBatch as queryOutbox,
 } from "../telemetry/telemetry-events-outbox.js";
 import type { AuthFallbackTelemetryEvent } from "../telemetry/types.js";
 
 await initializeDb();
 
-function pendingAuthFallbackPayloads(): AuthFallbackTelemetryEvent[] {
-  return queryTelemetryOutboxBatch("auth_fallback", 100).map(
-    (r) => JSON.parse(r.payload) as AuthFallbackTelemetryEvent,
+async function pendingAuthFallbackPayloads(): Promise<
+  AuthFallbackTelemetryEvent[]
+> {
+  const rows = await queryOutbox("auth_fallback", 100);
+  return rows.map(
+    (row) => JSON.parse(row.payload) as AuthFallbackTelemetryEvent,
   );
 }
 
@@ -57,11 +60,16 @@ const route = ROUTES.find(
   (r) => r.operationId === "internal_telemetry_auth_fallback",
 );
 
-function call(body: unknown) {
+async function call(
+  body: unknown,
+): Promise<{ recorded?: number; skipped?: boolean }> {
   if (!route) {
     throw new Error("route not found");
   }
-  return route.handler({ body } as RouteHandlerArgs);
+  return route.handler({ body } as RouteHandlerArgs) as Promise<{
+    recorded?: number;
+    skipped?: boolean;
+  }>;
 }
 
 const VALID_BODY = {
@@ -78,9 +86,9 @@ const VALID_BODY = {
 };
 
 describe("internal-telemetry-routes: auth-fallback", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     shareAnalytics = true;
-    discardPendingTelemetryOutboxEvents("auth_fallback");
+    await discardPending("auth_fallback");
   });
 
   test("route is locked to service-token callers (GATEWAY_PRINCIPALS + internal.write)", () => {
@@ -91,11 +99,11 @@ describe("internal-telemetry-routes: auth-fallback", () => {
     expect(route?.policy?.requiredScopes).toEqual(["internal.write"]);
   });
 
-  test("valid batch is persisted to the outbox as a wire auth_fallback event", () => {
-    const result = call(VALID_BODY);
+  test("valid batch is persisted to the outbox as a wire auth_fallback event", async () => {
+    const result = await call(VALID_BODY);
     expect(result).toEqual({ recorded: 1 });
 
-    const payloads = pendingAuthFallbackPayloads();
+    const payloads = await pendingAuthFallbackPayloads();
     expect(payloads.length).toBe(1);
     expect(payloads[0]).toMatchObject({
       type: "auth_fallback",
@@ -108,52 +116,62 @@ describe("internal-telemetry-routes: auth-fallback", () => {
     });
   });
 
-  test("returns skipped and persists nothing under a confirmed opt-out", () => {
+  test("returns skipped and persists nothing under a confirmed opt-out", async () => {
     shareAnalytics = false;
-    expect(call(VALID_BODY)).toEqual({ skipped: true });
-    expect(pendingAuthFallbackPayloads().length).toBe(0);
+    expect(await call(VALID_BODY)).toEqual({ skipped: true });
+    expect((await pendingAuthFallbackPayloads()).length).toBe(0);
   });
 
-  test("records the batch while consent is unknown (a cold cache never drops data)", () => {
+  test("records the batch while consent is unknown (a cold cache never drops data)", async () => {
     shareAnalytics = "unknown";
-    expect(call(VALID_BODY)).toEqual({ recorded: 1 });
-    expect(pendingAuthFallbackPayloads().length).toBe(1);
+    expect(await call(VALID_BODY)).toEqual({ recorded: 1 });
+    expect((await pendingAuthFallbackPayloads()).length).toBe(1);
   });
 
-  test("throws 503 when consent is on but the telemetry DB is unavailable, so the gateway re-queues", () => {
-    const spy = spyOn(dbConnection, "getTelemetryDb").mockReturnValue(null);
+  test("throws 503 when consent is on but the telemetry DB is unavailable, so the gateway re-queues", async () => {
+    const spySqlite = spyOn(dbConnection, "getTelemetrySqlite").mockReturnValue(
+      null,
+    );
+    const spyDb = spyOn(dbConnection, "getTelemetryDb").mockReturnValue(null);
     try {
-      expect(() => call(VALID_BODY)).toThrow(ServiceUnavailableError);
+      await expect(call(VALID_BODY)).rejects.toThrow(ServiceUnavailableError);
     } finally {
-      spy.mockRestore();
+      spySqlite.mockRestore();
+      spyDb.mockRestore();
     }
-    expect(pendingAuthFallbackPayloads().length).toBe(0);
+    expect((await pendingAuthFallbackPayloads()).length).toBe(0);
 
     // Once the DB is back the same batch records normally.
-    expect(call(VALID_BODY)).toEqual({ recorded: 1 });
+    expect(await call(VALID_BODY)).toEqual({ recorded: 1 });
   });
 
-  test("throws 503 (not skipped) when consent is unknown and the telemetry DB is unavailable", () => {
+  test("throws 503 (not skipped) when consent is unknown and the telemetry DB is unavailable", async () => {
     shareAnalytics = "unknown";
-    const spy = spyOn(dbConnection, "getTelemetryDb").mockReturnValue(null);
+    const spySqlite = spyOn(dbConnection, "getTelemetrySqlite").mockReturnValue(
+      null,
+    );
+    const spyDb = spyOn(dbConnection, "getTelemetryDb").mockReturnValue(null);
     try {
-      expect(() => call(VALID_BODY)).toThrow(ServiceUnavailableError);
+      await expect(call(VALID_BODY)).rejects.toThrow(ServiceUnavailableError);
     } finally {
-      spy.mockRestore();
+      spySqlite.mockRestore();
+      spyDb.mockRestore();
     }
-    expect(pendingAuthFallbackPayloads().length).toBe(0);
+    expect((await pendingAuthFallbackPayloads()).length).toBe(0);
   });
 
-  test("rejects a malformed body without persisting", () => {
-    expect(() => call({ window_start: 1000 })).toThrow(RouteError);
-    expect(() => call({ ...VALID_BODY, counts: [] })).toThrow(RouteError);
-    expect(() =>
+  test("rejects a malformed body without persisting", async () => {
+    await expect(call({ window_start: 1000 })).rejects.toThrow(RouteError);
+    await expect(call({ ...VALID_BODY, counts: [] })).rejects.toThrow(
+      RouteError,
+    );
+    await expect(
       call({
         ...VALID_BODY,
         counts: [{ guard: "edge", path: "/x", failure_kind: "y", count: 0 }],
       }),
-    ).toThrow(RouteError);
-    expect(pendingAuthFallbackPayloads().length).toBe(0);
+    ).rejects.toThrow(RouteError);
+    expect((await pendingAuthFallbackPayloads()).length).toBe(0);
   });
 });
 

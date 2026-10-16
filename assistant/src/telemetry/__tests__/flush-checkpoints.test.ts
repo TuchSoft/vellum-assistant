@@ -11,7 +11,7 @@ import {
 
 await initializeDb();
 
-function clearCheckpoints(): void {
+async function clearCheckpoints(): Promise<void> {
   const db = getTelemetryDb();
   if (!db) {
     throw new Error("telemetry DB unavailable in test");
@@ -20,37 +20,46 @@ function clearCheckpoints(): void {
 }
 
 describe("flush-checkpoints", () => {
-  beforeEach(() => {
-    clearCheckpoints();
+  beforeEach(async () => {
+    await clearCheckpoints();
   });
 
-  test("store is available once the telemetry DB is open", () => {
-    expect(isFlushCheckpointStoreAvailable()).toBe(true);
+  test("store is available once the telemetry DB is open", async () => {
+    expect(await isFlushCheckpointStoreAvailable()).toBe(true);
   });
 
-  test("get returns null for an absent key", () => {
-    expect(getFlushCheckpoint("telemetry:usage:last_reported_at")).toBeNull();
+  test("get returns null for an absent key", async () => {
+    expect(await getFlushCheckpoint("telemetry:usage:last_reported_at")).toBe(
+      null,
+    );
   });
 
-  test("set + get round-trips", () => {
-    setFlushCheckpoint("telemetry:usage:last_reported_at", "1700000000000");
-    expect(getFlushCheckpoint("telemetry:usage:last_reported_at")).toBe(
+  test("set + get round-trips", async () => {
+    await setFlushCheckpoint(
+      "telemetry:usage:last_reported_at",
+      "1700000000000",
+    );
+    expect(await getFlushCheckpoint("telemetry:usage:last_reported_at")).toBe(
       "1700000000000",
     );
   });
 
-  test("set overwrites an existing value", () => {
-    setFlushCheckpoint("telemetry:turns:last_reported_id", "row-1");
-    setFlushCheckpoint("telemetry:turns:last_reported_id", "row-2");
-    expect(getFlushCheckpoint("telemetry:turns:last_reported_id")).toBe(
+  test("set overwrites an existing value", async () => {
+    await setFlushCheckpoint("telemetry:turns:last_reported_id", "row-1");
+    await setFlushCheckpoint("telemetry:turns:last_reported_id", "row-2");
+    expect(await getFlushCheckpoint("telemetry:turns:last_reported_id")).toBe(
       "row-2",
     );
   });
 
-  test("keys are independent", () => {
-    setFlushCheckpoint("telemetry:usage:last_reported_at", "1");
-    setFlushCheckpoint("telemetry:turns:last_reported_at", "2");
-    expect(getFlushCheckpoint("telemetry:usage:last_reported_at")).toBe("1");
-    expect(getFlushCheckpoint("telemetry:turns:last_reported_at")).toBe("2");
+  test("keys are independent", async () => {
+    await setFlushCheckpoint("telemetry:usage:last_reported_at", "1");
+    await setFlushCheckpoint("telemetry:turns:last_reported_at", "2");
+    expect(await getFlushCheckpoint("telemetry:usage:last_reported_at")).toBe(
+      "1",
+    );
+    expect(await getFlushCheckpoint("telemetry:turns:last_reported_at")).toBe(
+      "2",
+    );
   });
 });

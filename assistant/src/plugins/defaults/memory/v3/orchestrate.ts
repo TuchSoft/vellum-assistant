@@ -77,6 +77,7 @@ import {
   recordLatencySubSpan,
   timeLatencySubSpan,
 } from "../../../../daemon/turn-latency-sub-spans.js";
+import { fireAndForgetTelemetry } from "../../../../telemetry/fire-and-forget.js";
 import { recordWatchdogEvent } from "../../../../telemetry/watchdog-events-store.js";
 import { getLogger } from "../logging.js";
 import { injectionUnits } from "./capabilities.js";
@@ -136,16 +137,14 @@ export const MEMORY_V3_INJECTION_GATE_CHECK_NAME = "memory_v3_injection_gate";
  *  reported explicitly rather than left for the platform to re-derive from a
  *  hardcoded list that would silently miscount the next reason we add. */
 function recordGateRun(detail: Record<string, unknown>): void {
-  try {
+  fireAndForgetTelemetry(
     recordWatchdogEvent({
       checkName: MEMORY_V3_INJECTION_GATE_CHECK_NAME,
       value: 1,
       detail,
-    });
-  } catch {
-    // recordWatchdogEvent already no-ops on opt-out and a missing telemetry
-    // DB; anything past that is not worth failing the turn over.
-  }
+    }),
+    "memory-v3-gate",
+  );
 }
 
 /** `check_name` of the `watchdog` telemetry event recorded once per orchestrated
@@ -166,15 +165,14 @@ function recordSelectionRun(
   value: number,
   detail: Record<string, unknown>,
 ): void {
-  try {
+  fireAndForgetTelemetry(
     recordWatchdogEvent({
       checkName: MEMORY_V3_SELECTION_CHECK_NAME,
       value,
       detail,
-    });
-  } catch {
-    // Same contract as recordGateRun: telemetry must never cost a turn.
-  }
+    }),
+    "memory-v3-selection",
+  );
 }
 
 /** Default number of BM25 needle articles to fold into the pool. */

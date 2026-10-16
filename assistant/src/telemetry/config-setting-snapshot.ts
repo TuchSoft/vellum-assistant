@@ -72,7 +72,9 @@ const lastRecorded = new Map<string, string>();
  * value changes. Never throws — a storage failure is logged and the key
  * retries on the next invocation.
  */
-export function recordConfigSettingSnapshot(config: AssistantConfig): void {
+export async function recordConfigSettingSnapshot(
+  config: AssistantConfig,
+): Promise<void> {
   const consent = getRawShareAnalytics();
   if (consent === "unknown") {
     return;
@@ -86,7 +88,7 @@ export function recordConfigSettingSnapshot(config: AssistantConfig): void {
       continue;
     }
     try {
-      if (recordConfigSettingEvent({ configKey, configValue })) {
+      if (await recordConfigSettingEvent({ configKey, configValue })) {
         lastRecorded.set(configKey, configValue);
       }
     } catch (err) {
@@ -109,13 +111,13 @@ let bootRetryTimer: ReturnType<typeof setTimeout> | null = null;
 const BOOT_RETRY_INTERVAL_MS = 60_000;
 
 function recordSnapshotFromConfig(): void {
-  try {
-    // `getConfigReadOnly()` re-reads config.json on change (capturing live
-    // edits) and never writes to disk — safe for the monitor process.
-    recordConfigSettingSnapshot(getConfigReadOnly());
-  } catch (err) {
-    log.warn({ err }, "Config-setting snapshot failed (non-fatal)");
-  }
+  // Fire-and-forget: the snapshot is best-effort telemetry, and the timer
+  // callback cannot await. `recordConfigSettingSnapshot` logs its own storage
+  // failures and retries on the next tick; the extra `.catch` guards the
+  // unexpected so a rejection never becomes an unhandled one.
+  void recordConfigSettingSnapshot(getConfigReadOnly()).catch((err) =>
+    log.warn({ err }, "Config-setting snapshot failed (non-fatal)"),
+  );
 }
 
 function recordBootSnapshotOnceConsentKnown(): void {

@@ -29,7 +29,9 @@ mock.module("../../persistence/checkpoints.js", () => ({
 }));
 
 mock.module("../../persistence/lifecycle-events-store.js", () => ({
-  recordLifecycleEvent: (name: string) => recordImpl(name),
+  // Async, mirroring the real store: a synchronous throw in the fake becomes a
+  // rejection, exactly as the real Promise-returning store behaves.
+  recordLifecycleEvent: async (name: string) => recordImpl(name),
 }));
 
 mock.module("../../platform/consent-cache.js", () => ({
@@ -60,14 +62,14 @@ beforeEach(() => {
 });
 
 describe("recordWatcherInventoryIfDue", () => {
-  test("records one event per enabled watcher when due", () => {
+  test("records one event per enabled watcher when due", async () => {
     fakeEnabledWatchers = [
       { providerId: "gmail" },
       { providerId: "linear" },
       { providerId: "gmail" },
     ];
 
-    recordWatcherInventoryIfDue(BASE);
+    await recordWatcherInventoryIfDue(BASE);
 
     expect(recordedEvents).toEqual([
       "watcher_enabled:gmail",
@@ -77,102 +79,107 @@ describe("recordWatcherInventoryIfDue", () => {
     expect(checkpoints.get(INVENTORY_KEY)).toBe(String(BASE));
   });
 
-  test("skips when the last inventory is within the interval", () => {
+  test("skips when the last inventory is within the interval", async () => {
     fakeEnabledWatchers = [{ providerId: "gmail" }];
     checkpoints.set(INVENTORY_KEY, String(BASE));
 
-    recordWatcherInventoryIfDue(BASE + WATCHER_INVENTORY_INTERVAL_MS - 1);
+    await recordWatcherInventoryIfDue(BASE + WATCHER_INVENTORY_INTERVAL_MS - 1);
 
     expect(recordedEvents).toEqual([]);
     expect(checkpoints.get(INVENTORY_KEY)).toBe(String(BASE));
   });
 
-  test("records again once the interval has elapsed", () => {
+  test("records again once the interval has elapsed", async () => {
     fakeEnabledWatchers = [{ providerId: "github" }];
     checkpoints.set(INVENTORY_KEY, String(BASE));
 
-    recordWatcherInventoryIfDue(BASE + WATCHER_INVENTORY_INTERVAL_MS);
+    await recordWatcherInventoryIfDue(BASE + WATCHER_INVENTORY_INTERVAL_MS);
 
     expect(recordedEvents).toEqual(["watcher_enabled:github"]);
   });
 
-  test("advances the checkpoint even when no watchers are enabled", () => {
-    recordWatcherInventoryIfDue(BASE + 1);
+  test("advances the checkpoint even when no watchers are enabled", async () => {
+    await recordWatcherInventoryIfDue(BASE + 1);
 
     expect(recordedEvents).toEqual([]);
     expect(checkpoints.get(INVENTORY_KEY)).toBe(String(BASE + 1));
   });
 
-  test("swallows storage errors and leaves the checkpoint for retry", () => {
+  test("swallows storage errors and leaves the checkpoint for retry", async () => {
     fakeEnabledWatchers = [{ providerId: "gmail" }];
     recordImpl = () => {
       throw new Error("db unavailable");
     };
 
-    expect(() => recordWatcherInventoryIfDue(BASE + 2)).not.toThrow();
+    await expect(
+      recordWatcherInventoryIfDue(BASE + 2),
+    ).resolves.toBeUndefined();
     // Checkpoint must not advance on failure: the next tick retries
     // instead of skipping a day of inventory.
     expect(checkpoints.get(INVENTORY_KEY)).toBeUndefined();
 
     recordImpl = recordAndReturnEvent;
-    recordWatcherInventoryIfDue(BASE + 3);
+    await recordWatcherInventoryIfDue(BASE + 3);
 
     expect(recordedEvents).toEqual(["watcher_enabled:gmail"]);
     expect(checkpoints.get(INVENTORY_KEY)).toBe(String(BASE + 3));
   });
 
-  test("leaves the checkpoint for retry when the telemetry DB is unavailable with consent on", () => {
+  test("leaves the checkpoint for retry when the telemetry DB is unavailable with consent on", async () => {
     fakeEnabledWatchers = [{ providerId: "gmail" }];
     // Degraded mode: consent granted but the store reports nothing recorded.
     recordImpl = () => null;
 
-    recordWatcherInventoryIfDue(BASE + 2);
+    await recordWatcherInventoryIfDue(BASE + 2);
     expect(checkpoints.get(INVENTORY_KEY)).toBeUndefined();
 
     recordImpl = recordAndReturnEvent;
-    recordWatcherInventoryIfDue(BASE + 3);
+    await recordWatcherInventoryIfDue(BASE + 3);
 
     expect(recordedEvents).toEqual(["watcher_enabled:gmail"]);
     expect(checkpoints.get(INVENTORY_KEY)).toBe(String(BASE + 3));
   });
 
-  test("advances the checkpoint when consent is a confirmed opt-out", () => {
+  test("advances the checkpoint when consent is a confirmed opt-out", async () => {
     fakeEnabledWatchers = [{ providerId: "gmail" }];
     shareAnalytics = false;
     // Confirmed-opt-out skip: the store records nothing and returns null.
     recordImpl = () => null;
 
-    recordWatcherInventoryIfDue(BASE + 4);
+    await recordWatcherInventoryIfDue(BASE + 4);
 
     expect(recordedEvents).toEqual([]);
     expect(checkpoints.get(INVENTORY_KEY)).toBe(String(BASE + 4));
   });
 
-  test("leaves the checkpoint for retry when the store returns null while consent is unknown", () => {
+  test("leaves the checkpoint for retry when the store returns null while consent is unknown", async () => {
     fakeEnabledWatchers = [{ providerId: "gmail" }];
     shareAnalytics = "unknown";
     // Unknown consent never drops at record time, so a null here means the
     // telemetry DB is unavailable — retry, don't skip a day.
     recordImpl = () => null;
 
-    recordWatcherInventoryIfDue(BASE + 4);
+    await recordWatcherInventoryIfDue(BASE + 4);
 
     expect(checkpoints.get(INVENTORY_KEY)).toBeUndefined();
   });
 });
 
 describe("recordWatcherLlmProcessed", () => {
-  test("embeds provider and conversation id in the event name", () => {
+  test("embeds provider and conversation id in the event name", async () => {
     recordWatcherLlmProcessed("linear", "conv-123");
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(recordedEvents).toEqual(["watcher_llm_processed:linear:conv-123"]);
   });
 
-  test("swallows storage errors", () => {
+  test("swallows storage errors", async () => {
     recordImpl = () => {
       throw new Error("db unavailable");
     };
 
     expect(() => recordWatcherLlmProcessed("gmail", "conv-456")).not.toThrow();
+    // The rejection is handled by the fire-and-forget wrapper; let it settle.
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 });

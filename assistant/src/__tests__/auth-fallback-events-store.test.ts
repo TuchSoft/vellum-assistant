@@ -29,21 +29,23 @@ const SAMPLE: AuthFallbackCount[] = [
 ];
 
 describe("auth-fallback-events-store", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setShareAnalytics(true);
-    resetOutboxTable();
+    await resetOutboxTable();
   });
 
-  test("records one outbox row per count entry with the full wire payload", () => {
-    const recorded = recordAuthFallbackCounts(1000, 2000, SAMPLE);
+  test("records one outbox row per count entry with the full wire payload", async () => {
+    const recorded = await recordAuthFallbackCounts(1000, 2000, SAMPLE);
     expect(recorded).toBe(2);
 
-    const rows = pendingOutboxRows("auth_fallback");
+    const rows = await pendingOutboxRows("auth_fallback");
     expect(rows.length).toBe(2);
     const payloads = rows.map(
-      (r) => JSON.parse(r.payload) as AuthFallbackTelemetryEvent,
+      (row) => JSON.parse(row.payload) as AuthFallbackTelemetryEvent,
     );
-    const byGuard = Object.fromEntries(payloads.map((p) => [p.guard, p]));
+    const byGuard = Object.fromEntries(
+      payloads.map((payload) => [payload.guard, payload]),
+    );
     expect(byGuard["edge"]).toEqual({
       type: "auth_fallback",
       daemon_event_id: expect.any(String),
@@ -63,37 +65,38 @@ describe("auth-fallback-events-store", () => {
     });
     // The wire daemon_event_id matches the outbox row id, and recorded_at
     // matches the row's created_at (record-time stamping).
-    rows.forEach((row, i) => {
-      expect(payloads[i].daemon_event_id).toBe(row.id);
-      expect(payloads[i].recorded_at).toBe(row.createdAt);
+    rows.forEach((row, idx) => {
+      expect(payloads[idx].daemon_event_id).toBe(row.id);
+      expect(payloads[idx].recorded_at).toBe(row.createdAt);
     });
   });
 
-  test("honors a confirmed share_analytics opt-out (records nothing)", () => {
+  test("honors a confirmed share_analytics opt-out (records nothing)", async () => {
     setShareAnalytics(false);
-    const recorded = recordAuthFallbackCounts(1000, 2000, SAMPLE);
+    const recorded = await recordAuthFallbackCounts(1000, 2000, SAMPLE);
     expect(recorded).toBe(0);
-    expect(pendingOutboxRows("auth_fallback").length).toBe(0);
+    expect((await pendingOutboxRows("auth_fallback")).length).toBe(0);
   });
 
-  test("records while consent is unknown (a cold cache never drops data)", () => {
+  test("records while consent is unknown (a cold cache never drops data)", async () => {
     setShareAnalytics("unknown");
-    const recorded = recordAuthFallbackCounts(1000, 2000, SAMPLE);
+    const recorded = await recordAuthFallbackCounts(1000, 2000, SAMPLE);
     expect(recorded).toBe(2);
-    expect(pendingOutboxRows("auth_fallback").length).toBe(2);
+    expect((await pendingOutboxRows("auth_fallback")).length).toBe(2);
   });
 
-  test("empty counts batch is a no-op", () => {
-    expect(recordAuthFallbackCounts(1000, 2000, [])).toBe(0);
-    expect(pendingOutboxRows("auth_fallback").length).toBe(0);
+  test("empty counts batch is a no-op", async () => {
+    expect(await recordAuthFallbackCounts(1000, 2000, [])).toBe(0);
+    expect((await pendingOutboxRows("auth_fallback")).length).toBe(0);
   });
 
-  test("records all-or-nothing: db unavailable returns 0 with no rows", () => {
-    withTelemetryDbUnavailable(() => {
-      expect(recordAuthFallbackCounts(1000, 2000, SAMPLE)).toBe(0);
+  test("records all-or-nothing: db unavailable returns 0 with no rows", async () => {
+    await withTelemetryDbUnavailable(async () => {
+      const result = await recordAuthFallbackCounts(1000, 2000, SAMPLE);
+      expect(result).toBe(0);
     });
     // No partial batch: the gateway's `recorded === 0` retry contract means
     // any committed remnant would later double-count.
-    expect(pendingOutboxRows("auth_fallback").length).toBe(0);
+    expect((await pendingOutboxRows("auth_fallback")).length).toBe(0);
   });
 });

@@ -32,6 +32,7 @@ import {
 } from "@vellumai/avatar-manifest";
 
 import { publishAvatarChanged } from "../runtime/sync/resource-sync-events.js";
+import { fireAndForgetTelemetry } from "../telemetry/fire-and-forget.js";
 import { recordTelemetryEvent } from "../telemetry/telemetry-events-outbox.js";
 import { getLogger } from "../util/logger.js";
 import { getAvatarDir, getAvatarImagePath } from "../util/platform.js";
@@ -111,14 +112,13 @@ function announceChange(
   if (isSameAvatar(previous, next, imageBytesChanged)) {
     return;
   }
-  try {
+  fireAndForgetTelemetry(
     recordTelemetryEvent(
       "avatar_changed",
       avatarChangedFields(action, previous, next, options?.clientOs),
-    );
-  } catch (err) {
-    log.warn({ err, action }, "Failed to record the avatar_changed event");
-  }
+    ),
+    "avatar-changed",
+  );
 }
 
 /**

@@ -80,6 +80,7 @@ import {
 import { resolveUserSlug } from "../../../prompts/persona-resolver.js";
 import type { SystemPromptPersonaOverride } from "../../../prompts/system-prompt.js";
 import { wakeAgentForOpportunity } from "../../../runtime/agent-wake.js";
+import { fireAndForgetTelemetry } from "../../../telemetry/fire-and-forget.js";
 import { recordWatchdogEvent } from "../../../telemetry/watchdog-events-store.js";
 import { findMostRecentRetrospectiveFor } from "./find-most-recent-retrospective-for.js";
 import { getLogger } from "./logging.js";
@@ -203,7 +204,7 @@ export async function memoryRetrospectiveJob(
     outcome: string,
     detail?: { reason?: string; noFindings?: boolean },
   ): void => {
-    try {
+    fireAndForgetTelemetry(
       recordWatchdogEvent({
         checkName: MEMORY_RETROSPECTIVE_RUN_CHECK_NAME,
         value: 1,
@@ -214,11 +215,9 @@ export async function memoryRetrospectiveJob(
             ? { noFindings: detail.noFindings }
             : {}),
         },
-      });
-    } catch {
-      // recordWatchdogEvent already no-ops on opt-out and a missing
-      // telemetry DB; anything past that is not worth surfacing here.
-    }
+      }),
+      "memory-retrospective-run",
+    );
   };
 
   let outcome: MemoryRetrospectiveOutcome;

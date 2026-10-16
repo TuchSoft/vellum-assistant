@@ -29,29 +29,31 @@ export function recordAuthFallbackCounts(
   windowStart: number,
   windowEnd: number,
   counts: AuthFallbackCount[],
-): number {
-  if (getRawShareAnalytics() === false) {
-    return 0;
-  }
-  if (counts.length === 0) {
-    return 0;
-  }
-  const createdAt = Date.now();
-  const rows = counts.map((c) => {
-    const id = uuid();
-    const event: AuthFallbackTelemetryEvent = {
-      type: "auth_fallback",
-      daemon_event_id: id,
-      recorded_at: createdAt,
-      guard: c.guard,
-      path: c.path,
-      failure_kind: c.failureKind,
-      count: c.count,
-      window_start: windowStart,
-      window_end: windowEnd,
-      assistant_version: APP_VERSION,
-    };
-    return { id, name: "auth_fallback", createdAt, event };
-  });
-  return insertTelemetryOutboxEvents(rows) ? rows.length : 0;
+): Promise<number> {
+  return (async () => {
+    if (getRawShareAnalytics() === false) {
+      return 0;
+    }
+    if (counts.length === 0) {
+      return 0;
+    }
+    const createdAt = Date.now();
+    const rows = counts.map((c) => {
+      const id = uuid();
+      const event: AuthFallbackTelemetryEvent = {
+        type: "auth_fallback",
+        daemon_event_id: id,
+        recorded_at: createdAt,
+        guard: c.guard,
+        path: c.path,
+        failure_kind: c.failureKind,
+        count: c.count,
+        window_start: windowStart,
+        window_end: windowEnd,
+        assistant_version: APP_VERSION,
+      };
+      return { id, name: "auth_fallback", createdAt, event };
+    });
+    return (await insertTelemetryOutboxEvents(rows)) ? rows.length : 0;
+  })();
 }

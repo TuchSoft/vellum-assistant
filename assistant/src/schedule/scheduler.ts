@@ -28,6 +28,7 @@ import {
 import { publishConversationListChanged } from "../runtime/sync/resource-sync-events.js";
 import { runSequencesOnce } from "../sequence/engine.js";
 import { getSubagentManager } from "../subagent/index.js";
+import { fireAndForgetTelemetry } from "../telemetry/fire-and-forget.js";
 import type { TurnFailure } from "../telemetry/turn-outcome.js";
 import { recordWatchdogEvent } from "../telemetry/watchdog-events-store.js";
 import {
@@ -506,21 +507,27 @@ export function startScheduler(): SchedulerHandle {
         { pid },
         "Schedule worker was not running — respawned by watchdog",
       );
-      recordWatchdogEvent({
-        checkName: "schedule_worker_respawn",
-        detail: { pid },
-      });
+      fireAndForgetTelemetry(
+        recordWatchdogEvent({
+          checkName: "schedule_worker_respawn",
+          detail: { pid },
+        }),
+        "schedule-worker-respawn",
+      );
     },
     onPersistentFailure: (consecutiveFailures, err) => {
       log.error(
         { err, consecutiveFailures },
         "Schedule worker repeatedly failed to respawn — schedules are paused",
       );
-      recordWatchdogEvent({
-        checkName: "schedule_worker_down",
-        value: consecutiveFailures,
-        detail: { consecutiveFailures },
-      });
+      fireAndForgetTelemetry(
+        recordWatchdogEvent({
+          checkName: "schedule_worker_down",
+          value: consecutiveFailures,
+          detail: { consecutiveFailures },
+        }),
+        "schedule-worker-down",
+      );
       emitScheduleWorkerDownNotification(consecutiveFailures);
     },
   });

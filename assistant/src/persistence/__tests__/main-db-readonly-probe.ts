@@ -31,50 +31,55 @@ await initializeDb();
 resetDb();
 useReadOnlyMainDbForTelemetry();
 
-// Telemetry store queries work over the read-only main connection.
-const rows = queryUnreportedUsageEvents(0, undefined, 10);
-if (!Array.isArray(rows) || rows.length !== 0) {
-  throw new Error(`expected empty usage query, got ${JSON.stringify(rows)}`);
-}
+(async () => {
+  // Telemetry store queries work over the read-only main connection.
+  const rows = queryUnreportedUsageEvents(0, undefined, 10);
+  if (!Array.isArray(rows) || rows.length !== 0) {
+    throw new Error(`expected empty usage query, got ${JSON.stringify(rows)}`);
+  }
 
-// Writes through the read-only connection fail loudly.
-const readOnlyDb = getMainDbReadOnly();
-if (!readOnlyDb) {
-  throw new Error("read-only main DB connection unavailable");
-}
-let writeError: unknown;
-try {
-  readOnlyDb
-    .insert(memoryCheckpoints)
-    .values({ key: "readonly-probe", value: "1", updatedAt: Date.now() })
+  // Writes through the read-only connection fail loudly.
+  const readOnlyDb = getMainDbReadOnly();
+  if (!readOnlyDb) {
+    throw new Error("read-only main DB connection unavailable");
+  }
+  let writeError: unknown;
+  try {
+    readOnlyDb
+      .insert(memoryCheckpoints)
+      .values({ key: "readonly-probe", value: "1", updatedAt: Date.now() })
+      .run();
+  } catch (err) {
+    writeError = err;
+  }
+  if (!writeError || !/readonly/i.test(String(writeError))) {
+    throw new Error(
+      `expected a readonly write failure, got: ${String(writeError)}`,
+    );
+  }
+
+  // The telemetry DB stays writable: flush state and event rows.
+  await setFlushCheckpoint("telemetry:readonly-probe:last_reported_at", "123");
+  if (
+    (await getFlushCheckpoint("telemetry:readonly-probe:last_reported_at")) !==
+    "123"
+  ) {
+    throw new Error("flush checkpoint round-trip failed");
+  }
+  const telemetryDb = getTelemetryDb();
+  if (!telemetryDb) {
+    throw new Error("telemetry DB unavailable");
+  }
+  telemetryDb
+    .insert(telemetryEvents)
+    .values({
+      id: "readonly-probe-row",
+      name: "config_setting",
+      createdAt: Date.now(),
+      conversationId: null,
+      payload: '{"type":"config_setting"}',
+    })
     .run();
-} catch (err) {
-  writeError = err;
-}
-if (!writeError || !/readonly/i.test(String(writeError))) {
-  throw new Error(
-    `expected a readonly write failure, got: ${String(writeError)}`,
-  );
-}
 
-// The telemetry DB stays writable: flush state and event rows.
-setFlushCheckpoint("telemetry:readonly-probe:last_reported_at", "123");
-if (getFlushCheckpoint("telemetry:readonly-probe:last_reported_at") !== "123") {
-  throw new Error("flush checkpoint round-trip failed");
-}
-const telemetryDb = getTelemetryDb();
-if (!telemetryDb) {
-  throw new Error("telemetry DB unavailable");
-}
-telemetryDb
-  .insert(telemetryEvents)
-  .values({
-    id: "readonly-probe-row",
-    name: "config_setting",
-    createdAt: Date.now(),
-    conversationId: null,
-    payload: '{"type":"config_setting"}',
-  })
-  .run();
-
-console.log("READONLY_PROBE_OK");
+  console.log("READONLY_PROBE_OK");
+})();

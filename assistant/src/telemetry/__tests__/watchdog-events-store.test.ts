@@ -10,25 +10,28 @@ import {
 } from "./outbox-test-harness.js";
 
 describe("watchdog-events-store", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setShareAnalytics(true);
-    resetOutboxTable();
+    await resetOutboxTable();
   });
 
-  test("honors the share_analytics opt-out (records nothing)", () => {
+  test("honors the share_analytics opt-out (records nothing)", async () => {
     setShareAnalytics(false);
-    recordWatchdogEvent({ checkName: "event_loop_blocked", value: 60000 });
-    expect(pendingOutboxRows("watchdog", 10)).toHaveLength(0);
+    await recordWatchdogEvent({
+      checkName: "event_loop_blocked",
+      value: 60000,
+    });
+    expect(await pendingOutboxRows("watchdog", 10)).toHaveLength(0);
   });
 
-  test("records the full wire event, with detail as a nested object", () => {
-    recordWatchdogEvent({
+  test("records the full wire event, with detail as a nested object", async () => {
+    await recordWatchdogEvent({
       checkName: "event_loop_blocked",
       value: 12345,
       detail: { reason: "no_bytes_60s", threshold_ms: 5000 },
     });
 
-    const rows = pendingOutboxRows("watchdog", 10);
+    const rows = await pendingOutboxRows("watchdog", 10);
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
     expect(row.id).toBeString();
@@ -44,10 +47,10 @@ describe("watchdog-events-store", () => {
     });
   });
 
-  test("omitted value and detail persist as null", () => {
-    recordWatchdogEvent({ checkName: "stream_idle" });
+  test("omitted value and detail persist as null", async () => {
+    await recordWatchdogEvent({ checkName: "stream_idle" });
 
-    const payloads = pendingOutboxPayloads("watchdog");
+    const payloads = await pendingOutboxPayloads("watchdog");
     expect(payloads).toHaveLength(1);
     expect(payloads[0]).toMatchObject({
       check_name: "stream_idle",
@@ -56,14 +59,14 @@ describe("watchdog-events-store", () => {
     });
   });
 
-  test("explicit null value and detail persist as null", () => {
-    recordWatchdogEvent({
+  test("explicit null value and detail persist as null", async () => {
+    await recordWatchdogEvent({
       checkName: "restart",
       value: null,
       detail: null,
     });
 
-    const payloads = pendingOutboxPayloads("watchdog");
+    const payloads = await pendingOutboxPayloads("watchdog");
     expect(payloads).toHaveLength(1);
     expect(payloads[0]?.value).toBeNull();
     expect(payloads[0]?.detail).toBeNull();

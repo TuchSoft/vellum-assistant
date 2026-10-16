@@ -27,16 +27,9 @@
 import type { Database } from "bun:sqlite";
 
 import type { DrizzleDb } from "./db-connection.js";
-import {
-  getDb,
-  getLogsDb,
-  getLogsSqlite,
-  getMemoryDb,
-  getMemorySqlite,
-  getSqlite,
-  getTelemetryDb,
-  getTelemetrySqlite,
-} from "./db-connection.js";
+// Namespace import (not named bindings) so tests can `spyOn` a connection
+// accessor and have the facade observe the replacement at call time.
+import * as dbConnection from "./db-connection.js";
 
 /** Which driver backs an {@link AsyncDb}. */
 export type DbDialect = "sqlite" | "postgres";
@@ -182,7 +175,7 @@ function sqliteFacade(
  */
 export function getAsyncDb(): AsyncDb | null {
   try {
-    return sqliteFacade("main", getSqlite(), getDb);
+    return sqliteFacade("main", dbConnection.getSqlite(), dbConnection.getDb);
   } catch {
     return null;
   }
@@ -190,8 +183,8 @@ export function getAsyncDb(): AsyncDb | null {
 
 /** Async facade for the dedicated logs database (`assistant-logs.db`). */
 export function getLogsAsyncDb(): AsyncDb | null {
-  return sqliteFacade("logs", getLogsSqlite(), () => {
-    const db = getLogsDb();
+  return sqliteFacade("logs", dbConnection.getLogsSqlite(), () => {
+    const db = dbConnection.getLogsDb();
     if (!db) {
       throw new Error("logs database unavailable");
     }
@@ -201,8 +194,8 @@ export function getLogsAsyncDb(): AsyncDb | null {
 
 /** Async facade for the dedicated memory database (`assistant-memory.db`). */
 export function getMemoryAsyncDb(): AsyncDb | null {
-  return sqliteFacade("memory", getMemorySqlite(), () => {
-    const db = getMemoryDb();
+  return sqliteFacade("memory", dbConnection.getMemorySqlite(), () => {
+    const db = dbConnection.getMemoryDb();
     if (!db) {
       throw new Error("memory database unavailable");
     }
@@ -212,8 +205,8 @@ export function getMemoryAsyncDb(): AsyncDb | null {
 
 /** Async facade for the dedicated telemetry database (`assistant-telemetry.db`). */
 export function getTelemetryAsyncDb(): AsyncDb | null {
-  return sqliteFacade("telemetry", getTelemetrySqlite(), () => {
-    const db = getTelemetryDb();
+  return sqliteFacade("telemetry", dbConnection.getTelemetrySqlite(), () => {
+    const db = dbConnection.getTelemetryDb();
     if (!db) {
       throw new Error("telemetry database unavailable");
     }

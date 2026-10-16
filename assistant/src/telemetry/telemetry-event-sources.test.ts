@@ -117,10 +117,10 @@ describe("telemetry event source partition", () => {
 });
 
 describe("onboarding_research source: flushes via the default outbox source", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setShareAnalytics(true);
     setShareDiagnostics(true);
-    resetOutboxTable();
+    await resetOutboxTable();
   });
 
   function onboardingResearchSource() {
@@ -133,8 +133,8 @@ describe("onboarding_research source: flushes via the default outbox source", ()
     return source;
   }
 
-  function recordSample(): void {
-    recordTelemetryEvent(
+  async function recordSample(): Promise<void> {
+    await recordTelemetryEvent(
       "onboarding_research",
       {
         conversation_id: "conv-x",
@@ -153,27 +153,27 @@ describe("onboarding_research source: flushes via the default outbox source", ()
     );
   }
 
-  test("ships pending rows regardless of diagnostics consent, like every other outbox event", () => {
+  test("ships pending rows regardless of diagnostics consent, like every other outbox event", async () => {
     // No flush-time diagnostics gate: the daemon rides `share_analytics`
     // only and leaves the diagnostics decision to the platform's
     // authoritative server-side ingest gate. Diagnostics off (and even a
     // stale accepted version) must not hold the row back.
     setShareDiagnostics(false, "2000-01-01");
-    recordSample();
+    await recordSample();
 
-    const batch = onboardingResearchSource().collect(0, undefined, 100);
+    const batch = await onboardingResearchSource().collect(0, undefined, 100);
     expect(batch.events).toHaveLength(1);
   });
 });
 
 describe("orphan-drain source", () => {
-  beforeEach(() => {
-    resetOutboxTable();
+  beforeEach(async () => {
+    await resetOutboxTable();
     setShareAnalytics(true);
   });
 
-  function insertOutboxRow(name: string, id: string): void {
-    insertTelemetryOutboxEvents([
+  async function insertOutboxRow(name: string, id: string): Promise<void> {
+    await insertTelemetryOutboxEvents([
       {
         id,
         name,
@@ -188,28 +188,28 @@ describe("orphan-drain source", () => {
     ]);
   }
 
-  test("drains rows for a type no longer in the wire contract, then self-heals on ack", () => {
+  test("drains rows for a type no longer in the wire contract, then self-heals on ack", async () => {
     // A row whose name isn't a current outbox event type — e.g. recorded before
     // the platform removed the type. No per-type source queries it.
     const orphanName = "removed_legacy_event";
-    insertOutboxRow(orphanName, "orphan-row-1");
+    await insertOutboxRow(orphanName, "orphan-row-1");
 
     const source = orphanOutboxDrainSource();
-    const batch = source.collect(0, undefined, 500);
+    const batch = await source.collect(0, undefined, 500);
     expect(batch.events).toHaveLength(1);
     expect((batch.events[0] as { type: string }).type).toBe(orphanName);
     expect(batch.rowIds).toEqual(["orphan-row-1"]);
 
     // Send-then-ack: the reporter deletes the row after a 2xx, so it self-heals.
-    source.ack?.acknowledge(batch.rowIds ?? []);
-    expect(pendingOutboxRows(orphanName)).toHaveLength(0);
+    await source.ack?.acknowledge(batch.rowIds ?? []);
+    expect(await pendingOutboxRows(orphanName)).toHaveLength(0);
   });
 
-  test("ignores rows for a current outbox event type", () => {
+  test("ignores rows for a current outbox event type", async () => {
     // Known types drain through their own per-type source, not this one.
     const knownName = OUTBOX_TELEMETRY_EVENT_NAMES[0];
-    insertOutboxRow(knownName, "known-row-1");
-    const batch = orphanOutboxDrainSource().collect(0, undefined, 500);
+    await insertOutboxRow(knownName, "known-row-1");
+    const batch = await orphanOutboxDrainSource().collect(0, undefined, 500);
     expect(batch.events).toHaveLength(0);
   });
 

@@ -10,31 +10,31 @@ import {
 } from "./outbox-test-harness.js";
 
 describe("config-setting-events-store", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setShareAnalytics(true);
-    resetOutboxTable();
+    await resetOutboxTable();
   });
 
-  test("honors the share_analytics opt-out (records nothing, returns false)", () => {
+  test("honors the share_analytics opt-out (records nothing, returns false)", async () => {
     setShareAnalytics(false);
     expect(
-      recordConfigSettingEvent({
+      await recordConfigSettingEvent({
         configKey: "memory.enabled",
         configValue: "true",
       }),
     ).toBe(false);
-    expect(pendingOutboxRows("config_setting", 10)).toHaveLength(0);
+    expect(await pendingOutboxRows("config_setting", 10)).toHaveLength(0);
   });
 
-  test("records the full wire event and returns true", () => {
+  test("records the full wire event and returns true", async () => {
     expect(
-      recordConfigSettingEvent({
+      await recordConfigSettingEvent({
         configKey: "memory.v2.enabled",
         configValue: "false",
       }),
     ).toBe(true);
 
-    const rows = pendingOutboxRows("config_setting", 10);
+    const rows = await pendingOutboxRows("config_setting", 10);
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
     expect(row.id).toBeString();
@@ -49,13 +49,13 @@ describe("config-setting-events-store", () => {
     });
   });
 
-  test("clamps oversize key and value to the platform bounds", () => {
-    recordConfigSettingEvent({
+  test("clamps oversize key and value to the platform bounds", async () => {
+    await recordConfigSettingEvent({
       configKey: "k".repeat(200),
       configValue: "v".repeat(300),
     });
 
-    const payloads = pendingOutboxPayloads("config_setting");
+    const payloads = await pendingOutboxPayloads("config_setting");
     expect(payloads).toHaveLength(1);
     expect(payloads[0]!.config_key).toBe("k".repeat(128));
     expect(payloads[0]!.config_value).toBe("v".repeat(256));

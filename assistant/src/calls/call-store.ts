@@ -12,6 +12,7 @@ import {
   callPendingQuestions,
   callSessions,
 } from "../persistence/schema/index.js";
+import { fireAndForgetTelemetry } from "../telemetry/fire-and-forget.js";
 import {
   type PhoneCallDirection,
   phoneCallEndScreen,
@@ -142,10 +143,13 @@ export function createCallSession(opts: {
   // provider dials: a call that never connects is exactly the one the funnel
   // needs to count. An outbound attempt the ingress preflight rejects never
   // reaches here; see `telemetry/phone-call-funnel.ts`.
-  recordPhoneCallStarted({
-    callSessionId: row.id,
-    screen: phoneCallStartScreen(opts.direction, row.callMode),
-  });
+  fireAndForgetTelemetry(
+    recordPhoneCallStarted({
+      callSessionId: row.id,
+      screen: phoneCallStartScreen(opts.direction, row.callMode),
+    }),
+    "call-store:phone-call-started",
+  );
   return { ...row, skipDisclosure };
 }
 
@@ -318,11 +322,14 @@ function recordCallEndedEvent(id: string, status: CallStatus): void {
         connected: hasCallEvent(id, "call_connected"),
       });
 
-  recordPhoneCallEnded({
-    callSessionId: id,
-    screen: phoneCallEndScreen(status, silence),
-    outcome: status === "failed" ? "failed" : "completed",
-  });
+  fireAndForgetTelemetry(
+    recordPhoneCallEnded({
+      callSessionId: id,
+      screen: phoneCallEndScreen(status, silence),
+      outcome: status === "failed" ? "failed" : "completed",
+    }),
+    "call-store:phone-call-ended",
+  );
 }
 
 /**

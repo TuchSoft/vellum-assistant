@@ -11,8 +11,8 @@
 
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
-const recordPhoneCallStarted = mock(() => null);
-const recordPhoneCallEnded = mock(() => null);
+const recordPhoneCallStarted = mock(async () => null);
+const recordPhoneCallEnded = mock(async () => null);
 
 // Spread the real module rather than replacing it: the call store pulls other
 // recorders out of it, and a bare replacement makes those imports fail.

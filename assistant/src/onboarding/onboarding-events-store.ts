@@ -100,7 +100,7 @@ function buildOnboardingTelemetryEvent(
  */
 export function recordOnboardingEvent(
   params: RecordOnboardingEventParams,
-): OnboardingEvent | null {
+): Promise<OnboardingEvent | null> {
   return recordTelemetryOutboxEvent("onboarding", (id, createdAt) =>
     buildOnboardingTelemetryEvent(id, createdAt, params),
   );
@@ -115,7 +115,7 @@ export function recordActivationEvent(params: {
   stepName: ActivationStepName;
   sessionId: string;
   abVariant?: string;
-}): OnboardingEvent | null {
+}): Promise<OnboardingEvent | null> {
   return recordTelemetryOutboxEvent("onboarding", (id, createdAt) =>
     buildOnboardingTelemetryEvent(id, createdAt, {
       screen: params.stepName,
@@ -148,11 +148,11 @@ export function recordActivationEvent(params: {
  * rather than the measurement. A dropped row costs a gap in a chart; a raised
  * one costs the user their conversation.
  */
-function recordVoiceFunnelEventSafely(
-  record: () => OnboardingEvent | null,
-): OnboardingEvent | null {
+async function recordVoiceFunnelEventSafely(
+  record: () => Promise<OnboardingEvent | null>,
+): Promise<OnboardingEvent | null> {
   try {
-    return record();
+    return await record();
   } catch (err) {
     log.warn(
       { err },
@@ -174,7 +174,7 @@ function recordVoiceFunnelEvent(params: {
   sessionId: string;
   screen: string;
   outcome?: string;
-}): OnboardingEvent | null {
+}): Promise<OnboardingEvent | null> {
   return recordVoiceFunnelEventSafely(() =>
     recordTelemetryOutboxEvent("onboarding", (id, createdAt) =>
       buildOnboardingTelemetryEvent(id, createdAt, {
@@ -196,7 +196,7 @@ export function recordLiveVoiceSessionEvent(params: {
   sessionId: string;
   screen?: string;
   outcome?: LiveVoiceSessionOutcome;
-}): OnboardingEvent | null {
+}): Promise<OnboardingEvent | null> {
   return recordVoiceFunnelEvent({
     funnelVersion: LIVE_VOICE_FUNNEL_VERSION,
     stepName: params.stepName,
@@ -214,7 +214,7 @@ export function recordLiveVoiceSessionEvent(params: {
 export function recordLiveVoiceSessionStarted(params: {
   sessionId: string;
   screen: string;
-}): OnboardingEvent | null {
+}): Promise<OnboardingEvent | null> {
   return recordLiveVoiceSessionEvent({
     stepName: LIVE_VOICE_STEPS.sessionStarted.stepName,
     stepIndex: LIVE_VOICE_STEPS.sessionStarted.stepIndex,
@@ -228,7 +228,7 @@ export function recordLiveVoiceSessionEnded(params: {
   sessionId: string;
   screen: string;
   outcome: LiveVoiceSessionOutcome;
-}): OnboardingEvent | null {
+}): Promise<OnboardingEvent | null> {
   return recordLiveVoiceSessionEvent({
     stepName: LIVE_VOICE_STEPS.sessionEnded.stepName,
     stepIndex: LIVE_VOICE_STEPS.sessionEnded.stepIndex,
@@ -254,7 +254,7 @@ function recordPhoneCallEvent(params: {
   callSessionId: string;
   screen: string;
   outcome?: PhoneCallOutcome;
-}): OnboardingEvent | null {
+}): Promise<OnboardingEvent | null> {
   return recordVoiceFunnelEvent({
     funnelVersion: PHONE_CALL_FUNNEL_VERSION,
     stepName: params.stepName,
@@ -271,7 +271,7 @@ function recordPhoneCallEvent(params: {
 export function recordPhoneCallStarted(params: {
   callSessionId: string;
   screen: string;
-}): OnboardingEvent | null {
+}): Promise<OnboardingEvent | null> {
   return recordPhoneCallEvent({
     stepName: PHONE_CALL_STEPS.callStarted.stepName,
     stepIndex: PHONE_CALL_STEPS.callStarted.stepIndex,
@@ -285,7 +285,7 @@ export function recordPhoneCallEnded(params: {
   callSessionId: string;
   screen: string;
   outcome: PhoneCallOutcome;
-}): OnboardingEvent | null {
+}): Promise<OnboardingEvent | null> {
   return recordPhoneCallEvent({
     stepName: PHONE_CALL_STEPS.callEnded.stepName,
     stepIndex: PHONE_CALL_STEPS.callEnded.stepIndex,

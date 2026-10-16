@@ -116,7 +116,7 @@ export async function sampleDbIntegrityIfDue(): Promise<void> {
     if (!result) {
       return; // locked, operational failure, or timeout — stay due
     }
-    const queued = recordWatchdogEvent({
+    const queued = await recordWatchdogEvent({
       checkName: CHECK_NAME,
       value: result.errors.length,
       detail: {

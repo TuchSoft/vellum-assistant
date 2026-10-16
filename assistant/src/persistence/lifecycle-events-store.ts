@@ -100,11 +100,10 @@ export function buildLifecycleTelemetryEvent(
 export function recordLifecycleEvent(
   eventName: string,
   attributes: LifecycleEventAttributes = {},
-): LifecycleEvent | null {
-  const recorded = recordTelemetryEvent(
+): Promise<LifecycleEvent | null> {
+  return recordTelemetryEvent(
     "lifecycle",
     buildLifecycleFields(eventName, attributes),
     { conversationId: attributes.conversationId ?? null },
-  );
-  return recorded ? { ...recorded, eventName } : null;
+  ).then((recorded) => (recorded ? { ...recorded, eventName } : null));
 }

@@ -44,7 +44,7 @@ const authFallbackBody = z.object({
     .min(1),
 });
 
-function handleRecordAuthFallback({ body }: RouteHandlerArgs) {
+async function handleRecordAuthFallback({ body }: RouteHandlerArgs) {
   const parsed = authFallbackBody.safeParse(body);
   if (!parsed.success) {
     throw new BadRequestError(
@@ -59,7 +59,11 @@ function handleRecordAuthFallback({ body }: RouteHandlerArgs) {
     count: c.count,
   }));
 
-  const recorded = recordAuthFallbackCounts(window_start, window_end, mapped);
+  const recorded = await recordAuthFallbackCounts(
+    window_start,
+    window_end,
+    mapped,
+  );
   if (recorded === 0) {
     if (getRawShareAnalytics() !== false) {
       // Consent is not a confirmed opt-out but nothing was recorded (the

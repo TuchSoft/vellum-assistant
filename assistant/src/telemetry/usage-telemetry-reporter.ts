@@ -149,11 +149,11 @@ function startReporterWithSources(
  * it" guard needs the before-any-tool-runs ordering only daemon startup can
  * provide (the monitor boots concurrently with the daemon serving turns).
  */
-export function startUsageTelemetryReporter(): void {
+export async function startUsageTelemetryReporter(): Promise<void> {
   if (process.env.VELLUM_DEV === "1") {
     return;
   }
-  initToolExecutedWatermarkIfAbsent(telemetryDbFlushCheckpointStore);
+  await initToolExecutedWatermarkIfAbsent(telemetryDbFlushCheckpointStore);
   startReporterWithSources(DAEMON_TELEMETRY_EVENT_SOURCES, "Daemon");
 }
 
@@ -211,13 +211,13 @@ export async function stopUsageTelemetryReporter(): Promise<void> {
  * mode), so this never throws — matching flush(), which treats DB errors as
  * non-fatal.
  */
-export function initToolExecutedWatermarkIfAbsent(
+export async function initToolExecutedWatermarkIfAbsent(
   checkpoints: FlushCheckpointStore,
-): void {
+): Promise<void> {
   try {
     const key = watermarkKeysForSource(TOOL_EXECUTED_SOURCE_ID).at;
-    if (checkpoints.get(key) == null) {
-      checkpoints.set(key, String(Date.now()));
+    if ((await checkpoints.get(key)) == null) {
+      await checkpoints.set(key, String(Date.now()));
     }
   } catch (err) {
     log.warn(
@@ -251,7 +251,7 @@ export class UsageTelemetryReporter {
     // guarded init in case that never happened (e.g. a standalone monitor
     // started out of band).
     if (this.sources.some((s) => s.id === TOOL_EXECUTED_SOURCE_ID)) {
-      initToolExecutedWatermarkIfAbsent(this.checkpoints);
+      void initToolExecutedWatermarkIfAbsent(this.checkpoints);
     }
   }
 
@@ -327,7 +327,7 @@ export class UsageTelemetryReporter {
       // reporter partition that flushes the outbox (ack-mode sources)
       // prunes it.
       if (batchCount === 0 && this.sources.some((source) => source.ack)) {
-        const prunedCount = deleteTelemetryOutboxEventsBefore(
+        const prunedCount = await deleteTelemetryOutboxEventsBefore(
           Date.now() - OUTBOX_MAX_ROW_AGE_MS,
         );
         if (prunedCount > 0) {
@@ -351,7 +351,7 @@ export class UsageTelemetryReporter {
       // An unreadable watermark must not be mistaken for cursor 0 — that
       // would requery and re-ship history from the beginning. Nothing is
       // advanced or sent; the cycle retries once the store is back.
-      if (!this.checkpoints.isAvailable()) {
+      if (!(await this.checkpoints.isAvailable())) {
         log.warn(
           "Telemetry flush: flush-checkpoint store unavailable — skipping, will retry next cycle",
         );
@@ -406,12 +406,12 @@ export class UsageTelemetryReporter {
         const now = String(Date.now());
         for (const source of this.sources) {
           if (source.ack) {
-            source.ack.discardPending();
+            await source.ack.discardPending();
             continue;
           }
           const keys = watermarkKeysForSource(source.id);
-          this.checkpoints.set(keys.at, now);
-          this.checkpoints.set(keys.id, OPT_OUT_WATERMARK_ID_SENTINEL);
+          await this.checkpoints.set(keys.at, now);
+          await this.checkpoints.set(keys.id, OPT_OUT_WATERMARK_ID_SENTINEL);
         }
         return settle("opted-out");
       }
@@ -424,15 +424,18 @@ export class UsageTelemetryReporter {
       const batches: Array<{
         source: TelemetryEventSource;
         batch: TelemetryEventSourceBatch;
-      }> = this.sources.map((source) => {
+      }> = [];
+      for (const source of this.sources) {
         const keys = watermarkKeysForSource(source.id);
-        const afterCreatedAt = Number(this.checkpoints.get(keys.at) ?? "0");
-        const afterId = this.checkpoints.get(keys.id) ?? undefined;
-        return {
+        const afterCreatedAt = Number(
+          (await this.checkpoints.get(keys.at)) ?? "0",
+        );
+        const afterId = (await this.checkpoints.get(keys.id)) ?? undefined;
+        batches.push({
           source,
-          batch: source.collect(afterCreatedAt, afterId, BATCH_SIZE),
-        };
-      });
+          batch: await source.collect(afterCreatedAt, afterId, BATCH_SIZE),
+        });
+      }
 
       // Ack-mode batches must carry a row id per event: without them nothing
       // can be acknowledged post-2xx, so shipping would re-send the same rows
@@ -543,12 +546,15 @@ export class UsageTelemetryReporter {
       for (const { source, batch } of batches) {
         if (source.ack) {
           if (batch.events.length > 0) {
-            source.ack.acknowledge(batch.rowIds ?? []);
+            await source.ack.acknowledge(batch.rowIds ?? []);
           }
         } else if (batch.lastCursor) {
           const keys = watermarkKeysForSource(source.id);
-          this.checkpoints.set(keys.at, String(batch.lastCursor.createdAt));
-          this.checkpoints.set(keys.id, batch.lastCursor.id);
+          await this.checkpoints.set(
+            keys.at,
+            String(batch.lastCursor.createdAt),
+          );
+          await this.checkpoints.set(keys.id, batch.lastCursor.id);
         }
       }
 

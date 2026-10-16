@@ -2,6 +2,7 @@ import { getConfigReadOnly } from "../config/loader.js";
 import { memoryTier } from "../config/memory-tier.js";
 import { getRawShareAnalytics } from "../platform/consent-cache.js";
 import { getLogger } from "../util/logger.js";
+import { fireAndForgetTelemetry } from "./fire-and-forget.js";
 import { measureMemoryCorpusSize } from "./memory-corpus-size.js";
 import { recordWatchdogEvent } from "./watchdog-events-store.js";
 
@@ -60,27 +61,26 @@ export function recordMemoryTierOnce(): void {
   if (consent === "unknown") {
     return;
   }
-  try {
-    // `getConfigReadOnly()` re-reads config.json on change (capturing live
-    // edits) and never writes to disk — safe for the monitor process.
-    const tier = memoryTier(getConfigReadOnly());
+  // `getConfigReadOnly()` re-reads config.json on change (capturing live
+  // edits) and never writes to disk — safe for the monitor process.
+  const tier = memoryTier(getConfigReadOnly());
 
-    let corpus: Record<string, number> = {};
-    if (consent !== false) {
-      try {
-        corpus = { ...measureMemoryCorpusSize() };
-      } catch (err) {
-        log.warn({ err }, "memory corpus sizing failed (emitting tier only)");
-      }
+  let corpus: Record<string, number> = {};
+  if (consent !== false) {
+    try {
+      corpus = { ...measureMemoryCorpusSize() };
+    } catch (err) {
+      log.warn({ err }, "memory corpus sizing failed (emitting tier only)");
     }
+  }
 
+  fireAndForgetTelemetry(
     recordWatchdogEvent({
       checkName: MEMORY_TIER_CHECK_NAME,
       detail: { tier, ...corpus },
-    });
-  } catch (err) {
-    log.warn({ err }, "memory_tier watchdog emit failed (non-fatal)");
-  }
+    }),
+    "memory_tier",
+  );
 }
 
 let tierTimer: ReturnType<typeof setInterval> | null = null;

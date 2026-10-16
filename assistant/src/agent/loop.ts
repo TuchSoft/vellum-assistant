@@ -62,6 +62,7 @@ import {
   boundUnparseableToolArgs,
   isUnparseableToolArgs,
 } from "../providers/unparseable-tool-args.js";
+import { fireAndForgetTelemetry } from "../telemetry/fire-and-forget.js";
 import { recordWatchdogEvent } from "../telemetry/watchdog-events-store.js";
 import {
   ABORT_SETTLE_GRACE_MS,
@@ -136,14 +137,13 @@ function recordSendUserMessageOutcome(
   outcome: "nudge" | "fallback",
   model: string | undefined,
 ): void {
-  try {
+  fireAndForgetTelemetry(
     recordWatchdogEvent({
       checkName: SEND_USER_MESSAGE_CHECK,
       detail: { outcome, model: model ?? null },
-    });
-  } catch {
-    // Telemetry must not affect the turn.
-  }
+    }),
+    "send_user_message_outcome",
+  );
 }
 
 /**

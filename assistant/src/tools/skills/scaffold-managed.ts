@@ -16,6 +16,7 @@ import {
   createManagedSkill,
   getManagedSkillDir,
 } from "../../skills/managed-store.js";
+import { fireAndForgetTelemetry } from "../../telemetry/fire-and-forget.js";
 import { recordWatchdogEvent } from "../../telemetry/watchdog-events-store.js";
 import { getLogger } from "../../util/logger.js";
 import { throwIfCancelled } from "../shared/abort.js";
@@ -166,15 +167,13 @@ function recordBackgroundSkillUpdate(args: {
       },
       "skill update receipt recording failed; the skill write stands and no receipt will name this update",
     );
-    try {
+    fireAndForgetTelemetry(
       recordWatchdogEvent({
         checkName: SKILL_UPDATE_RECEIPT_RECORD_FAILED_CHECK_NAME,
         value: 1,
-      });
-    } catch {
-      // recordWatchdogEvent already no-ops on opt-out and a missing
-      // telemetry DB; anything past that is not worth surfacing here.
-    }
+      }),
+      "skill-update-receipt-failed",
+    );
   }
 }
 
@@ -500,18 +499,16 @@ export async function executeScaffoldManagedSkill(
   // deletion-redaction tie to the source conversation. Never throws: a
   // telemetry failure must not fail a scaffold that already succeeded.
   if (!managedSkillExistedBefore) {
-    try {
+    fireAndForgetTelemetry(
       recordWatchdogEvent({
         checkName: SKILL_AUTHORED_CHECK_NAME,
         value: 1,
         detail: {
           authored_by: fromRetrospective ? "retrospective" : "user",
         },
-      });
-    } catch {
-      // recordWatchdogEvent already no-ops on opt-out and a missing
-      // telemetry DB; anything past that is not worth surfacing here.
-    }
+      }),
+      "skill-authored",
+    );
   }
 
   // A background pass changed a skill that already existed. Creates announce

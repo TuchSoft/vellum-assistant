@@ -83,7 +83,7 @@ const telemetryIngestRequestSchema = z.discriminatedUnion(
  * the up-front validation pass; the real id is stamped at record time. */
 const VALIDATION_PROBE_DAEMON_EVENT_ID = "validation-probe";
 
-function handleRecordLifecycleEvent({ body }: RouteHandlerArgs) {
+async function handleRecordLifecycleEvent({ body }: RouteHandlerArgs) {
   const eventName = body?.event_name as string | undefined;
   if (!eventName || !VALID_EVENT_NAMES.has(eventName)) {
     throw new BadRequestError(
@@ -91,7 +91,7 @@ function handleRecordLifecycleEvent({ body }: RouteHandlerArgs) {
     );
   }
 
-  const event = recordLifecycleEvent(eventName);
+  const event = await recordLifecycleEvent(eventName);
   if (!event) {
     return { skipped: true };
   }
@@ -131,7 +131,7 @@ async function handleTelemetryFlush() {
  * outbox row's dedicated column so pending rows redact on conversation deletion
  * via the indexed delete.
  */
-function handleTelemetryIngest({ body }: RouteHandlerArgs) {
+async function handleTelemetryIngest({ body }: RouteHandlerArgs) {
   const parsed = telemetryIngestRequestSchema.safeParse(body);
   if (!parsed.success) {
     throw new BadRequestError(parsed.error.message);
@@ -166,7 +166,7 @@ function handleTelemetryIngest({ body }: RouteHandlerArgs) {
       ? fields.conversation_id
       : null;
 
-  const event = recordTelemetryOutboxEvent(
+  const event = await recordTelemetryOutboxEvent(
     type,
     (id, createdAt): TelemetryEvent =>
       // Base fields stamped after the spread so a `fields` payload carrying a

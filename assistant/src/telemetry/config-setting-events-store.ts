@@ -28,13 +28,13 @@ export interface ConfigSettingEventRecord {
  * the memo on a real write and keeps retrying while consent is off or the
  * telemetry DB is unavailable.
  */
-export function recordConfigSettingEvent(
+export async function recordConfigSettingEvent(
   record: ConfigSettingEventRecord,
-): boolean {
+): Promise<boolean> {
   return (
-    recordTelemetryEvent("config_setting", {
+    (await recordTelemetryEvent("config_setting", {
       config_key: record.configKey.slice(0, MAX_CONFIG_KEY_CHARS),
       config_value: record.configValue.slice(0, MAX_CONFIG_VALUE_CHARS),
-    }) !== null
+    })) !== null
   );
 }

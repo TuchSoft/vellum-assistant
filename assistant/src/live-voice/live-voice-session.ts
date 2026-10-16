@@ -1595,7 +1595,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
     // credentials is precisely the one the failure rate needs to count, and
     // recording the start only once `ready` goes out would hide every such
     // session from both the numerator and the denominator.
-    recordLiveVoiceSessionStarted({
+    await recordLiveVoiceSessionStarted({
       sessionId: this.context.sessionId,
       screen: liveVoiceStartScreen(
         this.context.startFrame.client,
@@ -2157,7 +2157,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
           receivedAudio: this.receivedAudio,
           detectedSpeech: this.detectedSpeech,
         });
-    recordLiveVoiceSessionEnded({
+    await recordLiveVoiceSessionEnded({
       sessionId: this.context.sessionId,
       screen: liveVoiceEndScreen(
         reason,

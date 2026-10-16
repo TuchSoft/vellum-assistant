@@ -56,6 +56,7 @@ import {
   upsertSkillCardInsertJob,
 } from "../../../persistence/jobs-store.js";
 import { publishConversationMessagesChanged } from "../../../runtime/sync/resource-sync-events.js";
+import { fireAndForgetTelemetry } from "../../../telemetry/fire-and-forget.js";
 import { recordWatchdogEvent } from "../../../telemetry/watchdog-events-store.js";
 import { getLogger } from "./logging.js";
 import { SKILL_CARD_MESSAGE_KIND } from "./memory-retrospective-constants.js";
@@ -355,16 +356,14 @@ async function insertOrDeferSkillCard(
   // check_name): one event per delivered card, value = skills on it. The
   // dedup early-return above keeps retried deliveries from double-counting.
   // Never throws — the card is already inserted.
-  try {
+  fireAndForgetTelemetry(
     recordWatchdogEvent({
       checkName: SKILL_CARD_DELIVERED_CHECK_NAME,
       value: skills.length,
       detail: { skill_count: skills.length },
-    });
-  } catch {
-    // recordWatchdogEvent already no-ops on opt-out and a missing telemetry
-    // DB; anything past that is not worth surfacing here.
-  }
+    }),
+    "skill-card-delivered",
+  );
   log.info(
     {
       sourceConversationId,

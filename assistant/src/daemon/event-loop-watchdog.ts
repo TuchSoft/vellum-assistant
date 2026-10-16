@@ -53,6 +53,7 @@ import {
   getSectionTrail,
   type SectionTrailEntry,
 } from "../persistence/slow-sync-log.js";
+import { fireAndForgetTelemetry } from "../telemetry/fire-and-forget.js";
 import { watchdogTelemetryEventSchema } from "../telemetry/telemetry-wire.generated.js";
 import { recordWatchdogEvent } from "../telemetry/watchdog-events-store.js";
 import { getLogger } from "../util/logger.js";
@@ -326,9 +327,8 @@ async function reportBlock(
   // event-loop blocking in the infrastructure admin chart. `recordWatchdogEvent`
   // no-ops when usage-data collection is disabled (the event is dropped to
   // honor the opt-out), so the watchdog runs unconditionally without leaking
-  // health data for opted-out owners. Never let a telemetry failure escape
-  // the timer callback.
-  try {
+  // health data for opted-out owners.
+  fireAndForgetTelemetry(
     recordWatchdogEvent({
       checkName: EVENT_LOOP_BLOCKED_CHECK_NAME,
       value: blockedMs,
@@ -339,10 +339,9 @@ async function reportBlock(
         sectionTrail,
         stallCapture,
       }),
-    });
-  } catch {
-    // Never let a telemetry failure escape the timer callback.
-  }
+    }),
+    "event_loop_block",
+  );
 }
 
 /**

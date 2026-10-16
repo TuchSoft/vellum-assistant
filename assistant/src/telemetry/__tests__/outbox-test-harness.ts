@@ -25,9 +25,8 @@ mock.module("../../platform/consent-cache.js", () => ({
 }));
 
 import * as dbConnection from "../../persistence/db-connection.js";
-import { getTelemetryDb } from "../../persistence/db-connection.js";
+import { getTelemetryAsyncDb } from "../../persistence/db-facade.js";
 import { initializeDb } from "../../persistence/db-init.js";
-import { telemetryEvents } from "../../persistence/schema/index.js";
 import { queryTelemetryOutboxBatch } from "../telemetry-events-outbox.js";
 
 await initializeDb();
@@ -51,35 +50,47 @@ export function setShareDiagnostics(
 }
 
 /** Delete every telemetry_events row. */
-export function resetOutboxTable(): void {
-  const db = getTelemetryDb();
+export async function resetOutboxTable(): Promise<void> {
+  const db = getTelemetryAsyncDb();
   if (!db) {
     throw new Error("telemetry DB unavailable in test");
   }
-  db.delete(telemetryEvents).run();
+  await db.label("test:outbox:reset").run("DELETE FROM telemetry_events");
 }
 
 /** Pending rows for one event name in (created_at, id) order. */
-export function pendingOutboxRows(name: string, limit = 100) {
+export async function pendingOutboxRows(
+  name: string,
+  limit = 100,
+): Promise<Array<{ id: string; createdAt: number; payload: string }>> {
   return queryTelemetryOutboxBatch(name, limit);
 }
 
 /** Pending payloads for one event name, JSON-parsed, in flush order. */
-export function pendingOutboxPayloads<T = Record<string, unknown>>(
+export async function pendingOutboxPayloads<T = Record<string, unknown>>(
   name: string,
   limit = 100,
-): T[] {
-  return pendingOutboxRows(name, limit).map(
-    (row) => JSON.parse(row.payload) as T,
-  );
+): Promise<T[]> {
+  const rows = await pendingOutboxRows(name, limit);
+  return rows.map((row) => JSON.parse(row.payload) as T);
 }
 
 /** Run `fn` with the telemetry connection reported as unavailable. */
-export function withTelemetryDbUnavailable(fn: () => void): void {
-  const spy = spyOn(dbConnection, "getTelemetryDb").mockReturnValue(null);
+export async function withTelemetryDbUnavailable(
+  fn: () => Promise<void>,
+): Promise<void> {
+  // The async facade resolves its raw connection through
+  // `dbConnection.getTelemetrySqlite()` at call time, so stubbing that (and the
+  // sync `getTelemetryDb` for any direct consumer) makes the whole telemetry
+  // data layer observe an unavailable database.
+  const spySqlite = spyOn(dbConnection, "getTelemetrySqlite").mockReturnValue(
+    null,
+  );
+  const spyDb = spyOn(dbConnection, "getTelemetryDb").mockReturnValue(null);
   try {
-    fn();
+    await fn();
   } finally {
-    spy.mockRestore();
+    spySqlite.mockRestore();
+    spyDb.mockRestore();
   }
 }

@@ -56,6 +56,7 @@ import {
   activationStepNameForMomentParam,
   isActivationMomentParam,
 } from "../telemetry/activation-funnel.js";
+import { fireAndForgetTelemetry } from "../telemetry/fire-and-forget.js";
 import { resolveAppId } from "../tools/apps/resolve-app-id.js";
 import { formatDesktopAppRequired } from "../tools/capability-offer.js";
 import { POINT_AT_PROXY_TOOL } from "../tools/computer-use/skill-proxy-bridge.js";
@@ -1841,20 +1842,16 @@ function recordActivationMoment(
   ctx: Conversation,
   moment: ActivationMomentParam,
 ): void {
-  try {
-    if (!isActivationSession(ctx.conversationId)) {
-      return;
-    }
+  if (!isActivationSession(ctx.conversationId)) {
+    return;
+  }
+  fireAndForgetTelemetry(
     recordActivationEvent({
       stepName: activationStepNameForMomentParam(moment),
       sessionId: ctx.conversationId,
-    });
-  } catch (err) {
-    log.warn(
-      { err, conversationId: ctx.conversationId, moment },
-      "Failed to record activation moment",
-    );
-  }
+    }),
+    "activation_moment",
+  );
 }
 
 /**

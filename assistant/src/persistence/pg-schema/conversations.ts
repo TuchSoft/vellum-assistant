@@ -1,0 +1,467 @@
+import { sql } from "drizzle-orm";
+import {
+  bigint,
+  check,
+  doublePrecision,
+  index,
+  integer,
+  pgTable,
+  primaryKey,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+
+export const conversations = pgTable(
+  "conversations",
+  {
+    id: text("id").primaryKey(),
+    title: text("title"),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+    // Nullable (migration 350): NULL = unknown total; readers coalesce to 0.
+    totalInputTokens: bigint("total_input_tokens", { mode: "number" }).default(
+      0,
+    ),
+    totalOutputTokens: bigint("total_output_tokens", { mode: "number" })
+      .notNull()
+      .default(0),
+    totalEstimatedCost: doublePrecision("total_estimated_cost")
+      .notNull()
+      .default(0),
+    contextSummary: text("context_summary"),
+    contextCompactedMessageCount: bigint("context_compacted_message_count", {
+      mode: "number",
+    })
+      .notNull()
+      .default(0),
+    contextCompactedAt: bigint("context_compacted_at", { mode: "number" }),
+    historyStrippedAt: bigint("history_stripped_at", { mode: "number" }),
+    slackContextCompactionWatermarkTs: text(
+      "slack_context_compaction_watermark_ts",
+    ),
+    slackContextCompactionWatermarkAt: integer(
+      "slack_context_compaction_watermark_at",
+    ),
+    conversationType: text("conversation_type").notNull().default("standard"),
+    source: text("source").notNull().default("user"),
+    originChannel: text("origin_channel"),
+    originInterface: text("origin_interface"),
+    forkParentConversationId: text("fork_parent_conversation_id"),
+    forkParentMessageId: text("fork_parent_message_id"),
+    /**
+     * How this conversation's fork was materialized: `reference` means the
+     * rows at-or-before `forkParentMessageId` live on the parent and are read
+     * through it, `cloning` (and NULL, the value every pre-existing fork
+     * carries) means they were physically copied onto this row. Read through
+     * `isReferentialFork` in `conversation-lineage.ts`, never directly: the
+     * NULL-is-cloning default is what keeps existing forks from being read
+     * twice, once from their copies and once through their parent.
+     */
+    forkStrategy: text("fork_strategy"),
+    /**
+     * Id of the conversation that spawned this one (subagent spawns stamp
+     * their parent's conversation id). Distinct from
+     * `forkParentConversationId`, which records message-history inheritance;
+     * this column records spawn attribution for telemetry. NULL for
+     * conversations not spawned by another conversation.
+     */
+    parentConversationId: text("parent_conversation_id"),
+    /**
+     * Role the subagent that owns this conversation was spawned with, from
+     * `SUBAGENT_ROLE_REGISTRY` (`researcher`, `builder`, `advisor`); a spawn
+     * that named no role records the default, `builder`. NULL for every
+     * conversation that is not a subagent.
+     *
+     * Denormalized here rather than read from the `subagents` table at
+     * telemetry-flush time on purpose: `subagents` rows are deleted on
+     * dispose (TTL sweep ~30 minutes after the run goes terminal), while
+     * usage telemetry flushes on a watermark that can trail arbitrarily far
+     * behind after an ingest outage. Stamping the conversation row, the same
+     * rationale that put `parent_conversation_id` here, makes the
+     * attribution durable for the life of the usage row.
+     */
+    subagentRole: text("subagent_role"),
+    /**
+     * How the subagent that owns this conversation was spawned: context
+     * inheritance and lifecycle, orthogonal to {@link subagentRole}. One of
+     * the modes described on `SubagentSpawnMode` in `subagent/types.ts`. NULL
+     * for every conversation that is not a subagent.
+     */
+    subagentSpawnMode: text("subagent_spawn_mode"),
+    isAutoTitle: bigint("is_auto_title", { mode: "number" })
+      .notNull()
+      .default(1),
+    scheduleJobId: text("schedule_job_id"),
+    lastMessageAt: bigint("last_message_at", { mode: "number" }),
+    archivedAt: bigint("archived_at", { mode: "number" }),
+    lastReopenedAt: bigint("last_reopened_at", { mode: "number" }),
+    /**
+     * Epoch-ms timestamp set when a background/scheduled conversation is
+     * explicitly promoted into the sidebar's Recents grouping. NULL (the
+     * default) means not surfaced. Set/cleared only via the surface API —
+     * never automatically.
+     */
+    surfacedAt: bigint("surfaced_at", { mode: "number" }),
+    inferenceProfile: text("inference_profile"),
+    // JSON-encoded string[] of plugin ids scoping this chat; null = default (all globally-enabled).
+    enabledPlugins: text("enabled_plugins"),
+    inferenceProfileSessionId: text("inference_profile_session_id"),
+    inferenceProfileExpiresAt: bigint("inference_profile_expires_at", {
+      mode: "number",
+    }),
+    lastNotifiedInferenceProfile: text("last_notified_inference_profile"),
+    /**
+     * Epoch-ms timestamp set when the agent loop starts a turn for this
+     * conversation, cleared (NULL) when the turn ends. NULL means not
+     * processing. This is the cross-process source of truth for processing
+     * state — the in-memory `Conversation._processing` flag is the hot-path
+     * read for resident conversations, but CLI-side and other out-of-process
+     * callers read this column directly.
+     */
+    processingStartedAt: bigint("processing_started_at", { mode: "number" }),
+    /**
+     * Count of consecutive startup auto-resume attempts for this
+     * conversation's interrupted turn. Incremented by the startup reconciler
+     * when it wakes a conversation whose `processing_started_at` survived the
+     * previous process; reset to 0 whenever a turn ends cleanly. Caps
+     * resume-loops for turns that repeatedly take the process down.
+     */
+    processingResumeAttempts: bigint("processing_resume_attempts", {
+      mode: "number",
+    })
+      .notNull()
+      .default(0),
+    /**
+     * Highest stream `seq` whose content is durably persisted to this
+     * conversation's message rows. Seeded with the global high-water seq when
+     * the row is inserted and advanced on each persistence flush
+     * (`recordConversationPersistedSeq`). Returned by `/messages` as the
+     * snapshot↔stream alignment baseline so a client applies only stream
+     * events with a higher `seq`. NULL means the conversation was created
+     * before any stream activity (global seq 0) or predates this column — the
+     * client cold-starts in that case.
+     */
+    seq: bigint("seq", { mode: "number" }),
+  },
+  (table) => [
+    index("idx_conversations_updated_at").on(table.updatedAt),
+    index("idx_conversations_last_message_at").on(table.lastMessageAt),
+    index("idx_conversations_conversation_type").on(table.conversationType),
+    index("idx_conversations_archived_at").on(table.archivedAt),
+    index("idx_conversations_surfaced_at").on(table.surfacedAt),
+    index("idx_conversations_fork_parent_conversation_id").on(
+      table.forkParentConversationId,
+    ),
+    index("idx_conversations_parent_conversation_id").on(
+      table.parentConversationId,
+    ),
+  ],
+);
+
+export const conversationModeSessions = pgTable(
+  "conversation_mode_sessions",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    mode: text("mode", {
+      enum: ["computer_use", "browser", "live_vision", "ambient"],
+    }).notNull(),
+    status: text("status", {
+      enum: ["active", "completed", "interrupted"],
+    }).notNull(),
+    sourceStartedAt: bigint("source_started_at", { mode: "number" }).notNull(),
+    firstIncludedAt: bigint("first_included_at", { mode: "number" }),
+    firstIncludedMessageId: text("first_included_message_id"),
+    lastActivityAt: bigint("last_activity_at", { mode: "number" }).notNull(),
+    lastOwnedMessageId: text("last_owned_message_id"),
+    endedAt: bigint("ended_at", { mode: "number" }),
+    endReason: text("end_reason"),
+    revision: bigint("revision", { mode: "number" }).notNull().default(1),
+  },
+  (table) => [
+    check(
+      "conversation_mode_sessions_mode_check",
+      sql`${table.mode} IN ('computer_use', 'browser', 'live_vision', 'ambient')`,
+    ),
+    check(
+      "conversation_mode_sessions_status_check",
+      sql`${table.status} IN ('active', 'completed', 'interrupted')`,
+    ),
+    check(
+      "conversation_mode_sessions_revision_check",
+      sql`${table.revision} > 0`,
+    ),
+    check(
+      "conversation_mode_sessions_first_included_boundary_check",
+      sql`(${table.firstIncludedAt} IS NULL) = (${table.firstIncludedMessageId} IS NULL)`,
+    ),
+    check(
+      "conversation_mode_sessions_terminal_fields_check",
+      sql`(
+        (${table.status} = 'active' AND ${table.endedAt} IS NULL AND ${table.endReason} IS NULL)
+        OR (${table.status} = 'completed' AND ${table.endedAt} IS NOT NULL AND ${table.endReason} IS NOT NULL AND length(${table.endReason}) > 0)
+        OR (${table.status} = 'interrupted' AND ${table.endReason} IS NOT NULL AND length(${table.endReason}) > 0)
+      )`,
+    ),
+    check(
+      "conversation_mode_sessions_end_after_activity_check",
+      sql`${table.endedAt} IS NULL OR ${table.endedAt} >= ${table.lastActivityAt}`,
+    ),
+    check(
+      "conversation_mode_sessions_activity_after_source_check",
+      sql`${table.lastActivityAt} >= ${table.sourceStartedAt}`,
+    ),
+    check(
+      "conversation_mode_sessions_first_included_before_activity_check",
+      sql`${table.firstIncludedAt} IS NULL OR ${table.firstIncludedAt} <= ${table.lastActivityAt}`,
+    ),
+    index("idx_conversation_mode_sessions_conversation_status").on(
+      table.conversationId,
+      table.status,
+    ),
+  ],
+);
+
+export const messages = pgTable(
+  "messages",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    role: text("role").notNull(),
+    /**
+     * Union of two JSON shapes: an inline `ContentBlock[]` (or a legacy
+     * plain string), or `{ ref: "<workspace-relative path>" }` pointing at
+     * a file-backed content payload. Resolve to typed blocks with
+     * `resolveMessageContentBlocks` (message-content-file.ts) — never
+     * interpret this column's shape by hand.
+     */
+    content: text("content").notNull(),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+    metadata: text("metadata"),
+    clientMessageId: text("client_message_id"),
+    /**
+     * 1 (default) = `content` is the complete, immutable value (inline or
+     * `{ ref }`). 0 = the message is still streaming and `content` is a
+     * `{ ref }` to its in-flight delta file. Batch readers (search, memory
+     * indexing, fork) must filter `finalized = 1`; only the live turn and
+     * crash recovery read unfinalized rows.
+     */
+    finalized: bigint("finalized", { mode: "number" }).notNull().default(1),
+  },
+  (table) => [
+    uniqueIndex("idx_messages_conv_client_msg_id")
+      .on(table.conversationId, table.clientMessageId)
+      .where(sql`client_message_id IS NOT NULL`),
+  ],
+);
+
+export const toolInvocations = pgTable(
+  "tool_invocations",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id),
+    toolName: text("tool_name").notNull(),
+    input: text("input").notNull(),
+    result: text("result").notNull(),
+    decision: text("decision").notNull(),
+    riskLevel: text("risk_level").notNull(),
+    matchedTrustRuleId: text("matched_trust_rule_id"),
+    durationMs: bigint("duration_ms", { mode: "number" }).notNull(),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+    /** Serialized input size in bytes, computed before any redaction. Null pre-migration-278. */
+    argBytes: bigint("arg_bytes", { mode: "number" }),
+    /** Full serialized result size in bytes, computed before truncation/redaction. Null pre-migration-278 and for denied rows. */
+    resultBytes: bigint("result_bytes", { mode: "number" }),
+    provider: text("provider"),
+    model: text("model"),
+    inferenceProfile: text("inference_profile"),
+    inferenceProfileSource: text("inference_profile_source"),
+  },
+  (table) => [
+    index("idx_tool_invocations_conversation_id").on(table.conversationId),
+  ],
+);
+
+export const conversationKeys = pgTable("conversation_keys", {
+  id: text("id").primaryKey(),
+  conversationKey: text("conversation_key").notNull(),
+  conversationId: text("conversation_id")
+    .notNull()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const attachments = pgTable("attachments", {
+  id: text("id").primaryKey(),
+  originalFilename: text("original_filename").notNull(),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+  kind: text("kind").notNull(),
+  dataBase64: text("data_base64").notNull(),
+  contentHash: text("content_hash"),
+  thumbnailBase64: text("thumbnail_base64"),
+  filePath: text("file_path"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const messageAttachments = pgTable("message_attachments", {
+  id: text("id").primaryKey(),
+  messageId: text("message_id")
+    .notNull()
+    .references(() => messages.id, { onDelete: "cascade" }),
+  attachmentId: text("attachment_id")
+    .notNull()
+    .references(() => attachments.id, { onDelete: "cascade" }),
+  position: bigint("position", { mode: "number" }).notNull().default(0),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+// Per-conversation ConversationGraphMemory + InContextTracker snapshot,
+// rehydrated on resume. Lives in the dedicated memory database
+// (`assistant-memory.db`), not main — access it via the memory connection
+// (`getMemoryDb()` / `getMemorySqlite()`). No FK to conversations.id: SQLite
+// foreign keys cannot span database files, so the deleted-conversation cascade
+// is replaced by an explicit delete in the memory `conversation-deleted` hook.
+export const conversationGraphMemoryState = pgTable(
+  "conversation_graph_memory_state",
+  {
+    conversationId: text("conversation_id").primaryKey(),
+    stateJson: text("state_json").notNull(),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  },
+);
+
+/**
+ * Append-only ledger of every compaction event for a conversation. The
+ * `conversations` row keeps only the latest compaction (`context_summary` /
+ * `context_compacted_message_count` / `context_compacted_at`) as the hot-path
+ * cache the load path reads; this table preserves the full history so a fork
+ * can inherit the most recent compaction whose event time (`compacted_at`)
+ * is at-or-before the boundary message it forks from.
+ */
+export const conversationCompactionEvents = pgTable(
+  "conversation_compaction_events",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    compactedAt: bigint("compacted_at", { mode: "number" }).notNull(),
+    summary: text("summary").notNull(),
+    compactedMessageCount: bigint("compacted_message_count", {
+      mode: "number",
+    }).notNull(),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("idx_compaction_events_conv_at").on(
+      table.conversationId,
+      table.compactedAt,
+    ),
+  ],
+);
+
+/**
+ * Lifecycle of a channel inbound event's reply delivery. `pending` is the only
+ * non-terminal value, so every path that finishes a turn has to move the row
+ * off it, including the paths that finish WITHOUT delivering: recovery reads a
+ * lingering `pending` as a reply still owed. See `runtime/AGENTS.md`.
+ */
+export const CHANNEL_DELIVERY_STATUSES = [
+  "pending",
+  "delivered",
+  "failed",
+  "dead_letter",
+] as const;
+export type ChannelDeliveryStatus = (typeof CHANNEL_DELIVERY_STATUSES)[number];
+
+/** Lifecycle of a channel inbound event's agent-turn processing. */
+export const CHANNEL_PROCESSING_STATUSES = [
+  "pending",
+  "processed",
+  "failed",
+  "dead_letter",
+] as const;
+export type ChannelProcessingStatus =
+  (typeof CHANNEL_PROCESSING_STATUSES)[number];
+
+export const channelInboundEvents = pgTable("channel_inbound_events", {
+  id: text("id").primaryKey(),
+  sourceChannel: text("source_channel").notNull(),
+  externalChatId: text("external_chat_id").notNull(),
+  externalMessageId: text("external_message_id").notNull(),
+  sourceMessageId: text("source_message_id"),
+  conversationId: text("conversation_id")
+    .notNull()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  messageId: text("message_id").references(() => messages.id, {
+    onDelete: "cascade",
+  }),
+  deliveryStatus: text("delivery_status", { enum: CHANNEL_DELIVERY_STATUSES })
+    .notNull()
+    .default("pending"),
+  processingStatus: text("processing_status", {
+    enum: CHANNEL_PROCESSING_STATUSES,
+  })
+    .notNull()
+    .default("pending"),
+  processingAttempts: bigint("processing_attempts", { mode: "number" })
+    .notNull()
+    .default(0),
+  deliveryAttempts: bigint("delivery_attempts", { mode: "number" })
+    .notNull()
+    .default(0),
+  lastProcessingError: text("last_processing_error"),
+  retryAfter: bigint("retry_after", { mode: "number" }),
+  rawPayload: text("raw_payload"),
+  deliveredSegmentCount: bigint("delivered_segment_count", { mode: "number" })
+    .notNull()
+    .default(0),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
+/**
+ * Provider-id index for messages the assistant itself posted: the outbound
+ * counterpart of `channelInboundEvents`' provider-id resolution. One stored
+ * reply fans out to many provider posts, and a reaction or deletion names a
+ * post, so resolution is keyed by the (channel, chat, provider id) triple.
+ * Written by the post-send reconciliation alongside the row's `providerMeta`
+ * envelope, which remains the row's self-description; this table is the
+ * derived index over its id facts.
+ */
+export const channelOutboundPosts = pgTable(
+  "channel_outbound_posts",
+  {
+    sourceChannel: text("source_channel").notNull(),
+    externalChatId: text("external_chat_id").notNull(),
+    providerMessageId: text("provider_message_id").notNull(),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sourceChannel,
+        table.externalChatId,
+        table.providerMessageId,
+      ],
+    }),
+    index("idx_channel_outbound_posts_message_id").on(table.messageId),
+    index("idx_channel_outbound_posts_conversation_id").on(
+      table.conversationId,
+    ),
+  ],
+);

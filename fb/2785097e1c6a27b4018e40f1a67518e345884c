@@ -1,0 +1,138 @@
+assistant/src/__tests__/auth-fallback-events-store.test.ts
+  h_a912520b04f25d 32,34,37-38,41,44-47,68-70,74,76,78,81,83,85,88-90,93-96,100
+assistant/src/__tests__/conversation-surfaces-activation-emit.test.ts
+  h_a912520b04f25d 35-36,42,48-52,98-103,131,134,150,175,183,202,213,226,255,268,282,311,360,395,399
+assistant/src/__tests__/internal-telemetry-routes.test.ts
+  h_a912520b04f25d 43-44,50-55,63-65,69-72,89,91,102-103,106,119,121-122,125,127-128,131-135,137,139-140,142,145,148,150-153,155,157-158,160,163-168,173-174
+assistant/src/__tests__/telemetry-routes.test.ts
+  h_a912520b04f25d 15,54,57,68-69,72,90-91,94,99-104,109,111-112,115,117-118,121,124-126,128-131,134-135,141,152,159,161,164,169,171,174-179,182-183,187
+assistant/src/agent/loop.ts
+  h_a912520b04f25d 65,140,144-146
+assistant/src/avatar/__tests__/avatar-store.test.ts
+  h_a912520b04f25d 56-62
+assistant/src/avatar/avatar-store.ts
+  h_a912520b04f25d 35,115,119-121
+assistant/src/calls/__tests__/call-funnel-telemetry.test.ts
+  h_a912520b04f25d 14-15
+assistant/src/calls/call-store.ts
+  h_a912520b04f25d 15,146-152,325-332
+assistant/src/daemon/conversation-skill-tools.ts
+  h_a912520b04f25d 30,200-208
+assistant/src/daemon/conversation-surfaces.ts
+  h_a912520b04f25d 59,1845-1848,1852-1854
+assistant/src/daemon/event-loop-watchdog.ts
+  h_a912520b04f25d 56,330-331,342-344
+assistant/src/daemon/lifecycle.ts
+  h_a912520b04f25d 750
+assistant/src/live-voice/live-voice-session.ts
+  h_a912520b04f25d 1598,2160
+assistant/src/monitoring/__tests__/oom-kill-reporter.test.ts
+  h_a912520b04f25d 165
+assistant/src/monitoring/db-integrity-sample.ts
+  h_a912520b04f25d 119
+assistant/src/monitoring/oom-kill-reporter.ts
+  h_a912520b04f25d 18-21,239-242,296,301,328,345,350,383,469
+assistant/src/onboarding/__tests__/onboarding-events-store.test.ts
+  h_a912520b04f25d 5,19-22,26,28,31-32,38,55-56,66,70-71,77,83,85,91,94-96,103,108,110,113-114,122,147,149-150,153-155,158
+assistant/src/onboarding/onboarding-events-store.ts
+  h_a912520b04f25d 103,118,151-153,155,177,199,217,231,257,274,288
+assistant/src/persistence/__tests__/main-db-readonly-probe.ts
+  h_a912520b04f25d 34-39,41-59,61-82,84-85
+assistant/src/persistence/db-facade.ts
+  h_a912520b04f25d 30-32,178,186-187,197-198,208-209
+assistant/src/persistence/lifecycle-events-store.test.ts
+  h_a912520b04f25d 33,35,38-39,61-62,90,93,121,123,127-129
+assistant/src/persistence/lifecycle-events-store.ts
+  h_a912520b04f25d 103-104,108
+assistant/src/persistence/slow-sync-log.ts
+  h_a912520b04f25d 32,167-178
+assistant/src/plugins/defaults/memory/memory-retrospective-job.ts
+  h_a912520b04f25d 83,207,218-220
+assistant/src/plugins/defaults/memory/memory-retrospective-skill-card.ts
+  h_a912520b04f25d 59,359,364-366
+assistant/src/plugins/defaults/memory/startup.ts
+  h_a912520b04f25d 52,105,110-112
+assistant/src/plugins/defaults/memory/v3/orchestrate.ts
+  h_a912520b04f25d 80,140,145-147,168,173-175
+assistant/src/runtime/routes/conversation-routes.ts
+  h_a912520b04f25d 166,2274,2282-2284,2366,2374-2376
+assistant/src/runtime/routes/deprecated-route-context.ts
+  h_a912520b04f25d 25,74-85
+assistant/src/runtime/routes/internal-telemetry-routes.ts
+  h_a912520b04f25d 47,62-66
+assistant/src/runtime/routes/telemetry-routes.ts
+  h_a912520b04f25d 86,94,134,169
+assistant/src/schedule/scheduler.ts
+  h_a912520b04f25d 31,510-516,523-530
+assistant/src/security/auth-fallback-events-store.ts
+  h_a912520b04f25d 32-58
+assistant/src/telemetry/__tests__/config-setting-events-store.test.ts
+  h_a912520b04f25d 13,15,18,21,26,29,31,37,52-53,58
+assistant/src/telemetry/__tests__/config-setting-snapshot.test.ts
+  h_a912520b04f25d 28-29,32-33,37,39,43-44,46,53-56,58,61-63,65,67,70-73,75,77,80,82,86,91-92,99,101-102,108-109,112,114-116,121-122,127-128,135-137,139,142
+assistant/src/telemetry/__tests__/flush-checkpoints.test.ts
+  h_a912520b04f25d 14,23-24,27-28,31-34,37-42,47-50,55-63
+assistant/src/telemetry/__tests__/outbox-test-harness.ts
+  h_a912520b04f25d 28,53-54,58,62-65,70,73-75,79-89,91,93-94
+assistant/src/telemetry/__tests__/watchdog-events-store.test.ts
+  h_a912520b04f25d 13,15,18,20-24,27-28,34,50-51,53,62-63,69
+assistant/src/telemetry/config-setting-events-store.ts
+  h_a912520b04f25d 31,33,35,38
+assistant/src/telemetry/config-setting-snapshot.ts
+  h_a912520b04f25d 75-77,91,114-120
+assistant/src/telemetry/fire-and-forget.ts
+  h_a912520b04f25d 1-30
+assistant/src/telemetry/flush-checkpoints.ts
+  h_a912520b04f25d 1,10-14,19-20,23-24,28-30,34-38,43-47,57-59
+assistant/src/telemetry/memory-tier-reporter.ts
+  h_a912520b04f25d 5,64-66,68-73,75,77,81-83
+assistant/src/telemetry/skill-loaded-events-store.ts
+  h_a912520b04f25d 24-27,40
+assistant/src/telemetry/telemetry-event-sources.test.ts
+  h_a912520b04f25d 120,123,136-137,156,162,164,170-171,175-176,191,195,198,204-205,208,211-212
+assistant/src/telemetry/telemetry-event-sources.ts
+  h_a912520b04f25d 82,91-92,123-124,143,147-148,183,189,191,225-226,229,235,239,242,255-257,323-324
+assistant/src/telemetry/telemetry-events-outbox.test.ts
+  h_a912520b04f25d 3,39,49-63,67,69,72-73,75,81-82,103,106-107,109,130,133,136-137,139,149,152-154,157-161,167-170,172,175-178,180,184-186,188-192,195-198,200,202,205-206,208,210,213,218,220,222,224,227,233,236,248,259,263,270-271,276,282,292,295,301,304,306,312-314,317-318,320,327,330-334,336,339-340,343-344,346,348,351-352,354-355,358,361-364,366,368-371
+assistant/src/telemetry/telemetry-events-outbox.ts
+  h_a912520b04f25d 8-11,15,25,58,60-61,68-81,89,91,111,115,121,141,164,167-168,173-177,181-184,189-193,202,204-205,209-213,217-220,224-226,235-236,240-243
+assistant/src/telemetry/tool-audit.ts
+  h_a912520b04f25d 44,204,206,210-212
+assistant/src/telemetry/usage-telemetry-reporter.test.ts
+  h_a912520b04f25d 19-26,327-328,330,363,380,462-463,1778-1779,1825-1826,1860-1861,1876,1881-1882,2109-2111,2124-2126,2149-2151,2157-2159,2170,2195,2218,2240,2387,2422-2423,2463-2464,2619,2624-2625,2632,2634,2638,2647,2649,2652,2660,2663,2668,2677,2687,2733-2735,2744,2758,2768-2770,2779,2783,2822,2826,2830-2832,2842-2844,2853,2864-2866,2875,2901,2930,2933,2938,2962,3151-3152,3155,3232-3233,3241-3244,3248-3249,3263,3272,3279,3285-3286,3294,3300-3301,3309,3317-3322,3326,3340,3345,3356,3362,3370,3376,3383,3408,3423,3430,3443,3452,3476
+assistant/src/telemetry/usage-telemetry-reporter.ts
+  h_a912520b04f25d 152,156,214,216,219-220,254,330,354,409,413-414,427-428,430-434,436-438,549,553-557
+assistant/src/telemetry/watchdog-events-store.ts
+  h_a912520b04f25d 25
+assistant/src/tools/skills/scaffold-managed.ts
+  h_a912520b04f25d 19,170,174-176,502,509-511
+assistant/src/watcher/__tests__/telemetry.test.ts
+  h_a912520b04f25d 32-34,65,72,82,86,92,96,101-102,108,114-116,122,128,133,137,143,149,155,162,169,171,176,182-183
+assistant/src/watcher/telemetry.ts
+  h_a912520b04f25d 28,50,57,87,90-92
+bulk_fix.py
+  h_a912520b04f25d 1-36
+final_fix.py
+  h_a912520b04f25d 1-28
+fix_mock_decls.py
+  h_a912520b04f25d 1-62
+fix_test.py
+  h_a912520b04f25d 1-44
+run_fix.sh
+  h_a912520b04f25d 1-14
+run_fix2.sh
+  h_a912520b04f25d 1-6
+show_lines.py
+  h_a912520b04f25d 1-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fb2785097e1c6a27b4018e40f1a67518e345884c",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

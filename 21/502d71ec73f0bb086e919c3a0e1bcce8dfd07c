@@ -1,0 +1,16 @@
+assistant/src/config/__tests__/platform-identity.test.ts
+  h_a912520b04f25d 3,12-14,18-23,31,138-139,184-224
+assistant/src/config/platform-identity.ts
+  h_a912520b04f25d 10-13,189-216,223-227
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "21502d71ec73f0bb086e919c3a0e1bcce8dfd07c",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

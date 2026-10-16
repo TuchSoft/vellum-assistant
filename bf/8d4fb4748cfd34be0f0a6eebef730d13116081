@@ -1,0 +1,18 @@
+assistant/src/persistence/__tests__/db-orm.test.ts
+  h_a912520b04f25d 1-102
+assistant/src/persistence/db-facade.ts
+  h_a912520b04f25d 35-37,59-61,71-89,129
+assistant/src/persistence/db-postgres-facade.ts
+  h_a912520b04f25d 20,24-31,36,77-94,97,102,106-109,156-158,190,197
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bf8d4fb4748cfd34be0f0a6eebef730d13116081",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
-import { getTelemetryDb } from "../../persistence/db-connection.js";
+import { getTelemetryAsyncDb } from "../../persistence/db-facade.js";
 import { initializeDb } from "../../persistence/db-init.js";
-import { flushCheckpoints } from "../../persistence/schema/index.js";
 import {
   getFlushCheckpoint,
   isFlushCheckpointStoreAvailable,
@@ -12,11 +11,11 @@ import {
 await initializeDb();
 
 async function clearCheckpoints(): Promise<void> {
-  const db = getTelemetryDb();
+  const db = getTelemetryAsyncDb();
   if (!db) {
     throw new Error("telemetry DB unavailable in test");
   }
-  db.delete(flushCheckpoints).run();
+  await db.run("DELETE FROM flush_checkpoints");
 }
 
 describe("flush-checkpoints", () => {

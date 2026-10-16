@@ -129,6 +129,10 @@ describe("internal-telemetry-routes: auth-fallback", () => {
   });
 
   test("throws 503 when consent is on but the telemetry DB is unavailable, so the gateway re-queues", async () => {
+    const savedSlotUrl = process.env.VELLUM_TELEMETRY_DATABASE_URL;
+    const savedGenericUrl = process.env.VELLUM_DATABASE_URL;
+    process.env.VELLUM_TELEMETRY_DATABASE_URL = "";
+    process.env.VELLUM_DATABASE_URL = "";
     const spySqlite = spyOn(dbConnection, "getTelemetrySqlite").mockReturnValue(
       null,
     );
@@ -138,6 +142,16 @@ describe("internal-telemetry-routes: auth-fallback", () => {
     } finally {
       spySqlite.mockRestore();
       spyDb.mockRestore();
+      if (savedSlotUrl === undefined) {
+        delete process.env.VELLUM_TELEMETRY_DATABASE_URL;
+      } else {
+        process.env.VELLUM_TELEMETRY_DATABASE_URL = savedSlotUrl;
+      }
+      if (savedGenericUrl === undefined) {
+        delete process.env.VELLUM_DATABASE_URL;
+      } else {
+        process.env.VELLUM_DATABASE_URL = savedGenericUrl;
+      }
     }
     expect((await pendingAuthFallbackPayloads()).length).toBe(0);
 
@@ -147,6 +161,10 @@ describe("internal-telemetry-routes: auth-fallback", () => {
 
   test("throws 503 (not skipped) when consent is unknown and the telemetry DB is unavailable", async () => {
     shareAnalytics = "unknown";
+    const savedSlotUrl = process.env.VELLUM_TELEMETRY_DATABASE_URL;
+    const savedGenericUrl = process.env.VELLUM_DATABASE_URL;
+    process.env.VELLUM_TELEMETRY_DATABASE_URL = "";
+    process.env.VELLUM_DATABASE_URL = "";
     const spySqlite = spyOn(dbConnection, "getTelemetrySqlite").mockReturnValue(
       null,
     );
@@ -156,6 +174,16 @@ describe("internal-telemetry-routes: auth-fallback", () => {
     } finally {
       spySqlite.mockRestore();
       spyDb.mockRestore();
+      if (savedSlotUrl === undefined) {
+        delete process.env.VELLUM_TELEMETRY_DATABASE_URL;
+      } else {
+        process.env.VELLUM_TELEMETRY_DATABASE_URL = savedSlotUrl;
+      }
+      if (savedGenericUrl === undefined) {
+        delete process.env.VELLUM_DATABASE_URL;
+      } else {
+        process.env.VELLUM_DATABASE_URL = savedGenericUrl;
+      }
     }
     expect((await pendingAuthFallbackPayloads()).length).toBe(0);
   });

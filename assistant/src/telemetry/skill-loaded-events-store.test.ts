@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
-import { getTelemetryDb } from "../persistence/db-connection.js";
-import { telemetryEvents } from "../persistence/schema/index.js";
+import { getTelemetryAsyncDb } from "../persistence/db-facade.js";
 import { APP_VERSION } from "../version.js";
 import {
   resetOutboxTable,
@@ -9,37 +8,50 @@ import {
 } from "./__tests__/outbox-test-harness.js";
 import { recordSkillLoadedEvent } from "./skill-loaded-events-store.js";
 
-function pendingRows(): Array<{
-  id: string;
-  name: string;
-  createdAt: number;
-  conversationId: string | null;
-  payload: Record<string, unknown>;
-}> {
-  return getTelemetryDb()!
-    .select()
-    .from(telemetryEvents)
-    .all()
-    .map((row) => ({
-      ...row,
-      payload: JSON.parse(row.payload) as Record<string, unknown>,
-    }));
+/** Read rows through the facade so the assertions are backend-portable. */
+async function pendingRows(): Promise<
+  Array<{
+    id: string;
+    name: string;
+    createdAt: number;
+    conversationId: string | null;
+    payload: Record<string, unknown>;
+  }>
+> {
+  const db = getTelemetryAsyncDb();
+  if (!db) {
+    throw new Error("telemetry DB unavailable in test");
+  }
+  const rows = await db.all<{
+    id: string;
+    name: string;
+    createdAt: number;
+    conversationId: string | null;
+    payload: string;
+  }>(
+    `SELECT id, name, created_at AS "createdAt", conversation_id AS "conversationId", payload
+     FROM telemetry_events ORDER BY created_at, id`,
+  );
+  return rows.map((row) => ({
+    ...row,
+    payload: JSON.parse(row.payload) as Record<string, unknown>,
+  }));
 }
 
 describe("skill-loaded-events-store", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setShareAnalytics(true);
-    resetOutboxTable();
+    await resetOutboxTable();
   });
 
-  test("honors the share_analytics opt-out (records nothing)", () => {
+  test("honors the share_analytics opt-out (records nothing)", async () => {
     setShareAnalytics(false);
-    recordSkillLoadedEvent({ skillName: "web-research" });
-    expect(pendingRows()).toHaveLength(0);
+    await recordSkillLoadedEvent({ skillName: "web-research" });
+    expect(await pendingRows()).toHaveLength(0);
   });
 
-  test("record writes the full wire payload into the outbox", () => {
-    recordSkillLoadedEvent({
+  test("record writes the full wire payload into the outbox", async () => {
+    await recordSkillLoadedEvent({
       conversationId: "conv-xyz",
       skillName: "web-research",
       skillUpdatedAt: "2026-06-01T00:00:00.000Z",
@@ -49,7 +61,7 @@ describe("skill-loaded-events-store", () => {
       inferenceProfileSource: "active-profile",
     });
 
-    const rows = pendingRows();
+    const rows = await pendingRows();
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
     expect(row.name).toBe("skill_loaded");
@@ -73,10 +85,10 @@ describe("skill-loaded-events-store", () => {
     });
   });
 
-  test("optional fields ship as null and leave the conversation column null", () => {
-    recordSkillLoadedEvent({ skillName: "tasks" });
+  test("optional fields ship as null and leave the conversation column null", async () => {
+    await recordSkillLoadedEvent({ skillName: "tasks" });
 
-    const rows = pendingRows();
+    const rows = await pendingRows();
     expect(rows).toHaveLength(1);
     expect(rows[0]!.conversationId).toBeNull();
     expect(rows[0]!.payload).toMatchObject({

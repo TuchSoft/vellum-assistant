@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
-import { getTelemetrySqlite } from "../../persistence/db-connection.js";
+import { getTelemetryAsyncDb } from "../../persistence/db-facade.js";
 import {
   pendingOutboxPayloads as harnessPendingPayloads,
   resetOutboxTable,
@@ -59,9 +59,9 @@ describe("onboarding-events-store: recordActivationEvent", () => {
     });
     expect(event).not.toBeNull();
 
-    const raw = getTelemetrySqlite()!
-      .query(`SELECT id, name FROM telemetry_events`)
-      .all() as Array<{ id: string; name: string }>;
+    const raw = await getTelemetryAsyncDb()!.all<{ id: string; name: string }>(
+      `SELECT id, name FROM telemetry_events`,
+    );
     expect(raw).toEqual([{ id: event!.id, name: "onboarding" }]);
     const payload = (await pendingOnboardingPayloads())[0]!;
     expect(payload.daemon_event_id).not.toBe(event!.id);
@@ -132,13 +132,11 @@ describe("onboarding-events-store: recordOnboardingEvent", () => {
       assistant_version: APP_VERSION,
     });
 
-    const raw = getTelemetrySqlite()!
-      .query(`SELECT id, name, conversation_id FROM telemetry_events`)
-      .all() as Array<{
+    const raw = await getTelemetryAsyncDb()!.all<{
       id: string;
       name: string;
       conversation_id: string | null;
-    }>;
+    }>(`SELECT id, name, conversation_id FROM telemetry_events`);
     expect(raw).toEqual([
       { id: event!.id, name: "onboarding", conversation_id: null },
     ]);

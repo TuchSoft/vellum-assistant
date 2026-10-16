@@ -6,7 +6,7 @@ import {
   withTelemetryDbUnavailable,
 } from "../telemetry/__tests__/outbox-test-harness.js";
 import { APP_VERSION } from "../version.js";
-import { getTelemetrySqlite } from "./db-connection.js";
+import { getTelemetryAsyncDb } from "./db-facade.js";
 import {
   buildLifecycleTelemetryEvent,
   recordLifecycleEvent,
@@ -20,13 +20,16 @@ interface RawOutboxRow {
   payload: string;
 }
 
-function outboxRows(): RawOutboxRow[] {
-  return getTelemetrySqlite()!
-    .query(
-      `SELECT id, name, created_at, conversation_id, payload
-       FROM telemetry_events ORDER BY created_at, id`,
-    )
-    .all() as RawOutboxRow[];
+/** Read rows through the facade so the assertions are backend-portable. */
+async function outboxRows(): Promise<RawOutboxRow[]> {
+  const db = getTelemetryAsyncDb();
+  if (!db) {
+    throw new Error("telemetry DB unavailable in test");
+  }
+  return db.all<RawOutboxRow>(
+    `SELECT id, name, created_at, conversation_id, payload
+     FROM telemetry_events ORDER BY created_at, id`,
+  );
 }
 
 describe("lifecycle-events-store", () => {
@@ -41,7 +44,7 @@ describe("lifecycle-events-store", () => {
     expect(event!.eventName).toBe("app_open");
     expect(event!.createdAt).toBeGreaterThan(0);
 
-    const rows = outboxRows();
+    const rows = await outboxRows();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       id: event!.id,
@@ -68,7 +71,7 @@ describe("lifecycle-events-store", () => {
     });
     expect(event).not.toBeNull();
 
-    const rows = outboxRows();
+    const rows = await outboxRows();
     expect(rows).toHaveLength(1);
     // The conversation is stamped on the row too, so deleting the conversation
     // deletes the pending event with it.
@@ -96,7 +99,7 @@ describe("lifecycle-events-store", () => {
       surface: "",
     });
 
-    expect(JSON.parse(outboxRows()[0]!.payload)).toEqual({
+    expect(JSON.parse((await outboxRows())[0]!.payload)).toEqual({
       type: "lifecycle",
       daemon_event_id: event!.id,
       event_name: "permission_prompt:bash",
@@ -105,7 +108,7 @@ describe("lifecycle-events-store", () => {
       tool_name: "bash",
       risk_level: "high",
     });
-    expect(outboxRows()[0]!.conversation_id).toBeNull();
+    expect((await outboxRows())[0]!.conversation_id).toBeNull();
   });
 
   test("buildLifecycleTelemetryEvent stamps the record-time binary version", () => {
@@ -121,7 +124,7 @@ describe("lifecycle-events-store", () => {
   test("returns null and writes no row when share_analytics is disabled", async () => {
     setShareAnalytics(false);
     expect(await recordLifecycleEvent("app_open")).toBeNull();
-    expect(outboxRows()).toHaveLength(0);
+    expect(await outboxRows()).toHaveLength(0);
   });
 
   test("degrades when the telemetry database is unavailable", async () => {
@@ -129,6 +132,6 @@ describe("lifecycle-events-store", () => {
       expect(await recordLifecycleEvent("app_open")).toBeNull();
     });
 
-    expect(outboxRows()).toHaveLength(0);
+    expect(await outboxRows()).toHaveLength(0);
   });
 });

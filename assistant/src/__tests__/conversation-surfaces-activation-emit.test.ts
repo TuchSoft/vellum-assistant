@@ -52,6 +52,28 @@ async function pendingOnboardingPayloads(): Promise<
   return rows.map((row) => JSON.parse(row.payload) as OnboardingTelemetryEvent);
 }
 
+/**
+ * Wait until at least `min` onboarding rows are visible.
+ *
+ * The emission under test is fire-and-forget (the surface commit path must not
+ * block on telemetry), so the row lands asynchronously. On the synchronous
+ * SQLite backend it is visible by the next microtask; on Postgres it waits for
+ * a round trip. Poll instead of asserting immediately.
+ */
+async function waitForOnboardingRows(
+  min: number,
+  timeoutMs = 3000,
+): Promise<OnboardingTelemetryEvent[]> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const rows = await pendingOnboardingPayloads();
+    if (rows.length >= min || Date.now() >= deadline) {
+      return rows;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 interface ProcessMessageCall {
   content: string;
   activeSurfaceId?: string;
@@ -147,7 +169,7 @@ describe("activation moment emission from ui_show surface commits", () => {
       selectedIds: ["inbox"],
     });
 
-    const rows = await pendingOnboardingPayloads();
+    const rows = await waitForOnboardingRows(1);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.step_name).toBe("activation_moment_2_complete");
     expect(rows[0]!.step_index).toBe(2);
@@ -180,7 +202,7 @@ describe("activation moment emission from ui_show surface commits", () => {
       choiceId: "inbox",
       selectedIds: ["inbox"],
     });
-    const rows = await pendingOnboardingPayloads();
+    const rows = await waitForOnboardingRows(1);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.step_name).toBe("activation_moment_2_complete");
   });
@@ -199,7 +221,7 @@ describe("activation moment emission from ui_show surface commits", () => {
     });
 
     // Recorded immediately on render — no handleSurfaceAction commit needed.
-    let rows = await pendingOnboardingPayloads();
+    let rows = await waitForOnboardingRows(1);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.step_name).toBe("activation_first_wow_executed");
     expect(rows[0]!.step_index).toBe(4);
@@ -210,7 +232,7 @@ describe("activation moment emission from ui_show surface commits", () => {
       (msg): msg is UiSurfaceShow => msg.type === "ui_surface_show",
     ) as UiSurfaceShow;
     await handleSurfaceAction(ctx, showMessage.surfaceId, "expand", {});
-    rows = await pendingOnboardingPayloads();
+    rows = await waitForOnboardingRows(1);
     expect(rows).toHaveLength(1);
   });
 
@@ -308,7 +330,7 @@ describe("activation moment emission from ui_show surface commits", () => {
       seedPrompt: "Write a draft",
     });
 
-    const rows = await pendingOnboardingPayloads();
+    const rows = await waitForOnboardingRows(1);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.step_name).toBe("activation_moment_1_complete");
     expect(rows[0]!.session_id).toBe("conv-launch");
@@ -357,7 +379,7 @@ describe("activation moment emission from ui_show surface commits", () => {
       selectedIds: ["inbox"],
     });
 
-    const rows = await pendingOnboardingPayloads();
+    const rows = await waitForOnboardingRows(1);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.step_name).toBe("activation_moment_2_complete");
     expect(rows[0]!.session_id).toBe("conv-restore");
@@ -396,7 +418,7 @@ describe("activation moment emission from ui_show surface commits", () => {
 
     // Terminal commit — emits exactly once.
     await handleSurfaceAction(ctx, surfaceId, "run", { selectedIds: ["r1"] });
-    const rows = await pendingOnboardingPayloads();
+    const rows = await waitForOnboardingRows(1);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.step_name).toBe("activation_moment_3_complete");
   });

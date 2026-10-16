@@ -1,29 +1,33 @@
 /**
  * Tests for the async DB facade (`db-facade.ts`) — the driver-agnostic seam
- * that the DB port colors the codebase against. The SQLite backend must behave
- * exactly like the synchronous helpers it wraps: same rows, same changed-row
+ * that the DB port colors the codebase against. The backend under test must
+ * behave like the synchronous helpers it wraps: same rows, same changed-row
  * counts, same transaction semantics; only the calling convention is async.
+ *
+ * Runs against whichever backend the telemetry slot is configured for (SQLite
+ * by default, Postgres with `VELLUM_TELEMETRY_DB_BACKEND=postgres`), so the
+ * probe uses dialect-neutral DDL and a per-dialect existence probe.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
-import { getTelemetrySqlite } from "../db-connection.js";
 import { getAsyncDb, getTelemetryAsyncDb } from "../db-facade.js";
 import { initializeDb } from "../db-init.js";
 
 await initializeDb();
 
-const raw = getTelemetrySqlite();
-if (!raw) {
-  throw new Error("telemetry database unavailable in test");
-}
+const isPostgres =
+  (process.env.VELLUM_TELEMETRY_DB_BACKEND ?? process.env.VELLUM_DB_BACKEND) ===
+  "postgres";
+const INT_TYPE = isPostgres ? "BIGINT" : "INTEGER";
 
-raw.exec(/*sql*/ `
-  CREATE TABLE IF NOT EXISTS facade_probe (
-    id TEXT PRIMARY KEY,
-    value INTEGER NOT NULL
-  )
-`);
+/** Dialect-appropriate existence probe for a table by name. */
+function tableExistsSql(): string {
+  return isPostgres
+    ? `SELECT table_name AS name FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_name = ?`
+    : `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`;
+}
 
 function telemetry() {
   const db = getTelemetryAsyncDb();
@@ -33,13 +37,19 @@ function telemetry() {
   return db;
 }
 
-describe("AsyncDb facade (sqlite)", () => {
+beforeAll(async () => {
+  await telemetry().exec(
+    `CREATE TABLE IF NOT EXISTS facade_probe (id TEXT PRIMARY KEY, value ${INT_TYPE} NOT NULL)`,
+  );
+});
+
+describe("AsyncDb facade", () => {
   beforeEach(async () => {
     await telemetry().run("DELETE FROM facade_probe");
   });
 
   test("dialect and slot are reported", () => {
-    expect(telemetry().dialect).toBe("sqlite");
+    expect(telemetry().dialect).toBe(isPostgres ? "postgres" : "sqlite");
     expect(telemetry().slot).toBe("telemetry");
   });
 
@@ -98,10 +108,9 @@ describe("AsyncDb facade (sqlite)", () => {
     await telemetry().exec(
       "CREATE TABLE IF NOT EXISTS facade_probe_ddl (id TEXT PRIMARY KEY)",
     );
-    const row = await telemetry().get<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-      ["facade_probe_ddl"],
-    );
+    const row = await telemetry().get<{ name: string }>(tableExistsSql(), [
+      "facade_probe_ddl",
+    ]);
     expect(row).toEqual({ name: "facade_probe_ddl" });
     await telemetry().exec("DROP TABLE IF EXISTS facade_probe_ddl");
   });

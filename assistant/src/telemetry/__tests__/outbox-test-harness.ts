@@ -79,10 +79,14 @@ export async function pendingOutboxPayloads<T = Record<string, unknown>>(
 export async function withTelemetryDbUnavailable(
   fn: () => Promise<void>,
 ): Promise<void> {
-  // The async facade resolves its raw connection through
-  // `dbConnection.getTelemetrySqlite()` at call time, so stubbing that (and the
-  // sync `getTelemetryDb` for any direct consumer) makes the whole telemetry
-  // data layer observe an unavailable database.
+  // The async facade resolves its backend at call time. Under SQLite it reads
+  // `dbConnection.getTelemetrySqlite()`; under Postgres it reads the slot's
+  // connection URL. Blank both the SQLite accessors and the URL env so the
+  // facade reports the slot unavailable regardless of backend.
+  const savedSlotUrl = process.env.VELLUM_TELEMETRY_DATABASE_URL;
+  const savedGenericUrl = process.env.VELLUM_DATABASE_URL;
+  process.env.VELLUM_TELEMETRY_DATABASE_URL = "";
+  process.env.VELLUM_DATABASE_URL = "";
   const spySqlite = spyOn(dbConnection, "getTelemetrySqlite").mockReturnValue(
     null,
   );
@@ -92,5 +96,15 @@ export async function withTelemetryDbUnavailable(
   } finally {
     spySqlite.mockRestore();
     spyDb.mockRestore();
+    if (savedSlotUrl === undefined) {
+      delete process.env.VELLUM_TELEMETRY_DATABASE_URL;
+    } else {
+      process.env.VELLUM_TELEMETRY_DATABASE_URL = savedSlotUrl;
+    }
+    if (savedGenericUrl === undefined) {
+      delete process.env.VELLUM_DATABASE_URL;
+    } else {
+      process.env.VELLUM_DATABASE_URL = savedGenericUrl;
+    }
   }
 }

@@ -199,14 +199,11 @@ import {
   recordActivationEvent,
   recordOnboardingEvent,
 } from "../onboarding/onboarding-events-store.js";
-import { getDb, getTelemetryDb } from "../persistence/db-connection.js";
+import { getDb } from "../persistence/db-connection.js";
+import { getTelemetryAsyncDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { recordLifecycleEvent } from "../persistence/lifecycle-events-store.js";
-import {
-  conversations,
-  telemetryEvents,
-  toolInvocations,
-} from "../persistence/schema/index.js";
+import { conversations, toolInvocations } from "../persistence/schema/index.js";
 import { recordAuthFallbackCounts } from "../security/auth-fallback-events-store.js";
 import type { UsageEvent } from "../usage/types.js";
 import {
@@ -340,7 +337,7 @@ let mockFetch: ReturnType<typeof mock>;
 // Setup / Teardown
 // ---------------------------------------------------------------------------
 
-beforeEach(() => {
+beforeEach(async () => {
   eventIdCounter = 0;
   // Default consent ON so the happy-path send tests exercise the flush.
   mockGetRawShareAnalytics.mockReset();
@@ -365,7 +362,9 @@ beforeEach(() => {
   mockQueryUnreportedTurnEvents.mockReset();
   mockQueryUnreportedTurnEvents.mockReturnValue([]);
   getDb().delete(toolInvocations).run();
-  getTelemetryDb()!.delete(telemetryEvents).run();
+  // Clear the telemetry outbox through the facade so the reset is
+  // backend-portable (SQLite today, Postgres under the port).
+  await getTelemetryAsyncDb()!.run("DELETE FROM telemetry_events");
   delete process.env.VELLUM_DISABLE_PLATFORM;
   delete process.env.IS_PLATFORM;
   mockGetPlatformBaseUrl.mockReset();
@@ -2052,7 +2051,7 @@ describe("UsageTelemetryReporter", () => {
 
   test("auth_fallback events are included in the events array with type discriminator", async () => {
     mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    recordAuthFallbackCounts(1700000740000, 1700000800000, [
+    await recordAuthFallbackCounts(1700000740000, 1700000800000, [
       {
         guard: "edge",
         path: "/v1/messages",
@@ -2089,7 +2088,7 @@ describe("UsageTelemetryReporter", () => {
 
   test("auth_fallback rows are deleted on success and never watermarked (ack mode)", async () => {
     mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    recordAuthFallbackCounts(1700000000000, 1700000001000, [
+    await recordAuthFallbackCounts(1700000000000, 1700000001000, [
       {
         guard: "edge-scoped",
         path: "/v1/a",
@@ -2132,7 +2131,7 @@ describe("UsageTelemetryReporter", () => {
 
   test("auth_fallback rows survive a failed POST and re-ship on the next flush", async () => {
     mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    recordAuthFallbackCounts(1700000000000, 1700000001000, [
+    await recordAuthFallbackCounts(1700000000000, 1700000001000, [
       {
         guard: "edge",
         path: "/v1/messages",
@@ -3385,26 +3384,24 @@ describe("UsageTelemetryReporter", () => {
 
   test("outboxSource purges corrupt-payload rows at collect while valid siblings ship", async () => {
     // Raw inserts: the store API only writes JSON.stringify-ed events, so
-    // corrupt payloads (invalid JSON, non-object JSON) go in directly.
-    getTelemetryDb()!
-      .insert(telemetryEvents)
-      .values([
-        {
-          id: "ob-corrupt-json",
-          name: OUTBOX_NAME,
-          createdAt: OUTBOX_BASE + 1000,
-          conversationId: null,
-          payload: "{not json",
-        },
-        {
-          id: "ob-non-object",
-          name: OUTBOX_NAME,
-          createdAt: OUTBOX_BASE + 2000,
-          conversationId: null,
-          payload: "42",
-        },
-      ])
-      .run();
+    // corrupt payloads (invalid JSON, non-object JSON) go in directly. Written
+    // through the facade so the test is backend-portable.
+    await getTelemetryAsyncDb()!.run(
+      `INSERT INTO telemetry_events (id, name, created_at, conversation_id, payload)
+       VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)`,
+      [
+        "ob-corrupt-json",
+        OUTBOX_NAME,
+        OUTBOX_BASE + 1000,
+        null,
+        "{not json",
+        "ob-non-object",
+        OUTBOX_NAME,
+        OUTBOX_BASE + 2000,
+        null,
+        "42",
+      ],
+    );
     await seedOutboxRow("ob-valid", OUTBOX_BASE + 3000);
     const reporter = new UsageTelemetryReporter(
       [outboxSource(OUTBOX_NAME)],

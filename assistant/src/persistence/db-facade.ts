@@ -30,6 +30,8 @@ import type { DrizzleDb } from "./db-connection.js";
 // Namespace import (not named bindings) so tests can `spyOn` a connection
 // accessor and have the facade observe the replacement at call time.
 import * as dbConnection from "./db-connection.js";
+import { getPostgresAsyncDb } from "./db-postgres-facade.js";
+import { TELEMETRY_PG_BASELINE } from "./pg-baseline/telemetry.js";
 
 /** Which driver backs an {@link AsyncDb}. */
 export type DbDialect = "sqlite" | "postgres";
@@ -60,8 +62,10 @@ export interface AsyncDb {
   readonly dialect: DbDialect;
   readonly slot: AsyncDbSlot;
 
-  /** The Drizzle query root. Terminal calls must be awaited. */
-  readonly orm: DrizzleDb;
+  /** The Drizzle query root, when the backend exposes one. Terminal calls
+   * must be awaited. Absent on the Postgres backend until the `pgTable`
+   * schema lands (see the module doc in `db-postgres-facade.ts`). */
+  readonly orm?: DrizzleDb;
 
   /** Run a query and return every row. */
   all<T = unknown>(sql: string, params?: readonly SqlParam[]): Promise<T[]>;
@@ -168,12 +172,62 @@ function sqliteFacade(
 }
 
 /**
+ * Per-slot backend selection from env. A slot-specific pair
+ * (`VELLUM_<SLOT>_DB_BACKEND` / `VELLUM_<SLOT>_DATABASE_URL`) overrides the
+ * generic pair (`VELLUM_DB_BACKEND` / `VELLUM_DATABASE_URL`); the default is
+ * SQLite, so an unconfigured process behaves exactly as before.
+ */
+interface BackendResolution {
+  dialect: DbDialect;
+  url: string | undefined;
+}
+
+function resolveBackend(slot: AsyncDbSlot): BackendResolution {
+  const upper = slot.toUpperCase();
+  const backend =
+    process.env[`VELLUM_${upper}_DB_BACKEND`] ?? process.env.VELLUM_DB_BACKEND;
+  return {
+    dialect: backend === "postgres" ? "postgres" : "sqlite",
+    url:
+      process.env[`VELLUM_${upper}_DATABASE_URL`] ??
+      process.env.VELLUM_DATABASE_URL,
+  };
+}
+
+/**
+ * Resolve a Postgres facade for `slot`. Fail-soft like the dedicated SQLite
+ * accessors: a missing connection URL (e.g. a blanked env in a degraded-mode
+ * test) yields `null` rather than throwing, so callers keep their existing
+ * `if (!db) return <degraded>` branches on both backends.
+ */
+function postgresFacade(
+  slot: AsyncDbSlot,
+  resolution: BackendResolution,
+  baseline: readonly string[] = [],
+): AsyncDb | null {
+  if (!resolution.url) {
+    void import("../util/logger.js").then(({ getLogger }) =>
+      getLogger("db-facade").warn(
+        { slot },
+        "Postgres backend selected without a connection URL; the slot is unavailable",
+      ),
+    );
+    return null;
+  }
+  return getPostgresAsyncDb(slot, resolution.url, baseline);
+}
+
+/**
  * The async facade for the main database. Unlike {@link getSqlite} (which
  * throws on open failure), this mirrors the dedicated accessors' fail-soft
  * posture and returns `null` when the connection cannot be opened, so callers
  * keep their existing degraded-mode branches.
  */
 export function getAsyncDb(): AsyncDb | null {
+  const resolution = resolveBackend("main");
+  if (resolution.dialect === "postgres") {
+    return postgresFacade("main", resolution);
+  }
   try {
     return sqliteFacade("main", dbConnection.getSqlite(), dbConnection.getDb);
   } catch {
@@ -183,6 +237,10 @@ export function getAsyncDb(): AsyncDb | null {
 
 /** Async facade for the dedicated logs database (`assistant-logs.db`). */
 export function getLogsAsyncDb(): AsyncDb | null {
+  const resolution = resolveBackend("logs");
+  if (resolution.dialect === "postgres") {
+    return postgresFacade("logs", resolution);
+  }
   return sqliteFacade("logs", dbConnection.getLogsSqlite(), () => {
     const db = dbConnection.getLogsDb();
     if (!db) {
@@ -194,6 +252,10 @@ export function getLogsAsyncDb(): AsyncDb | null {
 
 /** Async facade for the dedicated memory database (`assistant-memory.db`). */
 export function getMemoryAsyncDb(): AsyncDb | null {
+  const resolution = resolveBackend("memory");
+  if (resolution.dialect === "postgres") {
+    return postgresFacade("memory", resolution);
+  }
   return sqliteFacade("memory", dbConnection.getMemorySqlite(), () => {
     const db = dbConnection.getMemoryDb();
     if (!db) {
@@ -205,6 +267,10 @@ export function getMemoryAsyncDb(): AsyncDb | null {
 
 /** Async facade for the dedicated telemetry database (`assistant-telemetry.db`). */
 export function getTelemetryAsyncDb(): AsyncDb | null {
+  const resolution = resolveBackend("telemetry");
+  if (resolution.dialect === "postgres") {
+    return postgresFacade("telemetry", resolution, TELEMETRY_PG_BASELINE);
+  }
   return sqliteFacade("telemetry", dbConnection.getTelemetrySqlite(), () => {
     const db = dbConnection.getTelemetryDb();
     if (!db) {

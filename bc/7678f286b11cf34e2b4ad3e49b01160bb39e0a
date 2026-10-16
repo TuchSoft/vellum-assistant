@@ -1,0 +1,20 @@
+assistant/docs/pg-port-translation.md
+  h_a912520b04f25d 1-66
+assistant/src/persistence/__tests__/db-facade.test.ts
+  h_a912520b04f25d 1-155
+assistant/src/persistence/db-facade.ts
+  h_a912520b04f25d 1-222
+assistant/src/persistence/raw-query.ts
+  h_a912520b04f25d 38-45,242-344
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bc7678f286b11cf34e2b4ad3e49b01160bb39e0a",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

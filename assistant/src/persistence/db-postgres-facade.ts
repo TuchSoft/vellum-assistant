@@ -17,14 +17,23 @@
  * facade translates.
  */
 
+import { drizzle } from "drizzle-orm/postgres-js";
 import type { Sql } from "postgres";
 import postgres from "postgres";
 
-import type { AsyncDb, AsyncDbSlot, SqlParam } from "./db-facade.js";
+import type { DrizzleDb } from "./db-connection.js";
+import type {
+  AsyncDb,
+  AsyncDbSlot,
+  SchemaTables,
+  SqlParam,
+} from "./db-facade.js";
+import * as pgSchema from "./pg-schema/index.js";
 
 type PgSql = Sql<Record<string, never>>;
 
 const pools = new Map<string, PgSql>();
+const orms = new Map<string, DrizzleDb>();
 const baselines = new Map<string, Promise<void>>();
 
 /** One pooled connection set per URL, shared by every facade on that URL. */
@@ -65,14 +74,38 @@ function toPgPlaceholders(sqlText: string): string {
   return sqlText.replace(/\?/g, () => `$${++index}`);
 }
 
+/**
+ * The Drizzle query root for a URL, cached per URL.
+ *
+ * Built from the `postgres.js` pool over the Postgres mirror (`pg-schema`) and
+ * cast to the SQLite `DrizzleDb` type on purpose: the facade exposes one
+ * `orm`/`schema` pair so a dialect-agnostic query path typechecks (see the
+ * `AsyncDb.orm` doc). The runtime object is genuinely a Postgres Drizzle
+ * instance, and `schema` hands it the matching `pg-schema` tables.
+ */
+function ormFor(url: string): DrizzleDb {
+  let existing = orms.get(url);
+  if (!existing) {
+    existing = drizzle(pool(url), { schema: pgSchema }) as unknown as DrizzleDb;
+    orms.set(url, existing);
+  }
+  return existing;
+}
+
 class PostgresAsyncDb implements AsyncDb {
   readonly dialect = "postgres" as const;
+  readonly schema = pgSchema as unknown as SchemaTables;
 
   constructor(
     readonly slot: AsyncDbSlot,
     private readonly sql: PgSql,
+    private readonly url: string,
     private readonly baseline: Promise<void> | null,
   ) {}
+
+  get orm(): DrizzleDb {
+    return ormFor(this.url);
+  }
 
   private async ready(): Promise<void> {
     if (this.baseline) {
@@ -120,7 +153,9 @@ class PostgresAsyncDb implements AsyncDb {
   async transaction<T>(cb: (tx: AsyncDb) => Promise<T>): Promise<T> {
     await this.ready();
     const result = await this.sql.begin((tx) =>
-      cb(new PostgresAsyncDb(this.slot, tx as unknown as PgSql, null)),
+      cb(
+        new PostgresAsyncDb(this.slot, tx as unknown as PgSql, this.url, null),
+      ),
     );
     return result as T;
   }
@@ -152,13 +187,14 @@ export function getPostgresAsyncDb(
     }
     applied = existing;
   }
-  return new PostgresAsyncDb(slot, sql, applied);
+  return new PostgresAsyncDb(slot, sql, url, applied);
 }
 
 /** Test/shutdown hook: close every pooled connection. */
 export async function closePostgresFacades(): Promise<void> {
   const open = [...pools.values()];
   pools.clear();
+  orms.clear();
   baselines.clear();
   await Promise.all(open.map((sql) => sql.end({ timeout: 5 })));
 }

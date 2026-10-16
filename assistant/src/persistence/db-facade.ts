@@ -32,6 +32,9 @@ import type { DrizzleDb } from "./db-connection.js";
 import * as dbConnection from "./db-connection.js";
 import { getPostgresAsyncDb } from "./db-postgres-facade.js";
 import { TELEMETRY_PG_BASELINE } from "./pg-baseline/telemetry.js";
+// Value import: the SQLite table barrel, so `AsyncDb.schema` can hand a query
+// the table objects matching the SQLite `orm`'s dialect.
+import * as sqliteSchema from "./schema/index.js";
 
 /** Which driver backs an {@link AsyncDb}. */
 export type DbDialect = "sqlite" | "postgres";
@@ -53,6 +56,9 @@ export type SqlParam =
  */
 export type AsyncDbSlot = "main" | "logs" | "memory" | "telemetry";
 
+/** The SQLite table barrel's shape; the Postgres one is cast to it (same names). */
+export type SchemaTables = typeof sqliteSchema;
+
 /**
  * A connection whose operations all return Promises, regardless of the driver
  * underneath. Methods mirror the raw helpers in `raw-query.ts` so a call site
@@ -62,10 +68,25 @@ export interface AsyncDb {
   readonly dialect: DbDialect;
   readonly slot: AsyncDbSlot;
 
-  /** The Drizzle query root, when the backend exposes one. Terminal calls
-   * must be awaited. Absent on the Postgres backend until the `pgTable`
-   * schema lands (see the module doc in `db-postgres-facade.ts`). */
-  readonly orm?: DrizzleDb;
+  /**
+   * The Drizzle query root for the active backend. Terminal calls must be
+   * awaited.
+   *
+   * Typed as the SQLite Drizzle instance so ONE dialect-agnostic code path
+   * typechecks: on Postgres the runtime object is a `drizzle-orm/postgres-js`
+   * instance over `pg-schema`, and {@link schema} is the matching barrel, so
+   * `await db.orm.select().from(db.schema.scheduleJobs)` is valid on both. Use
+   * `await` on the builder, never the SQLite-only `.get()/.all()/.run()`
+   * terminals. See `pg-port-translation.md`.
+   */
+  readonly orm: DrizzleDb;
+
+  /**
+   * The table barrel matching {@link orm}'s dialect: the SQLite `schema/` on
+   * the SQLite backend, `pg-schema/` on Postgres. The two barrels export the
+   * same table/column names, which is what makes a single query path work.
+   */
+  readonly schema: SchemaTables;
 
   /** Run a query and return every row. */
   all<T = unknown>(sql: string, params?: readonly SqlParam[]): Promise<T[]>;
@@ -105,6 +126,7 @@ export interface AsyncDb {
  */
 class SqliteAsyncDb implements AsyncDb {
   readonly dialect = "sqlite" as const;
+  readonly schema = sqliteSchema;
 
   constructor(
     readonly slot: AsyncDbSlot,

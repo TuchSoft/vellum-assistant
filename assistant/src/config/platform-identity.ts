@@ -7,7 +7,10 @@
  * overrides (and `PLATFORM_ORGANIZATION_ID` / `PLATFORM_USER_ID` when set).
  * When the in-memory assistant id is empty, the next resolve retries
  * validate (single-flight, with a cooldown after a failed attempt that holds
- * only while the same API key and base URL are stored).
+ * only while the same API key and base URL are stored). When validate yields
+ * nothing (e.g. an instance not connected to the platform), resolution falls
+ * back to the `vellum:platform_assistant_id` credential, which the platform
+ * provisions on the assistant's behalf.
  */
 
 import { credentialKey } from "../security/credential-key.js";
@@ -183,13 +186,45 @@ export async function ensurePlatformIdentityIds(): Promise<void> {
   await ensureInFlight;
 }
 
+/**
+ * Read the bound platform assistant id from the credential store.
+ *
+ * This is the durable source for standalone instances that never complete a
+ * platform validate, so their in-memory override stays empty. Fail-soft: a
+ * missing or unreadable credential resolves to null and never throws.
+ */
+async function readPlatformAssistantIdFromVault(): Promise<string | null> {
+  try {
+    const stored = (
+      await getSecureKeyAsync(credentialKey("vellum", "platform_assistant_id"))
+    )?.trim();
+    return stored || null;
+  } catch (err) {
+    log.warn(
+      { err },
+      "failed to read platform assistant id from credential store",
+    );
+    return null;
+  }
+}
+
+/**
+ * Resolve the bound platform assistant id.
+ *
+ * Precedence: the in-memory override (populated by validate, or pushed by
+ * secret-routes), then the `vellum:platform_assistant_id` credential.
+ */
 export async function resolvePlatformAssistantId(): Promise<string> {
   const existing = getPlatformAssistantId()?.trim() ?? "";
   if (existing) {
     return existing;
   }
   await ensurePlatformIdentityIds();
-  return getPlatformAssistantId()?.trim() ?? "";
+  const fromPlatform = getPlatformAssistantId()?.trim() ?? "";
+  if (fromPlatform) {
+    return fromPlatform;
+  }
+  return (await readPlatformAssistantIdFromVault()) ?? "";
 }
 
 export async function resolvePlatformAssistantIdOrNull(): Promise<

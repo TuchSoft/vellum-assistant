@@ -1,0 +1,26 @@
+assistant/src/daemon/conversation-lifecycle.ts
+  h_a912520b04f25d 31,166-169,229-231,240-241,245-248,259,261-263,265-267,385-397,449
+assistant/src/daemon/conversation-process.ts
+  h_a912520b04f25d 486-497
+assistant/src/daemon/conversation.ts
+  h_a912520b04f25d 789-798
+assistant/src/daemon/handlers/conversations.ts
+  h_a912520b04f25d 100-104,113
+assistant/src/runtime/__tests__/agent-wake.test.ts
+  h_a912520b04f25d 655-659,4163-4210
+assistant/src/runtime/agent-wake.ts
+  h_a912520b04f25d 955-962,977-983,1506,1508-1509,1598,1702
+assistant/src/util/abort-reasons.ts
+  h_a912520b04f25d 17-25,78-83,86-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "02b3ce1e018be94b1f1a756665f3c57337f86729",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+assistant/src/__tests__/disk-usage.test.ts
+  h_a912520b04f25d 143,150-151,154-155,158
+assistant/src/util/disk-usage.ts
+  h_a912520b04f25d 5,79-82,86,89-95,126,135,137
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4ce9084e3ffbcb5187c425bfe9b93f750044052a",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

@@ -1,0 +1,60 @@
+assistant/src/persistence/__tests__/pg-schema-mirror.test.ts
+  h_a912520b04f25d 1-56
+assistant/src/persistence/pg-schema/a2a.ts
+  h_a912520b04f25d 1-29
+assistant/src/persistence/pg-schema/acp.ts
+  h_a912520b04f25d 1-76
+assistant/src/persistence/pg-schema/bookmarks.ts
+  h_a912520b04f25d 1-29
+assistant/src/persistence/pg-schema/calls.ts
+  h_a912520b04f25d 1-131
+assistant/src/persistence/pg-schema/contacts.ts
+  h_a912520b04f25d 1-43
+assistant/src/persistence/pg-schema/conversation-groups.ts
+  h_a912520b04f25d 1-18
+assistant/src/persistence/pg-schema/conversation-starters.ts
+  h_a912520b04f25d 1-31
+assistant/src/persistence/pg-schema/conversation-tool-surfaces.ts
+  h_a912520b04f25d 1-27
+assistant/src/persistence/pg-schema/conversations.ts
+  h_a912520b04f25d 1-467
+assistant/src/persistence/pg-schema/custom-types.ts
+  h_a912520b04f25d 1-15
+assistant/src/persistence/pg-schema/documents.ts
+  h_a912520b04f25d 1-100
+assistant/src/persistence/pg-schema/guardian.ts
+  h_a912520b04f25d 1-30
+assistant/src/persistence/pg-schema/index.ts
+  h_a912520b04f25d 1-21
+assistant/src/persistence/pg-schema/inference.ts
+  h_a912520b04f25d 1-28
+assistant/src/persistence/pg-schema/infrastructure.ts
+  h_a912520b04f25d 1-404
+assistant/src/persistence/pg-schema/memory-core.ts
+  h_a912520b04f25d 1-111
+assistant/src/persistence/pg-schema/memory-graph.ts
+  h_a912520b04f25d 1-177
+assistant/src/persistence/pg-schema/memory-injection.ts
+  h_a912520b04f25d 1-84
+assistant/src/persistence/pg-schema/notifications.ts
+  h_a912520b04f25d 1-194
+assistant/src/persistence/pg-schema/oauth.ts
+  h_a912520b04f25d 1-103
+assistant/src/persistence/pg-schema/tasks.ts
+  h_a912520b04f25d 1-18
+assistant/src/persistence/pg-schema/watch.ts
+  h_a912520b04f25d 1-31
+assistant/src/persistence/pg-schema/workflows.ts
+  h_a912520b04f25d 1-55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d13073de097a5b4b459c2f22256b6d2e26071b1c",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

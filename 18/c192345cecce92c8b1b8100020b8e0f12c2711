@@ -1,0 +1,34 @@
+assistant/docs/pg-port-baseline.md
+  h_a912520b04f25d 1-73
+assistant/drizzle.config.ts
+  h_a912520b04f25d 3-15,17-19
+assistant/scripts/generate-pg-baseline.ts
+  h_a912520b04f25d 1-161
+assistant/src/persistence/pg-migrations/__tests__/baseline.test.ts
+  h_a912520b04f25d 1-189
+assistant/src/persistence/pg-migrations/__tests__/pg-integration.test.ts
+  h_a912520b04f25d 1-203
+assistant/src/persistence/pg-migrations/baseline.generated.ts
+  h_a912520b04f25d 1-457
+assistant/src/persistence/pg-migrations/baseline.ts
+  h_a912520b04f25d 1-244
+assistant/src/persistence/pg-migrations/index.ts
+  h_a912520b04f25d 1-28
+assistant/src/persistence/pg-migrations/pg-steps.ts
+  h_a912520b04f25d 1-43
+assistant/src/persistence/pg-migrations/run-pg-migrations.ts
+  h_a912520b04f25d 1-126
+assistant/src/persistence/pg-migrations/sqlite-model.ts
+  h_a912520b04f25d 1-166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "18c192345cecce92c8b1b8100020b8e0f12c2711",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

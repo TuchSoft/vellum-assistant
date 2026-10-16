@@ -1,0 +1,26 @@
+assistant/src/followups/__tests__/followup-store-postgres.test.ts
+  h_a912520b04f25d 1-144
+assistant/src/followups/followup-store.ts
+  h_a912520b04f25d 4-5,8-11,27-31,35-48,51-57,64,68-70,90,95-97,100,103,108-109,111,113,116,119-121,125,138,145-146,148,151,154-156,159,167
+assistant/src/persistence/db-facade.ts
+  h_a912520b04f25d 260-273
+assistant/src/schedule/schedule-store.ts
+  h_a912520b04f25d 17-18
+assistant/src/tools/followups/followup_create.ts
+  h_a912520b04f25d 115
+assistant/src/tools/followups/followup_list.ts
+  h_a912520b04f25d 77,85
+assistant/src/tools/followups/followup_resolve.ts
+  h_a912520b04f25d 62,68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e430d8d241b7c0a54ac358231cd0e55d494608fc",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

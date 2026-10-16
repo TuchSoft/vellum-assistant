@@ -652,6 +652,11 @@ function makeWakeConversation(options: {
     },
     buildCurrentSystemPrompt: () => "mock-system-prompt",
     modelOverride: undefined,
+    // Mirrors Conversation.abortController: the wake installs its own
+    // controller here so the Stop path (`abortConversation`) can reach the run.
+    // A resting conversation starts null, which the wake's install guard
+    // requires.
+    abortController: null as AbortController | null,
     ...(kickDrainQueue ? { kickDrainQueue } : {}),
   };
 
@@ -4153,5 +4158,53 @@ describe("scheduled wake cancellation", () => {
     expect(conversation.isProcessing()).toBe(false);
     expect(conversation.abortController).toBeNull();
     expect(conversation.currentTurnCronRunId).toBeUndefined();
+  });
+});
+
+describe("wake abort controller (non-cron)", () => {
+  test("a non-cron wake installs an abort controller the Stop path can abort", async () => {
+    const running = Promise.withResolvers<AbortSignal>();
+    const conversation = makeWakeConversation({
+      runImpl: async (input, onEvent, runOptions) => {
+        const signal = runOptions!.signal!;
+        // (a) the woken turn owns the conversation's abort controller for the
+        // whole run, so the Stop path has something to signal.
+        expect(conversation.abortController).not.toBeNull();
+        running.resolve(signal);
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) {
+            resolve();
+            return;
+          }
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        await onEvent({
+          type: "agent_loop_exit",
+          reason: "aborted_pre_call",
+        } as AgentEvent);
+        return runResult([...input]);
+      },
+    });
+    const wake = wakeAgentForOpportunity(
+      {
+        conversationId: conversation.conversationId,
+        source: "agent-mail",
+        hint: "Check the inbox",
+      },
+      { resolveTarget: async () => conversation },
+    );
+    const signal = await running.promise;
+    expect(conversation.abortController).not.toBeNull();
+    // (b) the loop received a defined abort signal, not `undefined`.
+    expect(signal).toBeInstanceOf(AbortSignal);
+    // The Stop path (`cancelGeneration` -> `abortConversation`) aborts
+    // whatever controller the running turn installed.
+    conversation.abortController!.abort();
+    await wake;
+    // (c) the abort propagated into the running loop.
+    expect(signal.aborted).toBe(true);
+    // (d) teardown released both the controller and the processing flag.
+    expect(conversation.abortController).toBeNull();
+    expect(conversation.isProcessing()).toBe(false);
   });
 });

@@ -97,6 +97,11 @@ export async function switchConversation(conversationId: string): Promise<{
 }
 /**
  * Cancel generation for a conversation. Returns true if a conversation was found and cancelled.
+ *
+ * Uses the `hard_cancel` reason: the turn is torn down like a user interrupt,
+ * but the messages queued behind it are parked instead of draining into the
+ * next turn. The reason reaches whatever abort controller the running turn
+ * installed, including a woken (background) turn.
  */
 export function cancelGeneration(conversationId: string): boolean {
   const conversation = findConversation(conversationId);
@@ -105,7 +110,7 @@ export function cancelGeneration(conversationId: string): boolean {
   }
   touchConversation(conversationId);
   conversation.abort(
-    createAbortReason("user_cancel", "cancelGeneration", conversationId),
+    createAbortReason("hard_cancel", "cancelGeneration", conversationId),
   );
   // Also abort any in-flight child subagents spawned by this conversation.
   // Omit sendToClient to suppress parent notifications — the parent is

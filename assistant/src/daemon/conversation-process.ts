@@ -483,6 +483,18 @@ export async function drainQueue(
   conversation: Conversation,
   reason: QueueDrainReason = "loop_complete",
 ): Promise<void> {
+  // A hard cancel (Stop) parks the queue. The stopped turn's own unwind is
+  // about to kick this drain; absorb that one so the messages queued behind the
+  // turn stay queued rather than running into the next turn. Cleared here so a
+  // later explicit drain (a fresh send, a canned-reply release) runs them.
+  if (conversation.suppressNextQueueDrain) {
+    conversation.suppressNextQueueDrain = false;
+    log.info(
+      { conversationId: conversation.conversationId, reason },
+      "Skipping queue drain after hard cancel; queued messages parked",
+    );
+    return;
+  }
   // After a steer, drain only the promoted head message — don't batch
   // the remaining queue items into the same turn.
   const steered = conversation.pendingSteerRepair;

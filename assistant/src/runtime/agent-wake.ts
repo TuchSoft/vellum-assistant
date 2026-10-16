@@ -952,9 +952,14 @@ export async function wakeAgentForOpportunity(
     // observed the lock free, and nothing between its final `isProcessing()`
     // check and this acquisition awaits — keep that stretch await-free so
     // the lock cannot change hands in between.
-    const scheduleAbortController = opts.cronRunId
-      ? new AbortController()
-      : undefined;
+    // Every wake owns an abort controller so the Stop path
+    // (`cancelGeneration` -> `abortConversation` -> `abort()`) and
+    // interrupt-on-send can reach the woken turn exactly as they reach an
+    // interactive turn. The controller is distinct from `cronRunId`: a
+    // scheduled run's identity is carried by `currentTurnCronRunId`, not by the
+    // controller, so a non-cron wake (agent mail, long-run, memory
+    // retrospective, schedule completion) is abortable too.
+    const wakeAbortController = new AbortController();
     const priorScheduledRunId = conversation.currentTurnCronRunId;
     const priorWorkOrigins = conversation.currentTurnWorkOrigins;
     const wakeWorkOrigins = opts.backgroundToolCompletion
@@ -969,8 +974,13 @@ export async function wakeAgentForOpportunity(
         ]
       : [];
     conversation.currentTurnWorkOrigins = wakeWorkOrigins;
-    if (scheduleAbortController) {
-      conversation.abortController = scheduleAbortController;
+    // Install only when the slot is free: the idle gate above guarantees no
+    // other turn holds it, and the guard keeps a mis-timed wake from clobbering
+    // a controller an interactive turn already owns.
+    if (conversation.abortController === null) {
+      conversation.abortController = wakeAbortController;
+    }
+    if (opts.cronRunId) {
       conversation.currentTurnCronRunId = opts.cronRunId;
     }
     conversation.setProcessing(true);
@@ -1493,11 +1503,10 @@ export async function wakeAgentForOpportunity(
       if (conversation.currentTurnWorkOrigins === wakeWorkOrigins) {
         conversation.currentTurnWorkOrigins = priorWorkOrigins;
       }
-      if (
-        scheduleAbortController &&
-        conversation.abortController === scheduleAbortController
-      ) {
+      if (conversation.abortController === wakeAbortController) {
         conversation.abortController = null;
+      }
+      if (opts.cronRunId) {
         conversation.currentTurnCronRunId = priorScheduledRunId;
       }
       desktopAutomationLease.releaseForConversation(conversationId);
@@ -1586,7 +1595,7 @@ export async function wakeAgentForOpportunity(
     };
     let cancelledBeforeRun = false;
     try {
-      if (scheduleAbortController?.signal.aborted || scheduledRunFailed()) {
+      if (wakeAbortController.signal.aborted || scheduledRunFailed()) {
         cancelledBeforeRun = true;
         return { invoked: false, producedToolCalls: false, reason: "timeout" };
       }
@@ -1690,7 +1699,7 @@ export async function wakeAgentForOpportunity(
       try {
         ({ history: updatedHistory } = await conversation.agentLoop.run({
           messages: runInput,
-          signal: scheduleAbortController?.signal,
+          signal: wakeAbortController.signal,
           onEvent,
           requestId: `wake:${source}`,
           onCheckpoint,

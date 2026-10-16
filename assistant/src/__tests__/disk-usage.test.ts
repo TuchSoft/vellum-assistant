@@ -140,28 +140,22 @@ describe("disk usage sampler", () => {
     ]);
   });
 
-  test("measures workspace du usage on a local Docker hatch", async () => {
+  test("reports statfs on a local Docker workspace bind and never invokes du", async () => {
     isContainerized = true;
     isPlatform = false;
     statfsResult = statfsFor(100 * GIB, 40 * GIB);
-    spawnResult = {
-      status: 0,
-      stdout: `${2 * GIB}\t/workspace\n`,
-    };
 
     const usage = await getDiskUsageInfo();
 
-    // Used reflects only the workspace (du), free reflects the host headroom
-    // the volume can grow into, and total is their sum.
+    // The workspace is a bind mount with no distinct volume, so the disk
+    // behind it is reported directly from statfs, with no tree walk.
     expect(usage).toEqual({
       path: "/workspace",
-      totalMb: 2048 + 40960,
-      usedMb: 2048,
+      totalMb: 102400,
+      usedMb: 61440,
       freeMb: 40960,
     });
-    expect(spawnCalls).toEqual([
-      { command: "du", args: ["-sb", "/workspace"] },
-    ]);
+    expect(spawnCalls).toHaveLength(0);
   });
 
   test("does not use du for platform-managed containerized instances", async () => {
@@ -178,25 +172,6 @@ describe("disk usage sampler", () => {
       freeMb: 6144,
     });
     expect(spawnCalls).toHaveLength(0);
-  });
-
-  test("falls back to statfs when du fails on a local Docker hatch", async () => {
-    isContainerized = true;
-    isPlatform = false;
-    statfsResult = statfsFor(100 * GIB, 40 * GIB);
-    spawnResult = { status: 1, stdout: "" };
-
-    const usage = await getDiskUsageInfo();
-
-    expect(usage).toEqual({
-      path: "/workspace",
-      totalMb: 102400,
-      usedMb: 61440,
-      freeMb: 40960,
-    });
-    expect(spawnCalls).toEqual([
-      { command: "du", args: ["-sb", "/workspace"] },
-    ]);
   });
 
   test("returns null for malformed Kubernetes memory strings", () => {

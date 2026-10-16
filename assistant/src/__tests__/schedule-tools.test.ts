@@ -1939,7 +1939,7 @@ describe("schedule tools on plugin-sourced schedules", () => {
     expect(result.isError).toBe(true);
     expect(result.content).toContain("managed by a plugin");
     expect(result.content).toContain("only enabled can be changed");
-    expect(getSchedule(job.id)?.name).toBe("daily");
+    expect((await getSchedule(job.id))?.name).toBe("daily");
   });
 
   test("schedule_update refuses enabled mixed with definition fields", async () => {
@@ -1952,7 +1952,7 @@ describe("schedule tools on plugin-sourced schedules", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("managed by a plugin");
-    expect(getSchedule(job.id)?.enabled).toBe(true);
+    expect((await getSchedule(job.id))?.enabled).toBe(true);
   });
 
   test("schedule_delete surfaces the store refusal as a normal tool error", async () => {
@@ -1962,7 +1962,7 @@ describe("schedule tools on plugin-sourced schedules", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("managed by a plugin");
-    expect(getSchedule(job.id)).not.toBeNull();
+    expect(await getSchedule(job.id)).not.toBeNull();
   });
 
   test("schedule_list marks plugin-managed rows in list and detail modes", async () => {
@@ -2198,7 +2198,7 @@ describe("schedule_create / schedule_update group", () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.content).toContain("Conversation group: Briefs");
-    const job = getSchedule(extractJobId(result.content));
+    const job = await getSchedule(extractJobId(result.content));
     expect(job?.groupId).toBe(group.id);
     expect(resolveScheduleConversationGroupId(job!)).toBe(group.id);
   });
@@ -2225,21 +2225,21 @@ describe("schedule_create / schedule_update group", () => {
       ctx,
     );
     const jobId = extractJobId(created.content);
-    expect(getSchedule(jobId)?.groupId).toBeNull();
+    expect((await getSchedule(jobId))?.groupId).toBeNull();
 
     const updated = await executeScheduleUpdate(
       { job_id: jobId, group: "Reports" },
       ctx,
     );
     expect(updated.isError).toBeFalsy();
-    expect(getSchedule(jobId)?.groupId).toBe(group.id);
+    expect((await getSchedule(jobId))?.groupId).toBe(group.id);
 
     const cleared = await executeScheduleUpdate(
       { job_id: jobId, group: null },
       ctx,
     );
     expect(cleared.isError).toBeFalsy();
-    expect(getSchedule(jobId)?.groupId).toBeNull();
+    expect((await getSchedule(jobId))?.groupId).toBeNull();
   });
 
   test("run conversations fall back to system:scheduled when the group is deleted", async () => {
@@ -2253,7 +2253,7 @@ describe("schedule_create / schedule_update group", () => {
       },
       ctx,
     );
-    const job = getSchedule(extractJobId(created.content));
+    const job = await getSchedule(extractJobId(created.content));
     expect(job?.groupId).toBe(group.id);
 
     deleteGroup(group.id);

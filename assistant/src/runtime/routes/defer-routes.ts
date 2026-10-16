@@ -31,8 +31,8 @@ const MAX_DEFER_HORIZON_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
-function countActiveDefers(conversationId?: string): number {
-  const jobs = listSchedules({
+async function countActiveDefers(conversationId?: string): Promise<number> {
+  const jobs = await listSchedules({
     mode: "wake",
     createdBy: DEFER_CREATED_BY_VALUES,
     conversationId,
@@ -87,14 +87,14 @@ async function handleDeferCreate({ body = {} }: RouteHandlerArgs) {
     throw new BadRequestError("fireAt must be within 30 days");
   }
 
-  const perConvo = countActiveDefers(conversationId);
+  const perConvo = await countActiveDefers(conversationId);
   if (perConvo >= MAX_DEFERS_PER_CONVERSATION) {
     throw new BadRequestError(
       `Too many active defers for conversation ${conversationId} (limit: ${MAX_DEFERS_PER_CONVERSATION})`,
     );
   }
 
-  const global = countActiveDefers();
+  const global = await countActiveDefers();
   if (global >= MAX_DEFERS_GLOBAL) {
     throw new BadRequestError(
       `Too many active defers globally (limit: ${MAX_DEFERS_GLOBAL})`,
@@ -119,7 +119,7 @@ async function handleDeferCreate({ body = {} }: RouteHandlerArgs) {
 async function handleDeferList({ body = {} }: RouteHandlerArgs) {
   const { conversationId } = parseBody(DeferListParams, body);
 
-  const jobs = listSchedules({
+  const jobs = await listSchedules({
     mode: "wake",
     createdBy: DEFER_CREATED_BY_VALUES,
     conversationId,
@@ -145,7 +145,7 @@ async function handleDeferCancel({ body = {} }: RouteHandlerArgs) {
   const { id, all, conversationId } = parseBody(DeferCancelParams, body);
 
   if (id) {
-    const job = getSchedule(id);
+    const job = await getSchedule(id);
     if (!job || job.mode !== "wake" || !isDeferSchedule(job.createdBy)) {
       return { cancelled: 0, error: "Not a deferred wake" };
     }
@@ -154,7 +154,7 @@ async function handleDeferCancel({ body = {} }: RouteHandlerArgs) {
   }
 
   if (all) {
-    const jobs = listSchedules({
+    const jobs = await listSchedules({
       mode: "wake",
       createdBy: DEFER_CREATED_BY_VALUES,
       conversationId,

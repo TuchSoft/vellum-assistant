@@ -126,7 +126,7 @@ async function cancelScheduleIfLast(conversationId: string): Promise<void> {
   }
   // A plugin-declared schedule outlives its run conversations: its lifecycle
   // belongs to the reconciler, and `deleteSchedule` refuses sourced rows.
-  if (getSchedule(conv.scheduleJobId)?.sourceKey != null) {
+  if ((await getSchedule(conv.scheduleJobId))?.sourceKey != null) {
     return;
   }
   await deleteSchedule(conv.scheduleJobId);

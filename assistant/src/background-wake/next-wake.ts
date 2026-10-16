@@ -47,11 +47,11 @@ type WakeCandidate = {
   source: "heartbeat" | "schedule";
 };
 
-export function computeNextBackgroundWakeIntent(
+export async function computeNextBackgroundWakeIntent(
   now = Date.now(),
-): BackgroundWakeIntent | null {
+): Promise<BackgroundWakeIntent | null> {
   const heartbeat = getHeartbeatWakeSource(now);
-  const schedules = getScheduleWakeSources();
+  const schedules = await getScheduleWakeSources();
   const computedAt = Date.now();
   const candidates: WakeCandidate[] = [];
 
@@ -148,8 +148,9 @@ function getHeartbeatWakeSource(now: number): HeartbeatWakeSource | null {
   };
 }
 
-function getScheduleWakeSources(): ScheduleWakeSource[] {
-  return listSchedules({ enabledOnly: true })
+async function getScheduleWakeSources(): Promise<ScheduleWakeSource[]> {
+  const schedules = await listSchedules({ enabledOnly: true });
+  return schedules
     .filter((schedule) => schedule.status === "active")
     .filter((schedule) => Number.isFinite(schedule.nextRunAt))
     .filter((schedule) => schedule.nextRunAt > 0)

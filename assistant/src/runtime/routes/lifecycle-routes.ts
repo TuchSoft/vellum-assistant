@@ -156,7 +156,7 @@ export const ROUTES: RouteDefinition[] = [
       "Reports conversation turns, memory jobs, schedule runs, workflow runs, and heartbeat runs currently in flight, plus the active quiesce lease. `idle: true` means it is safe to stop the assistant without interrupting work.",
     tags: ["system"],
     responseBody: drainStatusResponseSchema,
-    handler: () => {
+    handler: async () => {
       // Every read THROWS on failure (surfacing as a 5xx the client retries):
       // for a drain decision, a failed read must not pass for proof of
       // absence, or the client stops the assistant over unobservable
@@ -164,7 +164,7 @@ export const ROUTES: RouteDefinition[] = [
       // fails closed.
       const activeConversations = listProcessingConversations();
       const memoryJobs = listRunningMemoryJobs();
-      const scheduleRuns = listRunningScheduleRuns();
+      const scheduleRuns = await listRunningScheduleRuns();
       // Workflows launched by a schedule outlive their schedule run — the
       // scheduler fires them and completes its own run row immediately — so
       // a running workflow must hold the drain open in its own right.

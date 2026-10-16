@@ -266,11 +266,11 @@ async function searchMemoriesSemantic(
   }
 }
 
-function searchScheduleJobs(
+async function searchScheduleJobs(
   query: string,
   limit: number,
-): GlobalSearchSchedule[] {
-  const all = listSchedules();
+): Promise<GlobalSearchSchedule[]> {
+  const all = await listSchedules();
   const q = query.toLowerCase();
   const matched = all.filter(
     (s) =>
@@ -353,7 +353,7 @@ async function handleGlobalSearch({
   }
 
   if (categories.has("schedules")) {
-    results.schedules = searchScheduleJobs(term, limit);
+    results.schedules = await searchScheduleJobs(term, limit);
   }
 
   if (categories.has("contacts")) {

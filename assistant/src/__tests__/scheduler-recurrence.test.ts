@@ -130,7 +130,7 @@ describe("scheduler RRULE execution", () => {
     });
 
     // Verify it was stored with rrule syntax
-    const stored = getSchedule(schedule.id);
+    const stored = await getSchedule(schedule.id);
     expect(stored).not.toBeNull();
     expect(stored!.syntax).toBe("rrule");
 
@@ -150,7 +150,7 @@ describe("scheduler RRULE execution", () => {
     ).toBe(true);
 
     // A cron_runs entry should have been created
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(runs.length).toBeGreaterThanOrEqual(1);
     expect(runs[0].status).toBe("ok");
   });
@@ -196,12 +196,12 @@ describe("scheduler RRULE execution", () => {
     expect(processedMessages).toContain("Final expired run");
 
     // One run record IS created with status 'ok'
-    const runs = getScheduleRuns(id);
+    const runs = await getScheduleRuns(id);
     expect(runs.length).toBe(1);
     expect(runs[0].status).toBe("ok");
 
     // After firing, the schedule is disabled with nextRunAt=0
-    const afterSchedule = getSchedule(id);
+    const afterSchedule = await getSchedule(id);
     expect(afterSchedule).not.toBeNull();
     expect(afterSchedule!.enabled).toBe(false);
     expect(afterSchedule!.nextRunAt).toBe(0);
@@ -212,7 +212,7 @@ describe("scheduler RRULE execution", () => {
 
     expect(processedMessages).not.toContain("Final expired run");
     // No additional runs
-    const runsAfter = getScheduleRuns(id);
+    const runsAfter = await getScheduleRuns(id);
     expect(runsAfter.length).toBe(1);
   });
 
@@ -225,7 +225,7 @@ describe("scheduler RRULE execution", () => {
     });
 
     // Verify it defaults to cron syntax
-    const stored = getSchedule(schedule.id);
+    const stored = await getSchedule(schedule.id);
     expect(stored).not.toBeNull();
     expect(stored!.syntax).toBe("cron");
 
@@ -244,7 +244,7 @@ describe("scheduler RRULE execution", () => {
     );
 
     // A cron_runs entry should have been created
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(runs.length).toBeGreaterThanOrEqual(1);
     expect(runs[0].status).toBe("ok");
   });
@@ -273,7 +273,7 @@ describe("scheduler RRULE execution", () => {
     expect(dispatched).toHaveLength(0);
 
     // A failed cron_run is recorded so the dead schedule stays visible.
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(runs.length).toBeGreaterThanOrEqual(1);
     expect(runs[0].status).toBe("error");
   });
@@ -321,7 +321,7 @@ describe("scheduler RRULE execution", () => {
     await runDueSchedulesOnce();
 
     // The schedule should have been claimed and nextRunAt advanced
-    const after = getSchedule(schedule.id);
+    const after = await getSchedule(schedule.id);
     expect(after).not.toBeNull();
     expect(after!.lastRunAt).not.toBeNull();
     // nextRunAt should be in the future (not the excluded date)
@@ -369,7 +369,7 @@ describe("scheduler RRULE execution", () => {
 
     expect(processedMessages).toContain("Set fire test");
 
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(runs.length).toBeGreaterThanOrEqual(1);
     expect(runs[0].status).toBe("ok");
   });
@@ -444,7 +444,7 @@ describe("scheduler RRULE execution", () => {
       // The schedule should have fired
       expect(processedMessages).toContain("EXRULE scheduler fire");
 
-      const after = getSchedule(schedule.id);
+      const after = await getSchedule(schedule.id);
       expect(after).not.toBeNull();
       expect(after!.lastRunAt).not.toBeNull();
       expect(after!.nextRunAt).toBeGreaterThan(frozenNow.getTime() - 5000);
@@ -471,13 +471,13 @@ describe("scheduler RRULE execution", () => {
       expression: rruleExpr,
     });
 
-    const originalNextRunAt = getSchedule(schedule.id)!.nextRunAt;
+    const originalNextRunAt = (await getSchedule(schedule.id))!.nextRunAt;
     forceScheduleDue(schedule.id);
-    const forcedDueAt = getSchedule(schedule.id)!.nextRunAt;
+    const forcedDueAt = (await getSchedule(schedule.id))!.nextRunAt;
 
     await runDueSchedulesOnce();
 
-    const after = getSchedule(schedule.id);
+    const after = await getSchedule(schedule.id);
     expect(after).not.toBeNull();
     // nextRunAt must have moved forward from the forced-due value
     expect(after!.nextRunAt).toBeGreaterThan(forcedDueAt);
@@ -497,7 +497,7 @@ describe("scheduler RRULE execution", () => {
       // No expression = one-shot
     });
 
-    expect(getSchedule(schedule.id)!.status).toBe("active");
+    expect((await getSchedule(schedule.id))!.status).toBe("active");
 
     const processedMessages: { conversationId: string; message: string }[] = [];
     onRunBackgroundJobPrompt = ({ conversationId, prompt }) => {
@@ -510,13 +510,13 @@ describe("scheduler RRULE execution", () => {
       processedMessages.some((m) => m.message === "Execute this once"),
     ).toBe(true);
 
-    const after = getSchedule(schedule.id);
+    const after = await getSchedule(schedule.id);
     expect(after).not.toBeNull();
     expect(after!.status).toBe("fired");
     expect(after!.enabled).toBe(false);
 
     // A cron_runs entry should have been created
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(runs.length).toBeGreaterThanOrEqual(1);
     expect(runs[0].status).toBe("ok");
   });
@@ -531,7 +531,7 @@ describe("scheduler RRULE execution", () => {
       routingHints: { channel: "slack" },
     });
 
-    expect(getSchedule(schedule.id)!.status).toBe("active");
+    expect((await getSchedule(schedule.id))!.status).toBe("active");
 
     await runDueSchedulesOnce();
 
@@ -548,7 +548,7 @@ describe("scheduler RRULE execution", () => {
       routingHints: { channel: "slack" },
     });
 
-    const after = getSchedule(schedule.id);
+    const after = await getSchedule(schedule.id);
     expect(after).not.toBeNull();
     expect(after!.status).toBe("fired");
     expect(after!.enabled).toBe(false);
@@ -562,13 +562,13 @@ describe("scheduler RRULE execution", () => {
       nextRunAt: Date.now() - 1000,
     });
 
-    expect(getSchedule(schedule.id)!.status).toBe("active");
+    expect((await getSchedule(schedule.id))!.status).toBe("active");
 
     runBackgroundJobShouldFail = true;
 
     await runDueSchedulesOnce();
 
-    const after = getSchedule(schedule.id);
+    const after = await getSchedule(schedule.id);
     expect(after).not.toBeNull();
     expect(after!.status).toBe("active");
     expect(after!.enabled).toBe(true);
@@ -605,7 +605,7 @@ describe("scheduler RRULE execution", () => {
     });
 
     // Schedule should remain enabled and have a future nextRunAt (not fired/disabled)
-    const after = getSchedule(schedule.id);
+    const after = await getSchedule(schedule.id);
     expect(after).not.toBeNull();
     expect(after!.enabled).toBe(true);
     expect(after!.nextRunAt).toBeGreaterThan(Date.now() - 5000);
@@ -638,7 +638,7 @@ describe("scheduler RRULE execution", () => {
     });
 
     // Should be marked as fired
-    const after = getSchedule(schedule.id);
+    const after = await getSchedule(schedule.id);
     expect(after!.status).toBe("fired");
   });
 });

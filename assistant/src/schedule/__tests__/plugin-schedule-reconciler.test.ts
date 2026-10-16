@@ -222,7 +222,7 @@ describe("reconcilePluginSchedules", () => {
 
     await reconcilePluginSchedules();
 
-    const rows = listDeclaredSchedules();
+    const rows = await listDeclaredSchedules();
     expect(rows).toHaveLength(2);
 
     const digestRow = rows.find((r) => r.sourceKey === DIGEST_KEY)!;
@@ -265,7 +265,7 @@ describe("reconcilePluginSchedules", () => {
   test("a repeat pass with unchanged declarations is a no-op", async () => {
     writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const row = listDeclaredSchedules()[0]!;
+    const row = (await listDeclaredSchedules())[0]!;
     const before = rawJob(row.id);
     emittedSignals.length = 0;
 
@@ -278,13 +278,13 @@ describe("reconcilePluginSchedules", () => {
   test("an upgrade updates by hash and emits definition_changed for the armed row", async () => {
     writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     emittedSignals.length = 0;
 
     writePlugin("news", digest("Summarize the WEEK."));
     await reconcilePluginSchedules();
 
-    const updated = listDeclaredSchedules()[0]!;
+    const updated = (await listDeclaredSchedules())[0]!;
     expect(updated.id).toBe(created.id);
     expect(updated.message).toBe("Summarize the WEEK.");
     expect(updated.definitionHash).not.toBe(created.definitionHash);
@@ -305,13 +305,13 @@ describe("reconcilePluginSchedules", () => {
   test("uninstall disarms without deleting rows or runs; reinstall re-links and re-arms", async () => {
     writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     await createScheduleRun(created.id, "conv-1");
 
     rmSync(join(pluginsDir, "news"), { recursive: true, force: true });
     await reconcilePluginSchedules();
 
-    const disarmed = listDeclaredSchedules()[0]!;
+    const disarmed = (await listDeclaredSchedules())[0]!;
     expect(disarmed.id).toBe(created.id);
     expect(disarmed.enabled).toBe(false);
     expect(disarmed.sourceKey).toBe(DIGEST_KEY);
@@ -324,7 +324,7 @@ describe("reconcilePluginSchedules", () => {
     writePlugin("news", digest());
     await reconcilePluginSchedules();
 
-    const relinked = listDeclaredSchedules();
+    const relinked = await listDeclaredSchedules();
     expect(relinked).toHaveLength(1);
     expect(relinked[0]!.id).toBe(created.id);
     expect(relinked[0]!.enabled).toBe(true);
@@ -338,7 +338,7 @@ describe("reconcilePluginSchedules", () => {
   test("user_enabled survives upgrades and disarm/re-arm cycles", async () => {
     writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
 
     await setUserEnabled(created.id, false);
     emittedSignals.length = 0;
@@ -347,7 +347,7 @@ describe("reconcilePluginSchedules", () => {
     // disabled, and no definition_changed emits for an unarmed row.
     writePlugin("news", digest("Summarize the WEEK."));
     await reconcilePluginSchedules();
-    let row = listDeclaredSchedules()[0]!;
+    let row = (await listDeclaredSchedules())[0]!;
     expect(row.message).toBe("Summarize the WEEK.");
     expect(row.enabled).toBe(false);
     expect(row.userEnabled).toBe(false);
@@ -358,7 +358,7 @@ describe("reconcilePluginSchedules", () => {
     await reconcilePluginSchedules();
     writePlugin("news", digest("Summarize the WEEK."));
     await reconcilePluginSchedules();
-    row = listDeclaredSchedules()[0]!;
+    row = (await listDeclaredSchedules())[0]!;
     expect(row.id).toBe(created.id);
     expect(row.enabled).toBe(false);
     expect(row.userEnabled).toBe(false);
@@ -370,13 +370,13 @@ describe("reconcilePluginSchedules", () => {
       digestFiles({ expression: "* * * * *", enabled: false }),
     );
     await reconcilePluginSchedules();
-    expect(listDeclaredSchedules()[0]!.enabled).toBe(false);
+    expect((await listDeclaredSchedules())[0]!.enabled).toBe(false);
     expect(emittedSignals).toHaveLength(0);
 
     writePlugin("news", digest());
     await reconcilePluginSchedules();
 
-    const armed = listDeclaredSchedules()[0]!;
+    const armed = (await listDeclaredSchedules())[0]!;
     expect(armed.enabled).toBe(true);
     expect(emittedSignals).toHaveLength(1);
     const signal = emittedSignals[0]!;
@@ -392,13 +392,13 @@ describe("reconcilePluginSchedules", () => {
       digestFiles({ expression: "* * * * *", enabled: false }),
     );
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     expect(created.enabled).toBe(false);
 
     await setUserEnabled(created.id, true);
     await reconcilePluginSchedules();
 
-    const row = listDeclaredSchedules()[0]!;
+    const row = (await listDeclaredSchedules())[0]!;
     expect(row.enabled).toBe(true);
     expect(row.userEnabled).toBe(true);
   });
@@ -406,15 +406,15 @@ describe("reconcilePluginSchedules", () => {
   test("disabling a plugin pauses its schedules; re-enabling restores them", async () => {
     const dir = writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
 
     writeFileSync(join(dir, ".disabled"), "");
     await reconcilePluginSchedules();
-    expect(listDeclaredSchedules()[0]!.enabled).toBe(false);
+    expect((await listDeclaredSchedules())[0]!.enabled).toBe(false);
 
     rmSync(join(dir, ".disabled"));
     await reconcilePluginSchedules();
-    const restored = listDeclaredSchedules()[0]!;
+    const restored = (await listDeclaredSchedules())[0]!;
     expect(restored.id).toBe(created.id);
     expect(restored.enabled).toBe(true);
     expect(restored.userEnabled).toBeNull();
@@ -423,7 +423,7 @@ describe("reconcilePluginSchedules", () => {
   test("a parse error keeps the last-good execute row running and emits a deduped notification", async () => {
     writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     const before = rawJob(created.id);
     emittedSignals.length = 0;
 
@@ -452,7 +452,7 @@ describe("reconcilePluginSchedules", () => {
   test("a parse error disarms a script row, which re-arms once the declaration parses", async () => {
     writePlugin("news", scriptSync());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     expect(created.mode).toBe("script");
     expect(created.enabled).toBe(true);
     emittedSignals.length = 0;
@@ -462,7 +462,7 @@ describe("reconcilePluginSchedules", () => {
     writePlugin("news", brokenScriptSync());
     await reconcilePluginSchedules();
 
-    const paused = listDeclaredSchedules()[0]!;
+    const paused = (await listDeclaredSchedules())[0]!;
     expect(paused.id).toBe(created.id);
     expect(paused.enabled).toBe(false);
     expect(emittedSignals).toHaveLength(1);
@@ -476,7 +476,7 @@ describe("reconcilePluginSchedules", () => {
     writePlugin("news", scriptSync());
     await reconcilePluginSchedules();
 
-    const rearmed = listDeclaredSchedules()[0]!;
+    const rearmed = (await listDeclaredSchedules())[0]!;
     expect(rearmed.id).toBe(created.id);
     expect(rearmed.enabled).toBe(true);
     expect(rearmed.nextRunAt).toBeGreaterThan(0);
@@ -485,7 +485,7 @@ describe("reconcilePluginSchedules", () => {
   test("a script row the user turned off reports no pause when its declaration breaks", async () => {
     writePlugin("news", scriptSync());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     await setUserEnabled(created.id, false);
     emittedSignals.length = 0;
 
@@ -494,7 +494,7 @@ describe("reconcilePluginSchedules", () => {
     writePlugin("news", brokenScriptSync());
     await reconcilePluginSchedules();
 
-    expect(listDeclaredSchedules()[0]!.enabled).toBe(false);
+    expect((await listDeclaredSchedules())[0]!.enabled).toBe(false);
     expect(emittedSignals).toHaveLength(1);
     const signal = emittedSignals[0]!;
     expect(signal.sourceEventName).toBe("schedule.definition_error");
@@ -506,7 +506,7 @@ describe("reconcilePluginSchedules", () => {
   test("a user's off choice survives a script row's disarm and re-arm", async () => {
     writePlugin("news", scriptSync());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     await setUserEnabled(created.id, false);
 
     writePlugin("news", brokenScriptSync());
@@ -514,7 +514,7 @@ describe("reconcilePluginSchedules", () => {
     writePlugin("news", scriptSync());
     await reconcilePluginSchedules();
 
-    const row = listDeclaredSchedules()[0]!;
+    const row = (await listDeclaredSchedules())[0]!;
     expect(row.enabled).toBe(false);
     expect(row.userEnabled).toBe(false);
   });
@@ -522,7 +522,7 @@ describe("reconcilePluginSchedules", () => {
   test("an ended recurrence keeps a script row on its last-good definition", async () => {
     writePlugin("news", scriptSync());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     const before = rawJob(created.id);
     emittedSignals.length = 0;
 
@@ -547,7 +547,7 @@ describe("reconcilePluginSchedules", () => {
   test("engine-latched rows are left untouched by definition changes", async () => {
     writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     emittedSignals.length = 0;
 
     // Recurrence exhaustion latch: the claim path disables the row, zeroes
@@ -587,7 +587,7 @@ describe("reconcilePluginSchedules", () => {
 
     await Promise.all([reconcilePluginSchedules(), reconcilePluginSchedules()]);
 
-    const rows = listDeclaredSchedules();
+    const rows = await listDeclaredSchedules();
     expect(rows).toHaveLength(1);
     expect(rows[0]!.sourceKey).toBe(DIGEST_KEY);
   });
@@ -595,7 +595,7 @@ describe("reconcilePluginSchedules", () => {
   test("a manifest-rejected plugin disarms its schedules and surfaces the failure", async () => {
     const dir = writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     expect(created.enabled).toBe(true);
     emittedSignals.length = 0;
 
@@ -604,7 +604,7 @@ describe("reconcilePluginSchedules", () => {
     writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "" }));
     await reconcilePluginSchedules();
 
-    const disarmed = listDeclaredSchedules()[0]!;
+    const disarmed = (await listDeclaredSchedules())[0]!;
     expect(disarmed.id).toBe(created.id);
     expect(disarmed.enabled).toBe(false);
     expect(emittedSignals).toHaveLength(1);
@@ -628,7 +628,7 @@ describe("reconcilePluginSchedules", () => {
       JSON.stringify({ name: "news", version: "1.0.0" }),
     );
     await reconcilePluginSchedules();
-    expect(listDeclaredSchedules()[0]!.enabled).toBe(true);
+    expect((await listDeclaredSchedules())[0]!.enabled).toBe(true);
   });
 
   test("a plugin with an unparseable package.json creates no rows and surfaces the failure", async () => {
@@ -637,7 +637,7 @@ describe("reconcilePluginSchedules", () => {
 
     await reconcilePluginSchedules();
 
-    expect(listDeclaredSchedules()).toHaveLength(0);
+    expect(await listDeclaredSchedules()).toHaveLength(0);
     expect(emittedSignals).toHaveLength(1);
     expect(emittedSignals[0]!.sourceEventName).toBe(
       "schedule.definition_error",
@@ -657,7 +657,7 @@ describe("reconcilePluginSchedules", () => {
 
     await reconcilePluginSchedules();
 
-    expect(listDeclaredSchedules()).toHaveLength(0);
+    expect(await listDeclaredSchedules()).toHaveLength(0);
     expect(emittedSignals).toHaveLength(0);
   });
 
@@ -674,7 +674,7 @@ describe("reconcilePluginSchedules", () => {
     });
     await reconcilePluginSchedules();
 
-    const sync = listDeclaredSchedules().find(
+    const sync = (await listDeclaredSchedules()).find(
       (r) => r.sourceKey === "plugin:news/sync",
     )!;
     expect(sync.enabled).toBe(true);
@@ -698,7 +698,7 @@ describe("reconcilePluginSchedules", () => {
 
     await reconcilePluginSchedules();
 
-    expect(listDeclaredSchedules()[0]!.enabled).toBe(false);
+    expect((await listDeclaredSchedules())[0]!.enabled).toBe(false);
     expect(emittedSignals).toHaveLength(0);
   });
 
@@ -873,7 +873,7 @@ describe("reconcilePluginSchedules", () => {
   test("a completed bounded recurrence stays silent across passes", async () => {
     writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
 
     // The engine latches an exhausted recurrence in one write: disabled,
     // next run zeroed, last run stamped.
@@ -897,7 +897,7 @@ describe("reconcilePluginSchedules", () => {
   test("an ended recurrence on a still-armed row surfaces the error", async () => {
     writePlugin("news", digest());
     await reconcilePluginSchedules();
-    expect(listDeclaredSchedules()[0]!.enabled).toBe(true);
+    expect((await listDeclaredSchedules())[0]!.enabled).toBe(true);
     emittedSignals.length = 0;
 
     // The armed row expects more firings; an upgrade that ends the
@@ -914,13 +914,13 @@ describe("reconcilePluginSchedules", () => {
   test("an ended recurrence on a row this pass disarmed still surfaces", async () => {
     const dir = writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
 
     // Disabling the plugin disarms the row without the engine latching it:
     // `enabled` goes false, the run clock is untouched.
     writeFileSync(join(dir, ".disabled"), "");
     await reconcilePluginSchedules();
-    const disarmed = listDeclaredSchedules()[0]!;
+    const disarmed = (await listDeclaredSchedules())[0]!;
     expect(disarmed.enabled).toBe(false);
     expect(disarmed.lastRunAt).toBeNull();
     expect(disarmed.userEnabled).toBeNull();
@@ -932,7 +932,7 @@ describe("reconcilePluginSchedules", () => {
     rmSync(join(dir, ".disabled"));
     await reconcilePluginSchedules();
 
-    expect(listDeclaredSchedules()[0]!.id).toBe(created.id);
+    expect((await listDeclaredSchedules())[0]!.id).toBe(created.id);
     expect(emittedSignals).toHaveLength(1);
     expect(emittedSignals[0]!.sourceEventName).toBe(
       "schedule.definition_error",
@@ -942,7 +942,7 @@ describe("reconcilePluginSchedules", () => {
   test("a user-disabled row keeps an ended recurrence quiet", async () => {
     writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     await setUserEnabled(created.id, false);
     emittedSignals.length = 0;
 
@@ -958,7 +958,7 @@ describe("reconcilePluginSchedules", () => {
     writePlugin("news", disabledDigest("20990101T090000Z"));
     await reconcilePluginSchedules();
 
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     expect(created.enabled).toBe(false);
     expect(created.nextRunAt).toBe(0);
     expect(created.lastRunAt).toBeNull();
@@ -980,7 +980,7 @@ describe("reconcilePluginSchedules", () => {
 
     await reconcilePluginSchedules();
 
-    expect(listDeclaredSchedules()).toHaveLength(0);
+    expect(await listDeclaredSchedules()).toHaveLength(0);
     expect(emittedSignals).toHaveLength(1);
     expect(emittedSignals[0]!.sourceEventName).toBe(
       "schedule.definition_error",
@@ -1000,20 +1000,20 @@ describe("reconcilePluginSchedules", () => {
 
     await reconcilePluginSchedules();
 
-    expect(listDeclaredSchedules()).toHaveLength(0);
+    expect(await listDeclaredSchedules()).toHaveLength(0);
     expect(emittedSignals).toHaveLength(0);
   });
 
   test("a row disarms once its plugin is no longer activated", async () => {
     const dir = writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     expect(created.enabled).toBe(true);
 
     notActivatedDirs.add(dir);
     await reconcilePluginSchedules();
 
-    const row = listDeclaredSchedules()[0]!;
+    const row = (await listDeclaredSchedules())[0]!;
     expect(row.id).toBe(created.id);
     expect(row.enabled).toBe(false);
   });
@@ -1022,12 +1022,12 @@ describe("reconcilePluginSchedules", () => {
     const dir = writePlugin("news", digest());
     notActivatedDirs.add(dir);
     await reconcilePluginSchedules();
-    expect(listDeclaredSchedules()).toHaveLength(0);
+    expect(await listDeclaredSchedules()).toHaveLength(0);
 
     notActivatedDirs.delete(dir);
     await reconcilePluginSchedules();
 
-    const rows = listDeclaredSchedules();
+    const rows = await listDeclaredSchedules();
     expect(rows).toHaveLength(1);
     expect(rows[0]!.sourceKey).toBe(DIGEST_KEY);
     expect(rows[0]!.enabled).toBe(true);
@@ -1077,7 +1077,7 @@ describe("reconcilePluginSchedules under the plugin-schedules flag", () => {
     setOverridesForTesting({ "plugin-schedules": true });
     writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const armed = listDeclaredSchedules();
+    const armed = await listDeclaredSchedules();
     expect(armed).toHaveLength(1);
     expect(armed[0]!.enabled).toBe(true);
     emittedSignals.length = 0;
@@ -1091,7 +1091,7 @@ describe("reconcilePluginSchedules under the plugin-schedules flag", () => {
     });
     await reconcilePluginSchedules();
 
-    const rows = listDeclaredSchedules();
+    const rows = await listDeclaredSchedules();
     expect(rows).toHaveLength(1);
     expect(rows[0]!.id).toBe(armed[0]!.id);
     expect(rows[0]!.enabled).toBe(false);
@@ -1104,7 +1104,7 @@ describe("reconcilePluginSchedules under the plugin-schedules flag", () => {
 
     await reconcilePluginSchedules();
 
-    expect(listDeclaredSchedules()).toHaveLength(0);
+    expect(await listDeclaredSchedules()).toHaveLength(0);
     expect(emittedSignals).toHaveLength(0);
   });
 
@@ -1112,16 +1112,16 @@ describe("reconcilePluginSchedules under the plugin-schedules flag", () => {
     setOverridesForTesting({ "plugin-schedules": true });
     writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
 
     setOverridesForTesting({ "plugin-schedules": false });
     await reconcilePluginSchedules();
-    expect(listDeclaredSchedules()[0]!.enabled).toBe(false);
+    expect((await listDeclaredSchedules())[0]!.enabled).toBe(false);
 
     setOverridesForTesting({ "plugin-schedules": true });
     await reconcilePluginSchedules();
 
-    const rearmed = listDeclaredSchedules();
+    const rearmed = await listDeclaredSchedules();
     expect(rearmed).toHaveLength(1);
     expect(rearmed[0]!.id).toBe(created.id);
     expect(rearmed[0]!.enabled).toBe(true);
@@ -1132,7 +1132,7 @@ describe("reconcilePluginSchedules under the plugin-schedules flag", () => {
     setOverridesForTesting({ "plugin-schedules": true });
     writePlugin("news", digest());
     await reconcilePluginSchedules();
-    const created = listDeclaredSchedules()[0]!;
+    const created = (await listDeclaredSchedules())[0]!;
     await setUserEnabled(created.id, false);
 
     setOverridesForTesting({ "plugin-schedules": false });
@@ -1140,7 +1140,7 @@ describe("reconcilePluginSchedules under the plugin-schedules flag", () => {
     setOverridesForTesting({ "plugin-schedules": true });
     await reconcilePluginSchedules();
 
-    const row = listDeclaredSchedules()[0]!;
+    const row = (await listDeclaredSchedules())[0]!;
     expect(row.userEnabled).toBe(false);
     expect(row.enabled).toBe(false);
   });

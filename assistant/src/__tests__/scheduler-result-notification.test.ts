@@ -21,7 +21,9 @@ let runBackgroundJobShouldFail = false;
  * conversation id just before the runner resolves, exactly where a real turn
  * would already have spawned its child.
  */
-let delegateOnRun: ((conversationId: string) => void) | undefined;
+let delegateOnRun:
+  | ((conversationId: string) => void | Promise<void>)
+  | undefined;
 mock.module("../runtime/background-job-runner.js", () => ({
   runBackgroundJob: async (opts: {
     prompt: string;
@@ -48,7 +50,7 @@ mock.module("../runtime/background-job-runner.js", () => ({
         errorKind: "exception" as const,
       };
     }
-    delegateOnRun?.(conv.id);
+    await delegateOnRun?.(conv.id);
     return { conversationId: conv.id, ok: true };
   },
 }));
@@ -235,7 +237,7 @@ describe("schedule result notification wiring", () => {
 
     // The producer must be handed the run the scheduler actually recorded, so
     // its dedupe key names this firing and not some other.
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(producerCalls[0].runId).toBe(runs[0].id);
     expect(runs[0].conversationId).toBe(producerCalls[0].conversationId);
   });
@@ -255,7 +257,7 @@ describe("schedule result notification wiring", () => {
 
     await runDueSchedulesOnce();
 
-    expect(getScheduleRuns(schedule.id)[0].status).toBe("ok");
+    expect((await getScheduleRuns(schedule.id))[0].status).toBe("ok");
     expect(producerCalls).toHaveLength(0);
   });
 
@@ -274,11 +276,11 @@ describe("schedule result notification wiring", () => {
     });
     forceScheduleDue(schedule.id);
 
-    delegateOnRun = (conversationId) => {
+    delegateOnRun = async (conversationId) => {
       // The turn's own reply, written before the guidance exists.
       addMessage(conversationId, "assistant", "Here is a first pass.");
 
-      const cronRunId = getScheduleRuns(schedule.id)[0].id;
+      const cronRunId = (await getScheduleRuns(schedule.id))[0].id;
       const child = attachRunningChild(conversationId, cronRunId);
       let continuationRunning = false;
       setConversation(conversationId, {
@@ -322,7 +324,7 @@ describe("schedule result notification wiring", () => {
     });
     forceScheduleDue(schedule.id);
 
-    delegateOnRun = (conversationId) => {
+    delegateOnRun = async (conversationId) => {
       addMessage(conversationId, "assistant", "Done.");
     };
 
@@ -347,7 +349,7 @@ describe("schedule result notification wiring", () => {
         forceScheduleDue(schedule.id);
         const started = Promise.withResolvers<string>();
         const finishWake = Promise.withResolvers<void>();
-        delegateOnRun = (conversationId) => {
+        delegateOnRun = async (conversationId) => {
           addMessage(conversationId, "assistant", "The command is running.");
           setConversation(conversationId, {
             isProcessing: () => false,
@@ -355,7 +357,7 @@ describe("schedule result notification wiring", () => {
           } as unknown as Conversation);
           registerBackgroundTool({
             id: "bg-scheduled",
-            cronRunId: getScheduleRuns(schedule.id)[0].id,
+            cronRunId: (await getScheduleRuns(schedule.id))[0].id,
             conversationId,
             toolName: "bash",
             command: "generate-report",
@@ -382,7 +384,7 @@ describe("schedule result notification wiring", () => {
         const wake = wakeAgentForOpportunity(
           {
             conversationId,
-            cronRunId: getScheduleRuns(schedule.id)[0].id,
+            cronRunId: (await getScheduleRuns(schedule.id))[0].id,
             hint: `Background command ${status}`,
             source: "background-tool",
           },
@@ -405,7 +407,7 @@ describe("schedule result notification wiring", () => {
         finishWake.resolve();
         await wake;
         await scheduledRun;
-        expect(getScheduleRuns(schedule.id)[0].status).toBe("ok");
+        expect((await getScheduleRuns(schedule.id))[0].status).toBe("ok");
         expect(producerCalls).toHaveLength(quiet ? 0 : 1);
         if (!quiet) {
           expect(producerSawText).toEqual([`Final result: ${status}.`]);
@@ -432,13 +434,13 @@ describe("schedule result notification wiring", () => {
         let parentAborted = false;
         let wake: ReturnType<typeof wakeAgentForOpportunity> | undefined;
         const finishLookup = Promise.withResolvers<void>();
-        delegateOnRun = (conversationId) => {
+        delegateOnRun = async (conversationId) => {
           addMessage(
             conversationId,
             "assistant",
             "The report is still running.",
           );
-          const cronRunId = getScheduleRuns(schedule.id)[0].id;
+          const cronRunId = (await getScheduleRuns(schedule.id))[0].id;
           setConversation(conversationId, {
             isProcessing: () => false,
             snapshotQueuedMessages: () => [],
@@ -451,7 +453,7 @@ describe("schedule result notification wiring", () => {
             wake = wakeAgentForOpportunity(
               {
                 conversationId,
-                cronRunId: getScheduleRuns(schedule.id)[0].id,
+                cronRunId: (await getScheduleRuns(schedule.id))[0].id,
                 source: "background-tool",
                 hint: "The command finished",
               },
@@ -489,7 +491,7 @@ describe("schedule result notification wiring", () => {
         };
         try {
           const result = await runDueSchedulesOnce();
-          expect(getScheduleRuns(schedule.id)[0]).toMatchObject({
+          expect((await getScheduleRuns(schedule.id))[0]).toMatchObject({
             status: "error",
             error: "Scheduled work did not finish before its time limit",
           });
@@ -535,9 +537,9 @@ describe("schedule result notification wiring", () => {
       let conversationId = "";
       let runId = "";
       let settleUserChild: (() => void) | undefined;
-      delegateOnRun = (id) => {
+      delegateOnRun = async (id) => {
         conversationId = id;
-        runId = getScheduleRuns(schedule.id)[0].id;
+        runId = (await getScheduleRuns(schedule.id))[0].id;
         const ctx = {
           conversationId: id,
           currentTurnCronRunId: userTurnActive ? undefined : runId,
@@ -638,9 +640,9 @@ describe("schedule result notification wiring", () => {
       let wake: ReturnType<typeof wakeAgentForOpportunity> | undefined;
       let userChild: ReturnType<typeof attachRunningChild> | undefined;
       let conversationId = "";
-      delegateOnRun = (id) => {
+      delegateOnRun = async (id) => {
         conversationId = id;
-        const runId = getScheduleRuns(schedule.id)[0].id;
+        const runId = (await getScheduleRuns(schedule.id))[0].id;
         const queue = new MessageQueue();
         if (kind === "queue") {
           queue.push({
@@ -721,7 +723,7 @@ describe("schedule result notification wiring", () => {
         addMessage(conversationId, "assistant", "Report finished.");
         removeBackgroundTool("owned-command");
         await scheduledRun;
-        expect(getScheduleRuns(schedule.id)[0].status).toBe("ok");
+        expect((await getScheduleRuns(schedule.id))[0].status).toBe("ok");
         expect(producerSawText).toEqual(["Report finished."]);
       } finally {
         releaseWake.resolve();
@@ -748,8 +750,8 @@ describe("schedule result notification wiring", () => {
       forceScheduleDue(schedule.id);
       const delegated = Promise.withResolvers<string>();
       const queue = new MessageQueue();
-      delegateOnRun = (id) => {
-        const runId = getScheduleRuns(schedule.id)[0].id;
+      delegateOnRun = async (id) => {
+        const runId = (await getScheduleRuns(schedule.id))[0].id;
         queue.push({
           content: "Continue report",
           attachments: [],
@@ -783,7 +785,7 @@ describe("schedule result notification wiring", () => {
       addMessage(id, "assistant", "Final report.");
       queue.clear();
       await scheduledRun;
-      expect(getScheduleRuns(schedule.id)[0].status).toBe("ok");
+      expect((await getScheduleRuns(schedule.id))[0].status).toBe("ok");
       expect(producerSawText).toEqual(["Final report."]);
     });
   }
@@ -798,9 +800,9 @@ describe("schedule result notification wiring", () => {
     forceScheduleDue(schedule.id);
     const entered = Promise.withResolvers<string>();
     const dispatches = new Map<string, Set<QueuedDispatch>>();
-    delegateOnRun = (id) => {
+    delegateOnRun = async (id) => {
       dispatches.set(
-        getScheduleRuns(schedule.id)[0].id,
+        (await getScheduleRuns(schedule.id))[0].id,
         new Set([{ controller: new AbortController(), messages: [] }]),
       );
       setConversation(id, {
@@ -817,7 +819,7 @@ describe("schedule result notification wiring", () => {
     addMessage(id, "assistant", "Final report.");
     dispatches.clear();
     await scheduledRun;
-    expect(getScheduleRuns(schedule.id)[0].status).toBe("ok");
+    expect((await getScheduleRuns(schedule.id))[0].status).toBe("ok");
     expect(producerSawText).toEqual(["Final report."]);
   });
 
@@ -838,7 +840,7 @@ describe("schedule result notification wiring", () => {
     // run's own reply. A timestamp taken after the run would sit past any
     // notification the run emitted, so the probe would miss it and every
     // well-authored schedule would notify twice.
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(producerCalls[0].runStartedAt).toBeGreaterThanOrEqual(before);
     expect(producerCalls[0].runStartedAt).toBeLessThanOrEqual(
       runs[0].startedAt,
@@ -861,7 +863,7 @@ describe("schedule result notification wiring", () => {
 
     await runDueSchedulesOnce();
 
-    expect(getScheduleRuns(schedule.id)[0].status).toBe("error");
+    expect((await getScheduleRuns(schedule.id))[0].status).toBe("error");
     expect(producerCalls).toHaveLength(0);
   });
 
@@ -879,7 +881,7 @@ describe("schedule result notification wiring", () => {
 
     await runDueSchedulesOnce();
 
-    expect(getScheduleRuns(schedule.id)[0].status).toBe("ok");
+    expect((await getScheduleRuns(schedule.id))[0].status).toBe("ok");
     expect(producerCalls).toHaveLength(0);
   });
 

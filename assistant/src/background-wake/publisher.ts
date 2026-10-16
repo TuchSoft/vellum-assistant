@@ -50,7 +50,7 @@ function runPendingRefresh(): void {
 
 async function runRefresh(reason: string): Promise<void> {
   try {
-    const intent = computeNextBackgroundWakeIntent();
+    const intent = await computeNextBackgroundWakeIntent();
     if (intent) {
       const result = await publishBackgroundWakeIntent(intent);
       lastIntentSnapshot = intent;

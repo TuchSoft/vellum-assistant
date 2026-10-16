@@ -18,7 +18,7 @@ const log = getLogger("schedule-recovery");
  * so all "firing" / "running" rows are definitively stale.
  */
 export async function recoverStaleSchedules(): Promise<number> {
-  const stale = findStaleInFlightJobs(0);
+  const stale = await findStaleInFlightJobs(0);
   if (stale.length === 0) {
     return 0;
   }
@@ -28,7 +28,7 @@ export async function recoverStaleSchedules(): Promise<number> {
   let recovered = 0;
   for (const { jobId, staleRunId } of stale) {
     try {
-      const job = getSchedule(jobId);
+      const job = await getSchedule(jobId);
       if (!job) {
         continue;
       }

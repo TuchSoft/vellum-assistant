@@ -58,8 +58,8 @@ describe("enrichFeedItemsWithSource", () => {
     getScheduleName: (id) => schedules[id] ?? null,
   });
 
-  it("classifies a heartbeat item with a static label", () => {
-    const [item] = enrichFeedItemsWithSource(
+  it("classifies a heartbeat item with a static label", async () => {
+    const [item] = await enrichFeedItemsWithSource(
       [makeItem({ id: "n1", conversationId: "c1" })],
       deps({ c1: { source: "heartbeat", scheduleJobId: null } }),
     );
@@ -68,8 +68,8 @@ describe("enrichFeedItemsWithSource", () => {
     expect(item.sourceLabel).toBe("Heartbeat");
   });
 
-  it("classifies a memory-consolidation item", () => {
-    const [item] = enrichFeedItemsWithSource(
+  it("classifies a memory-consolidation item", async () => {
+    const [item] = await enrichFeedItemsWithSource(
       [makeItem({ id: "n2", conversationId: "c2" })],
       deps({ c2: { source: "memory-retrospective", scheduleJobId: null } }),
     );
@@ -78,8 +78,8 @@ describe("enrichFeedItemsWithSource", () => {
     expect(item.sourceLabel).toBe("Memory consolidation");
   });
 
-  it("gives distinct keys and names to two different schedules", () => {
-    const [a, b] = enrichFeedItemsWithSource(
+  it("gives distinct keys and names to two different schedules", async () => {
+    const [a, b] = await enrichFeedItemsWithSource(
       [
         makeItem({ id: "n3", conversationId: "cA" }),
         makeItem({ id: "n4", conversationId: "cB" }),
@@ -102,8 +102,8 @@ describe("enrichFeedItemsWithSource", () => {
     expect(b.sourceLabel).toBe("Evening recap");
   });
 
-  it("prefers an explicit metadata.scheduleId over the conversation row", () => {
-    const [item] = enrichFeedItemsWithSource(
+  it("prefers an explicit metadata.scheduleId over the conversation row", async () => {
+    const [item] = await enrichFeedItemsWithSource(
       [
         makeItem({
           id: "n5",
@@ -120,8 +120,8 @@ describe("enrichFeedItemsWithSource", () => {
     expect(item.sourceLabel).toBe("Payload schedule");
   });
 
-  it("labels a schedule with no resolvable name as 'Scheduled'", () => {
-    const [item] = enrichFeedItemsWithSource(
+  it("labels a schedule with no resolvable name as 'Scheduled'", async () => {
+    const [item] = await enrichFeedItemsWithSource(
       [makeItem({ id: "n6", conversationId: "cY" })],
       deps({ cY: { source: "schedule", scheduleJobId: "gone" } }),
     );
@@ -129,8 +129,8 @@ describe("enrichFeedItemsWithSource", () => {
     expect(item.sourceLabel).toBe("Scheduled");
   });
 
-  it("classifies items with no source conversation as 'other'", () => {
-    const [item] = enrichFeedItemsWithSource(
+  it("classifies items with no source conversation as 'other'", async () => {
+    const [item] = await enrichFeedItemsWithSource(
       [makeItem({ id: "n7" })],
       deps({}),
     );
@@ -139,9 +139,9 @@ describe("enrichFeedItemsWithSource", () => {
     expect(item.sourceLabel).toBe("Other");
   });
 
-  it("resolves each distinct conversation at most once", () => {
+  it("resolves each distinct conversation at most once", async () => {
     const calls: string[] = [];
-    enrichFeedItemsWithSource(
+    await enrichFeedItemsWithSource(
       [
         makeItem({ id: "n8", conversationId: "dup" }),
         makeItem({ id: "n9", conversationId: "dup" }),

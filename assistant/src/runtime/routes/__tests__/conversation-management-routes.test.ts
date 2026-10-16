@@ -503,7 +503,7 @@ describe("DELETE /v1/conversations/:id (deleteConversation)", () => {
     // THEN the conversation is gone but the schedule row survives: its
     // lifecycle belongs to the reconciler, not conversation cleanup.
     expect(getDb().select().from(conversations).all()).toHaveLength(0);
-    expect(getSchedule(job.id)).not.toBeNull();
+    expect(await getSchedule(job.id)).not.toBeNull();
   });
 
   test("deleting the last conversation of a user schedule still deletes the schedule", async () => {
@@ -519,6 +519,6 @@ describe("DELETE /v1/conversations/:id (deleteConversation)", () => {
     await deleteHandler({ pathParams: { id: convId } });
 
     expect(getDb().select().from(conversations).all()).toHaveLength(0);
-    expect(getSchedule(job.id)).toBeNull();
+    expect(await getSchedule(job.id)).toBeNull();
   });
 });

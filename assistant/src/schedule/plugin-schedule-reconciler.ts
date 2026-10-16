@@ -107,7 +107,7 @@ async function runReconcilePass(): Promise<void> {
       : { desired: new Map(), errors: [], manifestFailures: [] };
 
   const existingByKey = new Map<string, ScheduleJob>();
-  for (const row of listDeclaredSchedules()) {
+  for (const row of await listDeclaredSchedules()) {
     if (row.sourceKey !== null) {
       existingByKey.set(row.sourceKey, row);
     }

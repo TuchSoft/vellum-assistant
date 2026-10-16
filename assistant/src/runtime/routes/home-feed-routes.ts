@@ -173,7 +173,7 @@ export async function handleGetHomeFeed({
   // context-banner relative-time label. Each item is enriched with its
   // source-conversation classification (`sourceType`/`sourceKey`/
   // `sourceLabel`) so clients can filter the feed by what produced it.
-  const filtered = enrichFeedItemsWithSource(feed.items);
+  const filtered = await enrichFeedItemsWithSource(feed.items);
 
   const now = new Date();
 
@@ -244,9 +244,9 @@ export async function handlePatchFeedItem({
   return updated as unknown as Record<string, unknown>;
 }
 
-export function handleListHomeFeed({
+export async function handleListHomeFeed({
   body = {},
-}: RouteHandlerArgs): Record<string, unknown> {
+}: RouteHandlerArgs): Promise<Record<string, unknown>> {
   const parsed = listHomeFeedRequestSchema.safeParse(body);
   if (!parsed.success) {
     throw new BadRequestError(
@@ -339,7 +339,7 @@ export function handleListHomeFeed({
   const total = filtered.length;
   const offset = params.offset ?? 0;
   const limit = params.limit ?? 20;
-  const items = enrichFeedItemsWithSource(
+  const items = await enrichFeedItemsWithSource(
     filtered.slice(offset, offset + limit),
   );
 

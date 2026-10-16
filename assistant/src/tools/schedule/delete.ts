@@ -33,7 +33,7 @@ export async function executeScheduleDelete(
   throwIfCancelled(context);
 
   // Fetch the job first for the confirmation message
-  const job = getSchedule(jobId);
+  const job = await getSchedule(jobId);
   if (!job) {
     return { content: `Error: Schedule not found: ${jobId}`, isError: true };
   }

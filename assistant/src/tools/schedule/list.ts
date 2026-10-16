@@ -62,14 +62,14 @@ export async function executeScheduleList(
 
   // Detail mode for a specific job
   if (jobId) {
-    const job = getSchedule(jobId);
+    const job = await getSchedule(jobId);
     if (!job) {
       return { content: `Error: Schedule not found: ${jobId}`, isError: true };
     }
 
     const oneShot = isOneShot(job);
 
-    const runs = getScheduleRuns(jobId, 5);
+    const runs = await getScheduleRuns(jobId, 5);
     const lines = [
       `Schedule: ${job.name}`,
       `  ID: ${job.id}`,
@@ -142,7 +142,7 @@ export async function executeScheduleList(
   }
 
   // List mode
-  const jobs = listSchedules({ enabledOnly });
+  const jobs = await listSchedules({ enabledOnly });
   if (jobs.length === 0) {
     return { content: "No schedules found.", isError: false };
   }

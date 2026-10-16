@@ -190,7 +190,7 @@ describe("createSchedule (cron)", () => {
       syntax: "cron",
     });
 
-    const retrieved = getSchedule(job.id);
+    const retrieved = await getSchedule(job.id);
     expect(retrieved).not.toBeNull();
     expect(retrieved!.syntax).toBe("cron");
     expect(retrieved!.expression).toBe("0 * * * *");
@@ -219,8 +219,12 @@ describe("createSchedule (cron)", () => {
     });
     expect(updated).not.toBeNull();
     expect(updated!.description).toBe("Updated summary prompt");
-    expect(getSchedule(job.id)!.description).toBe("Updated summary prompt");
-    expect(listSchedules()[0].description).toBe("Updated summary prompt");
+    expect((await getSchedule(job.id))!.description).toBe(
+      "Updated summary prompt",
+    );
+    expect((await listSchedules())[0].description).toBe(
+      "Updated summary prompt",
+    );
   });
 
   test("defaults source conversation metadata to null", async () => {
@@ -232,7 +236,7 @@ describe("createSchedule (cron)", () => {
     });
 
     expect(job.createdFromConversationId).toBeNull();
-    expect(getSchedule(job.id)!.createdFromConversationId).toBeNull();
+    expect((await getSchedule(job.id))!.createdFromConversationId).toBeNull();
 
     const raw = getRawDb()
       .query("SELECT created_from_conversation_id FROM cron_jobs WHERE id = ?")
@@ -250,8 +254,12 @@ describe("createSchedule (cron)", () => {
     });
 
     expect(job.createdFromConversationId).toBe("conv-source");
-    expect(getSchedule(job.id)!.createdFromConversationId).toBe("conv-source");
-    expect(listSchedules()[0].createdFromConversationId).toBe("conv-source");
+    expect((await getSchedule(job.id))!.createdFromConversationId).toBe(
+      "conv-source",
+    );
+    expect((await listSchedules())[0].createdFromConversationId).toBe(
+      "conv-source",
+    );
 
     // Create-only: `updateSchedule` does not accept it, so a wake's
     // source-conversation binding cannot drift from what creation recorded.
@@ -432,7 +440,7 @@ describe("createSchedule (RRULE set)", () => {
       expression,
     });
 
-    const retrieved = getSchedule(job.id);
+    const retrieved = await getSchedule(job.id);
     expect(retrieved).not.toBeNull();
     expect(retrieved!.syntax).toBe("rrule");
     expect(retrieved!.expression).toBe(expression);
@@ -708,7 +716,7 @@ describe("claimDueSchedules", () => {
     expect(claimed[0].nextRunAt).toBe(0);
 
     // Verify the schedule is disabled in the DB
-    const persisted = getSchedule(id);
+    const persisted = await getSchedule(id);
     expect(persisted!.enabled).toBe(false);
 
     // A subsequent claim should not pick it up
@@ -805,7 +813,7 @@ describe("createSchedule (one-shot)", () => {
       routingHints: hints,
     });
 
-    const retrieved = getSchedule(job.id);
+    const retrieved = await getSchedule(job.id);
     expect(retrieved).not.toBeNull();
     expect(retrieved!.expression).toBeNull();
     expect(retrieved!.cronExpression).toBeNull();
@@ -913,7 +921,7 @@ describe("completeOneShot", () => {
 
     await completeOneShot(job.id);
 
-    const retrieved = getSchedule(job.id);
+    const retrieved = await getSchedule(job.id);
     expect(retrieved!.status).toBe("fired");
     expect(retrieved!.enabled).toBe(false);
   });
@@ -927,7 +935,7 @@ describe("completeOneShot", () => {
 
     await completeOneShot(job.id);
 
-    const retrieved = getSchedule(job.id);
+    const retrieved = await getSchedule(job.id);
     expect(retrieved!.status).toBe("active"); // unchanged
     expect(retrieved!.enabled).toBe(true);
   });
@@ -952,7 +960,7 @@ describe("failOneShot", () => {
 
     await failOneShot(job.id);
 
-    const retrieved = getSchedule(job.id);
+    const retrieved = await getSchedule(job.id);
     expect(retrieved!.status).toBe("active");
     expect(retrieved!.enabled).toBe(true); // still enabled for retry
   });
@@ -991,7 +999,7 @@ describe("cancelSchedule", () => {
     const result = await cancelSchedule(job.id);
     expect(result).toBe(true);
 
-    const retrieved = getSchedule(job.id);
+    const retrieved = await getSchedule(job.id);
     expect(retrieved!.status).toBe("cancelled");
     expect(retrieved!.enabled).toBe(false);
   });
@@ -1060,7 +1068,7 @@ describe("routing and mode fields", () => {
       mode: "notify",
     });
 
-    const retrieved = getSchedule(job.id);
+    const retrieved = await getSchedule(job.id);
     expect(retrieved!.routingIntent).toBe("multi_channel");
     expect(retrieved!.routingHints).toEqual(hints);
     expect(retrieved!.mode).toBe("notify");
@@ -1134,7 +1142,7 @@ describe("script timeout override", () => {
 
     // THEN the stored timeout is null (the runner falls back to the default)
     expect(job.timeoutMs).toBeNull();
-    expect(getSchedule(job.id)!.timeoutMs).toBeNull();
+    expect((await getSchedule(job.id))!.timeoutMs).toBeNull();
   });
 
   test("persists a timeoutMs override through create/read", async () => {
@@ -1151,7 +1159,7 @@ describe("script timeout override", () => {
 
     // THEN the override round-trips through the store
     expect(job.timeoutMs).toBe(120_000);
-    expect(getSchedule(job.id)!.timeoutMs).toBe(120_000);
+    expect((await getSchedule(job.id))!.timeoutMs).toBe(120_000);
   });
 
   test("updateSchedule sets and clears the timeout override", async () => {
@@ -1177,7 +1185,7 @@ describe("script timeout override", () => {
 
     // THEN it reverts to null
     expect(cleared!.timeoutMs).toBeNull();
-    expect(getSchedule(job.id)!.timeoutMs).toBeNull();
+    expect((await getSchedule(job.id))!.timeoutMs).toBeNull();
   });
 });
 
@@ -1206,7 +1214,7 @@ describe("capability manifest", () => {
     });
 
     expect(job.capabilities).toEqual(manifest);
-    expect(getSchedule(job.id)!.capabilities).toEqual(manifest);
+    expect((await getSchedule(job.id))!.capabilities).toEqual(manifest);
   });
 
   test("defaults capabilities to null when not provided", async () => {
@@ -1218,7 +1226,7 @@ describe("capability manifest", () => {
     });
 
     expect(job.capabilities).toBeNull();
-    expect(getSchedule(job.id)!.capabilities).toBeNull();
+    expect((await getSchedule(job.id))!.capabilities).toBeNull();
   });
 
   test("updateSchedule sets and clears the capability manifest", async () => {
@@ -1233,11 +1241,11 @@ describe("capability manifest", () => {
 
     const updated = await updateSchedule(job.id, { capabilities: manifest });
     expect(updated!.capabilities).toEqual(manifest);
-    expect(getSchedule(job.id)!.capabilities).toEqual(manifest);
+    expect((await getSchedule(job.id))!.capabilities).toEqual(manifest);
 
     const cleared = await updateSchedule(job.id, { capabilities: null });
     expect(cleared!.capabilities).toBeNull();
-    expect(getSchedule(job.id)!.capabilities).toBeNull();
+    expect((await getSchedule(job.id))!.capabilities).toBeNull();
   });
 });
 
@@ -1263,7 +1271,7 @@ describe("listSchedules filters", () => {
       nextRunAt: Date.now() + 60_000,
     });
 
-    const oneShots = listSchedules({ oneShotOnly: true });
+    const oneShots = await listSchedules({ oneShotOnly: true });
     expect(oneShots.length).toBe(1);
     expect(oneShots[0].name).toBe("One-shot");
     expect(oneShots[0].expression).toBeNull();
@@ -1282,7 +1290,7 @@ describe("listSchedules filters", () => {
       nextRunAt: Date.now() + 60_000,
     });
 
-    const recurring = listSchedules({ recurringOnly: true });
+    const recurring = await listSchedules({ recurringOnly: true });
     expect(recurring.length).toBe(1);
     expect(recurring[0].name).toBe("Recurring");
     expect(recurring[0].expression).not.toBeNull();
@@ -1311,7 +1319,7 @@ describe("createSchedule (wake mode)", () => {
     expect(job.wakeConversationId).toBe("conv-123");
     expect(job.status).toBe("active");
 
-    const retrieved = getSchedule(job.id);
+    const retrieved = await getSchedule(job.id);
     expect(retrieved).not.toBeNull();
     expect(retrieved!.wakeConversationId).toBe("conv-123");
   });
@@ -1352,7 +1360,7 @@ describe("listSchedules new filters", () => {
       wakeConversationId: "conv-abc",
     });
 
-    const wakeOnly = listSchedules({ mode: "wake" });
+    const wakeOnly = await listSchedules({ mode: "wake" });
     expect(wakeOnly.length).toBe(1);
     expect(wakeOnly[0].name).toBe("Wake schedule");
     expect(wakeOnly[0].mode).toBe("wake");
@@ -1372,7 +1380,7 @@ describe("listSchedules new filters", () => {
       createdBy: "defer",
     });
 
-    const deferOnly = listSchedules({ createdBy: "defer" });
+    const deferOnly = await listSchedules({ createdBy: "defer" });
     expect(deferOnly.length).toBe(1);
     expect(deferOnly[0].name).toBe("Defer schedule");
     expect(deferOnly[0].createdBy).toBe("defer");
@@ -1399,7 +1407,7 @@ describe("listSchedules new filters", () => {
       nextRunAt: Date.now() + 60_000,
     });
 
-    const conv123Only = listSchedules({ conversationId: "conv-123" });
+    const conv123Only = await listSchedules({ conversationId: "conv-123" });
     expect(conv123Only.length).toBe(1);
     expect(conv123Only[0].name).toBe("Wake for conv-123");
     expect(conv123Only[0].wakeConversationId).toBe("conv-123");
@@ -1427,13 +1435,17 @@ describe("listSchedules new filters", () => {
       cronExpression: "0 9 * * *",
     });
 
-    const cheapOnly = listSchedules({ inferenceProfile: "cost-optimized" });
+    const cheapOnly = await listSchedules({
+      inferenceProfile: "cost-optimized",
+    });
     expect(cheapOnly.map((j) => j.name).sort()).toEqual([
       "Cheap digest",
       "Second cheap digest",
     ]);
-    expect(listSchedules({ inferenceProfile: "no-such-profile" })).toEqual([]);
-    expect(listSchedules().length).toBe(3);
+    expect(
+      await listSchedules({ inferenceProfile: "no-such-profile" }),
+    ).toEqual([]);
+    expect((await listSchedules()).length).toBe(3);
   });
 });
 
@@ -1500,7 +1512,7 @@ describe("owner-defer provenance", () => {
     await expect(
       updateSchedule(job.id, { message: "do something else" }),
     ).rejects.toThrow(/fixed at creation/);
-    expect(getSchedule(job.id)!.message).toBe("check the build");
+    expect((await getSchedule(job.id))!.message).toBe("check the build");
   });
 
   test("a trusted row refuses a target rewrite", async () => {
@@ -1508,7 +1520,7 @@ describe("owner-defer provenance", () => {
     await expect(
       updateSchedule(job.id, { wakeConversationId: "conv-elsewhere" }),
     ).rejects.toThrow(/fixed at creation/);
-    expect(getSchedule(job.id)!.wakeConversationId).toBe("conv-target");
+    expect((await getSchedule(job.id))!.wakeConversationId).toBe("conv-target");
   });
 
   test("a trusted row refuses a mode change", async () => {
@@ -1516,7 +1528,7 @@ describe("owner-defer provenance", () => {
     await expect(updateSchedule(job.id, { mode: "execute" })).rejects.toThrow(
       /fixed at creation/,
     );
-    expect(getSchedule(job.id)!.mode).toBe("wake");
+    expect((await getSchedule(job.id))!.mode).toBe("wake");
   });
 
   test("a trusted row still accepts unrelated edits and same-value writes", async () => {
@@ -1621,7 +1633,7 @@ describe("declared schedules", () => {
       syntax: "cron",
     });
 
-    const declared = listDeclaredSchedules();
+    const declared = await listDeclaredSchedules();
     expect(declared).toHaveLength(1);
     expect(declared[0].sourceKey).toBe(SOURCE_KEY);
     expect(imperative.sourceKey).toBeNull();
@@ -1711,7 +1723,7 @@ describe("declared schedules", () => {
 
     await disarmDeclaredSchedule(created.id);
 
-    const disarmed = getSchedule(created.id);
+    const disarmed = await getSchedule(created.id);
     expect(disarmed!.enabled).toBe(false);
     const runs = getRawDb()
       .query("SELECT COUNT(*) AS n FROM cron_runs WHERE job_id = ?")
@@ -1736,7 +1748,7 @@ describe("declared schedules", () => {
     await expect(disarmDeclaredSchedule(imperative.id)).rejects.toThrow(
       /plugin-sourced/,
     );
-    expect(getSchedule(imperative.id)!.enabled).toBe(true);
+    expect((await getSchedule(imperative.id))!.enabled).toBe(true);
   });
 
   test("user override wins over the declared value in both directions", async () => {
@@ -1909,7 +1921,7 @@ describe("declared schedules", () => {
       /managed by a plugin/,
     );
 
-    expect(getSchedule(created.id)).not.toBeNull();
+    expect(await getSchedule(created.id)).not.toBeNull();
     const runs = getRawDb()
       .query("SELECT COUNT(*) AS n FROM cron_runs WHERE job_id = ?")
       .get(created.id) as { n: number };
@@ -1928,7 +1940,7 @@ describe("declared schedules", () => {
     expect(renamed!.name).toBe("Renamed");
 
     expect(await deleteSchedule(imperative.id)).toBe(true);
-    expect(getSchedule(imperative.id)).toBeNull();
+    expect(await getSchedule(imperative.id)).toBeNull();
   });
 });
 
@@ -1958,7 +1970,7 @@ describe("inference-profile pinning", () => {
     });
 
     expect(job.inferenceProfile).toBe(expected!);
-    expect(getSchedule(job.id)!.inferenceProfile).toBe(expected!);
+    expect((await getSchedule(job.id))!.inferenceProfile).toBe(expected!);
   });
 
   test("creation with an explicit profile keeps it", async () => {

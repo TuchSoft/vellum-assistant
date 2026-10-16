@@ -183,7 +183,7 @@ describe("a non-owner cannot retarget a schedule onto a guardian conversation", 
       }),
     ).rejects.toThrow(/only be changed by the assistant's owner/);
 
-    const after = getSchedule(schedule.id);
+    const after = await getSchedule(schedule.id);
     expect(after?.mode).toBe("execute");
     expect(after?.wakeConversationId).toBeNull();
   });
@@ -204,7 +204,7 @@ describe("a non-owner cannot retarget a schedule onto a guardian conversation", 
       ).rejects.toThrow(/only be changed by the assistant's owner/);
     }
 
-    const after = getSchedule(defer.id);
+    const after = await getSchedule(defer.id);
     expect(after?.wakeConversationId).toBe(TARGET);
     expect(after?.message).toBe("check the build");
   });
@@ -257,7 +257,7 @@ describe("a locked-field edit is refused as a caller error, not a daemon fault",
     expect((err as BadRequestError).message).toMatch(
       /fixed at creation; cancel and re-create it/,
     );
-    expect(getSchedule(defer.id)?.message).toBe("check the build");
+    expect((await getSchedule(defer.id))?.message).toBe("check the build");
   });
 
   test("same-value and unrelated edits still succeed for the owner", async () => {
@@ -269,8 +269,8 @@ describe("a locked-field edit is refused as a caller error, not a daemon fault",
       headers: LOCAL_CALLER,
     });
 
-    expect(getSchedule(defer.id)?.name).toBe("renamed");
-    expect(getSchedule(defer.id)?.message).toBe("check the build");
+    expect((await getSchedule(defer.id))?.name).toBe("renamed");
+    expect((await getSchedule(defer.id))?.message).toBe("check the build");
   });
 });
 
@@ -315,7 +315,7 @@ describe("toggle-enable cannot be used as a firing trigger", () => {
       }),
     ).rejects.toThrow(/only be changed by the assistant's owner/);
 
-    expect(getSchedule(defer.id)).not.toBeNull();
+    expect(await getSchedule(defer.id)).not.toBeNull();
   });
 
   test("ordinary schedules are unaffected by the wake bar", async () => {
@@ -333,7 +333,7 @@ describe("toggle-enable cannot be used as a firing trigger", () => {
       headers: STALE_ACTOR,
     });
 
-    expect(getSchedule(schedule.id)?.enabled).toBe(false);
+    expect((await getSchedule(schedule.id))?.enabled).toBe(false);
   });
 });
 

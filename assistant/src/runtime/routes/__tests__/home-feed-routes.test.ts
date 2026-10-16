@@ -604,7 +604,7 @@ describe("handleListHomeFeed", () => {
     hasMore: boolean;
   };
 
-  test("excludes dismissed items by default", () => {
+  test("excludes dismissed items by default", async () => {
     writeFeedFile([
       makeItem({ id: "a", status: "new" }),
       makeItem({ id: "b", status: "seen" }),
@@ -612,127 +612,127 @@ describe("handleListHomeFeed", () => {
       makeItem({ id: "d", status: "dismissed" }),
     ]);
 
-    const result = handleListHomeFeed({ body: {} }) as ListResult;
+    const result = (await handleListHomeFeed({ body: {} })) as ListResult;
     expect(result.items.map((i) => i.id).sort()).toEqual(["a", "b", "c"]);
     expect(result.total).toBe(3);
     expect(result.hasMore).toBe(false);
   });
 
-  test("includeDismissed: true returns dismissed items too", () => {
+  test("includeDismissed: true returns dismissed items too", async () => {
     writeFeedFile([
       makeItem({ id: "a", status: "new" }),
       makeItem({ id: "d", status: "dismissed" }),
     ]);
 
-    const result = handleListHomeFeed({
+    const result = (await handleListHomeFeed({
       body: { includeDismissed: true },
-    }) as ListResult;
+    })) as ListResult;
     expect(result.items.map((i) => i.id).sort()).toEqual(["a", "d"]);
   });
 
-  test("statuses filter overrides the dismissed-default exclusion", () => {
+  test("statuses filter overrides the dismissed-default exclusion", async () => {
     writeFeedFile([
       makeItem({ id: "a", status: "new" }),
       makeItem({ id: "b", status: "seen" }),
       makeItem({ id: "d", status: "dismissed" }),
     ]);
 
-    const result = handleListHomeFeed({
+    const result = (await handleListHomeFeed({
       body: { statuses: ["dismissed"] },
-    }) as ListResult;
+    })) as ListResult;
     expect(result.items.map((i) => i.id)).toEqual(["d"]);
   });
 
-  test("urgencies filter narrows by urgency and excludes items missing urgency", () => {
+  test("urgencies filter narrows by urgency and excludes items missing urgency", async () => {
     writeFeedFile([
       makeItem({ id: "a", urgency: "high" }),
       makeItem({ id: "b", urgency: "low" }),
       makeItem({ id: "c" }),
     ]);
 
-    const result = handleListHomeFeed({
+    const result = (await handleListHomeFeed({
       body: { urgencies: ["high"] },
-    }) as ListResult;
+    })) as ListResult;
     expect(result.items.map((i) => i.id)).toEqual(["a"]);
   });
 
-  test("categories filter narrows by category", () => {
+  test("categories filter narrows by category", async () => {
     writeFeedFile([
       makeItem({ id: "a", category: "email" }),
       makeItem({ id: "b", category: "background" }),
     ]);
 
-    const result = handleListHomeFeed({
+    const result = (await handleListHomeFeed({
       body: { categories: ["email"] },
-    }) as ListResult;
+    })) as ListResult;
     expect(result.items.map((i) => i.id)).toEqual(["a"]);
   });
 
-  test("conversationId filter narrows by conversation", () => {
+  test("conversationId filter narrows by conversation", async () => {
     writeFeedFile([
       makeItem({ id: "a", conversationId: "conv-1" }),
       makeItem({ id: "b", conversationId: "conv-2" }),
       makeItem({ id: "c" }),
     ]);
 
-    const result = handleListHomeFeed({
+    const result = (await handleListHomeFeed({
       body: { conversationId: "conv-1" },
-    }) as ListResult;
+    })) as ListResult;
     expect(result.items.map((i) => i.id)).toEqual(["a"]);
   });
 
-  test("fromAssistant: true returns only assistant-emitted items", () => {
+  test("fromAssistant: true returns only assistant-emitted items", async () => {
     writeFeedFile([
       makeItem({ id: "a", fromAssistant: true }),
       makeItem({ id: "b", fromAssistant: false }),
       makeItem({ id: "c" }),
     ]);
 
-    const result = handleListHomeFeed({
+    const result = (await handleListHomeFeed({
       body: { fromAssistant: true },
-    }) as ListResult;
+    })) as ListResult;
     expect(result.items.map((i) => i.id)).toEqual(["a"]);
   });
 
-  test("noteworthy: true returns only noteworthy items", () => {
+  test("noteworthy: true returns only noteworthy items", async () => {
     writeFeedFile([
       makeItem({ id: "a", noteworthy: true }),
       makeItem({ id: "b" }),
     ]);
 
-    const result = handleListHomeFeed({
+    const result = (await handleListHomeFeed({
       body: { noteworthy: true },
-    }) as ListResult;
+    })) as ListResult;
     expect(result.items.map((i) => i.id)).toEqual(["a"]);
   });
 
-  test("before filter is strict (createdAt < before)", () => {
+  test("before filter is strict (createdAt < before)", async () => {
     writeFeedFile([
       makeItem({ id: "old", createdAt: "2026-05-01T00:00:00.000Z" }),
       makeItem({ id: "edge", createdAt: "2026-05-15T00:00:00.000Z" }),
       makeItem({ id: "new", createdAt: "2026-05-20T00:00:00.000Z" }),
     ]);
 
-    const result = handleListHomeFeed({
+    const result = (await handleListHomeFeed({
       body: { before: "2026-05-15T00:00:00.000Z" },
-    }) as ListResult;
+    })) as ListResult;
     expect(result.items.map((i) => i.id)).toEqual(["old"]);
   });
 
-  test("after filter is strict (createdAt > after)", () => {
+  test("after filter is strict (createdAt > after)", async () => {
     writeFeedFile([
       makeItem({ id: "old", createdAt: "2026-05-01T00:00:00.000Z" }),
       makeItem({ id: "edge", createdAt: "2026-05-15T00:00:00.000Z" }),
       makeItem({ id: "new", createdAt: "2026-05-20T00:00:00.000Z" }),
     ]);
 
-    const result = handleListHomeFeed({
+    const result = (await handleListHomeFeed({
       body: { after: "2026-05-15T00:00:00.000Z" },
-    }) as ListResult;
+    })) as ListResult;
     expect(result.items.map((i) => i.id)).toEqual(["new"]);
   });
 
-  test("limit and offset paginate; hasMore reflects remaining items", () => {
+  test("limit and offset paginate; hasMore reflects remaining items", async () => {
     writeFeedFile(
       Array.from({ length: 25 }, (_, i) =>
         makeItem({
@@ -743,26 +743,26 @@ describe("handleListHomeFeed", () => {
       ),
     );
 
-    const page1 = handleListHomeFeed({
+    const page1 = (await handleListHomeFeed({
       body: { limit: 10, offset: 0 },
-    }) as ListResult;
+    })) as ListResult;
     expect(page1.items).toHaveLength(10);
     expect(page1.total).toBe(25);
     expect(page1.returned).toBe(10);
     expect(page1.hasMore).toBe(true);
 
-    const page3 = handleListHomeFeed({
+    const page3 = (await handleListHomeFeed({
       body: { limit: 10, offset: 20 },
-    }) as ListResult;
+    })) as ListResult;
     expect(page3.items).toHaveLength(5);
     expect(page3.hasMore).toBe(false);
   });
 
-  test("invalid before timestamp throws 400", () => {
+  test("invalid before timestamp throws 400", async () => {
     writeFeedFile([]);
     let caught: unknown;
     try {
-      handleListHomeFeed({ body: { before: "not-a-date" } });
+      await handleListHomeFeed({ body: { before: "not-a-date" } });
     } catch (err) {
       caught = err;
     }
@@ -770,11 +770,11 @@ describe("handleListHomeFeed", () => {
     expect((caught as { statusCode: number }).statusCode).toBe(400);
   });
 
-  test("invalid filter shape throws 400", () => {
+  test("invalid filter shape throws 400", async () => {
     writeFeedFile([]);
     let caught: unknown;
     try {
-      handleListHomeFeed({ body: { urgencies: ["extreme"] } });
+      await handleListHomeFeed({ body: { urgencies: ["extreme"] } });
     } catch (err) {
       caught = err;
     }
@@ -782,14 +782,14 @@ describe("handleListHomeFeed", () => {
     expect((caught as { statusCode: number }).statusCode).toBe(400);
   });
 
-  test("expired items are excluded (matches readHomeFeed TTL behavior)", () => {
+  test("expired items are excluded (matches readHomeFeed TTL behavior)", async () => {
     const past = new Date(Date.now() - 60_000).toISOString();
     writeFeedFile([
       makeItem({ id: "alive" }),
       makeItem({ id: "dead", expiresAt: past }),
     ]);
 
-    const result = handleListHomeFeed({ body: {} }) as ListResult;
+    const result = (await handleListHomeFeed({ body: {} })) as ListResult;
     expect(result.items.map((i) => i.id)).toEqual(["alive"]);
   });
 });

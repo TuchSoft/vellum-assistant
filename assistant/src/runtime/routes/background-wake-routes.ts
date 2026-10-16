@@ -139,13 +139,13 @@ async function defaultCompleteWakeLease(
   return completeBackgroundWakeLease(args);
 }
 
-function handleGetIntent() {
-  return { intent: computeWakeIntent() };
+async function handleGetIntent() {
+  return { intent: await computeWakeIntent() };
 }
 
-function handlePrepareSleep() {
+async function handlePrepareSleep() {
   const now = Date.now();
-  const intent = computeWakeIntent(now);
+  const intent = await computeWakeIntent(now);
   return {
     intent,
     deferSleep:
@@ -205,7 +205,7 @@ async function runDrainDueLease(
       leaseId: request.leaseId,
       status: completionStatusForError(error),
       error: error instanceof Error ? error.message : String(error),
-      nextIntent: computeWakeIntent(),
+      nextIntent: await computeWakeIntent(),
     });
   } finally {
     if (renewTimer) {
@@ -233,7 +233,7 @@ async function performDrainDue(
   runtime: BackgroundWakeRuntime,
 ) {
   const now = Date.now();
-  const currentIntent = computeWakeIntent(now);
+  const currentIntent = await computeWakeIntent(now);
   const heartbeatDue = isHeartbeatTimerDue(runtime.heartbeat.nextRunAt, now);
   const schedulerDue =
     heartbeatDue ||
@@ -257,7 +257,7 @@ async function performDrainDue(
     });
   }
 
-  const nextIntent = computeWakeIntent();
+  const nextIntent = await computeWakeIntent();
 
   return {
     nextIntent,

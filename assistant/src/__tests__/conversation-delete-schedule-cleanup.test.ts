@@ -67,7 +67,7 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
       scheduleJobId: schedule.id,
     });
 
-    expect(getSchedule(schedule.id)).not.toBeNull();
+    expect(await getSchedule(schedule.id)).not.toBeNull();
 
     await deleteRoute.handler({
       pathParams: { id: conv.id },
@@ -75,7 +75,7 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
       headers: {},
     });
 
-    expect(getSchedule(schedule.id)).toBeNull();
+    expect(await getSchedule(schedule.id)).toBeNull();
     expect(getConversation(conv.id)).toBeNull();
   });
 
@@ -94,7 +94,7 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
       headers: {},
     });
 
-    expect(getSchedule(schedule.id)).not.toBeNull();
+    expect(await getSchedule(schedule.id)).not.toBeNull();
     expect(getConversation(conv.id)).toBeNull();
   });
 
@@ -129,7 +129,7 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
       headers: {},
     });
 
-    expect(getSchedule(schedule.id)).toBeNull();
+    expect(await getSchedule(schedule.id)).toBeNull();
     const runAfter = getRawDb()
       .query("SELECT * FROM cron_runs WHERE id = 'run-1'")
       .get();
@@ -158,7 +158,7 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
       headers: {},
     });
 
-    expect(getSchedule(schedule.id)).not.toBeNull();
+    expect(await getSchedule(schedule.id)).not.toBeNull();
   });
 
   test("deleting one scheduled conversation does not affect other schedules", async () => {
@@ -188,7 +188,7 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
       headers: {},
     });
 
-    expect(getSchedule(scheduleA.id)).toBeNull();
-    expect(getSchedule(scheduleB.id)).not.toBeNull();
+    expect(await getSchedule(scheduleA.id)).toBeNull();
+    expect(await getSchedule(scheduleB.id)).not.toBeNull();
   });
 });

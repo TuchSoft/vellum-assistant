@@ -92,7 +92,7 @@ describe("PATCH /schedules/:id — workflow-mode name validation", () => {
 
     // The schedule must stay in its prior mode — the wedge-prone nameless
     // workflow row was never persisted.
-    expect(listSchedules()[0].mode).toBe("execute");
+    expect((await listSchedules())[0].mode).toBe("execute");
   });
 
   test("rejects switching to workflow with a blank/whitespace workflowName", async () => {
@@ -109,7 +109,7 @@ describe("PATCH /schedules/:id — workflow-mode name validation", () => {
         body: { mode: "workflow", workflowName: "   " },
       }),
     ).rejects.toThrow("workflowName is required");
-    expect(listSchedules()[0].mode).toBe("execute");
+    expect((await listSchedules())[0].mode).toBe("execute");
   });
 
   test("rejects clearing the workflowName on an already-workflow schedule", async () => {
@@ -141,7 +141,7 @@ describe("PATCH /schedules/:id — workflow-mode name validation", () => {
     ).rejects.toThrow("workflowName is required");
 
     // The original name is intact (neither PATCH was applied).
-    expect(listSchedules()[0].workflowName).toBe("triage-inbox");
+    expect((await listSchedules())[0].workflowName).toBe("triage-inbox");
   });
 
   test("rejects with a BadRequestError instance (400 shape, matching create)", async () => {
@@ -175,7 +175,7 @@ describe("PATCH /schedules/:id — workflow-mode name validation", () => {
 
     const updated = result.schedules.find((s) => s.id === schedule.id);
     expect(updated?.mode).toBe("workflow");
-    expect(listSchedules()[0].workflowName).toBe("triage-inbox");
+    expect((await listSchedules())[0].workflowName).toBe("triage-inbox");
   });
 
   test("allows an unrelated PATCH on a workflow schedule (name untouched)", async () => {
@@ -291,7 +291,7 @@ describe("POST /schedules/:id/run — workflow mode triggers the workflow", () =
     expect(call.conversationId).toBe("conv-creator");
 
     // A schedule run row was recorded as ok with the workflow run id.
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(runs).toHaveLength(1);
     expect(runs[0].status).toBe("ok");
     expect(runs[0].output).toContain("wf-run-1");

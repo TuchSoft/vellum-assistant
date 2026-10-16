@@ -394,10 +394,10 @@ function serializeSchedule(
   };
 }
 
-function handleListSchedules(queryParams: Record<string, string>) {
+async function handleListSchedules(queryParams: Record<string, string>) {
   const includeAll = queryParams.include_all === "true";
   const inferenceProfile = queryParams.inference_profile?.trim();
-  const jobs = listSchedules(
+  const jobs = await listSchedules(
     inferenceProfile ? { inferenceProfile } : undefined,
   );
   const filtered = includeAll
@@ -414,8 +414,8 @@ function handleListSchedules(queryParams: Record<string, string>) {
   };
 }
 
-function handleGetSchedule(id: string) {
-  const job = getSchedule(id);
+async function handleGetSchedule(id: string) {
+  const job = await getSchedule(id);
   if (!job) {
     throw new NotFoundError("Schedule not found");
   }
@@ -476,8 +476,8 @@ async function handleReassignScheduleInferenceProfile(
   }
 
   const selected = hasFrom
-    ? listSchedules({ inferenceProfile: from })
-    : listSchedules().filter(canScheduleStillRun);
+    ? await listSchedules({ inferenceProfile: from })
+    : (await listSchedules()).filter(canScheduleStillRun);
   const matches = selected.filter((job) => job.inferenceProfile !== to);
   // The guard depends only on the caller, so its answer is the same for every
   // row: settle it once for the whole set. Checking per row would spend a
@@ -672,7 +672,7 @@ async function handleToggleSchedule(
   // Enabling is a firing trigger in its own right: a disabled wake row whose
   // `nextRunAt` has already passed fires on the next tick the moment it is
   // enabled, with no further caller involvement.
-  await assertWakeMutationAllowed(getSchedule(id), undefined, headers);
+  await assertWakeMutationAllowed(await getSchedule(id), undefined, headers);
 
   // One endpoint serves both kinds of row: imperative schedules take the
   // plain enabled write, plugin-sourced ones record the user_enabled override.
@@ -688,7 +688,7 @@ async function handleDeleteSchedule(
   id: string,
   headers?: Record<string, string>,
 ) {
-  await assertWakeMutationAllowed(getSchedule(id), undefined, headers);
+  await assertWakeMutationAllowed(await getSchedule(id), undefined, headers);
   let removed: boolean;
   try {
     removed = await deleteSchedule(id);
@@ -712,7 +712,7 @@ async function handleCancelSchedule(
   id: string,
   headers?: Record<string, string>,
 ) {
-  await assertWakeMutationAllowed(getSchedule(id), undefined, headers);
+  await assertWakeMutationAllowed(await getSchedule(id), undefined, headers);
   let cancelled: boolean;
   try {
     cancelled = await cancelSchedule(id);
@@ -778,7 +778,7 @@ async function handleUpdateSchedule(
   // so both "switch to workflow without a name" and "clear the name on an
   // already-workflow schedule" are rejected. Skip when the schedule does not
   // exist — the updateSchedule call below surfaces that as NotFound.
-  const existing = getSchedule(id);
+  const existing = await getSchedule(id);
   if (existing) {
     const resultingMode =
       "mode" in body ? (body.mode as string) : existing.mode;
@@ -897,18 +897,18 @@ async function handleUpdateSchedule(
   return handleListSchedules({});
 }
 
-function handleListScheduleRuns(
+async function handleListScheduleRuns(
   id: string,
   queryParams: Record<string, string>,
 ) {
-  const schedule = getSchedule(id);
+  const schedule = await getSchedule(id);
   if (!schedule) {
     throw new NotFoundError("Schedule not found");
   }
   const limit = parseRunsLimit(queryParams, 10);
   const before = parseRunsBeforeCursor(queryParams);
   const { rows, nextCursor } = paginateRuns(
-    getScheduleRuns(id, limit + 1, before),
+    await getScheduleRuns(id, limit + 1, before),
     limit,
     (r) => r.createdAt,
   );
@@ -1326,7 +1326,7 @@ async function handleRunScheduleNow(
   id: string,
   headers?: Record<string, string>,
 ) {
-  const schedule = getSchedule(id);
+  const schedule = await getSchedule(id);
   if (!schedule) {
     throw new NotFoundError("Schedule not found");
   }
@@ -1498,7 +1498,7 @@ async function handleRunScheduleNow(
   const isRecurring = schedule.expression != null;
   let conversationId: string | null = null;
   if (schedule.reuseConversation && isRecurring) {
-    const lastId = getLastScheduleConversationId(schedule.id);
+    const lastId = await getLastScheduleConversationId(schedule.id);
     if (lastId && getConversation(lastId)) {
       conversationId = lastId;
     }

@@ -44,7 +44,7 @@ function getMemoryItemCount(): number {
   }
 }
 
-function getDebugInfo() {
+async function getDebugInfo() {
   const now = Date.now();
   const uptimeSeconds = Math.floor((now - startedAt) / 1000);
 
@@ -60,7 +60,7 @@ function getDebugInfo() {
 
   const memoryJobCounts = getMemoryJobCounts();
 
-  const scheduleCounts = countSchedules();
+  const scheduleCounts = await countSchedules();
 
   const config = getConfig();
   const registeredProviders = listProviders();

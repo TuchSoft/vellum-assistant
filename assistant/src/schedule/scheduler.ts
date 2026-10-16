@@ -1108,7 +1108,7 @@ export async function runDueSchedulesOnce(
 
     let reusedConversationId: string | null = null;
     if (job.reuseConversation && !isOneShot) {
-      const lastId = getLastScheduleConversationId(job.id);
+      const lastId = await getLastScheduleConversationId(job.id);
       if (lastId && getConversation(lastId)) {
         reusedConversationId = lastId;
       }

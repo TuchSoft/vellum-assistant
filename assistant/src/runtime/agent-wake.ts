@@ -773,9 +773,9 @@ export async function wakeAgentForOpportunity(
   const resolveTarget = deps?.resolveTarget ?? defaultResolveTarget;
   const nowFn = deps?.now ?? Date.now;
   const startedAt = nowFn();
-  const scheduledRunFailed = (): boolean =>
+  const scheduledRunFailed = async (): Promise<boolean> =>
     opts.cronRunId !== undefined &&
-    getScheduleRunStatus(opts.cronRunId) === "error";
+    (await getScheduleRunStatus(opts.cronRunId)) === "error";
   let wakeTriggerMessageId: string | undefined;
   let completionAssistantMessageId: string | undefined;
 
@@ -880,7 +880,7 @@ export async function wakeAgentForOpportunity(
       restorePersistentWakeTrust();
       return { invoked: false, producedToolCalls: false, reason: "timeout" };
     }
-    if (scheduledRunFailed()) {
+    if (await scheduledRunFailed()) {
       restorePersistentWakeTrust();
       return { invoked: false, producedToolCalls: false, reason: "timeout" };
     }
@@ -1595,7 +1595,7 @@ export async function wakeAgentForOpportunity(
     };
     let cancelledBeforeRun = false;
     try {
-      if (wakeAbortController.signal.aborted || scheduledRunFailed()) {
+      if (wakeAbortController.signal.aborted || (await scheduledRunFailed())) {
         cancelledBeforeRun = true;
         return { invoked: false, producedToolCalls: false, reason: "timeout" };
       }

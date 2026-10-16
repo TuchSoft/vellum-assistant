@@ -14,11 +14,10 @@ import {
 import { v4 as uuid } from "uuid";
 
 import { getConversation } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
+import type { AsyncDb, SchemaTables } from "../persistence/db-facade.js";
+import { getAsyncDb } from "../persistence/db-facade.js";
 import { getGroup } from "../persistence/group-crud.js";
 import { isLifecycleQuiesced } from "../persistence/lifecycle-quiesce.js";
-import { rawChanges } from "../persistence/raw-query.js";
-import { scheduleJobs, scheduleRuns } from "../persistence/schema/index.js";
 import { publishSchedulesChanged } from "../runtime/sync/resource-sync-events.js";
 import { UserError } from "../util/errors.js";
 import { getLogger } from "../util/logger.js";
@@ -46,6 +45,25 @@ import {
 } from "./schedule-timezone.js";
 
 const logger = getLogger("schedule-store");
+
+/**
+ * The connection for this slice. `cron_jobs` and `cron_runs` live on the
+ * `main` slot, so every read and write goes through the main facade. It throws
+ * when the slot is unavailable, matching the synchronous `getDb()` it replaces
+ * (which threw on open failure) so a schedule mutation never silently
+ * disappears into a degraded no-op.
+ */
+function requireMainDb(): AsyncDb {
+  const db = getAsyncDb();
+  if (!db) {
+    throw new Error("main database unavailable");
+  }
+  return db;
+}
+
+/** Row shapes of the two tables this slice owns, from the SQLite barrel. */
+type ScheduleJobRow = SchemaTables["scheduleJobs"]["$inferSelect"];
+type ScheduleRunRow = SchemaTables["scheduleRuns"]["$inferSelect"];
 
 function notifySchedulesChanged(): void {
   publishSchedulesChanged();
@@ -280,7 +298,7 @@ async function insertSchedule(
     throw new Error("Wake schedules require wakeConversationId");
   }
 
-  const db = getDb();
+  const db = requireMainDb();
   const id = uuid();
   const now = Date.now();
   const enabled = params.enabled ?? true;
@@ -373,11 +391,14 @@ async function insertSchedule(
     updatedAt: now,
   };
 
-  await withSqliteRetry(() => db.insert(scheduleJobs).values(row).run(), {
-    op: "createSchedule",
-    context: { scheduleId: id },
-    ...(opts?.signal ? { signal: opts.signal } : {}),
-  });
+  await withSqliteRetry(
+    () => db.orm.insert(db.schema.scheduleJobs).values(row),
+    {
+      op: "createSchedule",
+      context: { scheduleId: id },
+      ...(opts?.signal ? { signal: opts.signal } : {}),
+    },
+  );
   notifySchedulesChanged();
   return parseJobRow(row);
 }
@@ -462,32 +483,32 @@ export function resolveScheduleConversationGroupId(
   return "system:scheduled";
 }
 
-export function getSchedule(id: string): ScheduleJob | null {
-  const db = getDb();
-  const row = db
-    .select()
-    .from(scheduleJobs)
-    .where(eq(scheduleJobs.id, id))
-    .get();
+export async function getSchedule(id: string): Promise<ScheduleJob | null> {
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
+  const [row] = await db.orm.select().from(jobs).where(eq(jobs.id, id));
   if (!row) {
     return null;
   }
   return parseJobRow(row);
 }
 
-export function countSchedules(): { total: number; enabled: number } {
-  const db = getDb();
-  const row = db
+export async function countSchedules(): Promise<{
+  total: number;
+  enabled: number;
+}> {
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
+  const [row] = await db.orm
     .select({
       total: sql<number>`COUNT(*)`,
-      enabled: sql<number>`SUM(CASE WHEN ${scheduleJobs.enabled} THEN 1 ELSE 0 END)`,
+      enabled: sql<number>`SUM(CASE WHEN ${jobs.enabled} THEN 1 ELSE 0 END)`,
     })
-    .from(scheduleJobs)
-    .get();
-  return { total: row?.total ?? 0, enabled: row?.enabled ?? 0 };
+    .from(jobs);
+  return { total: Number(row?.total ?? 0), enabled: Number(row?.enabled ?? 0) };
 }
 
-export function listSchedules(options?: {
+export async function listSchedules(options?: {
   enabledOnly?: boolean;
   oneShotOnly?: boolean;
   recurringOnly?: boolean;
@@ -495,46 +516,42 @@ export function listSchedules(options?: {
   createdBy?: string | readonly string[];
   conversationId?: string;
   inferenceProfile?: string;
-}): ScheduleJob[] {
-  const db = getDb();
+}): Promise<ScheduleJob[]> {
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   const conditions = [];
   if (options?.enabledOnly) {
-    conditions.push(eq(scheduleJobs.enabled, true));
+    conditions.push(eq(jobs.enabled, true));
   }
   if (options?.oneShotOnly) {
-    conditions.push(isNull(scheduleJobs.cronExpression));
+    conditions.push(isNull(jobs.cronExpression));
   }
   if (options?.recurringOnly) {
-    conditions.push(sql`${scheduleJobs.cronExpression} IS NOT NULL`);
+    conditions.push(sql`${jobs.cronExpression} IS NOT NULL`);
   }
   if (options?.mode) {
-    conditions.push(eq(scheduleJobs.mode, options.mode));
+    conditions.push(eq(jobs.mode, options.mode));
   }
   if (options?.createdBy) {
     const createdBy = options.createdBy;
     conditions.push(
       typeof createdBy === "string"
-        ? eq(scheduleJobs.createdBy, createdBy)
-        : inArray(scheduleJobs.createdBy, [...createdBy]),
+        ? eq(jobs.createdBy, createdBy)
+        : inArray(jobs.createdBy, [...createdBy]),
     );
   }
   if (options?.conversationId) {
-    conditions.push(
-      eq(scheduleJobs.wakeConversationId, options.conversationId),
-    );
+    conditions.push(eq(jobs.wakeConversationId, options.conversationId));
   }
   if (options?.inferenceProfile) {
-    conditions.push(
-      eq(scheduleJobs.inferenceProfile, options.inferenceProfile),
-    );
+    conditions.push(eq(jobs.inferenceProfile, options.inferenceProfile));
   }
   const where = conditions.length > 0 ? and(...conditions) : undefined;
-  const rows = db
+  const rows = await db.orm
     .select()
-    .from(scheduleJobs)
+    .from(jobs)
     .where(where)
-    .orderBy(asc(scheduleJobs.nextRunAt))
-    .all();
+    .orderBy(asc(jobs.nextRunAt));
   return rows.map(parseJobRow);
 }
 
@@ -579,12 +596,9 @@ export async function updateSchedule(
   },
   opts?: ScheduleWriteOptions,
 ): Promise<ScheduleJob | null> {
-  const db = getDb();
-  const existing = db
-    .select()
-    .from(scheduleJobs)
-    .where(eq(scheduleJobs.id, id))
-    .get();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
+  const [existing] = await db.orm.select().from(jobs).where(eq(jobs.id, id));
   if (!existing) {
     return null;
   }
@@ -760,7 +774,7 @@ export async function updateSchedule(
   }
 
   await withSqliteRetry(
-    () => db.update(scheduleJobs).set(set).where(eq(scheduleJobs.id, id)).run(),
+    () => db.orm.update(jobs).set(set).where(eq(jobs.id, id)),
     {
       op: "updateSchedule",
       context: { scheduleId: id },
@@ -773,12 +787,13 @@ export async function updateSchedule(
 }
 
 /** `source_key` of the row, or null when the row is absent or imperative. */
-function getRowSourceKey(id: string): string | null {
-  const row = getDb()
-    .select({ sourceKey: scheduleJobs.sourceKey })
-    .from(scheduleJobs)
-    .where(eq(scheduleJobs.id, id))
-    .get();
+async function getRowSourceKey(id: string): Promise<string | null> {
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
+  const [row] = await db.orm
+    .select({ sourceKey: jobs.sourceKey })
+    .from(jobs)
+    .where(eq(jobs.id, id));
   return row?.sourceKey ?? null;
 }
 
@@ -786,22 +801,24 @@ export async function deleteSchedule(
   id: string,
   opts?: ScheduleWriteOptions,
 ): Promise<boolean> {
-  const db = getDb();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   // Plugin-sourced rows keep their identity and run history: deleting one
   // would just have the reconciler recreate it from the declaration on its
   // next pass. Disable is the supported action; removal means removing the
   // plugin's schedule file.
-  if (getRowSourceKey(id) != null) {
+  if ((await getRowSourceKey(id)) != null) {
     throw new UserError(
       "This schedule is managed by a plugin and cannot be deleted. Disable it instead, or remove the plugin's schedule file.",
     );
   }
-  // Capture rawChanges() inside the awaited closure: reading it after the
-  // await would race other async DB work on the shared connection.
   const deleted = await withSqliteRetry(
-    () => {
-      db.delete(scheduleJobs).where(eq(scheduleJobs.id, id)).run();
-      return rawChanges() > 0;
+    async () => {
+      const rows = await db.orm
+        .delete(jobs)
+        .where(eq(jobs.id, id))
+        .returning({ id: jobs.id });
+      return rows.length > 0;
     },
     {
       op: "deleteSchedule",
@@ -848,14 +865,14 @@ export interface DeclaredScheduleDefinition {
 }
 
 /** All plugin-sourced schedule rows, including disarmed ones. */
-export function listDeclaredSchedules(): ScheduleJob[] {
-  const db = getDb();
-  const rows = db
+export async function listDeclaredSchedules(): Promise<ScheduleJob[]> {
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
+  const rows = await db.orm
     .select()
-    .from(scheduleJobs)
-    .where(isNotNull(scheduleJobs.sourceKey))
-    .orderBy(asc(scheduleJobs.nextRunAt))
-    .all();
+    .from(jobs)
+    .where(isNotNull(jobs.sourceKey))
+    .orderBy(asc(jobs.nextRunAt));
   return rows.map(parseJobRow);
 }
 
@@ -895,12 +912,12 @@ export async function upsertDeclaredSchedule(
   sourceKey: string,
   definition: DeclaredScheduleDefinition,
 ): Promise<ScheduleJob> {
-  const db = getDb();
-  const existing = db
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
+  const [existing] = await db.orm
     .select()
-    .from(scheduleJobs)
-    .where(eq(scheduleJobs.sourceKey, sourceKey))
-    .get();
+    .from(jobs)
+    .where(eq(jobs.sourceKey, sourceKey));
 
   if (!existing) {
     return insertSchedule({ ...definition, createdBy: "agent", sourceKey });
@@ -981,17 +998,12 @@ export async function upsertDeclaredSchedule(
   }
 
   await withSqliteRetry(
-    () =>
-      db
-        .update(scheduleJobs)
-        .set(set)
-        .where(eq(scheduleJobs.id, existing.id))
-        .run(),
+    () => db.orm.update(jobs).set(set).where(eq(jobs.id, existing.id)),
     { op: "upsertDeclaredSchedule", context: { scheduleId: existing.id } },
   );
   notifySchedulesChanged();
 
-  const updated = getSchedule(existing.id);
+  const updated = await getSchedule(existing.id);
   if (!updated) {
     throw new Error(`Declared schedule ${existing.id} vanished during upsert`);
   }
@@ -1010,12 +1022,9 @@ export async function upsertDeclaredSchedule(
  * user or the engine already turned off is not something this call paused.
  */
 export async function disarmDeclaredSchedule(id: string): Promise<boolean> {
-  const db = getDb();
-  const existing = db
-    .select()
-    .from(scheduleJobs)
-    .where(eq(scheduleJobs.id, id))
-    .get();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
+  const [existing] = await db.orm.select().from(jobs).where(eq(jobs.id, id));
   if (!existing) {
     return false;
   }
@@ -1029,11 +1038,10 @@ export async function disarmDeclaredSchedule(id: string): Promise<boolean> {
   }
   await withSqliteRetry(
     () =>
-      db
-        .update(scheduleJobs)
+      db.orm
+        .update(jobs)
         .set({ enabled: false, updatedAt: Date.now() })
-        .where(eq(scheduleJobs.id, id))
-        .run(),
+        .where(eq(jobs.id, id)),
     { op: "disarmDeclaredSchedule", context: { scheduleId: id } },
   );
   notifySchedulesChanged();
@@ -1054,12 +1062,9 @@ export async function setUserEnabled(
   value: boolean,
   opts?: ScheduleWriteOptions,
 ): Promise<ScheduleJob | null> {
-  const db = getDb();
-  const existing = db
-    .select()
-    .from(scheduleJobs)
-    .where(eq(scheduleJobs.id, id))
-    .get();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
+  const [existing] = await db.orm.select().from(jobs).where(eq(jobs.id, id));
   if (!existing) {
     return null;
   }
@@ -1103,7 +1108,7 @@ export async function setUserEnabled(
   }
 
   await withSqliteRetry(
-    () => db.update(scheduleJobs).set(set).where(eq(scheduleJobs.id, id)).run(),
+    () => db.orm.update(jobs).set(set).where(eq(jobs.id, id)),
     {
       op: "setUserEnabled",
       context: { scheduleId: id },
@@ -1134,22 +1139,22 @@ export async function claimDueSchedules(now: number): Promise<ScheduleJob[]> {
     return [];
   }
 
-  const db = getDb();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   const claimed: ScheduleJob[] = [];
 
   // ── Recurring schedules ──────────────────────────────────────────
-  const recurringCandidates = db
+  const recurringCandidates = await db.orm
     .select()
-    .from(scheduleJobs)
+    .from(jobs)
     .where(
       and(
-        eq(scheduleJobs.enabled, true),
-        lte(scheduleJobs.nextRunAt, now),
-        sql`${scheduleJobs.cronExpression} IS NOT NULL`,
+        eq(jobs.enabled, true),
+        lte(jobs.nextRunAt, now),
+        sql`${jobs.cronExpression} IS NOT NULL`,
       ),
     )
-    .orderBy(asc(scheduleJobs.nextRunAt))
-    .all();
+    .orderBy(asc(jobs.nextRunAt));
 
   for (const row of recurringCandidates) {
     let newNextRunAt: number | null;
@@ -1190,17 +1195,13 @@ export async function claimDueSchedules(now: number): Promise<ScheduleJob[]> {
     }
 
     const recurringClaimed = await withSqliteRetry(
-      () => {
-        db.update(scheduleJobs)
+      async () => {
+        const rows = await db.orm
+          .update(jobs)
           .set(updates)
-          .where(
-            and(
-              eq(scheduleJobs.id, row.id),
-              eq(scheduleJobs.nextRunAt, row.nextRunAt),
-            ),
-          )
-          .run();
-        return rawChanges() > 0;
+          .where(and(eq(jobs.id, row.id), eq(jobs.nextRunAt, row.nextRunAt)))
+          .returning({ id: jobs.id });
+        return rows.length > 0;
       },
       { op: "claimDueSchedules.recurring", context: { scheduleId: row.id } },
     );
@@ -1221,34 +1222,32 @@ export async function claimDueSchedules(now: number): Promise<ScheduleJob[]> {
   }
 
   // ── One-shot schedules ───────────────────────────────────────────
-  const oneShotCandidates = db
+  const oneShotCandidates = await db.orm
     .select()
-    .from(scheduleJobs)
+    .from(jobs)
     .where(
       and(
-        isNull(scheduleJobs.cronExpression),
-        eq(scheduleJobs.status, "active"),
-        lte(scheduleJobs.nextRunAt, now),
-        eq(scheduleJobs.enabled, true),
+        isNull(jobs.cronExpression),
+        eq(jobs.status, "active"),
+        lte(jobs.nextRunAt, now),
+        eq(jobs.enabled, true),
       ),
     )
-    .orderBy(asc(scheduleJobs.nextRunAt))
-    .all();
+    .orderBy(asc(jobs.nextRunAt));
 
   for (const row of oneShotCandidates) {
     const oneShotClaimed = await withSqliteRetry(
-      () => {
-        db.update(scheduleJobs)
+      async () => {
+        const rows = await db.orm
+          .update(jobs)
           .set({
             status: "firing",
             lastRunAt: now,
             updatedAt: now,
           })
-          .where(
-            and(eq(scheduleJobs.id, row.id), eq(scheduleJobs.status, "active")),
-          )
-          .run();
-        return rawChanges() > 0;
+          .where(and(eq(jobs.id, row.id), eq(jobs.status, "active")))
+          .returning({ id: jobs.id });
+        return rows.length > 0;
       },
       { op: "claimDueSchedules.oneShot", context: { scheduleId: row.id } },
     );
@@ -1278,19 +1277,21 @@ export async function claimDueSchedules(now: number): Promise<ScheduleJob[]> {
  * Transitions status from 'firing' to 'fired' and disables the schedule.
  */
 export async function completeOneShot(id: string): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   const now = Date.now();
   const changed = await withSqliteRetry(
-    () => {
-      db.update(scheduleJobs)
+    async () => {
+      const rows = await db.orm
+        .update(jobs)
         .set({
           status: "fired",
           enabled: false,
           updatedAt: now,
         })
-        .where(and(eq(scheduleJobs.id, id), eq(scheduleJobs.status, "firing")))
-        .run();
-      return rawChanges() > 0;
+        .where(and(eq(jobs.id, id), eq(jobs.status, "firing")))
+        .returning({ id: jobs.id });
+      return rows.length > 0;
     },
     { op: "completeOneShot", context: { scheduleId: id } },
   );
@@ -1304,18 +1305,20 @@ export async function completeOneShot(id: string): Promise<void> {
  * Allows the schedule to be retried on the next tick.
  */
 export async function failOneShot(id: string): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   const now = Date.now();
   const changed = await withSqliteRetry(
-    () => {
-      db.update(scheduleJobs)
+    async () => {
+      const rows = await db.orm
+        .update(jobs)
         .set({
           status: "active",
           updatedAt: now,
         })
-        .where(and(eq(scheduleJobs.id, id), eq(scheduleJobs.status, "firing")))
-        .run();
-      return rawChanges() > 0;
+        .where(and(eq(jobs.id, id), eq(jobs.status, "firing")))
+        .returning({ id: jobs.id });
+      return rows.length > 0;
     },
     { op: "failOneShot", context: { scheduleId: id } },
   );
@@ -1330,19 +1333,21 @@ export async function failOneShot(id: string): Promise<void> {
  * — the job should be retried on the next scheduler tick.
  */
 export async function retryOneShot(id: string): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   const now = Date.now();
   const changed = await withSqliteRetry(
-    () => {
-      db.update(scheduleJobs)
+    async () => {
+      const rows = await db.orm
+        .update(jobs)
         .set({
           status: "active",
-          retryCount: sql`${scheduleJobs.retryCount} + 1`,
+          retryCount: sql`${jobs.retryCount} + 1`,
           updatedAt: now,
         })
-        .where(and(eq(scheduleJobs.id, id), eq(scheduleJobs.status, "firing")))
-        .run();
-      return rawChanges() > 0;
+        .where(and(eq(jobs.id, id), eq(jobs.status, "firing")))
+        .returning({ id: jobs.id });
+      return rows.length > 0;
     },
     { op: "retryOneShot", context: { scheduleId: id } },
   );
@@ -1357,20 +1362,22 @@ export async function retryOneShot(id: string): Promise<void> {
  * be retried further.
  */
 export async function failOneShotPermanently(id: string): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   const now = Date.now();
   const changed = await withSqliteRetry(
-    () => {
-      db.update(scheduleJobs)
+    async () => {
+      const rows = await db.orm
+        .update(jobs)
         .set({
           status: "cancelled",
           enabled: false,
           lastStatus: "error",
           updatedAt: now,
         })
-        .where(and(eq(scheduleJobs.id, id), eq(scheduleJobs.status, "firing")))
-        .run();
-      return rawChanges() > 0;
+        .where(and(eq(jobs.id, id), eq(jobs.status, "firing")))
+        .returning({ id: jobs.id });
+      return rows.length > 0;
     },
     { op: "failOneShotPermanently", context: { scheduleId: id } },
   );
@@ -1384,28 +1391,30 @@ export async function failOneShotPermanently(id: string): Promise<void> {
  * Returns true if a row was actually updated (i.e., it was in 'active' status).
  */
 export async function cancelSchedule(id: string): Promise<boolean> {
-  const db = getDb();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   // Cancelled is a permanent latch on a sourced row: the reconciler, the
   // enabled toggle, and delete all skip it, so cancelling would brick the
   // plugin's schedule even across reinstalls. Disable is the supported
   // action, as with update and delete.
-  if (getRowSourceKey(id) != null) {
+  if ((await getRowSourceKey(id)) != null) {
     throw new UserError(
       "This schedule is managed by a plugin and cannot be cancelled. Disable it instead via the enabled toggle.",
     );
   }
   const now = Date.now();
   const cancelled = await withSqliteRetry(
-    () => {
-      db.update(scheduleJobs)
+    async () => {
+      const rows = await db.orm
+        .update(jobs)
         .set({
           status: "cancelled",
           enabled: false,
           updatedAt: now,
         })
-        .where(and(eq(scheduleJobs.id, id), eq(scheduleJobs.status, "active")))
-        .run();
-      return rawChanges() > 0;
+        .where(and(eq(jobs.id, id), eq(jobs.status, "active")))
+        .returning({ id: jobs.id });
+      return rows.length > 0;
     },
     { op: "cancelSchedule", context: { scheduleId: id } },
   );
@@ -1419,74 +1428,73 @@ export async function createScheduleRun(
   jobId: string,
   conversationId: string | null,
 ): Promise<string> {
-  const db = getDb();
+  const db = requireMainDb();
   const id = uuid();
   const now = Date.now();
   await withSqliteRetry(
     () =>
-      db
-        .insert(scheduleRuns)
-        .values({
-          id,
-          jobId,
-          status: "running",
-          startedAt: now,
-          finishedAt: null,
-          durationMs: null,
-          output: null,
-          error: null,
-          conversationId,
-          createdAt: now,
-        })
-        .run(),
+      db.orm.insert(db.schema.scheduleRuns).values({
+        id,
+        jobId,
+        status: "running",
+        startedAt: now,
+        finishedAt: null,
+        durationMs: null,
+        output: null,
+        error: null,
+        conversationId,
+        createdAt: now,
+      }),
     { op: "createScheduleRun", context: { scheduleId: jobId, runId: id } },
   );
   return id;
 }
 
-export function getScheduleRunStatus(
+export async function getScheduleRunStatus(
   runId: string,
-): ScheduleRun["status"] | undefined {
-  return getDb()
-    .select({ status: scheduleRuns.status })
-    .from(scheduleRuns)
-    .where(eq(scheduleRuns.id, runId))
-    .get()?.status;
+): Promise<ScheduleRun["status"] | undefined> {
+  const db = requireMainDb();
+  const runs = db.schema.scheduleRuns;
+  const [row] = await db.orm
+    .select({ status: runs.status })
+    .from(runs)
+    .where(eq(runs.id, runId));
+  return row?.status;
 }
 
 /** Currently-running schedule runs with their job names, oldest first. */
-export function listRunningScheduleRuns(): Array<{
-  runId: string;
-  scheduleName: string | null;
-  startedAt: number;
-}> {
-  const db = getDb();
-  return db
+export async function listRunningScheduleRuns(): Promise<
+  Array<{
+    runId: string;
+    scheduleName: string | null;
+    startedAt: number;
+  }>
+> {
+  const db = requireMainDb();
+  const runs = db.schema.scheduleRuns;
+  const jobs = db.schema.scheduleJobs;
+  const rows = await db.orm
     .select({
-      runId: scheduleRuns.id,
-      scheduleName: scheduleJobs.name,
-      startedAt: scheduleRuns.startedAt,
+      runId: runs.id,
+      scheduleName: jobs.name,
+      startedAt: runs.startedAt,
     })
-    .from(scheduleRuns)
-    .leftJoin(scheduleJobs, eq(scheduleRuns.jobId, scheduleJobs.id))
-    .where(eq(scheduleRuns.status, "running"))
-    .orderBy(asc(scheduleRuns.startedAt))
-    .limit(20)
-    .all();
+    .from(runs)
+    .leftJoin(jobs, eq(runs.jobId, jobs.id))
+    .where(eq(runs.status, "running"))
+    .orderBy(asc(runs.startedAt))
+    .limit(20);
+  return rows;
 }
 
 export async function setScheduleRunConversationId(
   runId: string,
   conversationId: string,
 ): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
+  const runs = db.schema.scheduleRuns;
   await withSqliteRetry(
-    () =>
-      db
-        .update(scheduleRuns)
-        .set({ conversationId })
-        .where(eq(scheduleRuns.id, runId))
-        .run(),
+    () => db.orm.update(runs).set({ conversationId }).where(eq(runs.id, runId)),
     { op: "setScheduleRunConversationId", context: { runId } },
   );
 }
@@ -1500,14 +1508,11 @@ async function finishScheduleRunRow(
   runId: string,
   result: { status: "ok" | "error"; output?: string; error?: string },
 ): Promise<{ jobId: string; now: number } | null> {
-  const db = getDb();
+  const db = requireMainDb();
+  const runs = db.schema.scheduleRuns;
   const now = Date.now();
 
-  const run = db
-    .select()
-    .from(scheduleRuns)
-    .where(eq(scheduleRuns.id, runId))
-    .get();
+  const [run] = await db.orm.select().from(runs).where(eq(runs.id, runId));
   if (!run) {
     return null;
   }
@@ -1516,8 +1521,8 @@ async function finishScheduleRunRow(
 
   await withSqliteRetry(
     () =>
-      db
-        .update(scheduleRuns)
+      db.orm
+        .update(runs)
         .set({
           status: result.status,
           finishedAt: now,
@@ -1531,8 +1536,7 @@ async function finishScheduleRunRow(
               ? null
               : safeStringSlice(result.error, 0, 2000),
         })
-        .where(eq(scheduleRuns.id, runId))
-        .run(),
+        .where(eq(runs.id, runId)),
     { op: "finishScheduleRunRow", context: { runId } },
   );
 
@@ -1555,7 +1559,8 @@ export async function recordAdministrativeSkipRun(
   jobId: string,
   reason: string,
 ): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   const runId = await createScheduleRun(jobId, null);
   const finished = await finishScheduleRunRow(runId, {
     status: "error",
@@ -1565,12 +1570,13 @@ export async function recordAdministrativeSkipRun(
     return;
   }
   const changed = await withSqliteRetry(
-    () => {
-      db.update(scheduleJobs)
+    async () => {
+      const rows = await db.orm
+        .update(jobs)
         .set({ lastStatus: "error", updatedAt: finished.now })
-        .where(eq(scheduleJobs.id, jobId))
-        .run();
-      return rawChanges() > 0;
+        .where(eq(jobs.id, jobId))
+        .returning({ id: jobs.id });
+      return rows.length > 0;
     },
     {
       op: "recordAdministrativeSkipRun.job",
@@ -1586,7 +1592,8 @@ export async function completeScheduleRun(
   runId: string,
   result: { status: "ok" | "error"; output?: string; error?: string },
 ): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   const finished = await finishScheduleRunRow(runId, result);
   if (!finished) {
     return;
@@ -1596,23 +1603,20 @@ export async function completeScheduleRun(
   // Update the parent job's lastStatus and retryCount
   if (result.status === "error") {
     // Increment retry count
-    const job = db
-      .select()
-      .from(scheduleJobs)
-      .where(eq(scheduleJobs.id, jobId))
-      .get();
+    const [job] = await db.orm.select().from(jobs).where(eq(jobs.id, jobId));
     if (job) {
       const changed = await withSqliteRetry(
-        () => {
-          db.update(scheduleJobs)
+        async () => {
+          const rows = await db.orm
+            .update(jobs)
             .set({
               lastStatus: "error",
               retryCount: job.retryCount + 1,
               updatedAt: now,
             })
-            .where(eq(scheduleJobs.id, jobId))
-            .run();
-          return rawChanges() > 0;
+            .where(eq(jobs.id, jobId))
+            .returning({ id: jobs.id });
+          return rows.length > 0;
         },
         {
           op: "completeScheduleRun.jobError",
@@ -1625,12 +1629,13 @@ export async function completeScheduleRun(
     }
   } else {
     const changed = await withSqliteRetry(
-      () => {
-        db.update(scheduleJobs)
+      async () => {
+        const rows = await db.orm
+          .update(jobs)
           .set({ lastStatus: "ok", retryCount: 0, updatedAt: now })
-          .where(eq(scheduleJobs.id, jobId))
-          .run();
-        return rawChanges() > 0;
+          .where(eq(jobs.id, jobId))
+          .returning({ id: jobs.id });
+        return rows.length > 0;
       },
       { op: "completeScheduleRun.jobOk", context: { scheduleId: jobId } },
     );
@@ -1644,21 +1649,23 @@ export async function completeScheduleRun(
  * Return the conversation ID from the most recent successful run
  * for a given schedule, or null if none exists.
  */
-export function getLastScheduleConversationId(jobId: string): string | null {
-  const db = getDb();
-  const row = db
-    .select({ conversationId: scheduleRuns.conversationId })
-    .from(scheduleRuns)
+export async function getLastScheduleConversationId(
+  jobId: string,
+): Promise<string | null> {
+  const db = requireMainDb();
+  const runs = db.schema.scheduleRuns;
+  const [row] = await db.orm
+    .select({ conversationId: runs.conversationId })
+    .from(runs)
     .where(
       and(
-        eq(scheduleRuns.jobId, jobId),
-        eq(scheduleRuns.status, "ok"),
-        sql`${scheduleRuns.conversationId} IS NOT NULL`,
+        eq(runs.jobId, jobId),
+        eq(runs.status, "ok"),
+        sql`${runs.conversationId} IS NOT NULL`,
       ),
     )
-    .orderBy(desc(scheduleRuns.createdAt))
-    .limit(1)
-    .get();
+    .orderBy(desc(runs.createdAt))
+    .limit(1);
   return row?.conversationId ?? null;
 }
 
@@ -1667,24 +1674,24 @@ export function getLastScheduleConversationId(jobId: string): string | null {
  * with `createdAt` strictly older than it are returned (cursor for
  * paginating into history).
  */
-export function getScheduleRuns(
+export async function getScheduleRuns(
   jobId: string,
   limit?: number,
   before?: number,
-): ScheduleRun[] {
-  const db = getDb();
-  const rows = db
+): Promise<ScheduleRun[]> {
+  const db = requireMainDb();
+  const runs = db.schema.scheduleRuns;
+  const rows = await db.orm
     .select()
-    .from(scheduleRuns)
+    .from(runs)
     .where(
       and(
-        eq(scheduleRuns.jobId, jobId),
-        before != null ? lt(scheduleRuns.createdAt, before) : undefined,
+        eq(runs.jobId, jobId),
+        before != null ? lt(runs.createdAt, before) : undefined,
       ),
     )
-    .orderBy(desc(scheduleRuns.createdAt))
-    .limit(limit ?? 10)
-    .all();
+    .orderBy(desc(runs.createdAt))
+    .limit(limit ?? 10);
   return rows.map(parseRunRow);
 }
 
@@ -1911,25 +1918,28 @@ export async function deferClaimedSchedule(
   id: string,
   nextRetryAt: number,
 ): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   const now = Date.now();
   await withSqliteRetry(
-    () => {
-      db.update(scheduleJobs)
+    async () => {
+      const rows = await db.orm
+        .update(jobs)
         .set({ nextRunAt: nextRetryAt, enabled: true, updatedAt: now })
-        .where(eq(scheduleJobs.id, id))
-        .run();
-      return rawChanges() > 0;
+        .where(eq(jobs.id, id))
+        .returning({ id: jobs.id });
+      return rows.length > 0;
     },
     { op: "deferClaimedSchedule.requeue", context: { scheduleId: id } },
   );
   await withSqliteRetry(
-    () => {
-      db.update(scheduleJobs)
+    async () => {
+      const rows = await db.orm
+        .update(jobs)
         .set({ status: "active", updatedAt: now })
-        .where(and(eq(scheduleJobs.id, id), eq(scheduleJobs.status, "firing")))
-        .run();
-      return rawChanges() > 0;
+        .where(and(eq(jobs.id, id), eq(jobs.status, "firing")))
+        .returning({ id: jobs.id });
+      return rows.length > 0;
     },
     { op: "deferClaimedSchedule.status", context: { scheduleId: id } },
   );
@@ -1945,27 +1955,30 @@ export async function scheduleRetry(
   id: string,
   nextRetryAt: number,
 ): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   const now = Date.now();
   let changed = await withSqliteRetry(
-    () => {
-      db.update(scheduleJobs)
+    async () => {
+      const rows = await db.orm
+        .update(jobs)
         .set({ nextRunAt: nextRetryAt, updatedAt: now })
-        .where(eq(scheduleJobs.id, id))
-        .run();
-      return rawChanges() > 0;
+        .where(eq(jobs.id, id))
+        .returning({ id: jobs.id });
+      return rows.length > 0;
     },
     { op: "scheduleRetry.nextRunAt", context: { scheduleId: id } },
   );
   // Revert one-shot status from "firing" to "active" so the scheduler
   // will claim it again when nextRetryAt arrives. No-op for recurring.
   const reverted = await withSqliteRetry(
-    () => {
-      db.update(scheduleJobs)
+    async () => {
+      const rows = await db.orm
+        .update(jobs)
         .set({ status: "active", updatedAt: now })
-        .where(and(eq(scheduleJobs.id, id), eq(scheduleJobs.status, "firing")))
-        .run();
-      return rawChanges() > 0;
+        .where(and(eq(jobs.id, id), eq(jobs.status, "firing")))
+        .returning({ id: jobs.id });
+      return rows.length > 0;
     },
     { op: "scheduleRetry.revertStatus", context: { scheduleId: id } },
   );
@@ -1979,14 +1992,16 @@ export async function scheduleRetry(
  * Reset the retry count for a schedule back to zero (e.g. after a successful run).
  */
 export async function resetRetryCount(id: string): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
   const changed = await withSqliteRetry(
-    () => {
-      db.update(scheduleJobs)
+    async () => {
+      const rows = await db.orm
+        .update(jobs)
         .set({ retryCount: 0, updatedAt: Date.now() })
-        .where(eq(scheduleJobs.id, id))
-        .run();
-      return rawChanges() > 0;
+        .where(eq(jobs.id, id))
+        .returning({ id: jobs.id });
+      return rows.length > 0;
     },
     { op: "resetRetryCount", context: { scheduleId: id } },
   );
@@ -2004,38 +2019,42 @@ export async function resetRetryCount(id: string): Promise<void> {
  *   (for one-shots) or startedAt (for runs) is older than `now - staleThresholdMs`.
  *   Pass 0 at startup (the previous process is definitely dead).
  */
-export function findStaleInFlightJobs(staleThresholdMs: number = 0): Array<{
-  jobId: string;
-  staleRunId: string | null;
-}> {
-  const db = getDb();
+export async function findStaleInFlightJobs(
+  staleThresholdMs: number = 0,
+): Promise<
+  Array<{
+    jobId: string;
+    staleRunId: string | null;
+  }>
+> {
+  const db = requireMainDb();
+  const jobs = db.schema.scheduleJobs;
+  const runs = db.schema.scheduleRuns;
   const cutoff = Date.now() - staleThresholdMs;
 
   // One-shots stuck in "firing" where lastRunAt is older than cutoff
-  const staleOneShots = db
-    .select({ id: scheduleJobs.id })
-    .from(scheduleJobs)
+  const staleOneShots = await db.orm
+    .select({ id: jobs.id })
+    .from(jobs)
     .where(
       and(
-        isNull(scheduleJobs.cronExpression),
-        eq(scheduleJobs.status, "firing"),
-        eq(scheduleJobs.enabled, true),
-        staleThresholdMs > 0 ? lte(scheduleJobs.lastRunAt, cutoff) : undefined,
+        isNull(jobs.cronExpression),
+        eq(jobs.status, "firing"),
+        eq(jobs.enabled, true),
+        staleThresholdMs > 0 ? lte(jobs.lastRunAt, cutoff) : undefined,
       ),
-    )
-    .all();
+    );
 
   // Cron runs stuck in "running" where startedAt is older than cutoff
-  const staleRuns = db
-    .select({ id: scheduleRuns.id, jobId: scheduleRuns.jobId })
-    .from(scheduleRuns)
+  const staleRuns = await db.orm
+    .select({ id: runs.id, jobId: runs.jobId })
+    .from(runs)
     .where(
       and(
-        eq(scheduleRuns.status, "running"),
-        staleThresholdMs > 0 ? lte(scheduleRuns.startedAt, cutoff) : undefined,
+        eq(runs.status, "running"),
+        staleThresholdMs > 0 ? lte(runs.startedAt, cutoff) : undefined,
       ),
-    )
-    .all();
+    );
 
   const result: Array<{ jobId: string; staleRunId: string | null }> = [];
   const seenJobIds = new Set<string>();
@@ -2052,7 +2071,7 @@ export function findStaleInFlightJobs(staleThresholdMs: number = 0): Array<{
   return result;
 }
 
-function parseJobRow(row: typeof scheduleJobs.$inferSelect): ScheduleJob {
+function parseJobRow(row: ScheduleJobRow): ScheduleJob {
   return {
     id: row.id,
     name: row.name,
@@ -2130,7 +2149,7 @@ function parseOptionalJson(json: string | null | undefined): unknown {
   }
 }
 
-function parseRunRow(row: typeof scheduleRuns.$inferSelect): ScheduleRun {
+function parseRunRow(row: ScheduleRunRow): ScheduleRun {
   return {
     id: row.id,
     jobId: row.jobId,

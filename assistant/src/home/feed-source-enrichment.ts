@@ -45,7 +45,7 @@ export interface FeedSourceEnrichmentDeps {
   /** Resolve the source columns for a conversation, or null when missing. */
   getConversationRow?: (id: string) => ConversationSourceRow | null;
   /** Resolve a schedule's display name, or null when missing. */
-  getScheduleName?: (id: string) => string | null;
+  getScheduleName?: (id: string) => string | null | Promise<string | null>;
 }
 
 /**
@@ -103,9 +103,9 @@ function defaultGetConversationRow(id: string): ConversationSourceRow | null {
   }
 }
 
-function defaultGetScheduleName(id: string): string | null {
+async function defaultGetScheduleName(id: string): Promise<string | null> {
   try {
-    return getSchedule(id)?.name ?? null;
+    return (await getSchedule(id))?.name ?? null;
   } catch {
     return null;
   }
@@ -116,10 +116,10 @@ function defaultGetScheduleName(id: string): string | null {
  * and `sourceLabel`. Conversation and schedule lookups are memoized across
  * the batch so each distinct source is resolved at most once.
  */
-export function enrichFeedItemsWithSource(
+export async function enrichFeedItemsWithSource(
   items: FeedItem[],
   deps: FeedSourceEnrichmentDeps = {},
-): FeedItem[] {
+): Promise<FeedItem[]> {
   if (items.length === 0) {
     return items;
   }
@@ -137,49 +137,51 @@ export function enrichFeedItemsWithSource(
   };
 
   const scheduleNameCache = new Map<string, string | null>();
-  const resolveScheduleName = (id: string): string | null => {
+  const resolveScheduleName = async (id: string): Promise<string | null> => {
     if (!scheduleNameCache.has(id)) {
-      scheduleNameCache.set(id, getScheduleName(id));
+      scheduleNameCache.set(id, await getScheduleName(id));
     }
     return scheduleNameCache.get(id) ?? null;
   };
 
-  return items.map((item) => {
-    const row = item.conversationId ? resolveConv(item.conversationId) : null;
-    const sourceType = classifyConversationSource(row?.source);
+  return await Promise.all(
+    items.map(async (item) => {
+      const row = item.conversationId ? resolveConv(item.conversationId) : null;
+      const sourceType = classifyConversationSource(row?.source);
 
-    const metadataScheduleId =
-      typeof item.metadata?.scheduleId === "string"
-        ? item.metadata.scheduleId
-        : undefined;
-    const scheduleId = metadataScheduleId ?? row?.scheduleJobId ?? undefined;
+      const metadataScheduleId =
+        typeof item.metadata?.scheduleId === "string"
+          ? item.metadata.scheduleId
+          : undefined;
+      const scheduleId = metadataScheduleId ?? row?.scheduleJobId ?? undefined;
 
-    let sourceKey: string;
-    let sourceLabel: string;
-    if (sourceType === "schedule" && scheduleId) {
-      sourceKey = `schedule:${scheduleId}`;
-      sourceLabel = resolveScheduleName(scheduleId) ?? "Scheduled";
-    } else if (sourceType === "schedule") {
-      sourceKey = "schedule";
-      sourceLabel = "Scheduled";
-    } else {
-      sourceKey = sourceType;
-      sourceLabel = STATIC_SOURCE_LABELS[sourceType];
-    }
+      let sourceKey: string;
+      let sourceLabel: string;
+      if (sourceType === "schedule" && scheduleId) {
+        sourceKey = `schedule:${scheduleId}`;
+        sourceLabel = (await resolveScheduleName(scheduleId)) ?? "Scheduled";
+      } else if (sourceType === "schedule") {
+        sourceKey = "schedule";
+        sourceLabel = "Scheduled";
+      } else {
+        sourceKey = sourceType;
+        sourceLabel = STATIC_SOURCE_LABELS[sourceType];
+      }
 
-    // Surface the scheduleId in metadata when it was recovered from the
-    // source conversation so clients have a single place to read it.
-    const metadata =
-      scheduleId !== undefined && metadataScheduleId === undefined
-        ? { ...(item.metadata ?? {}), scheduleId }
-        : item.metadata;
+      // Surface the scheduleId in metadata when it was recovered from the
+      // source conversation so clients have a single place to read it.
+      const metadata =
+        scheduleId !== undefined && metadataScheduleId === undefined
+          ? { ...(item.metadata ?? {}), scheduleId }
+          : item.metadata;
 
-    return {
-      ...item,
-      sourceType,
-      sourceKey,
-      sourceLabel,
-      ...(metadata ? { metadata } : {}),
-    };
-  });
+      return {
+        ...item,
+        sourceType,
+        sourceKey,
+        sourceLabel,
+        ...(metadata ? { metadata } : {}),
+      };
+    }),
+  );
 }

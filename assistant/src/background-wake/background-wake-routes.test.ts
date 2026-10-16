@@ -148,7 +148,7 @@ describe("background wake runtime routes", () => {
     });
     computeCalls = 0;
     computedIntent = intentFixture({ nextWakeAt: Date.now() + 10 * 60_000 });
-    setBackgroundWakeIntentComputerForTest(() => {
+    setBackgroundWakeIntentComputerForTest(async () => {
       computeCalls += 1;
       return computedIntent;
     });

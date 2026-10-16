@@ -169,7 +169,7 @@ describe("schedule retry store", () => {
     const futureTime = Date.now() + 120_000;
     await scheduleRetry(schedule.id, futureTime);
 
-    const updated = getSchedule(schedule.id)!;
+    const updated = (await getSchedule(schedule.id))!;
     expect(updated.status).toBe("active");
     expect(updated.nextRunAt).toBe(futureTime);
   });
@@ -182,11 +182,11 @@ describe("schedule retry store", () => {
       syntax: "cron",
     });
 
-    const originalStatus = getSchedule(schedule.id)!.status;
+    const originalStatus = (await getSchedule(schedule.id))!.status;
     const futureTime = Date.now() + 120_000;
     await scheduleRetry(schedule.id, futureTime);
 
-    const updated = getSchedule(schedule.id)!;
+    const updated = (await getSchedule(schedule.id))!;
     expect(updated.nextRunAt).toBe(futureTime);
     // Status unchanged for recurring (it's "active", not "firing")
     expect(updated.status).toBe(originalStatus);
@@ -204,12 +204,12 @@ describe("schedule retry store", () => {
     const runId = await createScheduleRun(schedule.id, "test-conv");
     await completeScheduleRun(runId, { status: "error", error: "boom" });
 
-    const afterError = getSchedule(schedule.id)!;
+    const afterError = (await getSchedule(schedule.id))!;
     expect(afterError.retryCount).toBe(1);
 
     await resetRetryCount(schedule.id);
 
-    const afterReset = getSchedule(schedule.id)!;
+    const afterReset = (await getSchedule(schedule.id))!;
     expect(afterReset.retryCount).toBe(0);
   });
 
@@ -223,7 +223,7 @@ describe("schedule retry store", () => {
       retryBackoffMs: 30000,
     });
 
-    const retrieved = getSchedule(schedule.id)!;
+    const retrieved = (await getSchedule(schedule.id))!;
     expect(retrieved.maxRetries).toBe(5);
     expect(retrieved.retryBackoffMs).toBe(30000);
   });
@@ -236,7 +236,7 @@ describe("schedule retry store", () => {
       syntax: "cron",
     });
 
-    const retrieved = getSchedule(schedule.id)!;
+    const retrieved = (await getSchedule(schedule.id))!;
     expect(retrieved.maxRetries).toBe(3);
     expect(retrieved.retryBackoffMs).toBe(60000);
   });
@@ -279,7 +279,7 @@ describe("scheduler retry integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 500));
     scheduler.stop();
 
-    const updated = getSchedule(schedule.id)!;
+    const updated = (await getSchedule(schedule.id))!;
     // completeScheduleRun incremented retryCount from 0 to 1
     expect(updated.retryCount).toBe(1);
     // nextRunAt should be backoff time (much sooner than next hour)
@@ -289,7 +289,7 @@ describe("scheduler retry integration", () => {
     expect(updated.nextRunAt).toBeLessThan(now + 5 * 60 * 1000);
 
     // A schedule run should be recorded with error status
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(runs.length).toBeGreaterThanOrEqual(1);
     expect(runs[0].status).toBe("error");
   });
@@ -318,14 +318,14 @@ describe("scheduler retry integration", () => {
     scheduler = startScheduler(processMessage, () => {});
     await new Promise((resolve) => setTimeout(resolve, 500));
 
-    const afterFailure = getSchedule(schedule.id)!;
+    const afterFailure = (await getSchedule(schedule.id))!;
     expect(afterFailure.retryCount).toBe(1);
 
     // Second run: success
     forceScheduleDue(schedule.id);
     await scheduler.runOnce();
 
-    const afterSuccess = getSchedule(schedule.id)!;
+    const afterSuccess = (await getSchedule(schedule.id))!;
     expect(afterSuccess.retryCount).toBe(0);
     expect(afterSuccess.lastStatus).toBe("ok");
   });
@@ -349,7 +349,7 @@ describe("scheduler retry integration", () => {
     scheduler = startScheduler(processMessage, () => {});
     await new Promise((resolve) => setTimeout(resolve, 500));
 
-    const afterFirst = getSchedule(schedule.id)!;
+    const afterFirst = (await getSchedule(schedule.id))!;
     expect(afterFirst.retryCount).toBe(1);
     // nextRunAt should be backoff time (much sooner than next hour)
     const now1 = Date.now();
@@ -360,7 +360,7 @@ describe("scheduler retry integration", () => {
     forceScheduleDue(schedule.id);
     await scheduler.runOnce();
 
-    const afterSecond = getSchedule(schedule.id)!;
+    const afterSecond = (await getSchedule(schedule.id))!;
     // Exhaust path for recurring: resetRetryCount -> 0
     expect(afterSecond.retryCount).toBe(0);
     // Schedule should still be enabled (not cancelled for recurring)
@@ -386,7 +386,7 @@ describe("scheduler retry integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 500));
     scheduler.stop();
 
-    const updated = getSchedule(schedule.id)!;
+    const updated = (await getSchedule(schedule.id))!;
     // One-shot should revert from "firing" back to "active" for retry
     expect(updated.status).toBe("active");
     // nextRunAt should be in the future (backoff delay)
@@ -413,7 +413,7 @@ describe("scheduler retry integration", () => {
     scheduler = startScheduler(processMessage, () => {});
     await new Promise((resolve) => setTimeout(resolve, 500));
 
-    const afterFirst = getSchedule(schedule.id)!;
+    const afterFirst = (await getSchedule(schedule.id))!;
     expect(afterFirst.retryCount).toBe(1);
     expect(afterFirst.status).toBe("active"); // reverted for retry
 
@@ -421,7 +421,7 @@ describe("scheduler retry integration", () => {
     forceScheduleDue(schedule.id);
     await scheduler.runOnce();
 
-    const afterSecond = getSchedule(schedule.id)!;
+    const afterSecond = (await getSchedule(schedule.id))!;
     expect(afterSecond.status).toBe("cancelled");
     expect(afterSecond.enabled).toBe(false);
   });
@@ -445,11 +445,11 @@ describe("scheduler retry integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 500));
     scheduler.stop();
 
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(runs.length).toBeGreaterThanOrEqual(1);
     expect(runs[0].status).toBe("error");
 
-    const updated = getSchedule(schedule.id)!;
+    const updated = (await getSchedule(schedule.id))!;
     expect(updated.retryCount).toBe(1);
   });
 
@@ -472,7 +472,7 @@ describe("scheduler retry integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 500));
     scheduler.stop();
 
-    const updated = getSchedule(schedule.id)!;
+    const updated = (await getSchedule(schedule.id))!;
     const now = Date.now();
     // nextRunAt should be backoff delay (~60s), NOT the next hourly occurrence (~60 min)
     // Backoff at attempt 0 with base 60000 is ~60s (with jitter)
@@ -678,12 +678,12 @@ describe("crash recovery", () => {
     expect(recovered).toBe(1);
 
     // A schedule run should be created with error
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(runs.length).toBeGreaterThanOrEqual(1);
     expect(runs[0].status).toBe("error");
     expect(runs[0].error).toContain("recovered on restart");
 
-    const updated = getSchedule(schedule.id)!;
+    const updated = (await getSchedule(schedule.id))!;
     // retryCount incremented by completeScheduleRun + retry applied
     expect(updated.retryCount).toBe(1);
     expect(updated.status).toBe("active"); // reverted for retry
@@ -705,7 +705,7 @@ describe("crash recovery", () => {
     const recovered = await recoverStaleSchedules();
     expect(recovered).toBe(1);
 
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     const recoveredRun = runs.find((r) => r.id === runId);
     expect(recoveredRun).toBeDefined();
     expect(recoveredRun!.status).toBe("error");
@@ -730,7 +730,7 @@ describe("crash recovery", () => {
 
     await recoverStaleSchedules();
 
-    const updated = getSchedule(schedule.id)!;
+    const updated = (await getSchedule(schedule.id))!;
     expect(updated.status).toBe("cancelled");
     expect(updated.enabled).toBe(false);
   });
@@ -772,11 +772,11 @@ describe("crash recovery", () => {
     );
 
     // With a 10-minute threshold, the job is too recent to be considered stale
-    const recentResults = findStaleInFlightJobs(10 * 60 * 1000);
+    const recentResults = await findStaleInFlightJobs(10 * 60 * 1000);
     expect(recentResults.length).toBe(0);
 
     // With no threshold (0), the job is returned
-    const allResults = findStaleInFlightJobs(0);
+    const allResults = await findStaleInFlightJobs(0);
     expect(allResults.length).toBe(1);
     expect(allResults[0].jobId).toBe(schedule.id);
   });
@@ -841,7 +841,7 @@ describe("scheduler-recovery equivalence", () => {
       error: "Process terminated during execution (recovered on restart)",
     });
     // Now run recovery's retry logic on the post-completeScheduleRun state
-    const jobB = getSchedule(scheduleB.id)!;
+    const jobB = (await getSchedule(scheduleB.id))!;
     const decision = decideRetry(jobB);
     const noopLogger = new Proxy({} as Record<string, unknown>, {
       get: () => () => {},
@@ -857,8 +857,8 @@ describe("scheduler-recovery equivalence", () => {
       log: noopLogger as any,
     });
 
-    const stateA = getSchedule(scheduleA.id)!;
-    const stateB = getSchedule(scheduleB.id)!;
+    const stateA = (await getSchedule(scheduleA.id))!;
+    const stateB = (await getSchedule(scheduleB.id))!;
 
     // Both should have the same retryCount
     expect(stateA.retryCount).toBe(stateB.retryCount);
@@ -901,7 +901,7 @@ describe("scheduler-recovery equivalence", () => {
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     // After first failure, A should be retrying
-    const afterFirstA = getSchedule(scheduleA.id)!;
+    const afterFirstA = (await getSchedule(scheduleA.id))!;
     expect(afterFirstA.retryCount).toBe(1);
     expect(afterFirstA.status).toBe("active");
 
@@ -920,7 +920,7 @@ describe("scheduler-recovery equivalence", () => {
     const runB1 = await createScheduleRun(scheduleB.id, "recovery-conv-1");
     await completeScheduleRun(runB1, { status: "error", error: "fail" });
     // decideRetry + apply for first failure
-    const jobB1 = getSchedule(scheduleB.id)!;
+    const jobB1 = (await getSchedule(scheduleB.id))!;
     const decision1 = decideRetry(jobB1);
     const noopLogger = new Proxy({} as Record<string, unknown>, {
       get: () => () => {},
@@ -949,7 +949,7 @@ describe("scheduler-recovery equivalence", () => {
     );
     const runB2 = await createScheduleRun(scheduleB.id, "recovery-conv-2");
     await completeScheduleRun(runB2, { status: "error", error: "fail" });
-    const jobB2 = getSchedule(scheduleB.id)!;
+    const jobB2 = (await getSchedule(scheduleB.id))!;
     const decision2 = decideRetry(jobB2);
     await applyRetryDecision({
       job: jobB2,
@@ -967,8 +967,8 @@ describe("scheduler-recovery equivalence", () => {
       log: noopLogger as any,
     });
 
-    const stateA = getSchedule(scheduleA.id)!;
-    const stateB = getSchedule(scheduleB.id)!;
+    const stateA = (await getSchedule(scheduleA.id))!;
+    const stateB = (await getSchedule(scheduleB.id))!;
 
     // Both should be cancelled and disabled
     expect(stateA.status).toBe("cancelled");

@@ -441,7 +441,7 @@ describe("GET /schedules — default defer exclusion", () => {
     });
 
     const route = findRoute("schedules/:id/toggle", "POST");
-    const agent = listSchedules().find((j) => j.createdBy === "agent")!;
+    const agent = (await listSchedules()).find((j) => j.createdBy === "agent")!;
     const result = (await route.handler({
       pathParams: { id: agent.id },
       body: { enabled: false },
@@ -1116,7 +1116,7 @@ describe("POST /schedules — create", () => {
       message: "good morning",
     });
     expect(result.schedule.id).toBeDefined();
-    const job = listSchedules()[0];
+    const job = (await listSchedules())[0];
     expect(job.name).toBe("Morning ping");
     expect(job.mode).toBe("execute");
     expect(job.expression).toBe("0 9 * * *");
@@ -1134,7 +1134,7 @@ describe("POST /schedules — create", () => {
       message: "hi",
       timezone: " America/New_York ",
     });
-    const job = listSchedules()[0];
+    const job = (await listSchedules())[0];
     expect(job.name).toBe("Trimmed");
     expect(job.description).toBe("Trimmed description");
     expect(job.expression).toBe("0 9 * * *");
@@ -1149,7 +1149,7 @@ describe("POST /schedules — create", () => {
       expression,
       message: "monday wake",
     });
-    const job = listSchedules()[0];
+    const job = (await listSchedules())[0];
     expect(job.syntax).toBe("rrule");
     expect(job.expression).toBe(expression);
   });
@@ -1181,7 +1181,7 @@ describe("POST /schedules — create", () => {
       message: "hi",
     });
 
-    const job = listSchedules()[0];
+    const job = (await listSchedules())[0];
     expect(job.description).toBe("Description fallback");
   });
 
@@ -1249,7 +1249,9 @@ describe("POST /schedules — create", () => {
 
     // workflowArgs is not in the list projection; assert it round-trips at the
     // store layer (this is what the scheduler reads).
-    const stored = listSchedules().find((s) => s.name === "Workflow schedule")!;
+    const stored = (await listSchedules()).find(
+      (s) => s.name === "Workflow schedule",
+    )!;
     expect(stored.workflowArgs).toEqual({ folder: "primary", limit: 10 });
   });
 
@@ -1261,7 +1263,7 @@ describe("POST /schedules — create", () => {
       message: "hi",
       enabled: false,
     });
-    const job = listSchedules()[0];
+    const job = (await listSchedules())[0];
     expect(job.enabled).toBe(false);
   });
 
@@ -1274,7 +1276,7 @@ describe("POST /schedules — create", () => {
       inferenceProfile: "cost-optimized",
     });
     expect(result.schedule.inferenceProfile).toBe("cost-optimized");
-    expect(listSchedules()[0].inferenceProfile).toBe("cost-optimized");
+    expect((await listSchedules())[0].inferenceProfile).toBe("cost-optimized");
   });
 
   // The endpoint validates inferenceProfile once, before branching on mode, so
@@ -1290,7 +1292,7 @@ describe("POST /schedules — create", () => {
       inferenceProfile: "cost-optimized",
     });
     expect(result.schedule.inferenceProfile).toBe("cost-optimized");
-    expect(listSchedules()[0].inferenceProfile).toBe("cost-optimized");
+    expect((await listSchedules())[0].inferenceProfile).toBe("cost-optimized");
   });
 
   test("persists a valid inferenceProfile on a script-mode create", async () => {
@@ -1304,7 +1306,7 @@ describe("POST /schedules — create", () => {
       inferenceProfile: "cost-optimized",
     });
     expect(result.schedule.inferenceProfile).toBe("cost-optimized");
-    expect(listSchedules()[0].inferenceProfile).toBe("cost-optimized");
+    expect((await listSchedules())[0].inferenceProfile).toBe("cost-optimized");
   });
 
   test("pins inferenceProfile to the resolved default when omitted", async () => {
@@ -1320,7 +1322,7 @@ describe("POST /schedules — create", () => {
       message: "hi",
     });
     expect(result.schedule.inferenceProfile).toBe(expected!);
-    expect(listSchedules()[0].inferenceProfile).toBe(expected!);
+    expect((await listSchedules())[0].inferenceProfile).toBe(expected!);
   });
 
   test("rejects an unknown inferenceProfile", async () => {
@@ -1376,7 +1378,7 @@ describe("PATCH /schedules/:id — description", () => {
       id: schedule.id,
       description: "Updated description",
     });
-    expect(listSchedules()[0].description).toBe("Updated description");
+    expect((await listSchedules())[0].description).toBe("Updated description");
   });
 
   test("sets, validates, and re-snapshots inferenceProfile", async () => {
@@ -1396,7 +1398,7 @@ describe("PATCH /schedules/:id — description", () => {
       pathParams: { id: schedule.id },
       body: { inferenceProfile: "cost-optimized" },
     });
-    expect(listSchedules()[0].inferenceProfile).toBe("cost-optimized");
+    expect((await listSchedules())[0].inferenceProfile).toBe("cost-optimized");
 
     await expect(
       route.handler({
@@ -1404,14 +1406,14 @@ describe("PATCH /schedules/:id — description", () => {
         body: { inferenceProfile: "does-not-exist" },
       }),
     ).rejects.toThrow('Inference profile "does-not-exist" is not defined');
-    expect(listSchedules()[0].inferenceProfile).toBe("cost-optimized");
+    expect((await listSchedules())[0].inferenceProfile).toBe("cost-optimized");
 
     // Null is a reset to the current default, not an unpin.
     await route.handler({
       pathParams: { id: schedule.id },
       body: { inferenceProfile: null },
     });
-    expect(listSchedules()[0].inferenceProfile).toBe(resolvedDefault);
+    expect((await listSchedules())[0].inferenceProfile).toBe(resolvedDefault);
   });
 
   test("re-derives syntax when the expression switches cron to rrule", async () => {
@@ -1430,7 +1432,7 @@ describe("PATCH /schedules/:id — description", () => {
       body: { expression: rrule },
     });
 
-    const updated = listSchedules()[0];
+    const updated = (await listSchedules())[0];
     expect(updated.syntax).toBe("rrule");
     expect(updated.cronExpression).toBe(rrule);
   });
@@ -1783,9 +1785,9 @@ describe("PATCH /schedules/:id — timeout override", () => {
     clearTables();
   });
 
-  function listOne(): { id: string; timeoutMs: number | null } {
+  async function listOne(): Promise<{ id: string; timeoutMs: number | null }> {
     const route = findRoute("schedules", "GET");
-    const result = route.handler({}) as {
+    const result = (await route.handler({})) as {
       schedules: Array<{ id: string; timeoutMs: number | null }>;
     };
     return result.schedules[0];
@@ -1801,7 +1803,7 @@ describe("PATCH /schedules/:id — timeout override", () => {
       mode: "script",
       syntax: "cron",
     });
-    expect(listOne().timeoutMs).toBeNull();
+    expect((await listOne()).timeoutMs).toBeNull();
 
     const patch = findRoute("schedules/:id", "PATCH");
 
@@ -1812,7 +1814,7 @@ describe("PATCH /schedules/:id — timeout override", () => {
     });
 
     // THEN the list reflects the override
-    expect(listOne().timeoutMs).toBe(5000);
+    expect((await listOne()).timeoutMs).toBe(5000);
 
     // AND WHEN the guardian clears it
     await patch.handler({
@@ -1821,7 +1823,7 @@ describe("PATCH /schedules/:id — timeout override", () => {
     });
 
     // THEN it reverts to null
-    expect(listOne().timeoutMs).toBeNull();
+    expect((await listOne()).timeoutMs).toBeNull();
   });
 
   test("rejects an out-of-range timeout", async () => {
@@ -1844,7 +1846,7 @@ describe("PATCH /schedules/:id — timeout override", () => {
         body: { timeoutMs: 10 },
       }),
     ).rejects.toThrow("timeout_ms must be between");
-    expect(listOne().timeoutMs).toBeNull();
+    expect((await listOne()).timeoutMs).toBeNull();
   });
 });
 
@@ -1992,9 +1994,11 @@ describe("POST /schedules/reassign-profile", () => {
     })) as { reassigned: number };
 
     expect(result.reassigned).toBe(2);
-    expect(listSchedules({ inferenceProfile: "cost-optimized" })).toEqual([]);
+    expect(await listSchedules({ inferenceProfile: "cost-optimized" })).toEqual(
+      [],
+    );
     expect(
-      listSchedules()
+      (await listSchedules())
         .map((j) => j.inferenceProfile)
         .every((p) => p === resolvedDefault),
     ).toBe(true);
@@ -2020,7 +2024,7 @@ describe("POST /schedules/reassign-profile", () => {
     })) as { reassigned: number };
 
     expect(result.reassigned).toBe(1);
-    expect(listSchedules()[0].inferenceProfile).toBe(resolvedDefault!);
+    expect((await listSchedules())[0].inferenceProfile).toBe(resolvedDefault!);
   });
 
   test("refuses the whole move when a wake row is in scope and the caller is not the owner", async () => {
@@ -2055,7 +2059,9 @@ describe("POST /schedules/reassign-profile", () => {
     // All-or-nothing: the ordinary schedule sharing the profile does not move
     // either.
     expect(
-      listSchedules().every((j) => j.inferenceProfile === "cost-optimized"),
+      (await listSchedules()).every(
+        (j) => j.inferenceProfile === "cost-optimized",
+      ),
     ).toBe(true);
   });
 
@@ -2074,7 +2080,7 @@ describe("POST /schedules/reassign-profile", () => {
         body: { from: "cost-optimized", to: "does-not-exist" },
       }),
     ).rejects.toThrow('Inference profile "does-not-exist" is not defined');
-    expect(listSchedules()[0].inferenceProfile).toBe("cost-optimized");
+    expect((await listSchedules())[0].inferenceProfile).toBe("cost-optimized");
   });
 
   test("requires to, and rejects an empty from", async () => {
@@ -2095,15 +2101,15 @@ describe("POST /schedules/reassign-profile", () => {
       message: "hi",
       syntax: "cron",
     });
-    const updatedAtBefore = listSchedules()[0].updatedAt;
+    const updatedAtBefore = (await listSchedules())[0].updatedAt;
 
     const result = (await reassignRoute().handler({
       body: { from: "cost-optimized", to: resolvedDefault! },
     })) as { reassigned: number };
 
     expect(result.reassigned).toBe(0);
-    expect(listSchedules()[0].id).toBe(schedule.id);
-    expect(listSchedules()[0].updatedAt).toBe(updatedAtBefore);
+    expect((await listSchedules())[0].id).toBe(schedule.id);
+    expect((await listSchedules())[0].updatedAt).toBe(updatedAtBefore);
   });
 
   test("sweeps up pins left behind by an already-deleted profile", async () => {
@@ -2129,7 +2135,7 @@ describe("POST /schedules/reassign-profile", () => {
     })) as { reassigned: number };
 
     expect(result.reassigned).toBe(1);
-    expect(listSchedules()[0].inferenceProfile).toBe(resolvedDefault!);
+    expect((await listSchedules())[0].inferenceProfile).toBe(resolvedDefault!);
   });
 
   test("omitting from moves every schedule and skips the ones already there", async () => {
@@ -2166,7 +2172,7 @@ describe("POST /schedules/reassign-profile", () => {
       syntax: "cron",
       inferenceProfile: resolvedDefault!,
     });
-    const untouchedBefore = listSchedules().find(
+    const untouchedBefore = (await listSchedules()).find(
       (job) => job.name === "Already default",
     )!.updatedAt;
 
@@ -2178,10 +2184,13 @@ describe("POST /schedules/reassign-profile", () => {
     // on the target, so it is neither counted nor rewritten.
     expect(result.reassigned).toBe(2);
     expect(
-      listSchedules().every((job) => job.inferenceProfile === resolvedDefault),
+      (await listSchedules()).every(
+        (job) => job.inferenceProfile === resolvedDefault,
+      ),
     ).toBe(true);
     expect(
-      listSchedules().find((job) => job.name === "Already default")!.updatedAt,
+      (await listSchedules()).find((job) => job.name === "Already default")!
+        .updatedAt,
     ).toBe(untouchedBefore);
   });
 
@@ -2218,7 +2227,7 @@ describe("POST /schedules/reassign-profile", () => {
       syntax: "cron",
       inferenceProfile: "cost-optimized",
     });
-    const byId = new Map(listSchedules().map((job) => [job.id, job]));
+    const byId = new Map((await listSchedules()).map((job) => [job.id, job]));
     const firedBefore = byId.get(fired.id)!.updatedAt;
     const cancelledBefore = byId.get(cancelled.id)!.updatedAt;
 
@@ -2229,7 +2238,7 @@ describe("POST /schedules/reassign-profile", () => {
     // Their profile is history, so counting them would report a bigger move
     // than the user was shown.
     expect(result.reassigned).toBe(1);
-    const after = new Map(listSchedules().map((job) => [job.id, job]));
+    const after = new Map((await listSchedules()).map((job) => [job.id, job]));
     expect(after.get(live.id)!.inferenceProfile).toBe(resolvedDefault!);
     expect(after.get(fired.id)!.inferenceProfile).toBe("cost-optimized");
     expect(after.get(cancelled.id)!.inferenceProfile).toBe("cost-optimized");
@@ -2259,7 +2268,7 @@ describe("POST /schedules/reassign-profile", () => {
     })) as { reassigned: number };
 
     expect(result.reassigned).toBe(1);
-    expect(listSchedules()[0].inferenceProfile).toBe(resolvedDefault!);
+    expect((await listSchedules())[0].inferenceProfile).toBe(resolvedDefault!);
   });
 
   test("omitting from still refuses a non-owner caller when a wake row would move", async () => {
@@ -2283,6 +2292,6 @@ describe("POST /schedules/reassign-profile", () => {
     ).rejects.toThrow(
       "Deferred wake schedules can only be changed by the assistant's owner",
     );
-    expect(listSchedules()[0].inferenceProfile).toBe("cost-optimized");
+    expect((await listSchedules())[0].inferenceProfile).toBe("cost-optimized");
   });
 });

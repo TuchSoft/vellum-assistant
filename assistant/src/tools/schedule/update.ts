@@ -101,7 +101,7 @@ export async function executeScheduleUpdate(
   }
   throwIfCancelled(context);
 
-  const existing = getSchedule(jobId);
+  const existing = await getSchedule(jobId);
 
   // Prevent changing a one-shot to recurring or vice versa. (`fire_at` is
   // not an advertised update field, so it stays a raw-input read.)

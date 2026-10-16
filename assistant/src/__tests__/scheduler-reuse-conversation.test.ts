@@ -173,7 +173,7 @@ describe("scheduler conversation reuse", () => {
     expect(firstConversationId).toBeTruthy();
 
     // AND a successful run is recorded
-    const runs1 = getScheduleRuns(schedule.id);
+    const runs1 = await getScheduleRuns(schedule.id);
     expect(runs1.length).toBe(1);
     expect(runs1[0].status).toBe("ok");
     expect(runs1[0].conversationId).toBe(firstConversationId);
@@ -189,7 +189,7 @@ describe("scheduler conversation reuse", () => {
     expect(processedMessages[0].conversationId).toBe(firstConversationId);
 
     // AND the run references the reused conversation
-    const runs2 = getScheduleRuns(schedule.id);
+    const runs2 = await getScheduleRuns(schedule.id);
     expect(runs2.length).toBe(2);
     expect(runs2[0].conversationId).toBe(firstConversationId);
   });
@@ -331,7 +331,7 @@ describe("scheduler conversation reuse", () => {
     expect(processedMessages[0].conversationId).toBeTruthy();
 
     // AND the schedule is marked as fired
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(runs.length).toBeGreaterThanOrEqual(1);
     expect(runs[0].status).toBe("ok");
   });
@@ -417,7 +417,7 @@ describe("scheduler conversation reuse", () => {
     forceScheduleDue(schedule.id);
     await runDueSchedulesOnce();
 
-    const runs1 = getScheduleRuns(schedule.id);
+    const runs1 = await getScheduleRuns(schedule.id);
     expect(runs1[0].status).toBe("ok");
 
     // WHEN the next run's turn fails at the LLM call (reported via turnFailure,
@@ -435,7 +435,7 @@ describe("scheduler conversation reuse", () => {
     await runDueSchedulesOnce();
 
     // THEN the run is recorded as an error (not "ok") and carries the code
-    const runs2 = getScheduleRuns(schedule.id);
+    const runs2 = await getScheduleRuns(schedule.id);
     expect(runs2.length).toBe(2);
     expect(runs2[0].status).toBe("error");
     expect(runs2[0].error).toContain("provider_error");
@@ -518,7 +518,7 @@ describe("scheduler talk-mode runner option propagation", () => {
 
     await runDueSchedulesOnce();
 
-    const runs = getScheduleRuns(schedule.id);
+    const runs = await getScheduleRuns(schedule.id);
     expect(runs.length).toBe(1);
     expect(runs[0].status).toBe("error");
     // Critical: must NOT be empty — the DB column should carry a marker that

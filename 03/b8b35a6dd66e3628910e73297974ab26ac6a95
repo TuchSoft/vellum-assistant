@@ -1,0 +1,40 @@
+assistant/package.json
+  h_a912520b04f25d 76
+assistant/src/__tests__/conversation-surfaces-activation-emit.test.ts
+  h_a912520b04f25d 55-76,172,205,224,235,333,382,421
+assistant/src/__tests__/internal-telemetry-routes.test.ts
+  h_a912520b04f25d 132-135,145-154,164-167,177-186
+assistant/src/onboarding/__tests__/onboarding-events-store.test.ts
+  h_a912520b04f25d 3,62-64,135,139
+assistant/src/persistence/__tests__/db-facade.test.ts
+  h_a912520b04f25d 3-4,6-9,12,19-29,40-46,52,111-113
+assistant/src/persistence/db-facade.ts
+  h_a912520b04f25d 33-34,65-68,174-219,227-230,240-243,255-258,270-273
+assistant/src/persistence/db-postgres-facade.ts
+  h_a912520b04f25d 1-164
+assistant/src/persistence/lifecycle-events-store.test.ts
+  h_a912520b04f25d 9,23-32,47,74,102,111,127,135
+assistant/src/persistence/pg-baseline/telemetry.ts
+  h_a912520b04f25d 1-29
+assistant/src/telemetry/__tests__/flush-checkpoints.test.ts
+  h_a912520b04f25d 3,14,18
+assistant/src/telemetry/__tests__/outbox-test-harness.ts
+  h_a912520b04f25d 82-89,99-108
+assistant/src/telemetry/skill-loaded-events-store.test.ts
+  h_a912520b04f25d 3,11-38,42,44,47,49-50,53-54,64,88-89,91
+assistant/src/telemetry/usage-telemetry-reporter.test.ts
+  h_a912520b04f25d 202-203,206,340,365-367,2054,2091,2134,3387-3404
+bun.lock
+  h_a912520b04f25d 51,3406-3407
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "03b8b35a6dd66e3628910e73297974ab26ac6a95",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

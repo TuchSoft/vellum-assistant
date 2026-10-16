@@ -1,11 +1,14 @@
 import { and, eq, lte, or } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
-import { getDb } from "../persistence/db-connection.js";
-import { followups } from "../persistence/schema/index.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import type { FollowUp, FollowUpCreateInput, FollowUpStatus } from "./types.js";
 
-function parseFollowUp(row: typeof followups.$inferSelect): FollowUp {
+/** Row shape of the `followups` table, from the SQLite barrel. */
+type FollowUpRow = SchemaTables["followups"]["$inferSelect"];
+
+function parseFollowUp(row: FollowUpRow): FollowUp {
   const scheduleId = row.reminderCronId;
   return {
     id: row.id,
@@ -21,44 +24,50 @@ function parseFollowUp(row: typeof followups.$inferSelect): FollowUp {
   };
 }
 
-export function createFollowUp(input: FollowUpCreateInput): FollowUp {
-  const db = getDb();
+export async function createFollowUp(
+  input: FollowUpCreateInput,
+): Promise<FollowUp> {
+  const db = requireMainDb();
+  const followups = db.schema.followups;
   const now = Date.now();
   const id = uuid();
 
-  db.insert(followups)
-    .values({
-      id,
-      channel: input.channel,
-      conversationId: input.conversationId,
-      contactId: input.contactId ?? null,
-      sentAt: input.sentAt ?? now,
-      expectedResponseBy: input.expectedResponseBy ?? null,
-      status: "pending",
-      reminderCronId: input.reminderScheduleId ?? null,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  await db.orm.insert(followups).values({
+    id,
+    channel: input.channel,
+    conversationId: input.conversationId,
+    contactId: input.contactId ?? null,
+    sentAt: input.sentAt ?? now,
+    expectedResponseBy: input.expectedResponseBy ?? null,
+    status: "pending",
+    reminderCronId: input.reminderScheduleId ?? null,
+    createdAt: now,
+    updatedAt: now,
+  });
 
-  return getFollowUp(id)!;
+  return (await getFollowUp(id))!;
 }
 
-function getFollowUp(id: string): FollowUp | null {
-  const db = getDb();
-  const row = db.select().from(followups).where(eq(followups.id, id)).get();
+async function getFollowUp(id: string): Promise<FollowUp | null> {
+  const db = requireMainDb();
+  const followups = db.schema.followups;
+  const [row] = await db.orm
+    .select()
+    .from(followups)
+    .where(eq(followups.id, id));
   if (!row) {
     return null;
   }
   return parseFollowUp(row);
 }
 
-export function listFollowUps(filter?: {
+export async function listFollowUps(filter?: {
   status?: FollowUpStatus;
   channel?: string;
   contactId?: string;
-}): FollowUp[] {
-  const db = getDb();
+}): Promise<FollowUp[]> {
+  const db = requireMainDb();
+  const followups = db.schema.followups;
   const conditions = [];
 
   if (filter?.status) {
@@ -78,41 +87,42 @@ export function listFollowUps(filter?: {
         : and(...conditions)
       : undefined;
 
-  const rows = db.select().from(followups).where(whereClause).all();
+  const rows = await db.orm.select().from(followups).where(whereClause);
 
   return rows.map(parseFollowUp);
 }
 
-export function resolveFollowUp(id: string): FollowUp {
-  const db = getDb();
+export async function resolveFollowUp(id: string): Promise<FollowUp> {
+  const db = requireMainDb();
+  const followups = db.schema.followups;
   const now = Date.now();
 
-  const existing = db
+  const [existing] = await db.orm
     .select()
     .from(followups)
-    .where(eq(followups.id, id))
-    .get();
+    .where(eq(followups.id, id));
   if (!existing) {
     throw new Error(`Follow-up "${id}" not found`);
   }
 
-  db.update(followups)
+  await db.orm
+    .update(followups)
     .set({ status: "resolved", updatedAt: now })
-    .where(eq(followups.id, id))
-    .run();
+    .where(eq(followups.id, id));
 
-  return getFollowUp(id)!;
+  return (await getFollowUp(id))!;
 }
 
-export function resolveByConversation(
+export async function resolveByConversation(
   channel: string,
   conversationId: string,
-): FollowUp[] {
-  const db = getDb();
+): Promise<FollowUp[]> {
+  const db = requireMainDb();
+  const followups = db.schema.followups;
   const now = Date.now();
 
   // Find ALL pending/overdue/nudged follow-ups matching this conversation
-  const rows = db
+  const rows = await db.orm
     .select()
     .from(followups)
     .where(
@@ -125,28 +135,28 @@ export function resolveByConversation(
           eq(followups.status, "nudged"),
         ),
       ),
-    )
-    .all();
+    );
 
   if (rows.length === 0) {
     return [];
   }
 
   for (const row of rows) {
-    db.update(followups)
+    await db.orm
+      .update(followups)
       .set({ status: "resolved", updatedAt: now })
-      .where(eq(followups.id, row.id))
-      .run();
+      .where(eq(followups.id, row.id));
   }
 
-  return rows.map((row) => getFollowUp(row.id)!);
+  return Promise.all(rows.map(async (row) => (await getFollowUp(row.id))!));
 }
 
-export function getOverdueFollowUps(): FollowUp[] {
-  const db = getDb();
+export async function getOverdueFollowUps(): Promise<FollowUp[]> {
+  const db = requireMainDb();
+  const followups = db.schema.followups;
   const now = Date.now();
 
-  const rows = db
+  const rows = await db.orm
     .select()
     .from(followups)
     .where(
@@ -154,8 +164,7 @@ export function getOverdueFollowUps(): FollowUp[] {
         eq(followups.status, "pending"),
         lte(followups.expectedResponseBy, now),
       ),
-    )
-    .all();
+    );
 
   return rows.map(parseFollowUp);
 }

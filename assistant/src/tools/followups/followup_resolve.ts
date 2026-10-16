@@ -59,13 +59,13 @@ export async function executeFollowupResolve(
 
   try {
     if (id) {
-      const followUp = resolveFollowUp(id);
+      const followUp = await resolveFollowUp(id);
       return {
         content: `Resolved follow-up:\n${formatFollowUp(followUp)}`,
         isError: false,
       };
     } else {
-      const resolved = resolveByConversation(channel!, conversationId!);
+      const resolved = await resolveByConversation(channel!, conversationId!);
       if (resolved.length === 0) {
         return {
           content: `No pending follow-up found for channel="${channel}" conversation="${conversationId}"`,

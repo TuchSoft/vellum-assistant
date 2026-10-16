@@ -74,7 +74,7 @@ export async function executeFollowupList(
     let results: FollowUp[];
 
     if (overdueOnly || status === "overdue") {
-      results = getOverdueFollowUps();
+      results = await getOverdueFollowUps();
       if (channel) {
         results = results.filter((f) => f.channel === channel);
       }
@@ -82,7 +82,7 @@ export async function executeFollowupList(
         results = results.filter((f) => f.contactId === contactId);
       }
     } else {
-      results = listFollowUps({ status, channel, contactId });
+      results = await listFollowUps({ status, channel, contactId });
     }
 
     if (results.length === 0) {

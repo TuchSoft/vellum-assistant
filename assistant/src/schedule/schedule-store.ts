@@ -14,8 +14,8 @@ import {
 import { v4 as uuid } from "uuid";
 
 import { getConversation } from "../persistence/conversation-crud.js";
-import type { AsyncDb, SchemaTables } from "../persistence/db-facade.js";
-import { getAsyncDb } from "../persistence/db-facade.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { getGroup } from "../persistence/group-crud.js";
 import { isLifecycleQuiesced } from "../persistence/lifecycle-quiesce.js";
 import { publishSchedulesChanged } from "../runtime/sync/resource-sync-events.js";
@@ -45,21 +45,6 @@ import {
 } from "./schedule-timezone.js";
 
 const logger = getLogger("schedule-store");
-
-/**
- * The connection for this slice. `cron_jobs` and `cron_runs` live on the
- * `main` slot, so every read and write goes through the main facade. It throws
- * when the slot is unavailable, matching the synchronous `getDb()` it replaces
- * (which threw on open failure) so a schedule mutation never silently
- * disappears into a degraded no-op.
- */
-function requireMainDb(): AsyncDb {
-  const db = getAsyncDb();
-  if (!db) {
-    throw new Error("main database unavailable");
-  }
-  return db;
-}
 
 /** Row shapes of the two tables this slice owns, from the SQLite barrel. */
 type ScheduleJobRow = SchemaTables["scheduleJobs"]["$inferSelect"];

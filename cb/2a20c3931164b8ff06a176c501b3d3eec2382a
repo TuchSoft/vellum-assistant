@@ -1,0 +1,86 @@
+assistant/src/__tests__/conversation-delete-schedule-cleanup.test.ts
+  h_a912520b04f25d 70,78,97,132,161,191-192
+assistant/src/__tests__/schedule-retry.test.ts
+  h_a912520b04f25d 172,185,189,207,212,226,239,282,292,321,328,352,363,389,416,424,448,452,475,681,686,708,733,775,779,844,860-861,904,923,952,970-971
+assistant/src/__tests__/schedule-routes-workflow-validation.test.ts
+  h_a912520b04f25d 95,112,144,178,294
+assistant/src/__tests__/schedule-routes.test.ts
+  h_a912520b04f25d 444,1119,1137,1152,1184,1252-1254,1266,1279,1295,1309,1325,1381,1401,1409,1416,1435,1788,1790,1806,1817,1826,1849,1997-1999,2001,2027,2062-2064,2083,2104,2111-2112,2138,2175,2187-2189,2192-2193,2230,2241,2271,2295
+assistant/src/__tests__/schedule-store.test.ts
+  h_a912520b04f25d 193,222-227,239,257-262,443,719,816,924,938,963,1002,1071,1145,1162,1188,1217,1229,1244,1248,1274,1293,1322,1363,1383,1410,1438-1440,1445-1448,1515,1523,1531,1636,1726,1751,1924,1943,1973
+assistant/src/__tests__/schedule-tools.test.ts
+  h_a912520b04f25d 1942,1955,1965,2201,2228,2235,2242,2256
+assistant/src/__tests__/scheduler-recurrence.test.ts
+  h_a912520b04f25d 133,153,199,204,215,228,247,276,324,372,447,474,476,480,500,513,519,534,551,565,571,608,641
+assistant/src/__tests__/scheduler-result-notification.test.ts
+  h_a912520b04f25d 24-26,53,240,260,279,283,327,352,360,387,410,437,443,456,494,540,542,643,645,726,753-754,788,803,805,822,843,866,884
+assistant/src/__tests__/scheduler-reuse-conversation.test.ts
+  h_a912520b04f25d 176,192,334,420,438,521
+assistant/src/__tests__/wake-schedule-escalation.test.ts
+  h_a912520b04f25d 186,207,260,272-273,318,336
+assistant/src/background-wake/background-wake-routes.test.ts
+  h_a912520b04f25d 151
+assistant/src/background-wake/next-wake.test.ts
+  h_a912520b04f25d 63,88-89,104,107,115,117,125,130,143,156,169,180,193,202,210,220,223,237,240,250,258,268,285,287,295,299,302,312
+assistant/src/background-wake/next-wake.ts
+  h_a912520b04f25d 50,52,54,151-153
+assistant/src/background-wake/publisher.ts
+  h_a912520b04f25d 53
+assistant/src/home/feed-source-enrichment.test.ts
+  h_a912520b04f25d 61-62,71-72,81-82,105-106,123-124,132-133,142,144
+assistant/src/home/feed-source-enrichment.ts
+  h_a912520b04f25d 48,106,108,119,122,140,142,147-186
+assistant/src/runtime/agent-wake.ts
+  h_a912520b04f25d 776,778,883,1598
+assistant/src/runtime/routes/__tests__/conversation-management-routes.test.ts
+  h_a912520b04f25d 506,522
+assistant/src/runtime/routes/__tests__/home-feed-routes.test.ts
+  h_a912520b04f25d 607,615,621,627,629,633,640,642,646,653,655,659,665,667,671,678,680,684,691,693,697,703,705,709,716,718,722,729,731,735,746,748,754,756,761,765,773,777,785,792
+assistant/src/runtime/routes/background-wake-routes.ts
+  h_a912520b04f25d 142-143,146,148,208,236,260
+assistant/src/runtime/routes/conversation-management-routes.ts
+  h_a912520b04f25d 129
+assistant/src/runtime/routes/debug-routes.ts
+  h_a912520b04f25d 47,63
+assistant/src/runtime/routes/defer-routes.ts
+  h_a912520b04f25d 34-35,90,97,122,148,157
+assistant/src/runtime/routes/global-search-routes.ts
+  h_a912520b04f25d 269,272-273,356
+assistant/src/runtime/routes/home-feed-routes.ts
+  h_a912520b04f25d 176,247,249,342
+assistant/src/runtime/routes/lifecycle-routes.ts
+  h_a912520b04f25d 159,167
+assistant/src/runtime/routes/schedule-routes.ts
+  h_a912520b04f25d 397,400,417-418,479-480,675,691,715,781,900,904,911,1329,1501
+assistant/src/runtime/routes/wake-conversation-routes.ts
+  h_a912520b04f25d 105
+assistant/src/schedule/__tests__/plugin-schedule-reconciler.test.ts
+  h_a912520b04f25d 225,268,281,287,308,314,327,341,350,361,373,379,395,401,409,413,417,426,455,465,479,488,497,509,517,525,550,590,598,607,631,640,660,677,701,876,900,917,923,935,945,961,983,1003,1010,1016,1025,1030,1080,1094,1107,1115,1119,1124,1135,1143
+assistant/src/schedule/__tests__/schedule-store-postgres.test.ts
+  h_a912520b04f25d 1-258
+assistant/src/schedule/plugin-schedule-reconciler.ts
+  h_a912520b04f25d 110
+assistant/src/schedule/schedule-recovery.ts
+  h_a912520b04f25d 21,31
+assistant/src/schedule/schedule-store.ts
+  h_a912520b04f25d 17-18,49-67,301,394-401,486-489,496-502,505,507-508,511,519-521,524,527,530,533,539-540,544,547,550,552,554,599-601,777,790-796,804-805,810,816-821,868-871,873-875,915-917,919-920,1001,1006,1025-1027,1041-1042,1044,1065-1067,1111,1142-1143,1147,1149,1152-1154,1157,1198-1200,1202-1204,1225,1227,1230-1233,1236,1240-1242,1248-1250,1280-1281,1284-1286,1292-1294,1308-1309,1312-1314,1319-1321,1336-1337,1340-1342,1345,1348-1350,1365-1366,1369-1371,1378-1380,1394-1395,1400,1407-1409,1415-1417,1431,1436-1447,1453,1455-1462,1466-1476,1478-1480,1482-1487,1494-1495,1497,1511-1512,1515,1524-1525,1539,1562-1563,1573-1575,1577-1579,1595-1596,1606,1609-1611,1617-1619,1632-1634,1636-1638,1652-1659,1662-1664,1667-1668,1677,1681-1684,1686,1689-1690,1693-1694,1921-1922,1925-1927,1929-1931,1936-1938,1940-1942,1958-1959,1962-1964,1966-1968,1975-1977,1979-1981,1995-1996,1998-2000,2002-2004,2022-2032,2036-2038,2041-2044,2046,2049-2051,2054-2055,2057,2074,2152
+assistant/src/schedule/scheduler.ts
+  h_a912520b04f25d 1111
+assistant/src/tools/schedule/delete.ts
+  h_a912520b04f25d 36
+assistant/src/tools/schedule/list.ts
+  h_a912520b04f25d 65,72,145
+assistant/src/tools/schedule/update.ts
+  h_a912520b04f25d 104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cb2a20c3931164b8ff06a176c501b3d3eec2382a",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

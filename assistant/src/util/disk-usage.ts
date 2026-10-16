@@ -2,11 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, statfsSync } from "node:fs";
 import { promisify } from "node:util";
 
-import {
-  getIsContainerized,
-  getIsPlatform,
-  getMinikubeStorageSize,
-} from "../config/env-registry.js";
+import { getMinikubeStorageSize } from "../config/env-registry.js";
 import { getWorkspaceDir } from "./platform.js";
 
 const execFileAsync = promisify(execFile);
@@ -80,23 +76,23 @@ export function __resetDiskUsageCacheForTests(): void {
  * - `fixed-cap`: minikube hostPath PVC — the PVC request is the hard
  *   capacity, so usage is measured with `du` and free space is whatever
  *   remains within the quota.
- * - `host-free`: local Docker named volume — the volume is backed by the
- *   host (or Colima VM) filesystem and can grow into its free space, so
- *   usage is measured with `du` and the effective capacity is current usage
- *   plus the host's remaining headroom.
- * - `none`: statfsSync already reports the volume accurately (bare metal, or
- *   a platform-managed instance on a CSI-backed PVC), so use it directly.
+ * - `none`: statfsSync already reports the disk behind the workspace
+ *   accurately. This covers bare metal and every containerized instance
+ *   (local Docker and platform-managed), where the workspace is a bind
+ *   mount rather than a distinct volume.
  */
 type WorkspaceVolumeReporting =
   | { kind: "none" }
-  | { kind: "fixed-cap"; totalBytes: number }
-  | { kind: "host-free" };
+  | { kind: "fixed-cap"; totalBytes: number };
 
 /**
- * Decide how to report the workspace volume's capacity. Both minikube
- * hostPath PVCs and local Docker named volumes are backed by the host
- * filesystem, so statfsSync reports the host's entire disk rather than the
- * workspace volume — in both cases we measure actual usage with `du` instead.
+ * Decide how to report the workspace volume's capacity.
+ *
+ * Only a minikube hostPath PVC needs `du`: there the PVC request is the real
+ * capacity while statfsSync sees the host disk behind it. Everywhere else the
+ * workspace is a bind mount with no distinct volume, so statfsSync already
+ * answers the question that matters: is the disk behind the workspace nearly
+ * full? It does so without walking the tree.
  */
 function classifyWorkspaceVolume(
   fsTotalBytes: number,
@@ -111,14 +107,6 @@ function classifyWorkspaceVolume(
     if (pvcTotalBytes !== null && fsTotalBytes > pvcTotalBytes * 1.1) {
       return { kind: "fixed-cap", totalBytes: pvcTotalBytes };
     }
-    return { kind: "none" };
-  }
-
-  // Local Docker hatch: the workspace is a Docker named volume backed by the
-  // host filesystem. Platform-managed remote instances run on CSI-backed PVCs
-  // where statfsSync already reports the volume, so they are excluded.
-  if (getIsContainerized() && !getIsPlatform()) {
-    return { kind: "host-free" };
   }
 
   return { kind: "none" };
@@ -135,26 +123,18 @@ export async function getDiskUsageInfo(): Promise<DiskUsageInfo | null> {
       Math.round((b / (1024 * 1024)) * 100) / 100;
 
     const reporting = classifyWorkspaceVolume(fsTotalBytes);
-    if (reporting.kind !== "none") {
+    if (reporting.kind === "fixed-cap") {
       const volumePaths = [diskPath];
       if (diskPath !== "/data" && existsSync("/data")) {
         volumePaths.push("/data");
       }
       const usedBytes = await getCachedDirectorySizeBytes(volumePaths);
       if (usedBytes !== null) {
-        const totalBytes =
-          reporting.kind === "fixed-cap"
-            ? reporting.totalBytes
-            : usedBytes + fsFreeBytes;
-        const freeBytes =
-          reporting.kind === "fixed-cap"
-            ? Math.max(0, reporting.totalBytes - usedBytes)
-            : fsFreeBytes;
         return {
           path: diskPath,
-          totalMb: bytesToMb(totalBytes),
+          totalMb: bytesToMb(reporting.totalBytes),
           usedMb: bytesToMb(usedBytes),
-          freeMb: bytesToMb(freeBytes),
+          freeMb: bytesToMb(Math.max(0, reporting.totalBytes - usedBytes)),
         };
       }
     }

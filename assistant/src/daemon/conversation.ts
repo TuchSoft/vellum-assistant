@@ -787,6 +787,16 @@ export class Conversation {
    */
   pendingInterruptRepair = false;
   /**
+   * Set by `abortConversation` for a hard cancel whose stopped turn will unwind
+   * through its own `kickDrainQueue`. A hard cancel parks the messages queued
+   * behind the stopped turn instead of draining them, so the very next drain
+   * trigger (the unwinding turn's `finally`) is absorbed: `drainQueue` clears
+   * this and returns without running the queue. A later explicit drain (a fresh
+   * send, a canned-reply release) runs it normally.
+   * @internal
+   */
+  suppressNextQueueDrain = false;
+  /**
    * Set by `interruptRunningTurn` once it has handed the conversation over, and
    * consumed by the agent loop at the head of the very next turn, which emits
    * the `thinking` / `message_interrupted` transition.

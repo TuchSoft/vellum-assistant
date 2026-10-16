@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
+import { credentialKey } from "../../security/credential-key.js";
 import {
   getPlatformBaseUrl,
   setPlatformAssistantId,
@@ -8,10 +9,18 @@ import {
   setPlatformUserId,
 } from "../env.js";
 
+let mockSecureKeys: Record<string, string> = {};
+let throwForKey: string | undefined;
+
 const actualSecureKeys = await import("../../security/secure-keys.js");
 mock.module("../../security/secure-keys.js", () => ({
   ...actualSecureKeys,
-  getSecureKeyAsync: async () => undefined,
+  getSecureKeyAsync: async (key: string) => {
+    if (throwForKey && key === throwForKey) {
+      throw new Error("credential store unreachable");
+    }
+    return mockSecureKeys[key] ?? undefined;
+  },
 }));
 
 const {
@@ -19,6 +28,7 @@ const {
   fetchPlatformIdentityIds,
   PLATFORM_IDENTITY_VALIDATE_PATH,
   resolvePlatformAssistantId,
+  resolvePlatformAssistantIdOrNull,
 } = await import("../platform-identity.js");
 
 const BASE_URL = "https://platform.vellum.ai";
@@ -125,6 +135,8 @@ describe("resolvePlatformAssistantId", () => {
     new Response("not found", { status: 404 });
 
   beforeEach(() => {
+    mockSecureKeys = {};
+    throwForKey = undefined;
     fetchCalls.length = 0;
     fetchImpl = async () => new Response("not found", { status: 404 });
     globalThis.fetch = (async (
@@ -167,6 +179,47 @@ describe("resolvePlatformAssistantId", () => {
     process.env.ASSISTANT_API_KEY = "assistant-key";
     await expect(resolvePlatformAssistantId()).resolves.toBe(ASSISTANT_ID);
     expect(fetchCalls).toHaveLength(0);
+  });
+
+  test("the in-memory override outranks the vault credential", async () => {
+    setPlatformAssistantId(ASSISTANT_ID);
+    mockSecureKeys[credentialKey("vellum", "platform_assistant_id")] =
+      "vault-assistant-id";
+    await expect(resolvePlatformAssistantIdOrNull()).resolves.toBe(
+      ASSISTANT_ID,
+    );
+  });
+
+  test("falls back to the vault credential when the in-memory override is unset", async () => {
+    mockSecureKeys[credentialKey("vellum", "platform_assistant_id")] =
+      ASSISTANT_ID;
+    await expect(resolvePlatformAssistantId()).resolves.toBe(ASSISTANT_ID);
+    await expect(resolvePlatformAssistantIdOrNull()).resolves.toBe(
+      ASSISTANT_ID,
+    );
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  test("falls back to the vault credential when validate fails", async () => {
+    process.env.ASSISTANT_API_KEY = "assistant-key";
+    setPlatformBaseUrl(BASE_URL);
+    fetchImpl = async () => new Response("down", { status: 503 });
+    mockSecureKeys[credentialKey("vellum", "platform_assistant_id")] =
+      ASSISTANT_ID;
+
+    await expect(resolvePlatformAssistantIdOrNull()).resolves.toBe(
+      ASSISTANT_ID,
+    );
+    expect(fetchCalls).toHaveLength(1);
+  });
+
+  test("returns null when neither an override nor a vault credential exists", async () => {
+    await expect(resolvePlatformAssistantIdOrNull()).resolves.toBeNull();
+  });
+
+  test("a vault read failure resolves to null without throwing", async () => {
+    throwForKey = credentialKey("vellum", "platform_assistant_id");
+    await expect(resolvePlatformAssistantIdOrNull()).resolves.toBeNull();
   });
 
   test("returns empty when the in-memory override is unset and there is no API key", async () => {

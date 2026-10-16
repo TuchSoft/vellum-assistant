@@ -14,6 +14,15 @@ export type AbortReasonKind =
   | "schedule_timeout"
   /** User explicitly hit Stop / Esc on the active conversation. */
   | "user_cancel"
+  /**
+   * User hit Stop on a turn whose queue must be parked rather than drained.
+   *
+   * Behaves like {@link "user_cancel"} for teardown (the queue survives) but
+   * deliberately does not run the messages queued behind the stopped turn:
+   * they stay queued until an explicit later drain. This is the Stop default,
+   * and it is the reason a Stop carries onto a woken (background) turn.
+   */
+  | "hard_cancel"
   /** A new user message arrived for the same conversation, preempting the in-flight turn. */
   | "preempted_by_new_message"
   /** The conversation was disposed (eviction, shutdown) while still processing. */
@@ -66,13 +75,28 @@ export function createAbortReason(
  *
  * The distinction matters for the message queue. A user interrupt ends the
  * turn in flight; it says nothing about the messages the same user queued
- * behind it, so those survive the abort and run on the interrupted turn's
- * drain. Every other kind (dispose, eviction, voice supersession, subagent
- * teardown) is the conversation or its owner disappearing, where a queued
- * message has nothing left to run on and is discarded.
+ * behind it, so those survive the abort. A {@link "user_cancel"} and the CLI
+ * cancel signal run them on the interrupted turn's drain; a
+ * {@link "hard_cancel"} parks them instead ({@link isHardCancelAbort}). Every
+ * other kind (dispose, eviction, voice supersession, subagent teardown) is the
+ * conversation or its owner disappearing, where a queued message has nothing
+ * left to run on and is discarded.
  */
 export function isUserInterruptAbort(reason: AbortReason | undefined): boolean {
-  return reason?.kind === "user_cancel" || reason?.kind === "signal_cancel";
+  return (
+    reason?.kind === "user_cancel" ||
+    reason?.kind === "hard_cancel" ||
+    reason?.kind === "signal_cancel"
+  );
+}
+
+/**
+ * True when the abort is a hard Stop: the turn is torn down exactly like a
+ * {@link "user_cancel"}, but the messages queued behind it are parked rather
+ * than drained into the next turn.
+ */
+export function isHardCancelAbort(reason: AbortReason | undefined): boolean {
+  return reason?.kind === "hard_cancel";
 }
 
 /**

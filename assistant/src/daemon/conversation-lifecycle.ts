@@ -28,6 +28,7 @@ import {
   type AbortReason,
   createAbortReason,
   INTERRUPTED_TURN_NOTE_TEXT,
+  isHardCancelAbort,
   isUserInterruptAbort,
 } from "../util/abort-reasons.js";
 import { getLogger } from "../util/logger.js";
@@ -162,6 +163,10 @@ export interface AbortContext {
   /** Armed when an interrupt leaves queued messages behind, so the drain
    *  repairs tool_use blocks the killed turn abandoned. */
   pendingInterruptRepair: boolean;
+  /** Armed by a hard cancel whose stopped turn still owns the drain kick, so
+   *  the unwinding turn's `finally` absorbs that one drain and leaves the queue
+   *  parked. Consumed on read by `drainQueue`. */
+  suppressNextQueueDrain: boolean;
   /** Never rejects. Called only when an interrupt preserves the queue but no
    *  live turn is left to reach its `finally` and drain it. */
   kickDrainQueue(reason?: QueueDrainReason, origin?: string): Promise<void>;
@@ -221,7 +226,9 @@ export function forceClearStaleProcessing(
  * A user interrupt ends the turn in flight and nothing else: the aborted turn
  * unwinds to the agent loop's `finally`, which calls `kickDrainQueue`, so the
  * queued messages become the next turn. This is the same drain-after-abort
- * sequence `steerToMessage` relies on.
+ * sequence `steerToMessage` relies on. A `hard_cancel` keeps the survive-and-
+ * repair half but not the drain half: the messages stay queued for an explicit
+ * later drain.
  *
  * An interrupt can land mid-tool, leaving `tool_use` blocks with no results, so
  * arm the same repair a steer arms: the drained turn then opens with synthetic
@@ -230,11 +237,15 @@ export function forceClearStaleProcessing(
  * `hasLiveTurn` is false when the processing flag was force-cleared because no
  * controller was left to signal. No agent-loop `finally` runs in that case, so
  * the drain is kicked here instead; otherwise the preserved messages wait for
- * an unrelated later turn to finish.
+ * an unrelated later turn to finish. `holdDrain` set by a `hard_cancel`
+ * suppresses that kick, leaving the queue parked.
  */
 function preserveQueueAcrossInterrupt(
   ctx: AbortContext,
-  { hasLiveTurn }: { hasLiveTurn: boolean },
+  {
+    hasLiveTurn,
+    holdDrain = false,
+  }: { hasLiveTurn: boolean; holdDrain?: boolean },
 ): void {
   if (ctx.queue.isEmpty) {
     return;
@@ -245,9 +256,15 @@ function preserveQueueAcrossInterrupt(
       conversationId: ctx.conversationId,
       queueDepth: ctx.queue.length,
       hasLiveTurn,
+      holdDrain,
     },
-    "User interrupt: preserving queued messages for the interrupted turn's drain",
+    holdDrain
+      ? "Hard cancel: parking queued messages for an explicit later drain"
+      : "User interrupt: preserving queued messages for the interrupted turn's drain",
   );
+  if (holdDrain) {
+    return;
+  }
   if (!hasLiveTurn) {
     void ctx.kickDrainQueue("loop_complete", "abortConversation:no_live_turn");
   }
@@ -365,6 +382,19 @@ export function abortConversation(
   }
   const hasLiveTurn = ctx.abortController !== null;
   const wasProcessing = ctx.isProcessing();
+  const hardCancel = isHardCancelAbort(effectiveReason);
+  // A hard cancel parks the queue: the messages queued behind the stopped turn
+  // must not run into the next turn. When that turn is live its own `finally`
+  // will kick the drain as it unwinds, so absorb that one drain here; the queue
+  // stays queued for an explicit later drain.
+  if (
+    hardCancel &&
+    wasProcessing &&
+    ctx.abortController &&
+    !ctx.queue.isEmpty
+  ) {
+    ctx.suppressNextQueueDrain = true;
+  }
   if (wasProcessing) {
     log.info(
       { conversationId: ctx.conversationId, abortReason: effectiveReason },
@@ -416,6 +446,7 @@ export function abortConversation(
     // is empty. Kicking a second drain here would race the first.
     preserveQueueAcrossInterrupt(ctx, {
       hasLiveTurn: hasLiveTurn || !wasProcessing,
+      holdDrain: hardCancel,
     });
   } else {
     discardQueueOnAbort(ctx);

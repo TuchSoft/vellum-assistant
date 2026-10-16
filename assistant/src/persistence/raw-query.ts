@@ -35,6 +35,14 @@ import {
   getSqlite,
   getTelemetrySqlite,
 } from "./db-connection.js";
+import {
+  type AsyncDb,
+  type AsyncDbSlot,
+  getAsyncDb,
+  getLogsAsyncDb,
+  getMemoryAsyncDb,
+  getTelemetryAsyncDb,
+} from "./db-facade.js";
 
 type SqlParam = SQLQueryBindings;
 
@@ -230,4 +238,107 @@ export function resetTestTables(...tables: string[]): void {
     sqlite.exec("ROLLBACK");
     throw e;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Async counterparts
+// ---------------------------------------------------------------------------
+//
+// The helpers above are synchronous because they wrap `bun:sqlite`. The async
+// helpers below are the migration target: same semantics, same label-first
+// signature, but returning Promises and routing through the driver-agnostic
+// `AsyncDb` facade. New code should prefer these; the synchronous helpers stay
+// until their call sites are colored (see `db-facade.ts`).
+
+/** {@link rawGet} on the async facade. */
+export async function rawGetAsync<T>(
+  label: string,
+  sql: string,
+  ...params: SqlParam[]
+): Promise<T | null> {
+  return requireFacade(getAsyncDb(), "main").label(label).get<T>(sql, params);
+}
+
+/** {@link rawAll} on the async facade. */
+export async function rawAllAsync<T>(
+  label: string,
+  sql: string,
+  ...params: SqlParam[]
+): Promise<T[]> {
+  return requireFacade(getAsyncDb(), "main").label(label).all<T>(sql, params);
+}
+
+/** {@link rawRun} on the async facade. */
+export async function rawRunAsync(
+  label: string,
+  sql: string,
+  ...params: SqlParam[]
+): Promise<number> {
+  return requireFacade(getAsyncDb(), "main").label(label).run(sql, params);
+}
+
+/** {@link rawExec} on the async facade. */
+export async function rawExecAsync(sql: string): Promise<void> {
+  return requireFacade(getAsyncDb(), "main").exec(sql);
+}
+
+/** {@link rawMemoryGet} on the async facade. */
+export async function rawMemoryGetAsync<T>(
+  label: string,
+  sql: string,
+  ...params: SqlParam[]
+): Promise<T | null> {
+  return requireFacade(getMemoryAsyncDb(), "memory")
+    .label(label)
+    .get<T>(sql, params);
+}
+
+/** {@link rawMemoryAll} on the async facade. */
+export async function rawMemoryAllAsync<T>(
+  label: string,
+  sql: string,
+  ...params: SqlParam[]
+): Promise<T[]> {
+  return requireFacade(getMemoryAsyncDb(), "memory")
+    .label(label)
+    .all<T>(sql, params);
+}
+
+/** {@link rawMemoryRun} on the async facade. */
+export async function rawMemoryRunAsync(
+  label: string,
+  sql: string,
+  ...params: SqlParam[]
+): Promise<number> {
+  return requireFacade(getMemoryAsyncDb(), "memory")
+    .label(label)
+    .run(sql, params);
+}
+
+/** {@link rawLogsRun} on the async facade. */
+export async function rawLogsRunAsync(
+  label: string,
+  sql: string,
+  ...params: SqlParam[]
+): Promise<number> {
+  return requireFacade(getLogsAsyncDb(), "logs").label(label).run(sql, params);
+}
+
+/** {@link rawTelemetryRun} on the async facade. */
+export async function rawTelemetryRunAsync(
+  label: string,
+  sql: string,
+  ...params: SqlParam[]
+): Promise<number> {
+  return requireFacade(getTelemetryAsyncDb(), "telemetry")
+    .label(label)
+    .run(sql, params);
+}
+
+/** Unwrap a facade accessor, throwing the dedicated-database error when null. */
+function requireFacade(facade: AsyncDb | null, name: AsyncDbSlot): AsyncDb {
+  if (!facade) {
+    throw new Error(`${name} database unavailable`);
+  }
+  return facade;
 }

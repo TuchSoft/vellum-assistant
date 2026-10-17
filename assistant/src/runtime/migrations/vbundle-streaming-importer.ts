@@ -413,7 +413,7 @@ export async function streamCommitImport(
         // Best-effort: create the directory inside the temp workspace if it
         // resolves inside `workspaceDir`. Drain the empty body either way.
         entry.body.resume();
-        const dirResolved = resolveInsideTempWorkspace(
+        const dirResolved = await resolveInsideTempWorkspace(
           archivePath,
           pathResolver,
           realWorkspaceDir,
@@ -470,7 +470,7 @@ export async function streamCommitImport(
         // resolved disk path (which maps archive paths through the resolver,
         // e.g. legacy `prompts/USER.md` -> `users/<slug>.md`).
         const linkTargetStr = expectedEntry.linkTarget as string;
-        const diskPath = pathResolver.resolve(archivePath);
+        const diskPath = await pathResolver.resolve(archivePath);
         if (!diskPath) {
           importedFiles.push({
             path: archivePath,
@@ -671,7 +671,7 @@ export async function streamCommitImport(
         continue;
       }
 
-      const diskPath = pathResolver.resolve(archivePath);
+      const diskPath = await pathResolver.resolve(archivePath);
       if (!diskPath) {
         // Unknown destination. Consume bytes through the verifier anyway so
         // we still catch manifest/content mismatches, but don't write.
@@ -2361,13 +2361,13 @@ async function mergeBackupIntoLive(
  * returned disk path onto the temp workspace. Returns `null` when the path
  * cannot be resolved or lands outside `realWorkspaceDir`.
  */
-function resolveInsideTempWorkspace(
+async function resolveInsideTempWorkspace(
   archivePath: string,
   pathResolver: PathResolver,
   realWorkspaceDir: string,
   tempWorkspaceDir: string,
-): string | null {
-  const resolved = pathResolver.resolve(archivePath);
+): Promise<string | null> {
+  const resolved = await pathResolver.resolve(archivePath);
   if (!resolved) {
     return null;
   }

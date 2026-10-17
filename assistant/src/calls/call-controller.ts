@@ -2146,7 +2146,7 @@ export class CallController {
     }
 
     const clearedPendingGuardianInput =
-      this.clearPendingGuardianInputForCallEnd();
+      await this.clearPendingGuardianInputForCallEnd();
     this.state = "idle";
     this.currentTurnHandle = null;
 
@@ -2242,7 +2242,7 @@ export class CallController {
     }
   }
 
-  private clearPendingGuardianInputForCallEnd(): boolean {
+  private async clearPendingGuardianInputForCallEnd(): Promise<boolean> {
     if (!this.pendingGuardianInput) {
       return false;
     }
@@ -2562,7 +2562,7 @@ export class CallController {
 
     // Set a consultation timeout tied to this specific consultation
     // record, not the global controller state.
-    const consultationTimer = setTimeout(() => {
+    const consultationTimer = setTimeout(async () => {
       // Only fire if this consultation is still the active one
       if (
         !this.pendingGuardianInput ||

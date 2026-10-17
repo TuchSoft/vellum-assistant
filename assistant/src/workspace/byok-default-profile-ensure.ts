@@ -249,7 +249,9 @@ const HISTORICAL_INTENT_MODELS: Record<
   },
 };
 
-export function ensureByokDefaultProfiles(workspaceDir: string): void {
+export async function ensureByokDefaultProfiles(
+  workspaceDir: string,
+): Promise<void> {
   const configPath = join(workspaceDir, "config.json");
   if (!existsSync(configPath)) {
     return;
@@ -323,7 +325,12 @@ export function ensureByokDefaultProfiles(workspaceDir: string): void {
     const entry = readObject(profiles[name]);
     if (
       entry === null ||
-      !isKnownUneditedBody(entry, key, convertibleProvider, completionBase)
+      !(await isKnownUneditedBody(
+        entry,
+        key,
+        convertibleProvider,
+        completionBase,
+      ))
     ) {
       continue;
     }
@@ -373,12 +380,12 @@ export function ensureByokDefaultProfiles(workspaceDir: string): void {
   invalidateConfigCache();
 }
 
-function isKnownUneditedBody(
+async function isKnownUneditedBody(
   entry: Record<string, unknown>,
   key: HatchEraProfileKey,
   convertibleProvider: LLMProvider | null,
   completionBase: LLMConfigBase | undefined,
-): boolean {
+): Promise<boolean> {
   if (typeof entry.model !== "string") {
     return false;
   }
@@ -427,10 +434,10 @@ function isKnownUneditedBody(
     delete normalizedEntry.provider_connection;
   }
   const body = comparableBody(
-    withCompletionBaked(normalizedEntry, completionBase),
+    await withCompletionBaked(normalizedEntry, completionBase),
   );
   const known = comparableBody(
-    withCompletionBaked(materialized, completionBase),
+    await withCompletionBaked(materialized, completionBase),
   );
   return hatchBodyVariants(known, key, copyProvider).some((variant) =>
     isDeepStrictEqual(body, variant),
@@ -509,14 +516,14 @@ function hatchBodyVariants(
  * copy compares equal too, since both sides normalize). A body completion
  * never touches is returned as-is.
  */
-function withCompletionBaked(
+async function withCompletionBaked(
   body: Record<string, unknown>,
   base: LLMConfigBase | undefined,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   if (base === undefined) {
     return body;
   }
-  return completedProfileBody(body, base) ?? body;
+  return (await completedProfileBody(body, base)) ?? body;
 }
 
 /**

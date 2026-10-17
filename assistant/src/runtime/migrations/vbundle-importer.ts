@@ -172,7 +172,9 @@ export interface ImportCommitOptions {
  * Existing files are backed up before being replaced. The bundle is
  * re-validated before any state mutation to prevent writing corrupt data.
  */
-export function commitImport(options: ImportCommitOptions): ImportCommitResult {
+export async function commitImport(
+  options: ImportCommitOptions,
+): Promise<ImportCommitResult> {
   const {
     archiveData,
     pathResolver,
@@ -244,11 +246,16 @@ export function commitImport(options: ImportCommitOptions): ImportCommitResult {
   // valid disk path. This prevents path-traversal entries (e.g.
   // "workspace/../../etc/passwd") from triggering a workspace purge while
   // resolving to nothing.
-  const hasWorkspaceEntries = manifest.contents.some(
-    (f) =>
-      policy.isWorkspaceNamespacedArchivePath(f.path) &&
-      !!pathResolver.resolve(f.path),
-  );
+  let hasWorkspaceEntries = false;
+  for (const f of manifest.contents) {
+    if (!policy.isWorkspaceNamespacedArchivePath(f.path)) {
+      continue;
+    }
+    if (await pathResolver.resolve(f.path)) {
+      hasWorkspaceEntries = true;
+      break;
+    }
+  }
 
   // Capture the target's credential metadata BEFORE the workspace clear
   // runs. Step 1b wipes `data/credentials/`, so reading live metadata
@@ -256,7 +263,7 @@ export function commitImport(options: ImportCommitOptions): ImportCommitResult {
   // helper needs this content to preserve the target's platform-identity
   // (`vellum:*`) entries across the overwrite.
   let liveCredentialMetadataJson: string | null = null;
-  const credentialMetadataDiskPath = pathResolver.resolve(
+  const credentialMetadataDiskPath = await pathResolver.resolve(
     policy.CREDENTIAL_METADATA_ARCHIVE_PATH,
   );
   if (credentialMetadataDiskPath && existsSync(credentialMetadataDiskPath)) {
@@ -325,7 +332,7 @@ export function commitImport(options: ImportCommitOptions): ImportCommitResult {
       continue;
     }
 
-    const diskPath = pathResolver.resolve(fileEntry.path);
+    const diskPath = await pathResolver.resolve(fileEntry.path);
 
     if (!diskPath) {
       // Unknown archive path — skip it. Retired-feature paths (see

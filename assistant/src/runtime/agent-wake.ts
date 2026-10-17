@@ -1456,9 +1456,9 @@ export async function wakeAgentForOpportunity(
      * system-prompt override (a subagent fork) resolves it verbatim, so this is
      * a no-op there.
      */
-    const syncWakeLoopSystemPrompt = (): void => {
+    const syncWakeLoopSystemPrompt = async (): Promise<void> => {
       try {
-        conversation.syncLoopSystemPrompt();
+        await conversation.syncLoopSystemPrompt();
       } catch (err) {
         // A prompt rebuild is a refinement, never a reason to lose the wake.
         log.warn(
@@ -1512,7 +1512,7 @@ export async function wakeAgentForOpportunity(
       desktopAutomationLease.releaseForConversation(conversationId);
       restoreWakeAllowedTools();
       clearWakePersonaOverride();
-      syncWakeLoopSystemPrompt();
+      void syncWakeLoopSystemPrompt();
     };
     const applyWakeAllowedTools = (): boolean => {
       if (!opts.allowedTools) {
@@ -1693,7 +1693,7 @@ export async function wakeAgentForOpportunity(
       // conversation that already ran a tool-gated turn would otherwise carry
       // that turn's `01-send-user-message` section while the pin above
       // withholds the tool.
-      syncWakeLoopSystemPrompt();
+      await syncWakeLoopSystemPrompt();
 
       let updatedHistory: Message[];
       try {
@@ -1787,7 +1787,7 @@ export async function wakeAgentForOpportunity(
         // The prompt is part of what the wake stamped, so restore it with the
         // rest rather than leaving the loop holding a wake-scoped prompt for
         // whatever runs next.
-        conversation.syncLoopSystemPrompt();
+        void syncWakeLoopSystemPrompt();
       }
 
       // The loop swallows provider rejections into a graceful no-output

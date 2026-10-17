@@ -1502,11 +1502,9 @@ export class SubagentManager {
     // table is the only way to take every retained row with the data it
     // belongs to.
     if (!this.shuttingDown && !opts?.keepRecords) {
-      try {
-        deleteAllSubagentRecords();
-      } catch (err) {
+      void deleteAllSubagentRecords().catch((err) => {
         log.warn({ err }, "Failed to delete subagent records");
-      }
+      });
     }
   }
 
@@ -1545,14 +1543,12 @@ export class SubagentManager {
     // reachable by parent. Shutdown keeps every row so in-flight children can
     // rehydrate as `interrupted` on the next boot.
     if (!this.shuttingDown && !opts?.keepRecords) {
-      try {
-        deleteSubagentRecordsByParent(parentConversationId);
-      } catch (err) {
+      void deleteSubagentRecordsByParent(parentConversationId).catch((err) => {
         log.warn(
           { parentConversationId, err },
           "Failed to delete subagent records for parent",
         );
-      }
+      });
     }
 
     return count;

@@ -147,10 +147,14 @@ class PostgresAsyncDb implements AsyncDb {
   async transaction<T>(cb: (tx: AsyncDb) => Promise<T>): Promise<T> {
     await this.ready();
     const result = await this.sql.begin((tx) => {
-      const txSql = tx as unknown as PgSql;
-      // Drizzle must be built over the transaction handle, not the pooled
-      // client: otherwise `tx.orm` would run on a different connection and
-      // cannot see the transaction's uncommitted rows or its locks.
+      // postgres.js transaction handles expose the same query methods as the
+      // client but omit `options`, which Drizzle's driver reads while building
+      // its session. Delegate to the transaction handle and borrow the base
+      // client's options so Drizzle and the raw helpers share one connection.
+      const baseOptions = (this.sql as unknown as { options: unknown }).options;
+      const txSql = Object.assign(Object.create(tx) as object, {
+        options: baseOptions,
+      }) as PgSql;
       const txOrm = drizzle(txSql, { schema: pgSchema }) as PgDrizzleDb;
       return cb(new PostgresAsyncDb(this.slot, txSql, this.url, null, txOrm));
     });

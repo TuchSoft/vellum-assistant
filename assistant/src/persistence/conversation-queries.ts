@@ -916,7 +916,7 @@ export async function countConversationSections(
           : undefined,
       ),
     )
-    .groupBy(effectiveChannel);
+    .groupBy(sql`1`);
 
   if (!splitAssistantInitiated) {
     return { groups, channels };

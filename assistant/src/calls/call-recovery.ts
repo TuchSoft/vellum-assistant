@@ -111,13 +111,13 @@ export async function reconcileCallsOnStartup(
             },
             "No-SID session past grace period — failing orphan session",
           );
-          updateCallSession(session.id, {
+          await updateCallSession(session.id, {
             status: "failed",
             endedAt: Date.now(),
             lastError:
               "Daemon restarted before provider SID persisted; grace period expired — orphan session failed",
           });
-          expirePendingQuestions(session.id);
+          await expirePendingQuestions(session.id);
         } else {
           // Recent session — webhooks carrying the SID may still arrive.
           // Leave in its current non-terminal state.
@@ -129,7 +129,7 @@ export async function reconcileCallsOnStartup(
             },
             "Skipping recent no-SID session (within grace period, webhooks may still arrive)",
           );
-          updateCallSession(session.id, {
+          await updateCallSession(session.id, {
             lastError:
               "Daemon restarted before provider SID persisted; awaiting webhook",
           });
@@ -147,12 +147,12 @@ export async function reconcileCallsOnStartup(
           { callSessionId: session.id, callSid: session.providerCallSid, err },
           "Failed to fetch provider status during recovery — failing call",
         );
-        updateCallSession(session.id, {
+        await updateCallSession(session.id, {
           status: "failed",
           endedAt: Date.now(),
           lastError: `Recovery: failed to fetch provider status: ${msg}`,
         });
-        expirePendingQuestions(session.id);
+        await expirePendingQuestions(session.id);
         continue;
       }
 
@@ -163,12 +163,12 @@ export async function reconcileCallsOnStartup(
           { callSessionId: session.id, providerStatus },
           "Unrecognised provider status during recovery — failing call",
         );
-        updateCallSession(session.id, {
+        await updateCallSession(session.id, {
           status: "failed",
           endedAt: Date.now(),
           lastError: `Recovery: unrecognised provider status '${providerStatus}'`,
         });
-        expirePendingQuestions(session.id);
+        await expirePendingQuestions(session.id);
         continue;
       }
 
@@ -178,11 +178,11 @@ export async function reconcileCallsOnStartup(
           { callSessionId: session.id, providerStatus, mappedStatus },
           "Provider reports call ended — transitioning to terminal state",
         );
-        updateCallSession(session.id, {
+        await updateCallSession(session.id, {
           status: mappedStatus,
           endedAt: Date.now(),
         });
-        expirePendingQuestions(session.id);
+        await expirePendingQuestions(session.id);
       } else {
         // Provider says call is still active — leave it for webhooks to handle
         log.info(

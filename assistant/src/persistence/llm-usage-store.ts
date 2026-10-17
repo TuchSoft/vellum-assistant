@@ -570,9 +570,9 @@ export async function getConversationUsageTotals(
     [conversationId],
   );
   return {
-    inputTokens: row?.total_input ?? 0,
-    outputTokens: row?.total_output ?? 0,
-    estimatedCost: row?.total_cost ?? 0,
+    inputTokens: Number(row?.total_input ?? 0),
+    outputTokens: Number(row?.total_output ?? 0),
+    estimatedCost: Number(row?.total_cost ?? 0),
   };
 }
 
@@ -596,7 +596,7 @@ export async function getUsageCostForConversationWindow({
     `,
     [conversationId, from, to],
   );
-  return row?.total_cost ?? 0;
+  return Number(row?.total_cost ?? 0);
 }
 
 /**
@@ -634,7 +634,7 @@ export async function getUsageCostForRun({
     `,
     params,
   );
-  return row?.total_cost ?? 0;
+  return Number(row?.total_cost ?? 0);
 }
 
 /**
@@ -685,14 +685,14 @@ export async function getUsageTotals(
     where.params,
   );
   return {
-    totalInputTokens: row?.total_input_tokens ?? 0,
-    totalOutputTokens: row?.total_output_tokens ?? 0,
-    totalCacheCreationTokens: row?.total_cache_creation_tokens ?? 0,
-    totalCacheReadTokens: row?.total_cache_read_tokens ?? 0,
-    totalEstimatedCostUsd: row?.total_estimated_cost_usd ?? 0,
-    eventCount: row?.event_count ?? 0,
-    pricedEventCount: row?.priced_event_count ?? 0,
-    unpricedEventCount: row?.unpriced_event_count ?? 0,
+    totalInputTokens: Number(row?.total_input_tokens ?? 0),
+    totalOutputTokens: Number(row?.total_output_tokens ?? 0),
+    totalCacheCreationTokens: Number(row?.total_cache_creation_tokens ?? 0),
+    totalCacheReadTokens: Number(row?.total_cache_read_tokens ?? 0),
+    totalEstimatedCostUsd: Number(row?.total_estimated_cost_usd ?? 0),
+    eventCount: Number(row?.event_count ?? 0),
+    pricedEventCount: Number(row?.priced_event_count ?? 0),
+    unpricedEventCount: Number(row?.unpriced_event_count ?? 0),
   };
 }
 
@@ -728,7 +728,7 @@ async function fetchRawBucketRows(
 ): Promise<UsageEventBucketRow[]> {
   const where = buildUsageAggregationWhere(range, filter);
   const db = requireMainDb();
-  return db.all<UsageEventBucketRow>(
+  const rows = await db.all<UsageEventBucketRow>(
     /*sql*/ `
     SELECT
       (created_at / ${USAGE_PREAGG_BUCKET_MS}) * ${USAGE_PREAGG_BUCKET_MS} AS created_at,
@@ -743,6 +743,14 @@ async function fetchRawBucketRows(
     `,
     where.params,
   );
+  return rows.map((row) => ({
+    ...row,
+    created_at: Number(row.created_at),
+    input_tokens: Number(row.input_tokens ?? 0),
+    output_tokens: Number(row.output_tokens ?? 0),
+    estimated_cost_usd: Number(row.estimated_cost_usd ?? 0),
+    llm_call_count: Number(row.llm_call_count ?? 0),
+  }));
 }
 
 /**
@@ -825,12 +833,12 @@ function mapGroupRow(
     group: row.group_label ?? displayUsageGroup(groupBy, row.group_key),
     groupId: row.group_id,
     ...(includeGroupKey ? { groupKey: row.group_key } : {}),
-    totalInputTokens: row.total_input_tokens,
-    totalOutputTokens: row.total_output_tokens,
-    totalCacheCreationTokens: row.total_cache_creation_tokens,
-    totalCacheReadTokens: row.total_cache_read_tokens,
-    totalEstimatedCostUsd: row.total_estimated_cost_usd ?? 0,
-    eventCount: row.event_count,
+    totalInputTokens: Number(row.total_input_tokens ?? 0),
+    totalOutputTokens: Number(row.total_output_tokens ?? 0),
+    totalCacheCreationTokens: Number(row.total_cache_creation_tokens ?? 0),
+    totalCacheReadTokens: Number(row.total_cache_read_tokens ?? 0),
+    totalEstimatedCostUsd: Number(row.total_estimated_cost_usd ?? 0),
+    eventCount: Number(row.event_count ?? 0),
     // Turns are only meaningful per conversation; other dimensions select no
     // turn_count column, so this collapses to null.
     turnCount: groupBy === "conversation" ? (row.turn_count ?? null) : null,
@@ -1041,9 +1049,21 @@ export async function getUsageGroupedSeries(
     );
   }
 
-  return bucketGroupedUsageEvents(rows, range, tz, {
-    ...options,
-    granularity,
-    groupBy,
-  });
+  return bucketGroupedUsageEvents(
+    rows.map((row) => ({
+      ...row,
+      created_at: Number(row.created_at),
+      input_tokens: Number(row.input_tokens ?? 0),
+      output_tokens: Number(row.output_tokens ?? 0),
+      estimated_cost_usd: Number(row.estimated_cost_usd ?? 0),
+      llm_call_count: Number(row.llm_call_count ?? 0),
+    })),
+    range,
+    tz,
+    {
+      ...options,
+      granularity,
+      groupBy,
+    },
+  );
 }

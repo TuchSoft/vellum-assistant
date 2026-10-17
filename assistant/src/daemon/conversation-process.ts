@@ -1254,12 +1254,12 @@ async function drainSingleMessage(
   // preference from text the user never typed.
   if (conversation.assistantId && !isHiddenMessageMetadata(next.metadata)) {
     extractPreferences(resolvedContent)
-      .then((result) => {
+      .then(async (result) => {
         if (!result.detected) {
           return;
         }
         for (const pref of result.preferences) {
-          createPreference({
+          await createPreference({
             preferenceText: pref.preferenceText,
             appliesWhen: pref.appliesWhen,
             priority: pref.priority,
@@ -1704,12 +1704,12 @@ async function drainBatch(
     // (including its hidden-row exclusion).
     if (conversation.assistantId && !isHiddenMessageMetadata(qm.metadata)) {
       extractPreferences(qmContent)
-        .then((result) => {
+        .then(async (result) => {
           if (!result.detected) {
             return;
           }
           for (const pref of result.preferences) {
-            createPreference({
+            await createPreference({
               preferenceText: pref.preferenceText,
               appliesWhen: pref.appliesWhen,
               priority: pref.priority,
@@ -2441,12 +2441,12 @@ export async function processMessage(
   // block the main conversation flow.
   if (conversation.assistantId) {
     extractPreferences(resolvedContent)
-      .then((result) => {
+      .then(async (result) => {
         if (!result.detected) {
           return;
         }
         for (const pref of result.preferences) {
-          createPreference({
+          await createPreference({
             preferenceText: pref.preferenceText,
             appliesWhen: pref.appliesWhen,
             priority: pref.priority,

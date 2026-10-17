@@ -10,8 +10,8 @@
 import { desc } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
-import { getDb } from "../persistence/db-connection.js";
-import { notificationPreferences } from "../persistence/schema/index.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 
 // ── Row type ────────────────────────────────────────────────────────────
 
@@ -24,8 +24,11 @@ export interface NotificationPreferenceRow {
   updatedAt: number;
 }
 
+type NotificationPreferenceTableRow =
+  SchemaTables["notificationPreferences"]["$inferSelect"];
+
 function rowToPreference(
-  row: typeof notificationPreferences.$inferSelect,
+  row: NotificationPreferenceTableRow,
 ): NotificationPreferenceRow {
   return {
     id: row.id,
@@ -55,10 +58,10 @@ export interface CreatePreferenceParams {
   priority?: number;
 }
 
-export function createPreference(
+export async function createPreference(
   params: CreatePreferenceParams,
-): NotificationPreferenceRow {
-  const db = getDb();
+): Promise<NotificationPreferenceRow> {
+  const db = requireMainDb();
   const now = Date.now();
 
   const row = {
@@ -70,21 +73,21 @@ export function createPreference(
     updatedAt: now,
   };
 
-  db.insert(notificationPreferences).values(row).run();
+  await db.orm.insert(db.schema.notificationPreferences).values(row);
 
   return row;
 }
 
 // ── List ────────────────────────────────────────────────────────────────
 
-export function listPreferences(): NotificationPreferenceRow[] {
-  const db = getDb();
+export async function listPreferences(): Promise<NotificationPreferenceRow[]> {
+  const db = requireMainDb();
+  const preferences = db.schema.notificationPreferences;
 
-  const rows = db
+  const rows = await db.orm
     .select()
-    .from(notificationPreferences)
-    .orderBy(desc(notificationPreferences.priority))
-    .all();
+    .from(preferences)
+    .orderBy(desc(preferences.priority));
 
   return rows.map(rowToPreference);
 }

@@ -989,7 +989,7 @@ export async function evaluateSignal(
   let resolvedPreferenceContext = preferenceContext;
   if (resolvedPreferenceContext === undefined) {
     try {
-      resolvedPreferenceContext = getPreferenceSummary() ?? undefined;
+      resolvedPreferenceContext = (await getPreferenceSummary()) ?? undefined;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       log.warn(

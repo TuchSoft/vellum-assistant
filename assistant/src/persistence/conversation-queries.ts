@@ -8,7 +8,6 @@ import {
   lt,
   sql,
 } from "drizzle-orm";
-import type { SQLiteSelect } from "drizzle-orm/sqlite-core";
 
 import {
   parseExternalContentEnvelope,
@@ -22,8 +21,8 @@ import { isLexicalBackfillComplete } from "./checkpoints.js";
 import { unseenAttentionStateConditions } from "./conversation-attention-store.js";
 import type { ConversationRow } from "./conversation-crud.js";
 import { parseConversation } from "./conversation-crud.js";
-import { ensureDisplayOrderMigration } from "./conversation-display-order-migration.js";
-import { ensureGroupMigration } from "./conversation-group-migration.js";
+import { ensureDisplayOrderMigrationAsync } from "./conversation-display-order-migration.js";
+import { ensureGroupMigrationAsync } from "./conversation-group-migration.js";
 import { searchMessageIdsLexical } from "./conversation-search-lexical.js";
 import {
   ASSISTANT_INITIATED_GROUP_ID,
@@ -33,7 +32,8 @@ import {
   PINNED_GROUP_ID,
   UNGROUPED_GROUP_ID,
 } from "./conversation-types.js";
-import { getDb } from "./db-connection.js";
+import type { SchemaTables } from "./db-facade.js";
+import { requireMainDb } from "./db-facade.js";
 import { tokenize } from "./embeddings/sparse-tokenize.js";
 import {
   parseContentRef,
@@ -43,12 +43,10 @@ import {
   countMessagesByRoleForConversations,
   latestUserMessageRawContent,
 } from "./message-reads.js";
-import { rawAll } from "./raw-query.js";
-import {
-  conversationAssistantAttentionState,
-  conversations,
-} from "./schema/index.js";
 import { projectPersistedRowText } from "./user-facing-content.js";
+
+type ConversationsTable = SchemaTables["conversations"];
+type AttentionStateTable = SchemaTables["conversationAssistantAttentionState"];
 
 const log = getLogger("conversation-store");
 
@@ -126,12 +124,15 @@ export type ArchiveStatusFilter = "active" | "archived" | "all";
  */
 export type ConversationListTypeFilter = ConversationType | "all";
 
-function archiveStatusClause(status: ArchiveStatusFilter) {
+function archiveStatusClause(
+  status: ArchiveStatusFilter,
+  conversationsTable: ConversationsTable,
+) {
   switch (status) {
     case "active":
-      return sql`${conversations.archivedAt} IS NULL`;
+      return sql`${conversationsTable.archivedAt} IS NULL`;
     case "archived":
-      return sql`${conversations.archivedAt} IS NOT NULL`;
+      return sql`${conversationsTable.archivedAt} IS NOT NULL`;
     case "all":
       return null;
   }
@@ -145,10 +146,11 @@ function archiveStatusClause(status: ArchiveStatusFilter) {
  * marked done rather than the day it was last written to. An active row has
  * no `archived_at`, so for every active listing this is plain message recency.
  *
- * SQLite's multi-argument `MAX` is NULL when any argument is, hence the
- * `COALESCE` on each side.
+ * `GREATEST` propagates NULL, hence the `COALESCE` on each side.
  */
-const lastActivitySql = sql`MAX(COALESCE(${conversations.lastMessageAt}, ${conversations.updatedAt}), COALESCE(${conversations.archivedAt}, 0))`;
+function lastActivitySql(conversationsTable: ConversationsTable) {
+  return sql`GREATEST(COALESCE(${conversationsTable.lastMessageAt}, ${conversationsTable.updatedAt}), COALESCE(${conversationsTable.archivedAt}, 0))`;
+}
 
 /**
  * Raw SQL predicate for "visible in the standard (Recents) listing".
@@ -343,8 +345,11 @@ function ungroupedSql(alias = "conversations"): string {
  * correct bucket. Subagent runs are excluded from the background/scheduled
  * buckets so the sidebar never surfaces them.
  */
-function conversationTypeClause(type: ConversationListTypeFilter) {
-  const notSubagent = sql`(${conversations.source} IS NULL OR ${conversations.source} != 'subagent')`;
+function conversationTypeClause(
+  type: ConversationListTypeFilter,
+  conversationsTable: ConversationsTable,
+) {
+  const notSubagent = sql`(${conversationsTable.source} IS NULL OR ${conversationsTable.source} != 'subagent')`;
   switch (type) {
     case "standard":
       // Surfaced rows (`surfaced_at IS NOT NULL`) are promoted into the
@@ -354,7 +359,7 @@ function conversationTypeClause(type: ConversationListTypeFilter) {
     case "background":
       return sql.raw(backgroundUmbrellaSql());
     case "scheduled":
-      return sql`(${conversations.conversationType} = 'scheduled' OR group_id = 'system:scheduled') AND ${notSubagent}`;
+      return sql`(${conversationsTable.conversationType} = 'scheduled' OR group_id = 'system:scheduled') AND ${notSubagent}`;
     case "all":
       /* `private` is excluded explicitly rather than left to the two arms.
          The standard arm already drops it everywhere, but the umbrella
@@ -478,11 +483,14 @@ function groupIdClause(groupId: string) {
  * Every other channel matches exactly. A row is claimed for a channel only by
  * that channel, so there is no ambiguity to be tolerant about.
  */
-function originChannelClause(originChannel: string) {
+function originChannelClause(
+  originChannel: string,
+  conversationsTable: ConversationsTable,
+) {
   if (originChannel === NATIVE_ORIGIN_CHANNEL) {
     return sql`(origin_channel IS NULL OR origin_channel = ${NATIVE_ORIGIN_CHANNEL})`;
   }
-  return eq(conversations.originChannel, originChannel);
+  return eq(conversationsTable.originChannel, originChannel);
 }
 
 /**
@@ -491,12 +499,17 @@ function originChannelClause(originChannel: string) {
  * "unseen" joins on this: the list and count filters, the unread count, and
  * the section index.
  */
-const attentionJoin = eq(
-  conversationAssistantAttentionState.conversationId,
-  conversations.id,
-);
+function attentionJoin(
+  conversationsTable: ConversationsTable,
+  attentionStateTable: AttentionStateTable,
+) {
+  return eq(attentionStateTable.conversationId, conversationsTable.id);
+}
 
-function conversationListWhere(filter: ConversationListFilter) {
+function conversationListWhere(
+  filter: ConversationListFilter,
+  conversationsTable: ConversationsTable,
+) {
   const {
     conversationType = "standard",
     archiveStatus = "active",
@@ -507,9 +520,11 @@ function conversationListWhere(filter: ConversationListFilter) {
     excludeAssistantInitiated,
   } = filter;
   return and(
-    conversationTypeClause(conversationType),
-    archiveStatusClause(archiveStatus) ?? undefined,
-    originChannel ? originChannelClause(originChannel) : undefined,
+    conversationTypeClause(conversationType, conversationsTable),
+    archiveStatusClause(archiveStatus, conversationsTable) ?? undefined,
+    originChannel
+      ? originChannelClause(originChannel, conversationsTable)
+      : undefined,
     groupId ? groupIdClause(groupId) : undefined,
     ...(needsAttention ? unseenAttentionStateConditions() : []),
     foregroundOnly ? sql.raw(notBackgroundVisibilitySql()) : undefined,
@@ -517,35 +532,16 @@ function conversationListWhere(filter: ConversationListFilter) {
   );
 }
 
-/**
- * The joins {@link conversationListWhere}'s predicates need, applied to a
- * list or count query over `conversations`. The attention predicate lives on
- * `conversation_assistant_attention_state`, so `needsAttention` joins it.
- * Inner, not left: a conversation with no
- * attention row has no unseen message by definition. Joined only when the
- * filter asks, so a query without the filter runs without the join and
- * lists every conversation the predicates admit. One place for both
- * {@link listConversations} and {@link countConversations}, so a page and
- * its total always describe the same set.
- */
-function withListFilterJoins<T extends SQLiteSelect>(
-  query: T,
-  filter: ConversationListFilter,
-) {
-  if (!filter.needsAttention) {
-    return query;
-  }
-  return query.innerJoin(conversationAssistantAttentionState, attentionJoin);
-}
-
-export function listConversations(
+export async function listConversations(
   query: ConversationListQuery = {},
-): ConversationRow[] {
-  ensureDisplayOrderMigration();
-  ensureGroupMigration();
-  const db = getDb();
+): Promise<ConversationRow[]> {
+  await ensureDisplayOrderMigrationAsync();
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const attentionState = db.schema.conversationAssistantAttentionState;
   const { limit, offset = 0, ...filter } = query;
-  const recency = desc(lastActivitySql);
+  const recency = desc(lastActivitySql(conversations));
   // `id` closes the ordering so the sort is a total order. Rows tied on every
   // preceding key would otherwise have no defined relative order, which
   // becomes duplicated and skipped rows once a cursor pages across a tie
@@ -558,17 +554,25 @@ export function listConversations(
   const tiebreak = desc(conversations.id);
   // Selecting the conversation columns explicitly keeps the row shape
   // `parseConversation` maps identical whether or not the attention join is
-  // present.
-  return withListFilterJoins(
-    db.select(getTableColumns(conversations)).from(conversations).$dynamic(),
-    filter,
-  )
-    .where(conversationListWhere(filter))
+  // present. The join is inner, not left, because a conversation with no
+  // attention row has no unseen message by definition; it is applied only
+  // when the filter asks, so a query without `needsAttention` lists every
+  // conversation the predicates admit.
+  const base = db.orm
+    .select(getTableColumns(conversations))
+    .from(conversations);
+  const joined = filter.needsAttention
+    ? base.innerJoin(
+        attentionState,
+        attentionJoin(conversations, attentionState),
+      )
+    : base;
+  const rows = await joined
+    .where(conversationListWhere(filter, conversations))
     .orderBy(recency, tiebreak)
     .limit(limit ?? 100)
-    .offset(offset)
-    .all()
-    .map(parseConversation);
+    .offset(offset);
+  return rows.map(parseConversation);
 }
 
 /**
@@ -596,12 +600,13 @@ export function listConversations(
  *                              older than this epoch-millis cursor (for
  *                              paginating into history).
  */
-export function listConversationsBySource(
+export async function listConversationsBySource(
   source: string,
   limit = 20,
   opts?: { includeArchived?: boolean; beforeCreatedAt?: number },
-): ConversationRow[] {
-  const db = getDb();
+): Promise<ConversationRow[]> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
   const includeArchived = opts?.includeArchived ?? true;
   const where = and(
     eq(conversations.source, source),
@@ -610,13 +615,12 @@ export function listConversationsBySource(
       ? lt(conversations.createdAt, opts.beforeCreatedAt)
       : undefined,
   );
-  const rows = db
+  const rows = await db.orm
     .select()
     .from(conversations)
     .where(where)
     .orderBy(desc(conversations.createdAt))
-    .limit(limit)
-    .all();
+    .limit(limit);
   return rows.map(parseConversation);
 }
 
@@ -635,21 +639,22 @@ export function listConversationsBySource(
  * @param conversationIds  Conversation ids to look up (empty → empty map).
  * @param role             Message role to count (default `"assistant"`).
  */
-export function getMessageRoleStatsByConversation(
+export async function getMessageRoleStatsByConversation(
   conversationIds: string[],
   role: string = "assistant",
-): Map<string, { count: number; lastAt: number }> {
-  return countMessagesByRoleForConversations(conversationIds, role);
+): Promise<Map<string, { count: number; lastAt: number }>> {
+  return await countMessagesByRoleForConversations(conversationIds, role);
 }
 
-export function listPinnedConversations(
+export async function listPinnedConversations(
   archiveStatus: ArchiveStatusFilter = "active",
-): ConversationRow[] {
-  ensureDisplayOrderMigration();
-  ensureGroupMigration();
-  const db = getDb();
-  const archiveCond = archiveStatusClause(archiveStatus);
-  const query = db
+): Promise<ConversationRow[]> {
+  await ensureDisplayOrderMigrationAsync();
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const archiveCond = archiveStatusClause(archiveStatus, conversations);
+  const rows = await db.orm
     .select()
     .from(conversations)
     .where(
@@ -665,8 +670,8 @@ export function listPinnedConversations(
         ...(archiveCond ? [archiveCond] : []),
       ),
     )
-    .orderBy(desc(lastActivitySql));
-  return query.all().map(parseConversation);
+    .orderBy(desc(lastActivitySql(conversations)));
+  return rows.map(parseConversation);
 }
 
 /**
@@ -696,26 +701,26 @@ export interface ConversationTitlePrefixRow {
  * (`PLAYGROUND_TITLE_PREFIX`) rather than user input. If callers ever pass
  * dynamic prefixes, switch to `ESCAPE '\\'` and pre-escape `%` / `_` / `\`.
  */
-export function listConversationsByTitlePrefix(
+export async function listConversationsByTitlePrefix(
   prefix: string,
-): ConversationTitlePrefixRow[] {
+): Promise<ConversationTitlePrefixRow[]> {
   interface Row {
     id: string;
     title: string;
     message_count: number;
     created_at: number;
   }
-  const rows = rawAll<Row>(
-    "conversation:listByTitlePrefix",
+  const db = requireMainDb();
+  const rows = await db.all<Row>(
     `SELECT c.id, c.title,
             -- Any-state count (streaming rows included): a list-surface size
             -- hint where a transient +1 during a live turn is immaterial.
             (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count,
             c.created_at
      FROM conversations c
-     WHERE c.title LIKE ? || '%' AND c.archived_at IS NULL
+     WHERE c.title LIKE ? AND c.archived_at IS NULL
      ORDER BY c.created_at DESC`,
-    prefix,
+    [`${prefix}%`],
   );
   return rows.map((r) => ({
     id: r.id,
@@ -731,17 +736,23 @@ export function listConversationsByTitlePrefix(
  * {@link conversationListWhere}, so a page and its total always describe the
  * same set.
  */
-export function countConversations(
+export async function countConversations(
   filter: ConversationListFilter = {},
-): number {
-  ensureGroupMigration();
-  const db = getDb();
-  const [{ total }] = withListFilterJoins(
-    db.select({ total: count() }).from(conversations).$dynamic(),
-    filter,
-  )
-    .where(conversationListWhere(filter))
-    .all();
+): Promise<number> {
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const attentionState = db.schema.conversationAssistantAttentionState;
+  const base = db.orm.select({ total: count() }).from(conversations);
+  const joined = filter.needsAttention
+    ? base.innerJoin(
+        attentionState,
+        attentionJoin(conversations, attentionState),
+      )
+    : base;
+  const [{ total }] = await joined.where(
+    conversationListWhere(filter, conversations),
+  );
   return total;
 }
 
@@ -771,22 +782,23 @@ export function countConversations(
  *   ({@link unseenAttentionStateConditions}); conversations without a
  *   projection row read as seen, hence the inner join.
  */
-export function countUnreadConversations(): number {
-  ensureGroupMigration();
-  const db = getDb();
-  const [{ total }] = db
+export async function countUnreadConversations(): Promise<number> {
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const attentionState = db.schema.conversationAssistantAttentionState;
+  const [{ total }] = await db.orm
     .select({ total: count() })
     .from(conversations)
-    .innerJoin(conversationAssistantAttentionState, attentionJoin)
+    .innerJoin(attentionState, attentionJoin(conversations, attentionState))
     .where(
       and(
-        conversationTypeClause("standard"),
+        conversationTypeClause("standard", conversations),
         isNull(conversations.archivedAt),
         sql.raw(notBackgroundVisibilitySql()),
         ...unseenAttentionStateConditions(),
       ),
-    )
-    .all();
+    );
   return total;
 }
 
@@ -845,11 +857,14 @@ export interface CountConversationSectionsOptions {
   splitAssistantInitiated?: boolean;
 }
 
-export function countConversationSections(
+export async function countConversationSections(
   options: CountConversationSectionsOptions = {},
-): ConversationSectionCounts {
-  ensureGroupMigration();
-  const db = getDb();
+): Promise<ConversationSectionCounts> {
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const attentionState = db.schema.conversationAssistantAttentionState;
+  const attentionJoinSql = attentionJoin(conversations, attentionState);
   const { splitAssistantInitiated = false } = options;
 
   /* `countUnreadConversations` gets the same effect with an INNER JOIN and
@@ -862,36 +877,35 @@ export function countConversationSections(
     ...unseenAttentionStateConditions(),
   )} THEN 1 ELSE 0 END)`;
 
-  const groups = db
+  const groups = await db.orm
     .select({
       groupId: sql<string>`group_id`,
       total: count(),
       unread,
     })
     .from(conversations)
-    .leftJoin(conversationAssistantAttentionState, attentionJoin)
+    .leftJoin(attentionState, attentionJoinSql)
     .where(
       and(
-        conversationTypeClause("standard"),
+        conversationTypeClause("standard", conversations),
         isNull(conversations.archivedAt),
         sql`(group_id = ${PINNED_GROUP_ID} OR (group_id IS NOT NULL AND group_id NOT LIKE 'system:%'))`,
       ),
     )
-    .groupBy(sql`group_id`)
-    .all();
+    .groupBy(sql`group_id`);
 
   const effectiveChannel = sql<string>`COALESCE(${conversations.originChannel}, ${NATIVE_ORIGIN_CHANNEL})`;
-  const channels = db
+  const channels = await db.orm
     .select({
       channel: effectiveChannel,
       total: count(),
       unread,
     })
     .from(conversations)
-    .leftJoin(conversationAssistantAttentionState, attentionJoin)
+    .leftJoin(attentionState, attentionJoinSql)
     .where(
       and(
-        conversationTypeClause("standard"),
+        conversationTypeClause("standard", conversations),
         isNull(conversations.archivedAt),
         groupIdClause(UNGROUPED_GROUP_ID),
         /* The split's other half. These rows are ungrouped and natively
@@ -902,8 +916,7 @@ export function countConversationSections(
           : undefined,
       ),
     )
-    .groupBy(effectiveChannel)
-    .all();
+    .groupBy(effectiveChannel);
 
   if (!splitAssistantInitiated) {
     return { groups, channels };
@@ -912,18 +925,17 @@ export function countConversationSections(
   /* Composed from the same predicates as the buckets above rather than
      restated, so this section's badge cannot drift from theirs: same standard
      listing visibility, same active-rows-only rule, same unread CASE. */
-  const [assistantInitiated] = db
+  const [assistantInitiated] = await db.orm
     .select({ total: count(), unread })
     .from(conversations)
-    .leftJoin(conversationAssistantAttentionState, attentionJoin)
+    .leftJoin(attentionState, attentionJoinSql)
     .where(
       and(
-        conversationTypeClause("standard"),
+        conversationTypeClause("standard", conversations),
         isNull(conversations.archivedAt),
         groupIdClause(ASSISTANT_INITIATED_GROUP_ID),
       ),
-    )
-    .all();
+    );
 
   return {
     groups,
@@ -943,8 +955,10 @@ export function countConversationSections(
  * message (i.e., not a real user-typed message). This is used by undo() to
  * determine if additional exchanges need to be deleted from the DB.
  */
-export function isLastUserMessageToolResult(conversationId: string): boolean {
-  const lastUserContent = latestUserMessageRawContent(conversationId);
+export async function isLastUserMessageToolResult(
+  conversationId: string,
+): Promise<boolean> {
+  const lastUserContent = await latestUserMessageRawContent(conversationId);
 
   if (lastUserContent === null) {
     return false;
@@ -1049,8 +1063,9 @@ export async function searchConversations(
     return [];
   }
 
-  ensureGroupMigration();
-  const db = getDb();
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
   const trimmed = query.trim();
   const limit = opts?.limit ?? 20;
   const maxMsgsPerConv = opts?.maxMessagesPerConversation ?? 3;
@@ -1118,15 +1133,14 @@ export async function searchConversations(
       // index, which filters finalized = 1 at index time, so an unfinalized
       // row cannot be a candidate. Do not copy this shape for id sets with
       // different provenance.
-      const visibleRows = rawAll<CandidateRow>(
-        "conversation:searchConversations:visibleCandidates",
+      const visibleRows = await db.all<CandidateRow>(
         `
         SELECT m.id, m.conversation_id
         FROM messages m
         JOIN conversations c ON c.id = m.conversation_id
         WHERE ${whereClauses.join(" AND ")}
       `,
-        ...candidateIds,
+        candidateIds,
       );
       const visibleConvByMessageId = new Map<string, string>();
       for (const row of visibleRows) {
@@ -1186,11 +1200,10 @@ export async function searchConversations(
   if (!opts?.includeArchived) {
     titleConditions.push(sql`${conversations.archivedAt} IS NULL`);
   }
-  const titleMatchConvs = db
+  const titleMatchConvs = await db.orm
     .select({ id: conversations.id })
     .from(conversations)
-    .where(and(...titleConditions))
-    .all();
+    .where(and(...titleConditions));
   for (const row of titleMatchConvs) {
     contentConvIds.add(row.id);
   }
@@ -1207,14 +1220,12 @@ export async function searchConversations(
     title: string | null;
     updated_at: number;
   }
-  const matchingConversations = rawAll<ConvRow>(
-    "conversation:searchConversations:matchingConversations",
+  const matchingConversations = await db.all<ConvRow>(
     `SELECT id, title, updated_at FROM conversations
      WHERE id IN (${placeholders})
      ORDER BY updated_at DESC
      LIMIT ?`,
-    ...convIds,
-    limit,
+    [...convIds, limit],
   );
 
   if (matchingConversations.length === 0) {
@@ -1236,8 +1247,7 @@ export async function searchConversations(
       const candidateIds = qdrantCandidatesByConv?.get(conv.id) ?? [];
       if (candidateIds.length > 0) {
         const msgPlaceholders = candidateIds.map(() => "?").join(",");
-        matchingMsgs = rawAll<ConversationSearchMsgRow>(
-          "conversation:searchConversations:matchingMessages",
+        matchingMsgs = await db.all<ConversationSearchMsgRow>(
           `
           SELECT id, role, content, created_at, metadata
           FROM messages
@@ -1245,9 +1255,7 @@ export async function searchConversations(
           ORDER BY created_at ASC
           LIMIT ?
         `,
-          conv.id,
-          ...candidateIds,
-          maxMsgsPerConv,
+          [conv.id, ...candidateIds, maxMsgsPerConv],
         );
       }
     }

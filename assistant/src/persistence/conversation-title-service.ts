@@ -134,17 +134,21 @@ export function deriveDeterministicTitle(context: TitleContext): string {
  * broadcast so connected clients converge. Returns the title the conversation
  * carries once it settles, and whether this call is what set it.
  */
-export function applyDeterministicTitleIfReplaceable(
+export async function applyDeterministicTitleIfReplaceable(
   conversationId: string,
   title: string,
-): { title: string; updated: boolean } {
-  const conversation = getConversation(conversationId);
+): Promise<{ title: string; updated: boolean }> {
+  const conversation = await getConversation(conversationId);
   if (conversation && !isReplaceableTitle(conversation.title)) {
     return { title: conversation.title!, updated: false };
   }
   const cleaned =
     truncateTitle(title.replace(/\s+/g, " ").trim()) || UNTITLED_FALLBACK;
-  updateConversationTitle(conversationId, cleaned, AUTO_TITLE_DETERMINISTIC);
+  await updateConversationTitle(
+    conversationId,
+    cleaned,
+    AUTO_TITLE_DETERMINISTIC,
+  );
   publishConversationTitleChanged(conversationId, cleaned);
   return { title: cleaned, updated: true };
 }
@@ -188,7 +192,7 @@ export async function generateAndPersistConversationTitle(
   } = params;
 
   // Check current title is replaceable
-  const conversation = getConversation(conversationId);
+  const conversation = await getConversation(conversationId);
   if (conversation && !canReplaceTitle(conversation)) {
     return { title: conversation.title!, updated: false };
   }
@@ -203,14 +207,14 @@ export async function generateAndPersistConversationTitle(
   // image-only turn submits an empty prompt, and the forced title tool makes
   // the model fabricate a topic rather than decline.
   if (prompt.trim() === "") {
-    return settleForDeterministicTitle(conversationId, context);
+    return await settleForDeterministicTitle(conversationId, context);
   }
 
   const provider =
     params.provider ?? (await getConfiguredProvider("conversationTitle"));
   if (!provider) {
     logRetryableFallback(params, "no_provider");
-    return settleForDeterministicTitle(conversationId, context);
+    return await settleForDeterministicTitle(conversationId, context);
   }
 
   const { title, groupId, confidence } = await callTitleLabelLLM(
@@ -222,12 +226,12 @@ export async function generateAndPersistConversationTitle(
   );
   if (title) {
     // Re-check replaceability before persisting (race guard)
-    const current = getConversation(conversationId);
+    const current = await getConversation(conversationId);
     if (current && !canReplaceTitle(current)) {
       return { title: current.title!, updated: false };
     }
 
-    updateConversationTitle(conversationId, title, AUTO_TITLE_LLM);
+    await updateConversationTitle(conversationId, title, AUTO_TITLE_LLM);
     publishConversationTitleChanged(conversationId, title);
     log.info({ conversationId, title }, "Auto-generated conversation title");
     await maybeAssignConversationGroup(conversationId, groupId, confidence);
@@ -235,7 +239,7 @@ export async function generateAndPersistConversationTitle(
   }
 
   logRetryableFallback(params, "empty_output");
-  return settleForDeterministicTitle(conversationId, context);
+  return await settleForDeterministicTitle(conversationId, context);
 }
 
 /**
@@ -246,11 +250,11 @@ export async function generateAndPersistConversationTitle(
  * (a background job's bootstrap title) is not, which is why this defers to
  * `applyDeterministicTitleIfReplaceable` rather than writing directly.
  */
-function settleForDeterministicTitle(
+async function settleForDeterministicTitle(
   conversationId: string,
   context: TitleContext | undefined,
-): { title: string; updated: boolean } {
-  return applyDeterministicTitleIfReplaceable(
+): Promise<{ title: string; updated: boolean }> {
+  return await applyDeterministicTitleIfReplaceable(
     conversationId,
     deriveFallbackTitle(context) ?? UNTITLED_FALLBACK,
   );
@@ -289,18 +293,18 @@ export function queueGenerateConversationTitle(
     .withLock(async () => {
       await generateAndPersistConversationTitle(params);
     })
-    .catch((err) => {
+    .catch(async (err) => {
       log.warn(
         retryableFallbackLogFields(params, "generation_error", err),
         "Conversation title generation used retryable fallback",
       );
       // Replace loading placeholder with a retryable fallback.
       try {
-        const conversation = getConversation(params.conversationId);
+        const conversation = await getConversation(params.conversationId);
         if (conversation && isReplaceableTitle(conversation.title)) {
           const fallback =
             deriveFallbackTitle(params.context) ?? UNTITLED_FALLBACK;
-          updateConversationTitle(
+          await updateConversationTitle(
             params.conversationId,
             fallback,
             AUTO_TITLE_DETERMINISTIC,
@@ -344,7 +348,7 @@ export async function regenerateConversationTitle(
   const { conversationId, onlyIfReplaceable, allowGroupAssignment, signal } =
     params;
 
-  const conversation = getConversation(conversationId);
+  const conversation = await getConversation(conversationId);
   if (!conversation || !conversation.isAutoTitle) {
     return { title: conversation?.title ?? UNTITLED_FALLBACK, updated: false };
   }
@@ -358,7 +362,7 @@ export async function regenerateConversationTitle(
     return { title: conversation.title ?? UNTITLED_FALLBACK, updated: false };
   }
 
-  const allMessages = getMessages(conversationId);
+  const allMessages = await getMessages(conversationId);
   const recentMessages = allMessages.slice(-3);
   if (recentMessages.length === 0) {
     return { title: conversation.title ?? UNTITLED_FALLBACK, updated: false };
@@ -384,7 +388,7 @@ export async function regenerateConversationTitle(
   );
   if (title) {
     // Re-check isAutoTitle before persisting (race guard against manual rename)
-    const current = getConversation(conversationId);
+    const current = await getConversation(conversationId);
     if (
       !current ||
       !current.isAutoTitle ||
@@ -393,7 +397,7 @@ export async function regenerateConversationTitle(
       return { title: current?.title ?? UNTITLED_FALLBACK, updated: false };
     }
 
-    updateConversationTitle(conversationId, title, AUTO_TITLE_LLM);
+    await updateConversationTitle(conversationId, title, AUTO_TITLE_LLM);
     publishConversationTitleChanged(conversationId, title);
     log.info(
       { conversationId, title },
@@ -600,7 +604,7 @@ async function maybeAssignConversationGroup(
       );
       return;
     }
-    const meta = getDisplayMetaForConversations([conversationId]).get(
+    const meta = (await getDisplayMetaForConversations([conversationId])).get(
       conversationId,
     );
     const currentGroupId = meta?.groupId ?? null;
@@ -611,7 +615,9 @@ async function maybeAssignConversationGroup(
       );
       return;
     }
-    batchSetConversationPlacement([{ id: conversationId, groupId: group.id }]);
+    await batchSetConversationPlacement([
+      { id: conversationId, groupId: group.id },
+    ]);
     publishConversationListAndMetadataChanged("reordered", [conversationId]);
     log.info(
       { conversationId, groupId: group.id, groupName: group.name, confidence },
@@ -694,9 +700,7 @@ function titleGenerationLogFields(params: GenerateTitleParams) {
 }
 
 type TitleGenerationFallbackReason =
-  | "no_provider"
-  | "empty_output"
-  | "generation_error";
+  "no_provider" | "empty_output" | "generation_error";
 
 function retryableFallbackLogFields(
   params: GenerateTitleParams,

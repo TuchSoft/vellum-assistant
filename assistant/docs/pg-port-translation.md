@@ -1,30 +1,37 @@
 # SQLite to Postgres construct translation
 
-The mechanical guide for porting a data-layer slice from SQLite to Postgres
-behind the `AsyncDb` facade (`assistant/src/persistence/db-facade.ts`). Apply
-these rules at each call site; where a row is not mechanical, the call site is
-flagged for review (see the work-package plan in the WS-08 report).
+The mechanical guide for porting a data-layer slice from the legacy SQLite
+accessors to the Postgres-only `AsyncDb` facade
+(`assistant/src/persistence/db-facade.ts`). The facade has a single backend, so
+this map is what a call site written against `bun:sqlite` has to change. The
+legacy synchronous helpers still exist for the slices that have not been ported
+and are removed as each slice converts.
 
 ## Calling convention
 
-1. Replace the synchronous accessor with the async facade and add `await`:
-   - `getSqlite()` / `getSqliteFrom(db)` for reads and writes -> `getAsyncDb()`
-     (`getLogsSqlite` -> `getLogsAsyncDb`, `getMemorySqlite` -> `getMemoryAsyncDb`,
-     `getTelemetrySqlite` -> `getTelemetryAsyncDb`).
+1. Replace the synchronous accessor with the facade and add `await`:
+   - `getSqlite()` / `getSqliteFrom(db)` -> `getAsyncDb()`, or `requireMainDb()`
+     when every operation needs the connection (it throws instead of returning
+     `null`).
+   - `getMemorySqlite` -> `getMemoryAsyncDb`; `getTelemetrySqlite` ->
+     `getTelemetryAsyncDb`. Both resolve the shared Postgres database. The
+     `logs` slot is ClickHouse and is not served by the facade.
    - `rawGet/rawAll/rawRun/rawExec` -> `rawGetAsync/rawAllAsync/rawRunAsync/rawExecAsync`
-     (same label-first signature). The `rawMemory*/rawLogs*/rawTelemetry*` helpers
-     have `*Async` counterparts.
+     (same label-first signature). `rawMemory*Async` / `rawTelemetry*Async`
+     cover the dedicated rows.
    - `getTelemetryDb()` returning a Drizzle instance -> `getTelemetryAsyncDb()`
      returning a facade; the Drizzle root is `facade.orm` and its terminal calls
      must be awaited.
-2. Facade accessors return `null` when the connection is unavailable (same
-   degraded-mode posture as the dedicated `get*Db()` accessors). Keep the
+2. Facade accessors return `null` when `VELLUM_DATABASE_URL` is unset or blank
+   (same degraded-mode posture as the dedicated `get*Db()` accessors). Keep the
    existing `if (!db) return ...` branches.
-3. Drizzle query builders are thenable on both the SQLite and Postgres drivers,
-   so `await db.orm.select()...` is portable. The terminal methods that differ
-   per driver - `.all()` / `.get()` / `.run()` exist only on the SQLite builder -
-   are **not** portable; use `await` on the builder, or the facade's
-   `all`/`get`/`run` for raw SQL.
+3. Drizzle query builders are thenable, so `await db.orm.select()...` is the
+   query path. The old `.all()` / `.get()` / `.run()` terminals belong to the
+   `bun:sqlite` driver and are not part of the builder API; use `await` on the
+   builder, or the facade's `all`/`get`/`run` for raw SQL.
+4. `AsyncDb.orm` is the Postgres Drizzle instance and `AsyncDb.schema` is the
+   `pg-schema/` barrel, so the table objects a query uses come from the same
+   dialect as the connection.
 
 ## SQL constructs
 
@@ -57,10 +64,10 @@ flagged for review (see the work-package plan in the WS-08 report).
 
 ## Notes for the Postgres backend
 
-1. Positional placeholders: the facade accepts `?` and the Postgres backend
-   rewrites them to `$1..$n`.
+1. Positional placeholders: the facade accepts `?` and the backend rewrites
+   them to `$1..$n`.
 2. `bigint` values: `postgres.js` returns `int8` as a string by default; the
-   backend must register an `int8` parser that returns a JS number so epoch-ms
-   columns behave identically to SQLite.
-3. Multi-row `INSERT ... VALUES (...), (...)` is supported by both drivers; an
-   explicit transaction is unnecessary because a single statement is atomic.
+   backend registers an `int8` parser that returns a JS number so epoch-ms
+   columns behave like the legacy `INTEGER` columns.
+3. Multi-row `INSERT ... VALUES (...), (...)` is atomic in one statement; wraps
+   that combine several statements use `db.transaction`.

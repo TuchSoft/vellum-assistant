@@ -3,8 +3,8 @@
  *
  * Mirrors the shape of the SQLite runner (`persistence/migrations/run-migrations.ts`):
  * an ordered step list, a durable ledger so an already-applied step is skipped,
- * and per-step `down` for rollback. It runs on the `AsyncDb` facade, so it works
- * against the Postgres backend (and the SQLite one, which the tests use).
+ * and per-step `down` for rollback. It runs on the `AsyncDb` facade, so the
+ * same runner works against the Postgres backend the facade exposes.
  *
  * The ledger lives in its own table (`pg_schema_migrations`) on the target
  * database, independent of the SQLite `memory_checkpoints` bookkeeping.

@@ -7,7 +7,7 @@ How the Postgres schema is created and evolved for the DB port. Complements
 
 | Piece         | Path                                                  | Role                                                                                                                                 |
 | ------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Schema mirror | `src/persistence/pg-schema/`                          | `pgTable` definitions, structurally identical to `src/persistence/schema/`; the ORM source of truth on Postgres                      |
+| Schema mirror | `src/persistence/pg-schema/`                          | `pgTable` definitions, structurally identical to `src/persistence/schema/`; the ORM source of truth (`AsyncDb.schema`)               |
 | Introspection | `src/persistence/pg-migrations/sqlite-model.ts`       | reads the _effective_ schema of the live SQLite files (`sqlite_master` + `PRAGMA table_info/index_list/index_info/foreign_key_list`) |
 | Translator    | `src/persistence/pg-migrations/baseline.ts`           | neutral model -> idempotent Postgres DDL                                                                                             |
 | Baseline      | `src/persistence/pg-migrations/baseline.generated.ts` | generated, committed                                                                                                                 |
@@ -69,5 +69,10 @@ baseline phase ends, after which generate emits deltas only.
   gated on `VELLUM_PG_TEST_URL`: the baseline applies to an empty database,
   is idempotent, excludes the log tables, round-trips a synthetic SQLite schema,
   and the runner applies + rolls back.
+- `src/__tests__/pg-test-db.ts` — the shared test bootstrap. When
+  `VELLUM_PG_TEST_URL` is set, every test process gets its own schema, the
+  generated baseline is applied there, and `VELLUM_DATABASE_URL` points at it.
+  The conformance suites (`*-postgres.test.ts`) gate their `describe` on
+  `describePg` from this module; with the variable unset they skip.
 - `src/persistence/__tests__/pg-schema-mirror.test.ts` — the `pg-schema` mirror
   stays structurally identical to `schema/`.

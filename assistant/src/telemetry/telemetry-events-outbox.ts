@@ -1,14 +1,12 @@
 /**
- * Generic `telemetry_events` outbox on the dedicated telemetry database
- * (`assistant-telemetry.db`). Rows carry the full wire `TelemetryEvent` built
- * at record time and are deleted after a successful flush.
- * `recordTelemetryOutboxEvent` is the consent-owning record layer; the
- * storage seam functions carry no consent logic — their call sites own
- * gating.
+ * Generic `telemetry_events` outbox on the `telemetry` slot (the shared
+ * Postgres database). Rows carry the full wire `TelemetryEvent` built at record
+ * time and are deleted after a successful flush. `recordTelemetryOutboxEvent`
+ * is the consent-owning record layer; the storage seam functions carry no
+ * consent logic - their call sites own gating.
  *
  * All access goes through the async `AsyncDb` facade with positional `?`
- * placeholders, so the slice runs unchanged on the SQLite and Postgres
- * backends (see `docs/pg-port-translation.md`).
+ * placeholders (see `docs/pg-port-translation.md`).
  */
 import { v4 as uuid } from "uuid";
 

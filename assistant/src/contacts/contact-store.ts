@@ -25,16 +25,16 @@ type ContactChannelRow = SchemaTables["contactChannels"]["$inferSelect"];
 type AssistantMetadataRow =
   SchemaTables["assistantContactMetadata"]["$inferSelect"];
 
-/** Strip LIKE metacharacters so user input is matched literally.
- * Both SQLite and Postgres treat `%` and `_` as wildcards in LIKE. */
+/** Strip LIKE metacharacters so user input is matched literally. */
 function escapeLike(value: string): string {
   return value.replace(/%/g, "").replace(/_/g, "");
 }
 
 /**
  * Find the first contact_channels row whose (type, address) matches.
- * `lower(...)` catches legacy lowercased rows (pre-migration 290) on both
- * dialects; SQLite's `COLLATE NOCASE` has no Postgres equivalent.
+ * `lower(...)` makes the comparison case-insensitive without depending on a
+ * column collation, and matches the legacy lowercased rows (pre-migration
+ * 290).
  */
 async function findConflictingChannel(
   db: AsyncDb,

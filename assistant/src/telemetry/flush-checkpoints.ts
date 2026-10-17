@@ -1,18 +1,16 @@
 import { getTelemetryAsyncDb } from "../persistence/db-facade.js";
 
 /**
- * Telemetry flush state — the per-event-type watermark cursors the usage
+ * Telemetry flush state - the per-event-type watermark cursors the usage
  * telemetry reporter advances after each successful upload. Backed by the
- * `flush_checkpoints` table on the dedicated telemetry database
- * (`assistant-telemetry.db`); the main DB's `memory_checkpoints` ledger is
- * reserved for DB-migration checkpoints.
+ * `flush_checkpoints` table on the `telemetry` slot (the shared Postgres
+ * database); the main DB's `memory_checkpoints` ledger is reserved for
+ * DB-migration checkpoints.
  *
- * All access goes through the async `AsyncDb` facade, so the store runs
- * unchanged on the SQLite and Postgres backends. Reads and writes are
- * no-op/null when the telemetry DB cannot be opened at all. Callers that must
- * not mistake an unreadable store for "no watermark" (which would re-ship
- * history from cursor 0) should gate on
- * {@link isFlushCheckpointStoreAvailable} first.
+ * All access goes through the async `AsyncDb` facade. Reads and writes are
+ * no-op/null when the slot cannot be opened at all. Callers that must not
+ * mistake an unreadable store for "no watermark" (which would re-ship history
+ * from cursor 0) should gate on {@link isFlushCheckpointStoreAvailable} first.
  */
 
 /** True when the telemetry DB connection is open. */

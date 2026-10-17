@@ -91,7 +91,7 @@ export async function executeRunWorkflow(
     // The schema fills defaults (empty arrays, persona:false) for omitted
     // fields and throws (caught below) on a malformed `capabilities` object.
     const manifest = CapabilityManifestSchema.parse(input.capabilities ?? {});
-    const { runId } = getWorkflowRunManager().start({
+    const { runId } = await getWorkflowRunManager().start({
       ...(script != null ? { scriptSource: script } : { name: name as string }),
       args,
       manifest,

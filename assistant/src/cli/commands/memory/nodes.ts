@@ -229,7 +229,7 @@ export function registerMemoryNodesCommand(memory: Command): void {
         >,
       ]);
 
-      const result = handleStatsMemory(getConfig());
+      const result = await handleStatsMemory(getConfig());
 
       if (!result.success) {
         log.error(result.message);

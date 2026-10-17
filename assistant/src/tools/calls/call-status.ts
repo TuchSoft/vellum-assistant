@@ -26,7 +26,7 @@ export async function executeCallStatus(
   }
   const callSessionId = parsedInput.data.call_session_id;
 
-  const result = getCallStatus(callSessionId, context.conversationId);
+  const result = await getCallStatus(callSessionId, context.conversationId);
 
   if (!result.ok) {
     // When no active call is found and no specific ID was requested, it's not an error

@@ -314,7 +314,7 @@ async function buildWorkspaceSection(
   try {
     const { buildActiveDocuments } =
       await import("../daemon/conversation-runtime-assembly.js");
-    const docs = buildActiveDocuments(conversationId);
+    const docs = await buildActiveDocuments(conversationId);
     if (docs && docs.length > 0) {
       const titles = docs
         .slice(0, 20)

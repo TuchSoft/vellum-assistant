@@ -1034,7 +1034,7 @@ export async function runDueSchedulesOnce(
           },
           "Triggering workflow schedule",
         );
-        const { runId: workflowRunId } = getWorkflowRunManager().start({
+        const { runId: workflowRunId } = await getWorkflowRunManager().start({
           name: job.workflowName,
           args: job.workflowArgs ?? {},
           // Where the completion summary is delivered (an agent wake). Prefer an
@@ -1053,8 +1053,8 @@ export async function runDueSchedulesOnce(
           manifest: normalizeCapabilityManifest(job.capabilities),
           trustContext: INTERNAL_GUARDIAN_TRUST_CONTEXT,
         });
-        // `start` launches the run fire-and-forget and returns synchronously;
-        // a successful trigger is recorded as ok. Workflow completion/failure
+        // `start` resolves once the run is launched; a successful trigger is
+        // recorded as ok. Workflow completion/failure
         // is surfaced out-of-band via workflow events and the completion wake.
         await completeScheduleRun(runId, {
           status: "ok",

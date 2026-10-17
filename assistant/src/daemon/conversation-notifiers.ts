@@ -112,20 +112,23 @@ export function registerConversationNotifiers(
     },
   );
 
-  registerCallCompletionNotifier(conversationId, (callSessionId: string) => {
-    const summaryText = buildCallCompletionMessage(callSessionId);
+  registerCallCompletionNotifier(
+    conversationId,
+    async (callSessionId: string) => {
+      const summaryText = await buildCallCompletionMessage(callSessionId);
 
-    ctx.emit({
-      type: "assistant_text_delta",
-      text: summaryText,
-      conversationId: conversationId,
-    });
-    ctx.emit({
-      type: "message_complete",
-      conversationId: conversationId,
-      source: "aux",
-    });
-  });
+      ctx.emit({
+        type: "assistant_text_delta",
+        text: summaryText,
+        conversationId: conversationId,
+      });
+      ctx.emit({
+        type: "message_complete",
+        conversationId: conversationId,
+        source: "aux",
+      });
+    },
+  );
 }
 
 /**

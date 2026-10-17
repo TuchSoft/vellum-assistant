@@ -73,7 +73,7 @@ export async function executeManageWorkflows(
           isError: true,
         };
       }
-      const run = manager.status(runId);
+      const run = await manager.status(runId);
       if (!run || !ownsRun(run)) {
         return {
           content: JSON.stringify({ runId, found: false }),
@@ -104,7 +104,7 @@ export async function executeManageWorkflows(
       // `status` omits it to stay lightweight, so this action returns it in
       // full. The completion-summary wake truncates large results and points
       // the assistant here for the complete value.
-      const run = manager.status(runId);
+      const run = await manager.status(runId);
       if (!run || !ownsRun(run)) {
         return {
           content: JSON.stringify({ runId, found: false }),
@@ -130,7 +130,7 @@ export async function executeManageWorkflows(
       }
       // Only signal a run the caller owns. A non-owned (or absent) run is a
       // no-op with the same response shape, so existence is never revealed.
-      const run = manager.status(runId);
+      const run = await manager.status(runId);
       if (run && ownsRun(run)) {
         manager.abort(runId);
       }
@@ -152,7 +152,7 @@ export async function executeManageWorkflows(
       throwIfCancelled(context);
       // Don't resume — or reveal — a run the caller doesn't own; mirror
       // resume()'s own not-found message.
-      const run = manager.status(runId);
+      const run = await manager.status(runId);
       if (!run || !ownsRun(run)) {
         return {
           content: `Failed to resume workflow: Workflow run ${runId} not found.`,
@@ -160,7 +160,7 @@ export async function executeManageWorkflows(
         };
       }
       try {
-        const { runId: resumedId } = manager.resume(runId);
+        const { runId: resumedId } = await manager.resume(runId);
         return {
           content: JSON.stringify({
             runId: resumedId,
@@ -181,7 +181,7 @@ export async function executeManageWorkflows(
       }
     }
     case "list_runs": {
-      const runs = manager.list().filter(ownsRun);
+      const runs = (await manager.list()).filter(ownsRun);
       return {
         content: JSON.stringify({
           runs: runs.map((r) => ({

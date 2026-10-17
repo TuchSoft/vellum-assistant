@@ -191,7 +191,7 @@ export async function runDaemon(): Promise<void> {
   // are gated on DB readiness, not on the config-shaping steps further down,
   // so a fast-reconnecting client could otherwise resolve a turn against a
   // partial profile in the window between readiness and the post-overlay
-  // ensure call below. Sync, DB-free, and idempotent. Skipped when an
+  // ensure call below. Idempotent. Skipped when an
   // unconsumed onboarding overlay is pending: the overlay can rewrite the
   // llm config later this boot, and baking against the pre-overlay default
   // would pin the wrong baseline — on that single boot (a fresh hatch, with
@@ -200,7 +200,7 @@ export async function runDaemon(): Promise<void> {
   // subsequent boot takes this early pass.
   if (!hasPendingDefaultWorkspaceConfig()) {
     try {
-      ensureCompleteCustomProfiles(getWorkspaceDir());
+      await ensureCompleteCustomProfiles(getWorkspaceDir());
     } catch (err) {
       log.warn(
         { err },
@@ -618,7 +618,7 @@ export async function runDaemon(): Promise<void> {
   // custom profile. See workspace/custom-profile-ensure.ts for why this is
   // an ensure pass rather than a workspace migration.
   try {
-    ensureCompleteCustomProfiles(getWorkspaceDir());
+    await ensureCompleteCustomProfiles(getWorkspaceDir());
     log.info("Custom profile materialization ensure pass complete");
   } catch (err) {
     log.warn(
@@ -778,7 +778,7 @@ export async function runDaemon(): Promise<void> {
   // resume. Status only — accounting counters are preserved. Never blocks
   // startup on failure.
   try {
-    const reconciled = getWorkflowRunManager().reconcileOrphanedRuns();
+    const reconciled = await getWorkflowRunManager().reconcileOrphanedRuns();
     if (reconciled > 0) {
       log.info(
         { reconciled },
@@ -798,7 +798,8 @@ export async function runDaemon(): Promise<void> {
   // not auto-resume). Mirrors the workflow-run reconciliation above; never
   // blocks startup, and runs before the scheduler so no new spawn races it.
   try {
-    const { rehydrated, interrupted } = getSubagentManager().rehydrateFromDb();
+    const { rehydrated, interrupted } =
+      await getSubagentManager().rehydrateFromDb();
     if (rehydrated > 0) {
       log.info(
         { rehydrated, interrupted },

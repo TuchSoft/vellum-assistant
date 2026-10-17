@@ -39,7 +39,12 @@ export interface RecoveryStep {
 
 const RECOVERY_STEPS: RecoveryStep[] = [
   { name: "clear-stale-processing", run: clearStaleProcessing },
-  { name: "inflight-content", run: recoverInflightContent },
+  {
+    name: "inflight-content",
+    run: async () => {
+      await recoverInflightContent();
+    },
+  },
   { name: "orphaned-channel-events", run: recoverOrphanedChannelEvents },
   { name: "stranded-delivery-events", run: recoverStrandedDeliveryEvents },
 ];

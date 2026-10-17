@@ -18,7 +18,7 @@ export async function hasAutoArchiveBlockingWork(
     (conversation?.pendingStandaloneSurfaces.size ?? 0) > 0 ||
     hasPendingTurnFinalization(conversationId) ||
     getByConversation(conversationId).length > 0 ||
-    hasPendingBackgroundWork(conversationId)
+    (await hasPendingBackgroundWork(conversationId))
   ) {
     return true;
   }

@@ -238,18 +238,18 @@ function parseStatus(
     : undefined;
 }
 
-function handleListRuns(queryParams: Record<string, string>) {
+async function handleListRuns(queryParams: Record<string, string>) {
   const limit = parseLimit(queryParams.limit);
   const status = parseStatus(queryParams.status);
-  const runs = deps.getManager().list({
+  const runs = await deps.getManager().list({
     ...(limit !== undefined ? { limit } : {}),
     ...(status !== undefined ? { status } : {}),
   });
   return { runs: runs.map(toWireRun) };
 }
 
-function handleGetRun(id: string) {
-  const run = deps.getManager().status(id);
+async function handleGetRun(id: string) {
+  const run = await deps.getManager().status(id);
   if (!run) {
     throw new NotFoundError(`Workflow run ${id} not found`);
   }
@@ -257,7 +257,7 @@ function handleGetRun(id: string) {
 }
 
 async function handleGetRunJournal(id: string) {
-  const run = deps.getManager().status(id);
+  const run = await deps.getManager().status(id);
   if (!run) {
     throw new NotFoundError(`Workflow run ${id} not found`);
   }
@@ -277,11 +277,11 @@ async function handleGetRunJournal(id: string) {
   };
 }
 
-function handleAbortRun(id: string) {
+async function handleAbortRun(id: string) {
   // status() is the source of truth for existence; abort() itself is a no-op
   // for unknown/finished runs, so 404 on an unknown id is surfaced here.
   const manager = deps.getManager();
-  if (!manager.status(id)) {
+  if (!(await manager.status(id))) {
     throw new NotFoundError(`Workflow run ${id} not found`);
   }
   manager.abort(id);
@@ -326,7 +326,7 @@ async function handleResumeRun(id: string) {
   // status() is the source of truth for existence, so 404 an unknown id here
   // (matching abort) rather than letting resume's "not_found" reach the client
   // as a 409.
-  const run = manager.status(id);
+  const run = await manager.status(id);
   if (!run) {
     throw new NotFoundError(`Workflow run ${id} not found`);
   }
@@ -358,7 +358,7 @@ async function handleResumeRun(id: string) {
     }
   }
   try {
-    const { runId } = manager.resume(id);
+    const { runId } = await manager.resume(id);
     return { ok: true, runId };
   } catch (err) {
     if (err instanceof WorkflowResumeNotPossibleError) {

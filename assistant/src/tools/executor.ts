@@ -213,7 +213,7 @@ export class ToolExecutor {
         const targetRunId =
           typeof input.run_id === "string" ? input.run_id : undefined;
         const targetRun = targetRunId
-          ? getWorkflowRunManager().status(targetRunId)
+          ? await getWorkflowRunManager().status(targetRunId)
           : null;
         // Only promote to fresh approval for a run the caller actually OWNS. The
         // tool hides others' runs as not-found, so prompting here for a

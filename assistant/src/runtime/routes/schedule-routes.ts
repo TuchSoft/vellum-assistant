@@ -1425,7 +1425,7 @@ async function handleRunScheduleNow(
         },
         "Triggering workflow schedule manually (run now)",
       );
-      const { runId: workflowRunId } = getWorkflowRunManager().start({
+      const { runId: workflowRunId } = await getWorkflowRunManager().start({
         name: schedule.workflowName,
         args: schedule.workflowArgs ?? {},
         // Deliver the completion summary to the schedule's wake target, falling
@@ -1442,8 +1442,8 @@ async function handleRunScheduleNow(
         manifest: normalizeCapabilityManifest(schedule.capabilities),
         trustContext: INTERNAL_GUARDIAN_TRUST_CONTEXT,
       });
-      // `start` launches the run fire-and-forget and returns synchronously;
-      // a successful trigger is recorded as ok. Completion/failure is surfaced
+      // `start` resolves once the run is launched; a successful trigger is
+      // recorded as ok. Completion/failure is surfaced
       // out-of-band via workflow events and the completion wake.
       await completeScheduleRun(runId, {
         status: "ok",

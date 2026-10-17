@@ -127,10 +127,12 @@ export interface TurnFailure {
  * from the same metadata {@link stampTurnOutcome} writes keeps a single record
  * of the outcome rather than a parallel copy that could drift.
  */
-export function readTurnFailure(userMessageId: string): TurnFailure | null {
+export async function readTurnFailure(
+  userMessageId: string,
+): Promise<TurnFailure | null> {
   let metadataJson: string | null;
   try {
-    metadataJson = getMessageById(userMessageId)?.metadata ?? null;
+    metadataJson = (await getMessageById(userMessageId))?.metadata ?? null;
   } catch (err) {
     // Best-effort, mirroring stampTurnOutcome: a telemetry read on the turn
     // path must never throw, so a DB hiccup degrades to "no failure recorded".

@@ -418,7 +418,7 @@ async function dispatchWatchRetro(
       return { status: "skipped" };
     }
 
-    const priorMessageIds = messageIds(summary.conversationId);
+    const priorMessageIds = await messageIds(summary.conversationId);
     const dispatch = options.dispatch ?? dispatchRetroTurn;
     const dispatched = await dispatch(
       summary.conversationId,
@@ -443,7 +443,7 @@ async function dispatchWatchRetro(
     // user is shown always has something to read. A retro that failed leaves
     // the conversation where the session left it, out of sight, rather than as
     // an empty row named after a session with no account of it.
-    surfaceConversation(summary.conversationId);
+    await surfaceConversation(summary.conversationId);
 
     return { status: "dispatched", conversationId: summary.conversationId };
   } catch (err) {
@@ -461,8 +461,12 @@ async function dispatchWatchRetro(
 }
 
 /** Ids of the messages a conversation holds right now. */
-function messageIds(conversationId: string): ReadonlySet<string> {
-  return new Set(getMessages(conversationId).map((message) => message.id));
+async function messageIds(
+  conversationId: string,
+): Promise<ReadonlySet<string>> {
+  return new Set(
+    (await getMessages(conversationId)).map((message) => message.id),
+  );
 }
 
 /**
@@ -488,7 +492,7 @@ async function appendRetroCard(
   priorMessageIds: ReadonlySet<string>,
 ): Promise<string | null> {
   let payload: WatchRetroSurfaceData | null = null;
-  for (const message of getMessages(conversationId)) {
+  for (const message of await getMessages(conversationId)) {
     if (priorMessageIds.has(message.id) || message.role !== "assistant") {
       continue;
     }
@@ -564,8 +568,8 @@ async function appendRetroCard(
  * client while leaving `conversation_type` alone, so a watch thread is still a
  * background conversation to everything that classifies one.
  */
-function surfaceConversation(conversationId: string): void {
-  if (setConversationSurfaced(conversationId, true) === null) {
+async function surfaceConversation(conversationId: string): Promise<void> {
+  if ((await setConversationSurfaced(conversationId, true)) === null) {
     return;
   }
   // The row is new to every list the clients page through, so this is the

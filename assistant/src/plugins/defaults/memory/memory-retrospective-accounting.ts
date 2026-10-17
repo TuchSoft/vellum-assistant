@@ -101,11 +101,11 @@ export function isSkillCardMessage(row: { metadata: string | null }): boolean {
  * the rows behind it are reviewed by the retrospective that runs after the
  * row resolves (finalizes, or is repaired away by crash recovery).
  */
-export function getRetrospectiveMessagesAfter(
+export async function getRetrospectiveMessagesAfter(
   conversationId: string,
   after: MessagesAfterRef,
-): MessageRow[] {
-  const rows = getMessagesAfter(conversationId, after);
+): Promise<MessageRow[]> {
+  const rows = await getMessagesAfter(conversationId, after);
   const firstUnfinalized = rows.findIndex((row) => row.finalized !== 1);
   const bounded =
     firstUnfinalized === -1 ? rows : rows.slice(0, firstUnfinalized);
@@ -119,15 +119,15 @@ export function getRetrospectiveMessagesAfter(
  * comes from `countMessagesAfter` and the handful of card rows past the
  * cursor are counted separately and subtracted.
  */
-export function countRetrospectiveMessagesAfter(
+export async function countRetrospectiveMessagesAfter(
   conversationId: string,
   after: MessagesAfterRef,
-): number {
-  const total = countMessagesAfter(conversationId, after);
+): Promise<number> {
+  const total = await countMessagesAfter(conversationId, after);
   if (total === 0) {
     return 0;
   }
-  const excluded = countExcludedMessagesAfter(conversationId, after);
+  const excluded = await countExcludedMessagesAfter(conversationId, after);
   return Math.max(0, total - excluded);
 }
 
@@ -181,11 +181,11 @@ export function messagesHaveUserActivity(
  * camera frames are the one user-role row that does NOT count: the camera
  * sampled them, so they must not be what wakes a review.
  */
-export function hasQualifyingUserMessageAfter(
+export async function hasQualifyingUserMessageAfter(
   conversationId: string,
   after: MessagesAfterRef,
-): boolean {
-  const start = resolveMessagesAfterBound(after);
+): Promise<boolean> {
+  const start = await resolveMessagesAfterBound(after);
   if (start.kind === "vanished") {
     return false;
   }
@@ -236,10 +236,10 @@ function rawUserContentCarriesActivity(raw: string | null): boolean {
  * including the null/`""` "count everything" cases and the vanished-reference
  * "no new work" case.
  */
-function countExcludedMessagesAfter(
+async function countExcludedMessagesAfter(
   conversationId: string,
   after: MessagesAfterRef,
-): number {
+): Promise<number> {
   const db = getDb();
   const candidates = db
     .select({
@@ -262,7 +262,7 @@ function countExcludedMessagesAfter(
     return 0;
   }
 
-  const start = resolveMessagesAfterBound(after);
+  const start = await resolveMessagesAfterBound(after);
   // Vanished reference: `countMessagesAfter` reported 0, so there is nothing
   // to subtract from.
   if (start.kind === "vanished") {

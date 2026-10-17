@@ -88,7 +88,7 @@ const stop: HookFunction<StopContext> = async (ctx) => {
   // before (queues regeneration; the service re-checks isAutoTitle).
   let retryFallbackTitle = false;
   try {
-    const conversation = getConversation(ctx.conversationId);
+    const conversation = await getConversation(ctx.conversationId);
     if (conversation && conversation.conversationType !== "standard") {
       return;
     }

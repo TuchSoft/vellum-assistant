@@ -65,16 +65,16 @@ const STAGE_ORDER: PipelineStageName[] = ["preprocess", "map", "reduce"];
 // Helpers
 // ---------------------------------------------------------------------------
 
-function findOrCreateStage(
+async function findOrCreateStage(
   assetId: string,
   stageName: string,
-): ProcessingStage {
-  const stages = getProcessingStagesForAsset(assetId);
+): Promise<ProcessingStage> {
+  const stages = await getProcessingStagesForAsset(assetId);
   const existing = stages.find((s) => s.stage === stageName);
   if (existing) {
     return existing;
   }
-  return createProcessingStage({ assetId, stage: stageName });
+  return await createProcessingStage({ assetId, stage: stageName });
 }
 
 function isStageCompleted(stage: ProcessingStage): boolean {
@@ -85,8 +85,8 @@ function isStageCompleted(stage: ProcessingStage): boolean {
  * Check if the asset has been cancelled. Cooperative cancellation:
  * the pipeline checks this between stages to allow graceful stopping.
  */
-function isAssetCancelled(assetId: string): boolean {
-  const asset = getMediaAssetById(assetId);
+async function isAssetCancelled(assetId: string): Promise<boolean> {
+  const asset = await getMediaAssetById(assetId);
   if (!asset) {
     return true;
   }
@@ -114,7 +114,7 @@ export async function runPipeline(
   const baseDelayMs = options?.baseDelayMs ?? 1000;
   const onProgress = options?.onProgress;
 
-  const asset = getMediaAssetById(assetId);
+  const asset = await getMediaAssetById(assetId);
   if (!asset) {
     throw new Error(`Media asset not found: ${assetId}`);
   }
@@ -132,7 +132,7 @@ export async function runPipeline(
   }
 
   // Mark asset as processing
-  updateMediaAssetStatus(assetId, "processing");
+  await updateMediaAssetStatus(assetId, "processing");
 
   const completedStages: PipelineStageName[] = [];
   let failedStage: PipelineStageName | null = null;
@@ -143,7 +143,7 @@ export async function runPipeline(
   // Find where to resume from by checking existing stage records
   let startIndex = 0;
   for (let i = 0; i < STAGE_ORDER.length; i++) {
-    const stage = findOrCreateStage(assetId, STAGE_ORDER[i]);
+    const stage = await findOrCreateStage(assetId, STAGE_ORDER[i]);
     if (isStageCompleted(stage)) {
       completedStages.push(STAGE_ORDER[i]);
       startIndex = i + 1;
@@ -158,7 +158,7 @@ export async function runPipeline(
   } else if (startIndex >= STAGE_ORDER.length) {
     // All stages already completed - idempotent no-op
     onProgress?.("All pipeline stages already completed.");
-    updateMediaAssetStatus(assetId, "indexed");
+    await updateMediaAssetStatus(assetId, "indexed");
     return {
       assetId,
       completedStages,
@@ -174,17 +174,17 @@ export async function runPipeline(
     const stageName = STAGE_ORDER[i];
 
     // Cooperative cancellation check between stages
-    if (isAssetCancelled(assetId)) {
+    if (await isAssetCancelled(assetId)) {
       onProgress?.(`Pipeline cancelled before stage: ${stageName}`);
       cancelled = true;
       break;
     }
 
-    const stageRecord = findOrCreateStage(assetId, stageName);
+    const stageRecord = await findOrCreateStage(assetId, stageName);
     const handler = handlers[stageName];
 
     onProgress?.(`Starting stage: ${stageName}`);
-    updateProcessingStage(stageRecord.id, {
+    await updateProcessingStage(stageRecord.id, {
       status: "running",
       startedAt: Date.now(),
       lastError: null,
@@ -202,7 +202,7 @@ export async function runPipeline(
           await sleep(delay);
 
           // Re-check cancellation before retry
-          if (isAssetCancelled(assetId)) {
+          if (await isAssetCancelled(assetId)) {
             onProgress?.(
               `Pipeline cancelled during retry of stage: ${stageName}`,
             );
@@ -214,7 +214,7 @@ export async function runPipeline(
         await handler.execute(assetId, onProgress);
 
         // Mark stage as completed
-        updateProcessingStage(stageRecord.id, {
+        await updateProcessingStage(stageRecord.id, {
           status: "completed",
           progress: 100,
           completedAt: Date.now(),
@@ -232,7 +232,7 @@ export async function runPipeline(
 
         // Save partial progress - the stage handler should have already
         // persisted any partial results before throwing
-        updateProcessingStage(stageRecord.id, {
+        await updateProcessingStage(stageRecord.id, {
           status: attempt >= maxRetries ? "failed" : "running",
           lastError: errorMsg,
         });
@@ -255,9 +255,9 @@ export async function runPipeline(
   if (cancelled) {
     // Leave status as-is (already 'cancelled')
   } else if (failedStage) {
-    updateMediaAssetStatus(assetId, "failed");
+    await updateMediaAssetStatus(assetId, "failed");
   } else {
-    updateMediaAssetStatus(assetId, "indexed");
+    await updateMediaAssetStatus(assetId, "indexed");
   }
 
   return {

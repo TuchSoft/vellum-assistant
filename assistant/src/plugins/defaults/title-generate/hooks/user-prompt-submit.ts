@@ -34,7 +34,7 @@ const userPromptSubmit: HookFunction<UserPromptSubmitContext> = async (ctx) => {
   // as before (queues generation; the service re-checks replaceability).
   if (ctx.isNonInteractive) {
     try {
-      const conversation = getConversation(ctx.conversationId);
+      const conversation = await getConversation(ctx.conversationId);
       if (conversation && conversation.conversationType !== "standard") {
         return;
       }

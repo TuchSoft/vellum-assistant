@@ -131,8 +131,11 @@ const EXCLUDED_SOURCES: string[] = [
  * still backs up legacy/desktop guardian conversations (whose provenance is
  * `undefined`), which `resolveCapabilities(undefined)` would wrongly exclude.
  */
-export function isMemoryTrustedConversation(conversationId: string): boolean {
-  const trustClass = getConversationRecentProvenanceTrustClass(conversationId);
+export async function isMemoryTrustedConversation(
+  conversationId: string,
+): Promise<boolean> {
+  const trustClass =
+    await getConversationRecentProvenanceTrustClass(conversationId);
   return trustClass === "guardian" || trustClass === undefined;
 }
 
@@ -259,7 +262,7 @@ export async function runRetrospectiveSweep(
       // `isTrustedActor` gate the event triggers apply and the disposal net's
       // capability check — without it the timer path would write untrusted
       // contact content into long-term memory.
-      if (!isMemoryTrustedConversation(conversationId)) {
+      if (!(await isMemoryTrustedConversation(conversationId))) {
         continue;
       }
 
@@ -272,7 +275,7 @@ export async function runRetrospectiveSweep(
         continue;
       }
 
-      const unprocessed = countRetrospectiveMessagesAfter(
+      const unprocessed = await countRetrospectiveMessagesAfter(
         conversationId,
         retrospectiveCursor(state),
       );
@@ -281,10 +284,10 @@ export async function runRetrospectiveSweep(
       }
 
       if (
-        !enqueueMemoryRetrospectiveIfEnabled({
+        !(await enqueueMemoryRetrospectiveIfEnabled({
           conversationId,
           trigger: "sweep",
-        })
+        }))
       ) {
         continue;
       }

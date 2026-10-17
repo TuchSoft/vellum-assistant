@@ -58,7 +58,7 @@ const REDUCE_TIMEOUT_MS = 120_000;
  * Load map-output.json for an asset from its pipeline directory.
  */
 async function loadMapOutput(assetId: string): Promise<MapOutput> {
-  const asset = getMediaAssetById(assetId);
+  const asset = await getMediaAssetById(assetId);
   if (!asset) {
     throw new Error(`Media asset not found: ${assetId}`);
   }
@@ -141,7 +141,7 @@ async function persistReduceCost(
   query: string,
   result: ReduceResult,
 ): Promise<void> {
-  const asset = getMediaAssetById(assetId);
+  const asset = await getMediaAssetById(assetId);
   if (!asset) {
     return;
   }

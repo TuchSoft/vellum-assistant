@@ -330,7 +330,7 @@ async function insertSchedule(
     params.inferenceProfile ??
     (mode === "wake"
       ? resolveWakeScheduleInferenceProfile(
-          getConversation(params.wakeConversationId!) ?? null,
+          (await getConversation(params.wakeConversationId!)) ?? null,
         )
       : resolveDefaultScheduleInferenceProfile());
   const groupId = params.groupId ?? null;

@@ -118,7 +118,7 @@ export async function executeSubagentRead(
   const settled = await getSubagentManager().settleQueuedTurns(subagentId);
 
   // Read the subagent's conversation messages from DB.
-  const dbMessages = getMessages(state.conversationId);
+  const dbMessages = await getMessages(state.conversationId);
   if (!dbMessages || dbMessages.length === 0) {
     return {
       content: "No messages found in subagent conversation.",

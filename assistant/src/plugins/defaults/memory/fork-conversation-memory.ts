@@ -1,4 +1,4 @@
-import type { DrizzleDb } from "../../../persistence/db-connection.js";
+import type { AsyncDb } from "../../../persistence/db-facade.js";
 import { forkGraphMemoryState } from "./graph/graph-memory-state-store.js";
 import { forkRetrospectiveState } from "./memory-retrospective-state.js";
 import {
@@ -18,7 +18,7 @@ import type { InjectedBlock } from "./v3/types.js";
 
 /** Inputs to {@link forkConversationMemory}. */
 export interface ForkConversationMemoryInput {
-  db: DrizzleDb;
+  db: AsyncDb;
   sourceConversationId: string;
   forkId: string;
   /**
@@ -44,16 +44,16 @@ export interface ForkConversationMemoryInput {
  * (activation and injection logs, graph state, retrospective state).
  *
  * The persistence layer's fork path (`conversation-crud.ts`) imports this
- * directly and calls it synchronously inside the fork's DB transaction,
- * threading the live transaction handle for the state that still lives in the
- * main DB (ever-injected, retrospective) so those copies commit with the fork.
+ * directly and calls it inside the fork's DB transaction, threading the live
+ * transaction handle for the state that still lives in the main DB
+ * (ever-injected, retrospective) so those copies commit with the fork.
  * Activation and graph state have moved to the dedicated memory connection, a
  * separate database file: their copies write that connection and so are not
  * part of the fork transaction, matching the cross-file split everywhere else.
  * This is a persistence → memory back-import documented in the
  * persistence-layering guard; unlike the other persistence-lifecycle events it
- * is a direct call rather than a first-class `hooks` dispatch, because the async
- * hooks pipeline cannot run inside a synchronous transaction with a live handle.
+ * is a direct call rather than a first-class `hooks` dispatch, because the
+ * fork transaction owns the handle the call needs.
  *
  * The direct import puts this module on an import cycle (persistence imports
  * it; it transitively imports persistence). The cycle is benign: the binding
@@ -61,9 +61,9 @@ export interface ForkConversationMemoryInput {
  * function, and this module references its imports only inside the function
  * body — so no module body ever observes a half-initialized module.
  */
-export function forkConversationMemory(
+export async function forkConversationMemory(
   input: ForkConversationMemoryInput,
-): void {
+): Promise<void> {
   const {
     db,
     sourceConversationId,
@@ -124,7 +124,7 @@ export function forkConversationMemory(
       Date.now(),
     );
   }
-  forkRetrospectiveState({
+  await forkRetrospectiveState({
     database: db,
     sourceConversationId,
     forkedConversationId: forkId,

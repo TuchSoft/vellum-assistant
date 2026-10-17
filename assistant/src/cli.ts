@@ -234,7 +234,7 @@ export async function startCli(): Promise<void> {
         conversationKey = `builtin-cli:${randomUUID()}`;
         conversationId = "";
         pendingSessionPick = false;
-        reconnectEvents();
+        await reconnectEvents();
         process.stdout.write(
           `\n  New conversation started.\n  Type your message. Ctrl+D to detach.\n\n`,
         );
@@ -259,18 +259,18 @@ export async function startCli(): Promise<void> {
           prompt();
         } else {
           try {
-            const conversation = getConversation(selected.id);
+            const conversation = await getConversation(selected.id);
             if (!conversation) {
               process.stdout.write("  Failed to switch conversation.\n");
               renderConversationPicker(conversations);
               return;
             }
             const newKey = `builtin-cli:${selected.id}`;
-            setConversationKeyIfAbsent(newKey, selected.id);
+            await setConversationKeyIfAbsent(newKey, selected.id);
             conversationId = conversation.id;
             conversationKey = newKey;
             pendingSessionPick = false;
-            reconnectEvents();
+            await reconnectEvents();
             process.stdout.write(
               `\n  Conversation: ${conversation.title ?? "Untitled"}\n  Type your message. Ctrl+D to detach.\n\n`,
             );
@@ -474,14 +474,14 @@ export async function startCli(): Promise<void> {
   }
 
   /** Restart the file-stream watcher (e.g., after switching conversations). */
-  function reconnectEvents(): void {
+  async function reconnectEvents(): Promise<void> {
     disconnectEvents();
-    connectEvents();
+    await connectEvents();
   }
 
   /** Watch the file-based event stream for the current conversation. */
-  function connectEvents(): void {
-    const mapping = getOrCreateConversation(conversationKey);
+  async function connectEvents(): Promise<void> {
+    const mapping = await getOrCreateConversation(conversationKey);
 
     eventSubscription = watchEventStream(mapping.conversationId, (event) => {
       if (!conversationId && event.conversationId) {
@@ -491,7 +491,7 @@ export async function startCli(): Promise<void> {
     });
   }
 
-  function handleLine(line: string): void {
+  async function handleLine(line: string): Promise<void> {
     const content = line.trim();
     if (!content) {
       return;
@@ -511,7 +511,7 @@ export async function startCli(): Promise<void> {
     if (content === "/conversations") {
       pendingSessionPick = true;
       try {
-        const rows = listConversations({ limit: 20 });
+        const rows = await listConversations({ limit: 20 });
         const conversations = rows.map((r) => ({
           id: r.id,
           title: r.title || "Untitled",
@@ -530,7 +530,7 @@ export async function startCli(): Promise<void> {
       // Create a new conversation by using a unique key
       conversationKey = `builtin-cli:${randomUUID()}`;
       conversationId = "";
-      reconnectEvents();
+      await reconnectEvents();
       process.stdout.write(
         `\n  New conversation started.\n  Type your message. Ctrl+D to detach.\n\n`,
       );
@@ -560,12 +560,12 @@ export async function startCli(): Promise<void> {
 
     if (content === "/history") {
       try {
-        const mapping = getConversationByKey(conversationKey);
+        const mapping = await getConversationByKey(conversationKey);
         process.stdout.write("\n");
         if (!mapping) {
           process.stdout.write("  No messages in this conversation.\n");
         } else {
-          const rawMessages = getMessages(mapping.conversationId);
+          const rawMessages = await getMessages(mapping.conversationId);
           if (rawMessages.length === 0) {
             process.stdout.write("  No messages in this conversation.\n");
           } else {
@@ -773,7 +773,7 @@ export async function startCli(): Promise<void> {
   });
 
   // Initial connection
-  connectEvents();
+  await connectEvents();
   updateDaemonText(mainScreenLayout, "connected");
   updateStatusText(mainScreenLayout, "ready");
   process.stdout.write(`\n  Type your message. Ctrl+D to detach.\n\n`);

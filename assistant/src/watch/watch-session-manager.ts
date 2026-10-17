@@ -277,7 +277,9 @@ export class WatchSessionManager {
     return this.session?.sessionId ?? null;
   }
 
-  start(options: WatchSessionStartOptions): WatchSessionStartResult {
+  async start(
+    options: WatchSessionStartOptions,
+  ): Promise<WatchSessionStartResult> {
     const existing = this.session;
     if (existing !== null) {
       return {
@@ -297,7 +299,9 @@ export class WatchSessionManager {
       };
     }
 
-    const conversationId = this.resolveConversationId(options.conversationId);
+    const conversationId = await this.resolveConversationId(
+      options.conversationId,
+    );
     if (conversationId === null) {
       return {
         status: "failed",
@@ -425,18 +429,21 @@ export class WatchSessionManager {
    * its row already exists, so a session never mints a conversation under an
    * id it was handed.
    */
-  private resolveConversationId(
+  private async resolveConversationId(
     conversationId: string | undefined,
-  ): string | null {
+  ): Promise<string | null> {
     if (conversationId !== undefined) {
-      return getConversation(conversationId) === null ? null : conversationId;
+      return (await getConversation(conversationId)) === null
+        ? null
+        : conversationId;
     }
-    return createConversation({
+    const created = await createConversation({
       title: TEACH_CONVERSATION_TITLE,
       conversationType: "background",
       source: WATCH_CONVERSATION_SOURCE,
       origin: "vellum",
-    }).id;
+    });
+    return created.id;
   }
 
   /**

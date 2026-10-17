@@ -55,9 +55,9 @@ export async function run(
       context.signal ? { signal: context.signal } : undefined,
     );
 
-    const asset = getMediaAssetById(assetId);
+    const asset = await getMediaAssetById(assetId);
     const pipelineDir = join(dirname(asset!.filePath), "pipeline", assetId);
-    const keyframes = getKeyframesForAsset(assetId);
+    const keyframes = await getKeyframesForAsset(assetId);
 
     return {
       content: JSON.stringify(

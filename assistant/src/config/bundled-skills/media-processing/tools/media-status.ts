@@ -24,11 +24,11 @@ export async function run(
 
   // Query by asset ID
   if (assetId) {
-    const asset = getMediaAssetById(assetId);
+    const asset = await getMediaAssetById(assetId);
     if (!asset) {
       return { content: `Media asset not found: ${assetId}`, isError: true };
     }
-    const stages = getProcessingStagesForAsset(asset.id);
+    const stages = await getProcessingStagesForAsset(asset.id);
     return {
       content: JSON.stringify({ asset, stages }, null, 2),
       isError: false,
@@ -37,14 +37,14 @@ export async function run(
 
   // Query by file path
   if (filePath) {
-    const asset = getMediaAssetByFilePath(filePath);
+    const asset = await getMediaAssetByFilePath(filePath);
     if (!asset) {
       return {
         content: `No media asset found for path: ${filePath}`,
         isError: true,
       };
     }
-    const stages = getProcessingStagesForAsset(asset.id);
+    const stages = await getProcessingStagesForAsset(asset.id);
     return {
       content: JSON.stringify({ asset, stages }, null, 2),
       isError: false,
@@ -65,11 +65,13 @@ export async function run(
         isError: true,
       };
     }
-    const assets = getMediaAssetsByStatus(statusFilter);
-    const results = assets.map((asset) => ({
-      asset,
-      stages: getProcessingStagesForAsset(asset.id),
-    }));
+    const assets = await getMediaAssetsByStatus(statusFilter);
+    const results = await Promise.all(
+      assets.map(async (asset) => ({
+        asset,
+        stages: await getProcessingStagesForAsset(asset.id),
+      })),
+    );
     return {
       content: JSON.stringify(
         {

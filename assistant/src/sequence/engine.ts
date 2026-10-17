@@ -193,7 +193,7 @@ async function processEnrollment(
   // Try to extract the email thread ID from conversation tool results so
   // subsequent steps can reply in the same conversation.
   const extractedConversationId =
-    extractThreadIdFromConversation(result.conversationId) ?? undefined;
+    (await extractThreadIdFromConversation(result.conversationId)) ?? undefined;
   if (extractedConversationId) {
     log.info(
       { enrollmentId: enrollment.id, conversationId: extractedConversationId },
@@ -312,11 +312,11 @@ function buildStepPrompt(
  * invocations. Looks for common patterns like "thread_id": "..." or
  * "Thread ID: ..." in tool result text.
  */
-function extractThreadIdFromConversation(
+async function extractThreadIdFromConversation(
   conversationId: string,
-): string | null {
+): Promise<string | null> {
   try {
-    const msgs = getMessages(conversationId);
+    const msgs = await getMessages(conversationId);
     // Walk messages in reverse; the thread ID from the most recent tool call
     // is the one we want.
     for (let i = msgs.length - 1; i >= 0; i--) {

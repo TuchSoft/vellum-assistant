@@ -41,7 +41,7 @@
 
 import { desc, eq } from "drizzle-orm";
 
-import type { DrizzleDb } from "../../../persistence/db-connection.js";
+import type { AsyncDb } from "../../../persistence/db-facade.js";
 import { messageCreatedAtByIds } from "../../../persistence/message-reads.js";
 import { memoryRetrospectiveState } from "../../../persistence/schema/index.js";
 import { withSqliteRetry } from "./host-utils.js";
@@ -380,12 +380,12 @@ export async function upsertRetrospectiveState(
  * every copied row lies after the bound. Reads the source rows through the
  * fork transaction's handle.
  */
-function latestCopiedRowAtOrBefore(
-  database: DrizzleDb,
+async function latestCopiedRowAtOrBefore(
+  database: AsyncDb,
   forkedMessageIds: Map<string, string>,
   bound: { createdAt: number; id: string },
-): { forkedId: string; createdAt: number } | null {
-  const createdAtBySourceId = messageCreatedAtByIds(
+): Promise<{ forkedId: string; createdAt: number } | null> {
+  const createdAtBySourceId = await messageCreatedAtByIds(
     [...forkedMessageIds.keys()],
     { db: database },
   );
@@ -416,8 +416,8 @@ function latestCopiedRowAtOrBefore(
 
 /**
  * Carry the source conversation's retrospective state into a forked child so
- * the fork doesn't re-process content the parent already covered. Synchronous
- * so it can run inside the bun:sqlite transaction wrapping `forkConversation`.
+ * the fork doesn't re-process content the parent already covered. Runs inside
+ * the `forkConversation` transaction with the transaction's handle.
  *
  * Mapping for `lastProcessedMessageId`:
  *
@@ -445,13 +445,13 @@ function latestCopiedRowAtOrBefore(
  * The state row itself is written on the memory connection; an unavailable
  * memory database is a best-effort no-op.
  */
-export function forkRetrospectiveState(args: {
-  database: DrizzleDb;
+export async function forkRetrospectiveState(args: {
+  database: AsyncDb;
   sourceConversationId: string;
   forkedConversationId: string;
   forkedMessageIds: Map<string, string>;
   lastCopiedSourceMessageId: string | null;
-}): void {
+}): Promise<void> {
   const {
     database,
     sourceConversationId,
@@ -497,7 +497,7 @@ export function forkRetrospectiveState(args: {
       if (mapped !== undefined) {
         forkedPointer = mapped;
         forkedCreatedAt =
-          messageCreatedAtByIds([forkedPointer], { db: database }).get(
+          (await messageCreatedAtByIds([forkedPointer], { db: database })).get(
             forkedPointer,
           ) ?? null;
       } else if (sourceCreatedAt !== null) {
@@ -508,10 +508,14 @@ export function forkRetrospectiveState(args: {
         // rows after it (a replacement reply, later turns) stay unprocessed;
         // a bound before every copied row leaves the child at "nothing
         // processed yet".
-        const placed = latestCopiedRowAtOrBefore(database, forkedMessageIds, {
-          createdAt: sourceCreatedAt,
-          id: sourcePointer,
-        });
+        const placed = await latestCopiedRowAtOrBefore(
+          database,
+          forkedMessageIds,
+          {
+            createdAt: sourceCreatedAt,
+            id: sourcePointer,
+          },
+        );
         if (placed) {
           forkedPointer = placed.forkedId;
           forkedCreatedAt = placed.createdAt;
@@ -525,9 +529,11 @@ export function forkRetrospectiveState(args: {
         forkedCreatedAt =
           forkedPointer === ""
             ? null
-            : (messageCreatedAtByIds([forkedPointer], { db: database }).get(
-                forkedPointer,
-              ) ?? null);
+            : ((
+                await messageCreatedAtByIds([forkedPointer], {
+                  db: database,
+                })
+              ).get(forkedPointer) ?? null);
       }
     }
 

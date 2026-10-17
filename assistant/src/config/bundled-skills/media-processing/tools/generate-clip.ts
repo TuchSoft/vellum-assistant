@@ -132,7 +132,7 @@ export async function run(
 
   throwIfCancelled(context);
 
-  const asset = getMediaAssetById(assetId);
+  const asset = await getMediaAssetById(assetId);
   if (!asset) {
     return { content: `Media asset not found: ${assetId}`, isError: true };
   }
@@ -296,7 +296,7 @@ export async function run(
 
     // Register as file-backed attachment (no size limit, no base64 in-memory copy)
     const mimeType = MIME_BY_FORMAT[outputFormat] ?? "video/mp4";
-    const attachment = uploadFileBackedAttachment(
+    const attachment = await uploadFileBackedAttachment(
       clipFilename,
       mimeType,
       clipPath,

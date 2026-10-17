@@ -132,7 +132,7 @@ export class ConversationAutoArchiveWorker {
       !signal.aborted && this.enabledAfterDays() === afterDays;
 
     while (stillCurrent()) {
-      const candidates = listAutoArchiveCandidates({
+      const candidates = await listAutoArchiveCandidates({
         cutoff,
         limit: PAGE_SIZE,
         after,
@@ -155,11 +155,18 @@ export class ConversationAutoArchiveWorker {
             continue;
           }
           const archived = await withSqliteRetry(
-            () => {
-              if (!stillCurrent() || hasAutoArchiveBlockingWork(candidate.id)) {
+            async () => {
+              if (
+                !stillCurrent() ||
+                (await hasAutoArchiveBlockingWork(candidate.id))
+              ) {
                 return false;
               }
-              return archiveInactiveConversation(candidate, cutoff, Date.now());
+              return await archiveInactiveConversation(
+                candidate,
+                cutoff,
+                Date.now(),
+              );
             },
             {
               op: "conversation:autoArchive",

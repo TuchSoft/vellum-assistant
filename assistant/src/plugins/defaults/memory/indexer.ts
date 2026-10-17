@@ -297,9 +297,9 @@ export async function indexMessageNow(
     if (
       !isAutoAnalysisSource &&
       triggerConfig != null &&
-      !isMemoryRetrospectiveConversation(input.conversationId)
+      !(await isMemoryRetrospectiveConversation(input.conversationId))
     ) {
-      maybeEnqueueRetrospective(input.conversationId, triggerConfig);
+      await maybeEnqueueRetrospective(input.conversationId, triggerConfig);
     }
   }
 

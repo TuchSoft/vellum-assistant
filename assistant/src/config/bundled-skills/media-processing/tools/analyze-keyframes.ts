@@ -47,7 +47,7 @@ export async function mapSegmentsForAsset(
   // to the fan-out of paid calls below.
   options.signal?.throwIfAborted();
 
-  const asset = getMediaAssetById(assetId);
+  const asset = await getMediaAssetById(assetId);
   if (!asset) {
     throw new Error(`Media asset not found: ${assetId}`);
   }
@@ -146,7 +146,7 @@ export async function run(
         };
       }
 
-      const asset = getMediaAssetById(assetId);
+      const asset = await getMediaAssetById(assetId);
       if (!asset) {
         return { content: `Media asset not found: ${assetId}`, isError: true };
       }

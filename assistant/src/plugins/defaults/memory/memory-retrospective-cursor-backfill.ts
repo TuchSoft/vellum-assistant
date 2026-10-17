@@ -79,7 +79,7 @@ export async function backfillRetrospectiveCursorTimestamps(opts?: {
     afterConversationId = page[page.length - 1]!.conversationId;
     result.scanned += page.length;
 
-    const createdAtById = messageCreatedAtByIds(
+    const createdAtById = await messageCreatedAtByIds(
       page.map((row) => row.messageId),
     );
     const recoverable = page.flatMap((row) => {

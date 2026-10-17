@@ -77,13 +77,13 @@ export function shouldEnqueueRetrospective(args: {
  * thresholds, and enqueues if appropriate. Best-effort — any thrown error is
  * caught and logged so the agent turn cleanup path doesn't fail.
  */
-export function maybeEnqueueRetrospective(
+export async function maybeEnqueueRetrospective(
   conversationId: string,
   config: AssistantConfig,
-): void {
+): Promise<void> {
   try {
     const state = getRetrospectiveState(conversationId);
-    const newMessageCount = countRetrospectiveMessagesAfter(
+    const newMessageCount = await countRetrospectiveMessagesAfter(
       conversationId,
       retrospectiveCursor(state),
     );
@@ -103,7 +103,7 @@ export function maybeEnqueueRetrospective(
       return;
     }
 
-    enqueueMemoryRetrospectiveIfEnabled({ conversationId, trigger });
+    await enqueueMemoryRetrospectiveIfEnabled({ conversationId, trigger });
   } catch (err) {
     log.warn({ err, conversationId }, "trigger-check failed; skipping enqueue");
   }

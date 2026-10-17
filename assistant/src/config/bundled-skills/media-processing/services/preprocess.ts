@@ -397,7 +397,7 @@ export async function preprocessForAsset(
 
   const detectDeadTime = options.detectDeadTime ?? false;
 
-  const asset = getMediaAssetById(assetId);
+  const asset = await getMediaAssetById(assetId);
   if (!asset) {
     throw new Error(`Media asset not found: ${assetId}`);
   }
@@ -414,16 +414,19 @@ export async function preprocessForAsset(
 
   // Find or create processing stage
   let stage: ProcessingStage | undefined;
-  const existingStages = getProcessingStagesForAsset(assetId);
+  const existingStages = await getProcessingStagesForAsset(assetId);
   stage = existingStages.find((s) => s.stage === "preprocess");
   if (!stage) {
-    stage = createProcessingStage({ assetId, stage: "preprocess" });
+    stage = await createProcessingStage({ assetId, stage: "preprocess" });
   }
   // Recheck: the asset lookup and stage reads above are awaits, and this marks
   // the asset as being processed by a run that is about to start spawning
   // ffmpeg.
   signal?.throwIfAborted();
-  updateProcessingStage(stage.id, { status: "running", startedAt: Date.now() });
+  await updateProcessingStage(stage.id, {
+    status: "running",
+    startedAt: Date.now(),
+  });
 
   const pipelineDir = join(dirname(asset.filePath), "pipeline", assetId);
   const framesDir = join(pipelineDir, "frames");
@@ -538,7 +541,7 @@ export async function preprocessForAsset(
           `Warning: frame extraction failed for ${seg.id}: ${result.stderr.slice(0, 200)}\n`,
         );
         const segProgress = Math.round(((i + 1) / rawSegments.length) * 80);
-        updateProcessingStage(stage.id, { progress: segProgress });
+        await updateProcessingStage(stage.id, { progress: segProgress });
         continue;
       }
 
@@ -583,7 +586,7 @@ export async function preprocessForAsset(
       segments.push(segment);
 
       const segProgress = Math.round(((i + 1) / rawSegments.length) * 80);
-      updateProcessingStage(stage.id, { progress: segProgress });
+      await updateProcessingStage(stage.id, { progress: segProgress });
     }
 
     const totalFrames = segments.reduce(
@@ -609,7 +612,7 @@ export async function preprocessForAsset(
     onProgress?.(
       `Identified ${subjectRegistry.groups.length} subject group(s).\n`,
     );
-    updateProcessingStage(stage.id, { progress: 90 });
+    await updateProcessingStage(stage.id, { progress: 90 });
 
     // Step 5: Section boundaries
     let sectionBoundaries: SectionBoundary[];
@@ -636,7 +639,7 @@ export async function preprocessForAsset(
     await rename(tempDir, framesDir);
 
     onProgress?.("Registering keyframes in database...\n");
-    deleteKeyframesForAsset(assetId);
+    await deleteKeyframesForAsset(assetId);
 
     const keyframeRows = segments.flatMap((seg) =>
       seg.framePaths.map((fp, i) => ({
@@ -654,9 +657,9 @@ export async function preprocessForAsset(
     );
 
     if (keyframeRows.length > 0) {
-      insertKeyframesBatch(keyframeRows);
+      await insertKeyframesBatch(keyframeRows);
     }
-    updateProcessingStage(stage.id, { progress: 95 });
+    await updateProcessingStage(stage.id, { progress: 95 });
 
     // Step 7: Write manifest
     const manifest: PreprocessManifest = {
@@ -675,7 +678,7 @@ export async function preprocessForAsset(
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 
     // Update stage
-    updateProcessingStage(stage.id, {
+    await updateProcessingStage(stage.id, {
       status: "completed",
       progress: 100,
       completedAt: Date.now(),
@@ -690,7 +693,7 @@ export async function preprocessForAsset(
       "preprocess temp cleanup",
     );
     const msg = (err as Error).message;
-    updateProcessingStage(stage.id, {
+    await updateProcessingStage(stage.id, {
       status: "failed",
       lastError: safeStringSlice(msg, 0, 500),
     });

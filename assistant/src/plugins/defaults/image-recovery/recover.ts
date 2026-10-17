@@ -160,7 +160,8 @@ export async function persistUnsendableImageDowngrades(
   conversationId: string,
 ): Promise<number> {
   let rewritten = 0;
-  for (const row of await getMessages(conversationId)) {
+  const rows = await getMessages(conversationId);
+  for (const row of rows) {
     const hasImageBlock = row.content.some(
       (b) =>
         b.type === "image" ||

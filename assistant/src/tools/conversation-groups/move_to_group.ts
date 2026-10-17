@@ -53,7 +53,7 @@ export async function executeConversationMoveToGroup(
 
   const conversationId =
     parsedInput.data.conversation_id?.trim() || context.conversationId;
-  const conversation = getConversation(conversationId);
+  const conversation = await getConversation(conversationId);
   if (!conversation) {
     return {
       content: `Error: no conversation found with id ${conversationId}`,
@@ -65,7 +65,7 @@ export async function executeConversationMoveToGroup(
     ? `"${conversation.title}"`
     : `conversation ${conversationId}`;
 
-  const meta = getDisplayMetaForConversations([conversationId]).get(
+  const meta = (await getDisplayMetaForConversations([conversationId])).get(
     conversationId,
   );
   if (meta?.groupId === group.id) {
@@ -75,7 +75,9 @@ export async function executeConversationMoveToGroup(
     };
   }
 
-  batchSetConversationPlacement([{ id: conversationId, groupId: group.id }]);
+  await batchSetConversationPlacement([
+    { id: conversationId, groupId: group.id },
+  ]);
   publishConversationListAndMetadataChanged("reordered", [conversationId]);
 
   const notes: string[] = [];

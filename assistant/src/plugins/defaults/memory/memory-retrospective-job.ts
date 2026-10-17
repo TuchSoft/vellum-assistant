@@ -361,7 +361,7 @@ export async function runForkBasedRetrospective(
   // mixed tail's cutoff must land on the last REAL message (never blindly
   // past the card, so an interleaved real message is never skipped). See
   // `memory-retrospective-accounting.ts`.
-  const newMessages = getRetrospectiveMessagesAfter(
+  const newMessages = await getRetrospectiveMessagesAfter(
     sourceConversationId,
     retrospectiveCursor(state),
   );

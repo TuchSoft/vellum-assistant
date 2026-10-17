@@ -65,10 +65,10 @@ const COMPACTION_DEBOUNCE_MS = 500;
  * enqueue (or the upsert failed). The sweep counts only true returns toward
  * its per-pass cap.
  */
-export function enqueueMemoryRetrospectiveIfEnabled(args: {
+export async function enqueueMemoryRetrospectiveIfEnabled(args: {
   conversationId: string;
   trigger: MemoryRetrospectiveTrigger;
-}): boolean {
+}): Promise<boolean> {
   const { conversationId, trigger } = args;
 
   if (!isMemoryEnabled()) {
@@ -83,7 +83,7 @@ export function enqueueMemoryRetrospectiveIfEnabled(args: {
     return false;
   }
 
-  if (isMemoryRetrospectiveConversation(conversationId)) {
+  if (await isMemoryRetrospectiveConversation(conversationId)) {
     log.debug(
       { conversationId, trigger },
       "Skipping memory-retrospective enqueue: source is a memory-retrospective conversation",
@@ -91,7 +91,7 @@ export function enqueueMemoryRetrospectiveIfEnabled(args: {
     return false;
   }
 
-  if (isLowYieldRetrospectiveSource(conversationId)) {
+  if (await isLowYieldRetrospectiveSource(conversationId)) {
     log.debug(
       { conversationId, trigger },
       "Skipping memory-retrospective enqueue: scheduled or consolidation source",
@@ -99,7 +99,7 @@ export function enqueueMemoryRetrospectiveIfEnabled(args: {
     return false;
   }
 
-  if (!passesUserActivityGate(conversationId, trigger)) {
+  if (!(await passesUserActivityGate(conversationId, trigger))) {
     return false;
   }
 
@@ -144,17 +144,20 @@ function isRetrospectiveEnabled(): boolean {
  * non-tool_result content. A gate that cannot be evaluated (config or DB
  * unavailable) passes — an unevaluable gate must not silence retrospectives.
  */
-function passesUserActivityGate(
+async function passesUserActivityGate(
   conversationId: string,
   trigger: MemoryRetrospectiveTrigger,
-): boolean {
+): Promise<boolean> {
   try {
     if (!getConfig().memory.retrospective.requireUserActivity) {
       return true;
     }
     const state = getRetrospectiveState(conversationId);
     if (
-      hasQualifyingUserMessageAfter(conversationId, retrospectiveCursor(state))
+      await hasQualifyingUserMessageAfter(
+        conversationId,
+        retrospectiveCursor(state),
+      )
     ) {
       return true;
     }
@@ -177,10 +180,10 @@ function passesUserActivityGate(
  * conversation; without this check, that conversation's lifecycle would
  * enqueue another retrospective on top of it, recursing.
  */
-export function isMemoryRetrospectiveConversation(
+export async function isMemoryRetrospectiveConversation(
   conversationId: string,
-): boolean {
-  const source = getConversationSource(conversationId);
+): Promise<boolean> {
+  const source = await getConversationSource(conversationId);
   return source !== null && isMemoryRetrospectiveSource(source);
 }
 
@@ -191,8 +194,10 @@ export function isMemoryRetrospectiveConversation(
  * for no unique gain (and, for consolidation, re-stores already-captured
  * content). Heartbeat (`background`) and standard conversations are unaffected.
  */
-function isLowYieldRetrospectiveSource(conversationId: string): boolean {
-  const conversation = getConversation(conversationId);
+async function isLowYieldRetrospectiveSource(
+  conversationId: string,
+): Promise<boolean> {
+  const conversation = await getConversation(conversationId);
   if (!conversation) {
     return false;
   }
@@ -215,12 +220,10 @@ export function enqueueMemoryRetrospectiveOnCompaction(
   if (!resolveCapabilities(trustClass).canAccessMemory) {
     return;
   }
-  try {
-    enqueueMemoryRetrospectiveIfEnabled({
-      conversationId,
-      trigger: "compaction",
-    });
-  } catch {
-    // Best-effort — never block compaction on enqueue failures.
-  }
+  void enqueueMemoryRetrospectiveIfEnabled({
+    conversationId,
+    trigger: "compaction",
+  }).catch(() => {
+    // Best-effort, never block compaction on enqueue failures.
+  });
 }

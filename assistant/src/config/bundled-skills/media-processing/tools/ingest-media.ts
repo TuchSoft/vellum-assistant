@@ -198,7 +198,7 @@ export async function run(
   throwIfCancelled(context);
 
   // Register the asset
-  const asset = registerMediaAsset({
+  const asset = await registerMediaAsset({
     title,
     filePath,
     mimeType,
@@ -209,13 +209,13 @@ export async function run(
   });
 
   // Create an initial processing stage
-  createProcessingStage({
+  await createProcessingStage({
     assetId: asset.id,
     stage: "ingest",
   });
 
   // Update status to processing
-  updateMediaAssetStatus(asset.id, "processing");
+  await updateMediaAssetStatus(asset.id, "processing");
 
   // Enqueue a processing job via the existing jobs framework
   if (isMemoryEnabled()) {

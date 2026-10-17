@@ -192,7 +192,7 @@ export async function executeScaffoldManagedSkill(
     loadCatalog?: () => { id: string; source: SkillSource }[];
     getConversation?: (
       id: string,
-    ) => { forkParentConversationId: string | null } | null;
+    ) => Promise<{ forkParentConversationId: string | null } | null>;
   } = {},
 ): Promise<ToolExecutionResult> {
   const skillId = input.skill_id;
@@ -448,8 +448,8 @@ export async function executeScaffoldManagedSkill(
     try {
       const lookupConversation = deps.getConversation ?? getConversation;
       sourceConversationId =
-        lookupConversation(context.conversationId)?.forkParentConversationId ??
-        undefined;
+        (await lookupConversation(context.conversationId))
+          ?.forkParentConversationId ?? undefined;
     } catch {
       // Lineage stays unset; the scaffold itself still proceeds.
     }

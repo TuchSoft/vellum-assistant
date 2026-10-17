@@ -165,7 +165,7 @@ export async function run(
         // Fallback: if the source path is outside the sandbox (e.g. an image
         // attached from ~/Desktop), check if the attachment store has a
         // workspace-internal copy stored under its original source_path.
-        const storedPath = getFilePathBySourcePath(
+        const storedPath = await getFilePathBySourcePath(
           filePath,
           context.conversationId,
         );

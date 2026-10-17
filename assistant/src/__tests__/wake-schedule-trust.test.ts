@@ -11,7 +11,7 @@
  * schedule) is a route concern and lives in `wake-schedule-escalation.test.ts`.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { recoverRestingTrustContext } from "../daemon/conversation-resting-trust.js";
 import {
@@ -24,8 +24,7 @@ import {
   createConversation,
   setConversationOriginChannelIfUnset,
 } from "../persistence/conversation-crud.js";
-import { getDb, getSqliteFrom } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import type { WakeOptions } from "../runtime/agent-wake.js";
 import { resolveCapabilities } from "../runtime/capabilities.js";
 import {
@@ -34,8 +33,7 @@ import {
 } from "../schedule/defer-provenance.js";
 import { buildWakeScheduleOptions } from "../schedule/wake-schedule-options.js";
 import { resolveSensitiveToolDecision } from "../tools/tool-approval-handler.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 const TARGET = "conv-guardian-owned";
 
@@ -62,8 +60,11 @@ const LEGACY_WAKE_JOB = {
  * look. `setConversationOriginChannelIfUnset` only accepts a `ChannelId`, so
  * this has to go in under the type system.
  */
-function writeRawOriginChannel(conversationId: string, raw: string): void {
-  getSqliteFrom(getDb()).run(
+async function writeRawOriginChannel(
+  conversationId: string,
+  raw: string,
+): Promise<void> {
+  await requireMainDb().run(
     "UPDATE conversations SET origin_channel = ? WHERE id = ?",
     [raw, conversationId],
   );
@@ -94,15 +95,16 @@ function wakeGateDecision(options: WakeOptions): string {
   return gateDecision(options.trustContext, "sandbox");
 }
 
-describe("an owner-authored defer on a guardian-owned conversation", () => {
-  beforeEach(() => {
-    getDb().run("DELETE FROM messages");
-    getDb().run("DELETE FROM conversations");
-    createConversation({ id: TARGET });
+describePg("an owner-authored defer on a guardian-owned conversation", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
+    await createConversation({ id: TARGET });
   });
 
-  test("recovers the target's guardian resting trust", () => {
-    expect(buildWakeScheduleOptions(OWNER_WAKE_JOB, TARGET)).toEqual({
+  test("recovers the target's guardian resting trust", async () => {
+    expect(await buildWakeScheduleOptions(OWNER_WAKE_JOB, TARGET)).toEqual({
       conversationId: TARGET,
       hint: "Check back on this",
       source: "defer",
@@ -111,8 +113,8 @@ describe("an owner-authored defer on a guardian-owned conversation", () => {
     });
   });
 
-  test("clears the sensitive-tool gate at both reaches", () => {
-    const options = buildWakeScheduleOptions(OWNER_WAKE_JOB, TARGET);
+  test("clears the sensitive-tool gate at both reaches", async () => {
+    const options = await buildWakeScheduleOptions(OWNER_WAKE_JOB, TARGET);
 
     // `bash` in the workspace sandbox and a host-reaching invocation alike.
     // This is what lets a resumed deferral keep using the tools it was using
@@ -121,21 +123,21 @@ describe("an owner-authored defer on a guardian-owned conversation", () => {
     expect(gateDecision(options.trustContext, "host")).toBe("proceed");
   });
 
-  test("the internal vellum channel counts as guardian-owned", () => {
-    createConversation({ id: "conv-vellum" });
-    setConversationOriginChannelIfUnset("conv-vellum", "vellum");
+  test("the internal vellum channel counts as guardian-owned", async () => {
+    await createConversation({ id: "conv-vellum" });
+    await setConversationOriginChannelIfUnset("conv-vellum", "vellum");
 
     expect(
-      buildWakeScheduleOptions(
+      await buildWakeScheduleOptions(
         { ...OWNER_WAKE_JOB, createdFromConversationId: "conv-vellum" },
         "conv-vellum",
       ),
     ).toHaveProperty("trustContext", INTERNAL_GUARDIAN_TRUST_CONTEXT);
   });
 
-  test("the schedule's inference profile still rides along", () => {
+  test("the schedule's inference profile still rides along", async () => {
     expect(
-      buildWakeScheduleOptions(
+      await buildWakeScheduleOptions(
         { ...OWNER_WAKE_JOB, inferenceProfile: "fast" },
         TARGET,
       ),
@@ -143,25 +145,26 @@ describe("an owner-authored defer on a guardian-owned conversation", () => {
   });
 });
 
-describe("a row without owner provenance recovers nothing", () => {
-  beforeEach(() => {
-    getDb().run("DELETE FROM messages");
-    getDb().run("DELETE FROM conversations");
-    createConversation({ id: TARGET });
+describePg("a row without owner provenance recovers nothing", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
+    await createConversation({ id: TARGET });
   });
 
-  test("a legacy defer fails closed even on a guardian-owned target", () => {
+  test("a legacy defer fails closed even on a guardian-owned target", async () => {
     // A legacy row records no author for its target or text, so a retargeted
     // one is indistinguishable from an untouched one. Such rows keep firing;
     // they never recover trust.
-    const options = buildWakeScheduleOptions(LEGACY_WAKE_JOB, TARGET);
+    const options = await buildWakeScheduleOptions(LEGACY_WAKE_JOB, TARGET);
 
     expect(options).not.toHaveProperty("trustContext");
     expect(wakeGateDecision(options)).toBe("deny");
   });
 
-  test("an unmarked schedule fails closed", () => {
-    const options = buildWakeScheduleOptions(
+  test("an unmarked schedule fails closed", async () => {
+    const options = await buildWakeScheduleOptions(
       { ...OWNER_WAKE_JOB, createdBy: "agent" },
       TARGET,
     );
@@ -170,8 +173,8 @@ describe("a row without owner provenance recovers nothing", () => {
     expect(wakeGateDecision(options)).toBe("deny");
   });
 
-  test("a marked row whose source binding was never set fails closed", () => {
-    const options = buildWakeScheduleOptions(
+  test("a marked row whose source binding was never set fails closed", async () => {
+    const options = await buildWakeScheduleOptions(
       { ...OWNER_WAKE_JOB, createdFromConversationId: null },
       TARGET,
     );
@@ -180,12 +183,12 @@ describe("a row without owner provenance recovers nothing", () => {
     expect(wakeGateDecision(options)).toBe("deny");
   });
 
-  test("a marked row retargeted away from its source binding fails closed", () => {
+  test("a marked row retargeted away from its source binding fails closed", async () => {
     // The second half of the proof, standing on its own: even if the marker
     // survived and the route guard were bypassed or regressed, moving
     // `wakeConversationId` breaks the equality with the write-once source
     // binding, so the retargeted row cannot elevate.
-    const options = buildWakeScheduleOptions(
+    const options = await buildWakeScheduleOptions(
       { ...OWNER_WAKE_JOB, createdFromConversationId: "conv-somewhere-else" },
       TARGET,
     );
@@ -195,10 +198,11 @@ describe("a row without owner provenance recovers nothing", () => {
   });
 });
 
-describe("target provenance still bounds an owner-authored defer", () => {
-  beforeEach(() => {
-    getDb().run("DELETE FROM messages");
-    getDb().run("DELETE FROM conversations");
+describePg("target provenance still bounds an owner-authored defer", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
   });
 
   /** An owner-marked row correctly bound to `conversationId`. */
@@ -206,11 +210,11 @@ describe("target provenance still bounds an owner-authored defer", () => {
     return { ...OWNER_WAKE_JOB, createdFromConversationId: conversationId };
   }
 
-  test("a remote-channel target recovers nothing", () => {
-    createConversation({ id: "conv-remote" });
-    setConversationOriginChannelIfUnset("conv-remote", "telegram");
+  test("a remote-channel target recovers nothing", async () => {
+    await createConversation({ id: "conv-remote" });
+    await setConversationOriginChannelIfUnset("conv-remote", "telegram");
 
-    const options = buildWakeScheduleOptions(
+    const options = await buildWakeScheduleOptions(
       ownerJobFor("conv-remote"),
       "conv-remote",
     );
@@ -222,34 +226,37 @@ describe("target provenance still bounds an owner-authored defer", () => {
     expect(wakeGateDecision(options)).toBe("deny");
   });
 
-  test("an unrecognized stored origin recovers nothing", () => {
+  test("an unrecognized stored origin recovers nothing", async () => {
     // `getConversationOriginChannel` would collapse an unparseable value into
     // the same `null` an unset column yields, which would read as local. A row
     // from a newer build, a renamed channel id, or corrupted data must land
     // where a remote channel lands.
-    createConversation({ id: "conv-future" });
-    writeRawOriginChannel("conv-future", "channel-from-a-newer-build");
+    await createConversation({ id: "conv-future" });
+    await writeRawOriginChannel("conv-future", "channel-from-a-newer-build");
 
-    expect(recoverRestingTrustContext("conv-future")).toBeNull();
+    expect(await recoverRestingTrustContext("conv-future")).toBeNull();
     expect(
-      buildWakeScheduleOptions(ownerJobFor("conv-future"), "conv-future"),
+      await buildWakeScheduleOptions(ownerJobFor("conv-future"), "conv-future"),
     ).not.toHaveProperty("trustContext");
   });
 
-  test("an empty-string origin recovers nothing", () => {
-    createConversation({ id: "conv-blank" });
-    writeRawOriginChannel("conv-blank", "");
+  test("an empty-string origin recovers nothing", async () => {
+    await createConversation({ id: "conv-blank" });
+    await writeRawOriginChannel("conv-blank", "");
 
-    expect(recoverRestingTrustContext("conv-blank")).toBeNull();
+    expect(await recoverRestingTrustContext("conv-blank")).toBeNull();
   });
 
-  test("a conversation that does not exist recovers nothing", () => {
+  test("a conversation that does not exist recovers nothing", async () => {
     // Inert in practice (the wake rejects it as `not_found` before a turn
     // runs), but trust is granted on a positively recognized local origin, so
     // an absent row must never be one.
-    expect(recoverRestingTrustContext("conv-missing")).toBeNull();
+    expect(await recoverRestingTrustContext("conv-missing")).toBeNull();
     expect(
-      buildWakeScheduleOptions(ownerJobFor("conv-missing"), "conv-missing"),
+      await buildWakeScheduleOptions(
+        ownerJobFor("conv-missing"),
+        "conv-missing",
+      ),
     ).not.toHaveProperty("trustContext");
   });
 });

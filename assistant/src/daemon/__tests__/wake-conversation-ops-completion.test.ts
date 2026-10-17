@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 // persistWakeTriggerMessage syncs each row to the disk view and publishes a
 // sync invalidation; stub both so this unit test stays a pure DB round-trip
@@ -10,17 +10,15 @@ mock.module("../../runtime/sync/resource-sync-events.js", () => ({
   publishConversationMessagesChanged: () => {},
 }));
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import {
   createConversation,
   getMessages,
 } from "../../persistence/conversation-crud.js";
-import { initializeDb } from "../../persistence/db-init.js";
 import type { Message } from "../../providers/types.js";
 import type { CompletedBackgroundTool } from "../../tools/background-tool-registry.js";
 import type { Conversation } from "../conversation.js";
 import { persistWakeTriggerMessage } from "../wake-conversation-ops.js";
-
-await initializeDb();
 
 /** Minimal Conversation stub exercising only the fields the function reads. */
 function makeConversationStub(
@@ -49,19 +47,21 @@ function triggerMessage(): Message {
   };
 }
 
-function readMetadata(conversationId: string): Record<string, unknown> {
-  const rows = getMessages(conversationId);
+async function readMetadata(
+  conversationId: string,
+): Promise<Record<string, unknown>> {
+  const rows = await getMessages(conversationId);
   expect(rows.length).toBe(1);
   const raw = rows[0]?.metadata;
   expect(raw).toBeTruthy();
   return JSON.parse(raw as string) as Record<string, unknown>;
 }
 
-describe("persistWakeTriggerMessage backgroundToolCompletion", () => {
+describePg("persistWakeTriggerMessage backgroundToolCompletion", () => {
   let conversationId: string;
 
-  beforeEach(() => {
-    conversationId = createConversation("wake-completion-test").id;
+  beforeEach(async () => {
+    conversationId = (await createConversation("wake-completion-test")).id;
   });
 
   test("round-trips a completion onto the persisted metadata", async () => {
@@ -85,7 +85,7 @@ describe("persistWakeTriggerMessage backgroundToolCompletion", () => {
       completion,
     );
 
-    const metadata = readMetadata(conversationId);
+    const metadata = await readMetadata(conversationId);
     expect(metadata.backgroundToolCompletion).toEqual(completion);
     // Existing wake-trigger metadata is unaffected.
     expect(metadata.kind).toBe("background-event");
@@ -104,7 +104,7 @@ describe("persistWakeTriggerMessage backgroundToolCompletion", () => {
       true,
     );
 
-    const metadata = readMetadata(conversationId);
+    const metadata = await readMetadata(conversationId);
     expect("backgroundToolCompletion" in metadata).toBe(false);
     expect(metadata.kind).toBe("background-event");
     // A clientless wake (interrupted-turn recovery, local IPC wake) pins
@@ -124,7 +124,7 @@ describe("persistWakeTriggerMessage backgroundToolCompletion", () => {
       false,
     );
 
-    const metadata = readMetadata(conversationId);
+    const metadata = await readMetadata(conversationId);
     expect(metadata.backgroundEventSource).toBe("schedule");
     expect(metadata.backgroundEventInteractive).toBe(false);
   });

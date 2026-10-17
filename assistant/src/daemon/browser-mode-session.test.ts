@@ -20,12 +20,12 @@ function createCoordinator() {
   const activity: Array<{ turnId: string; at: number }> = [];
 
   const coordinator = {
-    activateSource(input: {
+    async activateSource(input: {
       sourceId: string;
       generation: number;
       mode: "browser";
       sourceStartedAt: number;
-    }): ModeSessionSourceHandle {
+    }): Promise<ModeSessionSourceHandle> {
       activation += 1;
       const handle = {
         sourceId: input.sourceId,
@@ -37,20 +37,20 @@ function createCoordinator() {
       activated.push(handle);
       return handle;
     },
-    claimTurn(
+    async claimTurn(
       _turnId: string,
       handle: ModeSessionSourceHandle,
       _at: number,
-    ): ModeSession {
+    ): Promise<ModeSession> {
       owner ??= { id: handle.id, mode: handle.mode };
       return owner;
     },
     getTurnOwner: () => owner,
-    recordActivity: (turnId: string, at: number) => {
+    recordActivity: async (turnId: string, at: number) => {
       activity.push({ turnId, at });
       return true;
     },
-    retireSource: (
+    retireSource: async (
       handle: ModeSessionSourceHandle,
       disposition?: ModeSessionTerminalDisposition,
     ) => {
@@ -80,23 +80,23 @@ describe("BrowserModeSessionProducer", () => {
 
   test.each([false, true])(
     "retires failed admission while preserving a partial turn owner (%s)",
-    (partial) => {
+    async (partial) => {
       const state = createCoordinator();
       const claim = state.coordinator.claimTurn;
-      state.coordinator.claimTurn = (...args) => {
+      state.coordinator.claimTurn = async (...args) => {
         if (partial) {
-          claim(...args);
+          await claim(...args);
         }
         throw new Error("tracking unavailable");
       };
       const producer = new BrowserModeSessionProducer(state.coordinator);
-      expect(() =>
+      await expect(
         producer.beginOperation({
           turnId: "turn-123",
           lifecycle: "action",
           at: 100,
         }),
-      ).toThrow("tracking unavailable");
+      ).rejects.toThrow("tracking unavailable");
       expect(state.retired).toHaveLength(1);
       expect(state.retired[0]?.disposition).toMatchObject({
         status: "interrupted",
@@ -110,7 +110,7 @@ describe("BrowserModeSessionProducer", () => {
     },
   );
 
-  test("admits new tracking only while the shared feature flag is enabled", () => {
+  test("admits new tracking only while the shared feature flag is enabled", async () => {
     const state = createCoordinator();
     const producer = new BrowserModeSessionProducer(
       state.coordinator,
@@ -121,7 +121,7 @@ describe("BrowserModeSessionProducer", () => {
     setOverridesForTesting({});
     expect(isSessionGroupsEnabled()).toBe(false);
     expect(
-      producer.beginOperation({
+      await producer.beginOperation({
         turnId: "turn-disabled",
         lifecycle: "action",
         at: 100,
@@ -130,7 +130,7 @@ describe("BrowserModeSessionProducer", () => {
     expect(state.activated).toEqual([]);
 
     setOverridesForTesting({ "session-groups": true });
-    const admitted = producer.beginOperation({
+    const admitted = await producer.beginOperation({
       turnId: "turn-enabled",
       lifecycle: "action",
       at: 110,
@@ -139,14 +139,14 @@ describe("BrowserModeSessionProducer", () => {
 
     setOverridesForTesting({ "session-groups": false });
     state.clearOwner();
-    const close = producer.beginOperation({
+    const close = await producer.beginOperation({
       turnId: "turn-close",
       lifecycle: "terminal",
       at: 120,
     });
     expect(close?.owner).toEqual({ id: "browser-1", mode: "browser" });
     expect(
-      producer.finishOperation(close, {
+      await producer.finishOperation(close, {
         at: 130,
         isError: false,
         cancelled: false,
@@ -156,11 +156,11 @@ describe("BrowserModeSessionProducer", () => {
     expect(state.retired).toHaveLength(1);
   });
 
-  test("claims the first action and records repeated successful activity", () => {
+  test("claims the first action and records repeated successful activity", async () => {
     const state = createCoordinator();
     const producer = new BrowserModeSessionProducer(state.coordinator);
 
-    const first = producer.beginOperation({
+    const first = await producer.beginOperation({
       turnId: "turn-1",
       lifecycle: "action",
       at: 100,
@@ -168,7 +168,7 @@ describe("BrowserModeSessionProducer", () => {
     expect(first?.owner).toEqual({ id: "browser-1", mode: "browser" });
     expect(state.activated).toHaveLength(1);
     expect(
-      producer.finishOperation(first, {
+      await producer.finishOperation(first, {
         at: 120,
         isError: false,
         cancelled: false,
@@ -176,7 +176,7 @@ describe("BrowserModeSessionProducer", () => {
     ).toBe(true);
     expect(state.activity).toEqual([{ turnId: "turn-1", at: 120 }]);
 
-    const repeated = producer.beginOperation({
+    const repeated = await producer.beginOperation({
       turnId: "turn-1",
       lifecycle: "action",
       at: 130,
@@ -185,19 +185,19 @@ describe("BrowserModeSessionProducer", () => {
     expect(state.activated).toHaveLength(1);
   });
 
-  test("status and a terminal operation without an active run are inert", () => {
+  test("status and a terminal operation without an active run are inert", async () => {
     const state = createCoordinator();
     const producer = new BrowserModeSessionProducer(state.coordinator);
 
     expect(
-      producer.beginOperation({
+      await producer.beginOperation({
         turnId: "turn-1",
         lifecycle: "status",
         at: 100,
       }),
     ).toBeUndefined();
     expect(
-      producer.beginOperation({
+      await producer.beginOperation({
         turnId: "turn-1",
         lifecycle: "terminal",
         at: 110,
@@ -206,12 +206,12 @@ describe("BrowserModeSessionProducer", () => {
     expect(state.activated).toEqual([]);
   });
 
-  test("keeps an existing non-browser owner without activating a nested run", () => {
+  test("keeps an existing non-browser owner without activating a nested run", async () => {
     const state = createCoordinator();
     state.setOwner({ id: "live-1", mode: "live_vision" });
     const producer = new BrowserModeSessionProducer(state.coordinator);
 
-    const token = producer.beginOperation({
+    const token = await producer.beginOperation({
       turnId: "turn-1",
       lifecycle: "action",
       at: 100,
@@ -220,7 +220,7 @@ describe("BrowserModeSessionProducer", () => {
     expect(token?.handle).toBeUndefined();
     expect(state.activated).toEqual([]);
     expect(
-      producer.finishOperation(token, {
+      await producer.finishOperation(token, {
         at: 120,
         isError: false,
         cancelled: false,
@@ -229,24 +229,24 @@ describe("BrowserModeSessionProducer", () => {
     expect(state.activity).toEqual([{ turnId: "turn-1", at: 120 }]);
   });
 
-  test("successful close retires the active run with a completed disposition", () => {
+  test("successful close retires the active run with a completed disposition", async () => {
     const state = createCoordinator();
     const producer = new BrowserModeSessionProducer(state.coordinator);
-    producer.beginOperation({
+    await producer.beginOperation({
       turnId: "turn-1",
       lifecycle: "action",
       at: 100,
     });
     state.clearOwner();
 
-    const close = producer.beginOperation({
+    const close = await producer.beginOperation({
       turnId: "turn-close",
       lifecycle: "terminal",
       at: 200,
     });
     expect(close?.owner.id).toBe("browser-1");
     expect(
-      producer.finishOperation(close, {
+      await producer.finishOperation(close, {
         at: 220,
         isError: false,
         cancelled: false,
@@ -264,17 +264,17 @@ describe("BrowserModeSessionProducer", () => {
     ]);
   });
 
-  test("a foreign-owned terminal operation retires only the captured browser run", () => {
+  test("a foreign-owned terminal operation retires only the captured browser run", async () => {
     const state = createCoordinator();
     const producer = new BrowserModeSessionProducer(state.coordinator);
-    producer.beginOperation({
+    await producer.beginOperation({
       turnId: "turn-browser",
       lifecycle: "action",
       at: 100,
     });
     state.setOwner({ id: "live-1", mode: "live_vision" });
 
-    const close = producer.beginOperation({
+    const close = await producer.beginOperation({
       turnId: "turn-live",
       lifecycle: "terminal",
       at: 200,
@@ -284,7 +284,7 @@ describe("BrowserModeSessionProducer", () => {
       handle: { id: "browser-1", activation: 1 },
     });
     expect(
-      producer.finishOperation(close, {
+      await producer.finishOperation(close, {
         at: 220,
         isError: false,
         cancelled: false,
@@ -300,13 +300,13 @@ describe("BrowserModeSessionProducer", () => {
     });
 
     state.clearOwner();
-    producer.beginOperation({
+    await producer.beginOperation({
       turnId: "turn-browser-2",
       lifecycle: "action",
       at: 300,
     });
     expect(
-      producer.finishOperation(close, {
+      await producer.finishOperation(close, {
         at: 320,
         isError: true,
         cancelled: false,
@@ -315,21 +315,21 @@ describe("BrowserModeSessionProducer", () => {
     expect(state.retired).toHaveLength(1);
   });
 
-  test("a failed close keeps the session active until a successful retry", () => {
+  test("a failed close keeps the session active until a successful retry", async () => {
     const state = createCoordinator();
     const producer = new BrowserModeSessionProducer(state.coordinator);
-    const action = producer.beginOperation({
+    const action = await producer.beginOperation({
       turnId: "turn-1",
       lifecycle: "action",
       at: 100,
     });
-    const close = producer.beginOperation({
+    const close = await producer.beginOperation({
       turnId: "turn-1",
       lifecycle: "terminal",
       at: 110,
     });
     expect(
-      producer.finishOperation(close, {
+      await producer.finishOperation(close, {
         at: 120,
         isError: true,
         cancelled: false,
@@ -338,13 +338,13 @@ describe("BrowserModeSessionProducer", () => {
     expect(state.retired).toHaveLength(0);
     expect(state.activity).toEqual([{ turnId: "turn-1", at: 120 }]);
 
-    const retry = producer.beginOperation({
+    const retry = await producer.beginOperation({
       turnId: "turn-1",
       lifecycle: "terminal",
       at: 130,
     });
     expect(retry?.handle).toEqual(action?.handle);
-    producer.finishOperation(retry, {
+    await producer.finishOperation(retry, {
       at: 140,
       isError: false,
       cancelled: false,
@@ -355,16 +355,16 @@ describe("BrowserModeSessionProducer", () => {
     });
   });
 
-  test("cancellation retires the exact run while accepted output remains on its captured turn", () => {
+  test("cancellation retires the exact run while accepted output remains on its captured turn", async () => {
     const state = createCoordinator();
     const producer = new BrowserModeSessionProducer(state.coordinator);
-    const stale = producer.beginOperation({
+    const stale = await producer.beginOperation({
       turnId: "turn-1",
       lifecycle: "action",
       at: 100,
     });
     expect(
-      producer.finishOperation(stale, {
+      await producer.finishOperation(stale, {
         at: 120,
         isError: true,
         cancelled: true,
@@ -376,21 +376,21 @@ describe("BrowserModeSessionProducer", () => {
     });
 
     state.clearOwner();
-    const current = producer.beginOperation({
+    const current = await producer.beginOperation({
       turnId: "turn-2",
       lifecycle: "action",
       at: 200,
     });
     expect(current?.handle?.activation).toBe(2);
     expect(
-      producer.finishOperation(stale, {
+      await producer.finishOperation(stale, {
         at: 210,
         isError: true,
         cancelled: true,
       }),
     ).toBe(false);
     expect(
-      producer.finishOperation(stale, {
+      await producer.finishOperation(stale, {
         at: 220,
         isError: false,
         cancelled: false,

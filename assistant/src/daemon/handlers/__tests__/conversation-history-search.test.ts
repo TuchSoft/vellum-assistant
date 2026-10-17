@@ -8,36 +8,30 @@
  * `persistence/__tests__/conversation-queries-search.test.ts`.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import { createConversation } from "../../../persistence/conversation-crud.js";
-import { getDb } from "../../../persistence/db-connection.js";
-import { initializeDb } from "../../../persistence/db-init.js";
-import { rawRun } from "../../../persistence/raw-query.js";
-import { conversations } from "../../../persistence/schema/index.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { performConversationSearch } from "../conversation-history.js";
 
-await initializeDb();
-
-function seedArchived(title: string): string {
-  const conv = createConversation({ title });
-  rawRun(
-    "test:archiveConversation",
+async function seedArchived(title: string): Promise<string> {
+  const conv = await createConversation({ title });
+  await requireMainDb().run(
     "UPDATE conversations SET archived_at = ? WHERE id = ?",
-    Date.now(),
-    conv.id,
+    [Date.now(), conv.id],
   );
   return conv.id;
 }
 
-describe("performConversationSearch · wildcard listing", () => {
-  beforeEach(() => {
-    getDb().delete(conversations).run();
+describePg("performConversationSearch · wildcard listing", () => {
+  beforeEach(async () => {
+    await requireMainDb().orm.delete(requireMainDb().schema.conversations);
   });
 
   test("omits archived conversations by default", async () => {
-    createConversation("live-1");
-    seedArchived("archived-1");
+    await createConversation("live-1");
+    await seedArchived("archived-1");
 
     const results = await performConversationSearch({ query: "*" });
 
@@ -45,8 +39,8 @@ describe("performConversationSearch · wildcard listing", () => {
   });
 
   test("includeArchived reaches archived conversations", async () => {
-    createConversation("live-1");
-    seedArchived("archived-1");
+    await createConversation("live-1");
+    await seedArchived("archived-1");
 
     const results = await performConversationSearch({
       query: "*",

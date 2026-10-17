@@ -18,11 +18,11 @@ function createCoordinator() {
   const releases: string[] = [];
 
   const coordinator = {
-    activateSource(input: {
+    async activateSource(input: {
       sourceId: string;
       generation: number;
       mode: ModeSessionMode;
-    }): ModeSessionSourceHandle {
+    }): Promise<ModeSessionSourceHandle> {
       activation += 1;
       return {
         sourceId: input.sourceId,
@@ -32,25 +32,29 @@ function createCoordinator() {
         mode: input.mode,
       };
     },
-    claimTurn(
+    async claimTurn(
       turnId: string,
       handle: ModeSessionSourceHandle,
-    ): ModeSessionSourceHandle {
+    ): Promise<ModeSessionSourceHandle> {
       owners.set(turnId, handle);
       return handle;
     },
-    recordActivity: () => true,
-    retireSource(
+    recordActivity: async () => true,
+    async retireSource(
       handle: ModeSessionSourceHandle,
       disposition?: ModeSessionTerminalDisposition,
-    ): boolean {
+    ): Promise<boolean> {
       retired.push({ handle, disposition });
       return true;
     },
-    trackPersistedRow(turnId: string, messageId: string, at: number): void {
+    async trackPersistedRow(
+      turnId: string,
+      messageId: string,
+      at: number,
+    ): Promise<void> {
       rows.push({ turnId, messageId, at });
     },
-    releaseTurn(turnId: string): void {
+    async releaseTurn(turnId: string): Promise<void> {
       releases.push(turnId);
       owners.delete(turnId);
     },
@@ -59,24 +63,24 @@ function createCoordinator() {
 }
 
 describe("CameraModeSessionProducer", () => {
-  test("starts before a frame and exposes the same owner to voice turns", () => {
+  test("starts before a frame and exposes the same owner to voice turns", async () => {
     const state = createCoordinator();
     const producer = new CameraModeSessionProducer(
       state.coordinator,
       "voice-1",
     );
 
-    const handle = producer.start(1, "live", 100);
+    const handle = await producer.start(1, "live", 100);
     expect(handle).toMatchObject({
       generation: 1,
       mode: "live_vision",
       sourceId: "live-voice-camera:voice-1",
     });
     expect(producer.captureTurn()).toEqual(handle);
-    expect(producer.start(1, "live", 110)).toEqual(handle);
+    expect(await producer.start(1, "live", 110)).toEqual(handle);
   });
 
-  test("rolls back a partially claimed start and allows the epoch to retry", () => {
+  test("rolls back a partially claimed start and allows the epoch to retry", async () => {
     const state = createCoordinator();
     const producer = new CameraModeSessionProducer(
       state.coordinator,
@@ -84,8 +88,8 @@ describe("CameraModeSessionProducer", () => {
     );
     const claimTurn = state.coordinator.claimTurn.bind(state.coordinator);
     let shouldThrow = true;
-    state.coordinator.claimTurn = (turnId, handle) => {
-      const owner = claimTurn(turnId, handle);
+    state.coordinator.claimTurn = async (turnId, handle) => {
+      const owner = await claimTurn(turnId, handle);
       if (shouldThrow) {
         shouldThrow = false;
         throw new Error("session tracking unavailable");
@@ -93,7 +97,7 @@ describe("CameraModeSessionProducer", () => {
       return owner;
     };
 
-    expect(() => producer.start(1, "ambient", 100)).toThrow(
+    await expect(producer.start(1, "ambient", 100)).rejects.toThrow(
       "session tracking unavailable",
     );
     expect(producer.captureTurn()).toBeUndefined();
@@ -108,65 +112,67 @@ describe("CameraModeSessionProducer", () => {
     ]);
     expect(state.releases).toHaveLength(1);
 
-    expect(producer.start(1, "ambient", 110)).toMatchObject({
+    expect(await producer.start(1, "ambient", 110)).toMatchObject({
       generation: 1,
       activation: 2,
       mode: "ambient",
     });
   });
 
-  test("releases a partial claim even when source retirement throws", () => {
+  test("releases a partial claim even when source retirement throws", async () => {
     const state = createCoordinator();
     const producer = new CameraModeSessionProducer(
       state.coordinator,
       "voice-1",
     );
     const claimTurn = state.coordinator.claimTurn.bind(state.coordinator);
-    state.coordinator.claimTurn = (turnId, handle) => {
-      claimTurn(turnId, handle);
+    state.coordinator.claimTurn = async (turnId, handle) => {
+      await claimTurn(turnId, handle);
       throw new Error("session tracking unavailable");
     };
-    state.coordinator.retireSource = () => {
+    state.coordinator.retireSource = async () => {
       throw new Error("source retirement unavailable");
     };
 
-    expect(() => producer.start(1, "live", 100)).toThrow(AggregateError);
+    await expect(producer.start(1, "live", 100)).rejects.toThrow(
+      AggregateError,
+    );
     expect(producer.captureTurn()).toBeUndefined();
     expect(state.owners.size).toBe(0);
     expect(state.releases).toHaveLength(1);
   });
 
-  test("rolls back a refused synthetic owner", () => {
+  test("rolls back a refused synthetic owner", async () => {
     const state = createCoordinator();
     const producer = new CameraModeSessionProducer(
       state.coordinator,
       "voice-1",
     );
     const claimTurn = state.coordinator.claimTurn.bind(state.coordinator);
-    state.coordinator.claimTurn = (turnId, handle) => {
-      claimTurn(turnId, handle);
+    state.coordinator.claimTurn = async (turnId, handle) => {
+      await claimTurn(turnId, handle);
       return { ...handle, id: "another-session" };
     };
 
-    expect(producer.start(1, "live", 100)).toBeUndefined();
+    expect(await producer.start(1, "live", 100)).toBeUndefined();
     expect(producer.captureTurn()).toBeUndefined();
     expect(state.owners.size).toBe(0);
     expect(state.retired).toHaveLength(1);
     expect(state.releases).toHaveLength(1);
   });
 
-  test("holds terminal publication until accepted keeps settle", () => {
+  test("holds terminal publication until accepted keeps settle", async () => {
     const state = createCoordinator();
     const producer = new CameraModeSessionProducer(
       state.coordinator,
       "voice-1",
     );
-    producer.start(1, "ambient", 100);
+    await producer.start(1, "ambient", 100);
     const frame = producer.beginFrame(1, "ambient");
 
-    expect(producer.end(1)).toBe(true);
+    expect(await producer.end(1)).toBe(true);
     expect(state.releases).toEqual([]);
-    producer.finishFrame(frame, { messageId: "frame-1", at: 140 });
+    await producer.finishFrame(frame, { messageId: "frame-1", at: 140 });
 
     expect(state.rows).toEqual([
       expect.objectContaining({ messageId: "frame-1", at: 140 }),
@@ -178,50 +184,50 @@ describe("CameraModeSessionProducer", () => {
     });
   });
 
-  test("settles each accepted keep exactly once", () => {
+  test("settles each accepted keep exactly once", async () => {
     const state = createCoordinator();
     const producer = new CameraModeSessionProducer(
       state.coordinator,
       "voice-1",
     );
-    producer.start(1, "ambient", 100);
+    await producer.start(1, "ambient", 100);
     const frame = producer.beginFrame(1, "ambient");
-    producer.end(1);
+    await producer.end(1);
 
-    producer.finishFrame(frame, { messageId: "frame-1", at: 140 });
-    producer.finishFrame(frame, { messageId: "frame-1", at: 140 });
+    await producer.finishFrame(frame, { messageId: "frame-1", at: 140 });
+    await producer.finishFrame(frame, { messageId: "frame-1", at: 140 });
 
     expect(state.rows).toHaveLength(1);
     expect(state.releases).toHaveLength(1);
   });
 
-  test("rejects stale frames and ends without requiring another message", () => {
+  test("rejects stale frames and ends without requiring another message", async () => {
     const state = createCoordinator();
     const producer = new CameraModeSessionProducer(
       state.coordinator,
       "voice-1",
     );
-    producer.start(1, "live", 100);
-    producer.end(1);
-    producer.start(2, "live", 200);
+    await producer.start(1, "live", 100);
+    await producer.end(1);
+    await producer.start(2, "live", 200);
 
-    expect(producer.start(1, "live", 210)).toBeUndefined();
+    expect(await producer.start(1, "live", 210)).toBeUndefined();
     expect(producer.beginFrame(1, "live")).toBeUndefined();
     expect(producer.beginFrame(2, "ambient")).toBeUndefined();
-    expect(producer.end(1)).toBe(false);
+    expect(await producer.end(1)).toBe(false);
     expect(producer.captureTurn()).toMatchObject({ generation: 2 });
     expect(state.retired).toHaveLength(1);
     expect(state.releases).toHaveLength(1);
   });
 
-  test("retires an unended run as interrupted when a replacement starts", () => {
+  test("retires an unended run as interrupted when a replacement starts", async () => {
     const state = createCoordinator();
     const producer = new CameraModeSessionProducer(
       state.coordinator,
       "voice-1",
     );
-    producer.start(1, "live", 100);
-    producer.start(2, "ambient", 200);
+    await producer.start(1, "live", 100);
+    await producer.start(2, "ambient", 200);
 
     expect(state.retired[0]?.disposition).toEqual({
       status: "interrupted",
@@ -230,35 +236,37 @@ describe("CameraModeSessionProducer", () => {
     expect(producer.captureTurn()).toMatchObject({ mode: "ambient" });
   });
 
-  test("releases the local run when source retirement throws after mutation", () => {
+  test("releases the local run when source retirement throws after mutation", async () => {
     const state = createCoordinator();
     const producer = new CameraModeSessionProducer(
       state.coordinator,
       "voice-1",
     );
-    producer.start(1, "live", 100);
+    await producer.start(1, "live", 100);
     const retireSource = state.coordinator.retireSource.bind(state.coordinator);
-    state.coordinator.retireSource = (handle, disposition) => {
-      retireSource(handle, disposition);
+    state.coordinator.retireSource = async (handle, disposition) => {
+      await retireSource(handle, disposition);
       throw new Error("source retirement unavailable");
     };
 
-    expect(() => producer.end(1)).toThrow("source retirement unavailable");
+    await expect(producer.end(1)).rejects.toThrow(
+      "source retirement unavailable",
+    );
     expect(producer.captureTurn()).toBeUndefined();
     expect(state.releases).toHaveLength(1);
-    expect(producer.end(1)).toBe(false);
+    expect(await producer.end(1)).toBe(false);
   });
 
-  test("releases the synthetic turn when its source is already stale", () => {
+  test("releases the synthetic turn when its source is already stale", async () => {
     const state = createCoordinator();
     const producer = new CameraModeSessionProducer(
       state.coordinator,
       "voice-1",
     );
-    producer.start(1, "live", 100);
-    state.coordinator.retireSource = () => false;
+    await producer.start(1, "live", 100);
+    state.coordinator.retireSource = async () => false;
 
-    expect(producer.end(1)).toBe(false);
+    expect(await producer.end(1)).toBe(false);
     expect(producer.captureTurn()).toBeUndefined();
     expect(state.releases).toHaveLength(1);
   });

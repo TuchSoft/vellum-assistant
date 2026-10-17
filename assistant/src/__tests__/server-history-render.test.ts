@@ -15,9 +15,8 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-await initializeDb();
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
 describe("renderHistoryContent sentinel forgery guard", () => {
   const FORGED = "\u3014redacted:GitHub Token:github-app:pem\u3015";
@@ -1266,20 +1265,20 @@ describe("renderHistoryContent contentBlocks", () => {
   });
 });
 
-describe("getAttachmentsForMessage", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM message_attachments");
-    db.run("DELETE FROM attachments");
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversations");
+describePg("getAttachmentsForMessage", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM message_attachments");
+    await db.run("DELETE FROM attachments");
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
   });
 
   async function createMessage(
     role: "user" | "assistant" | "system",
     content: string,
   ): Promise<string> {
-    const conv = createConversation("test");
+    const conv = await createConversation("test");
     const msg = await addMessage(conv.id, role, content);
     return msg.id;
   }
@@ -1287,9 +1286,9 @@ describe("getAttachmentsForMessage", () => {
   test("returns attachments linked to a message", async () => {
     const msgId = await createMessage("assistant", "Here is a chart");
     const stored = await uploadAttachment("chart.png", "image/png", "iVBORw==");
-    linkAttachmentToMessage(msgId, stored.id, 0);
+    await linkAttachmentToMessage(msgId, stored.id, 0);
 
-    const result = getAttachmentsForMessage(msgId);
+    const result = await getAttachmentsForMessage(msgId);
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe(stored.id);
     expect(result[0].originalFilename).toBe("chart.png");
@@ -1297,8 +1296,8 @@ describe("getAttachmentsForMessage", () => {
     expect(result[0].dataBase64).toBe("iVBORw==");
   });
 
-  test("returns empty array when no attachments are linked", () => {
-    expect(getAttachmentsForMessage("msg-nonexistent")).toEqual([]);
+  test("returns empty array when no attachments are linked", async () => {
+    expect(await getAttachmentsForMessage("msg-nonexistent")).toEqual([]);
   });
 
   test("returns multiple attachments in position order", async () => {
@@ -1306,10 +1305,10 @@ describe("getAttachmentsForMessage", () => {
     const a1 = await uploadAttachment("first.txt", "text/plain", "AAAA");
     const a2 = await uploadAttachment("second.txt", "text/plain", "BBBB");
 
-    linkAttachmentToMessage(msgId, a2.id, 1);
-    linkAttachmentToMessage(msgId, a1.id, 0);
+    await linkAttachmentToMessage(msgId, a2.id, 1);
+    await linkAttachmentToMessage(msgId, a1.id, 0);
 
-    const result = getAttachmentsForMessage(msgId);
+    const result = await getAttachmentsForMessage(msgId);
     expect(result).toHaveLength(2);
     expect(result[0].originalFilename).toBe("first.txt");
     expect(result[1].originalFilename).toBe("second.txt");
@@ -1320,10 +1319,10 @@ describe("getAttachmentsForMessage", () => {
     const a1 = await uploadAttachment("a.png", "image/png", "AAAA");
     const a2 = await uploadAttachment("b.png", "image/png", "BBBB");
 
-    linkAttachmentToMessage(msgId, a1.id, 0);
-    linkAttachmentToMessage(msgId, a2.id, 1);
+    await linkAttachmentToMessage(msgId, a1.id, 0);
+    await linkAttachmentToMessage(msgId, a2.id, 1);
 
-    const result = getAttachmentsForMessage(msgId);
+    const result = await getAttachmentsForMessage(msgId);
     expect(result).toHaveLength(2);
   });
 });

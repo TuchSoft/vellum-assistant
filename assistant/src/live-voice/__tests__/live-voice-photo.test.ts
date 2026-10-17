@@ -1,4 +1,4 @@
-import { describe, expect, mock, spyOn, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 
 import { eq } from "drizzle-orm";
 
@@ -11,6 +11,7 @@ import { waitFor } from "../../__tests__/helpers/wait-for.js";
 
 setConfig("memory", { enabled: false });
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import type { AssistantEvent } from "../../api/index.js";
 import {
   Conversation,
@@ -40,10 +41,8 @@ import {
   selectSightFrameCaptureTimes,
 } from "../../persistence/conversation-crud.js";
 import { sightFrameAttachmentIdsFromMetadata } from "../../persistence/conversation-types.js";
-import * as dbConnection from "../../persistence/db-connection.js";
-import { getDb } from "../../persistence/db-connection.js";
-import { initializeDb } from "../../persistence/db-init.js";
-import { attachments, conversations } from "../../persistence/schema/index.js";
+import * as dbFacade from "../../persistence/db-facade.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import * as slowSyncLog from "../../persistence/slow-sync-log.js";
 import { mediaBlockAttachmentId, type Message } from "../../providers/types.js";
 import { assistantEventHub } from "../../runtime/assistant-event-hub.js";
@@ -59,8 +58,6 @@ import {
   persistLiveVoicePhoto,
 } from "../live-voice-photo.js";
 
-await initializeDb();
-
 /**
  * Run something in the window the persist opens between materializing an
  * attachment and inserting its row.
@@ -70,16 +67,16 @@ await initializeDb();
  * Armed per test and cleared as it fires; every other test leaves it null
  * and gets the real function.
  */
-let duringPersistBeforeInsert: (() => void) | null = null;
+let duringPersistBeforeInsert: (() => void | Promise<void>) | null = null;
 const realPortOversized = { ...portOversized };
 mock.module("../../daemon/port-oversized-content.js", () => ({
   ...realPortOversized,
-  offloadOversizedText: (
+  offloadOversizedText: async (
     ...args: Parameters<typeof realPortOversized.offloadOversizedText>
   ) => {
     const hook = duringPersistBeforeInsert;
     duringPersistBeforeInsert = null;
-    hook?.();
+    await hook?.();
     return realPortOversized.offloadOversizedText(...args);
   },
 }));
@@ -94,7 +91,7 @@ mock.module("../../daemon/port-oversized-content.js", () => ({
  * per test and cleared as it fires; every other test leaves it null and the
  * insert runs for real the first time.
  */
-let beforeFailingInsertAttempt: (() => void) | null = null;
+let beforeFailingInsertAttempt: (() => void | Promise<void>) | null = null;
 
 /**
  * Make every store read throw, which is what leaves a persist unable to say
@@ -112,20 +109,19 @@ let breakStoreAfterInsert = false;
 const realSlowSyncLog = { ...slowSyncLog };
 mock.module("../../persistence/slow-sync-log.js", () => ({
   ...realSlowSyncLog,
-  timeSyncSection: <T>(
+  traceAsyncSection: async <T>(
     label: string,
-    fn: () => T,
-    detail?: (result: T) => Record<string, unknown>,
-  ): T => {
+    fn: () => Promise<T>,
+  ): Promise<T> => {
     if (label === "messages:insert" && beforeFailingInsertAttempt) {
       const hook = beforeFailingInsertAttempt;
       beforeFailingInsertAttempt = null;
-      hook();
+      await hook();
       throw Object.assign(new Error("database is locked"), {
         code: "SQLITE_BUSY",
       });
     }
-    const result = realSlowSyncLog.timeSyncSection(label, fn, detail);
+    const result = await realSlowSyncLog.traceAsyncSection(label, fn);
     if (label === "messages:insert" && breakStoreAfterInsert) {
       breakStoreAfterInsert = false;
       storeUnreadable = true;
@@ -153,14 +149,14 @@ mock.module("../../persistence/attachments-store.js", () => ({
   },
 }));
 
-const realDbConnection = { ...dbConnection };
-mock.module("../../persistence/db-connection.js", () => ({
-  ...realDbConnection,
-  getDb: () => {
+const realDbFacade = { ...dbFacade };
+mock.module("../../persistence/db-facade.js", () => ({
+  ...realDbFacade,
+  requireMainDb: () => {
     if (storeUnreadable) {
       throw new Error("database is not readable");
     }
-    return realDbConnection.getDb();
+    return realDbFacade.requireMainDb();
   },
 }));
 
@@ -168,8 +164,8 @@ const IMAGE_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk";
 
 /** A registered conversation the persist paths can reach, plus its teardown. */
-function liveConversation(title: string) {
-  const conversation = createConversation(title);
+async function liveConversation(title: string) {
+  const conversation = await createConversation(title);
   const { provider } = createMockProvider([textResponse("")]);
   const activeConversation = new Conversation(
     conversation.id,
@@ -243,8 +239,8 @@ async function uploadFrame(name: string): Promise<string> {
 }
 
 /** True while the attachment's row is still in the store. */
-function frameStored(attachmentId: string): boolean {
-  return getAttachmentById(attachmentId) !== null;
+async function frameStored(attachmentId: string): Promise<boolean> {
+  return (await getAttachmentById(attachmentId)) !== null;
 }
 
 /** Collect the row announcements the hub carries for one conversation. */
@@ -264,17 +260,21 @@ function watchEchoes(conversationId: string) {
 }
 
 /** Every attachment row in the store, so a test can spot one made since. */
-function allAttachmentIds(): string[] {
-  return getDb()
-    .select({ id: attachments.id })
-    .from(attachments)
-    .all()
-    .map((row) => row.id);
+async function allAttachmentIds(): Promise<string[]> {
+  const db = requireMainDb();
+  const rows = await db.orm
+    .select({ id: db.schema.attachments.id })
+    .from(db.schema.attachments);
+  return rows.map((row) => row.id);
 }
 
-function conversationCount(): number {
-  return getDb().select({ id: conversations.id }).from(conversations).all()
-    .length;
+async function conversationCount(): Promise<number> {
+  const db = requireMainDb();
+  return (
+    await db.orm
+      .select({ id: db.schema.conversations.id })
+      .from(db.schema.conversations)
+  ).length;
 }
 
 /**
@@ -354,9 +354,9 @@ async function attachmentLinkedElsewhere(
   return attachment.id;
 }
 
-describe("persistLiveVoicePhoto", () => {
+describePg("persistLiveVoicePhoto", () => {
   test("persists and echoes the image with human-readable context", async () => {
-    const conversation = createConversation("Live voice photo");
+    const conversation = await createConversation("Live voice photo");
     const { provider } = createMockProvider([textResponse("")]);
     const activeConversation = new Conversation(
       conversation.id,
@@ -397,14 +397,14 @@ describe("persistLiveVoicePhoto", () => {
         { message: "Timed out waiting for live-voice photo echo" },
       );
 
-      const [message] = getMessages(conversation.id);
+      const [message] = await getMessages(conversation.id);
       if (!message) {
         throw new Error("Live-voice photo message was not persisted");
       }
       expect(message.content.filter((block) => block.type === "text")).toEqual([
         { type: "text", text: "here's a photo:" },
       ]);
-      expect(getAttachmentsForMessage(message.id)).toHaveLength(1);
+      expect(await getAttachmentsForMessage(message.id)).toHaveLength(1);
       expect(
         published.find((event) => event.type === "user_message_echo"),
       ).toMatchObject({
@@ -423,7 +423,7 @@ describe("persistLiveVoicePhoto", () => {
   test("leaves the photo untagged, so retention never ages it out", async () => {
     // A photo the user chose to take is not an ambient frame; the sight tag
     // would hand it to the pass that stubs frames out of the context.
-    const live = liveConversation("Live voice photo untagged");
+    const live = await liveConversation("Live voice photo untagged");
     try {
       const attachment = await uploadAttachment(
         "photo.png",
@@ -434,7 +434,7 @@ describe("persistLiveVoicePhoto", () => {
       const result = await persistLiveVoicePhoto(live.id, attachment.id);
       expect(result.ok).toBe(true);
 
-      expect(selectSightFrameCaptureTimes(live.id).size).toBe(0);
+      expect((await selectSightFrameCaptureTimes(live.id)).size).toBe(0);
     } finally {
       live.dispose();
     }
@@ -443,7 +443,7 @@ describe("persistLiveVoicePhoto", () => {
   test("leaves the photo unscripted, the shutter being a turn the user took", async () => {
     // Pressing the shutter is the user acting, so the row keeps asserting
     // "the user did this" and stays inside activation.
-    const live = liveConversation("Live voice photo scripted");
+    const live = await liveConversation("Live voice photo scripted");
     try {
       const attachment = await uploadAttachment(
         "photo.png",
@@ -455,16 +455,16 @@ describe("persistLiveVoicePhoto", () => {
         true,
       );
 
-      expect(metadataOf(getMessages(live.id)[0]).scripted).toBe(false);
+      expect(metadataOf((await getMessages(live.id))[0]).scripted).toBe(false);
     } finally {
       live.dispose();
     }
   });
 });
 
-describe("persistAmbientSightFrame", () => {
+describePg("persistAmbientSightFrame", () => {
   test("reports where the daemon's half of the persist went", async () => {
-    const live = liveConversation("Live voice sight frame timing");
+    const live = await liveConversation("Live voice sight frame timing");
     try {
       const attachment = await uploadAttachment(
         "frame.png",
@@ -497,7 +497,7 @@ describe("persistAmbientSightFrame", () => {
   });
 
   test("tags the row with the attachment it carries", async () => {
-    const live = liveConversation("Live voice sight frame");
+    const live = await liveConversation("Live voice sight frame");
     try {
       const attachment = await uploadAttachment(
         "frame.png",
@@ -512,15 +512,15 @@ describe("persistAmbientSightFrame", () => {
       );
       expect(result.ok).toBe(true);
 
-      const [message] = getMessages(live.id);
+      const [message] = await getMessages(live.id);
       expect(message.content.filter((block) => block.type === "text")).toEqual([
         { type: "text", text: "(camera frame)" },
       ]);
-      expect(getAttachmentsForMessage(message.id)).toHaveLength(1);
+      expect(await getAttachmentsForMessage(message.id)).toHaveLength(1);
       // Readable by the retention pass, which is the whole point of the tag.
-      expect([...selectSightFrameCaptureTimes(live.id).keys()]).toEqual([
-        attachment.id,
-      ]);
+      expect([...(await selectSightFrameCaptureTimes(live.id)).keys()]).toEqual(
+        [attachment.id],
+      );
     } finally {
       live.dispose();
     }
@@ -530,7 +530,7 @@ describe("persistAmbientSightFrame", () => {
     // The gate sent this, not the user. A keep every few seconds would
     // otherwise read downstream as that many turns taken, and activation
     // believes a row that claims it was typed.
-    const live = liveConversation("Live voice sight frame scripted");
+    const live = await liveConversation("Live voice sight frame scripted");
     try {
       const attachment = await uploadAttachment(
         "frame.png",
@@ -542,7 +542,7 @@ describe("persistAmbientSightFrame", () => {
         (await persistAmbientSightFrame(live.id, attachment.id, "voice")).ok,
       ).toBe(true);
 
-      expect(metadataOf(getMessages(live.id)[0]).scripted).toBe(true);
+      expect(metadataOf((await getMessages(live.id))[0]).scripted).toBe(true);
     } finally {
       live.dispose();
     }
@@ -552,7 +552,7 @@ describe("persistAmbientSightFrame", () => {
     // The mark says a reply to this row is spoken back over a session that is
     // still open, which decides whether a finished reply raises a push. Only
     // the voice surface may claim it, and it has to keep claiming it.
-    const live = liveConversation("Live voice sight frame voice mark");
+    const live = await liveConversation("Live voice sight frame voice mark");
     try {
       const attachment = await uploadAttachment(
         "frame.png",
@@ -564,7 +564,9 @@ describe("persistAmbientSightFrame", () => {
         (await persistAmbientSightFrame(live.id, attachment.id, "voice")).ok,
       ).toBe(true);
 
-      expect(metadataOf(getMessages(live.id)[0]).voiceSessionTurn).toBe(true);
+      expect(metadataOf((await getMessages(live.id))[0]).voiceSessionTurn).toBe(
+        true,
+      );
     } finally {
       live.dispose();
     }
@@ -574,8 +576,8 @@ describe("persistAmbientSightFrame", () => {
     // An attachment already linked to another conversation is cloned into this
     // one under a fresh id, and both the persisted block and the link carry the
     // clone. A tag naming the id the caller held would match nothing.
-    const source = liveConversation("Live voice sight frame source");
-    const live = liveConversation("Live voice sight frame clone");
+    const source = await liveConversation("Live voice sight frame source");
+    const live = await liveConversation("Live voice sight frame clone");
     try {
       const arrivedAs = await attachmentLinkedElsewhere(source.id);
 
@@ -583,16 +585,16 @@ describe("persistAmbientSightFrame", () => {
         (await persistAmbientSightFrame(live.id, arrivedAs, "voice")).ok,
       ).toBe(true);
 
-      const [row] = getMessages(live.id);
+      const [row] = await getMessages(live.id);
       const stored = storedImageId(row);
       expect(stored).toBeDefined();
       expect(stored).not.toBe(arrivedAs);
       expect(sightFrameAttachmentIdsFromMetadata(metadataOf(row))).toEqual([
         stored!,
       ]);
-      expect([...selectSightFrameCaptureTimes(live.id).keys()]).toEqual([
-        stored!,
-      ]);
+      expect([...(await selectSightFrameCaptureTimes(live.id)).keys()]).toEqual(
+        [stored!],
+      );
     } finally {
       live.dispose();
       source.dispose();
@@ -604,8 +606,8 @@ describe("persistAmbientSightFrame", () => {
     // its block names the id the session held while the tag names what
     // materialization stored. Left disagreeing, the turn that created the
     // frame sends it full size and only a reload ever bounds it.
-    const source = liveConversation("Live voice live block source");
-    const live = liveConversation("Live voice live block clone");
+    const source = await liveConversation("Live voice live block source");
+    const live = await liveConversation("Live voice live block clone");
     try {
       const arrivedAs = await attachmentLinkedElsewhere(source.id);
 
@@ -613,7 +615,7 @@ describe("persistAmbientSightFrame", () => {
         (await persistAmbientSightFrame(live.id, arrivedAs, "voice")).ok,
       ).toBe(true);
 
-      const stored = storedImageId(getMessages(live.id)[0]);
+      const stored = storedImageId((await getMessages(live.id))[0]);
       expect(stored).toBeDefined();
       expect(stored).not.toBe(arrivedAs);
       // The array a turn actually sends agrees with the tag.
@@ -627,8 +629,8 @@ describe("persistAmbientSightFrame", () => {
   test("retention ages a cloned frame in the live history", async () => {
     // The reload path is covered below; this is the same conversation before
     // any reload, which is where a long call spends all its time.
-    const source = liveConversation("Live voice live retention source");
-    const live = liveConversation("Live voice live retention");
+    const source = await liveConversation("Live voice live retention source");
+    const live = await liveConversation("Live voice live retention");
     try {
       const arrivedAs = await attachmentLinkedElsewhere(source.id);
       expect(
@@ -643,7 +645,7 @@ describe("persistAmbientSightFrame", () => {
 
       const live_ = live.activeConversation;
       expect(live_.messages).toHaveLength(3);
-      const retained = live_.trimAgedSightFrames(live_.messages);
+      const retained = await live_.trimAgedSightFrames(live_.messages);
 
       // Three frames, a budget of two: the cloned one is the oldest and goes.
       expect(retained[0].content.some((b) => b.type === "image")).toBe(false);
@@ -659,8 +661,8 @@ describe("persistAmbientSightFrame", () => {
     // The end of the same thread: a tag naming the id the caller held leaves
     // this frame unrecognized, so it is never counted and never stubbed, and
     // it rides every later request for the rest of the call.
-    const source = liveConversation("Live voice cloned retention source");
-    const live = liveConversation("Live voice cloned retention");
+    const source = await liveConversation("Live voice cloned retention source");
+    const live = await liveConversation("Live voice cloned retention");
     try {
       const arrivedAs = await attachmentLinkedElsewhere(source.id);
       expect(
@@ -673,11 +675,11 @@ describe("persistAmbientSightFrame", () => {
         ).toBe(true);
       }
 
-      const assembled: Message[] = getMessages(live.id).map((row) => ({
+      const assembled: Message[] = (await getMessages(live.id)).map((row) => ({
         role: "user" as const,
         content: row.content,
       }));
-      const retained = applySightFrameRetention(assembled, live.id);
+      const retained = await applySightFrameRetention(assembled, live.id);
 
       // Three frames, a budget of two: the cloned one is the oldest and goes.
       expect(retained[0].content.some((b) => b.type === "image")).toBe(false);
@@ -690,14 +692,14 @@ describe("persistAmbientSightFrame", () => {
   });
 
   test("reports a frame whose attachment does not resolve", async () => {
-    const live = liveConversation("Live voice sight frame missing");
+    const live = await liveConversation("Live voice sight frame missing");
     try {
       expect(
         await persistAmbientSightFrame(live.id, "att-missing", "voice"),
       ).toEqual({
         ok: false,
       });
-      expect(getMessages(live.id)).toHaveLength(0);
+      expect(await getMessages(live.id)).toHaveLength(0);
     } finally {
       live.dispose();
     }
@@ -707,7 +709,7 @@ describe("persistAmbientSightFrame", () => {
     // A keep landing mid-reply must neither interrupt the reply nor land
     // between the rows the reply persists. The processing lock is what orders
     // them: the keep takes it only once the turn has let go.
-    const live = liveConversation("Live voice sight frame interleave");
+    const live = await liveConversation("Live voice sight frame interleave");
     try {
       const attachment = await uploadAttachment(
         "frame.png",
@@ -718,14 +720,14 @@ describe("persistAmbientSightFrame", () => {
       live.activeConversation.setProcessing(true);
       const pending = persistAmbientSightFrame(live.id, attachment.id, "voice");
       await new Promise((resolve) => setTimeout(resolve, 150));
-      expect(getMessages(live.id)).toHaveLength(0);
+      expect(await getMessages(live.id)).toHaveLength(0);
 
       // The turn's own persist, while it still holds the lock.
       await addMessage(live.id, "assistant", "still looking");
       live.activeConversation.setProcessing(false);
       expect(await pending).toMatchObject({ ok: true });
 
-      const rows = getMessages(live.id);
+      const rows = await getMessages(live.id);
       expect(rows.map((row) => row.role)).toEqual(["assistant", "user"]);
     } finally {
       live.dispose();
@@ -733,7 +735,7 @@ describe("persistAmbientSightFrame", () => {
   });
 });
 
-describe("standalone image persists are serialized per conversation", () => {
+describePg("standalone image persists are serialized per conversation", () => {
   test("two images arriving together take the flag one at a time", async () => {
     // The window the boolean flag cannot survive. Both persists interleave
     // across the awaits between reading the flag and taking it, so both read
@@ -742,7 +744,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // second write is still going, leaving a spoken turn free to launch into
     // a half-written row and the second finisher free to clear that turn's
     // flag.
-    const live = liveConversation("Live voice concurrent images");
+    const live = await liveConversation("Live voice concurrent images");
     const seen = watchProcessing(live.activeConversation);
     try {
       const photo = await uploadFrame("snap.png");
@@ -759,7 +761,7 @@ describe("standalone image persists are serialized per conversation", () => {
       expect(seen.calls).toEqual([true, false, true, false]);
       expect(seen.maxDepth).toBe(1);
       expect(seen.depth).toBe(0);
-      expect(getMessages(live.id)).toHaveLength(2);
+      expect(await getMessages(live.id)).toHaveLength(2);
     } finally {
       live.dispose();
     }
@@ -769,7 +771,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // The same invariant across the wait path: both jobs sit behind a running
     // turn, and the chain still hands the flag over one at a time when it
     // ends.
-    const live = liveConversation("Live voice serialized keeps");
+    const live = await liveConversation("Live voice serialized keeps");
     const seen = watchProcessing(live.activeConversation);
     try {
       const first = await uploadFrame("first.png");
@@ -789,7 +791,7 @@ describe("standalone image persists are serialized per conversation", () => {
 
       expect(seen.maxDepth).toBe(1);
       expect(seen.depth).toBe(0);
-      expect(getMessages(live.id)).toHaveLength(2);
+      expect(await getMessages(live.id)).toHaveLength(2);
     } finally {
       live.dispose();
     }
@@ -800,7 +802,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // have to be one step. Split by an await, a turn claims it in between and
     // the frame writes over a turn that got there first, then clears the flag
     // that turn is still holding.
-    const live = liveConversation("Live voice turn start race");
+    const live = await liveConversation("Live voice turn start race");
     try {
       const frame = await uploadFrame("race.png");
 
@@ -820,7 +822,7 @@ describe("standalone image persists are serialized per conversation", () => {
       // found it busy and never claimed it.
       expect(turn.claimed()).toBe(false);
       expect(live.activeConversation.isProcessing()).toBe(false);
-      expect(getMessages(live.id)).toHaveLength(1);
+      expect(await getMessages(live.id)).toHaveLength(1);
     } finally {
       live.dispose();
     }
@@ -831,11 +833,11 @@ describe("standalone image persists are serialized per conversation", () => {
     // The frame's write fence reads the claim as no longer its own and refuses
     // the row, and its release is refused for the same reason, so the turn
     // keeps a conversation nothing else wrote into.
-    const live = liveConversation("Live voice keep flag claimed away");
+    const live = await liveConversation("Live voice keep flag claimed away");
     try {
       const frame = await uploadFrame("claimed-away.png");
 
-      duringPersistBeforeInsert = () => {
+      duringPersistBeforeInsert = async () => {
         live.activeConversation.setProcessing(true);
       };
 
@@ -843,7 +845,7 @@ describe("standalone image persists are serialized per conversation", () => {
         ok: false,
       });
 
-      expect(getMessages(live.id)).toHaveLength(0);
+      expect(await getMessages(live.id)).toHaveLength(0);
       // The turn still holds it: the frame released only its own claim.
       expect(live.activeConversation.isProcessing()).toBe(true);
     } finally {
@@ -858,7 +860,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // write lost a race to contention publishes an idle conversation for as
     // long as the caller's retry sleeps, and anything polling for idle takes
     // it while that caller believes its own turn is starting.
-    const live = liveConversation("Live voice acquire mirror failure");
+    const live = await liveConversation("Live voice acquire mirror failure");
     try {
       storeUnreadable = true;
       const owner = live.activeConversation.acquireProcessing();
@@ -886,7 +888,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // out-of-process retrospective worker read to decide a turn is live, so a
     // turn that writes rows while the column is null lets a client stop
     // waiting mid-turn and lets the worker fork partial history.
-    const live = liveConversation("Live voice marker fence");
+    const live = await liveConversation("Live voice marker fence");
     try {
       const owner = live.activeConversation.acquireProcessing();
       expect(owner).not.toBeNull();
@@ -896,13 +898,12 @@ describe("standalone image persists are serialized per conversation", () => {
       expect(live.activeConversation.isProcessing()).toBe(true);
       await live.activeConversation.ensureProcessingMarker(owner!);
 
-      expect(
-        getDb()
-          .select({ startedAt: conversations.processingStartedAt })
-          .from(conversations)
-          .where(eq(conversations.id, live.id))
-          .get()?.startedAt,
-      ).not.toBeNull();
+      const db = requireMainDb();
+      const marked = await db.orm
+        .select({ startedAt: db.schema.conversations.processingStartedAt })
+        .from(db.schema.conversations)
+        .where(eq(db.schema.conversations.id, live.id));
+      expect(marked[0]?.startedAt).not.toBeNull();
 
       expect(live.activeConversation.releaseProcessing(owner!)).toBe(true);
     } finally {
@@ -913,7 +914,7 @@ describe("standalone image persists are serialized per conversation", () => {
   test("a claim whose marker will not land is given back", async () => {
     // The fence has to fail closed: a hold nobody can see is worse than an
     // operation that reports it could not start.
-    const live = liveConversation("Live voice marker fence failure");
+    const live = await liveConversation("Live voice marker fence failure");
     try {
       storeUnreadable = true;
       const owner = live.activeConversation.acquireProcessing();
@@ -939,17 +940,17 @@ describe("standalone image persists are serialized per conversation", () => {
     // and the persist's own clone cleanup hits contention, retrying under the
     // caller's id reclaims nothing: that row is still linked where it came
     // from, and the clone nobody names survives every pass.
-    const source = liveConversation("Live voice clone reclaim source");
-    const live = liveConversation("Live voice clone reclaim");
+    const source = await liveConversation("Live voice clone reclaim source");
+    const live = await liveConversation("Live voice clone reclaim");
     try {
       const arrivedAs = await attachmentLinkedElsewhere(source.id);
-      const beforePersist = new Set(allAttachmentIds());
+      const beforePersist = new Set(await allAttachmentIds());
 
       // Replaced mid-persist, so the precondition refuses after the clone was
       // made, and the clone cleanup that follows fails once on contention.
-      duringPersistBeforeInsert = () => {
-        deleteConversationRows(live.id);
-        createConversation({ id: live.id, title: "Recreated" });
+      duringPersistBeforeInsert = async () => {
+        await deleteConversationRows(live.id);
+        await createConversation({ id: live.id, title: "Recreated" });
         // The persist's own clone cleanup fails, and so does the reclaim that
         // follows it, so the record reaches the deferred pass.
         failNextReclaims = 2;
@@ -959,22 +960,24 @@ describe("standalone image persists are serialized per conversation", () => {
         await persistAmbientSightFrame(live.id, arrivedAs, "voice"),
       ).toEqual({ ok: false });
 
-      expect(getMessages(live.id)).toHaveLength(0);
+      expect(await getMessages(live.id)).toHaveLength(0);
       expect(_pendingFrameReclaimCountForTests()).toBe(1);
       // The clone outlived the failed cleanup, so something still owes it.
-      const clones = allAttachmentIds().filter((id) => !beforePersist.has(id));
+      const clones = await allAttachmentIds().filter(
+        (id) => !beforePersist.has(id),
+      );
       expect(clones).toHaveLength(1);
-      expect(frameStored(clones[0])).toBe(true);
+      expect(await frameStored(clones[0])).toBe(true);
 
       _drainFrameReclaimRechecksForTests();
 
       expect(_pendingFrameReclaimCountForTests()).toBe(0);
       // The clone is gone, and the original it was copied from is untouched
       // and still linked to the message that owns it.
-      expect(frameStored(clones[0])).toBe(false);
-      expect(frameStored(arrivedAs)).toBe(true);
+      expect(await frameStored(clones[0])).toBe(false);
+      expect(await frameStored(arrivedAs)).toBe(true);
       expect(
-        getAttachmentsForMessage(getMessages(source.id)[0].id),
+        await getAttachmentsForMessage((await getMessages(source.id))[0].id),
       ).toHaveLength(1);
     } finally {
       duringPersistBeforeInsert = null;
@@ -989,7 +992,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // that answered "fine" for a hold Stop or a teardown already cleared would
     // let that work run under a dead claim while a new turn acquires and
     // writes alongside it.
-    const live = liveConversation("Live voice fence claim cleared");
+    const live = await liveConversation("Live voice fence claim cleared");
     try {
       const owner = live.activeConversation.acquireProcessing();
       expect(owner).not.toBeNull();
@@ -1010,7 +1013,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // The other half of the same window: the marker lands, and the hold is
     // claimed away before the awaiter resumes. The fence answers for the
     // present, not for the moment it started waiting.
-    const live = liveConversation("Live voice fence claim stolen");
+    const live = await liveConversation("Live voice fence claim stolen");
     try {
       const owner = live.activeConversation.acquireProcessing();
       expect(owner).not.toBeNull();
@@ -1030,7 +1033,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // Callers owe one answer for "this conversation is someone else's",
     // however it became so, and the fenced acquire is what collapses the two
     // routes into it. The claim is given back on the way out.
-    const live = liveConversation("Live voice fenced acquire loss");
+    const live = await liveConversation("Live voice fenced acquire loss");
     try {
       const marker = spyOn(
         live.activeConversation,
@@ -1059,7 +1062,9 @@ describe("standalone image persists are serialized per conversation", () => {
     // The P2 shape. A marker that will not land is a real failure, and the
     // claim has to be gone before the throw reaches the caller, or the
     // conversation is stuck processing with sends queuing behind a dead hold.
-    const live = liveConversation("Live voice fenced acquire marker failure");
+    const live = await liveConversation(
+      "Live voice fenced acquire marker failure",
+    );
     try {
       const marker = spyOn(
         live.activeConversation,
@@ -1086,11 +1091,11 @@ describe("standalone image persists are serialized per conversation", () => {
     // unchanged, so without the ownership term the frame writes under a dead
     // claim alongside the turn that now holds the conversation, and the
     // refused release afterwards cannot undo the row.
-    const live = liveConversation("Live voice keep stopped mid-write");
+    const live = await liveConversation("Live voice keep stopped mid-write");
     try {
       const frame = await uploadFrame("stopped-mid-write.png");
 
-      duringPersistBeforeInsert = () => {
+      duringPersistBeforeInsert = async () => {
         // What `abortConversation` does for a hold with no live turn behind
         // it, followed by the next request taking the conversation.
         live.activeConversation.setProcessing(false);
@@ -1101,8 +1106,8 @@ describe("standalone image persists are serialized per conversation", () => {
         ok: false,
       });
 
-      expect(getMessages(live.id)).toHaveLength(0);
-      expect(frameStored(frame)).toBe(false);
+      expect(await getMessages(live.id)).toHaveLength(0);
+      expect(await frameStored(frame)).toBe(false);
       // The claim taken during the Stop is untouched by the frame's release.
       expect(live.activeConversation.isProcessing()).toBe(true);
     } finally {
@@ -1116,7 +1121,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // The chain is bounded this way: keeps arrive every few seconds while each
     // job can wait out a turn for far longer, so a queued keep that a newer
     // one has already made stale is given up rather than stacked.
-    const live = liveConversation("Live voice coalesced keeps");
+    const live = await liveConversation("Live voice coalesced keeps");
     try {
       const running = await uploadFrame("running.png");
       const stale = await uploadFrame("stale.png");
@@ -1137,17 +1142,17 @@ describe("standalone image persists are serialized per conversation", () => {
       expect(await newestKeep).toMatchObject({ ok: true });
 
       expect(
-        [...selectSightFrameCaptureTimes(live.id).keys()].sort(),
+        [...(await selectSightFrameCaptureTimes(live.id)).keys()].sort(),
       ).toHaveLength(2);
-      expect(getMessages(live.id)).toHaveLength(2);
+      expect(await getMessages(live.id)).toHaveLength(2);
 
       // The client uploaded the displaced frame and the daemon chose to drop
       // it, so this is the only thing that will ever collect it: the client's
       // own abandon-delete fires on a refused send, and this send succeeded.
-      expect(frameStored(stale)).toBe(false);
+      expect(await frameStored(stale)).toBe(false);
       // The two that reached a message are not this reclaim's to touch.
-      expect(frameStored(running)).toBe(true);
-      expect(frameStored(newest)).toBe(true);
+      expect(await frameStored(running)).toBe(true);
+      expect(await frameStored(newest)).toBe(true);
     } finally {
       live.dispose();
     }
@@ -1155,7 +1160,7 @@ describe("standalone image persists are serialized per conversation", () => {
 
   test("queued photos are never replaced", async () => {
     // The user watched themselves take each one, so none of them is stale.
-    const live = liveConversation("Live voice queued photos");
+    const live = await liveConversation("Live voice queued photos");
     try {
       const ids = [
         await uploadFrame("one.png"),
@@ -1171,10 +1176,10 @@ describe("standalone image persists are serialized per conversation", () => {
       for (const result of await Promise.all(writes)) {
         expect(result).toMatchObject({ ok: true });
       }
-      expect(getMessages(live.id)).toHaveLength(3);
+      expect(await getMessages(live.id)).toHaveLength(3);
       // Nothing is ever reclaimed on the photo path: none of them was dropped.
       for (const id of ids) {
-        expect(frameStored(id)).toBe(true);
+        expect(await frameStored(id)).toBe(true);
       }
     } finally {
       live.dispose();
@@ -1186,7 +1191,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // collect the row: the client's abandon-delete fires on a refused send,
     // and this send was accepted.
     const restoreWait = _setProcessingWaitMsForTests(120);
-    const live = liveConversation("Live voice keep wait timeout");
+    const live = await liveConversation("Live voice keep wait timeout");
     try {
       const frame = await uploadFrame("timed-out.png");
 
@@ -1196,8 +1201,8 @@ describe("standalone image persists are serialized per conversation", () => {
         ok: false,
       });
 
-      expect(frameStored(frame)).toBe(false);
-      expect(getMessages(live.id)).toHaveLength(0);
+      expect(await frameStored(frame)).toBe(false);
+      expect(await getMessages(live.id)).toHaveLength(0);
       // The delete took first try, so nothing is left waiting on the store.
       expect(_pendingFrameReclaimCountForTests()).toBe(0);
     } finally {
@@ -1212,7 +1217,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // delete that fails on the same contention everything else here waits out
     // cannot just be logged: the record is the only handle left on the bytes.
     const restoreWait = _setProcessingWaitMsForTests(120);
-    const live = liveConversation("Live voice keep reclaim contention");
+    const live = await liveConversation("Live voice keep reclaim contention");
     try {
       const frame = await uploadFrame("reclaim-contention.png");
 
@@ -1224,21 +1229,21 @@ describe("standalone image persists are serialized per conversation", () => {
         ok: false,
       });
 
-      expect(frameStored(frame)).toBe(true);
+      expect(await frameStored(frame)).toBe(true);
       expect(_pendingFrameReclaimCountForTests()).toBe(1);
 
       // The recheck's own delete can fail too, and that keeps the record
       // rather than spending it.
       failNextReclaims = 1;
       _drainFrameReclaimRechecksForTests();
-      expect(frameStored(frame)).toBe(true);
+      expect(await frameStored(frame)).toBe(true);
       expect(_pendingFrameReclaimCountForTests()).toBe(1);
 
       _drainFrameReclaimRechecksForTests();
 
       expect(_pendingFrameReclaimCountForTests()).toBe(0);
-      expect(frameStored(frame)).toBe(false);
-      expect(getMessages(live.id)).toHaveLength(0);
+      expect(await frameStored(frame)).toBe(false);
+      expect(await getMessages(live.id)).toHaveLength(0);
     } finally {
       failNextReclaims = 0;
       live.activeConversation.setProcessing(false);
@@ -1251,7 +1256,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // A photo is a deliberate upload the user watched themselves make, so a
     // failed persist is theirs to retry rather than the daemon's to delete.
     const restoreWait = _setProcessingWaitMsForTests(120);
-    const live = liveConversation("Live voice photo wait timeout");
+    const live = await liveConversation("Live voice photo wait timeout");
     try {
       const photo = await uploadFrame("timed-out-photo.png");
 
@@ -1260,8 +1265,8 @@ describe("standalone image persists are serialized per conversation", () => {
         ok: false,
       });
 
-      expect(frameStored(photo)).toBe(true);
-      expect(getMessages(live.id)).toHaveLength(0);
+      expect(await frameStored(photo)).toBe(true);
+      expect(await getMessages(live.id)).toHaveLength(0);
     } finally {
       live.activeConversation.setProcessing(false);
       live.dispose();
@@ -1276,7 +1281,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // back holding nothing but camera frames, so the job re-reads before it
     // touches anything.
     const restoreWait = _setProcessingWaitMsForTests(150);
-    const live = liveConversation("Live voice keep deleted mid-queue");
+    const live = await liveConversation("Live voice keep deleted mid-queue");
     const holder = await uploadFrame("voice-holder.png");
     const queued = await uploadFrame("voice-queued.png");
     try {
@@ -1286,16 +1291,16 @@ describe("standalone image persists are serialized per conversation", () => {
       const queuedKeep = persistAmbientSightFrame(live.id, queued, "voice");
 
       destroyActiveConversation(live.id, { keepSubagentRecords: true });
-      deleteConversationRows(live.id);
-      const countAfterDelete = conversationCount();
+      await deleteConversationRows(live.id);
+      const countAfterDelete = await conversationCount();
 
       expect(await holderKeep).toEqual({ ok: false });
       expect(await queuedKeep).toEqual({ ok: false });
 
       expect(getConversation(live.id)).toBeNull();
-      expect(conversationCount()).toBe(countAfterDelete);
-      expect(getMessages(live.id)).toHaveLength(0);
-      expect(frameStored(queued)).toBe(false);
+      expect(await conversationCount()).toBe(countAfterDelete);
+      expect(await getMessages(live.id)).toHaveLength(0);
+      expect(await frameStored(queued)).toBe(false);
     } finally {
       _setProcessingWaitMsForTests(restoreWait);
     }
@@ -1306,7 +1311,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // so a delete alone is caught only by the messages foreign key. A recreate
     // under the same id restores that foreign key's target, and the frame
     // would land in a conversation made after the deletion.
-    const live = liveConversation("Live voice keep recreated id");
+    const live = await liveConversation("Live voice keep recreated id");
     try {
       const frame = await uploadFrame("recreated.png");
 
@@ -1317,14 +1322,14 @@ describe("standalone image persists are serialized per conversation", () => {
       await sleep(30);
 
       // The same id, naming a conversation the keep was never taken in.
-      deleteConversationRows(live.id);
-      createConversation({ id: live.id, title: "Recreated" });
+      await deleteConversationRows(live.id);
+      await createConversation({ id: live.id, title: "Recreated" });
       live.activeConversation.setProcessing(false);
 
       expect(await keep).toEqual({ ok: false });
 
-      expect(getMessages(live.id)).toHaveLength(0);
-      expect(frameStored(frame)).toBe(false);
+      expect(await getMessages(live.id)).toHaveLength(0);
+      expect(await frameStored(frame)).toBe(false);
     } finally {
       live.dispose();
     }
@@ -1335,7 +1340,9 @@ describe("standalone image persists are serialized per conversation", () => {
     // when its job starts. The chain can hold a keep behind another image for
     // as long as a turn runs, and a job that read the id when it began would
     // read the replacement and then check it against itself.
-    const live = liveConversation("Live voice keep queued behind another");
+    const live = await liveConversation(
+      "Live voice keep queued behind another",
+    );
     const holder = await uploadFrame("chain-holder.png");
     const queued = await uploadFrame("chain-queued.png");
     try {
@@ -1347,16 +1354,16 @@ describe("standalone image persists are serialized per conversation", () => {
       const queuedKeep = persistAmbientSightFrame(live.id, queued, "voice");
 
       // The same id, naming a conversation neither frame was taken in.
-      deleteConversationRows(live.id);
-      createConversation({ id: live.id, title: "Recreated" });
+      await deleteConversationRows(live.id);
+      await createConversation({ id: live.id, title: "Recreated" });
       live.activeConversation.setProcessing(false);
 
       expect(await holderKeep).toEqual({ ok: false });
       expect(await queuedKeep).toEqual({ ok: false });
 
-      expect(getMessages(live.id)).toHaveLength(0);
-      expect(frameStored(holder)).toBe(false);
-      expect(frameStored(queued)).toBe(false);
+      expect(await getMessages(live.id)).toHaveLength(0);
+      expect(await frameStored(holder)).toBe(false);
+      expect(await frameStored(queued)).toBe(false);
     } finally {
       live.dispose();
     }
@@ -1367,7 +1374,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // stamped from one wall-clock millisecond would read as the same
     // conversation and every fence would pass. The stamp is issued
     // monotonically, which is what keeps the two apart.
-    const live = liveConversation("Live voice same millisecond recreate");
+    const live = await liveConversation("Live voice same millisecond recreate");
     try {
       const frame = await uploadFrame("same-millisecond.png");
       const takenIn = getConversation(live.id)!.createdAt;
@@ -1378,8 +1385,8 @@ describe("standalone image persists are serialized per conversation", () => {
 
       const clock = spyOn(Date, "now").mockReturnValue(takenIn);
       try {
-        deleteConversationRows(live.id);
-        createConversation({ id: live.id, title: "Recreated" });
+        await deleteConversationRows(live.id);
+        await createConversation({ id: live.id, title: "Recreated" });
       } finally {
         clock.mockRestore();
       }
@@ -1388,8 +1395,8 @@ describe("standalone image persists are serialized per conversation", () => {
       live.activeConversation.setProcessing(false);
 
       expect(await keep).toEqual({ ok: false });
-      expect(getMessages(live.id)).toHaveLength(0);
-      expect(frameStored(frame)).toBe(false);
+      expect(await getMessages(live.id)).toHaveLength(0);
+      expect(await frameStored(frame)).toBe(false);
     } finally {
       live.dispose();
     }
@@ -1401,23 +1408,23 @@ describe("standalone image persists are serialized per conversation", () => {
     // and a delete and recreate under the same id landing in any of those
     // windows restores the messages foreign key's target, so nothing else
     // stops the frame joining a conversation it was never taken in.
-    const live = liveConversation("Live voice keep replaced mid-write");
+    const live = await liveConversation("Live voice keep replaced mid-write");
     try {
       const frame = await uploadFrame("mid-write.png");
 
-      duringPersistBeforeInsert = () => {
-        deleteConversationRows(live.id);
-        createConversation({ id: live.id, title: "Recreated" });
+      duringPersistBeforeInsert = async () => {
+        await deleteConversationRows(live.id);
+        await createConversation({ id: live.id, title: "Recreated" });
       };
 
       expect(await persistAmbientSightFrame(live.id, frame, "voice")).toEqual({
         ok: false,
       });
 
-      expect(getMessages(live.id)).toHaveLength(0);
+      expect(await getMessages(live.id)).toHaveLength(0);
       // Nothing else would ever collect it: the client's abandon-delete fires
       // on a refused send, and this send was accepted.
-      expect(frameStored(frame)).toBe(false);
+      expect(await frameStored(frame)).toBe(false);
     } finally {
       duringPersistBeforeInsert = null;
       live.dispose();
@@ -1429,21 +1436,23 @@ describe("standalone image persists are serialized per conversation", () => {
     // given once for the call speaks only for the first attempt. A delete and
     // recreate inside that sleep leaves the retry writing into a row the frame
     // was never accepted for.
-    const live = liveConversation("Live voice keep replaced between attempts");
+    const live = await liveConversation(
+      "Live voice keep replaced between attempts",
+    );
     try {
       const frame = await uploadFrame("between-attempts.png");
 
-      beforeFailingInsertAttempt = () => {
-        deleteConversationRows(live.id);
-        createConversation({ id: live.id, title: "Recreated" });
+      beforeFailingInsertAttempt = async () => {
+        await deleteConversationRows(live.id);
+        await createConversation({ id: live.id, title: "Recreated" });
       };
 
       expect(await persistAmbientSightFrame(live.id, frame, "voice")).toEqual({
         ok: false,
       });
 
-      expect(getMessages(live.id)).toHaveLength(0);
-      expect(frameStored(frame)).toBe(false);
+      expect(await getMessages(live.id)).toHaveLength(0);
+      expect(await frameStored(frame)).toBe(false);
     } finally {
       beforeFailingInsertAttempt = null;
       live.dispose();
@@ -1454,19 +1463,19 @@ describe("standalone image persists are serialized per conversation", () => {
     // The control on the check above: a retry the conversation outlived is the
     // ordinary path `withSqliteRetry` exists for, and the frame has to survive
     // it exactly as it always has.
-    const live = liveConversation("Live voice keep retried insert");
+    const live = await liveConversation("Live voice keep retried insert");
     try {
       const frame = await uploadFrame("retried.png");
 
-      beforeFailingInsertAttempt = () => {};
+      beforeFailingInsertAttempt = async () => {};
 
       const result = await persistAmbientSightFrame(live.id, frame, "voice");
       expect(result.ok).toBe(true);
 
-      const rows = getMessages(live.id);
+      const rows = await getMessages(live.id);
       expect(rows).toHaveLength(1);
       expect(result.messageId).toBe(rows[0].id);
-      expect(frameStored(frame)).toBe(true);
+      expect(await frameStored(frame)).toBe(true);
     } finally {
       beforeFailingInsertAttempt = null;
       live.dispose();
@@ -1479,7 +1488,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // collection is candidate-driven with no sweep. So a refusal the store
     // could not explain has to come back to the question rather than leave the
     // bytes for good.
-    const live = liveConversation("Live voice keep unreadable store");
+    const live = await liveConversation("Live voice keep unreadable store");
     const watch = watchEchoes(live.id);
     try {
       const frame = await uploadFrame("unreadable.png");
@@ -1490,14 +1499,14 @@ describe("standalone image persists are serialized per conversation", () => {
 
       expect(result).toEqual({ ok: false });
       // Not reclaimed on the spot: "could not read" is not "no row".
-      expect(frameStored(frame)).toBe(true);
+      expect(await frameStored(frame)).toBe(true);
       expect(_pendingFrameReclaimCountForTests()).toBe(1);
 
       _drainFrameReclaimRechecksForTests();
 
       expect(_pendingFrameReclaimCountForTests()).toBe(0);
-      expect(frameStored(frame)).toBe(false);
-      expect(getMessages(live.id)).toHaveLength(0);
+      expect(await frameStored(frame)).toBe(false);
+      expect(await getMessages(live.id)).toHaveLength(0);
       // No row landed, so there is nothing to tell the client about and the
       // refusal it already has stands.
       expect(watch.echoes()).toHaveLength(0);
@@ -1514,7 +1523,9 @@ describe("standalone image persists are serialized per conversation", () => {
     // write never got to protect, so a recheck that finds the row must leave
     // the attachment alone. The client was told the frame was dropped, so
     // without the announce the row it never heard about waits for a reload.
-    const live = liveConversation("Live voice keep row landed unreadable");
+    const live = await liveConversation(
+      "Live voice keep row landed unreadable",
+    );
     const watch = watchEchoes(live.id);
     try {
       const frame = await uploadFrame("landed.png");
@@ -1530,9 +1541,9 @@ describe("standalone image persists are serialized per conversation", () => {
 
       expect(_pendingFrameReclaimCountForTests()).toBe(0);
       // The row is in the transcript, so its bytes are spoken for.
-      const rows = getMessages(live.id);
+      const rows = await getMessages(live.id);
       expect(rows).toHaveLength(1);
-      expect(frameStored(frame)).toBe(true);
+      expect(await frameStored(frame)).toBe(true);
 
       await waitFor(() => watch.echoes().length > 0, {
         message: "Timed out waiting for the deferred row announcement",
@@ -1557,7 +1568,7 @@ describe("standalone image persists are serialized per conversation", () => {
     // Ten passes was once the whole budget, and dropping a record there loses
     // its upload for good: nothing else in the daemon collects an attachment
     // no caller names. The passes only get further apart.
-    const live = liveConversation("Live voice keep long outage");
+    const live = await liveConversation("Live voice keep long outage");
     const watch = watchEchoes(live.id);
     try {
       const landed = await uploadFrame("outage-landed.png");
@@ -1588,16 +1599,16 @@ describe("standalone image persists are serialized per conversation", () => {
       // The store comes back long after the old cap.
       storeUnreadable = false;
       // Neither upload was given up while it was down.
-      expect(frameStored(landed)).toBe(true);
-      expect(frameStored(dropped)).toBe(true);
+      expect(await frameStored(landed)).toBe(true);
+      expect(await frameStored(dropped)).toBe(true);
 
       _drainFrameReclaimRechecksForTests();
 
       expect(_pendingFrameReclaimCountForTests()).toBe(0);
-      expect(frameStored(landed)).toBe(true);
-      expect(frameStored(dropped)).toBe(false);
+      expect(await frameStored(landed)).toBe(true);
+      expect(await frameStored(dropped)).toBe(false);
 
-      const rows = getMessages(live.id);
+      const rows = await getMessages(live.id);
       expect(rows).toHaveLength(1);
       await waitFor(() => watch.echoes().length > 0, {
         message: "Timed out waiting for the post-outage row announcement",
@@ -1614,7 +1625,7 @@ describe("standalone image persists are serialized per conversation", () => {
   });
 
   test("the conversation's chain is dropped once it drains", async () => {
-    const live = liveConversation("Live voice chain cleanup");
+    const live = await liveConversation("Live voice chain cleanup");
     try {
       const frame = await uploadFrame("cleanup.png");
 
@@ -1630,9 +1641,9 @@ describe("standalone image persists are serialized per conversation", () => {
   });
 });
 
-describe("newestPersistedSightFrame", () => {
-  test("is null for a conversation that carries no frame", () => {
-    const live = liveConversation("Sight newest none");
+describePg("newestPersistedSightFrame", () => {
+  test("is null for a conversation that carries no frame", async () => {
+    const live = await liveConversation("Sight newest none");
     try {
       expect(newestPersistedSightFrame(live.id)).toBeNull();
     } finally {
@@ -1641,7 +1652,7 @@ describe("newestPersistedSightFrame", () => {
   });
 
   test("names the last frame written, by the id the row carries", async () => {
-    const live = liveConversation("Sight newest");
+    const live = await liveConversation("Sight newest");
     try {
       const first = await uploadFrame("first.png");
       const second = await uploadFrame("second.png");
@@ -1654,7 +1665,7 @@ describe("newestPersistedSightFrame", () => {
 
       // A frame already linked elsewhere is stored under a fresh id, so the
       // answer is read from the rows rather than assumed from the argument.
-      const rows = getMessages(live.id);
+      const rows = await getMessages(live.id);
       const storedSecond = sightFrameAttachmentIdsFromMetadata(
         metadataOf(rows[1]),
       )[0];
@@ -1668,9 +1679,9 @@ describe("newestPersistedSightFrame", () => {
   });
 });
 
-describe("pendingStandaloneImagePersist", () => {
+describePg("pendingStandaloneImagePersist", () => {
   test("reports nothing for a conversation with no image queued", async () => {
-    const live = liveConversation("Sight pending idle");
+    const live = await liveConversation("Sight pending idle");
     try {
       expect(pendingStandaloneImagePersist(live.id)).toBeNull();
     } finally {
@@ -1682,20 +1693,20 @@ describe("pendingStandaloneImagePersist", () => {
     // The count is taken before the persist's first await, which is what lets
     // a turn launching in the same call chain as the utterance see a frame
     // that has not started writing.
-    const live = liveConversation("Sight pending keep");
+    const live = await liveConversation("Sight pending keep");
     try {
       const frame = await uploadFrame("pending-keep.png");
 
       const keep = persistAmbientSightFrame(live.id, frame, "voice");
       const pending = pendingStandaloneImagePersist(live.id);
       expect(pending).not.toBeNull();
-      expect(getMessages(live.id)).toHaveLength(0);
+      expect(await getMessages(live.id)).toHaveLength(0);
 
       await pending;
 
       // Settled means written and the flag handed back, so a turn waiting on
       // this both sees the row and can claim the flag.
-      expect(getMessages(live.id)).toHaveLength(1);
+      expect(await getMessages(live.id)).toHaveLength(1);
       expect(live.activeConversation.isProcessing()).toBe(false);
       expect(await keep).toMatchObject({ ok: true });
       expect(pendingStandaloneImagePersist(live.id)).toBeNull();
@@ -1707,7 +1718,7 @@ describe("pendingStandaloneImagePersist", () => {
   test("reports a photo in flight, not keeps alone", async () => {
     // A user who snaps a shutter photo and asks about it straight away wants
     // the same freshness, so the ledger this reads counts both kinds.
-    const live = liveConversation("Sight pending photo");
+    const live = await liveConversation("Sight pending photo");
     try {
       const photo = await uploadFrame("pending-photo.png");
 
@@ -1717,7 +1728,7 @@ describe("pendingStandaloneImagePersist", () => {
 
       await pending;
 
-      expect(getMessages(live.id)).toHaveLength(1);
+      expect(await getMessages(live.id)).toHaveLength(1);
       expect(await snap).toMatchObject({ ok: true });
     } finally {
       live.dispose();
@@ -1725,7 +1736,7 @@ describe("pendingStandaloneImagePersist", () => {
   });
 
   test("settles rather than rejects when the persist gives up", async () => {
-    const live = liveConversation("Sight pending failure");
+    const live = await liveConversation("Sight pending failure");
     try {
       const keep = persistAmbientSightFrame(live.id, "att-missing", "voice");
       const pending = pendingStandaloneImagePersist(live.id);
@@ -1733,7 +1744,7 @@ describe("pendingStandaloneImagePersist", () => {
 
       expect(await pending).toBeUndefined();
       expect(await keep).toMatchObject({ ok: false });
-      expect(getMessages(live.id)).toHaveLength(0);
+      expect(await getMessages(live.id)).toHaveLength(0);
     } finally {
       live.dispose();
     }
@@ -1743,7 +1754,7 @@ describe("pendingStandaloneImagePersist", () => {
     // The boundary a caller can rely on: a frame the client sends during the
     // wait belongs to whatever asks next, so the wait stays bounded by work
     // that was already in flight.
-    const live = liveConversation("Sight pending boundary");
+    const live = await liveConversation("Sight pending boundary");
     try {
       const first = await uploadFrame("boundary-first.png");
       const second = await uploadFrame("boundary-second.png");
@@ -1758,11 +1769,11 @@ describe("pendingStandaloneImagePersist", () => {
       live.activeConversation.setProcessing(false);
 
       await pending;
-      expect(getMessages(live.id)).toHaveLength(1);
+      expect(await getMessages(live.id)).toHaveLength(1);
 
       expect(await firstKeep).toMatchObject({ ok: true });
       expect(await secondKeep).toMatchObject({ ok: true });
-      expect(getMessages(live.id)).toHaveLength(2);
+      expect(await getMessages(live.id)).toHaveLength(2);
     } finally {
       live.dispose();
     }

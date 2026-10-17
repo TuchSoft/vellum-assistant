@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import {
   addMessage,
@@ -7,23 +7,22 @@ import {
   PROVIDER_ERROR_MESSAGE_KIND,
   SYSTEM_CARD_MESSAGE_KIND,
 } from "../persistence/conversation-crud.js";
-import { getDb, getLogsDb } from "../persistence/db-connection.js";
+import { getLogsDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
-import {
-  llmRequestLogs,
-  toolInvocations,
-} from "../persistence/schema/index.js";
+import { llmRequestLogs } from "../persistence/schema/index.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
-function resetTables(): void {
-  const db = getDb();
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
   getLogsDb()!.delete(llmRequestLogs).run();
-  db.delete(toolInvocations).run();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+  await db.run("DELETE FROM tool_invocations");
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 function toolResultContent(toolUseIds: string[]): string {
@@ -37,13 +36,13 @@ function toolResultContent(toolUseIds: string[]): string {
   );
 }
 
-describe("getAssistantMessageIdsInTurn", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("getAssistantMessageIdsInTurn", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
   test("single-step turn: returns only the one assistant message", async () => {
-    const conv = createConversation("single-step");
+    const conv = await createConversation("single-step");
     await addMessage(conv.id, "user", "Hello", {
       skipIndexing: true,
     });
@@ -51,12 +50,12 @@ describe("getAssistantMessageIdsInTurn", () => {
       skipIndexing: true,
     });
 
-    const result = getAssistantMessageIdsInTurn(a1.id);
+    const result = await getAssistantMessageIdsInTurn(a1.id);
     expect(result).toEqual([a1.id]);
   });
 
   test("multi-step turn: user → A1 → tool_result → A2 → query A2 → returns [A1, A2]", async () => {
-    const conv = createConversation("multi-step");
+    const conv = await createConversation("multi-step");
     await addMessage(conv.id, "user", "Do the thing", {
       skipIndexing: true,
     });
@@ -70,12 +69,12 @@ describe("getAssistantMessageIdsInTurn", () => {
       skipIndexing: true,
     });
 
-    const result = getAssistantMessageIdsInTurn(a2.id);
+    const result = await getAssistantMessageIdsInTurn(a2.id);
     expect(result).toEqual([a1.id, a2.id]);
   });
 
   test("3-step turn: user → A1 → tool_result → A2 → tool_result → A3 → query A3 → returns [A1, A2, A3]", async () => {
-    const conv = createConversation("three-step");
+    const conv = await createConversation("three-step");
     await addMessage(conv.id, "user", "Complex task", {
       skipIndexing: true,
     });
@@ -95,12 +94,12 @@ describe("getAssistantMessageIdsInTurn", () => {
       skipIndexing: true,
     });
 
-    const result = getAssistantMessageIdsInTurn(a3.id);
+    const result = await getAssistantMessageIdsInTurn(a3.id);
     expect(result).toEqual([a1.id, a2.id, a3.id]);
   });
 
   test("query intermediate message: query A1 in a 2-step turn → returns [A1, A2]", async () => {
-    const conv = createConversation("intermediate");
+    const conv = await createConversation("intermediate");
     await addMessage(conv.id, "user", "Start task", {
       skipIndexing: true,
     });
@@ -114,17 +113,17 @@ describe("getAssistantMessageIdsInTurn", () => {
       skipIndexing: true,
     });
 
-    const result = getAssistantMessageIdsInTurn(a1.id);
+    const result = await getAssistantMessageIdsInTurn(a1.id);
     expect(result).toEqual([a1.id, a2.id]);
   });
 
-  test("message not found: returns [messageId]", () => {
-    const result = getAssistantMessageIdsInTurn("nonexistent-id");
+  test("message not found: returns [messageId]", async () => {
+    const result = await getAssistantMessageIdsInTurn("nonexistent-id");
     expect(result).toEqual(["nonexistent-id"]);
   });
 
   test("consecutive turns: query message in second turn → returns only that turn's messages", async () => {
-    const conv = createConversation("consecutive");
+    const conv = await createConversation("consecutive");
 
     // First turn
     await addMessage(conv.id, "user", "First question", {
@@ -149,16 +148,16 @@ describe("getAssistantMessageIdsInTurn", () => {
     });
 
     // Query second turn → should NOT include a1
-    const result = getAssistantMessageIdsInTurn(a3.id);
+    const result = await getAssistantMessageIdsInTurn(a3.id);
     expect(result).toEqual([a2.id, a3.id]);
 
     // Query first turn → should only include a1
-    const firstTurnResult = getAssistantMessageIdsInTurn(a1.id);
+    const firstTurnResult = await getAssistantMessageIdsInTurn(a1.id);
     expect(firstTurnResult).toEqual([a1.id]);
   });
 
   test("provider-error row after an assistant row: not grouped into the turn", async () => {
-    const conv = createConversation("provider-error-after");
+    const conv = await createConversation("provider-error-after");
     await addMessage(conv.id, "user", "Do the thing", {
       skipIndexing: true,
     });
@@ -170,12 +169,12 @@ describe("getAssistantMessageIdsInTurn", () => {
       metadata: { messageKind: PROVIDER_ERROR_MESSAGE_KIND },
     });
 
-    expect(getAssistantMessageIdsInTurn(a1.id)).toEqual([a1.id]);
-    expect(getAssistantMessageIdsInTurn(pe.id)).toEqual([pe.id]);
+    expect(await getAssistantMessageIdsInTurn(a1.id)).toEqual([a1.id]);
+    expect(await getAssistantMessageIdsInTurn(pe.id)).toEqual([pe.id]);
   });
 
   test("assistant row after a provider-error row: earlier standalone row excluded", async () => {
-    const conv = createConversation("provider-error-before");
+    const conv = await createConversation("provider-error-before");
     await addMessage(conv.id, "user", "Do the thing", {
       skipIndexing: true,
     });
@@ -187,12 +186,12 @@ describe("getAssistantMessageIdsInTurn", () => {
       skipIndexing: true,
     });
 
-    expect(getAssistantMessageIdsInTurn(a1.id)).toEqual([a1.id]);
-    expect(getAssistantMessageIdsInTurn(pe.id)).toEqual([pe.id]);
+    expect(await getAssistantMessageIdsInTurn(a1.id)).toEqual([a1.id]);
+    expect(await getAssistantMessageIdsInTurn(pe.id)).toEqual([pe.id]);
   });
 
   test("system card adjacent to an assistant row: not grouped into the turn", async () => {
-    const conv = createConversation("system-card-adjacent");
+    const conv = await createConversation("system-card-adjacent");
     await addMessage(conv.id, "user", "Summarize please", {
       skipIndexing: true,
     });
@@ -204,7 +203,7 @@ describe("getAssistantMessageIdsInTurn", () => {
       metadata: { messageKind: SYSTEM_CARD_MESSAGE_KIND },
     });
 
-    expect(getAssistantMessageIdsInTurn(a1.id)).toEqual([a1.id]);
-    expect(getAssistantMessageIdsInTurn(card.id)).toEqual([card.id]);
+    expect(await getAssistantMessageIdsInTurn(a1.id)).toEqual([a1.id]);
+    expect(await getAssistantMessageIdsInTurn(card.id)).toEqual([card.id]);
   });
 });

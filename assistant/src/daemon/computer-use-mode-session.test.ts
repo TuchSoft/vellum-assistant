@@ -20,12 +20,12 @@ function createCoordinator() {
   const draining: string[] = [];
 
   const coordinator = {
-    activateSource(input: {
+    async activateSource(input: {
       sourceId: string;
       generation: number;
       mode: "computer_use";
       sourceStartedAt: number;
-    }): ModeSessionSourceHandle {
+    }): Promise<ModeSessionSourceHandle> {
       activated.push(input);
       activation += 1;
       return {
@@ -36,24 +36,24 @@ function createCoordinator() {
         mode: input.mode,
       };
     },
-    claimTurn(
+    async claimTurn(
       _turnId: string,
       handle: ModeSessionSourceHandle,
       _at: number,
-    ): ModeSession {
+    ): Promise<ModeSession> {
       owner = { id: handle.id, mode: handle.mode };
       return owner;
     },
     getTurnOwner: () => owner,
-    recordActivity: (turnId: string, at: number) => {
+    recordActivity: async (turnId: string, at: number) => {
       activity.push({ turnId, at });
       return true;
     },
-    retireSource: (handle: ModeSessionSourceHandle) => {
+    retireSource: async (handle: ModeSessionSourceHandle) => {
       retired.push(handle);
       return true;
     },
-    beginDraining: (turnId: string) => {
+    beginDraining: async (turnId: string) => {
       draining.push(turnId);
       return true;
     },
@@ -81,23 +81,23 @@ describe("ComputerUseModeSessionProducer", () => {
 
   test.each([false, true])(
     "retires failed admission while preserving a partial turn owner (%s)",
-    (partial) => {
+    async (partial) => {
       const state = createCoordinator();
       const claim = state.coordinator.claimTurn;
-      state.coordinator.claimTurn = (...args) => {
+      state.coordinator.claimTurn = async (...args) => {
         if (partial) {
-          claim(...args);
+          await claim(...args);
         }
         throw new Error("tracking unavailable");
       };
       const producer = new ComputerUseModeSessionProducer(state.coordinator);
-      expect(() =>
+      await expect(
         producer.recordAction({
           turnId: "turn-123",
           source: { sourceId: "computer", generation: 1 },
           at: 100,
         }),
-      ).toThrow("tracking unavailable");
+      ).rejects.toThrow("tracking unavailable");
       expect(state.retired).toHaveLength(1);
       expect(state.retired[0]?.mode).toBe("computer_use");
       if (partial) {
@@ -108,7 +108,7 @@ describe("ComputerUseModeSessionProducer", () => {
     },
   );
 
-  test("admits new tracking only while the shared feature flag is enabled", () => {
+  test("admits new tracking only while the shared feature flag is enabled", async () => {
     const state = createCoordinator();
     const producer = new ComputerUseModeSessionProducer(
       state.coordinator,
@@ -118,45 +118,47 @@ describe("ComputerUseModeSessionProducer", () => {
 
     setOverridesForTesting({ "session-groups": false });
     expect(
-      producer.recordAction({ turnId: "turn-disabled", source, at: 100 }),
+      await producer.recordAction({ turnId: "turn-disabled", source, at: 100 }),
     ).toBeUndefined();
     expect(state.activated).toEqual([]);
 
     setOverridesForTesting({ "session-groups": true });
     expect(
-      producer.recordAction({ turnId: "turn-enabled", source, at: 110 }),
+      await producer.recordAction({ turnId: "turn-enabled", source, at: 110 }),
     ).toEqual({ id: "session-1", mode: "computer_use" });
 
     setOverridesForTesting({ "session-groups": false });
-    expect(producer.endTask({ turnId: "turn-enabled", source })).toBe(true);
+    expect(await producer.endTask({ turnId: "turn-enabled", source })).toBe(
+      true,
+    );
     expect(state.retired).toHaveLength(1);
     expect(state.draining).toEqual(["turn-enabled"]);
   });
 
-  test("activates on the first action and records later action activity", () => {
+  test("activates on the first action and records later action activity", async () => {
     const state = createCoordinator();
     const producer = new ComputerUseModeSessionProducer(state.coordinator);
     const source = { sourceId: "proxy-123", generation: 2 };
 
     expect(
-      producer.recordAction({ turnId: "turn-123", source, at: 100 }),
+      await producer.recordAction({ turnId: "turn-123", source, at: 100 }),
     ).toEqual({ id: "session-1", mode: "computer_use" });
     expect(state.activated).toEqual([
       expect.objectContaining({ ...source, sourceStartedAt: 100 }),
     ]);
 
-    producer.recordAction({ turnId: "turn-123", source, at: 120 });
+    await producer.recordAction({ turnId: "turn-123", source, at: 120 });
     expect(state.activated).toHaveLength(1);
     expect(state.activity).toEqual([{ turnId: "turn-123", at: 120 }]);
   });
 
-  test("keeps an existing mode owner without activating a secondary run", () => {
+  test("keeps an existing mode owner without activating a secondary run", async () => {
     const state = createCoordinator();
     state.setOwner({ id: "live-123", mode: "live_vision" });
     const producer = new ComputerUseModeSessionProducer(state.coordinator);
 
     expect(
-      producer.recordAction({
+      await producer.recordAction({
         turnId: "turn-123",
         source: { sourceId: "proxy-123", generation: 0 },
         at: 100,
@@ -166,13 +168,13 @@ describe("ComputerUseModeSessionProducer", () => {
     expect(state.activity).toEqual([{ turnId: "turn-123", at: 100 }]);
   });
 
-  test("terminal end retires its exact handle and begins final reply drain", () => {
+  test("terminal end retires its exact handle and begins final reply drain", async () => {
     const state = createCoordinator();
     const producer = new ComputerUseModeSessionProducer(state.coordinator);
     const source = { sourceId: "proxy-123", generation: 3 };
-    producer.recordAction({ turnId: "turn-123", source, at: 100 });
+    await producer.recordAction({ turnId: "turn-123", source, at: 100 });
 
-    expect(producer.endTask({ turnId: "turn-123", source })).toBe(true);
+    expect(await producer.endTask({ turnId: "turn-123", source })).toBe(true);
     expect(state.retired).toEqual([
       expect.objectContaining({
         sourceId: "proxy-123",
@@ -184,23 +186,31 @@ describe("ComputerUseModeSessionProducer", () => {
     expect(state.draining).toEqual(["turn-123"]);
   });
 
-  test("stale terminal callbacks cannot retire a replacement activation", () => {
+  test("stale terminal callbacks cannot retire a replacement activation", async () => {
     const state = createCoordinator();
     const producer = new ComputerUseModeSessionProducer(state.coordinator);
     const oldSource = { sourceId: "proxy-123", generation: 3 };
-    producer.recordAction({ turnId: "turn-old", source: oldSource, at: 100 });
+    await producer.recordAction({
+      turnId: "turn-old",
+      source: oldSource,
+      at: 100,
+    });
     state.clearOwner();
 
     const nextSource = { sourceId: "proxy-123", generation: 4 };
-    producer.recordAction({ turnId: "turn-new", source: nextSource, at: 200 });
+    await producer.recordAction({
+      turnId: "turn-new",
+      source: nextSource,
+      at: 200,
+    });
 
-    expect(producer.endTask({ turnId: "turn-old", source: oldSource })).toBe(
-      false,
-    );
+    expect(
+      await producer.endTask({ turnId: "turn-old", source: oldSource }),
+    ).toBe(false);
     expect(state.retired).toEqual([]);
-    expect(producer.endTask({ turnId: "turn-new", source: nextSource })).toBe(
-      true,
-    );
+    expect(
+      await producer.endTask({ turnId: "turn-new", source: nextSource }),
+    ).toBe(true);
     expect(state.retired[0]).toMatchObject({
       generation: 4,
       activation: 2,

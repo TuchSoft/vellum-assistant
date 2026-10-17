@@ -12,7 +12,7 @@
  * suite's clone case depends on that same export behaving for real.
  */
 
-import { describe, expect, mock, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 
 import { eq } from "drizzle-orm";
 
@@ -55,14 +55,14 @@ let failNextContentRead = false;
 
 mock.module("../../persistence/attachments-store.js", () => ({
   ...realStore,
-  resolveAttachmentsForPersist: (ids: string[]) => {
+  resolveAttachmentsForPersist: async (ids: string[]) => {
     if (failNextResolve) {
       failNextResolve = false;
       throw new Error("simulated attachment read failure");
     }
     return realStore.resolveAttachmentsForPersist(ids);
   },
-  linkAttachmentToMessage: (
+  linkAttachmentToMessage: async (
     messageId: string,
     attachmentId: string,
     position: number,
@@ -73,14 +73,14 @@ mock.module("../../persistence/attachments-store.js", () => ({
     }
     return realStore.linkAttachmentToMessage(messageId, attachmentId, position);
   },
-  getAttachmentContent: (attachmentId: string) => {
+  getAttachmentContent: async (attachmentId: string) => {
     if (failNextContentRead) {
       failNextContentRead = false;
       throw new Error("simulated attachment byte read failure");
     }
     return realStore.getAttachmentContent(attachmentId);
   },
-  scopeAttachmentToMessageConversation: (
+  scopeAttachmentToMessageConversation: async (
     conversationId: string,
     conversationCreatedAt: number,
     attachmentId: string,
@@ -88,7 +88,7 @@ mock.module("../../persistence/attachments-store.js", () => ({
     if (unstorableAttachmentIds.has(attachmentId)) {
       return null;
     }
-    const scoped = realStore.scopeAttachmentToMessageConversation(
+    const scoped = await realStore.scopeAttachmentToMessageConversation(
       conversationId,
       conversationCreatedAt,
       attachmentId,
@@ -188,6 +188,7 @@ mock.module("../../persistence/job-handlers/message-lexical.js", () => ({
   },
 }));
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import { Conversation } from "../../daemon/conversation.js";
 import {
   deleteConversation,
@@ -203,22 +204,18 @@ import {
 } from "../../persistence/conversation-crud.js";
 import { getConversationAttachmentsDirPath } from "../../persistence/conversation-directories.js";
 import { sightFrameAttachmentIdsFromMetadata } from "../../persistence/conversation-types.js";
-import { getDb } from "../../persistence/db-connection.js";
-import { initializeDb } from "../../persistence/db-init.js";
-import { attachments } from "../../persistence/schema.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { mediaBlockAttachmentId, type Message } from "../../providers/types.js";
 import {
   persistAmbientSightFrame,
   persistLiveVoicePhoto,
 } from "../live-voice-photo.js";
 
-await initializeDb();
-
 const IMAGE_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk";
 
-function liveConversation(title: string) {
-  const conversation = createConversation(title);
+async function liveConversation(title: string) {
+  const conversation = await createConversation(title);
   const { provider } = createMockProvider([textResponse("")]);
   const activeConversation = new Conversation(
     conversation.id,
@@ -285,9 +282,9 @@ function attributableImageId(row: MessageRow): string | undefined {
   return undefined;
 }
 
-describe("a camera frame that falls back to inline bytes", () => {
+describePg("a camera frame that falls back to inline bytes", () => {
   test("is tagged by the id its own block carries", async () => {
-    const live = liveConversation("Live voice inline fallback tag");
+    const live = await liveConversation("Live voice inline fallback tag");
     try {
       const inlineFrame = await uploadUnstorableFrame("inline.png");
 
@@ -295,7 +292,7 @@ describe("a camera frame that falls back to inline bytes", () => {
         (await persistAmbientSightFrame(live.id, inlineFrame, "voice")).ok,
       ).toBe(true);
 
-      const [row] = getMessages(live.id);
+      const [row] = await getMessages(live.id);
       // The scenario really fired: bytes in the row, no reference to a row of
       // their own, and the block naming the id the caller held.
       expect(hasInlineImage(row)).toBe(true);
@@ -306,9 +303,9 @@ describe("a camera frame that falls back to inline bytes", () => {
       ]);
       // Capture times come from the tag on the row, so an id with no
       // `message_attachments` row still resolves.
-      expect([...selectSightFrameCaptureTimes(live.id).keys()]).toEqual([
-        inlineFrame,
-      ]);
+      expect([...(await selectSightFrameCaptureTimes(live.id)).keys()]).toEqual(
+        [inlineFrame],
+      );
     } finally {
       live.dispose();
     }
@@ -318,7 +315,7 @@ describe("a camera frame that falls back to inline bytes", () => {
     // The reason the tag matters. Untagged, the one frame carrying its full
     // base64 is the one frame retention cannot touch, so it rides every later
     // request for the rest of the call.
-    const live = liveConversation("Live voice inline fallback retention");
+    const live = await liveConversation("Live voice inline fallback retention");
     try {
       const inlineFrame = await uploadUnstorableFrame("inline-aged.png");
       expect(
@@ -331,13 +328,13 @@ describe("a camera frame that falls back to inline bytes", () => {
         ).toBe(true);
       }
 
-      const assembled: Message[] = getMessages(live.id).map((row) => ({
+      const assembled: Message[] = (await getMessages(live.id)).map((row) => ({
         role: "user" as const,
         content: row.content,
       }));
       expect(assembled).toHaveLength(3);
 
-      const retained = applySightFrameRetention(assembled, live.id);
+      const retained = await applySightFrameRetention(assembled, live.id);
 
       // Three frames, a budget of two: the inline one is the oldest, so its
       // bytes give way to the timestamped stub.
@@ -357,14 +354,14 @@ describe("a camera frame that falls back to inline bytes", () => {
   });
 });
 
-describe("a camera frame whose message link fails", () => {
+describePg("a camera frame whose message link fails", () => {
   test("is repaired to inline bytes naming the id its tag names", async () => {
     // The tag is written with the row, before the link is attempted, so it
     // already names the CLONE that scoping stored. The repair rebuilds the
     // block from the caller's attachment, which names the id the session held.
     // Left disagreeing, the repaired row's frame never ages out.
-    const source = liveConversation("Live voice repair source");
-    const live = liveConversation("Live voice repair");
+    const source = await liveConversation("Live voice repair source");
+    const live = await liveConversation("Live voice repair");
     try {
       // Linked under another conversation, so materialization clones it.
       const arrivedAs = await uploadFrame("repair.png");
@@ -377,7 +374,7 @@ describe("a camera frame whose message link fails", () => {
       ).toBe(true);
       expect(failNextLink).toBe(false);
 
-      const [row] = getMessages(live.id);
+      const [row] = await getMessages(live.id);
       // The repair really fired: bytes in the row rather than a reference.
       expect(hasInlineImage(row)).toBe(true);
 
@@ -393,14 +390,14 @@ describe("a camera frame whose message link fails", () => {
   });
 });
 
-describe("a camera frame whose persist throws", () => {
+describePg("a camera frame whose persist throws", () => {
   test("keeps its attachment when the message row already exists", async () => {
     // A persist can fail well after the insert: the link write fails, the
     // repair rewrites the content, and that rewrite throws in turn. The row
     // then references the attachment with no link protecting it, which is
     // exactly what a link-aware delete reads as collectible, so reclaiming
     // would strip the image out of a message the transcript still shows.
-    const live = liveConversation("Live voice throw after insert");
+    const live = await liveConversation("Live voice throw after insert");
     try {
       const frame = await uploadFrame("throws-late.png");
       // Load once so the resident history is not stale for an unrelated
@@ -417,9 +414,9 @@ describe("a camera frame whose persist throws", () => {
 
       // The row landed, so the result says so: the client keeps the frame it
       // showed instead of retracting a message the next reload would reveal.
-      const [row] = getMessages(live.id);
+      const [row] = await getMessages(live.id);
       expect(result).toEqual({ ok: true, messageId: row.id });
-      expect(realStore.getAttachmentById(frame)).not.toBeNull();
+      expect(await realStore.getAttachmentById(frame)).not.toBeNull();
       // And the clients rendering this conversation were told.
       expect(messagesChangedFor).toContain(live.id);
 
@@ -441,7 +438,7 @@ describe("a camera frame whose persist throws", () => {
     // it again and the first one was in the transcript all along. The caller
     // sends its retract-style error frame only on ok:false, so reporting the
     // truth here is all it takes.
-    const live = liveConversation("Live voice photo throw after insert");
+    const live = await liveConversation("Live voice photo throw after insert");
     try {
       const photo = await uploadFrame("photo-throws-late.png");
 
@@ -452,9 +449,9 @@ describe("a camera frame whose persist throws", () => {
       expect(failNextLink).toBe(false);
       expect(failNextContentUpdate).toBe(false);
 
-      const [row] = getMessages(live.id);
+      const [row] = await getMessages(live.id);
       expect(result).toEqual({ ok: true, messageId: row.id });
-      expect(realStore.getAttachmentById(photo)).not.toBeNull();
+      expect(await realStore.getAttachmentById(photo)).not.toBeNull();
       expect(messagesChangedFor).toContain(live.id);
     } finally {
       live.dispose();
@@ -464,7 +461,7 @@ describe("a camera frame whose persist throws", () => {
   test("gives up its attachment when it threw before the insert", async () => {
     // Nothing was written, so the upload is stranded exactly as a superseded
     // or timed-out keep's is.
-    const live = liveConversation("Live voice throw before insert");
+    const live = await liveConversation("Live voice throw before insert");
     try {
       const frame = await uploadFrame("throws-early.png");
 
@@ -474,8 +471,8 @@ describe("a camera frame whose persist throws", () => {
       });
       expect(failNextResolve).toBe(false);
 
-      expect(getMessages(live.id)).toHaveLength(0);
-      expect(realStore.getAttachmentById(frame)).toBeNull();
+      expect(await getMessages(live.id)).toHaveLength(0);
+      expect(await realStore.getAttachmentById(frame)).toBeNull();
     } finally {
       live.dispose();
     }
@@ -485,7 +482,7 @@ describe("a camera frame whose persist throws", () => {
     // Nothing was inserted here, so the frame would have been reclaimed. The
     // read that would prove it fails, and an unanswerable question resolves
     // toward leaking a row rather than risking one a message references.
-    const live = liveConversation("Live voice throw with unreadable row");
+    const live = await liveConversation("Live voice throw with unreadable row");
     try {
       const frame = await uploadFrame("throws-unreadable.png");
 
@@ -497,15 +494,15 @@ describe("a camera frame whose persist throws", () => {
       });
       expect(failNextMessageLookup).toBe(false);
 
-      expect(getMessages(live.id)).toHaveLength(0);
-      expect(realStore.getAttachmentById(frame)).not.toBeNull();
+      expect(await getMessages(live.id)).toHaveLength(0);
+      expect(await realStore.getAttachmentById(frame)).not.toBeNull();
     } finally {
       live.dispose();
     }
   });
 });
 
-describe("attachments a failed persist attempt cloned for itself", () => {
+describePg("attachments a failed persist attempt cloned for itself", () => {
   /** Link the upload under another conversation, so scoping has to clone it. */
   async function attachmentLinkedElsewhere(
     otherConversationId: string,
@@ -525,8 +522,8 @@ describe("attachments a failed persist attempt cloned for itself", () => {
     // Scoping clones before the row is written, and the caller only ever holds
     // the id it sent, so a failure here strands the clone and its copied file
     // where nothing can reach them.
-    const source = liveConversation("Live voice clone leak source");
-    const live = liveConversation("Live voice clone leak");
+    const source = await liveConversation("Live voice clone leak source");
+    const live = await liveConversation("Live voice clone leak");
     try {
       const arrivedAs = await attachmentLinkedElsewhere(
         source.id,
@@ -546,11 +543,11 @@ describe("attachments a failed persist attempt cloned for itself", () => {
       expect(cloned).toBeDefined();
       expect(cloned).not.toBe(arrivedAs);
 
-      expect(getMessages(live.id)).toHaveLength(0);
-      expect(realStore.getAttachmentById(cloned!)).toBeNull();
+      expect(await getMessages(live.id)).toHaveLength(0);
+      expect(await realStore.getAttachmentById(cloned!)).toBeNull();
       // The caller's own upload is untouched, still held by its other
       // conversation's message.
-      expect(realStore.getAttachmentById(arrivedAs)).not.toBeNull();
+      expect(await realStore.getAttachmentById(arrivedAs)).not.toBeNull();
     } finally {
       live.dispose();
       source.dispose();
@@ -561,8 +558,8 @@ describe("attachments a failed persist attempt cloned for itself", () => {
     // Past the insert the persisted content names the clone while no link
     // protects it yet, so cleaning up here would strip the image out of a
     // message the transcript still shows.
-    const source = liveConversation("Live voice clone kept source");
-    const live = liveConversation("Live voice clone kept");
+    const source = await liveConversation("Live voice clone kept source");
+    const live = await liveConversation("Live voice clone kept");
     try {
       const arrivedAs = await attachmentLinkedElsewhere(
         source.id,
@@ -583,9 +580,9 @@ describe("attachments a failed persist attempt cloned for itself", () => {
       expect(cloned).toBeDefined();
       expect(cloned).not.toBe(arrivedAs);
 
-      expect(getMessages(live.id)).toHaveLength(1);
-      expect(realStore.getAttachmentById(cloned!)).not.toBeNull();
-      expect(realStore.getAttachmentById(arrivedAs)).not.toBeNull();
+      expect(await getMessages(live.id)).toHaveLength(1);
+      expect(await realStore.getAttachmentById(cloned!)).not.toBeNull();
+      expect(await realStore.getAttachmentById(arrivedAs)).not.toBeNull();
     } finally {
       live.dispose();
       source.dispose();
@@ -597,8 +594,8 @@ describe("attachments a failed persist attempt cloned for itself", () => {
     // so a throw there leaves a clone the returned list never mentions. Only
     // the materialization step still knows about it, which is why it cleans up
     // its own partial work rather than leaving that to the caller.
-    const source = liveConversation("Live voice partial clone source");
-    const live = liveConversation("Live voice partial clone");
+    const source = await liveConversation("Live voice partial clone source");
+    const live = await liveConversation("Live voice partial clone");
     try {
       const arrivedAs = await attachmentLinkedElsewhere(
         source.id,
@@ -618,9 +615,9 @@ describe("attachments a failed persist attempt cloned for itself", () => {
       expect(cloned).toBeDefined();
       expect(cloned).not.toBe(arrivedAs);
 
-      expect(getMessages(live.id)).toHaveLength(0);
-      expect(realStore.getAttachmentById(cloned!)).toBeNull();
-      expect(realStore.getAttachmentById(arrivedAs)).not.toBeNull();
+      expect(await getMessages(live.id)).toHaveLength(0);
+      expect(await realStore.getAttachmentById(cloned!)).toBeNull();
+      expect(await realStore.getAttachmentById(arrivedAs)).not.toBeNull();
     } finally {
       live.dispose();
       source.dispose();
@@ -632,7 +629,7 @@ describe("attachments a failed persist attempt cloned for itself", () => {
     // IS the caller's upload and the retry they are about to make needs it.
     // A photo rather than a keep, so the live-voice reclaim (keeps only) stays
     // out of the way and the assertion isolates the persist's own cleanup.
-    const live = liveConversation("Live voice uncloned survives");
+    const live = await liveConversation("Live voice uncloned survives");
     try {
       const photo = await uploadFrame("uncloned.png");
 
@@ -642,30 +639,37 @@ describe("attachments a failed persist attempt cloned for itself", () => {
       });
       expect(failNextAddMessage).toBe(false);
 
-      expect(getMessages(live.id)).toHaveLength(0);
-      expect(realStore.getAttachmentById(photo)).not.toBeNull();
+      expect(await getMessages(live.id)).toHaveLength(0);
+      expect(await realStore.getAttachmentById(photo)).not.toBeNull();
     } finally {
       live.dispose();
     }
   });
 });
 
-describe("a clone whose materialization fails", () => {
+describePg("a clone whose materialization fails", () => {
   /** Rows in the attachment store, so a leaked clone shows up as a count. */
-  function attachmentRowCount(): number {
-    return getDb().select({ id: attachments.id }).from(attachments).all()
-      .length;
+  async function attachmentRowCount(): Promise<number> {
+    const db = requireMainDb();
+    return (
+      await db.orm
+        .select({ id: db.schema.attachments.id })
+        .from(db.schema.attachments)
+    ).length;
   }
 
   /** Give a row a real file on disk, the shape a clone inherits its path from. */
-  function backWithFile(attachmentId: string, name: string): string {
+  async function backWithFile(
+    attachmentId: string,
+    name: string,
+  ): Promise<string> {
     const filePath = join(tmpdir(), `sight-frame-${name}`);
     writeFileSync(filePath, Buffer.from(IMAGE_BASE64, "base64"));
-    getDb()
-      .update(attachments)
+    const db = requireMainDb();
+    await db.orm
+      .update(db.schema.attachments)
       .set({ filePath })
-      .where(eq(attachments.id, attachmentId))
-      .run();
+      .where(eq(db.schema.attachments.id, attachmentId));
     return filePath;
   }
 
@@ -675,8 +679,10 @@ describe("a clone whose materialization fails", () => {
     // names the file the bytes came FROM. A failure used to leave that row for
     // good, because the persist recovers by inlining and no error ever reached
     // the callers that clean up.
-    const source = liveConversation("Live voice clone materialize source");
-    const live = liveConversation("Live voice clone materialize");
+    const source = await liveConversation(
+      "Live voice clone materialize source",
+    );
+    const live = await liveConversation("Live voice clone materialize");
     const attachDir = getConversationAttachmentsDirPath(
       live.id,
       live.createdAt,
@@ -687,9 +693,9 @@ describe("a clone whose materialization fails", () => {
       const elsewhere = await addMessage(source.id, "user", "look at this");
       realStore.linkAttachmentToMessage(elsewhere.id, arrivedAs, 0);
       // The clone is inserted carrying exactly this path.
-      sourceFile = backWithFile(arrivedAs, "source.png");
+      sourceFile = await backWithFile(arrivedAs, "source.png");
 
-      const rowsBefore = attachmentRowCount();
+      const rowsBefore = await attachmentRowCount();
 
       // A plain file where the destination's attachments directory belongs, so
       // the very first thing materialization does fails.
@@ -701,15 +707,15 @@ describe("a clone whose materialization fails", () => {
       ).toBe(true);
 
       // The recovery is unchanged: the frame still lands, inline.
-      const [row] = getMessages(live.id);
+      const [row] = await getMessages(live.id);
       expect(hasInlineImage(row)).toBe(true);
 
       // No clone row survived the failure.
-      expect(attachmentRowCount()).toBe(rowsBefore);
+      expect(await attachmentRowCount()).toBe(rowsBefore);
 
       // The source keeps its row, the file the clone was aliasing, and its own
       // message's link.
-      expect(realStore.getAttachmentById(arrivedAs)).not.toBeNull();
+      expect(await realStore.getAttachmentById(arrivedAs)).not.toBeNull();
       expect(existsSync(sourceFile)).toBe(true);
       expect(realStore.getAttachmentsForMessage(elsewhere.id)).toHaveLength(1);
     } finally {
@@ -729,18 +735,18 @@ describe("a clone whose materialization fails", () => {
     // survivor's bytes.
     const kept = await uploadFrame("shared-kept.png");
     const alias = await uploadFrame("shared-alias.png");
-    const sharedFile = backWithFile(kept, "shared.png");
-    getDb()
-      .update(attachments)
+    const sharedFile = await backWithFile(kept, "shared.png");
+    const db = requireMainDb();
+    await db.orm
+      .update(db.schema.attachments)
       .set({ filePath: sharedFile })
-      .where(eq(attachments.id, alias))
-      .run();
+      .where(eq(db.schema.attachments.id, alias));
 
     try {
-      expect(realStore.deleteOrphanAttachments([alias])).toBe(1);
+      expect(await realStore.deleteOrphanAttachments([alias])).toBe(1);
 
-      expect(realStore.getAttachmentById(alias)).toBeNull();
-      expect(realStore.getAttachmentById(kept)).not.toBeNull();
+      expect(await realStore.getAttachmentById(alias)).toBeNull();
+      expect(await realStore.getAttachmentById(kept)).not.toBeNull();
       // The survivor's bytes are still there.
       expect(existsSync(sharedFile)).toBe(true);
     } finally {
@@ -749,13 +755,13 @@ describe("a clone whose materialization fails", () => {
   });
 });
 
-describe("ambient frames stay out of the indexing pipeline", () => {
+describePg("ambient frames stay out of the indexing pipeline", () => {
   test("a kept frame is never handed to the indexer", async () => {
     // The camera sampled it, so indexing would feed extraction a frame every
     // few seconds of whatever the room contains, and commit those visuals to
     // memory with no consent surface. The transcript is the record the design
     // signed off on.
-    const live = liveConversation("Live voice keep not indexed");
+    const live = await liveConversation("Live voice keep not indexed");
     try {
       const frame = await uploadFrame("not-indexed.png");
 
@@ -764,7 +770,7 @@ describe("ambient frames stay out of the indexing pipeline", () => {
         true,
       );
 
-      const [row] = getMessages(live.id);
+      const [row] = await getMessages(live.id);
       expect(row).toBeDefined();
       expect(lexicallyIndexed).not.toContain(row.id);
       expect(lexicallyIndexed).toHaveLength(0);
@@ -776,14 +782,14 @@ describe("ambient frames stay out of the indexing pipeline", () => {
   test("a photo is still indexed, being something the user sent", async () => {
     // Deliberate user content, and its indexing is pre-existing behavior that
     // this change must not quietly take away.
-    const live = liveConversation("Live voice photo still indexed");
+    const live = await liveConversation("Live voice photo still indexed");
     try {
       const photo = await uploadFrame("still-indexed.png");
 
       lexicallyIndexed.length = 0;
       expect((await persistLiveVoicePhoto(live.id, photo)).ok).toBe(true);
 
-      const [row] = getMessages(live.id);
+      const [row] = await getMessages(live.id);
       expect(row).toBeDefined();
       expect(lexicallyIndexed).toContain(row.id);
     } finally {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 // Mock the shared `runBackgroundJob` runner so the scheduler's fresh-bootstrap
 // talk-mode path stays observable in unit tests. Each invocation creates a new
@@ -12,7 +12,7 @@ mock.module("../runtime/background-job-runner.js", () => ({
   runBackgroundJob: async (opts: { prompt: string; groupId?: string }) => {
     const { createConversation } =
       await import("../persistence/conversation-crud.js");
-    const conv = createConversation({
+    const conv = await createConversation({
       title: "(test stub)",
       conversationType: "background",
       source: "schedule",
@@ -53,29 +53,21 @@ mock.module("../notifications/emit-signal.js", () => ({
   },
 }));
 
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   createSchedule,
   getSchedule,
   getScheduleRuns,
 } from "../schedule/schedule-store.js";
 import { runDueSchedulesOnce } from "../schedule/scheduler.js";
-
-await initializeDb();
-
-/** Access the underlying bun:sqlite Database for raw parameterized queries. */
-function getRawDb(): import("bun:sqlite").Database {
-  return (getDb() as unknown as { $client: import("bun:sqlite").Database })
-    .$client;
-}
+import { describePg } from "./pg-test-db.js";
 
 /** Force a schedule to be due by setting next_run_at in the past. */
-function forceScheduleDue(scheduleId: string): void {
-  getRawDb().run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [
-    Date.now() - 1000,
-    scheduleId,
-  ]);
+async function forceScheduleDue(scheduleId: string): Promise<void> {
+  await requireMainDb().run(
+    "UPDATE cron_jobs SET next_run_at = ? WHERE id = ?",
+    [Date.now() - 1000, scheduleId],
+  );
 }
 
 // Build an RRULE expression anchored at the given start date, recurring every minute.
@@ -106,13 +98,13 @@ function buildEndedRrule(): string {
 
 // ── RRULE schedule fires through the scheduler ──────────────────────
 
-describe("scheduler RRULE execution", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversations");
+describePg("scheduler RRULE execution", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
     onRunBackgroundJobPrompt = null;
     runBackgroundJobShouldFail = false;
     processMessageImpl = async () => {};
@@ -135,7 +127,7 @@ describe("scheduler RRULE execution", () => {
     expect(stored!.syntax).toBe("rrule");
 
     // Force it to be due
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     const processedMessages: { conversationId: string; message: string }[] = [];
     onRunBackgroundJobPrompt = ({ conversationId, prompt }) => {
@@ -163,13 +155,13 @@ describe("scheduler RRULE execution", () => {
     // schedule that was valid when created but has since expired.
     const id = crypto.randomUUID();
     const now = Date.now();
-    getRawDb().run(
+    await requireMainDb().run(
       `INSERT INTO cron_jobs (id, name, enabled, cron_expression, schedule_syntax, timezone, message, next_run_at, last_run_at, last_status, retry_count, created_by, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         "Ended RRULE",
-        1,
+        true,
         endedExpr,
         "rrule",
         null,
@@ -229,7 +221,7 @@ describe("scheduler RRULE execution", () => {
     expect(stored).not.toBeNull();
     expect(stored!.syntax).toBe("cron");
 
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     const processedMessages: { conversationId: string; message: string }[] = [];
     onRunBackgroundJobPrompt = ({ conversationId, prompt }) => {
@@ -257,7 +249,7 @@ describe("scheduler RRULE execution", () => {
       syntax: "cron",
     });
 
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     const dispatched: string[] = [];
     onRunBackgroundJobPrompt = ({ prompt }) => {
@@ -316,7 +308,7 @@ describe("scheduler RRULE execution", () => {
     });
 
     // Force the schedule to be due
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 
@@ -358,7 +350,7 @@ describe("scheduler RRULE execution", () => {
       expression,
     });
 
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     const processedMessages: string[] = [];
     onRunBackgroundJobPrompt = ({ prompt }) => {
@@ -432,7 +424,7 @@ describe("scheduler RRULE execution", () => {
         expression,
       });
 
-      forceScheduleDue(schedule.id);
+      await forceScheduleDue(schedule.id);
 
       const processedMessages: string[] = [];
       onRunBackgroundJobPrompt = ({ prompt }) => {
@@ -472,7 +464,7 @@ describe("scheduler RRULE execution", () => {
     });
 
     const originalNextRunAt = (await getSchedule(schedule.id))!.nextRunAt;
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
     const forcedDueAt = (await getSchedule(schedule.id))!.nextRunAt;
 
     await runDueSchedulesOnce();
@@ -587,7 +579,7 @@ describe("scheduler RRULE execution", () => {
       routingHints: { preferred: "email" },
     });
 
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 

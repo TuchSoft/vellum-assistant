@@ -1,4 +1,4 @@
-import { describe, expect, mock, spyOn, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 
 import {
   createMockProvider,
@@ -9,6 +9,7 @@ import { waitFor } from "../../__tests__/helpers/wait-for.js";
 
 setConfig("memory", { enabled: false });
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import { UserMessageEchoEventSchema } from "../../api/events/user-message-echo.js";
 import type { AssistantEventEnvelope } from "../../api/index.js";
 import { Conversation } from "../../daemon/conversation.js";
@@ -20,7 +21,6 @@ import {
 import { conversationMessagesSyncTag } from "../../daemon/message-types/sync.js";
 import { uploadAttachment } from "../../persistence/attachments-store.js";
 import * as conversationCrud from "../../persistence/conversation-crud.js";
-import { initializeDb } from "../../persistence/db-init.js";
 import { assistantEventHub } from "../../runtime/assistant-event-hub.js";
 import {
   _drainFrameReclaimRechecksForTests,
@@ -31,10 +31,8 @@ import {
 import { LiveVoiceSession } from "../live-voice-session.js";
 import { createLiveVoiceServerFrameSequencer } from "../protocol.js";
 
-await initializeDb();
-
-function createHarness() {
-  const row = conversationCrud.createConversation("Camera frame echo");
+async function createHarness() {
+  const row = await conversationCrud.createConversation("Camera frame echo");
   const { provider } = createMockProvider([textResponse("")]);
   const conversation = new Conversation(
     row.id,
@@ -85,7 +83,7 @@ function createHarness() {
   const subscription = assistantEventHub.subscribe({
     type: "process",
     filter: { conversationId: row.id },
-    callback: (event) => {
+    callback: async (event) => {
       if (
         (event.message.type === "user_message_echo" &&
           event.message.conversationId === row.id) ||
@@ -94,8 +92,12 @@ function createHarness() {
       ) {
         published.push({
           event,
-          persistedIds: conversationCrud.getMessages(row.id).map((m) => m.id),
-          persistedSeq: conversationCrud.getConversationPersistedSeq(row.id),
+          persistedIds: (await conversationCrud.getMessages(row.id)).map(
+            (m) => m.id,
+          ),
+          persistedSeq: await conversationCrud.getConversationPersistedSeq(
+            row.id,
+          ),
         });
       }
     },
@@ -136,7 +138,7 @@ async function expectAnnouncement(
   ]);
   const [echo, sync] = harness.published;
   const message = UserMessageEchoEventSchema.parse(echo.event.message);
-  const rows = conversationCrud.getMessages(harness.conversationId);
+  const rows = await conversationCrud.getMessages(harness.conversationId);
   expect(rows).toHaveLength(1);
   expect(message.messageId).toBe(rows[0].id);
   expect(echo.persistedIds).toEqual([rows[0].id]);
@@ -151,12 +153,12 @@ async function expectAnnouncement(
   expect(harness.startVoiceTurn).not.toHaveBeenCalled();
 }
 
-describe("standalone image echoes", () => {
+describePg("standalone image echoes", () => {
   test("a grouped keep echoes the same durable camera owner", async () => {
-    const harness = createHarness();
+    const harness = await createHarness();
     try {
       const attachmentId = await uploadFrame();
-      const source = harness.conversation.modeSessions.activateSource({
+      const source = await harness.conversation.modeSessions.activateSource({
         sourceId: "camera:test",
         generation: 1,
         mode: "live_vision",
@@ -183,7 +185,7 @@ describe("standalone image echoes", () => {
         harness.published[0]!.event.message,
       );
       expect(echo.modeSession).toEqual(modeSession);
-      const [row] = conversationCrud.getMessages(harness.conversationId);
+      const [row] = await conversationCrud.getMessages(harness.conversationId);
       expect(JSON.parse(row!.metadata ?? "{}").modeSession).toEqual(
         modeSession,
       );
@@ -195,7 +197,7 @@ describe("standalone image echoes", () => {
   test.each(["sight_frame", "attach_image"] as const)(
     "%s emits one committed row before the history invalidation",
     async (type) => {
-      const harness = createHarness();
+      const harness = await createHarness();
       try {
         await harness.session.start();
         const attachmentId = await uploadFrame();
@@ -214,7 +216,7 @@ describe("standalone image echoes", () => {
   ] as const)(
     "$kind preserves its echo marker when a committed write throws (deferred: $deferred)",
     async ({ kind, deferred }) => {
-      const harness = createHarness();
+      const harness = await createHarness();
       const realPersist = conversationMessaging.persistQueuedMessageBody;
       const realGetMessage = conversationCrud.getMessageById;
       let committed = false;

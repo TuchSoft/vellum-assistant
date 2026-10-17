@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 
+import { describePg } from "../__tests__/pg-test-db.js";
 import { createConversation } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   assembleUserContentBlocks,
   offloadLinkPlan,
@@ -14,20 +14,18 @@ import {
 
 const OVERSIZED_FILENAME_RE = /^oversized-content-[0-9a-f-]{36}\.txt$/;
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
-describe("offloadOversizedText", () => {
+describePg("offloadOversizedText", () => {
   test("leaves text under the cap unchanged", async () => {
-    resetTables();
-    const conv = createConversation();
+    await resetTables();
+    const conv = await createConversation();
     const result = await offloadOversizedText("hello", {
       conversationId: conv.id,
       conversationCreatedAt: conv.createdAt,
@@ -36,8 +34,8 @@ describe("offloadOversizedText", () => {
   });
 
   test("ports over-cap text into a workspace_ref attachment", async () => {
-    resetTables();
-    const conv = createConversation();
+    await resetTables();
+    const conv = await createConversation();
     const original = "x".repeat(32);
     const result = await offloadOversizedText(
       original,
@@ -72,8 +70,8 @@ describe("offloadOversizedText", () => {
   });
 
   test("assigns a distinct generated filename per offload in one conversation", async () => {
-    resetTables();
-    const conv = createConversation();
+    await resetTables();
+    const conv = await createConversation();
     const ctx = {
       conversationId: conv.id,
       conversationCreatedAt: conv.createdAt,
@@ -88,15 +86,15 @@ describe("offloadOversizedText", () => {
   });
 });
 
-describe("oversizedContentFilename", () => {
+describePg("oversizedContentFilename", () => {
   test("embeds the given id", () => {
-    expect(oversizedContentFilename("11111111-1111-1111-1111-111111111111")).toBe(
-      "oversized-content-11111111-1111-1111-1111-111111111111.txt",
-    );
+    expect(
+      oversizedContentFilename("11111111-1111-1111-1111-111111111111"),
+    ).toBe("oversized-content-11111111-1111-1111-1111-111111111111.txt");
   });
 });
 
-describe("offloadLinkPlan", () => {
+describePg("offloadLinkPlan", () => {
   test("same persist and live id is linked and model-facing", () => {
     const plan = offloadLinkPlan("att-1", "att-1");
     expect(plan.linkIds).toEqual(["att-1"]);

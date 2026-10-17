@@ -366,12 +366,12 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
     "dispatches committed content once despite $failure failure (surface=$surface)",
     async ({ failure, surface }) => {
       const conversationKey = "conv-tracking-failure";
-      const { conversationId } = getOrCreateConversation(conversationKey);
+      const { conversationId } = await getOrCreateConversation(conversationKey);
       const modeSessions = new ConversationModeSessionCoordinator(
         conversationId,
       );
       const source = surface
-        ? modeSessions.activateSource({
+        ? await modeSessions.activateSource({
             sourceId: "browser-source",
             generation: 1,
             mode: "browser",
@@ -379,12 +379,12 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
           })!
         : undefined;
       if (source) {
-        modeSessions.claimTurn("turn-origin", source, 110);
-        modeSessions.recordStructuralWait("turn-origin", {
+        await modeSessions.claimTurn("turn-origin", source, 110);
+        await modeSessions.recordStructuralWait("turn-origin", {
           kind: "surface",
           responseId: "surface-123",
         });
-        modeSessions.releaseTurn("turn-origin");
+        await modeSessions.releaseTurn("turn-origin");
       }
 
       const persistedRows = () =>
@@ -402,15 +402,15 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
         committedCounts.push(persistedRows().length);
         throw new Error("optional session tracking failed");
       });
-      modeSessions.acceptTurn = (...args) => {
-        const owner = acceptTurn(...args);
+      modeSessions.acceptTurn = async (...args) => {
+        const owner = await acceptTurn(...args);
         if (failure === "acceptTurn") {
           trackingFailure();
         }
         return owner;
       };
-      modeSessions.trackPersistedRow = (...args) => {
-        trackPersistedRow(...args);
+      modeSessions.trackPersistedRow = async (...args) => {
+        await trackPersistedRow(...args);
         if (failure === "trackPersistedRow") {
           trackingFailure();
         }
@@ -449,8 +449,10 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
       const runAgentLoop = mock(async (_content: string, messageId: string) => {
         expect(ctx.isProcessing()).toBe(true);
         expect(ctx.messages).toHaveLength(1);
-        expect(modeSessions.getTurnOwner(messageId)?.id).toBe(source?.id);
-        modeSessions.releaseTurn(messageId, {
+        expect((await modeSessions.getTurnOwner(messageId))?.id).toBe(
+          source?.id,
+        );
+        await modeSessions.releaseTurn(messageId, {
           status: "completed",
           endReason: "turn_complete",
         });
@@ -505,7 +507,9 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
       expect(ctx.currentRequestId).toBeUndefined();
       expect(ctx.currentTurnClientMessageId).toBeUndefined();
       expect(releases).toEqual([1, 2]);
-      expect(modeSessions.getTurnOwner(firstBody.messageId)).toBeUndefined();
+      expect(
+        await modeSessions.getTurnOwner(firstBody.messageId),
+      ).toBeUndefined();
       expect(modeSessions.hasResidentWork()).toBe(false);
     },
   );
@@ -578,7 +582,7 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
 
   test("consumes explicit approval text when a single pending confirmation exists (idle)", async () => {
     const conversationKey = "conv-inline-idle";
-    const { conversationId } = getOrCreateConversation(conversationKey);
+    const { conversationId } = await getOrCreateConversation(conversationKey);
     const requestId = "req-inline-idle";
     const {
       conversation,
@@ -637,7 +641,7 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
 
   test("consumes natural-language approval text when approval conversation generator is configured", async () => {
     const conversationKey = "conv-inline-nl";
-    const { conversationId } = getOrCreateConversation(conversationKey);
+    const { conversationId } = await getOrCreateConversation(conversationKey);
     const requestId = "req-inline-nl";
     const {
       conversation,
@@ -704,7 +708,7 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
 
   test("consumes explicit approval text while busy instead of auto-denying and queueing", async () => {
     const conversationKey = "conv-inline-busy";
-    const { conversationId } = getOrCreateConversation(conversationKey);
+    const { conversationId } = await getOrCreateConversation(conversationKey);
     const requestId = "req-inline-busy";
     const {
       conversation,
@@ -763,7 +767,7 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
 
   test("consumes explicit approval text while busy even when queue depth is non-zero", async () => {
     const conversationKey = "conv-inline-busy-queued";
-    const { conversationId } = getOrCreateConversation(conversationKey);
+    const { conversationId } = await getOrCreateConversation(conversationKey);
     const requestId = "req-inline-busy-queued";
     const {
       conversation,
@@ -822,7 +826,7 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
 
   test("consumes explicit rejection text when a single pending confirmation exists (idle)", async () => {
     const conversationKey = "conv-inline-reject";
-    const { conversationId } = getOrCreateConversation(conversationKey);
+    const { conversationId } = await getOrCreateConversation(conversationKey);
     const requestId = "req-inline-reject";
     const {
       conversation,
@@ -882,7 +886,7 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
 
   test("does not consume ambiguous text — falls through to normal message handling", async () => {
     const conversationKey = "conv-inline-ambiguous";
-    const { conversationId } = getOrCreateConversation(conversationKey);
+    const { conversationId } = await getOrCreateConversation(conversationKey);
     const requestId = "req-inline-ambiguous";
     const { conversation, runAgentLoopMock } = makePendingApprovalConversation(
       requestId,
@@ -1044,7 +1048,7 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
     // The vellum channel never falls through to the shared
     // `default:vellum:<interface>` thread: each empty-handed send mints
     // a fresh conversation so the first-message id surfaces to the client.
-    expect(getConversationByKey("default:vellum:macos")).toBeNull();
+    expect(await getConversationByKey("default:vellum:macos")).toBeNull();
 
     await stopServer();
   });
@@ -1114,7 +1118,7 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
     // co-location so repeated inbound messages from the same external
     // channel/interface land on a single thread.
     expect(body1.conversationId).toBe(body2.conversationId);
-    const mapping = getConversationByKey("default:phone:phone");
+    const mapping = await getConversationByKey("default:phone:phone");
     expect(mapping).not.toBeNull();
     expect(mapping!.conversationId).toBe(body1.conversationId);
 
@@ -1123,7 +1127,7 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
 
   test("auto-deny resolves the guardian request so stale records do not cause pending_interaction_not_found", async () => {
     const conversationKey = "conv-auto-deny-guardian";
-    const { conversationId } = getOrCreateConversation(conversationKey);
+    const { conversationId } = await getOrCreateConversation(conversationKey);
     const requestId = "req-auto-deny-guardian";
 
     // Step 1: Create a pending approval conversation with a guardian request.

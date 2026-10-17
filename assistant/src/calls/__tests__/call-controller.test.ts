@@ -1,12 +1,4 @@
-import {
-  afterAll,
-  beforeEach,
-  describe,
-  expect,
-  type Mock,
-  mock,
-  test,
-} from "bun:test";
+import { afterAll, beforeEach, expect, type Mock, mock, test } from "bun:test";
 
 mock.module("../../config/env.js", () => ({ isHttpAuthDisabled: () => true }));
 
@@ -224,16 +216,14 @@ registerTestTtsProviders();
 import { resetDbForTesting } from "../../__tests__/db-test-helpers.js";
 import { createGuardianBinding } from "../../__tests__/helpers/create-guardian-binding.js";
 import { setConfig } from "../../__tests__/helpers/set-config.js";
+import { describePg } from "../../__tests__/pg-test-db.js";
 import { loadConfig } from "../../config/loader.js";
 import type {
   VoiceFrontModelConfig,
   VoiceProgressConfig,
 } from "../../config/schemas/voice.js";
 import { getMessages } from "../../persistence/conversation-crud.js";
-import { getDb } from "../../persistence/db-connection.js";
-import { initializeDb } from "../../persistence/db-init.js";
-import { resetTestTables } from "../../persistence/raw-query.js";
-import { conversations } from "../../persistence/schema/index.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { CallController } from "../call-controller.js";
 import { getCallController } from "../call-state.js";
 import {
@@ -259,8 +249,6 @@ setConfig("ingress", {
   enabled: true,
   publicBaseUrl: "https://generic.example.com",
 });
-
-await initializeDb();
 
 afterAll(() => {
   resetDbForTesting();
@@ -333,20 +321,18 @@ function createMockTransport(): MockTransport {
 // ── Helpers ─────────────────────────────────────────────────────────
 
 let ensuredConvIds = new Set<string>();
-function ensureConversation(id: string): void {
+async function ensureConversation(id: string): Promise<void> {
   if (ensuredConvIds.has(id)) {
     return;
   }
-  const db = getDb();
+  const db = requireMainDb();
   const now = Date.now();
-  db.insert(conversations)
-    .values({
-      id,
-      title: `Test conversation ${id}`,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  await db.orm.insert(db.schema.conversations).values({
+    id,
+    title: `Test conversation ${id}`,
+    createdAt: now,
+    updatedAt: now,
+  });
   ensuredConvIds.add(id);
 }
 
@@ -362,7 +348,8 @@ function pendingRequestByCallSession(callSessionId: string) {
 
 async function resetTables() {
   bridgeState.reset();
-  resetTestTables(
+  const db = requireMainDb();
+  for (const table of [
     "call_pending_questions",
     "call_events",
     "call_sessions",
@@ -371,7 +358,9 @@ async function resetTables() {
     "conversations",
     "contact_channels",
     "contacts",
-  );
+  ]) {
+    await db.run(`DELETE FROM "${table}"`);
+  }
   // Seed the vellum guardian binding (gateway does this at startup in production)
   await createGuardianBinding({
     channel: "vellum",
@@ -406,7 +395,7 @@ async function pollUntil(
 /**
  * Create a call session and a controller wired to a mock transport.
  */
-function setupController(
+async function setupController(
   task?: string,
   opts?: {
     assistantId?: string;
@@ -424,7 +413,7 @@ function setupController(
     frontModelConfig?: VoiceFrontModelConfig;
   },
 ) {
-  ensureConversation("conv-ctrl-test");
+  await ensureConversation("conv-ctrl-test");
   const session = createCallSession({
     direction: "inbound",
     conversationId: "conv-ctrl-test",
@@ -457,8 +446,10 @@ function setupController(
   return { session, relay: transport, controller };
 }
 
-function getLatestAssistantText(conversationId: string): string | null {
-  const msgs = getMessages(conversationId).filter(
+async function getLatestAssistantText(
+  conversationId: string,
+): Promise<string | null> {
+  const msgs = (await getMessages(conversationId)).filter(
     (m) => m.role === "assistant",
   );
   if (msgs.length === 0) {
@@ -474,9 +465,9 @@ function getLatestAssistantText(conversationId: string): string | null {
     .join("");
 }
 
-function setupControllerWithOrigin(task?: string) {
-  ensureConversation("conv-ctrl-voice");
-  ensureConversation("conv-ctrl-origin");
+async function setupControllerWithOrigin(task?: string) {
+  await ensureConversation("conv-ctrl-voice");
+  await ensureConversation("conv-ctrl-origin");
   const session = createCallSession({
     direction: "inbound",
     conversationId: "conv-ctrl-voice",
@@ -500,7 +491,7 @@ function setupControllerWithOrigin(task?: string) {
   return { session, relay: transport, controller };
 }
 
-describe("call-controller", () => {
+describePg("call-controller", () => {
   beforeEach(async () => {
     resetTables();
     // Reset the bridge mock to default behaviour
@@ -531,7 +522,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Hi", ", how", " are you?"]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hello");
 
@@ -549,7 +540,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Simple response."]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Test");
 
@@ -581,7 +572,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { relay, controller } = setupController("Confirm appointment");
+    const { relay, controller } = await setupController("Confirm appointment");
 
     await controller.startInitialGreeting();
     await controller.startInitialGreeting(); // should be no-op
@@ -631,7 +622,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { controller } = setupController("Tell a joke immediately");
+    const { controller } = await setupController("Tell a joke immediately");
 
     await controller.startInitialGreeting();
     await controller.handleCallerUtterance("Yeah. Sure. What's up?");
@@ -671,7 +662,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { controller } = setupController();
+    const { controller } = await setupController();
 
     // Simulate post-approval: call markNextCallerTurnAsOpeningAck directly
     // without any prior startInitialGreeting / CALL_OPENING
@@ -694,7 +685,8 @@ describe("call-controller", () => {
         "[ASK_GUARDIAN: What date works best?]",
       ]),
     );
-    const { session, relay, controller } = setupController("Book appointment");
+    const { session, relay, controller } =
+      await setupController("Book appointment");
 
     await controller.handleCallerUtterance("I need to schedule something");
 
@@ -733,7 +725,7 @@ describe("call-controller", () => {
         "I can confirm 3 PM works.",
       ]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Any update?");
 
@@ -756,7 +748,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Thank you for calling, goodbye! ", "[END_CALL]"]),
     );
-    const { session, relay, controller } = setupController();
+    const { session, relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("That is all, thanks");
 
@@ -780,7 +772,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Thank you for calling, goodbye! ", "[END_CALL]"]),
     );
-    const { session, relay, controller } = setupController();
+    const { session, relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("That is all, thanks");
 
@@ -802,7 +794,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Thank you for calling, goodbye! ", "[END_CALL]"]),
     );
-    const { session, relay, controller } = setupController();
+    const { session, relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("That is all, thanks");
 
@@ -841,7 +833,7 @@ describe("call-controller", () => {
         return { turnId: `run-${turnContents.length}`, abort: () => {} };
       },
     );
-    const { session, relay, controller } = setupController();
+    const { session, relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("That is all, thanks");
     expect(relay.endCalled).toBe(false);
@@ -881,7 +873,7 @@ describe("call-controller", () => {
         return { turnId: `run-${turnContents.length}`, abort: () => {} };
       },
     );
-    const { session, relay, controller } = setupController();
+    const { session, relay, controller } = await setupController();
 
     // First turn: assistant says goodbye with END_CALL (listen window starts)
     await controller.handleCallerUtterance("That is all, thanks");
@@ -923,7 +915,7 @@ describe("call-controller", () => {
         return { turnId: `run-${turnContents.length}`, abort: () => {} };
       },
     );
-    const { session, relay, controller } = setupController();
+    const { session, relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Can you ask?");
     expect(controller.getPendingConsultationQuestionId()).not.toBeNull();
@@ -954,7 +946,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Thank you for calling, goodbye! ", "[END_CALL]"]),
     );
-    const { session, relay, controller } = setupController(undefined, {
+    const { session, relay, controller } = await setupController(undefined, {
       awaitPlaybackDrained: () => drainPromise,
     });
 
@@ -982,7 +974,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Goodbye! ", "[END_CALL]"]),
     );
-    const { session, relay, controller } = setupController(undefined, {
+    const { session, relay, controller } = await setupController(undefined, {
       awaitPlaybackDrained: () => drainPromise,
     });
 
@@ -1006,7 +998,7 @@ describe("call-controller", () => {
       createMockVoiceTurn(["Goodbye! ", "[END_CALL]"]),
     );
     // Drain that never resolves — only the safety cap can release teardown.
-    const { session, relay, controller } = setupController(undefined, {
+    const { session, relay, controller } = await setupController(undefined, {
       awaitPlaybackDrained: () => new Promise<void>(() => {}),
     });
 
@@ -1043,7 +1035,7 @@ describe("call-controller", () => {
     );
     // Both goodbyes' drains never echo — only each teardown's own safety cap
     // can release it.
-    const { session, relay, controller } = setupController(undefined, {
+    const { session, relay, controller } = await setupController(undefined, {
       awaitPlaybackDrained: () => new Promise<void>(() => {}),
     });
 
@@ -1079,7 +1071,7 @@ describe("call-controller", () => {
     );
     // Drain never resolves during the test window; re-engagement must still
     // cancel the pending teardown mid-drain.
-    const { session, relay, controller } = setupController(undefined, {
+    const { session, relay, controller } = await setupController(undefined, {
       awaitPlaybackDrained: () => new Promise<void>(() => {}),
     });
 
@@ -1125,7 +1117,7 @@ describe("call-controller", () => {
         return { turnId: `run-${turnContents.length}`, abort: () => {} };
       },
     );
-    const { session, relay, controller } = setupController(undefined, {
+    const { session, relay, controller } = await setupController(undefined, {
       awaitPlaybackDrained: () => {
         drainCalls++;
         // First END_CALL drain resolves immediately; the second one is held
@@ -1164,7 +1156,7 @@ describe("call-controller", () => {
       createMockVoiceTurn(["Goodbye! ", "[END_CALL]"]),
     );
     // Default mock transport does not implement awaitPlaybackDrained.
-    const { session, relay, controller } = setupController();
+    const { session, relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("That is all, thanks");
     expect(relay.endCalled).toBe(false);
@@ -1184,7 +1176,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Goodbye! ", "[END_CALL]"]),
     );
-    const { session, relay, controller } = setupController(undefined, {
+    const { session, relay, controller } = await setupController(undefined, {
       awaitPlaybackDrained: () => drainPromise,
     });
 
@@ -1208,7 +1200,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Goodbye! ", "[END_CALL]"]),
     );
-    const { relay, controller } = setupController(undefined, {
+    const { relay, controller } = await setupController(undefined, {
       awaitPlaybackDrained: () => drainPromise,
     });
 
@@ -1229,7 +1221,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Hold on. [ASK_GUARDIAN: Preferred time?]"]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("I need an appointment");
 
@@ -1278,7 +1270,7 @@ describe("call-controller", () => {
     );
 
     const { session, relay, controller } =
-      setupController("Schedule a haircut");
+      await setupController("Schedule a haircut");
 
     await controller.handleCallerUtterance("Can I book for 7:30?");
 
@@ -1330,7 +1322,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hello");
 
@@ -1351,7 +1343,7 @@ describe("call-controller", () => {
       throw new Error("Conversation is already processing a message");
     });
 
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hello");
 
@@ -1379,7 +1371,7 @@ describe("call-controller", () => {
       throw new Error("boom");
     });
 
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hello");
 
@@ -1393,7 +1385,7 @@ describe("call-controller", () => {
   });
 
   test("handleUserAnswer: returns false when no pending consultation exists", async () => {
-    const { controller } = setupController();
+    const { controller } = await setupController();
 
     // No consultation is pending — answer should be rejected
     const result = await controller.handleUserAnswer("some answer");
@@ -1405,7 +1397,7 @@ describe("call-controller", () => {
   // ── handleInterrupt ───────────────────────────────────────────────
 
   test("handleInterrupt: resets state to idle", async () => {
-    const { controller } = setupController();
+    const { controller } = await setupController();
 
     // Calling handleInterrupt should not throw
     controller.handleInterrupt();
@@ -1440,7 +1432,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
     const turnPromise = controller.handleCallerUtterance("Start speaking");
     await new Promise((r) => setTimeout(r, 5));
     controller.handleInterrupt();
@@ -1484,7 +1476,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { controller } = setupController();
+    const { controller } = await setupController();
     const turnPromise = controller.handleCallerUtterance("Start speaking");
     await new Promise((r) => setTimeout(r, 5));
     controller.handleInterrupt();
@@ -1522,7 +1514,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { controller } = setupController(undefined, {
+    const { controller } = await setupController(undefined, {
       trustContext: trustCtx,
     });
 
@@ -1548,7 +1540,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { controller } = setupController(undefined, {
+    const { controller } = await setupController(undefined, {
       assistantId: "my-assistant",
     });
 
@@ -1586,7 +1578,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { controller } = setupController(undefined, {
+    const { controller } = await setupController(undefined, {
       trustContext: initialCtx,
     });
 
@@ -1607,7 +1599,7 @@ describe("call-controller", () => {
   // ── destroy ───────────────────────────────────────────────────────
 
   test("destroy: unregisters controller", async () => {
-    const { session, controller } = setupController();
+    const { session, controller } = await setupController();
 
     // Controller should be registered
     expect(getCallController(session.id)).toBeDefined();
@@ -1619,7 +1611,7 @@ describe("call-controller", () => {
   });
 
   test("destroy: can be called multiple times without error", async () => {
-    const { controller } = setupController();
+    const { controller } = await setupController();
 
     controller.destroy();
     // Second destroy should not throw
@@ -1655,7 +1647,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
     const turnPromise = controller.handleCallerUtterance("Start speaking");
 
     // Let the turn start
@@ -1701,7 +1693,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleUserInstruction("Ask about their weekend plans");
 
@@ -1717,7 +1709,7 @@ describe("call-controller", () => {
       createMockVoiceTurn(["Understood, adjusting approach."]),
     );
 
-    const { session, controller } = setupController();
+    const { session, controller } = await setupController();
 
     await controller.handleUserInstruction("Be more formal in your tone");
 
@@ -1740,7 +1732,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Hold on. [ASK_GUARDIAN: What time works?]"]),
     );
-    const { controller } = setupController();
+    const { controller } = await setupController();
     await controller.handleCallerUtterance("Book me in");
     // Controller returns to idle; consultation tracked separately
     expect(controller.getState()).toBe("idle");
@@ -1776,7 +1768,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Checking. [ASK_GUARDIAN: Confirm appointment?]"]),
     );
-    const { controller } = setupController();
+    const { controller } = await setupController();
     await controller.handleCallerUtterance("I want to schedule");
     expect(controller.getState()).toBe("idle");
     expect(controller.getPendingConsultationQuestionId()).not.toBeNull();
@@ -1817,7 +1809,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Let me ask. [ASK_GUARDIAN: Preferred date?]"]),
     );
-    const { session, controller } = setupController();
+    const { session, controller } = await setupController();
     await controller.handleCallerUtterance("Schedule please");
     expect(controller.getState()).toBe("idle");
     const firstQuestionId = controller.getPendingConsultationQuestionId();
@@ -1845,7 +1837,7 @@ describe("call-controller", () => {
   });
 
   test("handleUserAnswer: returns false when no pending consultation (stale/duplicate guard)", async () => {
-    const { controller } = setupController();
+    const { controller } = await setupController();
 
     // No consultation pending — idle state, answer rejected
     expect(await controller.handleUserAnswer("some answer")).toBe(false);
@@ -1877,7 +1869,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Hold on. [ASK_GUARDIAN: What time?]"]),
     );
-    const { controller } = setupController();
+    const { controller } = await setupController();
     await controller.handleCallerUtterance("Book me");
     expect(controller.getPendingConsultationQuestionId()).not.toBeNull();
 
@@ -1937,7 +1929,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { session, controller } = setupController();
+    const { session, controller } = await setupController();
     const turnPromise = controller.handleCallerUtterance("Hello");
     await new Promise((r) => setTimeout(r, 10));
 
@@ -1978,7 +1970,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Checking. [ASK_GUARDIAN: Confirm cancellation?]"]),
     );
-    const { session, relay, controller } = setupController();
+    const { session, relay, controller } = await setupController();
     await controller.handleCallerUtterance("I want to cancel");
     expect(controller.getState()).toBe("idle");
     expect(controller.getPendingConsultationQuestionId()).not.toBeNull();
@@ -2029,7 +2021,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Let me check. [ASK_GUARDIAN: What time works?]"]),
     );
-    const { session, relay, controller } = setupController();
+    const { session, relay, controller } = await setupController();
     try {
       await controller.handleCallerUtterance("Book me in");
       expect(controller.getState()).toBe("idle");
@@ -2085,7 +2077,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Let me check. [ASK_GUARDIAN: What time works?]"]),
     );
-    const { controller } = setupController();
+    const { controller } = await setupController();
     try {
       await controller.handleCallerUtterance("Book me in");
       expect(controller.getState()).toBe("idle");
@@ -2130,7 +2122,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Let me check. [ASK_GUARDIAN: What time works?]"]),
     );
-    const { session, controller } = setupController();
+    const { session, controller } = await setupController();
     try {
       await controller.handleCallerUtterance("Book me in");
       expect(controller.getState()).toBe("idle");
@@ -2178,7 +2170,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Let me check. [ASK_GUARDIAN: What time works?]"]),
     );
-    const { session, controller } = setupController();
+    const { session, controller } = await setupController();
     try {
       await controller.handleCallerUtterance("Book me in");
       expect(controller.getState()).toBe("idle");
@@ -2260,7 +2252,8 @@ describe("call-controller", () => {
         `Let me check with your guardian. [ASK_GUARDIAN_APPROVAL: ${approvalPayload}]`,
       ]),
     );
-    const { session, relay, controller } = setupController("Send an email");
+    const { session, relay, controller } =
+      await setupController("Send an email");
 
     await controller.handleCallerUtterance("Send an email to Bob");
 
@@ -2302,7 +2295,7 @@ describe("call-controller", () => {
         `Checking. [ASK_GUARDIAN_APPROVAL: ${approvalPayload}]`,
       ]),
     );
-    const { session, controller } = setupController("Send email");
+    const { session, controller } = await setupController("Send email");
 
     await controller.handleCallerUtterance("Send it");
     await new Promise((r) => setTimeout(r, 10));
@@ -2328,7 +2321,7 @@ describe("call-controller", () => {
         "Let me check. [ASK_GUARDIAN: What date works best?]",
       ]),
     );
-    const { session, controller } = setupController("Book appointment");
+    const { session, controller } = await setupController("Book appointment");
 
     await controller.handleCallerUtterance("I need to schedule something");
     await new Promise((r) => setTimeout(r, 10));
@@ -2356,7 +2349,7 @@ describe("call-controller", () => {
         " Thank you.",
       ]),
     );
-    const { relay, controller } = setupController("Create event");
+    const { relay, controller } = await setupController("Create event");
 
     await controller.handleCallerUtterance("Create a meeting");
 
@@ -2383,7 +2376,8 @@ describe("call-controller", () => {
         `Let me check. [ASK_GUARDIAN_APPROVAL: ${approvalPayload}]`,
       ]),
     );
-    const { session, relay, controller } = setupController("Send a message");
+    const { session, relay, controller } =
+      await setupController("Send a message");
 
     await controller.handleCallerUtterance("Send it");
     await new Promise((r) => setTimeout(r, 10));
@@ -2420,7 +2414,7 @@ describe("call-controller", () => {
         "Checking. [ASK_GUARDIAN_APPROVAL: {invalid json}] [ASK_GUARDIAN: Fallback question?]",
       ]),
     );
-    const { session, controller } = setupController("Test fallback");
+    const { session, controller } = await setupController("Test fallback");
 
     await controller.handleCallerUtterance("Do something");
     await new Promise((r) => setTimeout(r, 10));
@@ -2442,7 +2436,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Checking. [ASK_GUARDIAN: Confirm appointment?]"]),
     );
-    const { controller } = setupController();
+    const { controller } = await setupController();
     await controller.handleCallerUtterance("I want to schedule");
     expect(controller.getState()).toBe("idle");
     expect(controller.getPendingConsultationQuestionId()).not.toBeNull();
@@ -2507,7 +2501,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Let me check. [ASK_GUARDIAN: What time works?]"]),
     );
-    const { controller } = setupController();
+    const { controller } = await setupController();
     try {
       await controller.handleCallerUtterance("Book me in");
       expect(controller.getPendingConsultationQuestionId()).not.toBeNull();
@@ -2533,7 +2527,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Let me check. [ASK_GUARDIAN: What date?]"]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
     await controller.handleCallerUtterance("Schedule something");
     expect(controller.getPendingConsultationQuestionId()).not.toBeNull();
 
@@ -2575,7 +2569,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Let me ask. [ASK_GUARDIAN: Preferred date?]"]),
     );
-    const { session, controller } = setupController();
+    const { session, controller } = await setupController();
     await controller.handleCallerUtterance("Schedule please");
     await new Promise((r) => setTimeout(r, 10));
 
@@ -2621,7 +2615,7 @@ describe("call-controller", () => {
         `Checking. [ASK_GUARDIAN_APPROVAL: ${approvalPayload}]`,
       ]),
     );
-    const { session, controller } = setupController("Send email");
+    const { session, controller } = await setupController("Send email");
     await controller.handleCallerUtterance("Send email to Bob");
     await new Promise((r) => setTimeout(r, 10));
 
@@ -2661,7 +2655,7 @@ describe("call-controller", () => {
         `Checking. [ASK_GUARDIAN_APPROVAL: ${firstPayload}]`,
       ]),
     );
-    const { session, controller } = setupController("Process request");
+    const { session, controller } = await setupController("Process request");
     await controller.handleCallerUtterance("Send email");
     await new Promise((r) => setTimeout(r, 10));
 
@@ -2712,7 +2706,7 @@ describe("call-controller", () => {
         `Let me check. [ASK_GUARDIAN_APPROVAL: ${approvalPayload}]`,
       ]),
     );
-    const { session, controller } = setupController("Send email");
+    const { session, controller } = await setupController("Send email");
     await controller.handleCallerUtterance("Send email to Bob");
     await new Promise((r) => setTimeout(r, 10));
 
@@ -2750,7 +2744,7 @@ describe("call-controller", () => {
 
   test("silence timeout fires normally when not in guardian wait", async () => {
     mockSilenceTimeoutMs = 20; // Short timeout for testing
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     // No pending guardian consultation — the nudge should fire.
 
@@ -2776,7 +2770,7 @@ describe("call-controller", () => {
         "Let me check with your guardian. [ASK_GUARDIAN: Can this caller access the account?]",
       ]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     // Trigger a turn that creates a pending guardian input request
     await controller.handleCallerUtterance("I need to access the account");
@@ -2810,7 +2804,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Let me check. [ASK_GUARDIAN: Is this approved?]"]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     // Trigger a turn that creates a pending guardian input request
     await controller.handleCallerUtterance("Can I do this?");
@@ -2854,13 +2848,13 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Goodbye! [END_CALL]"]),
     );
-    const { controller } = setupControllerWithOrigin();
+    const { controller } = await setupControllerWithOrigin();
 
     await controller.handleCallerUtterance("Bye");
     // Allow async pointer write to flush
     await new Promise((r) => setTimeout(r, 10));
 
-    const text = getLatestAssistantText("conv-ctrl-origin");
+    const text = await getLatestAssistantText("conv-ctrl-origin");
     expect(text).not.toBeNull();
     expect(text!).toContain("+15552222222");
     expect(text!).toContain("completed");
@@ -2881,12 +2875,12 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Goodbye! [END_CALL]"]),
     );
-    const { controller } = setupControllerWithOrigin();
+    const { controller } = await setupControllerWithOrigin();
 
     await controller.handleCallerUtterance("End call");
     await new Promise((r) => setTimeout(r, 10));
 
-    const text = getLatestAssistantText("conv-ctrl-origin");
+    const text = await getLatestAssistantText("conv-ctrl-origin");
     expect(text).not.toBeNull();
     expect(text!).toContain("+15552222222");
     expect(text!).toContain("completed");
@@ -2902,7 +2896,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Hello", ", how", " are you?"]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -2929,7 +2923,7 @@ describe("call-controller", () => {
         "[ASK_GUARDIAN: Is 3pm ok?]",
       ]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Book an appointment");
 
@@ -2944,7 +2938,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Thanks for calling! ", "[END_CALL]"]),
     );
-    const { session, relay, controller } = setupController();
+    const { session, relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Goodbye");
 
@@ -2992,7 +2986,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Hello from synthesized path"]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3050,7 +3044,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Stale synthesized response"]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     const turn = controller.handleCallerUtterance("Hi");
     await new Promise((r) => setTimeout(r, 20)); // reach synthesis, blocked
@@ -3100,7 +3094,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Hello from synthesized path."]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3146,7 +3140,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Hello from synthesized path."]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     const turn = controller.handleCallerUtterance("Hi");
     // Let the turn generate its text and reach synthesis, blocked on the gate.
@@ -3199,7 +3193,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Hello from synthesized path."]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     const turn = controller.handleCallerUtterance("first");
     // Let the turn generate text and block inside provider synthesis.
@@ -3300,7 +3294,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3362,7 +3356,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Hello from deepgram path"]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3412,7 +3406,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Hello from fish path"]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3464,7 +3458,7 @@ describe("call-controller", () => {
 
   test("synthesized provider: segments synthesize during the stream — first play URL before turn completion", async () => {
     const { synthesizedTexts } = registerFishAudioSegmentRecorder();
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     let playUrlsAtTurnCompletion = -1;
     mockStartVoiceTurn.mockImplementation(
@@ -3508,7 +3502,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Hola desde aqui. ", "Segunda frase."]),
     );
-    const { controller } = setupController(undefined, {
+    const { controller } = await setupController(undefined, {
       resolveSynthesisLanguage: () => "es",
     });
 
@@ -3530,7 +3524,7 @@ describe("call-controller", () => {
       createMockVoiceTurn(["Hello from here."]),
     );
     // Default resolver + default config (multilingual STT pin): no hint.
-    const { controller } = setupController();
+    const { controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3575,7 +3569,7 @@ describe("call-controller", () => {
       mockStartVoiceTurn.mockImplementation(
         createMockVoiceTurn(["Namaste doston."]),
       );
-      const { controller } = setupController(undefined, {
+      const { controller } = await setupController(undefined, {
         resolveSynthesisLanguage: () => "hi",
       });
 
@@ -3601,7 +3595,7 @@ describe("call-controller", () => {
       mockStartVoiceTurn.mockImplementation(
         createMockVoiceTurn(["Hola desde aqui."]),
       );
-      const { controller } = setupController(undefined, {
+      const { controller } = await setupController(undefined, {
         resolveSynthesisLanguage: () => "es",
       });
 
@@ -3629,7 +3623,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["One is here. ", "Two is here."]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3654,7 +3648,7 @@ describe("call-controller", () => {
         "IAN: What time works?] One moment.",
       ]),
     );
-    const { session, controller } = setupController();
+    const { session, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3675,7 +3669,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["This is **very", " important**. Please note it."]),
     );
-    const { controller } = setupController();
+    const { controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3700,7 +3694,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["One is done. ", "Two is done. ", "Three is done."]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     const turn = controller.handleCallerUtterance("Hi");
     await pollUntil(() => synthesizedTexts.length === 1);
@@ -3758,7 +3752,7 @@ describe("call-controller", () => {
         return { turnId: `run-clobber-${voiceTurnCalls}`, abort: () => {} };
       },
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     const turn1 = controller.handleCallerUtterance("Hi");
     let turn1Settled = false;
@@ -3807,7 +3801,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["First part is done. ", "Second part is done."]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3845,7 +3839,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["First part is done. ", "Second part is done."]),
     );
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3868,7 +3862,7 @@ describe("call-controller", () => {
 
   test("synthesized provider: the turn's first segment flushes eagerly at a clause boundary before any sentence ends", async () => {
     const { synthesizedTexts } = registerFishAudioSegmentRecorder();
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     let segmentsBeforeSentenceEnd = -1;
     mockStartVoiceTurn.mockImplementation(
@@ -3906,7 +3900,7 @@ describe("call-controller", () => {
         "Let me take a look at that, and then, after checking, I will confirm.",
       ]),
     );
-    const { controller } = setupController();
+    const { controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3925,7 +3919,7 @@ describe("call-controller", () => {
         "The quick brown fox jumps over the lazy dog near the quiet river bank",
       ]),
     );
-    const { controller } = setupController();
+    const { controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3943,7 +3937,7 @@ describe("call-controller", () => {
   test("synthesized provider: a short reply below every eager threshold only force-flushes at turn completion", async () => {
     const { synthesizedTexts } = registerFishAudioSegmentRecorder();
     mockStartVoiceTurn.mockImplementation(createMockVoiceTurn(["Quick note"]));
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
 
@@ -3958,7 +3952,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["Let me take a look at that, one moment."]),
     );
-    const { controller } = setupController();
+    const { controller } = await setupController();
 
     await controller.handleCallerUtterance("Hi");
     await controller.handleCallerUtterance("Thanks");
@@ -4044,7 +4038,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["First part is done. ", "Second part is done."]),
     );
-    const { relay, controller } = setupController(undefined, {
+    const { relay, controller } = await setupController(undefined, {
       requiresPcmAudio: true,
     });
 
@@ -4074,7 +4068,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["First part is done. ", "Second part is done."]),
     );
-    const { relay, controller } = setupController(undefined, {
+    const { relay, controller } = await setupController(undefined, {
       requiresPcmAudio: true,
     });
 
@@ -4102,7 +4096,7 @@ describe("call-controller", () => {
     mockStartVoiceTurn.mockImplementation(
       createMockVoiceTurn(["First part is done. ", "Second part is done."]),
     );
-    const { relay, controller } = setupController(undefined, {
+    const { relay, controller } = await setupController(undefined, {
       requiresPcmAudio: true,
     });
 
@@ -4148,7 +4142,7 @@ describe("call-controller", () => {
       },
     );
 
-    const { relay, controller } = setupController();
+    const { relay, controller } = await setupController();
     const turnPromise = controller.handleCallerUtterance("Start speaking");
     await new Promise((r) => setTimeout(r, 5));
     controller.handleInterrupt();
@@ -4166,7 +4160,7 @@ describe("call-controller", () => {
 
   // ── Shared TTS provider resolution ──────────────────────────────────
 
-  describe("resolveCallTtsProvider (shared helper)", () => {
+  describePg("resolveCallTtsProvider (shared helper)", () => {
     test("returns native path with elevenlabs (non-streaming provider)", async () => {
       // Default config has provider: "elevenlabs" which is registered as
       // non-streaming in registerTestTtsProviders()
@@ -4207,7 +4201,7 @@ describe("call-controller", () => {
       mockStartVoiceTurn.mockImplementation(
         createMockVoiceTurn(["Hello", " caller"]),
       );
-      const { relay, controller } = setupController();
+      const { relay, controller } = await setupController();
 
       await controller.handleCallerUtterance("Hi");
 
@@ -4247,7 +4241,7 @@ describe("call-controller", () => {
 
   // ── Triage-and-escalate routing ─────────────────────────────────────
 
-  describe("triage-and-escalate routing", () => {
+  describePg("triage-and-escalate routing", () => {
     interface LegOpts {
       content: string;
       routingLeg?: string;
@@ -4314,7 +4308,7 @@ describe("call-controller", () => {
 
     test("a front-door answer runs one leg and is spoken verbatim", async () => {
       const { calls, aborted } = scriptLegs([["Hello", " there."]]);
-      const { session, relay, controller } = setupController();
+      const { session, relay, controller } = await setupController();
 
       await controller.handleCallerUtterance("Hi");
 
@@ -4336,7 +4330,7 @@ describe("call-controller", () => {
         ["[", "1] Let me check", " that.", " Ignored past the cap."],
         ["The answer is 42."],
       ]);
-      const { session, relay, controller } = setupController();
+      const { session, relay, controller } = await setupController();
 
       await controller.handleCallerUtterance("What is six times seven?");
 
@@ -4370,7 +4364,7 @@ describe("call-controller", () => {
         [bridge, " [", "ESCALATE", "]"],
         ["The answer is 42."],
       ]);
-      const { relay, controller } = setupController();
+      const { relay, controller } = await setupController();
 
       await controller.handleCallerUtterance("What is six times seven?");
 
@@ -4384,7 +4378,7 @@ describe("call-controller", () => {
 
     test("a bare escalate verdict speaks the canned bridge, audio-only", async () => {
       const { calls } = scriptLegs([["[1]"], ["Forty-two."]]);
-      const { session, relay, controller } = setupController();
+      const { session, relay, controller } = await setupController();
 
       await controller.handleCallerUtterance("What is six times seven?");
 
@@ -4412,7 +4406,7 @@ describe("call-controller", () => {
         opts.onComplete();
         return { turnId: "run-cancelled", abort: () => releaseLeg() };
       });
-      const { relay, controller } = setupController();
+      const { relay, controller } = await setupController();
 
       const turnPromise = controller.handleCallerUtterance("Hi");
       for (let i = 0; i < 10; i++) {
@@ -4442,7 +4436,7 @@ describe("call-controller", () => {
         });
         opts.callbacks?.persisted_assistant_message_id?.("assistant-row-1");
       });
-      const { session, controller } = setupController();
+      const { session, controller } = await setupController();
 
       await controller.handleCallerUtterance("Look that up");
 
@@ -4490,7 +4484,7 @@ describe("call-controller", () => {
           );
         },
       );
-      const { session, controller } = setupController();
+      const { session, controller } = await setupController();
 
       await controller.handleCallerUtterance("Hi");
 
@@ -4506,7 +4500,7 @@ describe("call-controller", () => {
 
     test("native route: a canned bridge in a language the table lacks goes out as system copy", async () => {
       scriptLegs([["[1]"], ["Forty-two."]]);
-      const { relay, controller } = setupController(undefined, {
+      const { relay, controller } = await setupController(undefined, {
         resolveSynthesisLanguage: () => "ko",
       });
 
@@ -4523,7 +4517,7 @@ describe("call-controller", () => {
 
     test("native route: a localized canned bridge rides the caller's language like model text", async () => {
       scriptLegs([["[1]"], ["Cuarenta y dos."]]);
-      const { relay, controller } = setupController(undefined, {
+      const { relay, controller } = await setupController(undefined, {
         resolveSynthesisLanguage: () => "es",
       });
 
@@ -4546,7 +4540,7 @@ describe("call-controller", () => {
         },
       });
       scriptLegs([["[1]"], ["Forty-two."]]);
-      const { controller } = setupController(undefined, {
+      const { controller } = await setupController(undefined, {
         resolveSynthesisLanguage: () => "ko",
       });
 
@@ -4577,7 +4571,7 @@ describe("call-controller", () => {
           return "Pulling up your calendar now.";
         },
       };
-      const { session, relay, controller } = setupController(undefined, {
+      const { session, relay, controller } = await setupController(undefined, {
         progressNarrator: narrator,
         progressConfig: narrationConfig,
       });
@@ -4628,7 +4622,7 @@ describe("call-controller", () => {
     });
 
     test("no narration without a narrator", async () => {
-      const { relay, controller } = setupController(undefined, {
+      const { relay, controller } = await setupController(undefined, {
         progressNarrator: null,
         progressConfig: {
           enabled: true,
@@ -4658,7 +4652,9 @@ describe("call-controller", () => {
 
     test("an outbound call reports the outbound entry", async () => {
       const { calls } = scriptLegs([["Hello, this is Ava."]]);
-      const { session, controller } = setupController("Book a table for two");
+      const { session, controller } = await setupController(
+        "Book a table for two",
+      );
 
       await controller.startInitialGreeting();
 
@@ -4674,9 +4670,9 @@ describe("call-controller", () => {
 
   // ── handleBargeIn ───────────────────────────────────────────────────
 
-  describe("handleBargeIn", () => {
+  describePg("handleBargeIn", () => {
     test("handleBargeIn returns false and does not abort when controller is idle", async () => {
-      const { relay, controller } = setupController();
+      const { relay, controller } = await setupController();
 
       // Controller starts idle after construction
       expect(controller.getState()).toBe("idle");
@@ -4710,7 +4706,7 @@ describe("call-controller", () => {
         },
       );
 
-      const { relay, controller } = setupController();
+      const { relay, controller } = await setupController();
       const turnPromise = controller.handleCallerUtterance("Hello");
 
       // Wait for microtasks to settle
@@ -4769,7 +4765,7 @@ describe("call-controller", () => {
         },
       );
 
-      const { controller } = setupController();
+      const { controller } = await setupController();
       const turnPromise = controller.handleCallerUtterance("Hi");
       for (let i = 0; i < 5; i++) {
         await Promise.resolve();
@@ -4818,7 +4814,7 @@ describe("call-controller", () => {
         },
       );
 
-      const { relay, controller } = setupController();
+      const { relay, controller } = await setupController();
       let audioStartCallback: (() => void) | null = null;
       relay.setAudioStartCallback = (cb) => {
         audioStartCallback = cb;
@@ -4872,7 +4868,7 @@ describe("call-controller", () => {
         },
       );
 
-      const { relay, controller } = setupController();
+      const { relay, controller } = await setupController();
       let audioStartCallback: (() => void) | null = null;
       let discardedPendingText = 0;
       relay.setAudioStartCallback = (cb) => {
@@ -4928,7 +4924,7 @@ describe("call-controller", () => {
         },
       );
 
-      const { relay, controller } = setupController();
+      const { relay, controller } = await setupController();
       let cancelledPendingSpeech = 0;
       // Buffering transport: audio never starts, so the first turn stays
       // in `processing` with its sentences already queued for synthesis.
@@ -4974,7 +4970,7 @@ describe("call-controller", () => {
         },
       );
 
-      const { relay, controller } = setupController();
+      const { relay, controller } = await setupController();
       let audioStartCallback: (() => void) | null = null;
       relay.setAudioStartCallback = (cb) => {
         audioStartCallback = cb;
@@ -5021,7 +5017,7 @@ describe("call-controller", () => {
         },
       );
 
-      const { relay, controller } = setupController();
+      const { relay, controller } = await setupController();
       const turnPromise = controller.handleCallerUtterance("Hi");
 
       // Let microtasks settle so onTextDelta runs
@@ -5057,9 +5053,9 @@ describe("call-controller", () => {
       await turnPromise.catch(() => {});
     });
   });
-  describe("turn metrics", () => {
+  describePg("turn metrics", () => {
     test("a caller turn records the marks the latency numbers are built from", async () => {
-      const { controller } = setupController();
+      const { controller } = await setupController();
 
       await controller.handleCallerUtterance("What is the weather?");
 
@@ -5088,7 +5084,7 @@ describe("call-controller", () => {
       // Seeding backdates the turn to the caller's own boundary; a turn that
       // opened at dispatch time would report a felt latency that starts after
       // the caller already finished speaking.
-      const { controller } = setupController();
+      const { controller } = await setupController();
 
       await controller.handleCallerUtterance("Hello there");
 
@@ -5116,7 +5112,7 @@ describe("call-controller", () => {
           abort: () => opts.onComplete(),
         }),
       );
-      const { controller } = setupController();
+      const { controller } = await setupController();
       const turnPromise = controller.handleCallerUtterance("Tell me a story");
       for (let i = 0; i < 5; i++) {
         await Promise.resolve();
@@ -5138,7 +5134,7 @@ describe("call-controller", () => {
       // Every mark opens a turn when none is active, so a barge-in on an idle
       // controller must leave the collector empty rather than start a turn
       // that never settles.
-      const { controller } = setupController();
+      const { controller } = await setupController();
 
       expect(controller.handleBargeIn()).toBe(false);
 
@@ -5152,7 +5148,7 @@ describe("call-controller", () => {
 
   // ── Semantic endpointing (front-door hold verdict) ─────────────────
 
-  describe("semantic endpointing", () => {
+  describePg("semantic endpointing", () => {
     /** Front-model tuning with a replay short enough for a real timer. */
     function endpointingConfig(
       overrides: Partial<VoiceFrontModelConfig> = {},
@@ -5196,7 +5192,7 @@ describe("call-controller", () => {
 
     test("a hold speaks nothing and carries the words into the next final", async () => {
       const { legs } = mockHoldingBridge();
-      const { relay, controller } = setupController(undefined, {
+      const { relay, controller } = await setupController(undefined, {
         frontModelConfig: endpointingConfig({ endpointExtensionMs: 10_000 }),
       });
 
@@ -5223,7 +5219,7 @@ describe("call-controller", () => {
 
     test("a held leg rolls its persisted user row back", async () => {
       const { discarded } = mockHoldingBridge();
-      const { controller } = setupController(undefined, {
+      const { controller } = await setupController(undefined, {
         frontModelConfig: endpointingConfig({ endpointExtensionMs: 10_000 }),
       });
 
@@ -5236,7 +5232,7 @@ describe("call-controller", () => {
 
     test("only caller speech is dispatched as an endpoint decision", async () => {
       const { legs } = mockHoldingBridge();
-      const { controller } = setupController(undefined, {
+      const { controller } = await setupController(undefined, {
         frontModelConfig: endpointingConfig({ endpointExtensionMs: 10_000 }),
       });
 
@@ -5251,7 +5247,7 @@ describe("call-controller", () => {
 
     test("the replay answers a held sentence when the caller says nothing more", async () => {
       const { legs } = mockHoldingBridge();
-      const { controller } = setupController(undefined, {
+      const { controller } = await setupController(undefined, {
         frontModelConfig: endpointingConfig({ endpointExtensionMs: 20 }),
       });
 
@@ -5272,7 +5268,7 @@ describe("call-controller", () => {
     test("the replay waits out the provider's commit window rather than racing the final for the same words", async () => {
       const { legs } = mockHoldingBridge();
       // The hold extension elapses long before the provider commits.
-      const { controller } = setupController(undefined, {
+      const { controller } = await setupController(undefined, {
         frontModelConfig: endpointingConfig({ endpointExtensionMs: 20 }),
       });
 
@@ -5301,7 +5297,7 @@ describe("call-controller", () => {
       // margin is gone, not slow, so the interim text is the only record of
       // what the caller said.
       loadConfig().calls.voice.utteranceEndMs = 5;
-      const { controller } = setupController(undefined, {
+      const { controller } = await setupController(undefined, {
         frontModelConfig: endpointingConfig({ endpointExtensionMs: 20 }),
       });
 
@@ -5318,7 +5314,7 @@ describe("call-controller", () => {
     test("interim words re-arm the replay so it fires only once the caller stops", async () => {
       const { legs } = mockHoldingBridge();
       loadConfig().calls.voice.utteranceEndMs = 5;
-      const { controller } = setupController(undefined, {
+      const { controller } = await setupController(undefined, {
         frontModelConfig: endpointingConfig({ endpointExtensionMs: 60 }),
       });
 
@@ -5339,7 +5335,7 @@ describe("call-controller", () => {
 
     test("the hold cap makes the front door answer the sentence as it stands", async () => {
       const { legs } = mockHoldingBridge();
-      const { controller } = setupController(undefined, {
+      const { controller } = await setupController(undefined, {
         frontModelConfig: endpointingConfig({
           endpointExtensionMs: 10_000,
           endpointMaxExtensions: 2,
@@ -5362,7 +5358,7 @@ describe("call-controller", () => {
 
     test("a committed turn resets the hold cap for the caller's next sentence", async () => {
       const { legs } = mockHoldingBridge();
-      const { controller } = setupController(undefined, {
+      const { controller } = await setupController(undefined, {
         frontModelConfig: endpointingConfig({
           endpointExtensionMs: 10_000,
           endpointMaxExtensions: 1,
@@ -5383,7 +5379,7 @@ describe("call-controller", () => {
 
     test("a hold records an endpoint decision and leaves no completed turn", async () => {
       mockHoldingBridge();
-      const { controller } = setupController(undefined, {
+      const { controller } = await setupController(undefined, {
         frontModelConfig: endpointingConfig({ endpointExtensionMs: 10_000 }),
       });
 
@@ -5400,7 +5396,7 @@ describe("call-controller", () => {
 
     test("an interim transcript seeds the turn its own utterance dispatches", async () => {
       mockStartVoiceTurn.mockImplementation(createMockVoiceTurn(["On it."]));
-      const { controller } = setupController();
+      const { controller } = await setupController();
 
       controller.handleCallerPartial("what is the");
       await controller.handleCallerUtterance("what is the weather?");

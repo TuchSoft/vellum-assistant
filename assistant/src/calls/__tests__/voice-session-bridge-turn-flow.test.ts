@@ -6,7 +6,7 @@
  * routing legs, transcript hygiene, tool-event forwarding, and the lock and
  * teardown races against scripted doubles.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 import { setConfig } from "../../__tests__/helpers/set-config.js";
 import type { AssistantEvent } from "../../api/index.js";
@@ -36,20 +36,18 @@ mock.module("../../daemon/conversation-store.js", () => ({
   },
 }));
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import {
   createConversation,
   getMessages,
 } from "../../persistence/conversation-crud.js";
-import { getDb } from "../../persistence/db-connection.js";
-import { initializeDb } from "../../persistence/db-init.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import {
   assistantEventHub,
   broadcastMessage,
 } from "../../runtime/assistant-event-hub.js";
 import { CALL_OPENING_MARKER } from "../voice-control-protocol.js";
 import { startVoiceTurn } from "../voice-session-bridge.js";
-
-await initializeDb();
 
 /**
  * Build a session that emits multiple events via the onEvent callback,
@@ -187,12 +185,12 @@ function injectDeps(conversationFactory: () => Conversation): void {
   voiceConversationFactory = conversationFactory;
 }
 
-describe("voice-session-bridge", () => {
-  beforeEach(() => {
+describePg("voice-session-bridge", () => {
+  beforeEach(async () => {
     seedVoiceConfig({ enabled: false, text: "" });
-    const db = getDb();
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversations");
+    const db = requireMainDb();
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
   });
 
   test("throws when deps not injected", async () => {
@@ -203,7 +201,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("startVoiceTurn forwards text deltas to onTextDelta callback", async () => {
-    const conversation = createConversation("voice bridge delta test");
+    const conversation = await createConversation("voice bridge delta test");
     const events: AssistantEvent[] = [
       {
         type: "assistant_text_delta",
@@ -244,7 +242,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("startVoiceTurn forwards error events to onError callback", async () => {
-    const conversation = createConversation("voice bridge error test");
+    const conversation = await createConversation("voice bridge error test");
     const events: AssistantEvent[] = [
       { type: "error", message: "Provider unavailable" },
     ];
@@ -267,7 +265,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("abort handle cancels the in-flight turn", async () => {
-    const conversation = createConversation("voice bridge abort test");
+    const conversation = await createConversation("voice bridge abort test");
     let abortCalled = false;
 
     const session = {
@@ -313,7 +311,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("startVoiceTurn passes callSite: 'callAgent' to runAgentLoop", async () => {
-    const conversation = createConversation("voice bridge callSite test");
+    const conversation = await createConversation("voice bridge callSite test");
     const events: AssistantEvent[] = [
       { type: "message_complete", conversationId: conversation.id },
     ];
@@ -361,7 +359,9 @@ describe("voice-session-bridge", () => {
     // the bridge's approval observer (auto-resolve for a non-guardian caller, a
     // real card for the guardian) would never get to decide. Presence is per
     // turn, so the bridge has to say so.
-    const conversation = createConversation("voice bridge interactive test");
+    const conversation = await createConversation(
+      "voice bridge interactive test",
+    );
     const events: AssistantEvent[] = [
       { type: "message_complete", conversationId: conversation.id },
     ];
@@ -403,7 +403,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("external AbortSignal triggers turn abort", async () => {
-    const conversation = createConversation("voice bridge signal test");
+    const conversation = await createConversation("voice bridge signal test");
     let abortCalled = false;
 
     const session = {
@@ -455,7 +455,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("startVoiceTurn passes turnChannelContext with voice channel", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge channel context test",
     );
     const events: AssistantEvent[] = [
@@ -492,7 +492,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("startVoiceTurn defaults persisted voice metadata to phone", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge phone metadata default test",
     );
     const events: AssistantEvent[] = [
@@ -519,7 +519,7 @@ describe("voice-session-bridge", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    const persisted = getMessages(conversation.id).find(
+    const persisted = (await getMessages(conversation.id)).find(
       (message) => message.id === persistedUserMessageId,
     );
     const metadata = parsePersistedMetadata(persisted?.metadata);
@@ -533,7 +533,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("startVoiceTurn can persist local live voice metadata and callbacks", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge local live voice metadata test",
     );
     const events: AssistantEvent[] = [
@@ -597,7 +597,7 @@ describe("voice-session-bridge", () => {
     expect(completeEvents).toEqual([events[1]]);
     expect(persistedAssistantMessageId).toBe("assistant-msg-1");
 
-    const persisted = getMessages(conversation.id).find(
+    const persisted = (await getMessages(conversation.id)).find(
       (message) => message.id === persistedUserMessageId,
     );
     const metadata = parsePersistedMetadata(persisted?.metadata);
@@ -611,7 +611,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("startVoiceTurn passes guardian context to the session", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge guardian context test",
     );
     const events: AssistantEvent[] = [
@@ -656,7 +656,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("inbound non-guardian opener prompt uses pickup framing instead of outbound phrasing", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge inbound opener framing test",
     );
     const events: AssistantEvent[] = [
@@ -719,7 +719,7 @@ describe("voice-session-bridge", () => {
       text: "At the very beginning of the call, introduce yourself as an assistant calling on behalf of the person you represent.",
     });
 
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge inbound disclosure rewrite test",
     );
     const events: AssistantEvent[] = [
@@ -771,7 +771,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("auto-denies confirmation requests for non-guardian voice turns", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge auto-deny non-guardian test",
     );
 
@@ -866,7 +866,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("auto-denies with could-not-verify copy for local live-voice (vellum) turns", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge auto-deny vellum copy test",
     );
 
@@ -953,7 +953,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("auto-denies confirmation requests for unverified_channel voice turns", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge auto-deny unverified test",
     );
 
@@ -1023,7 +1023,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("auto-denies confirmation requests when guardian context is missing", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge auto-deny unknown actor test",
     );
 
@@ -1089,7 +1089,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("auto-allows confirmation requests for guardian voice turns", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge auto-allow guardian test",
     );
 
@@ -1254,7 +1254,7 @@ describe("voice-session-bridge", () => {
   }
 
   test("broadcasts the confirmation_request before auto-allowing it (guardian)", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge confirmation order allow test",
     );
     injectDeps(() =>
@@ -1285,7 +1285,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("broadcasts the confirmation_request before auto-denying it (non-guardian)", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge confirmation order deny test",
     );
     injectDeps(() =>
@@ -1314,7 +1314,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("auto-resolves secret requests for voice turns (no secret-entry UI)", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge secret auto-resolve test",
     );
 
@@ -1391,7 +1391,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("forcePromptSideEffects does not leak when persistUserMessage fails", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge forcePromptSideEffects leak test",
     );
 
@@ -1446,7 +1446,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("turn state does not leak when persistUserMessage fails", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge turn state leak test",
     );
 
@@ -1515,7 +1515,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("cleanup on early persistUserMessage throw does not detach a prior turn's observer", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge sender detach guard test",
     );
 
@@ -1580,7 +1580,9 @@ describe("voice-session-bridge", () => {
   });
 
   test("pre-aborted signal triggers immediate abort", async () => {
-    const conversation = createConversation("voice bridge pre-abort test");
+    const conversation = await createConversation(
+      "voice bridge pre-abort test",
+    );
     let abortCalled = false;
 
     const session = {
@@ -1629,7 +1631,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("broadcasts a user_message_echo before the assistant reply streams (JARVIS-1258)", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge user echo ordering test",
     );
     const events: AssistantEvent[] = [
@@ -1692,7 +1694,7 @@ describe("voice-session-bridge", () => {
   });
 
   test("suppresses the user_message_echo for synthetic opener prompts", async () => {
-    const conversation = createConversation(
+    const conversation = await createConversation(
       "voice bridge opener echo suppression test",
     );
     const events: AssistantEvent[] = [

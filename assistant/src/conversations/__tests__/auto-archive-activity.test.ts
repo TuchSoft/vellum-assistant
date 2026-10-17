@@ -36,14 +36,11 @@ import {
   beginTurnFinalization,
   resetTurnFinalizationsForTesting,
 } from "../../daemon/turn-finalization.js";
-import { getDb } from "../../persistence/db-connection.js";
-import { initializeDb } from "../../persistence/db-init.js";
-import { acpSessionHistory } from "../../persistence/schema/index.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { hasAutoArchiveBlockingWork } from "../auto-archive-activity.js";
 
-await initializeDb();
 const ID = "conv-123";
-beforeEach(() => {
+beforeEach(async () => {
   hasResident = pendingInput = pendingBackground = hasManager = false;
   resident.hasInFlightWork.mockReturnValue(false);
   resident.inFlightSendRequestIds.clear();
@@ -51,13 +48,13 @@ beforeEach(() => {
   states = [];
   activeAndPendingIds = [];
   resetTurnFinalizationsForTesting();
-  getDb().delete(acpSessionHistory).run();
+  await requireMainDb().orm.delete(requireMainDb().schema.acpSessionHistory);
 });
 
-test("inactive nonresident and idle resident chats have no runtime blockers", () => {
-  expect(hasAutoArchiveBlockingWork(ID)).toBe(false);
+test("inactive nonresident and idle resident chats have no runtime blockers", async () => {
+  expect(await hasAutoArchiveBlockingWork(ID)).toBe(false);
   hasResident = true;
-  expect(hasAutoArchiveBlockingWork(ID)).toBe(false);
+  expect(await hasAutoArchiveBlockingWork(ID)).toBe(false);
 });
 
 for (const blocker of [
@@ -68,7 +65,7 @@ for (const blocker of [
   "background",
   "finalization",
 ]) {
-  test(`${blocker} work blocks automatic Done`, () => {
+  test(`${blocker} work blocks automatic Done`, async () => {
     hasResident = true;
     if (blocker === "in-flight") {
       resident.hasInFlightWork.mockReturnValue(true);
@@ -88,49 +85,47 @@ for (const blocker of [
     if (blocker === "finalization") {
       beginTurnFinalization(ID);
     }
-    expect(hasAutoArchiveBlockingWork(ID)).toBe(true);
+    expect(await hasAutoArchiveBlockingWork(ID)).toBe(true);
   });
 }
 
-test("settled turn finalization releases its blocker", () => {
+test("settled turn finalization releases its blocker", async () => {
   const settle = beginTurnFinalization(ID);
-  expect(hasAutoArchiveBlockingWork(ID)).toBe(true);
+  expect(await hasAutoArchiveBlockingWork(ID)).toBe(true);
   settle();
-  expect(hasAutoArchiveBlockingWork(ID)).toBe(false);
+  expect(await hasAutoArchiveBlockingWork(ID)).toBe(false);
 });
 
-test("live ACP state protects only its parent and terminal state does not block", () => {
+test("live ACP state protects only its parent and terminal state does not block", async () => {
   hasManager = true;
   states = [{ id: "session-123", parentConversationId: ID, status: "running" }];
-  expect(hasAutoArchiveBlockingWork(ID)).toBe(true);
-  expect(hasAutoArchiveBlockingWork("conv-other")).toBe(false);
+  expect(await hasAutoArchiveBlockingWork(ID)).toBe(true);
+  expect(await hasAutoArchiveBlockingWork("conv-other")).toBe(false);
   states[0]!.status = "completed";
-  expect(hasAutoArchiveBlockingWork(ID)).toBe(false);
+  expect(await hasAutoArchiveBlockingWork(ID)).toBe(false);
 });
 
-test("ACP resume reservations protect terminal history before live registration", () => {
+test("ACP resume reservations protect terminal history before live registration", async () => {
   hasManager = true;
   activeAndPendingIds = ["session-123"];
-  getDb()
-    .insert(acpSessionHistory)
-    .values({
-      id: "session-123",
-      parentConversationId: ID,
-      agentId: "agent-123",
-      acpSessionId: "session-123",
-      task: "Example task",
-      status: "completed",
-      startedAt: 1,
-    })
-    .run();
-  expect(hasAutoArchiveBlockingWork(ID)).toBe(true);
-  expect(hasAutoArchiveBlockingWork("conv-other")).toBe(false);
+  const db = requireMainDb();
+  await db.orm.insert(db.schema.acpSessionHistory).values({
+    id: "session-123",
+    parentConversationId: ID,
+    agentId: "agent-123",
+    acpSessionId: "session-123",
+    task: "Example task",
+    status: "completed",
+    startedAt: 1,
+  });
+  expect(await hasAutoArchiveBlockingWork(ID)).toBe(true);
+  expect(await hasAutoArchiveBlockingWork("conv-other")).toBe(false);
   activeAndPendingIds = [];
-  expect(hasAutoArchiveBlockingWork(ID)).toBe(false);
+  expect(await hasAutoArchiveBlockingWork(ID)).toBe(false);
 });
 
-test("uncertain ACP status fails closed", () => {
+test("uncertain ACP status fails closed", async () => {
   hasManager = true;
   states = undefined;
-  expect(hasAutoArchiveBlockingWork(ID)).toBe(true);
+  expect(await hasAutoArchiveBlockingWork(ID)).toBe(true);
 });

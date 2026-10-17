@@ -5,7 +5,7 @@
  * cleanup, and the stranded-writer fold at the turn seam.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { describe, expect, mock, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 
 import pino from "pino";
 
@@ -16,13 +16,13 @@ mock.module("../../util/logger.js", () => ({
     }),
 }));
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import {
   createConversation,
   getMessageById,
   reserveMessage,
 } from "../../persistence/conversation-crud.js";
-import { getDb, getSqliteFrom } from "../../persistence/db-connection.js";
-import { initializeDb } from "../../persistence/db-init.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import type { ContentBlock } from "../../providers/types.js";
 import {
   appendInflightSnapshot,
@@ -32,26 +32,28 @@ import {
   type InflightContentWriter,
 } from "../inflight-message-content.js";
 
-await initializeDb();
-
 const rlog = pino({ level: "silent" });
 
 function textBlock(text: string): ContentBlock {
   return { type: "text", text };
 }
 
-function rawRow(messageId: string): { content: string; finalized: number } {
-  const sqlite = getSqliteFrom(getDb());
-  return sqlite
-    .query("SELECT content, finalized FROM messages WHERE id = ?")
-    .get(messageId) as { content: string; finalized: number };
+async function rawRow(
+  messageId: string,
+): Promise<{ content: string; finalized: number }> {
+  return (await requireMainDb().get<{ content: string; finalized: number }>(
+    "SELECT content, finalized FROM messages WHERE id = ?",
+    [messageId],
+  ))!;
 }
 
-function rawMetadata(messageId: string): Record<string, unknown> {
-  const sqlite = getSqliteFrom(getDb());
-  const row = sqlite
-    .query("SELECT metadata FROM messages WHERE id = ?")
-    .get(messageId) as { metadata: string | null };
+async function rawMetadata(
+  messageId: string,
+): Promise<Record<string, unknown>> {
+  const row = await requireMainDb().get<{ metadata: string | null }>(
+    "SELECT metadata FROM messages WHERE id = ?",
+    [messageId],
+  );
   return row?.metadata
     ? (JSON.parse(row.metadata) as Record<string, unknown>)
     : {};
@@ -63,8 +65,8 @@ async function reserveInflight(): Promise<{
   messageId: string;
   writer: InflightContentWriter;
 }> {
-  const conv = createConversation("inflight test");
-  const writer = createInflightContentWriter(conv.id);
+  const conv = await createConversation("inflight test");
+  const writer = await createInflightContentWriter(conv.id);
   if (!writer) {
     throw new Error("writer creation failed");
   }
@@ -78,10 +80,10 @@ async function reserveInflight(): Promise<{
   return { conversationId: conv.id, messageId: reserved.id, writer };
 }
 
-describe("reserve born in-flight", () => {
+describePg("reserve born in-flight", () => {
   test("the row is created holding { ref } with finalized = 0", async () => {
     const { messageId, writer } = await reserveInflight();
-    const row = rawRow(messageId);
+    const row = await rawRow(messageId);
     expect(row.finalized).toBe(0);
     expect(JSON.parse(row.content)).toEqual({ ref: writer.ref });
     // No delta file exists until the first partial flush.
@@ -90,17 +92,19 @@ describe("reserve born in-flight", () => {
 
   test("a never-flushed in-flight row resolves to empty content", async () => {
     const { conversationId, messageId } = await reserveInflight();
-    expect(getMessageById(messageId, conversationId)?.content).toEqual([]);
+    expect((await getMessageById(messageId, conversationId))?.content).toEqual(
+      [],
+    );
   });
 });
 
-describe("appendInflightSnapshot", () => {
+describePg("appendInflightSnapshot", () => {
   test("appends touch only the file — the row keeps its { ref }", async () => {
     const { messageId, writer } = await reserveInflight();
     expect(appendInflightSnapshot(writer, [textBlock("hel")], 7, rlog)).toBe(
       true,
     );
-    const row = rawRow(messageId);
+    const row = await rawRow(messageId);
     expect(row.finalized).toBe(0);
     expect(JSON.parse(row.content)).toEqual({ ref: writer.ref });
     expect(existsSync(writer.absPath)).toBe(true);
@@ -115,7 +119,7 @@ describe("appendInflightSnapshot", () => {
       2,
       rlog,
     );
-    const row = getMessageById(messageId, conversationId);
+    const row = await getMessageById(messageId, conversationId);
     expect(row?.content).toEqual([textBlock("hello"), textBlock("world")]);
     expect(row?.finalized).toBe(0);
   });
@@ -150,7 +154,7 @@ describe("appendInflightSnapshot", () => {
   });
 });
 
-describe("finalizeInflightContent", () => {
+describePg("finalizeInflightContent", () => {
   test("folds inline, sets finalized = 1, deletes the file", async () => {
     const { conversationId, messageId, writer } = await reserveInflight();
     appendInflightSnapshot(writer, [textBlock("partial")], 1, rlog);
@@ -164,11 +168,11 @@ describe("finalizeInflightContent", () => {
         { model: "test-model" },
       ),
     ).toBe(true);
-    const row = rawRow(messageId);
+    const row = await rawRow(messageId);
     expect(row.finalized).toBe(1);
     expect(JSON.parse(row.content)).toEqual(final);
     expect(existsSync(writer.absPath)).toBe(false);
-    const mapped = getMessageById(messageId, conversationId);
+    const mapped = await getMessageById(messageId, conversationId);
     expect(mapped?.content).toEqual(final);
     expect(JSON.parse(mapped?.metadata ?? "{}").model).toBe("test-model");
   });
@@ -184,13 +188,13 @@ describe("finalizeInflightContent", () => {
         rlog,
       ),
     ).toBe(true);
-    const row = rawRow(messageId);
+    const row = await rawRow(messageId);
     expect(row.finalized).toBe(1);
     expect(JSON.parse(row.content)).toEqual(final);
   });
 });
 
-describe("finalizeStrandedInflightContent", () => {
+describePg("finalizeStrandedInflightContent", () => {
   test("folds leftover writers from the row's resolved content", async () => {
     const { conversationId, messageId, writer } = await reserveInflight();
     appendInflightSnapshot(
@@ -202,13 +206,13 @@ describe("finalizeStrandedInflightContent", () => {
     const writers = new Map([[messageId, writer]]);
     await finalizeStrandedInflightContent(writers, rlog);
     expect(writers.size).toBe(0);
-    const row = rawRow(messageId);
+    const row = await rawRow(messageId);
     expect(row.finalized).toBe(1);
     expect(JSON.parse(row.content)).toEqual([
       textBlock("cancelled mid-stream"),
     ]);
     expect(existsSync(writer.absPath)).toBe(false);
-    expect(getMessageById(messageId, conversationId)?.content).toEqual([
+    expect((await getMessageById(messageId, conversationId))?.content).toEqual([
       textBlock("cancelled mid-stream"),
     ]);
   });
@@ -224,7 +228,9 @@ describe("finalizeStrandedInflightContent", () => {
     const writers = new Map([[messageId, writer]]);
     await finalizeStrandedInflightContent(writers, rlog);
     expect(writers.size).toBe(0);
-    expect(JSON.parse(rawRow(messageId).content)).toEqual([textBlock("done")]);
+    expect(JSON.parse((await rawRow(messageId)).content)).toEqual([
+      textBlock("done"),
+    ]);
   });
 });
 
@@ -238,7 +244,7 @@ describe("finalizeStrandedInflightContent", () => {
  * a fallback row reserved `"private"` and finalized `"visible"` would keep the
  * stale marker, and its reply would project to working notes.
  */
-describe("metadata across a retried finalize", () => {
+describePg("metadata across a retried finalize", () => {
   test("the stranded retry stamps what the failed attempt was carrying", async () => {
     const { messageId, writer } = await reserveInflight();
     appendInflightSnapshot(writer, [textBlock("the fallback reply")], 1, rlog);
@@ -247,8 +253,10 @@ describe("metadata across a retried finalize", () => {
 
     await finalizeStrandedInflightContent(new Map([[messageId, writer]]), rlog);
 
-    expect(rawRow(messageId).finalized).toBe(1);
-    expect(rawMetadata(messageId).assistantTextVisibility).toBe("visible");
+    expect((await rawRow(messageId)).finalized).toBe(1);
+    expect((await rawMetadata(messageId)).assistantTextVisibility).toBe(
+      "visible",
+    );
   });
 
   test("a finalize parks its updates and clears them once the write lands", async () => {
@@ -263,7 +271,9 @@ describe("metadata across a retried finalize", () => {
     );
 
     expect(persisted).toBe(true);
-    expect(rawMetadata(messageId).assistantTextVisibility).toBe("visible");
+    expect((await rawMetadata(messageId)).assistantTextVisibility).toBe(
+      "visible",
+    );
     // Cleared, so a later stranded pass cannot re-stamp a settled row.
     expect(writer.pendingMetadataUpdates).toBeUndefined();
   });
@@ -278,7 +288,9 @@ describe("metadata across a retried finalize", () => {
       rlog,
     );
 
-    expect(rawMetadata(messageId).assistantTextVisibility).toBeUndefined();
+    expect(
+      (await rawMetadata(messageId)).assistantTextVisibility,
+    ).toBeUndefined();
     expect(writer.pendingMetadataUpdates).toBeUndefined();
   });
 });

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 // Mock the shared `runBackgroundJob` runner so the scheduler's fresh-bootstrap
 // talk-mode path stays observable in unit tests. Each invocation creates a new
@@ -46,7 +46,7 @@ mock.module("../runtime/background-job-runner.js", () => ({
     }
     const { createConversation } =
       await import("../persistence/conversation-crud.js");
-    const conv = createConversation({
+    const conv = await createConversation({
       title: "(test stub)",
       conversationType: opts.conversationType ?? "background",
       source: "schedule",
@@ -96,26 +96,18 @@ mock.module("../daemon/process-message.js", () => ({
 }));
 
 import { deleteConversation } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { assistantEventHub } from "../runtime/assistant-event-hub.js";
 import { createSchedule, getScheduleRuns } from "../schedule/schedule-store.js";
 import { runDueSchedulesOnce } from "../schedule/scheduler.js";
-
-await initializeDb();
-
-/** Access the underlying bun:sqlite Database for raw parameterized queries. */
-function getRawDb(): import("bun:sqlite").Database {
-  return (getDb() as unknown as { $client: import("bun:sqlite").Database })
-    .$client;
-}
+import { describePg } from "./pg-test-db.js";
 
 /** Force a schedule to be due by setting next_run_at in the past. */
-function forceScheduleDue(scheduleId: string): void {
-  getRawDb().run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [
-    Date.now() - 1000,
-    scheduleId,
-  ]);
+async function forceScheduleDue(scheduleId: string): Promise<void> {
+  await requireMainDb().run(
+    "UPDATE cron_jobs SET next_run_at = ? WHERE id = ?",
+    [Date.now() - 1000, scheduleId],
+  );
 }
 
 // Build an RRULE expression anchored at the given start date, recurring every minute.
@@ -129,15 +121,15 @@ function buildEveryMinuteRrule(dtstart: Date = new Date()): string {
   return `DTSTART:${ds}\nRRULE:FREQ=MINUTELY;INTERVAL=1`;
 }
 
-describe("scheduler conversation reuse", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
-    db.run("DELETE FROM task_runs");
-    db.run("DELETE FROM tasks");
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversations");
+describePg("scheduler conversation reuse", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
+    await db.run("DELETE FROM task_runs");
+    await db.run("DELETE FROM tasks");
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
     processedMessages.length = 0;
     processMessageImpl = captureProcessedMessage;
     runBackgroundJobOptions.length = 0;
@@ -163,7 +155,7 @@ describe("scheduler conversation reuse", () => {
     });
 
     // WHEN the schedule fires for the first time
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 
@@ -179,7 +171,7 @@ describe("scheduler conversation reuse", () => {
     expect(runs1[0].conversationId).toBe(firstConversationId);
 
     // WHEN the schedule fires for the second time
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
     processedMessages.length = 0;
 
     await runDueSchedulesOnce();
@@ -215,7 +207,7 @@ describe("scheduler conversation reuse", () => {
     });
 
     // WHEN the schedule fires for the first time
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 
@@ -224,7 +216,7 @@ describe("scheduler conversation reuse", () => {
     expect(firstConversationId).toBeTruthy();
 
     // WHEN the schedule fires for the second time
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
     processedMessages.length = 0;
 
     await runDueSchedulesOnce();
@@ -251,7 +243,7 @@ describe("scheduler conversation reuse", () => {
     });
 
     // WHEN the schedule fires for the first time
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 
@@ -259,7 +251,7 @@ describe("scheduler conversation reuse", () => {
     const firstConversationId = processedMessages[0].conversationId;
 
     // WHEN the schedule fires for the second time
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
     processedMessages.length = 0;
 
     await runDueSchedulesOnce();
@@ -286,7 +278,7 @@ describe("scheduler conversation reuse", () => {
       reuseConversation: true,
     });
 
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 
@@ -297,7 +289,7 @@ describe("scheduler conversation reuse", () => {
     deleteConversation(firstConversationId);
 
     // WHEN the schedule fires again
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
     processedMessages.length = 0;
 
     await runDueSchedulesOnce();
@@ -354,7 +346,7 @@ describe("scheduler conversation reuse", () => {
     });
 
     // AND a first successful run
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     let shouldFail = false;
     processMessageImpl = async (conversationId, message) => {
@@ -371,7 +363,7 @@ describe("scheduler conversation reuse", () => {
     const successConversationId = processedMessages[0].conversationId;
 
     // AND a second run that fails
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
     processedMessages.length = 0;
     shouldFail = true;
 
@@ -383,7 +375,7 @@ describe("scheduler conversation reuse", () => {
     // successful run still uses the original successful conversation.
 
     // AND a third run that succeeds
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
     processedMessages.length = 0;
     shouldFail = false;
 
@@ -414,7 +406,7 @@ describe("scheduler conversation reuse", () => {
       reuseConversation: true,
     });
 
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
     await runDueSchedulesOnce();
 
     const runs1 = await getScheduleRuns(schedule.id);
@@ -422,7 +414,7 @@ describe("scheduler conversation reuse", () => {
 
     // WHEN the next run's turn fails at the LLM call (reported via turnFailure,
     // no exception thrown)
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
     processedMessages.length = 0;
     processMessageImpl = async (conversationId, message) => {
       processedMessages.push({ conversationId, message });
@@ -442,13 +434,13 @@ describe("scheduler conversation reuse", () => {
   });
 });
 
-describe("scheduler talk-mode runner option propagation", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversations");
+describePg("scheduler talk-mode runner option propagation", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
     processedMessages.length = 0;
     processMessageImpl = captureProcessedMessage;
     runBackgroundJobOptions.length = 0;
@@ -466,7 +458,7 @@ describe("scheduler talk-mode runner option propagation", () => {
       expression: rruleExpr,
       quiet: true,
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 
@@ -490,7 +482,7 @@ describe("scheduler talk-mode runner option propagation", () => {
       expression: rruleExpr,
       // quiet defaults to false
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 
@@ -513,7 +505,7 @@ describe("scheduler talk-mode runner option propagation", () => {
       syntax: "rrule",
       expression: rruleExpr,
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
     runBackgroundJobBootstrapFails = true;
 
     await runDueSchedulesOnce();
@@ -536,7 +528,7 @@ describe("scheduler talk-mode runner option propagation", () => {
       syntax: "rrule",
       expression: rruleExpr,
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     const sseCalls: Array<{
       conversationId: string;

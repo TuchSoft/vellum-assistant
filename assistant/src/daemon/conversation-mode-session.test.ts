@@ -58,7 +58,7 @@ function createDependencies(initial = activeSession()) {
 
   const dependencies: ConversationModeSessionCoordinatorDependencies = {
     createId: () => (generatedIds++ === 0 ? initial.id : "session-created"),
-    beginSession: (input) => {
+    beginSession: async (input) => {
       session = activeSession({
         ...(creations++ === 0 ? initial : {}),
         id: input.id,
@@ -69,11 +69,11 @@ function createDependencies(initial = activeSession()) {
       });
       return { ok: true, session };
     },
-    getSession: (conversationId, id) =>
+    getSession: async (conversationId, id) =>
       conversationId === session.conversationId && id === session.id
         ? session
         : null,
-    updateActivity: (input) =>
+    updateActivity: async (input) =>
       staleOrMutate(input.expectedRevision, (current) => ({
         ...current,
         revision: current.revision + 1,
@@ -82,7 +82,7 @@ function createDependencies(initial = activeSession()) {
           ? { lastOwnedMessageId: input.lastOwnedMessageId }
           : {}),
       })),
-    updateBoundaries: (input) =>
+    updateBoundaries: async (input) =>
       staleOrMutate(input.expectedRevision, (current) => ({
         ...current,
         revision: current.revision + 1,
@@ -91,12 +91,12 @@ function createDependencies(initial = activeSession()) {
         lastActivityAt: Math.max(current.lastActivityAt, input.lastActivityAt),
         lastOwnedMessageId: input.lastOwnedMessageId,
       })),
-    advanceRevision: (input) =>
+    advanceRevision: async (input) =>
       staleOrMutate(input.expectedRevision, (current) => ({
         ...current,
         revision: current.revision + 1,
       })),
-    finalize: (input) =>
+    finalize: async (input) =>
       staleOrMutate(
         input.expectedRevision,
         (current) =>
@@ -115,7 +115,7 @@ function createDependencies(initial = activeSession()) {
               : {}),
           }) as ModeSessionSummary,
       ),
-    stampMessage: (messageId, owner) => {
+    stampMessage: async (messageId, owner) => {
       if (stampFailures.has(messageId)) {
         throw new Error("metadata write failed");
       }
@@ -146,13 +146,13 @@ function createDependencies(initial = activeSession()) {
   };
 }
 
-function activateSource(
+async function activateSource(
   coordinator: ConversationModeSessionCoordinator,
   session: ModeSessionSummary,
   sourceId = "computer-source",
   generation = 1,
 ) {
-  const handle = coordinator.activateSource({
+  const handle = await coordinator.activateSource({
     sourceId,
     generation,
     mode: session.mode,
@@ -163,7 +163,7 @@ function activateSource(
 }
 
 describe("ConversationModeSessionCoordinator", () => {
-  test("does not retain unowned or terminal bookkeeping", () => {
+  test("does not retain unowned or terminal bookkeeping", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
@@ -171,7 +171,7 @@ describe("ConversationModeSessionCoordinator", () => {
     );
 
     expect(coordinator.hasResidentWork()).toBe(false);
-    coordinator.acceptTurn("turn-unowned");
+    await coordinator.acceptTurn("turn-unowned");
     expect(coordinator.hasResidentWork()).toBe(false);
     coordinator.describeSummary(
       activeSession({
@@ -183,14 +183,14 @@ describe("ConversationModeSessionCoordinator", () => {
     expect(coordinator.hasResidentWork()).toBe(false);
   });
 
-  test("activates a durable source once per generation", () => {
+  test("activates a durable source once per generation", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
     expect(
-      coordinator.activateSource({
+      await coordinator.activateSource({
         sourceId: "computer-source",
         generation: 1,
         mode: "computer_use",
@@ -204,7 +204,7 @@ describe("ConversationModeSessionCoordinator", () => {
       activation: 1,
     });
     expect(
-      coordinator.activateSource({
+      await coordinator.activateSource({
         sourceId: "computer-source",
         generation: 1,
         mode: "computer_use",
@@ -216,7 +216,7 @@ describe("ConversationModeSessionCoordinator", () => {
       activation: 1,
     });
     expect(
-      coordinator.activateSource({
+      await coordinator.activateSource({
         sourceId: "computer-source",
         generation: 0,
         mode: "computer_use",
@@ -229,7 +229,7 @@ describe("ConversationModeSessionCoordinator", () => {
     });
   });
 
-  test("mints a new run after a successful turn without resetting the source", () => {
+  test("mints a new run after a successful turn without resetting the source", async () => {
     const store = createDependencies();
     const ids = ["session-first", "session-second"];
     store.dependencies.createId = () => ids.shift()!;
@@ -237,17 +237,17 @@ describe("ConversationModeSessionCoordinator", () => {
       "conv-123",
       store.dependencies,
     );
-    const first = coordinator.activateSource({
+    const first = await coordinator.activateSource({
       sourceId: "browser-source",
       generation: 1,
       mode: "browser",
       sourceStartedAt: 100,
     });
     expect(first?.id).toBe("session-first");
-    coordinator.claimTurn("turn-first", first!, 110);
-    coordinator.trackPersistedRow("turn-first", "assistant-first", 120);
+    await coordinator.claimTurn("turn-first", first!, 110);
+    await coordinator.trackPersistedRow("turn-first", "assistant-first", 120);
     expect(
-      coordinator.finalizeTurn({
+      await coordinator.finalizeTurn({
         turnId: "turn-first",
         status: "completed",
         endedAt: 130,
@@ -256,7 +256,7 @@ describe("ConversationModeSessionCoordinator", () => {
     ).toBe(true);
 
     expect(
-      coordinator.activateSource({
+      await coordinator.activateSource({
         sourceId: "browser-source",
         generation: 1,
         mode: "browser",
@@ -274,20 +274,20 @@ describe("ConversationModeSessionCoordinator", () => {
     ["interrupted", "error"],
   ] as const)(
     "uses the turn outcome after a browser command error (%s)",
-    (status, endReason) => {
+    async (status, endReason) => {
       const store = createDependencies();
       const coordinator = new ConversationModeSessionCoordinator(
         "conv-123",
         store.dependencies,
       );
       const producer = new BrowserModeSessionProducer(coordinator);
-      const first = producer.beginOperation({
+      const first = await producer.beginOperation({
         turnId: "turn-123",
         lifecycle: "action",
         at: 100,
       });
-      coordinator.trackPersistedRow("turn-123", "assistant-123", 110);
-      producer.finishOperation(first, {
+      await coordinator.trackPersistedRow("turn-123", "assistant-123", 110);
+      await producer.finishOperation(first, {
         at: 120,
         isError: true,
         cancelled: false,
@@ -299,35 +299,35 @@ describe("ConversationModeSessionCoordinator", () => {
         lastActivityAt: 120,
       });
 
-      const retry = producer.beginOperation({
+      const retry = await producer.beginOperation({
         turnId: "turn-123",
         lifecycle: "action",
         at: 130,
       });
       expect(retry?.handle).toEqual(first?.handle);
-      producer.finishOperation(retry, {
+      await producer.finishOperation(retry, {
         at: 140,
         isError: false,
         cancelled: false,
       });
       expect(store.session().lastActivityAt).toBe(140);
-      coordinator.releaseTurn("turn-123", { status, endReason });
+      await coordinator.releaseTurn("turn-123", { status, endReason });
       expect(store.session()).toMatchObject({ status, endReason });
       expect(coordinator.hasResidentWork()).toBe(false);
     },
   );
 
-  test("claims once and backfills only successfully tracked rows", () => {
+  test("claims once and backfills only successfully tracked rows", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
+    const handle = await activateSource(coordinator, store.session());
 
-    coordinator.acceptTurn("turn-123");
-    coordinator.trackPersistedRow("turn-123", "assistant-123", 90);
-    expect(coordinator.claimTurn("turn-123", handle, 120)).toEqual({
+    await coordinator.acceptTurn("turn-123");
+    await coordinator.trackPersistedRow("turn-123", "assistant-123", 90);
+    expect(await coordinator.claimTurn("turn-123", handle, 120)).toEqual({
       id: "session-123",
       mode: "computer_use",
     });
@@ -341,36 +341,38 @@ describe("ConversationModeSessionCoordinator", () => {
       lastActivityAt: 120,
     });
 
-    coordinator.trackPersistedRow("turn-123", "tool-result-123", 125);
+    await coordinator.trackPersistedRow("turn-123", "tool-result-123", 125);
     expect(store.stamps.at(-1)).toEqual({
       messageId: "tool-result-123",
       sessionId: "session-123",
     });
     expect(
-      coordinator.claimTurn(
+      await coordinator.claimTurn(
         "turn-123",
         { sourceId: "other-source", generation: 99, activation: 1 },
         130,
       ),
     ).toEqual({ id: "session-123", mode: "computer_use" });
-    expect(coordinator.retireSource({ ...handle, generation: 2 })).toBe(false);
-    expect(coordinator.retireSource(handle)).toBe(true);
+    expect(await coordinator.retireSource({ ...handle, generation: 2 })).toBe(
+      false,
+    );
+    expect(await coordinator.retireSource(handle)).toBe(true);
     expect(coordinator.getTurnOwner("turn-123")?.id).toBe("session-123");
   });
 
-  test("starts non-Live display timing at the first assistant row", () => {
+  test("starts non-Live display timing at the first assistant row", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
+    const handle = await activateSource(coordinator, store.session());
 
-    coordinator.trackPersistedRow("turn-123", "user-123", 80, {
+    await coordinator.trackPersistedRow("turn-123", "user-123", 80, {
       startsDisplayBoundary: false,
     });
-    coordinator.trackPersistedRow("turn-123", "assistant-123", 90);
-    coordinator.claimTurn("turn-123", handle, 120);
+    await coordinator.trackPersistedRow("turn-123", "assistant-123", 90);
+    await coordinator.claimTurn("turn-123", handle, 120);
 
     expect(store.stamps).toEqual([
       { messageId: "user-123", sessionId: "session-123" },
@@ -383,19 +385,23 @@ describe("ConversationModeSessionCoordinator", () => {
     });
   });
 
-  test("allows Live display timing to include its leading row", () => {
+  test("allows Live display timing to include its leading row", async () => {
     const liveSession = activeSession({ mode: "live_vision" });
     const store = createDependencies(liveSession);
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, liveSession, "camera-source");
+    const handle = await activateSource(
+      coordinator,
+      liveSession,
+      "camera-source",
+    );
 
-    coordinator.trackPersistedRow("turn-123", "camera-123", 80, {
+    await coordinator.trackPersistedRow("turn-123", "camera-123", 80, {
       startsDisplayBoundary: false,
     });
-    coordinator.claimTurn("turn-123", handle, 120);
+    await coordinator.claimTurn("turn-123", handle, 120);
 
     expect(store.session()).toMatchObject({
       firstIncludedAt: 80,
@@ -404,20 +410,24 @@ describe("ConversationModeSessionCoordinator", () => {
     });
   });
 
-  test("starts Ambient display timing at its first assistant row", () => {
+  test("starts Ambient display timing at its first assistant row", async () => {
     const ambientSession = activeSession({ mode: "ambient" });
     const store = createDependencies(ambientSession);
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, ambientSession, "camera-source");
+    const handle = await activateSource(
+      coordinator,
+      ambientSession,
+      "camera-source",
+    );
 
-    coordinator.trackPersistedRow("turn-123", "camera-123", 80, {
+    await coordinator.trackPersistedRow("turn-123", "camera-123", 80, {
       startsDisplayBoundary: false,
     });
-    coordinator.trackPersistedRow("turn-123", "assistant-123", 90);
-    coordinator.claimTurn("turn-123", handle, 120);
+    await coordinator.trackPersistedRow("turn-123", "assistant-123", 90);
+    await coordinator.claimTurn("turn-123", handle, 120);
 
     expect(store.session()).toMatchObject({
       firstIncludedAt: 90,
@@ -426,18 +436,18 @@ describe("ConversationModeSessionCoordinator", () => {
     });
   });
 
-  test("inherits only an exact unconsumed structural response", () => {
+  test("inherits only an exact unconsumed structural response", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
+    const handle = await activateSource(coordinator, store.session());
     expect(coordinator.hasResidentWork()).toBe(true);
-    coordinator.acceptTurn("turn-origin");
-    coordinator.claimTurn("turn-origin", handle, 110);
+    await coordinator.acceptTurn("turn-origin");
+    await coordinator.claimTurn("turn-origin", handle, 110);
     expect(
-      coordinator.recordStructuralWait("turn-origin", {
+      await coordinator.recordStructuralWait("turn-origin", {
         kind: "question",
         responseId: "interaction-123",
       }),
@@ -445,7 +455,7 @@ describe("ConversationModeSessionCoordinator", () => {
     expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
       "waiting",
     );
-    coordinator.releaseTurn("turn-origin", {
+    await coordinator.releaseTurn("turn-origin", {
       status: "completed",
       endReason: "turn_settled",
     });
@@ -455,13 +465,13 @@ describe("ConversationModeSessionCoordinator", () => {
     );
 
     expect(
-      coordinator.acceptTurn("turn-wrong-kind", {
+      await coordinator.acceptTurn("turn-wrong-kind", {
         kind: "confirmation",
         responseId: "interaction-123",
       }),
     ).toBeUndefined();
     expect(
-      coordinator.acceptTurn("turn-wrong-id", {
+      await coordinator.acceptTurn("turn-wrong-id", {
         kind: "question",
         responseId: "interaction-456",
       }),
@@ -469,20 +479,22 @@ describe("ConversationModeSessionCoordinator", () => {
     expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
       "waiting",
     );
-    coordinator.acceptTurn("turn-independent");
-    expect(coordinator.claimTurn("turn-independent", handle, 120)).toEqual({
+    await coordinator.acceptTurn("turn-independent");
+    expect(
+      await coordinator.claimTurn("turn-independent", handle, 120),
+    ).toEqual({
       id: "session-123",
       mode: "computer_use",
     });
     expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
       undefined,
     );
-    coordinator.releaseTurn("turn-independent");
+    await coordinator.releaseTurn("turn-independent");
     expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
       "waiting",
     );
     expect(
-      coordinator.acceptTurn("turn-resumed", {
+      await coordinator.acceptTurn("turn-resumed", {
         kind: "question",
         responseId: "interaction-123",
       }),
@@ -491,7 +503,7 @@ describe("ConversationModeSessionCoordinator", () => {
       undefined,
     );
     expect(
-      coordinator.acceptTurn("turn-replayed", {
+      await coordinator.acceptTurn("turn-replayed", {
         kind: "question",
         responseId: "interaction-123",
       }),
@@ -502,19 +514,19 @@ describe("ConversationModeSessionCoordinator", () => {
       store.dependencies,
     );
     expect(
-      otherConversation.acceptTurn("turn-cross-conversation", {
+      await otherConversation.acceptTurn("turn-cross-conversation", {
         kind: "question",
         responseId: "interaction-123",
       }),
     ).toBeUndefined();
   });
 
-  test("preserves a structural response after a failed session lookup for retry and settlement", () => {
+  test("preserves a structural response after a failed session lookup for retry and settlement", async () => {
     const store = createDependencies();
     let failLookup = false;
     const coordinator = new ConversationModeSessionCoordinator("conv-123", {
       ...store.dependencies,
-      getSession: (conversationId, sessionId) => {
+      getSession: async (conversationId, sessionId) => {
         if (failLookup) {
           failLookup = false;
           throw new Error("session lookup unavailable");
@@ -522,34 +534,36 @@ describe("ConversationModeSessionCoordinator", () => {
         return store.dependencies.getSession(conversationId, sessionId);
       },
     });
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-origin", handle, 110);
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-origin", handle, 110);
     const response = { kind: "surface", responseId: "surface-123" } as const;
-    coordinator.recordStructuralWait("turn-origin", response);
-    coordinator.releaseTurn("turn-origin", {
+    await coordinator.recordStructuralWait("turn-origin", response);
+    await coordinator.releaseTurn("turn-origin", {
       status: "completed",
       endReason: "turn_settled",
     });
 
     failLookup = true;
-    expect(() => coordinator.acceptTurn("turn-response", response)).toThrow(
-      "session lookup unavailable",
-    );
+    await expect(
+      coordinator.acceptTurn("turn-response", response),
+    ).rejects.toThrow("session lookup unavailable");
     expect(coordinator.getTurnOwner("turn-response")).toBeUndefined();
     expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
       "waiting",
     );
 
-    expect(coordinator.acceptTurn("turn-response", response)).toEqual({
+    expect(await coordinator.acceptTurn("turn-response", response)).toEqual({
       id: handle.id,
       mode: handle.mode,
     });
-    coordinator.trackPersistedRow("turn-response", "user-response", 120);
+    await coordinator.trackPersistedRow("turn-response", "user-response", 120);
     expect(store.stamps).toEqual([
       { messageId: "user-response", sessionId: handle.id },
     ]);
-    expect(coordinator.acceptTurn("turn-replayed", response)).toBeUndefined();
-    coordinator.releaseTurn("turn-response", {
+    expect(
+      await coordinator.acceptTurn("turn-replayed", response),
+    ).toBeUndefined();
+    await coordinator.releaseTurn("turn-response", {
       status: "completed",
       endReason: "turn_settled",
     });
@@ -574,8 +588,8 @@ describe("ConversationModeSessionCoordinator", () => {
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-origin", handle, 110);
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-origin", handle, 110);
     const signal = new AbortController();
     setConversation("conv-123", {
       modeSessions: coordinator,
@@ -614,9 +628,13 @@ describe("ConversationModeSessionCoordinator", () => {
       expect(pendingInteractions.getByConversation("conv-123")).toEqual([]);
       expect(coordinator.getTurnOwner("turn-origin")?.id).toBe(handle.id);
       expect(coordinator.getTerminalDisposition("turn-origin")).toBeUndefined();
-      coordinator.trackPersistedRow("turn-origin", "assistant-answer", 130);
+      await coordinator.trackPersistedRow(
+        "turn-origin",
+        "assistant-answer",
+        130,
+      );
       expect(
-        coordinator.finalizeTurn({
+        await coordinator.finalizeTurn({
           turnId: "turn-origin",
           status: "completed",
           endedAt: 140,
@@ -634,62 +652,66 @@ describe("ConversationModeSessionCoordinator", () => {
     }
   });
 
-  test("invalidates structural continuation when transcript history changes", () => {
+  test("invalidates structural continuation when transcript history changes", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-origin", handle, 110);
-    coordinator.recordStructuralWait("turn-origin", {
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-origin", handle, 110);
+    await coordinator.recordStructuralWait("turn-origin", {
       kind: "surface",
       responseId: "surface-123",
     });
-    coordinator.releaseTurn("turn-origin");
+    await coordinator.releaseTurn("turn-origin");
     expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
       "waiting",
     );
 
-    expect(coordinator.invalidateAllStructuralWaits()).toBe(1);
+    expect(await coordinator.invalidateAllStructuralWaits()).toBe(1);
     expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
       undefined,
     );
     expect(
-      coordinator.acceptTurn("turn-resumed", {
+      await coordinator.acceptTurn("turn-resumed", {
         kind: "surface",
         responseId: "surface-123",
       }),
     ).toBeUndefined();
-    expect(coordinator.invalidateAllStructuralWaits()).toBe(0);
+    expect(await coordinator.invalidateAllStructuralWaits()).toBe(0);
   });
 
   test.each(["single", "all"] as const)(
     "%s wait invalidation retires abandoned ownership at its last activity",
-    (invalidation) => {
+    async (invalidation) => {
       const store = createDependencies();
       const coordinator = new ConversationModeSessionCoordinator(
         "conv-123",
         store.dependencies,
       );
-      const handle = activateSource(coordinator, store.session());
-      coordinator.claimTurn("turn-origin", handle, 110);
-      coordinator.trackPersistedRow("turn-origin", "assistant-final", 125);
-      coordinator.recordStructuralWait("turn-origin", {
+      const handle = await activateSource(coordinator, store.session());
+      await coordinator.claimTurn("turn-origin", handle, 110);
+      await coordinator.trackPersistedRow(
+        "turn-origin",
+        "assistant-final",
+        125,
+      );
+      await coordinator.recordStructuralWait("turn-origin", {
         kind: "surface",
         responseId: "surface-123",
       });
-      coordinator.releaseTurn("turn-origin");
+      await coordinator.releaseTurn("turn-origin");
 
       if (invalidation === "single") {
         expect(
-          coordinator.invalidateStructuralWait({
+          await coordinator.invalidateStructuralWait({
             kind: "surface",
             responseId: "surface-123",
           }),
         ).toBe(true);
       } else {
-        expect(coordinator.invalidateAllStructuralWaits()).toBe(1);
+        expect(await coordinator.invalidateAllStructuralWaits()).toBe(1);
       }
 
       expect(store.session()).toMatchObject({
@@ -699,8 +721,10 @@ describe("ConversationModeSessionCoordinator", () => {
         lastActivityAt: 125,
       });
       expect(coordinator.hasResidentWork()).toBe(false);
-      expect(coordinator.claimTurn("turn-late", handle, 140)).toBeUndefined();
-      const next = coordinator.activateSource({
+      expect(
+        await coordinator.claimTurn("turn-late", handle, 140),
+      ).toBeUndefined();
+      const next = await coordinator.activateSource({
         sourceId: "computer-source",
         generation: 1,
         mode: "computer_use",
@@ -715,25 +739,25 @@ describe("ConversationModeSessionCoordinator", () => {
     },
   );
 
-  test("invalidating the final association drains every accepted turn", () => {
+  test("invalidating the final association drains every accepted turn", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-origin", handle, 110);
-    coordinator.recordStructuralWait("turn-origin", {
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-origin", handle, 110);
+    await coordinator.recordStructuralWait("turn-origin", {
       kind: "surface",
       responseId: "surface-first",
     });
-    coordinator.recordStructuralWait("turn-origin", {
+    await coordinator.recordStructuralWait("turn-origin", {
       kind: "surface",
       responseId: "surface-second",
     });
-    coordinator.claimTurn("turn-output", handle, 120);
+    await coordinator.claimTurn("turn-output", handle, 120);
 
-    coordinator.invalidateStructuralWait({
+    await coordinator.invalidateStructuralWait({
       kind: "surface",
       responseId: "surface-first",
     });
@@ -741,19 +765,25 @@ describe("ConversationModeSessionCoordinator", () => {
       "waiting",
     );
     expect(store.session().status).toBe("active");
-    coordinator.invalidateStructuralWait({
+    await coordinator.invalidateStructuralWait({
       kind: "surface",
       responseId: "surface-second",
     });
     expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
       "finishing",
     );
-    expect(coordinator.claimTurn("turn-late", handle, 130)).toBeUndefined();
-    coordinator.releaseTurn("turn-origin");
+    expect(
+      await coordinator.claimTurn("turn-late", handle, 130),
+    ).toBeUndefined();
+    await coordinator.releaseTurn("turn-origin");
     expect(coordinator.hasResidentWork()).toBe(true);
     expect(store.session().status).toBe("active");
-    coordinator.trackPersistedRow("turn-output", "assistant-drained", 140);
-    coordinator.releaseTurn("turn-output");
+    await coordinator.trackPersistedRow(
+      "turn-output",
+      "assistant-drained",
+      140,
+    );
+    await coordinator.releaseTurn("turn-output");
 
     expect(store.session()).toMatchObject({
       status: "completed",
@@ -769,56 +799,60 @@ describe("ConversationModeSessionCoordinator", () => {
     expect(coordinator.hasResidentWork()).toBe(false);
   });
 
-  test("invalidation preserves a live camera source", () => {
+  test("invalidation preserves a live camera source", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = coordinator.activateSource({
+    const handle = await coordinator.activateSource({
       sourceId: "camera-source",
       generation: 1,
       mode: "live_vision",
       sourceStartedAt: 100,
       lifetime: "source",
     })!;
-    coordinator.claimTurn("camera-run", handle, 110);
-    coordinator.recordStructuralWait("camera-run", {
+    await coordinator.claimTurn("camera-run", handle, 110);
+    await coordinator.recordStructuralWait("camera-run", {
       kind: "surface",
       responseId: "surface-123",
     });
-    coordinator.invalidateAllStructuralWaits();
+    await coordinator.invalidateAllStructuralWaits();
     expect(
       coordinator.describeSummary(store.session())?.runtimeState,
     ).toBeUndefined();
-    coordinator.releaseTurn("camera-run");
+    await coordinator.releaseTurn("camera-run");
     expect(store.session().status).toBe("active");
     expect(coordinator.hasResidentWork()).toBe(true);
-    expect(coordinator.claimTurn("camera-frame", handle, 130)?.id).toBe(
+    expect((await coordinator.claimTurn("camera-frame", handle, 130))?.id).toBe(
       handle.id,
     );
   });
 
-  test("an interruption disposition survives structural cleanup and uses drain completion time", () => {
+  test("an interruption disposition survives structural cleanup and uses drain completion time", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-output", handle, 110);
-    coordinator.recordStructuralWait("turn-output", {
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-output", handle, 110);
+    await coordinator.recordStructuralWait("turn-output", {
       kind: "surface",
       responseId: "surface-123",
     });
-    coordinator.retireSource(handle, {
+    await coordinator.retireSource(handle, {
       status: "interrupted",
       endReason: "computer_use_stopped",
     });
-    coordinator.invalidateAllStructuralWaits();
-    coordinator.trackPersistedRow("turn-output", "assistant-drained", 140);
+    await coordinator.invalidateAllStructuralWaits();
+    await coordinator.trackPersistedRow(
+      "turn-output",
+      "assistant-drained",
+      140,
+    );
     const beforeDrain = Date.now();
-    coordinator.releaseTurn("turn-output");
+    await coordinator.releaseTurn("turn-output");
     expect(store.session()).toMatchObject({
       status: "interrupted",
       endReason: "computer_use_stopped",
@@ -828,21 +862,21 @@ describe("ConversationModeSessionCoordinator", () => {
     expect(coordinator.hasResidentWork()).toBe(false);
   });
 
-  test("cancellation while abandoned output drains preserves interruption", () => {
+  test("cancellation while abandoned output drains preserves interruption", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-origin", handle, 110);
-    coordinator.recordStructuralWait("turn-origin", {
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-origin", handle, 110);
+    await coordinator.recordStructuralWait("turn-origin", {
       kind: "surface",
       responseId: "surface-123",
     });
-    coordinator.claimTurn("turn-output", handle, 120);
-    coordinator.invalidateAllStructuralWaits();
-    coordinator.releaseTurn("turn-origin", {
+    await coordinator.claimTurn("turn-output", handle, 120);
+    await coordinator.invalidateAllStructuralWaits();
+    await coordinator.releaseTurn("turn-origin", {
       status: "interrupted",
       endReason: "turn_cancelled",
     });
@@ -850,7 +884,7 @@ describe("ConversationModeSessionCoordinator", () => {
       status: "interrupted",
       endReason: "turn_cancelled",
     });
-    coordinator.releaseTurn("turn-output", {
+    await coordinator.releaseTurn("turn-output", {
       status: "completed",
       endReason: "turn_settled",
     });
@@ -863,12 +897,12 @@ describe("ConversationModeSessionCoordinator", () => {
 
   test.each(["stale_revision", "terminal", "not_found"] as const)(
     "releases retired residency after %s without announcing a successful write",
-    (reason) => {
+    async (reason) => {
       const store = createDependencies();
       let finalizations = 0;
       const coordinator = new ConversationModeSessionCoordinator("conv-123", {
         ...store.dependencies,
-        finalize: () => {
+        finalize: async () => {
           finalizations += 1;
           if (reason === "not_found") {
             return { ok: false, reason };
@@ -886,21 +920,23 @@ describe("ConversationModeSessionCoordinator", () => {
           return { ok: false, reason, session };
         },
       });
-      const handle = activateSource(coordinator, store.session());
-      coordinator.claimTurn("turn-output", handle, 110);
-      coordinator.recordStructuralWait("turn-output", {
+      const handle = await activateSource(coordinator, store.session());
+      await coordinator.claimTurn("turn-output", handle, 110);
+      await coordinator.recordStructuralWait("turn-output", {
         kind: "surface",
         responseId: "surface-123",
       });
-      coordinator.invalidateAllStructuralWaits();
+      await coordinator.invalidateAllStructuralWaits();
       expect(coordinator.hasResidentWork()).toBe(true);
       const publications = store.publications();
-      coordinator.releaseTurn("turn-output");
+      await coordinator.releaseTurn("turn-output");
 
       expect(finalizations).toBe(reason === "stale_revision" ? 2 : 1);
       expect(coordinator.hasResidentWork()).toBe(false);
       expect(store.publications()).toBe(publications + 1);
-      expect(coordinator.claimTurn("turn-late", handle, 130)).toBeUndefined();
+      expect(
+        await coordinator.claimTurn("turn-late", handle, 130),
+      ).toBeUndefined();
       if (reason === "terminal") {
         expect(coordinator.describeSummary(store.session())).toEqual({
           summary: store.session(),
@@ -918,11 +954,11 @@ describe("ConversationModeSessionCoordinator", () => {
 
   test.each([false, true])(
     "failed retirement invalidates a mounted descriptor (notification throws=%s)",
-    (notificationThrows) => {
+    async (notificationThrows) => {
       const store = createDependencies();
       const dependencies = {
         ...store.dependencies,
-        finalize: () => {
+        finalize: async () => {
           throw new Error("session store unavailable");
         },
       };
@@ -930,13 +966,13 @@ describe("ConversationModeSessionCoordinator", () => {
         "conv-123",
         dependencies,
       );
-      const handle = activateSource(coordinator, store.session());
-      coordinator.claimTurn("turn-output", handle, 110);
-      coordinator.recordStructuralWait("turn-output", {
+      const handle = await activateSource(coordinator, store.session());
+      await coordinator.claimTurn("turn-output", handle, 110);
+      await coordinator.recordStructuralWait("turn-output", {
         kind: "surface",
         responseId: "surface-123",
       });
-      coordinator.invalidateAllStructuralWaits();
+      await coordinator.invalidateAllStructuralWaits();
       expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
         "finishing",
       );
@@ -949,7 +985,7 @@ describe("ConversationModeSessionCoordinator", () => {
           throw new Error("notification unavailable");
         }
       };
-      expect(() => coordinator.releaseTurn("turn-output")).toThrow(
+      await expect(coordinator.releaseTurn("turn-output")).rejects.toThrow(
         "session store unavailable",
       );
       expect(invalidations).toBe(1);
@@ -963,22 +999,22 @@ describe("ConversationModeSessionCoordinator", () => {
     },
   );
 
-  test("completes a released structural owner when its response has no follow-up turn", () => {
+  test("completes a released structural owner when its response has no follow-up turn", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-origin", handle, 110);
-    coordinator.recordStructuralWait("turn-origin", {
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-origin", handle, 110);
+    await coordinator.recordStructuralWait("turn-origin", {
       kind: "surface",
       responseId: "surface-launcher",
     });
-    coordinator.releaseTurn("turn-origin");
+    await coordinator.releaseTurn("turn-origin");
 
     expect(
-      coordinator.settleStructuralWait(
+      await coordinator.settleStructuralWait(
         { kind: "surface", responseId: "surface-launcher" },
         { status: "completed", endReason: "surface_launch_settled" },
       ),
@@ -991,25 +1027,27 @@ describe("ConversationModeSessionCoordinator", () => {
       }),
     });
     expect(coordinator.hasResidentWork()).toBe(false);
-    expect(coordinator.claimTurn("turn-late", handle, 120)).toBeUndefined();
+    expect(
+      await coordinator.claimTurn("turn-late", handle, 120),
+    ).toBeUndefined();
   });
 
-  test("drains accepted work before completing a structural owner", () => {
+  test("drains accepted work before completing a structural owner", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-origin", handle, 110);
-    coordinator.recordStructuralWait("turn-origin", {
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-origin", handle, 110);
+    await coordinator.recordStructuralWait("turn-origin", {
       kind: "surface",
       responseId: "surface-launcher",
     });
-    coordinator.releaseTurn("turn-origin");
-    coordinator.claimTurn("turn-accepted", handle, 120);
+    await coordinator.releaseTurn("turn-origin");
+    await coordinator.claimTurn("turn-accepted", handle, 120);
 
-    coordinator.settleStructuralWait(
+    await coordinator.settleStructuralWait(
       { kind: "surface", responseId: "surface-launcher" },
       { status: "completed", endReason: "surface_launch_settled" },
     );
@@ -1022,9 +1060,11 @@ describe("ConversationModeSessionCoordinator", () => {
       summary: expect.objectContaining({ status: "active" }),
       runtimeState: "finishing",
     });
-    expect(coordinator.claimTurn("turn-late", handle, 130)).toBeUndefined();
+    expect(
+      await coordinator.claimTurn("turn-late", handle, 130),
+    ).toBeUndefined();
 
-    coordinator.releaseTurn("turn-accepted");
+    await coordinator.releaseTurn("turn-accepted");
     expect(coordinator.describeSummary(store.session())).toEqual({
       summary: expect.objectContaining({
         status: "completed",
@@ -1034,14 +1074,14 @@ describe("ConversationModeSessionCoordinator", () => {
     expect(coordinator.hasResidentWork()).toBe(false);
   });
 
-  test("keeps a source-lifetime owner active after settling an incidental surface wait", () => {
+  test("keeps a source-lifetime owner active after settling an incidental surface wait", async () => {
     const ambientSession = activeSession({ mode: "ambient" });
     const store = createDependencies(ambientSession);
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = coordinator.activateSource({
+    const handle = await coordinator.activateSource({
       sourceId: "camera-source",
       generation: 1,
       mode: "ambient",
@@ -1049,14 +1089,14 @@ describe("ConversationModeSessionCoordinator", () => {
       lifetime: "source",
     });
     expect(handle).toBeDefined();
-    coordinator.claimTurn("turn-origin", handle!, 110);
-    coordinator.recordStructuralWait("turn-origin", {
+    await coordinator.claimTurn("turn-origin", handle!, 110);
+    await coordinator.recordStructuralWait("turn-origin", {
       kind: "surface",
       responseId: "surface-launcher",
     });
-    coordinator.releaseTurn("turn-origin");
+    await coordinator.releaseTurn("turn-origin");
 
-    coordinator.settleStructuralWait(
+    await coordinator.settleStructuralWait(
       { kind: "surface", responseId: "surface-launcher" },
       { status: "completed", endReason: "surface_launch_settled" },
     );
@@ -1065,11 +1105,11 @@ describe("ConversationModeSessionCoordinator", () => {
       summary: expect.objectContaining({ status: "active", mode: "ambient" }),
     });
     expect(coordinator.hasResidentWork()).toBe(true);
-    expect(coordinator.claimTurn("turn-later", handle!, 120)).toEqual({
+    expect(await coordinator.claimTurn("turn-later", handle!, 120)).toEqual({
       id: handle!.id,
       mode: "ambient",
     });
-    coordinator.releaseTurn("turn-later", {
+    await coordinator.releaseTurn("turn-later", {
       status: "completed",
       endReason: "turn_settled",
     });
@@ -1079,69 +1119,73 @@ describe("ConversationModeSessionCoordinator", () => {
     expect(coordinator.hasResidentWork()).toBe(true);
   });
 
-  test("drops turn-scoped residency when fallback finalization throws", () => {
+  test("drops turn-scoped residency when fallback finalization throws", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator("conv-123", {
       ...store.dependencies,
-      finalize: () => {
+      finalize: async () => {
         throw new Error("session store unavailable");
       },
     });
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-123", handle, 110);
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-123", handle, 110);
 
-    expect(() =>
+    await expect(
       coordinator.releaseTurn("turn-123", {
         status: "completed",
         endReason: "turn_settled",
       }),
-    ).toThrow("session store unavailable");
+    ).rejects.toThrow("session store unavailable");
 
     expect(coordinator.hasResidentWork()).toBe(false);
-    expect(coordinator.claimTurn("turn-late", handle, 120)).toBeUndefined();
+    expect(
+      await coordinator.claimTurn("turn-late", handle, 120),
+    ).toBeUndefined();
   });
 
-  test("drops launcher residency when structural settlement persistence throws", () => {
+  test("drops launcher residency when structural settlement persistence throws", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator("conv-123", {
       ...store.dependencies,
-      finalize: () => {
+      finalize: async () => {
         throw new Error("session store unavailable");
       },
     });
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-origin", handle, 110);
-    coordinator.recordStructuralWait("turn-origin", {
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-origin", handle, 110);
+    await coordinator.recordStructuralWait("turn-origin", {
       kind: "surface",
       responseId: "surface-launcher",
     });
-    coordinator.releaseTurn("turn-origin");
+    await coordinator.releaseTurn("turn-origin");
 
-    expect(() =>
+    await expect(
       coordinator.settleStructuralWait(
         { kind: "surface", responseId: "surface-launcher" },
         { status: "completed", endReason: "surface_launch_settled" },
       ),
-    ).toThrow("session store unavailable");
+    ).rejects.toThrow("session store unavailable");
 
     expect(coordinator.hasResidentWork()).toBe(false);
-    expect(coordinator.claimTurn("turn-late", handle, 120)).toBeUndefined();
+    expect(
+      await coordinator.claimTurn("turn-late", handle, 120),
+    ).toBeUndefined();
   });
 
-  test("does not inherit recovered terminal state", () => {
+  test("does not inherit recovered terminal state", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.acceptTurn("turn-origin");
-    coordinator.claimTurn("turn-origin", handle, 110);
-    coordinator.recordStructuralWait("turn-origin", {
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.acceptTurn("turn-origin");
+    await coordinator.claimTurn("turn-origin", handle, 110);
+    await coordinator.recordStructuralWait("turn-origin", {
       kind: "question",
       responseId: "interaction-123",
     });
-    coordinator.releaseTurn("turn-origin");
+    await coordinator.releaseTurn("turn-origin");
     expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
       "waiting",
     );
@@ -1155,7 +1199,7 @@ describe("ConversationModeSessionCoordinator", () => {
     );
 
     expect(
-      coordinator.acceptTurn("turn-after-restart", {
+      await coordinator.acceptTurn("turn-after-restart", {
         kind: "question",
         responseId: "interaction-123",
       }),
@@ -1165,25 +1209,25 @@ describe("ConversationModeSessionCoordinator", () => {
     });
   });
 
-  test("clears a released structural wait when its source retires", () => {
+  test("clears a released structural wait when its source retires", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-origin", handle, 110);
-    coordinator.recordStructuralWait("turn-origin", {
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-origin", handle, 110);
+    await coordinator.recordStructuralWait("turn-origin", {
       kind: "confirmation",
       responseId: "confirmation-123",
     });
-    coordinator.releaseTurn("turn-origin");
+    await coordinator.releaseTurn("turn-origin");
     expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
       "waiting",
     );
 
     expect(
-      coordinator.retireSource(handle, {
+      await coordinator.retireSource(handle, {
         status: "interrupted",
         endReason: "computer_use_stopped",
       }),
@@ -1196,7 +1240,7 @@ describe("ConversationModeSessionCoordinator", () => {
     });
   });
 
-  test("reconciles one stale revision without moving the first boundary", () => {
+  test("reconciles one stale revision without moving the first boundary", async () => {
     const store = createDependencies(
       activeSession({
         firstIncludedAt: 80,
@@ -1209,16 +1253,16 @@ describe("ConversationModeSessionCoordinator", () => {
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(
+    const handle = await activateSource(
       coordinator,
       store.session(),
       "browser-source",
       7,
     );
-    coordinator.acceptTurn("turn-123");
-    coordinator.trackPersistedRow("turn-123", "assistant-later", 90);
+    await coordinator.acceptTurn("turn-123");
+    await coordinator.trackPersistedRow("turn-123", "assistant-later", 90);
     store.forceStale();
-    expect(coordinator.claimTurn("turn-123", handle, 120)).toEqual({
+    expect(await coordinator.claimTurn("turn-123", handle, 120)).toEqual({
       id: "session-123",
       mode: "computer_use",
     });
@@ -1230,26 +1274,26 @@ describe("ConversationModeSessionCoordinator", () => {
     });
   });
 
-  test("keeps ownership while draining and removes runtime hints at terminal", () => {
+  test("keeps ownership while draining and removes runtime hints at terminal", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.acceptTurn("turn-123");
-    coordinator.trackPersistedRow("turn-123", "assistant-123", 110);
-    coordinator.claimTurn("turn-123", handle, 120);
-    coordinator.retireSource(handle);
-    expect(coordinator.beginDraining("turn-123")).toBe(true);
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.acceptTurn("turn-123");
+    await coordinator.trackPersistedRow("turn-123", "assistant-123", 110);
+    await coordinator.claimTurn("turn-123", handle, 120);
+    await coordinator.retireSource(handle);
+    expect(await coordinator.beginDraining("turn-123")).toBe(true);
     expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
       "finishing",
     );
-    coordinator.trackPersistedRow("turn-123", "assistant-final", 130);
+    await coordinator.trackPersistedRow("turn-123", "assistant-final", 130);
     expect(coordinator.getTurnOwner("turn-123")?.id).toBe("session-123");
 
     expect(
-      coordinator.finalizeTurn({
+      await coordinator.finalizeTurn({
         turnId: "turn-123",
         status: "completed",
         endedAt: 140,
@@ -1266,7 +1310,7 @@ describe("ConversationModeSessionCoordinator", () => {
         lastOwnedMessageId: "assistant-final",
       }),
     });
-    const nextHandle = coordinator.activateSource({
+    const nextHandle = await coordinator.activateSource({
       sourceId: "computer-source",
       generation: 1,
       mode: "computer_use",
@@ -1277,29 +1321,31 @@ describe("ConversationModeSessionCoordinator", () => {
       generation: 1,
       activation: 2,
     });
-    coordinator.acceptTurn("turn-stale-callback");
+    await coordinator.acceptTurn("turn-stale-callback");
     expect(
-      coordinator.claimTurn("turn-stale-callback", handle, 160),
+      await coordinator.claimTurn("turn-stale-callback", handle, 160),
     ).toBeUndefined();
-    coordinator.acceptTurn("turn-next");
-    expect(coordinator.claimTurn("turn-next", nextHandle!, 160)).toMatchObject({
+    await coordinator.acceptTurn("turn-next");
+    expect(
+      await coordinator.claimTurn("turn-next", nextHandle!, 160),
+    ).toMatchObject({
       id: "session-created",
     });
     expect(store.publications()).toBeGreaterThan(0);
   });
 
-  test("retries an earlier failed metadata stamp when a later row persists", () => {
+  test("retries an earlier failed metadata stamp when a later row persists", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.acceptTurn("turn-123");
-    coordinator.trackPersistedRow("turn-123", "assistant-123", 90);
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.acceptTurn("turn-123");
+    await coordinator.trackPersistedRow("turn-123", "assistant-123", 90);
     store.failStamp("tool-result-123");
-    coordinator.claimTurn("turn-123", handle, 110);
-    coordinator.trackPersistedRow("turn-123", "tool-result-123", 120);
+    await coordinator.claimTurn("turn-123", handle, 110);
+    await coordinator.trackPersistedRow("turn-123", "tool-result-123", 120);
 
     expect(store.session()).toMatchObject({
       firstIncludedMessageId: "assistant-123",
@@ -1307,7 +1353,7 @@ describe("ConversationModeSessionCoordinator", () => {
       lastOwnedMessageId: "assistant-123",
     });
     store.allowStamp("tool-result-123");
-    coordinator.trackPersistedRow("turn-123", "assistant-456", 130);
+    await coordinator.trackPersistedRow("turn-123", "assistant-456", 130);
     expect(store.session()).toMatchObject({
       firstIncludedMessageId: "assistant-123",
       lastOwnedMessageId: "assistant-456",
@@ -1319,19 +1365,19 @@ describe("ConversationModeSessionCoordinator", () => {
     ]);
   });
 
-  test("retries a failed metadata stamp before releasing turn state", () => {
+  test("retries a failed metadata stamp before releasing turn state", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-123", handle, 110);
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-123", handle, 110);
     store.failStamp("assistant-123");
-    coordinator.trackPersistedRow("turn-123", "assistant-123", 120);
+    await coordinator.trackPersistedRow("turn-123", "assistant-123", 120);
 
     store.allowStamp("assistant-123");
-    coordinator.releaseTurn("turn-123");
+    await coordinator.releaseTurn("turn-123");
 
     expect(store.stamps).toEqual([
       { messageId: "assistant-123", sessionId: "session-123" },
@@ -1343,20 +1389,20 @@ describe("ConversationModeSessionCoordinator", () => {
     });
   });
 
-  test("retries a failed final row before terminal persistence", () => {
+  test("retries a failed final row before terminal persistence", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-123", handle, 110);
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-123", handle, 110);
     store.failStamp("assistant-123");
-    coordinator.trackPersistedRow("turn-123", "assistant-123", 120);
+    await coordinator.trackPersistedRow("turn-123", "assistant-123", 120);
 
     store.allowStamp("assistant-123");
     expect(
-      coordinator.finalizeTurn({
+      await coordinator.finalizeTurn({
         turnId: "turn-123",
         status: "completed",
         endedAt: 130,
@@ -1374,13 +1420,13 @@ describe("ConversationModeSessionCoordinator", () => {
     });
   });
 
-  test("waits for every source-lifetime turn before terminal persistence", () => {
+  test("waits for every source-lifetime turn before terminal persistence", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = coordinator.activateSource({
+    const handle = await coordinator.activateSource({
       sourceId: "camera-source",
       generation: 1,
       mode: "live_vision",
@@ -1388,15 +1434,15 @@ describe("ConversationModeSessionCoordinator", () => {
       lifetime: "source",
     });
     expect(handle).toBeDefined();
-    coordinator.acceptTurn("camera-run");
-    coordinator.claimTurn("camera-run", handle!, 100);
-    coordinator.acceptTurn("voice-turn");
-    coordinator.claimTurn("voice-turn", handle!, 110);
-    coordinator.trackPersistedRow("voice-turn", "assistant-123", 120);
+    await coordinator.acceptTurn("camera-run");
+    await coordinator.claimTurn("camera-run", handle!, 100);
+    await coordinator.acceptTurn("voice-turn");
+    await coordinator.claimTurn("voice-turn", handle!, 110);
+    await coordinator.trackPersistedRow("voice-turn", "assistant-123", 120);
     expect(coordinator.keepsSessionOpenAfterTurn("voice-turn")).toBe(true);
 
     expect(
-      coordinator.retireSource(handle!, {
+      await coordinator.retireSource(handle!, {
         status: "interrupted",
         endReason: "camera_lost",
       }),
@@ -1405,10 +1451,10 @@ describe("ConversationModeSessionCoordinator", () => {
       status: "interrupted",
       endReason: "camera_lost",
     });
-    coordinator.releaseTurn("voice-turn");
+    await coordinator.releaseTurn("voice-turn");
     expect(store.session().status).toBe("active");
 
-    coordinator.releaseTurn("camera-run");
+    await coordinator.releaseTurn("camera-run");
     expect(store.session()).toMatchObject({
       status: "interrupted",
       endReason: "camera_lost",
@@ -1416,18 +1462,18 @@ describe("ConversationModeSessionCoordinator", () => {
     });
   });
 
-  test("transfers a handoff owner without reopening source eligibility", () => {
+  test("transfers a handoff owner without reopening source eligibility", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.acceptTurn("turn-123");
-    coordinator.claimTurn("turn-123", handle, 110);
-    coordinator.trackPersistedRow("turn-123", "assistant-123", 120);
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.acceptTurn("turn-123");
+    await coordinator.claimTurn("turn-123", handle, 110);
+    await coordinator.trackPersistedRow("turn-123", "assistant-123", 120);
 
-    expect(coordinator.transferTurn("turn-123", "turn-456")).toEqual({
+    expect(await coordinator.transferTurn("turn-123", "turn-456")).toEqual({
       id: "session-123",
       mode: "computer_use",
     });
@@ -1436,26 +1482,26 @@ describe("ConversationModeSessionCoordinator", () => {
       id: "session-123",
       mode: "computer_use",
     });
-    coordinator.trackPersistedRow("turn-456", "assistant-456", 130);
+    await coordinator.trackPersistedRow("turn-456", "assistant-456", 130);
     expect(store.session()).toMatchObject({
       firstIncludedMessageId: "assistant-123",
       lastOwnedMessageId: "assistant-456",
     });
   });
 
-  test("repairs tracked rows before a handoff discards their turn state", () => {
+  test("repairs tracked rows before a handoff discards their turn state", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const handle = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-123", handle, 110);
+    const handle = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-123", handle, 110);
     store.failStamp("assistant-123");
-    coordinator.trackPersistedRow("turn-123", "assistant-123", 120);
+    await coordinator.trackPersistedRow("turn-123", "assistant-123", 120);
 
     store.allowStamp("assistant-123");
-    coordinator.transferTurn("turn-123", "turn-456");
+    await coordinator.transferTurn("turn-123", "turn-456");
 
     expect(store.stamps).toEqual([
       { messageId: "assistant-123", sessionId: "session-123" },
@@ -1468,36 +1514,46 @@ describe("ConversationModeSessionCoordinator", () => {
 
   test.each([false, true])(
     "hands ownership to an accepted destination without losing rows (matched wait=%s)",
-    (matchedWait) => {
+    async (matchedWait) => {
       const store = createDependencies();
       const coordinator = new ConversationModeSessionCoordinator(
         "conv-123",
         store.dependencies,
       );
-      const handle = activateSource(coordinator, store.session());
-      coordinator.claimTurn("turn-origin", handle, 110);
-      coordinator.trackPersistedRow("turn-origin", "assistant-origin", 120);
+      const handle = await activateSource(coordinator, store.session());
+      await coordinator.claimTurn("turn-origin", handle, 110);
+      await coordinator.trackPersistedRow(
+        "turn-origin",
+        "assistant-origin",
+        120,
+      );
       if (matchedWait) {
-        coordinator.recordStructuralWait("turn-origin", {
+        await coordinator.recordStructuralWait("turn-origin", {
           kind: "surface",
           responseId: "surface-123",
         });
       }
-      coordinator.acceptTurn("turn-queued", {
+      await coordinator.acceptTurn("turn-queued", {
         kind: "surface",
         responseId: "surface-123",
       });
-      coordinator.trackPersistedRow("turn-queued", "user-queued", 130, {
+      await coordinator.trackPersistedRow("turn-queued", "user-queued", 130, {
         startsDisplayBoundary: false,
       });
 
-      expect(coordinator.transferTurn("turn-origin", "turn-queued")).toEqual({
+      expect(
+        await coordinator.transferTurn("turn-origin", "turn-queued"),
+      ).toEqual({
         id: "session-123",
         mode: "computer_use",
       });
       expect(coordinator.getTurnOwner("turn-origin")).toBeUndefined();
-      coordinator.trackPersistedRow("turn-queued", "assistant-queued", 140);
-      coordinator.releaseTurn("turn-queued", {
+      await coordinator.trackPersistedRow(
+        "turn-queued",
+        "assistant-queued",
+        140,
+      );
+      await coordinator.releaseTurn("turn-queued", {
         status: "completed",
         endReason: "turn_settled",
       });
@@ -1516,21 +1572,21 @@ describe("ConversationModeSessionCoordinator", () => {
     },
   );
 
-  test("preserves a retired source disposition through an accepted destination", () => {
+  test("preserves a retired source disposition through an accepted destination", async () => {
     const store = createDependencies();
     const coordinator = new ConversationModeSessionCoordinator(
       "conv-123",
       store.dependencies,
     );
-    const source = activateSource(coordinator, store.session());
-    coordinator.claimTurn("turn-origin", source, 110);
-    coordinator.acceptTurn("turn-queued");
-    coordinator.retireSource(source, {
+    const source = await activateSource(coordinator, store.session());
+    await coordinator.claimTurn("turn-origin", source, 110);
+    await coordinator.acceptTurn("turn-queued");
+    await coordinator.retireSource(source, {
       status: "interrupted",
       endReason: "browser_cancelled",
     });
 
-    coordinator.transferTurn("turn-origin", "turn-queued");
+    await coordinator.transferTurn("turn-origin", "turn-queued");
 
     expect(coordinator.getTurnOwner("turn-origin")).toBeUndefined();
     expect(coordinator.getTerminalDisposition("turn-queued")).toEqual({
@@ -1540,8 +1596,10 @@ describe("ConversationModeSessionCoordinator", () => {
     expect(coordinator.describeSummary(store.session())?.runtimeState).toBe(
       "finishing",
     );
-    expect(coordinator.claimTurn("turn-late", source, 120)).toBeUndefined();
-    coordinator.releaseTurn("turn-queued");
+    expect(
+      await coordinator.claimTurn("turn-late", source, 120),
+    ).toBeUndefined();
+    await coordinator.releaseTurn("turn-queued");
     expect(store.session()).toMatchObject({
       status: "interrupted",
       endReason: "browser_cancelled",
@@ -1551,18 +1609,22 @@ describe("ConversationModeSessionCoordinator", () => {
 
   test.each(["origin", "destination"] as const)(
     "completes a handoff when %s row boundary repair throws",
-    (failedRepair) => {
+    async (failedRepair) => {
       const store = createDependencies();
       const coordinator = new ConversationModeSessionCoordinator(
         "conv-123",
         store.dependencies,
       );
-      const source = activateSource(coordinator, store.session());
-      coordinator.claimTurn("turn-origin", source, 110);
+      const source = await activateSource(coordinator, store.session());
+      await coordinator.claimTurn("turn-origin", source, 110);
       store.failStamp("assistant-origin");
-      coordinator.trackPersistedRow("turn-origin", "assistant-origin", 120);
-      coordinator.acceptTurn("turn-queued");
-      coordinator.trackPersistedRow(
+      await coordinator.trackPersistedRow(
+        "turn-origin",
+        "assistant-origin",
+        120,
+      );
+      await coordinator.acceptTurn("turn-queued");
+      await coordinator.trackPersistedRow(
         "turn-queued",
         "assistant-destination",
         130,
@@ -1578,7 +1640,9 @@ describe("ConversationModeSessionCoordinator", () => {
         return updateBoundaries(input);
       };
 
-      expect(coordinator.transferTurn("turn-origin", "turn-queued")).toEqual({
+      expect(
+        await coordinator.transferTurn("turn-origin", "turn-queued"),
+      ).toEqual({
         id: "session-123",
         mode: "computer_use",
       });
@@ -1590,7 +1654,7 @@ describe("ConversationModeSessionCoordinator", () => {
         { messageId: "assistant-destination", sessionId: "session-123" },
       ]);
       store.dependencies.updateBoundaries = updateBoundaries;
-      coordinator.releaseTurn("turn-queued", {
+      await coordinator.releaseTurn("turn-queued", {
         status: "completed",
         endReason: "turn_settled",
       });
@@ -1599,7 +1663,7 @@ describe("ConversationModeSessionCoordinator", () => {
     },
   );
 
-  test("preserves a distinct destination owner and settles the origin", () => {
+  test("preserves a distinct destination owner and settles the origin", async () => {
     const origin = createDependencies(activeSession({ id: "session-origin" }));
     const destination = createDependencies(
       activeSession({ id: "session-destination", mode: "browser" }),
@@ -1610,37 +1674,40 @@ describe("ConversationModeSessionCoordinator", () => {
       stores.find((store) => store.session().id === id)!.dependencies;
     const coordinator = new ConversationModeSessionCoordinator("conv-123", {
       createId: () => stores[nextId++]!.session().id,
-      beginSession: (input) => dependenciesFor(input.id).beginSession(input),
-      getSession: (conversationId, id) =>
+      beginSession: async (input) =>
+        dependenciesFor(input.id).beginSession(input),
+      getSession: async (conversationId, id) =>
         dependenciesFor(id).getSession(conversationId, id),
-      updateActivity: (input) =>
+      updateActivity: async (input) =>
         dependenciesFor(input.id).updateActivity(input),
-      updateBoundaries: (input) =>
+      updateBoundaries: async (input) =>
         dependenciesFor(input.id).updateBoundaries(input),
-      advanceRevision: (input) =>
+      advanceRevision: async (input) =>
         dependenciesFor(input.id).advanceRevision(input),
-      finalize: (input) => dependenciesFor(input.id).finalize(input),
-      stampMessage: (messageId, owner) =>
+      finalize: async (input) => dependenciesFor(input.id).finalize(input),
+      stampMessage: async (messageId, owner) =>
         dependenciesFor(owner.id).stampMessage(messageId, owner),
       publishMessagesChanged: () => {},
     });
-    const originSource = activateSource(
+    const originSource = await activateSource(
       coordinator,
       origin.session(),
       "origin-source",
     );
-    coordinator.claimTurn("turn-origin", originSource, 110);
-    coordinator.trackPersistedRow("turn-origin", "assistant-origin", 120);
-    const destinationSource = activateSource(
+    await coordinator.claimTurn("turn-origin", originSource, 110);
+    await coordinator.trackPersistedRow("turn-origin", "assistant-origin", 120);
+    const destinationSource = await activateSource(
       coordinator,
       destination.session(),
       "destination-source",
     );
-    coordinator.claimTurn("turn-queued", destinationSource, 130);
-    coordinator.trackPersistedRow("turn-queued", "assistant-queued", 140);
+    await coordinator.claimTurn("turn-queued", destinationSource, 130);
+    await coordinator.trackPersistedRow("turn-queued", "assistant-queued", 140);
     const destinationBeforeHandoff = destination.session();
 
-    expect(coordinator.transferTurn("turn-origin", "turn-queued")).toEqual({
+    expect(
+      await coordinator.transferTurn("turn-origin", "turn-queued"),
+    ).toEqual({
       id: "session-destination",
       mode: "browser",
     });
@@ -1658,7 +1725,7 @@ describe("ConversationModeSessionCoordinator", () => {
     expect(destination.stamps).toEqual([
       { messageId: "assistant-queued", sessionId: "session-destination" },
     ]);
-    coordinator.releaseTurn("turn-queued", {
+    await coordinator.releaseTurn("turn-queued", {
       status: "completed",
       endReason: "turn_settled",
     });

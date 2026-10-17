@@ -112,8 +112,8 @@ const { formatMessageSliceForTranscript } =
   await import("../transcript-formatter.js");
 
 describe("formatMessageSliceForTranscript subagent labels", () => {
-  test("embedded subagent transcripts render with generic role labels even when parent display names are provided", () => {
-    const out = formatMessageSliceForTranscript(parentMessages, {
+  test("embedded subagent transcripts render with generic role labels even when parent display names are provided", async () => {
+    const out = await formatMessageSliceForTranscript(parentMessages, {
       assistantName: "Bob",
       userName: "Alice",
     });
@@ -132,8 +132,8 @@ describe("formatMessageSliceForTranscript subagent labels", () => {
     expect(out).not.toContain("> **Bob**");
   });
 
-  test("without display-name options, parent and subagent both use generic labels", () => {
-    const out = formatMessageSliceForTranscript(parentMessages);
+  test("without display-name options, parent and subagent both use generic labels", async () => {
+    const out = await formatMessageSliceForTranscript(parentMessages);
 
     expect(out).toContain("## User (TIME)");
     expect(out).toContain("## Assistant (TIME)");

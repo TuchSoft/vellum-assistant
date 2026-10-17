@@ -17,12 +17,12 @@ let bindingRow: {
 
 mock.module("../../../persistence/delivery-crud.js", () => ({
   ...actualDeliveryCrud,
-  getLatestInboundEventReference: () => null,
+  getLatestInboundEventReference: async () => null,
 }));
 
 mock.module("../../../persistence/external-conversation-store.js", () => ({
   ...actualBindingStore,
-  getBindingByConversation: () => bindingRow,
+  getBindingByConversation: async () => bindingRow,
 }));
 
 const { resolveSlackApprovalSource } = await import("./approval-source.js");
@@ -33,38 +33,38 @@ const HINT = {
 };
 
 describe("resolveSlackApprovalSource chat names", () => {
-  test("the binding's chat name rides the reference", () => {
+  test("the binding's chat name rides the reference", async () => {
     bindingRow = {
       sourceChannel: "slack",
       externalChatId: "C0123CHANNEL",
       externalChatName: "user-feedback",
       conversationId: "conv-1",
     };
-    const reference = resolveSlackApprovalSource("conv-1", HINT);
+    const reference = await resolveSlackApprovalSource("conv-1", HINT);
     expect(reference?.sourceChatId).toBe("C0123CHANNEL");
     expect(reference?.sourceChatName).toBe("user-feedback");
   });
 
-  test("a binding for a different chat never lends its name", () => {
+  test("a binding for a different chat never lends its name", async () => {
     bindingRow = {
       sourceChannel: "slack",
       externalChatId: "C0OTHER",
       externalChatName: "somewhere-else",
       conversationId: "conv-1",
     };
-    const reference = resolveSlackApprovalSource("conv-1", HINT);
+    const reference = await resolveSlackApprovalSource("conv-1", HINT);
     expect(reference?.sourceChatId).toBe("C0123CHANNEL");
     expect(reference?.sourceChatName).toBeUndefined();
   });
 
-  test("an unnamed binding leaves the reference nameless", () => {
+  test("an unnamed binding leaves the reference nameless", async () => {
     bindingRow = {
       sourceChannel: "slack",
       externalChatId: "C0123CHANNEL",
       externalChatName: null,
       conversationId: "conv-1",
     };
-    const reference = resolveSlackApprovalSource("conv-1", HINT);
+    const reference = await resolveSlackApprovalSource("conv-1", HINT);
     expect(reference?.sourceChatName).toBeUndefined();
   });
 });

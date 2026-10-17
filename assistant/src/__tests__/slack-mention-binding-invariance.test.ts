@@ -9,7 +9,7 @@
  * These tests pin current behavior; nothing here changes it.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -17,30 +17,31 @@ setConfig("memory", { enabled: false });
 
 import { writeSlackMetadata } from "../messaging/providers/slack/message-metadata.js";
 import { addMessage, getMessages } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { recordInbound } from "../persistence/delivery-crud.js";
-import { conversationKeys } from "../persistence/schema/conversations.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 const SOURCE_CHANNEL_A = "C0111SRCA";
 const MENTIONED_CHANNEL_B = "C0222DESTB";
 
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM channel_inbound_events");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM channel_inbound_events");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM conversations");
 }
 
-describe("Slack mention binding invariance", () => {
+describePg("Slack mention binding invariance", () => {
   beforeEach(resetTables);
 
   test("a message in channel A mentioning channel B binds to A, and B mints no binding", async () => {
     // Inbound in source channel A whose text mentions destination channel B.
-    const first = recordInbound("slack", SOURCE_CHANNEL_A, "1700000000.000100");
+    const first = await recordInbound(
+      "slack",
+      SOURCE_CHANNEL_A,
+      "1700000000.000100",
+    );
     await addMessage(
       first.conversationId,
       "user",
@@ -65,7 +66,7 @@ describe("Slack mention binding invariance", () => {
 
     // A later message in the same source channel resolves to the SAME
     // conversation: the binding key is the source channel, nothing else.
-    const second = recordInbound(
+    const second = await recordInbound(
       "slack",
       SOURCE_CHANNEL_A,
       "1700000001.000200",
@@ -74,7 +75,7 @@ describe("Slack mention binding invariance", () => {
 
     // The mentioned channel B resolves to a DIFFERENT conversation if
     // anything ever arrives from it; mentioning it created no binding.
-    const fromB = recordInbound(
+    const fromB = await recordInbound(
       "slack",
       MENTIONED_CHANNEL_B,
       "1700000002.000300",
@@ -83,19 +84,19 @@ describe("Slack mention binding invariance", () => {
 
     // The persisted row's slackMeta records the source channel, and B
     // appears nowhere in persisted metadata, only in message text.
-    const rows = getMessages(first.conversationId);
+    const rows = await getMessages(first.conversationId);
     expect(rows).toHaveLength(1);
     expect(rows[0].metadata).toContain(SOURCE_CHANNEL_A);
     expect(rows[0].metadata).not.toContain(MENTIONED_CHANNEL_B);
   });
 
-  test("no conversation key exists for a channel that was only ever mentioned", () => {
-    recordInbound("slack", SOURCE_CHANNEL_A, "1700000003.000400");
+  test("no conversation key exists for a channel that was only ever mentioned", async () => {
+    await recordInbound("slack", SOURCE_CHANNEL_A, "1700000003.000400");
 
-    const keys = getDb()
-      .select({ conversationKey: conversationKeys.conversationKey })
-      .from(conversationKeys)
-      .all();
+    const db = requireMainDb();
+    const keys = await db.orm
+      .select({ conversationKey: db.schema.conversationKeys.conversationKey })
+      .from(db.schema.conversationKeys);
     const keyBlob = JSON.stringify(keys);
     expect(keyBlob).toContain(SOURCE_CHANNEL_A);
     expect(keyBlob).not.toContain(MENTIONED_CHANNEL_B);

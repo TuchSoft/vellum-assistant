@@ -56,7 +56,7 @@ let mockConversation: {
       turnId: string;
       lifecycle: "action" | "terminal" | "status";
       at: number;
-    }) => BrowserOperationToken | undefined;
+    }) => Promise<BrowserOperationToken | undefined>;
     finishOperation: (
       token: BrowserOperationToken | undefined,
       outcome: {
@@ -65,7 +65,7 @@ let mockConversation: {
         cancelled: boolean;
         terminalReason?: "browser_closed" | "browser_detached";
       },
-    ) => boolean;
+    ) => Promise<boolean>;
   };
 } | null = null;
 
@@ -86,7 +86,7 @@ const lifecycleFinishes: Array<{
 
 function browserLifecycle() {
   return {
-    beginOperation(input: (typeof lifecycleBegins)[number]) {
+    async beginOperation(input: (typeof lifecycleBegins)[number]) {
       lifecycleBegins.push(input);
       return {
         turnId: input.turnId,
@@ -94,7 +94,7 @@ function browserLifecycle() {
         owner: { id: "browser-session", mode: "browser" as const },
       } as BrowserOperationToken;
     },
-    finishOperation(
+    async finishOperation(
       token: BrowserOperationToken | undefined,
       outcome: (typeof lifecycleFinishes)[number]["outcome"],
     ) {
@@ -565,7 +565,7 @@ describe("browser_execute route", () => {
 
   test("executes a live-turn action without tracking while session groups are disabled", async () => {
     setOverridesForTesting({ "session-groups": false });
-    const activateSource = mock(() => {
+    const activateSource = mock(async () => {
       throw new Error("disabled tracking must not activate a source");
     });
     mockConversation = {
@@ -573,10 +573,10 @@ describe("browser_execute route", () => {
       browserModeSessions: new BrowserModeSessionProducer(
         {
           activateSource,
-          claimTurn: mock(() => undefined),
+          claimTurn: mock(async () => undefined),
           getTurnOwner: mock(() => undefined),
-          recordActivity: mock(() => false),
-          retireSource: mock(() => false),
+          recordActivity: mock(async () => false),
+          retireSource: mock(async () => false),
         },
         1,
         isSessionGroupsEnabled,
@@ -602,7 +602,7 @@ describe("browser_execute route", () => {
         currentRequestId: "turn-123",
         browserModeSessions: {
           ...browserLifecycle(),
-          beginOperation() {
+          async beginOperation() {
             throw new Error("tracking unavailable");
           },
         },
@@ -651,8 +651,8 @@ describe("browser_execute route", () => {
         currentRequestId: "turn-123",
         browserModeSessions: {
           ...lifecycle,
-          finishOperation(token, outcome) {
-            lifecycle.finishOperation(token, outcome);
+          async finishOperation(token, outcome) {
+            await lifecycle.finishOperation(token, outcome);
             throw new Error("session tracking unavailable");
           },
         },

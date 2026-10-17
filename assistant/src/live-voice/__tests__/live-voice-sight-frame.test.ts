@@ -14,7 +14,7 @@
  * echo, which is the keep stream's alone.
  */
 
-import { describe, expect, mock, spyOn, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 
 import {
   createMockProvider,
@@ -25,6 +25,7 @@ import { waitFor } from "../../__tests__/helpers/wait-for.js";
 
 setConfig("memory", { enabled: false });
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import type {
   VoiceTurnHandle,
   VoiceTurnOptions,
@@ -51,7 +52,6 @@ import {
 } from "../../persistence/conversation-crud.js";
 import { getConversationModeSession } from "../../persistence/conversation-mode-sessions.js";
 import { sightFrameAttachmentIdsFromMetadata } from "../../persistence/conversation-types.js";
-import { initializeDb } from "../../persistence/db-init.js";
 import type {
   StreamingTranscriber,
   SttStreamServerEvent,
@@ -67,8 +67,6 @@ import {
   type LiveVoiceServerFrame,
   validateLiveVoiceClientFrame,
 } from "../protocol.js";
-
-await initializeDb();
 
 const IMAGE_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk";
@@ -103,7 +101,7 @@ async function uploadFrame(): Promise<string> {
  * A session bound to a live conversation, so a kept frame has somewhere real
  * to land. Returns a `dispose` that unregisters it.
  */
-function createSessionHarness(
+async function createSessionHarness(
   title: string,
   options?: {
     acquireResidency?: boolean;
@@ -113,7 +111,7 @@ function createSessionHarness(
     startVoiceTurn?: LiveVoiceTurnStarter;
   },
 ) {
-  const conversation = createConversation(title);
+  const conversation = await createConversation(title);
   const { provider } = createMockProvider([textResponse("")]);
   const activeConversation = new Conversation(
     conversation.id,
@@ -152,7 +150,7 @@ function createSessionHarness(
         abort: mock(() => {
           const requestId = _options.preacceptedModeSession?.requestId;
           if (requestId) {
-            activeConversation.modeSessions.releaseTurn(requestId);
+            void activeConversation.modeSessions.releaseTurn(requestId);
           }
         }),
       })),
@@ -186,7 +184,7 @@ function createSessionHarness(
   };
 }
 
-describe("live-voice sight_frame frame", () => {
+describePg("live-voice sight_frame frame", () => {
   test("accepts camera lifecycle start, frame, and end", () => {
     expect(
       validateLiveVoiceClientFrame({
@@ -376,11 +374,14 @@ describe("live-voice sight_frame frame", () => {
   });
 });
 
-describe("live-voice camera frames kept mid-call", () => {
+describePg("live-voice camera frames kept mid-call", () => {
   test("keeps one canonical conversation across reload and camera restarts", async () => {
-    const harness = createSessionHarness("Sight residency across reload", {
-      acquireResidency: true,
-    });
+    const harness = await createSessionHarness(
+      "Sight residency across reload",
+      {
+        acquireResidency: true,
+      },
+    );
     try {
       await harness.session.start();
       await harness.session.handleClientFrame({
@@ -395,9 +396,11 @@ describe("live-voice camera frames kept mid-call", () => {
         cameraEpoch: 41,
         source: "live",
       });
-      await waitFor(() => getMessages(harness.conversationId).length === 1);
+      await waitFor(
+        async () => (await getMessages(harness.conversationId)).length === 1,
+      );
       const firstMetadata = JSON.parse(
-        getMessages(harness.conversationId)[0]!.metadata ?? "{}",
+        (await getMessages(harness.conversationId))[0]!.metadata ?? "{}",
       ) as { modeSession?: { id: string } };
 
       evictConversationsForReload();
@@ -406,10 +409,12 @@ describe("live-voice camera frames kept mid-call", () => {
         cameraEpoch: 41,
       });
       await waitFor(
-        () =>
-          getConversationModeSession(
-            harness.conversationId,
-            firstMetadata.modeSession!.id,
+        async () =>
+          (
+            await getConversationModeSession(
+              harness.conversationId,
+              firstMetadata.modeSession!.id,
+            )
           )?.status === "completed",
       );
 
@@ -429,9 +434,11 @@ describe("live-voice camera frames kept mid-call", () => {
         cameraEpoch: 42,
         source: "ambient",
       });
-      await waitFor(() => getMessages(harness.conversationId).length === 2);
+      await waitFor(
+        async () => (await getMessages(harness.conversationId)).length === 2,
+      );
       const secondMetadata = JSON.parse(
-        getMessages(harness.conversationId)[1]!.metadata ?? "{}",
+        (await getMessages(harness.conversationId))[1]!.metadata ?? "{}",
       ) as { modeSession?: { id: string; mode: string } };
       expect(secondMetadata.modeSession).toMatchObject({ mode: "ambient" });
       expect(secondMetadata.modeSession?.id).not.toBe(
@@ -465,7 +472,7 @@ describe("live-voice camera frames kept mid-call", () => {
     const bridgeTurn = new Promise<VoiceTurnHandle>((resolve) => {
       resolveTurn = resolve;
     });
-    const harness = createSessionHarness("Sight stop during admission", {
+    const harness = await createSessionHarness("Sight stop during admission", {
       startVoiceTurn: async () => bridgeTurn,
     });
     try {
@@ -495,7 +502,9 @@ describe("live-voice camera frames kept mid-call", () => {
       ).toEqual({ id: accepted.source.id, mode: accepted.source.mode });
       resolveTurn({ turnId: "bridge-turn-1", abort: mock() });
       await speaking;
-      harness.activeConversation.modeSessions.releaseTurn(accepted.requestId);
+      await harness.activeConversation.modeSessions.releaseTurn(
+        accepted.requestId,
+      );
     } finally {
       await harness.session.close("client_end");
       harness.dispose();
@@ -507,9 +516,12 @@ describe("live-voice camera frames kept mid-call", () => {
     const bridgeTurn = new Promise<VoiceTurnHandle>((resolve) => {
       resolveTurn = resolve;
     });
-    const harness = createSessionHarness("Sight replacement during admission", {
-      startVoiceTurn: async () => bridgeTurn,
-    });
+    const harness = await createSessionHarness(
+      "Sight replacement during admission",
+      {
+        startVoiceTurn: async () => bridgeTurn,
+      },
+    );
     try {
       await harness.session.start();
       await harness.session.handleClientFrame({
@@ -539,7 +551,9 @@ describe("live-voice camera frames kept mid-call", () => {
       ).toEqual({ id: accepted.source.id, mode: accepted.source.mode });
       resolveTurn({ turnId: "bridge-turn-1", abort: mock() });
       await speaking;
-      harness.activeConversation.modeSessions.releaseTurn(accepted.requestId);
+      await harness.activeConversation.modeSessions.releaseTurn(
+        accepted.requestId,
+      );
     } finally {
       await harness.session.close("client_end");
       harness.dispose();
@@ -551,7 +565,7 @@ describe("live-voice camera frames kept mid-call", () => {
     const preparation = new Promise<Conversation["modeSessions"]>((resolve) => {
       resolvePreparation = resolve;
     });
-    const harness = createSessionHarness("Deferred sight end", {
+    const harness = await createSessionHarness("Deferred sight end", {
       acquireModeSessionResidency: async () => ({
         coordinator: await preparation,
         release: () => {},
@@ -591,7 +605,7 @@ describe("live-voice camera frames kept mid-call", () => {
     const preparation = new Promise<Conversation["modeSessions"]>((resolve) => {
       resolvePreparation = resolve;
     });
-    const harness = createSessionHarness("Deferred sight frame", {
+    const harness = await createSessionHarness("Deferred sight frame", {
       acquireModeSessionResidency: async () => ({
         coordinator: await preparation,
         release: () => {},
@@ -614,9 +628,11 @@ describe("live-voice camera frames kept mid-call", () => {
 
       resolvePreparation(harness.activeConversation.modeSessions);
       await Promise.all([starting, keeping]);
-      await waitFor(() => getMessages(harness.conversationId).length > 0);
+      await waitFor(
+        async () => (await getMessages(harness.conversationId)).length > 0,
+      );
 
-      const row = getMessages(harness.conversationId)[0]!;
+      const row = (await getMessages(harness.conversationId))[0]!;
       const metadata = JSON.parse(row.metadata ?? "{}") as {
         modeSession?: { id: string; mode: string };
       };
@@ -640,7 +656,7 @@ describe("live-voice camera frames kept mid-call", () => {
       coordinator: await preparation,
       release,
     }));
-    const harness = createSessionHarness("Deferred sight close", {
+    const harness = await createSessionHarness("Deferred sight close", {
       acquireModeSessionResidency: acquire,
     });
     const activateSource = spyOn(
@@ -671,7 +687,7 @@ describe("live-voice camera frames kept mid-call", () => {
   });
 
   test("captures the active camera owner for a typed voice turn", async () => {
-    const harness = createSessionHarness("Sight-owned voice turn");
+    const harness = await createSessionHarness("Sight-owned voice turn");
     try {
       await harness.session.start();
       await harness.session.handleClientFrame({
@@ -699,13 +715,15 @@ describe("live-voice camera frames kept mid-call", () => {
   });
 
   test("dispatches voice ungrouped when the first delivery claim throws", async () => {
-    const harness = createSessionHarness("Sight voice first claim failure");
+    const harness = await createSessionHarness(
+      "Sight voice first claim failure",
+    );
     const coordinator = harness.activeConversation.modeSessions;
     const originalClaimTurn = coordinator.claimTurn.bind(coordinator);
     let attemptedRequestId: string | undefined;
     const claimTurn = spyOn(coordinator, "claimTurn").mockImplementation(
-      (turnId, source, at) => {
-        const owner = originalClaimTurn(turnId, source, at);
+      async (turnId, source, at) => {
+        const owner = await originalClaimTurn(turnId, source, at);
         if (!turnId.startsWith("live-voice-camera:")) {
           attemptedRequestId = turnId;
           throw new Error("session tracking unavailable");
@@ -739,13 +757,15 @@ describe("live-voice camera frames kept mid-call", () => {
   });
 
   test("releases a mismatched first delivery claim before ungrouped dispatch", async () => {
-    const harness = createSessionHarness("Sight voice first claim mismatch");
+    const harness = await createSessionHarness(
+      "Sight voice first claim mismatch",
+    );
     const coordinator = harness.activeConversation.modeSessions;
     const originalClaimTurn = coordinator.claimTurn.bind(coordinator);
     let attemptedRequestId: string | undefined;
     const claimTurn = spyOn(coordinator, "claimTurn").mockImplementation(
-      (turnId, source, at) => {
-        const owner = originalClaimTurn(turnId, source, at);
+      async (turnId, source, at) => {
+        const owner = await originalClaimTurn(turnId, source, at);
         if (!turnId.startsWith("live-voice-camera:") && owner) {
           attemptedRequestId = turnId;
           return { id: "different-session", mode: owner.mode };
@@ -779,13 +799,15 @@ describe("live-voice camera frames kept mid-call", () => {
   });
 
   test("releases every delivery claim when a later admission throws", async () => {
-    const harness = createSessionHarness("Sight voice later claim failure");
+    const harness = await createSessionHarness(
+      "Sight voice later claim failure",
+    );
     const coordinator = harness.activeConversation.modeSessions;
     const originalClaimTurn = coordinator.claimTurn.bind(coordinator);
     const attemptedRequestIds: string[] = [];
     const claimTurn = spyOn(coordinator, "claimTurn").mockImplementation(
-      (turnId, source, at) => {
-        const owner = originalClaimTurn(turnId, source, at);
+      async (turnId, source, at) => {
+        const owner = await originalClaimTurn(turnId, source, at);
         if (!turnId.startsWith("live-voice-camera:")) {
           attemptedRequestIds.push(turnId);
           if (attemptedRequestIds.length === 3) {
@@ -823,7 +845,7 @@ describe("live-voice camera frames kept mid-call", () => {
   });
 
   test("keeps a stopped camera session active until voice delivery settles", async () => {
-    const harness = createSessionHarness("Sight voice delivery barrier");
+    const harness = await createSessionHarness("Sight voice delivery barrier");
     try {
       await harness.session.start();
       await harness.session.handleClientFrame({
@@ -844,7 +866,8 @@ describe("live-voice camera frames kept mid-call", () => {
         cameraEpoch: 12,
       });
       expect(
-        getConversationModeSession(harness.conversationId, sessionId)?.status,
+        (await getConversationModeSession(harness.conversationId, sessionId))
+          ?.status,
       ).toBe("active");
 
       options.callbacks?.message_complete?.({
@@ -852,12 +875,12 @@ describe("live-voice camera frames kept mid-call", () => {
         conversationId: harness.conversationId,
         messageId: "assistant-message-1",
       });
-      harness.activeConversation.modeSessions.releaseTurn(
+      await harness.activeConversation.modeSessions.releaseTurn(
         options.preacceptedModeSession!.requestId,
       );
       await waitFor(
-        () =>
-          getConversationModeSession(harness.conversationId, sessionId)
+        async () =>
+          (await getConversationModeSession(harness.conversationId, sessionId))
             ?.status === "completed",
         { message: "Timed out waiting for voice delivery settlement" },
       );
@@ -871,13 +894,13 @@ describe("live-voice camera frames kept mid-call", () => {
   });
 
   test("releases remaining delivery claims when one release throws", async () => {
-    const harness = createSessionHarness("Sight voice release failure");
+    const harness = await createSessionHarness("Sight voice release failure");
     const coordinator = harness.activeConversation.modeSessions;
     const originalClaimTurn = coordinator.claimTurn.bind(coordinator);
     const claimedRequestIds: string[] = [];
     const claimTurn = spyOn(coordinator, "claimTurn").mockImplementation(
-      (turnId, source, at) => {
-        const owner = originalClaimTurn(turnId, source, at);
+      async (turnId, source, at) => {
+        const owner = await originalClaimTurn(turnId, source, at);
         if (!turnId.startsWith("live-voice-camera:")) {
           claimedRequestIds.push(turnId);
         }
@@ -888,8 +911,8 @@ describe("live-voice camera frames kept mid-call", () => {
     const releasedRequestIds: string[] = [];
     let injectedFailure = false;
     const releaseTurn = spyOn(coordinator, "releaseTurn").mockImplementation(
-      (turnId) => {
-        const released = originalReleaseTurn(turnId);
+      async (turnId) => {
+        const released = await originalReleaseTurn(turnId);
         if (!turnId.startsWith("live-voice-camera:")) {
           releasedRequestIds.push(turnId);
           if (!injectedFailure) {
@@ -937,7 +960,7 @@ describe("live-voice camera frames kept mid-call", () => {
   });
 
   test("socket loss interrupts a camera run after cancelling its voice hold", async () => {
-    const harness = createSessionHarness("Sight socket loss");
+    const harness = await createSessionHarness("Sight socket loss");
     try {
       await harness.session.start();
       await harness.session.handleClientFrame({
@@ -957,13 +980,13 @@ describe("live-voice camera frames kept mid-call", () => {
       await harness.session.close("websocket_close");
 
       await waitFor(
-        () =>
-          getConversationModeSession(harness.conversationId, sessionId)
+        async () =>
+          (await getConversationModeSession(harness.conversationId, sessionId))
             ?.status === "interrupted",
         { message: "Timed out waiting for interrupted camera session" },
       );
       expect(
-        getConversationModeSession(harness.conversationId, sessionId)
+        (await getConversationModeSession(harness.conversationId, sessionId))
           ?.endReason,
       ).toBe("camera_websocket_close");
     } finally {
@@ -985,9 +1008,12 @@ describe("live-voice camera frames kept mid-call", () => {
       });
       return { turnId: "unreachable", abort: mock() };
     };
-    const harness = createSessionHarness("Sight deferred admission close", {
-      startVoiceTurn,
-    });
+    const harness = await createSessionHarness(
+      "Sight deferred admission close",
+      {
+        startVoiceTurn,
+      },
+    );
     try {
       await harness.session.start();
       await harness.session.handleClientFrame({
@@ -1007,9 +1033,13 @@ describe("live-voice camera frames kept mid-call", () => {
       await speaking;
 
       await waitFor(
-        () =>
-          getConversationModeSession(harness.conversationId, accepted.source.id)
-            ?.status === "interrupted",
+        async () =>
+          (
+            await getConversationModeSession(
+              harness.conversationId,
+              accepted.source.id,
+            )
+          )?.status === "interrupted",
       );
       expect(
         harness.activeConversation.modeSessions.getTurnOwner(
@@ -1022,7 +1052,7 @@ describe("live-voice camera frames kept mid-call", () => {
   });
 
   test("stamps negotiated keeps and finalizes the run on sight_end", async () => {
-    const harness = createSessionHarness("Sight session lifecycle");
+    const harness = await createSessionHarness("Sight session lifecycle");
     try {
       await harness.session.start();
       await harness.session.handleClientFrame({
@@ -1037,11 +1067,14 @@ describe("live-voice camera frames kept mid-call", () => {
         cameraEpoch: 1,
         source: "live",
       });
-      await waitFor(() => getMessages(harness.conversationId).length > 0, {
-        message: "Timed out waiting for grouped camera frame",
-      });
+      await waitFor(
+        async () => (await getMessages(harness.conversationId)).length > 0,
+        {
+          message: "Timed out waiting for grouped camera frame",
+        },
+      );
 
-      const row = getMessages(harness.conversationId)[0]!;
+      const row = (await getMessages(harness.conversationId))[0]!;
       const metadata = JSON.parse(row.metadata ?? "{}") as {
         modeSession?: { id: string; mode: string };
       };
@@ -1052,10 +1085,12 @@ describe("live-voice camera frames kept mid-call", () => {
       });
 
       await waitFor(
-        () =>
-          getConversationModeSession(
-            harness.conversationId,
-            metadata.modeSession!.id,
+        async () =>
+          (
+            await getConversationModeSession(
+              harness.conversationId,
+              metadata.modeSession!.id,
+            )
           )?.status === "completed",
         { message: "Timed out waiting for camera session finalization" },
       );
@@ -1065,7 +1100,7 @@ describe("live-voice camera frames kept mid-call", () => {
   });
 
   test("saves an admitted frame after stop while rejecting a frame delivered after stop", async () => {
-    const harness = createSessionHarness("Sight admitted frame drain", {
+    const harness = await createSessionHarness("Sight admitted frame drain", {
       acquireResidency: true,
     });
     const processing = harness.activeConversation.acquireProcessing();
@@ -1095,8 +1130,8 @@ describe("live-voice camera frames kept mid-call", () => {
         cameraEpoch: 61,
         source: "live",
       });
-      expect(attachmentExists(late)).toBe(false);
-      expect(getMessages(harness.conversationId)).toHaveLength(0);
+      expect(await attachmentExists(late)).toBe(false);
+      expect(await getMessages(harness.conversationId)).toHaveLength(0);
       expect(harness.activeConversation.modeSessions.hasResidentWork()).toBe(
         true,
       );
@@ -1104,17 +1139,18 @@ describe("live-voice camera frames kept mid-call", () => {
       expect(harness.activeConversation.hasInFlightWork()).toBe(true);
       harness.activeConversation.releaseProcessing(processing!);
       await waitFor(
-        () =>
-          getMessages(harness.conversationId).length === 1 &&
+        async () =>
+          (await getMessages(harness.conversationId)).length === 1 &&
           !harness.activeConversation.hasInFlightWork(),
       );
-      const row = getMessages(harness.conversationId)[0]!;
+      const row = (await getMessages(harness.conversationId))[0]!;
       const stamp = JSON.parse(row.metadata ?? "{}").modeSession;
       expect(
-        getConversationModeSession(harness.conversationId, stamp.id)?.status,
+        (await getConversationModeSession(harness.conversationId, stamp.id))
+          ?.status,
       ).toBe("completed");
-      expect(getAttachmentsForMessage(row.id)).toHaveLength(1);
-      expect(attachmentExists(accepted)).toBe(true);
+      expect(await getAttachmentsForMessage(row.id)).toHaveLength(1);
+      expect(await attachmentExists(accepted)).toBe(true);
       expect(
         harness.frames.filter((frame) => frame.type === "error"),
       ).toMatchObject([{ frameType: "sight_frame", attachmentId: late }]);
@@ -1128,19 +1164,21 @@ describe("live-voice camera frames kept mid-call", () => {
   test.each([false, true])(
     "persists an accepted camera frame when its claim throws (partial: %s)",
     async (partial) => {
-      const harness = createSessionHarness("Sight frame ownership failure");
+      const harness = await createSessionHarness(
+        "Sight frame ownership failure",
+      );
       const coordinator = harness.activeConversation.modeSessions;
       const originalClaimTurn = coordinator.claimTurn.bind(coordinator);
       let failedSessionId: string | undefined;
       const claimTurn = spyOn(coordinator, "claimTurn").mockImplementation(
-        (turnId, source, at) => {
+        async (turnId, source, at) => {
           if (!turnId.startsWith("live-voice-camera:")) {
             if (partial) {
-              originalClaimTurn(turnId, source, at);
+              await originalClaimTurn(turnId, source, at);
             }
             throw new Error("session tracking unavailable");
           }
-          const owner = originalClaimTurn(turnId, source, at);
+          const owner = await originalClaimTurn(turnId, source, at);
           failedSessionId = owner?.id;
           return owner;
         },
@@ -1166,17 +1204,21 @@ describe("live-voice camera frames kept mid-call", () => {
         await Promise.all([keeping, ending]);
 
         await waitFor(
-          () =>
+          async () =>
             failedSessionId !== undefined &&
-            getConversationModeSession(harness.conversationId, failedSessionId)
-              ?.status === "completed" &&
-            getMessages(harness.conversationId).length === 1 &&
+            (
+              await getConversationModeSession(
+                harness.conversationId,
+                failedSessionId,
+              )
+            )?.status === "completed" &&
+            (await getMessages(harness.conversationId)).length === 1 &&
             !coordinator.hasResidentWork(),
           { message: "Timed out waiting for the accepted frame to settle" },
         );
-        expect(attachmentExists(attachmentId)).toBe(true);
-        const row = getMessages(harness.conversationId)[0]!;
-        expect(getAttachmentsForMessage(row.id)).toHaveLength(1);
+        expect(await attachmentExists(attachmentId)).toBe(true);
+        const row = (await getMessages(harness.conversationId))[0]!;
+        expect(await getAttachmentsForMessage(row.id)).toHaveLength(1);
         expect(
           harness.frames.filter((frame) => frame.type === "error"),
         ).toHaveLength(0);
@@ -1189,13 +1231,13 @@ describe("live-voice camera frames kept mid-call", () => {
   );
 
   test("releases acquired residency after a refused camera start and accepts ordinary frames", async () => {
-    const harness = createSessionHarness("Sight start tracking failure", {
+    const harness = await createSessionHarness("Sight start tracking failure", {
       acquireResidency: true,
     });
     const claim = spyOn(
       harness.activeConversation.modeSessions,
       "claimTurn",
-    ).mockImplementation(() => {
+    ).mockImplementation(async () => {
       throw new Error("tracking unavailable");
     });
     try {
@@ -1217,12 +1259,15 @@ describe("live-voice camera frames kept mid-call", () => {
         type: "sight_frame",
         attachmentId,
       });
-      await waitFor(() => getMessages(harness.conversationId).length === 1);
+      await waitFor(
+        async () => (await getMessages(harness.conversationId)).length === 1,
+      );
       expect(
-        JSON.parse(getMessages(harness.conversationId)[0]!.metadata ?? "{}")
-          .modeSession,
+        JSON.parse(
+          (await getMessages(harness.conversationId))[0]!.metadata ?? "{}",
+        ).modeSession,
       ).toBeUndefined();
-      expect(attachmentExists(attachmentId)).toBe(true);
+      expect(await attachmentExists(attachmentId)).toBe(true);
     } finally {
       claim.mockRestore();
       await harness.session.close("client_end");
@@ -1231,12 +1276,12 @@ describe("live-voice camera frames kept mid-call", () => {
   });
 
   test("keeps a persisted frame successful when bookkeeping and ownership release throw", async () => {
-    const harness = createSessionHarness("Sight frame release failure");
+    const harness = await createSessionHarness("Sight frame release failure");
     const coordinator = harness.activeConversation.modeSessions;
     const originalReleaseTurn = coordinator.releaseTurn.bind(coordinator);
     const releaseTurn = spyOn(coordinator, "releaseTurn").mockImplementation(
-      (turnId) => {
-        originalReleaseTurn(turnId);
+      async (turnId) => {
+        await originalReleaseTurn(turnId);
         if (!turnId.startsWith("live-voice-camera:")) {
           throw new Error("session tracking unavailable");
         }
@@ -1246,8 +1291,8 @@ describe("live-voice camera frames kept mid-call", () => {
     const trackPersistedRow = spyOn(
       coordinator,
       "trackPersistedRow",
-    ).mockImplementation((turnId, messageId, at, options) => {
-      originalTrackRow(turnId, messageId, at, options);
+    ).mockImplementation(async (turnId, messageId, at, options) => {
+      await originalTrackRow(turnId, messageId, at, options);
       if (turnId.startsWith("live-voice-camera:")) {
         throw new Error("tracking unavailable after persistence");
       }
@@ -1267,8 +1312,10 @@ describe("live-voice camera frames kept mid-call", () => {
         cameraEpoch: 53,
         source: "live",
       });
-      await waitFor(() => getMessages(harness.conversationId).length === 1);
-      const row = getMessages(harness.conversationId)[0]!;
+      await waitFor(
+        async () => (await getMessages(harness.conversationId)).length === 1,
+      );
+      const row = (await getMessages(harness.conversationId))[0]!;
 
       await harness.session.handleClientFrame({
         type: "sight_end",
@@ -1278,15 +1325,17 @@ describe("live-voice camera frames kept mid-call", () => {
         modeSession?: { id: string };
       };
       await waitFor(
-        () =>
-          getConversationModeSession(
-            harness.conversationId,
-            metadata.modeSession!.id,
+        async () =>
+          (
+            await getConversationModeSession(
+              harness.conversationId,
+              metadata.modeSession!.id,
+            )
           )?.status === "completed",
       );
 
-      expect(attachmentExists(attachmentId)).toBe(true);
-      expect(getAttachmentsForMessage(row.id)).toHaveLength(1);
+      expect(await attachmentExists(attachmentId)).toBe(true);
+      expect(await getAttachmentsForMessage(row.id)).toHaveLength(1);
       expect(
         trackPersistedRow.mock.calls.some(
           ([turnId, messageId]) =>
@@ -1305,7 +1354,7 @@ describe("live-voice camera frames kept mid-call", () => {
   });
 
   test("a kept frame persists as its own tagged message and runs no turn", async () => {
-    const harness = createSessionHarness("Sight keep stream");
+    const harness = await createSessionHarness("Sight keep stream");
     try {
       await harness.session.start();
       const attachmentId = await uploadFrame();
@@ -1314,15 +1363,18 @@ describe("live-voice camera frames kept mid-call", () => {
         type: "sight_frame",
         attachmentId,
       });
-      await waitFor(() => getMessages(harness.conversationId).length > 0, {
-        message: "Timed out waiting for the kept frame to persist",
-      });
+      await waitFor(
+        async () => (await getMessages(harness.conversationId)).length > 0,
+        {
+          message: "Timed out waiting for the kept frame to persist",
+        },
+      );
 
-      const rows = getMessages(harness.conversationId);
+      const rows = await getMessages(harness.conversationId);
       expect(rows).toHaveLength(1);
       const [row] = rows;
       expect(row.role).toBe("user");
-      expect(getAttachmentsForMessage(row.id)).toHaveLength(1);
+      expect(await getAttachmentsForMessage(row.id)).toHaveLength(1);
 
       // The tag names the attachment on the row that carries it, which is what
       // retention reads to decide what a later turn still sends in full.
@@ -1334,7 +1386,9 @@ describe("live-voice camera frames kept mid-call", () => {
         attachmentId,
       ]);
       expect(
-        selectSightFrameCaptureTimes(harness.conversationId).has(attachmentId),
+        (await selectSightFrameCaptureTimes(harness.conversationId)).has(
+          attachmentId,
+        ),
       ).toBe(true);
 
       // Nothing is dispatched for the frame itself: answering a picture the
@@ -1349,7 +1403,7 @@ describe("live-voice camera frames kept mid-call", () => {
   });
 
   test("an unknown attachment id is refused, recoverably and attributably", async () => {
-    const harness = createSessionHarness("Sight keep unknown id");
+    const harness = await createSessionHarness("Sight keep unknown id");
     try {
       await harness.session.start();
       const before = harness.frames.length;
@@ -1373,7 +1427,7 @@ describe("live-voice camera frames kept mid-call", () => {
         recoverable: true,
       });
       // Nothing landed and the call carries on.
-      expect(getMessages(harness.conversationId)).toHaveLength(0);
+      expect(await getMessages(harness.conversationId)).toHaveLength(0);
       expect(harness.startVoiceTurn).not.toHaveBeenCalled();
     } finally {
       harness.dispose();
@@ -1383,7 +1437,7 @@ describe("live-voice camera frames kept mid-call", () => {
   test("each refused keep names its own attachment", async () => {
     // The point of the echo: keeps overlap, so a shared `frameType` cannot
     // tell two outstanding sends apart.
-    const harness = createSessionHarness("Sight keep two refusals");
+    const harness = await createSessionHarness("Sight keep two refusals");
     try {
       await harness.session.start();
       const before = harness.frames.length;
@@ -1417,7 +1471,7 @@ describe("live-voice camera frames kept mid-call", () => {
     // Scope pin: the echo is the keep stream's, where sends overlap. A photo
     // is one deliberate snap at a time, and its receipt strip already knows
     // which one it is waiting on.
-    const harness = createSessionHarness("Sight keep photo scope");
+    const harness = await createSessionHarness("Sight keep photo scope");
     try {
       await harness.session.start();
       const before = harness.frames.length;
@@ -1448,7 +1502,9 @@ describe("live-voice camera frames kept mid-call", () => {
     // The id is checked before the persist is scheduled. Behind the persist it
     // would be answered only once the turn released the lock, long after the
     // client could still retract the preview it showed.
-    const harness = createSessionHarness("Sight keep unknown id mid-turn");
+    const harness = await createSessionHarness(
+      "Sight keep unknown id mid-turn",
+    );
     try {
       await harness.session.start();
       harness.activeConversation.setProcessing(true);
@@ -1474,7 +1530,7 @@ describe("live-voice camera frames kept mid-call", () => {
   test("keeps persist one message each", async () => {
     // One message per keep, no batching: the gate's rate floor separates them,
     // so there is no natural batch to form.
-    const harness = createSessionHarness("Sight keep stream repeated");
+    const harness = await createSessionHarness("Sight keep stream repeated");
     try {
       await harness.session.start();
       const first = await uploadFrame();
@@ -1484,18 +1540,26 @@ describe("live-voice camera frames kept mid-call", () => {
         type: "sight_frame",
         attachmentId: first,
       });
-      await waitFor(() => getMessages(harness.conversationId).length === 1, {
-        message: "Timed out waiting for the first kept frame",
-      });
+      await waitFor(
+        async () => (await getMessages(harness.conversationId)).length === 1,
+        {
+          message: "Timed out waiting for the first kept frame",
+        },
+      );
       await harness.session.handleClientFrame({
         type: "sight_frame",
         attachmentId: second,
       });
-      await waitFor(() => getMessages(harness.conversationId).length === 2, {
-        message: "Timed out waiting for the second kept frame",
-      });
+      await waitFor(
+        async () => (await getMessages(harness.conversationId)).length === 2,
+        {
+          message: "Timed out waiting for the second kept frame",
+        },
+      );
 
-      const captureTimes = selectSightFrameCaptureTimes(harness.conversationId);
+      const captureTimes = await selectSightFrameCaptureTimes(
+        harness.conversationId,
+      );
       expect([...captureTimes.keys()].sort()).toEqual([first, second].sort());
       expect(harness.startVoiceTurn).not.toHaveBeenCalled();
     } finally {

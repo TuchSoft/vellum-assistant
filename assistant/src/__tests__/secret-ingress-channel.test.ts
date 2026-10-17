@@ -79,9 +79,9 @@ describe("secret ingress — channel inbound path", () => {
     resetAllowlist();
   });
 
-  test("channel inbound with GOCSPX- secret returns blocked: true", () => {
+  test("channel inbound with GOCSPX- secret returns blocked: true", async () => {
     const secret = "GOCSPX-abcdefghijklmnopqrstuvwxyz12";
-    const result = runSecretIngressCheck(
+    const result = await runSecretIngressCheck(
       makeParams({
         content: `My secret is ${secret}`,
         trimmedContent: `My secret is ${secret}`,
@@ -92,8 +92,8 @@ describe("secret ingress — channel inbound path", () => {
     expect(result.detectedTypes).toContain("Google OAuth Client Secret");
   });
 
-  test("channel inbound with normal text returns blocked: false", () => {
-    const result = runSecretIngressCheck(
+  test("channel inbound with normal text returns blocked: false", async () => {
+    const result = await runSecretIngressCheck(
       makeParams({
         content: "Hello, how can I help?",
         trimmedContent: "Hello, how can I help?",
@@ -103,9 +103,9 @@ describe("secret ingress — channel inbound path", () => {
     expect(result.blocked).toBe(false);
   });
 
-  test("payload is cleared when blocked", () => {
+  test("payload is cleared when blocked", async () => {
     const secret = "GOCSPX-abcdefghijklmnopqrstuvwxyz12";
-    runSecretIngressCheck(
+    await runSecretIngressCheck(
       makeParams({
         eventId: "evt-clear-test",
         content: `Secret: ${secret}`,
@@ -119,8 +119,8 @@ describe("secret ingress — channel inbound path", () => {
     expect(clearPayloadMock).toHaveBeenCalledWith("evt-clear-test");
   });
 
-  test("payload is NOT cleared for normal messages", () => {
-    runSecretIngressCheck(
+  test("payload is NOT cleared for normal messages", async () => {
+    await runSecretIngressCheck(
       makeParams({
         content: "Normal message",
         trimmedContent: "Normal message",
@@ -131,12 +131,12 @@ describe("secret ingress — channel inbound path", () => {
     expect(clearPayloadMock).not.toHaveBeenCalled();
   });
 
-  test("event is marked as processed (not dead-lettered) when blocked — verified via caller contract", () => {
+  test("event is marked as processed (not dead-lettered) when blocked — verified via caller contract", async () => {
     // The inbound-message-handler calls markProcessed when runSecretIngressCheck
     // returns blocked: true. We verify the check returns blocked: true, which
     // triggers the markProcessed call in the handler.
     const secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij1234";
-    const result = runSecretIngressCheck(
+    const result = await runSecretIngressCheck(
       makeParams({
         content: secret,
         trimmedContent: secret,
@@ -153,9 +153,9 @@ describe("secret ingress — channel inbound path", () => {
     expect(markProcessedMock).toHaveBeenCalledWith("evt-test-1");
   });
 
-  test("channel inbound with GitHub token is blocked", () => {
+  test("channel inbound with GitHub token is blocked", async () => {
     const token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij1234";
-    const result = runSecretIngressCheck(
+    const result = await runSecretIngressCheck(
       makeParams({
         content: `Token: ${token}`,
         trimmedContent: `Token: ${token}`,
@@ -166,9 +166,9 @@ describe("secret ingress — channel inbound path", () => {
     expect(result.detectedTypes).toContain("GitHub Token");
   });
 
-  test("channel inbound with Slack bot token is blocked", () => {
+  test("channel inbound with Slack bot token is blocked", async () => {
     const token = "xoxb-1234567890-9876543210-AbCdEfGhIjKlMnOpQrStUvWx";
-    const result = runSecretIngressCheck(
+    const result = await runSecretIngressCheck(
       makeParams({
         content: token,
         trimmedContent: token,
@@ -179,10 +179,10 @@ describe("secret ingress — channel inbound path", () => {
     expect(result.detectedTypes).toContain("Slack Bot Token");
   });
 
-  test("channel inbound with JWT is not blocked (excluded pattern)", () => {
+  test("channel inbound with JWT is not blocked (excluded pattern)", async () => {
     const jwt =
       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
-    const result = runSecretIngressCheck(
+    const result = await runSecretIngressCheck(
       makeParams({
         content: jwt,
         trimmedContent: jwt,
@@ -192,11 +192,11 @@ describe("secret ingress — channel inbound path", () => {
     expect(result.blocked).toBe(false);
   });
 
-  test("channel inbound with blockIngress: false allows secrets through", () => {
+  test("channel inbound with blockIngress: false allows secrets through", async () => {
     setConfig("secretDetection", { enabled: true, blockIngress: false });
 
     const secret = "GOCSPX-abcdefghijklmnopqrstuvwxyz12";
-    const result = runSecretIngressCheck(
+    const result = await runSecretIngressCheck(
       makeParams({
         content: secret,
         trimmedContent: secret,
@@ -207,12 +207,12 @@ describe("secret ingress — channel inbound path", () => {
     expect(clearPayloadMock).not.toHaveBeenCalled();
   });
 
-  test("background dispatch is skipped when blocked (caller reads blocked flag)", () => {
+  test("background dispatch is skipped when blocked (caller reads blocked flag)", async () => {
     // The inbound-message-handler skips processChannelMessageInBackground
     // when ingressResult.blocked is true. We verify the function returns
     // the correct blocked flag that the handler uses for this decision.
     const secret = "AKIAIOSFODNN7EXAMPLE";
-    const result = runSecretIngressCheck(
+    const result = await runSecretIngressCheck(
       makeParams({
         content: `AWS: ${secret}`,
         trimmedContent: `AWS: ${secret}`,

@@ -225,7 +225,7 @@ describe("a one-shot surface answered before its turn persists", () => {
     await handleSurfaceAction(ctx, SURFACE_ID, "inbox", CHOICE_PAYLOAD);
 
     const toolUseId = "toolu_ui_show_1";
-    handleToolResult(makeToolState(toolUseId), makeHandlerDeps(ctx), {
+    await handleToolResult(makeToolState(toolUseId), makeHandlerDeps(ctx), {
       type: "tool_result",
       toolUseId,
       content: "Surface displayed",
@@ -266,10 +266,12 @@ describe("a surface with neither a persisted block nor a turn snapshot", () => {
     reservedRow = null;
   });
 
-  test("still reports the completion as safe to announce", () => {
+  test("still reports the completion as safe to announce", async () => {
     const ctx = makeContext();
 
-    expect(markSurfaceCompleted(ctx, "surface-ephemeral-1", "Done")).toBe(true);
+    expect(await markSurfaceCompleted(ctx, "surface-ephemeral-1", "Done")).toBe(
+      true,
+    );
     expect(ctx.currentTurnSurfaces).toHaveLength(0);
     expect(updates).toHaveLength(0);
   });

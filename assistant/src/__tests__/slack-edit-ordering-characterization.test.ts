@@ -10,7 +10,7 @@
  * consciously; the `test.todo` entries specify the intended semantics.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -20,27 +20,25 @@ import {
   addMessage,
   getMessageById,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { linkMessage, recordInbound } from "../persistence/delivery-crud.js";
 import { stringifyMessageContent } from "../persistence/message-content.js";
 import { handleEditIntercept } from "../runtime/routes/inbound-stages/edit-intercept.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM channel_inbound_events");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM channel_inbound_events");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM conversations");
 }
 
 const CHANNEL = "C0123CHANNEL";
 const ORIGINAL_TS = "1700000000.000100";
 
 async function seedMessage(): Promise<string> {
-  const inbound = recordInbound("slack", CHANNEL, ORIGINAL_TS, {
+  const inbound = await recordInbound("slack", CHANNEL, ORIGINAL_TS, {
     sourceMessageId: ORIGINAL_TS,
   });
   const inserted = await addMessage(
@@ -49,7 +47,7 @@ async function seedMessage(): Promise<string> {
     JSON.stringify([{ type: "text", text: "original text" }]),
     { metadata: { userMessageChannel: "slack" }, skipIndexing: true },
   );
-  linkMessage(inbound.eventId, inserted.id);
+  await linkMessage(inbound.eventId, inserted.id);
   return inserted.id;
 }
 
@@ -69,7 +67,7 @@ async function applyEdit(
   });
 }
 
-describe("Slack edit ordering (characterization)", () => {
+describePg("Slack edit ordering (characterization)", () => {
   beforeEach(resetTables);
 
   test("CURRENT BEHAVIOR: a later-arriving older edit overwrites the newer text", async () => {
@@ -80,7 +78,7 @@ describe("Slack edit ordering (characterization)", () => {
     // …then the first (older) edit arrives late and wins by arrival order.
     await applyEdit("edit-event-older", "first revision");
 
-    const row = getMessageById(messageId);
+    const row = await getMessageById(messageId);
     expect(stringifyMessageContent(row!.content)).toBe("first revision");
   });
 
@@ -91,7 +89,7 @@ describe("Slack edit ordering (characterization)", () => {
     // Same eventId again: recordInbound dedups it before any content write.
     await applyEdit("edit-event-dup", "should never apply");
 
-    const row = getMessageById(messageId);
+    const row = await getMessageById(messageId);
     expect(stringifyMessageContent(row!.content)).toBe("revised text");
   });
 
@@ -103,7 +101,7 @@ describe("Slack edit ordering (characterization)", () => {
     // The older edit (ts = .000200) arrives late; the guard must reject it.
     await applyEdit("edit-event-older", "first revision", "1700000000.000200");
 
-    const row = getMessageById(messageId);
+    const row = await getMessageById(messageId);
     expect(stringifyMessageContent(row!.content)).toBe("second revision");
   });
 

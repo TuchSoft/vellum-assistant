@@ -12,8 +12,9 @@
  */
 
 import { Buffer } from "node:buffer";
-import { describe, expect, mock, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import type {
   VoiceTurnCallbacks,
   VoiceTurnOptions,
@@ -27,7 +28,6 @@ import {
   addMessage,
   createConversation,
 } from "../../persistence/conversation-crud.js";
-import { initializeDb } from "../../persistence/db-init.js";
 import type {
   StreamingTranscriber,
   SttStreamServerEvent,
@@ -48,8 +48,6 @@ import {
   type LiveVoiceServerFrame,
   validateLiveVoiceClientFrame,
 } from "../protocol.js";
-
-await initializeDb();
 
 const IMAGE_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk";
@@ -194,7 +192,7 @@ function parkedFrameId(session: LiveVoiceSession): string | null {
     .pendingTurnAttachmentId;
 }
 
-describe("live-voice attach_frame frame", () => {
+describePg("live-voice attach_frame frame", () => {
   test("accepts a well-formed frame", () => {
     const result = validateLiveVoiceClientFrame({
       type: "attach_frame",
@@ -242,7 +240,7 @@ describe("live-voice attach_frame frame", () => {
   });
 });
 
-describe("live-voice camera frames parked for the next turn", () => {
+describePg("live-voice camera frames parked for the next turn", () => {
   test("a parked frame rides the next turn's user message", async () => {
     const attachmentId = await uploadFrame();
     const turns: VoiceTurnOptions[] = [];
@@ -312,10 +310,10 @@ describe("live-voice camera frames parked for the next turn", () => {
     // the client may have sent before: a frame that reached a message is that
     // message's, and re-sending its id must not delete it out from under the
     // transcript.
-    const conversation = createConversation("Live voice frame reuse");
+    const conversation = await createConversation("Live voice frame reuse");
     const message = await addMessage(conversation.id, "user", "what is this");
     const sent = await uploadFrame();
-    linkAttachmentToMessage(message.id, sent, 0);
+    await linkAttachmentToMessage(message.id, sent, 0);
     const replacement = await uploadFrame();
     const startVoiceTurn: LiveVoiceTurnStarter = mock(
       async (options: VoiceTurnOptions) => {
@@ -440,10 +438,10 @@ describe("live-voice camera frames parked for the next turn", () => {
     // Same link-awareness the displacement path relies on: an unpark arriving
     // after the turn drained the slot finds it empty, and the frame the
     // transcript is showing is not this call's to collect.
-    const conversation = createConversation("Live voice frame unpark");
+    const conversation = await createConversation("Live voice frame unpark");
     const message = await addMessage(conversation.id, "user", "what is this");
     const sent = await uploadFrame();
-    linkAttachmentToMessage(message.id, sent, 0);
+    await linkAttachmentToMessage(message.id, sent, 0);
     const startVoiceTurn: LiveVoiceTurnStarter = mock(
       async (options: VoiceTurnOptions) => {
         options.callbacks?.message_complete?.(makeMessageComplete());

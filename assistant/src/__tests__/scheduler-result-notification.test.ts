@@ -12,7 +12,7 @@
  * conversation's earlier notifications from silencing later runs.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 // Stub the shared runner so the execute path is observable without an LLM.
 let runBackgroundJobShouldFail = false;
@@ -34,7 +34,7 @@ mock.module("../runtime/background-job-runner.js", () => ({
   }) => {
     const { createConversation } =
       await import("../persistence/conversation-crud.js");
-    const conv = createConversation({
+    const conv = await createConversation({
       title: "(test stub)",
       conversationType: opts.conversationType ?? "background",
       source: "schedule",
@@ -72,7 +72,7 @@ const producerSawText: (string | undefined)[] = [];
 mock.module("../notifications/schedule-result-producer.js", () => ({
   emitScheduleResultNotification: async (params: CapturedCall) => {
     producerCalls.push(params);
-    producerSawText.push(latestAssistantText(params.conversationId));
+    producerSawText.push(await latestAssistantText(params.conversationId));
   },
 }));
 
@@ -105,8 +105,7 @@ import {
   setSubagentConversation,
 } from "../daemon/conversation-registry.js";
 import { addMessage } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { wakeAgentForOpportunity } from "../runtime/agent-wake.js";
 import { createSchedule, getScheduleRuns } from "../schedule/schedule-store.js";
 import { runDueSchedulesOnce } from "../schedule/scheduler.js";
@@ -119,22 +118,17 @@ import {
   removeBackgroundTool,
 } from "../tools/background-tool-registry.js";
 import { setConfig } from "./helpers/set-config.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function getRawDb(): import("bun:sqlite").Database {
-  return (getDb() as unknown as { $client: import("bun:sqlite").Database })
-    .$client;
-}
-
-function latestAssistantText(conversationId: string): string | undefined {
-  const rows = getRawDb()
-    .query(
-      `SELECT content FROM messages
-         WHERE conversation_id = ? AND role = 'assistant'
-         ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-    )
-    .all(conversationId) as { content: string }[];
+async function latestAssistantText(
+  conversationId: string,
+): Promise<string | undefined> {
+  const rows = await requireMainDb().all<{ content: string }>(
+    `SELECT content FROM messages
+       WHERE conversation_id = ? AND role = 'assistant'
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [conversationId],
+  );
   return rows[0]?.content;
 }
 
@@ -196,20 +190,20 @@ function attachRunningChild(
   };
 }
 
-function forceScheduleDue(scheduleId: string): void {
-  getRawDb().run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [
-    Date.now() - 1000,
-    scheduleId,
-  ]);
+async function forceScheduleDue(scheduleId: string): Promise<void> {
+  await requireMainDb().run(
+    "UPDATE cron_jobs SET next_run_at = ? WHERE id = ?",
+    [Date.now() - 1000, scheduleId],
+  );
 }
 
-describe("schedule result notification wiring", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversations");
+describePg("schedule result notification wiring", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
     producerCalls.length = 0;
     producerSawText.length = 0;
     runBackgroundJobShouldFail = false;
@@ -226,7 +220,7 @@ describe("schedule result notification wiring", () => {
       syntax: "cron",
       expression: "0 9 * * *",
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 
@@ -253,7 +247,7 @@ describe("schedule result notification wiring", () => {
       expression: "0 9 * * *",
       quiet: true,
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 
@@ -274,7 +268,7 @@ describe("schedule result notification wiring", () => {
       syntax: "cron",
       expression: "0 9 * * *",
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     delegateOnRun = async (conversationId) => {
       // The turn's own reply, written before the guidance exists.
@@ -322,7 +316,7 @@ describe("schedule result notification wiring", () => {
       syntax: "cron",
       expression: "0 9 * * *",
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     delegateOnRun = async (conversationId) => {
       addMessage(conversationId, "assistant", "Done.");
@@ -346,7 +340,7 @@ describe("schedule result notification wiring", () => {
           expression: "0 9 * * *",
           quiet,
         });
-        forceScheduleDue(schedule.id);
+        await forceScheduleDue(schedule.id);
         const started = Promise.withResolvers<string>();
         const finishWake = Promise.withResolvers<void>();
         delegateOnRun = async (conversationId) => {
@@ -429,7 +423,7 @@ describe("schedule result notification wiring", () => {
           maxRetries: 1,
           quiet,
         });
-        forceScheduleDue(schedule.id);
+        await forceScheduleDue(schedule.id);
         let cancelled = false;
         let parentAborted = false;
         let wake: ReturnType<typeof wakeAgentForOpportunity> | undefined;
@@ -529,7 +523,7 @@ describe("schedule result notification wiring", () => {
         expression: "0 9 * * *",
         maxRetries: 1,
       });
-      forceScheduleDue(schedule.id);
+      await forceScheduleDue(schedule.id);
       const controller = new AbortController();
       const queue = new MessageQueue();
       const userEvents: string[] = [];
@@ -634,7 +628,7 @@ describe("schedule result notification wiring", () => {
         syntax: "cron",
         expression: "0 9 * * *",
       });
-      forceScheduleDue(schedule.id);
+      await forceScheduleDue(schedule.id);
       const delegated = Promise.withResolvers<void>();
       const releaseWake = Promise.withResolvers<void>();
       let wake: ReturnType<typeof wakeAgentForOpportunity> | undefined;
@@ -747,7 +741,7 @@ describe("schedule result notification wiring", () => {
         syntax: "cron",
         expression: "0 9 * * *",
       });
-      forceScheduleDue(schedule.id);
+      await forceScheduleDue(schedule.id);
       const delegated = Promise.withResolvers<string>();
       const queue = new MessageQueue();
       delegateOnRun = async (id) => {
@@ -797,7 +791,7 @@ describe("schedule result notification wiring", () => {
       syntax: "cron",
       expression: "0 9 * * *",
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
     const entered = Promise.withResolvers<string>();
     const dispatches = new Map<string, Set<QueuedDispatch>>();
     delegateOnRun = async (id) => {
@@ -832,7 +826,7 @@ describe("schedule result notification wiring", () => {
       syntax: "cron",
       expression: "0 9 * * *",
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 
@@ -859,7 +853,7 @@ describe("schedule result notification wiring", () => {
       syntax: "cron",
       expression: "0 9 * * *",
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 
@@ -877,7 +871,7 @@ describe("schedule result notification wiring", () => {
       expression: "0 9 * * *",
       mode: "notify",
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 
@@ -897,7 +891,7 @@ describe("schedule result notification wiring", () => {
       mode: "script",
       script: "true",
     });
-    forceScheduleDue(schedule.id);
+    await forceScheduleDue(schedule.id);
 
     await runDueSchedulesOnce();
 

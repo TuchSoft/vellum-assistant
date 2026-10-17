@@ -7,7 +7,7 @@
  * Without the declaration, or without the frame, nothing extra runs.
  */
 
-import { describe, expect, mock, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 
 import {
   createMockProvider,
@@ -18,6 +18,7 @@ import { waitFor } from "../../__tests__/helpers/wait-for.js";
 
 setConfig("memory", { enabled: false });
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import type {
   VoiceTurnCallbacks,
   VoiceTurnOptions,
@@ -33,7 +34,6 @@ import {
   createConversation,
   getMessages,
 } from "../../persistence/conversation-crud.js";
-import { initializeDb } from "../../persistence/db-init.js";
 import type {
   StreamingTranscriber,
   SttStreamServerEvent,
@@ -52,8 +52,6 @@ import {
   LOOK_FOLLOW_UP_CONTENT,
   LOOK_FRAME_REASON,
 } from "../session-controls.js";
-
-await initializeDb();
 
 const IMAGE_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk";
@@ -90,12 +88,12 @@ class MockStreamingTranscriber implements StreamingTranscriber {
   }
 }
 
-function createHarness(options: {
+async function createHarness(options: {
   lookFrames: boolean;
   request?: string;
   handsFree?: boolean;
 }) {
-  const conversation = createConversation("Look follow-up");
+  const conversation = await createConversation("Look follow-up");
   const { provider } = createMockProvider([textResponse("")]);
   const activeConversation = new Conversation(
     conversation.id,
@@ -222,7 +220,7 @@ function createHarness(options: {
       "image/png",
       IMAGE_BASE64,
     );
-    const before = getMessages(conversation.id).length;
+    const before = (await getMessages(conversation.id)).length;
     await session.handleClientFrame({
       type: "sight_frame",
       attachmentId: attachment.id,
@@ -234,9 +232,12 @@ function createHarness(options: {
         bytes: 1,
       },
     });
-    await waitFor(() => getMessages(conversation.id).length > before, {
-      message: "Timed out waiting for the frame to persist",
-    });
+    await waitFor(
+      async () => (await getMessages(conversation.id)).length > before,
+      {
+        message: "Timed out waiting for the frame to persist",
+      },
+    );
   };
 
   return {
@@ -261,9 +262,9 @@ async function settle(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 600));
 }
 
-describe("live-voice look follow-up", () => {
+describePg("live-voice look follow-up", () => {
   test("answers the look from its frame on a hidden turn of its own", async () => {
-    const harness = createHarness({ lookFrames: true });
+    const harness = await createHarness({ lookFrames: true });
     try {
       await harness.askForLook();
       expect(harness.turns).toHaveLength(1);
@@ -287,7 +288,7 @@ describe("live-voice look follow-up", () => {
 
   test("carries an annotation request through capture and escalation", async () => {
     const request = "Show me on my screen where to add a new page.";
-    const harness = createHarness({ lookFrames: true, request });
+    const harness = await createHarness({ lookFrames: true, request });
     try {
       await harness.askForLook();
       expect(harness.turns).toHaveLength(1);
@@ -319,7 +320,7 @@ describe("live-voice look follow-up", () => {
 
   test("an observation can answer from the fresh frame without escalating", async () => {
     const request = "What do you see on my screen?";
-    const harness = createHarness({ lookFrames: true, request });
+    const harness = await createHarness({ lookFrames: true, request });
     try {
       await harness.askForLook();
       await harness.sendFrame(LOOK_FRAME_REASON);
@@ -333,7 +334,7 @@ describe("live-voice look follow-up", () => {
   });
 
   test("the reply that asks for a look is taught to only acknowledge it", async () => {
-    const harness = createHarness({ lookFrames: true });
+    const harness = await createHarness({ lookFrames: true });
     try {
       await harness.askForLook();
       expect(harness.turns[0]?.voiceControlPrompt).toContain(
@@ -345,7 +346,7 @@ describe("live-voice look follow-up", () => {
   });
 
   test("a client that did not declare lookFrames keeps the old look", async () => {
-    const harness = createHarness({ lookFrames: false });
+    const harness = await createHarness({ lookFrames: false });
     try {
       await harness.askForLook();
       expect(harness.turns[0]?.voiceControlPrompt).toContain(
@@ -361,7 +362,7 @@ describe("live-voice look follow-up", () => {
   });
 
   test("an ambient frame does not answer the look", async () => {
-    const harness = createHarness({ lookFrames: true });
+    const harness = await createHarness({ lookFrames: true });
     try {
       await harness.askForLook();
       await harness.sendFrame("heartbeat");
@@ -375,7 +376,7 @@ describe("live-voice look follow-up", () => {
   // The turn started before the frame was in the conversation, so it could
   // not have read it: the look is still owed an answer once that turn is done.
   test("keeps a clarification from a turn started before the frame landed", async () => {
-    const harness = createHarness({ lookFrames: true });
+    const harness = await createHarness({ lookFrames: true });
     try {
       await harness.askForLook();
       await harness.session.handleClientFrame({
@@ -404,7 +405,7 @@ describe("live-voice look follow-up", () => {
   });
 
   test("keeps multiple caller clarifications in order", async () => {
-    const harness = createHarness({ lookFrames: true });
+    const harness = await createHarness({ lookFrames: true });
     try {
       await harness.askForLook();
       const clarifications = ["show me where to click", "the new page button"];
@@ -424,7 +425,7 @@ describe("live-voice look follow-up", () => {
   });
 
   test("keeps a speculative clarification that commits after the frame lands", async () => {
-    const harness = createHarness({ lookFrames: true, handsFree: true });
+    const harness = await createHarness({ lookFrames: true, handsFree: true });
     try {
       await harness.askForLook();
       const audio = Buffer.alloc(480);
@@ -449,7 +450,7 @@ describe("live-voice look follow-up", () => {
   });
 
   test("duplicate look frames do not schedule a second follow-up", async () => {
-    const harness = createHarness({ lookFrames: true });
+    const harness = await createHarness({ lookFrames: true });
     try {
       await harness.askForLook();
       await harness.session.handleClientFrame({
@@ -470,7 +471,7 @@ describe("live-voice look follow-up", () => {
   });
 
   test("a turn that starts after the frame landed is not answered twice", async () => {
-    const harness = createHarness({ lookFrames: true });
+    const harness = await createHarness({ lookFrames: true });
     try {
       await harness.askForLook();
       await harness.session.handleClientFrame({
@@ -504,7 +505,7 @@ describe("live-voice look follow-up", () => {
   });
 
   test("an interrupt drops a look still waiting on its frame", async () => {
-    const harness = createHarness({ lookFrames: true });
+    const harness = await createHarness({ lookFrames: true });
     try {
       await harness.askForLook();
       await harness.session.handleClientFrame({ type: "interrupt" });
@@ -518,7 +519,7 @@ describe("live-voice look follow-up", () => {
   });
 
   test("an interrupt drops a captured look waiting for another turn to finish", async () => {
-    const harness = createHarness({ lookFrames: true });
+    const harness = await createHarness({ lookFrames: true });
     try {
       await harness.askForLook();
       await harness.session.handleClientFrame({
@@ -536,7 +537,7 @@ describe("live-voice look follow-up", () => {
   });
 
   test("the turn that answers a look cannot chain another look", async () => {
-    const harness = createHarness({ lookFrames: true });
+    const harness = await createHarness({ lookFrames: true });
     try {
       await harness.askForLook();
       await harness.sendFrame(LOOK_FRAME_REASON);

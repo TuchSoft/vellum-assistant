@@ -208,7 +208,7 @@ describe("tool preview lifecycle", () => {
   });
 
   describe("handleToolUsePreviewStart", () => {
-    test("emits tool_use_preview_start message", () => {
+    test("emits tool_use_preview_start message", async () => {
       const collector = createEventCollector();
       const deps = createMockDeps({
         onEvent: collector.onEvent,
@@ -232,7 +232,7 @@ describe("tool preview lifecycle", () => {
       expect((emitted as any).conversationId).toBe("test-session-id");
     });
 
-    test("stamps previewStartedAt on the event and stores it in state", () => {
+    test("stamps previewStartedAt on the event and stores it in state", async () => {
       const collector = createEventCollector();
       const deps = createMockDeps({
         onEvent: collector.onEvent,
@@ -261,7 +261,7 @@ describe("tool preview lifecycle", () => {
       );
     });
 
-    test("handleToolUse carries the stored previewStartedAt onto tool_use_start", () => {
+    test("handleToolUse carries the stored previewStartedAt onto tool_use_start", async () => {
       const collector = createEventCollector();
       const deps = createMockDeps({
         onEvent: collector.onEvent,
@@ -280,7 +280,7 @@ describe("tool preview lifecycle", () => {
       const previewStartedAt = state.toolPreviewStartedAt.get("toolu_carry");
 
       // WHEN the tool actually begins executing
-      handleToolUse(state, deps, {
+      await handleToolUse(state, deps, {
         type: "tool_use",
         id: "toolu_carry",
         name: "bash",
@@ -298,7 +298,7 @@ describe("tool preview lifecycle", () => {
       expect(toolUseStart.startedAt!).toBeGreaterThanOrEqual(previewStartedAt!);
     });
 
-    test("emits activity state with tool_running phase and preview_start reason", () => {
+    test("emits activity state with tool_running phase and preview_start reason", async () => {
       const collector = createEventCollector();
       const deps = createMockDeps({
         onEvent: collector.onEvent,
@@ -321,7 +321,7 @@ describe("tool preview lifecycle", () => {
       expect(activity.statusText).toMatch(/^Preparing/);
     });
 
-    test("handleInputJsonDelta includes toolUseId for app tools", () => {
+    test("handleInputJsonDelta includes toolUseId for app tools", async () => {
       const collector = createEventCollector();
       const deps = createMockDeps({ onEvent: collector.onEvent });
 
@@ -341,7 +341,7 @@ describe("tool preview lifecycle", () => {
       expect((emitted as any).conversationId).toBe("test-session-id");
     });
 
-    test("caps cumulative app preview payloads and stops forwarding growth", () => {
+    test("caps cumulative app preview payloads and stops forwarding growth", async () => {
       const collector = createEventCollector();
       const deps = createMockDeps({ onEvent: collector.onEvent });
       const accumulatedJson = '{"code":"' + "x".repeat(300_000);
@@ -367,7 +367,7 @@ describe("tool preview lifecycle", () => {
       expect(emitted.content).toBe(accumulatedJson.slice(0, 256_000));
     });
 
-    test("a streaming ui_show visual announces its surface exactly once", () => {
+    test("a streaming ui_show visual announces its surface exactly once", async () => {
       const collector = createEventCollector();
       const deps = createMockDeps({ onEvent: collector.onEvent });
 
@@ -392,7 +392,7 @@ describe("tool preview lifecycle", () => {
       expect(emitted.conversationId).toBe("test-session-id");
     });
 
-    test("a ui_show for any other surface type announces nothing", () => {
+    test("a ui_show for any other surface type announces nothing", async () => {
       const collector = createEventCollector();
       const deps = createMockDeps({ onEvent: collector.onEvent });
 
@@ -409,7 +409,7 @@ describe("tool preview lifecycle", () => {
       expect(collector.events).toEqual([]);
     });
 
-    test("a ui_show never streams its input to the client", () => {
+    test("a ui_show never streams its input to the client", async () => {
       const collector = createEventCollector();
       const deps = createMockDeps({ onEvent: collector.onEvent });
 
@@ -466,7 +466,7 @@ describe("tool preview lifecycle", () => {
       persistedSeqByConversation.clear();
     });
 
-    test("advances the conversation's persisted seq to the tool_use_start seq", () => {
+    test("advances the conversation's persisted seq to the tool_use_start seq", async () => {
       /**
        * The assistant row (including tool_use blocks) is persisted at
        * message_complete, which precedes tool events. handleToolUse emits a
@@ -502,7 +502,7 @@ describe("tool preview lifecycle", () => {
       } as unknown as AssistantEventEnvelope);
 
       // WHEN a tool_use is handled (its block is already durable)
-      handleToolUse(state, deps, {
+      await handleToolUse(state, deps, {
         type: "tool_use",
         id: "toolu_abc123",
         name: "bash",
@@ -514,8 +514,10 @@ describe("tool preview lifecycle", () => {
         (e) => e.type === "tool_use_start",
       );
       expect(toolUseStart).toBeDefined();
-      expect(getConversationPersistedSeq(conversationId)).toBe(getCurrentSeq());
-      expect(getConversationPersistedSeq(conversationId)).toBe(
+      expect(await getConversationPersistedSeq(conversationId)).toBe(
+        getCurrentSeq(),
+      );
+      expect(await getConversationPersistedSeq(conversationId)).toBe(
         (toolUseStart as unknown as AssistantEventEnvelope).seq ?? null,
       );
     });
@@ -615,8 +617,10 @@ describe("tool preview lifecycle", () => {
         (e) => e.type === "assistant_thinking_delta",
       );
       expect(thinkingDelta).toBeDefined();
-      expect(getConversationPersistedSeq(conversationId)).toBe(getCurrentSeq());
-      expect(getConversationPersistedSeq(conversationId)).toBe(
+      expect(await getConversationPersistedSeq(conversationId)).toBe(
+        getCurrentSeq(),
+      );
+      expect(await getConversationPersistedSeq(conversationId)).toBe(
         (thinkingDelta as unknown as AssistantEventEnvelope).seq ?? null,
       );
     });
@@ -646,8 +650,10 @@ describe("tool preview lifecycle", () => {
       // THEN the persisted seq equals the just-stamped tool_result seq
       const toolResult = events.find((e) => e.type === "tool_result");
       expect(toolResult).toBeDefined();
-      expect(getConversationPersistedSeq(conversationId)).toBe(getCurrentSeq());
-      expect(getConversationPersistedSeq(conversationId)).toBe(
+      expect(await getConversationPersistedSeq(conversationId)).toBe(
+        getCurrentSeq(),
+      );
+      expect(await getConversationPersistedSeq(conversationId)).toBe(
         (toolResult as unknown as AssistantEventEnvelope).seq ?? null,
       );
     });
@@ -816,13 +822,13 @@ describe("tool preview lifecycle", () => {
       // WHEN both results are handled concurrently (neither awaited first)
       try {
         await Promise.all([
-          handleToolResult(state, deps, {
+          await handleToolResult(state, deps, {
             type: "tool_result",
             toolUseId: "toolu_a",
             content: "result-a",
             isError: false,
           }),
-          handleToolResult(state, deps, {
+          await handleToolResult(state, deps, {
             type: "tool_result",
             toolUseId: "toolu_b",
             content: "result-b",
@@ -913,7 +919,7 @@ describe("tool preview lifecycle", () => {
     test("a result following its tool_use carries the resolved tool name", async () => {
       // GIVEN a tool whose tool_use event was observed
       const { deps, events } = makeCollectingDeps();
-      handleToolUse(state, deps, {
+      await handleToolUse(state, deps, {
         type: "tool_use",
         id: "toolu_named",
         name: "web_search",
@@ -951,7 +957,7 @@ describe("tool preview lifecycle", () => {
     test("a cancelled synthesis resolves the name when its tool_use was observed", async () => {
       // GIVEN a tool whose tool_use event was observed
       const { deps, events } = makeCollectingDeps();
-      handleToolUse(state, deps, {
+      await handleToolUse(state, deps, {
         type: "tool_use",
         id: "toolu_cancelled",
         name: "bash",
@@ -990,7 +996,7 @@ describe("tool preview lifecycle", () => {
   });
 
   describe("event ordering", () => {
-    test("events are emitted in correct order: tool_use_preview_start → tool_input_delta → tool_use", () => {
+    test("events are emitted in correct order: tool_use_preview_start → tool_input_delta → tool_use", async () => {
       const collector = createEventCollector();
       const deps = createMockDeps({
         onEvent: collector.onEvent,
@@ -1020,7 +1026,7 @@ describe("tool preview lifecycle", () => {
       });
 
       // Step 3: tool_use (emitted when tool execution begins after finalMessage)
-      handleToolUse(state, deps, {
+      await handleToolUse(state, deps, {
         type: "tool_use",
         id: toolUseId,
         name: toolName,
@@ -1041,7 +1047,7 @@ describe("tool preview lifecycle", () => {
       }
     });
 
-    test("non-app tool input_json_delta events are not forwarded to client", () => {
+    test("non-app tool input_json_delta events are not forwarded to client", async () => {
       const collector = createEventCollector();
       const deps = createMockDeps({
         onEvent: collector.onEvent,
@@ -1065,7 +1071,7 @@ describe("tool preview lifecycle", () => {
       expect(collector.events).toEqual([]);
     });
 
-    test("full lifecycle: preview_start → input_delta → tool_use → tool_result", () => {
+    test("full lifecycle: preview_start → input_delta → tool_use → tool_result", async () => {
       const collector = createEventCollector();
       const deps = createMockDeps({
         onEvent: collector.onEvent,
@@ -1095,7 +1101,7 @@ describe("tool preview lifecycle", () => {
       });
 
       // 3. Tool use start (after finalMessage)
-      handleToolUse(state, deps, {
+      await handleToolUse(state, deps, {
         type: "tool_use",
         id: toolUseId,
         name: toolName,
@@ -1103,7 +1109,7 @@ describe("tool preview lifecycle", () => {
       });
 
       // 4. Tool result
-      handleToolResult(state, deps, {
+      await handleToolResult(state, deps, {
         type: "tool_result",
         toolUseId,
         content: "hello",

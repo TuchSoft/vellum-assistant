@@ -22,7 +22,7 @@ const callTelegramBotApiMock = mock<CallTelegramBotApi>(
 const callTelegramBotApiMultipartMock = mock<CallTelegramBotApiMultipart>(
   async () => ({}) as never,
 );
-const getAttachmentContentMock = mock<GetAttachmentContent>(() => null);
+const getAttachmentContentMock = mock<GetAttachmentContent>(async () => null);
 
 mock.module("./api.js", () => ({
   callTelegramBotApi: (method: string, body: Record<string, unknown>) =>
@@ -80,7 +80,7 @@ beforeEach(() => {
   callTelegramBotApiMultipartMock.mockReset();
   callTelegramBotApiMultipartMock.mockImplementation(async () => ({}) as never);
   getAttachmentContentMock.mockReset();
-  getAttachmentContentMock.mockImplementation(() => null);
+  getAttachmentContentMock.mockImplementation(async () => null);
 });
 
 describe("sendTelegramRichReply", () => {
@@ -708,7 +708,9 @@ describe("sendTelegramAttachments", () => {
 
   /** Serve these bytes from the attachment store, keyed by attachment id. */
   function storeHolds(contents: Record<string, Buffer>) {
-    getAttachmentContentMock.mockImplementation((id) => contents[id] ?? null);
+    getAttachmentContentMock.mockImplementation(
+      async (id) => contents[id] ?? null,
+    );
   }
 
   const multipartCalls = () =>

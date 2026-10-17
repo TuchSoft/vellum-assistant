@@ -12,7 +12,7 @@
  * by the code under test rather than by microtask order: the frame is queued,
  * holding nothing, exactly as it is when an utterance ends on top of it.
  */
-import { describe, expect, mock, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 
 import {
   createMockProvider,
@@ -53,6 +53,7 @@ mock.module("../../daemon/conversation-store.js", () => ({
   getConversationIfExists: gatedGetConversationIfExists,
 }));
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import { Conversation } from "../../daemon/conversation.js";
 import {
   deleteConversation,
@@ -70,10 +71,7 @@ import {
   getMessages,
   type MessageRow,
 } from "../../persistence/conversation-crud.js";
-import { initializeDb } from "../../persistence/db-init.js";
 import { startVoiceTurn } from "../voice-session-bridge.js";
-
-await initializeDb();
 
 const IMAGE_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk";
@@ -109,8 +107,8 @@ function rowText(row: MessageRow): string {
   return "";
 }
 
-function rowTexts(conversationId: string): string[] {
-  return getMessages(conversationId).map(rowText);
+async function rowTexts(conversationId: string): Promise<string[]> {
+  return (await getMessages(conversationId)).map(rowText);
 }
 
 /**
@@ -120,8 +118,8 @@ function rowTexts(conversationId: string): string[] {
  * on, giving the hold back, so a suite about launch ordering does not run a
  * model.
  */
-function liveConversation(title: string) {
-  const row = createConversation(title);
+async function liveConversation(title: string) {
+  const row = await createConversation(title);
   const { provider } = createMockProvider([textResponse("")]);
   const conversation = new Conversation(
     row.id,
@@ -164,9 +162,9 @@ async function launchTurn(conversationId: string): Promise<void> {
   await sleep(20);
 }
 
-describe("voice turn hold for an in-flight camera frame", () => {
+describePg("voice turn hold for an in-flight camera frame", () => {
   test("a frame queued before the launch lands ahead of the spoken row", async () => {
-    const live = liveConversation("Sight hold ordering");
+    const live = await liveConversation("Sight hold ordering");
     const gate = deferred();
     try {
       const frame = await uploadFrame("hold-ordering.png");
@@ -182,13 +180,13 @@ describe("voice turn hold for an in-flight camera frame", () => {
       await sleep(20);
       // The turn is waiting rather than persisting, so the frame still has a
       // free flag to take.
-      expect(rowTexts(live.id)).toEqual([]);
+      expect(await rowTexts(live.id)).toEqual([]);
 
       gate.open();
       expect(await keep).toMatchObject({ ok: true });
       await turn;
 
-      expect(rowTexts(live.id)).toEqual([FRAME_CONTENT, SPOKEN_CONTENT]);
+      expect(await rowTexts(live.id)).toEqual([FRAME_CONTENT, SPOKEN_CONTENT]);
     } finally {
       gate.open();
       live.dispose();
@@ -198,7 +196,7 @@ describe("voice turn hold for an in-flight camera frame", () => {
   test("a photo queued before the launch holds the turn too", async () => {
     // The ledger counts every standalone image on purpose: a user who snaps a
     // photo and asks about it straight away wants the same freshness.
-    const live = liveConversation("Sight hold photo");
+    const live = await liveConversation("Sight hold photo");
     const gate = deferred();
     try {
       const photo = await uploadFrame("hold-photo.png");
@@ -207,13 +205,13 @@ describe("voice turn hold for an in-flight camera frame", () => {
       const snap = persistLiveVoicePhoto(live.id, photo);
       const turn = launchTurn(live.id);
       await sleep(20);
-      expect(rowTexts(live.id)).toEqual([]);
+      expect(await rowTexts(live.id)).toEqual([]);
 
       gate.open();
       await snap;
       await turn;
 
-      expect(rowTexts(live.id)).toEqual([PHOTO_CONTENT, SPOKEN_CONTENT]);
+      expect(await rowTexts(live.id)).toEqual([PHOTO_CONTENT, SPOKEN_CONTENT]);
     } finally {
       gate.open();
       live.dispose();
@@ -221,7 +219,7 @@ describe("voice turn hold for an in-flight camera frame", () => {
   });
 
   test("a stalled persist caps the hold and the turn goes on without it", async () => {
-    const live = liveConversation("Sight hold cap");
+    const live = await liveConversation("Sight hold cap");
     const gate = deferred();
     try {
       const frame = await uploadFrame("hold-cap.png");
@@ -236,7 +234,7 @@ describe("voice turn hold for an in-flight camera frame", () => {
       // turn would have given with no hold at all.
       expect(elapsed).toBeGreaterThanOrEqual(SIGHT_FRAME_TURN_HOLD_MS - 50);
       expect(elapsed).toBeLessThan(SIGHT_FRAME_TURN_HOLD_MS * 4);
-      expect(rowTexts(live.id)).toEqual([SPOKEN_CONTENT]);
+      expect(await rowTexts(live.id)).toEqual([SPOKEN_CONTENT]);
 
       gate.open();
       await keep;
@@ -247,7 +245,7 @@ describe("voice turn hold for an in-flight camera frame", () => {
   });
 
   test("a conversation with nothing in flight is not held at all", async () => {
-    const live = liveConversation("Sight hold idle");
+    const live = await liveConversation("Sight hold idle");
     try {
       expect(pendingStandaloneImagePersist(live.id)).toBeNull();
 
@@ -256,7 +254,7 @@ describe("voice turn hold for an in-flight camera frame", () => {
       const elapsed = Date.now() - startedAt;
 
       expect(elapsed).toBeLessThan(SIGHT_FRAME_TURN_HOLD_MS / 2);
-      expect(rowTexts(live.id)).toEqual([SPOKEN_CONTENT]);
+      expect(await rowTexts(live.id)).toEqual([SPOKEN_CONTENT]);
     } finally {
       live.dispose();
     }
@@ -266,7 +264,7 @@ describe("voice turn hold for an in-flight camera frame", () => {
     // The wait covers what was in flight when the turn asked. A keep the
     // client sends while the turn is already waiting is the next turn's to
     // wait for, which is what keeps the hold bounded by work already queued.
-    const live = liveConversation("Sight hold boundary");
+    const live = await liveConversation("Sight hold boundary");
     const firstGate = deferred();
     const secondGate = deferred();
     try {
@@ -283,11 +281,11 @@ describe("voice turn hold for an in-flight camera frame", () => {
       await firstKeep;
       await turn;
 
-      expect(rowTexts(live.id)).toEqual([FRAME_CONTENT, SPOKEN_CONTENT]);
+      expect(await rowTexts(live.id)).toEqual([FRAME_CONTENT, SPOKEN_CONTENT]);
 
       secondGate.open();
       await secondKeep;
-      expect(rowTexts(live.id)).toEqual([
+      expect(await rowTexts(live.id)).toEqual([
         FRAME_CONTENT,
         SPOKEN_CONTENT,
         FRAME_CONTENT,

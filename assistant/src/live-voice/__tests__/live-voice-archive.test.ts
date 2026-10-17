@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import {
   getAttachmentContent,
   getAttachmentsForMessage,
@@ -10,9 +11,7 @@ import {
   addMessage,
   createConversation,
 } from "../../persistence/conversation-crud.js";
-import { getDb } from "../../persistence/db-connection.js";
-import { initializeDb } from "../../persistence/db-init.js";
-import { rawAll, rawGet, rawRun } from "../../persistence/raw-query.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { getWorkspaceDir } from "../../util/platform.js";
 import type { LiveVoiceAudioArtifactMetadata } from "../live-voice-archive.js";
 import {
@@ -24,18 +23,16 @@ import {
   linkLiveVoiceUserUtteranceAudioToMessage,
 } from "../live-voice-archive.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 async function createMessage(role: "user" | "assistant" = "user") {
-  const conversation = createConversation();
+  const conversation = await createConversation();
   const message = await addMessage(
     conversation.id,
     role,
@@ -54,42 +51,41 @@ async function createMessage(role: "user" | "assistant" = "user") {
   return { conversation, message };
 }
 
-function getMessageMetadata(messageId: string): Record<string, unknown> {
-  const row = rawGet<{ metadata: string | null }>(
-    "test:getMessageMetadata",
+async function getMessageMetadata(
+  messageId: string,
+): Promise<Record<string, unknown>> {
+  const row = await requireMainDb().get<{ metadata: string | null }>(
     `SELECT metadata FROM messages WHERE id = ?`,
-    messageId,
+    [messageId],
   );
   expect(row).toBeDefined();
   return row?.metadata ? JSON.parse(row.metadata) : {};
 }
 
-function getLiveVoiceArtifacts(
+async function getLiveVoiceArtifacts(
   messageId: string,
-): LiveVoiceAudioArtifactMetadata[] {
-  const metadata = getMessageMetadata(messageId);
+): Promise<LiveVoiceAudioArtifactMetadata[]> {
+  const metadata = await getMessageMetadata(messageId);
   expect(Array.isArray(metadata.liveVoiceAudioArtifacts)).toBe(true);
   return metadata.liveVoiceAudioArtifacts as LiveVoiceAudioArtifactMetadata[];
 }
 
-function countAttachmentsForMessage(messageId: string): number {
-  const row = rawGet<{ count: number }>(
-    "test:countMessageAttachments",
+async function countAttachmentsForMessage(messageId: string): Promise<number> {
+  const row = await requireMainDb().get<{ count: number }>(
     `SELECT COUNT(*) AS count FROM message_attachments WHERE message_id = ?`,
-    messageId,
+    [messageId],
   );
-  return row?.count ?? 0;
+  return Number(row?.count ?? 0);
 }
 
-function countAllAttachments(): number {
-  const row = rawGet<{ count: number }>(
-    "test:countAllAttachments",
+async function countAllAttachments(): Promise<number> {
+  const row = await requireMainDb().get<{ count: number }>(
     `SELECT COUNT(*) AS count FROM attachments`,
   );
-  return row?.count ?? 0;
+  return Number(row?.count ?? 0);
 }
 
-describe("live voice audio archive", () => {
+describePg("live voice audio archive", () => {
   beforeEach(resetTables);
 
   test("archives user utterance audio through the attachment store", async () => {
@@ -126,9 +122,11 @@ describe("live voice audio archive", () => {
       filename: "live-voice-user-session-123-turn-abc.wav",
     });
 
-    expect(getAttachmentContent(result.artifact.attachmentId)).toEqual(audio);
+    expect(await getAttachmentContent(result.artifact.attachmentId)).toEqual(
+      audio,
+    );
 
-    const attachments = getAttachmentsForMessage(message.id);
+    const attachments = await getAttachmentsForMessage(message.id);
     expect(attachments).toHaveLength(1);
     expect(attachments[0]?.id).toBe(result.artifact.attachmentId);
     expect(attachments[0]?.originalFilename).toBe(
@@ -136,7 +134,7 @@ describe("live voice audio archive", () => {
     );
     expect(attachments[0]?.mimeType).toBe("audio/wav");
 
-    const artifacts = getLiveVoiceArtifacts(message.id);
+    const artifacts = await getLiveVoiceArtifacts(message.id);
     expect(artifacts).toEqual([result.artifact]);
   });
 
@@ -172,12 +170,11 @@ describe("live voice audio archive", () => {
       sizeBytes: audio.length,
     });
 
-    const row = rawGet<{
+    const row = await requireMainDb().get<{
       dataBase64: string;
       filePath: string | null;
       sourcePath: string | null;
     }>(
-      "test:fetchAudioArtifact",
       `SELECT
          data_base64 AS dataBase64,
          file_path AS filePath,
@@ -193,7 +190,9 @@ describe("live voice audio archive", () => {
     expect(existsSync(row!.filePath!)).toBe(true);
     expect(readFileSync(row!.filePath!)).toEqual(audio);
 
-    const serializedMetadata = JSON.stringify(getMessageMetadata(message.id));
+    const serializedMetadata = JSON.stringify(
+      await getMessageMetadata(message.id),
+    );
     expect(serializedMetadata).not.toContain(sourcePath);
     expect(serializedMetadata).not.toContain("api_key");
     expect(serializedMetadata).not.toContain("providerConfig");
@@ -221,8 +220,8 @@ describe("live voice audio archive", () => {
       archiveKey: "live-voice:session-user-link:turn-user-link:user",
       role: "user",
     });
-    expect(getAttachmentsForMessage(message.id)).toHaveLength(1);
-    expect(getLiveVoiceArtifacts(message.id)).toEqual([result.artifact]);
+    expect(await getAttachmentsForMessage(message.id)).toHaveLength(1);
+    expect(await getLiveVoiceArtifacts(message.id)).toEqual([result.artifact]);
   });
 
   test("links assistant response audio when the assistant message id is available", async () => {
@@ -250,8 +249,8 @@ describe("live voice audio archive", () => {
       role: "assistant",
       sampleRate: 24000,
     });
-    expect(getAttachmentsForMessage(message.id)).toHaveLength(1);
-    expect(getLiveVoiceArtifacts(message.id)).toEqual([result.artifact]);
+    expect(await getAttachmentsForMessage(message.id)).toHaveLength(1);
+    expect(await getLiveVoiceArtifacts(message.id)).toEqual([result.artifact]);
   });
 
   test("returns an unlinked result when the assistant message id is unavailable", async () => {
@@ -277,7 +276,7 @@ describe("live voice audio archive", () => {
       turnId: "turn-assistant-unlinked",
       role: "assistant",
     });
-    expect(countAllAttachments()).toBe(0);
+    expect(await countAllAttachments()).toBe(0);
   });
 
   test("is idempotent for the session turn role key", async () => {
@@ -315,10 +314,10 @@ describe("live voice audio archive", () => {
     }
     expect(second.idempotent).toBe(true);
     expect(second.artifact.attachmentId).toBe(first.artifact.attachmentId);
-    expect(countAttachmentsForMessage(message.id)).toBe(1);
-    expect(getAttachmentContent(first.artifact.attachmentId)?.toString()).toBe(
-      "first audio",
-    );
+    expect(await countAttachmentsForMessage(message.id)).toBe(1);
+    expect(
+      (await getAttachmentContent(first.artifact.attachmentId))?.toString(),
+    ).toBe("first audio");
 
     const assistantResult = await archiveLiveVoiceAudioArtifact({
       messageId: message.id,
@@ -332,7 +331,7 @@ describe("live voice audio archive", () => {
       },
     });
     expect(assistantResult.type).toBe("archived");
-    expect(countAttachmentsForMessage(message.id)).toBe(2);
+    expect(await countAttachmentsForMessage(message.id)).toBe(2);
   });
 
   test("restores metadata idempotency from the deterministic attachment filename", async () => {
@@ -354,10 +353,9 @@ describe("live voice audio archive", () => {
       throw new Error("expected archive result");
     }
 
-    rawRun(
-      "test:clearMessageMetadata",
+    await requireMainDb().run(
       `UPDATE messages SET metadata = NULL WHERE id = ?`,
-      message.id,
+      [message.id],
     );
 
     const second = await archiveLiveVoiceAssistantResponseAudio({
@@ -377,12 +375,12 @@ describe("live voice audio archive", () => {
     }
     expect(second.idempotent).toBe(true);
     expect(second.artifact.attachmentId).toBe(first.artifact.attachmentId);
-    expect(countAttachmentsForMessage(message.id)).toBe(1);
-    expect(getLiveVoiceArtifacts(message.id)).toHaveLength(1);
+    expect(await countAttachmentsForMessage(message.id)).toBe(1);
+    expect(await getLiveVoiceArtifacts(message.id)).toHaveLength(1);
   });
 
   test("links an existing archived audio artifact to another message id", async () => {
-    const conversation = createConversation();
+    const conversation = await createConversation();
     const sourceMessage = await addMessage(
       conversation.id,
       "user",
@@ -434,8 +432,10 @@ describe("live voice audio archive", () => {
     }
     expect(linked.idempotent).toBe(false);
     expect(linked.artifact.attachmentId).toBe(archived.artifact.attachmentId);
-    expect(getAttachmentsForMessage(targetMessage.id)).toHaveLength(1);
-    expect(getLiveVoiceArtifacts(targetMessage.id)).toEqual([linked.artifact]);
+    expect(await getAttachmentsForMessage(targetMessage.id)).toHaveLength(1);
+    expect(await getLiveVoiceArtifacts(targetMessage.id)).toEqual([
+      linked.artifact,
+    ]);
 
     const second = linkLiveVoiceAudioArtifactToMessage({
       messageId: targetMessage.id,
@@ -446,7 +446,7 @@ describe("live voice audio archive", () => {
       throw new Error("expected link result");
     }
     expect(second.idempotent).toBe(true);
-    expect(countAttachmentsForMessage(targetMessage.id)).toBe(1);
+    expect(await countAttachmentsForMessage(targetMessage.id)).toBe(1);
   });
 
   test("returns typed warnings for non-fatal archive failures", async () => {
@@ -503,7 +503,7 @@ describe("live voice audio archive", () => {
       throw new Error("expected warning result");
     }
     expect(missingMessage.warning.code).toBe("message_not_found");
-    expect(countAttachmentsForMessage(message.id)).toBe(0);
+    expect(await countAttachmentsForMessage(message.id)).toBe(0);
   });
 
   test("keeps archive metadata scoped to allowed live voice fields", async () => {
@@ -522,7 +522,7 @@ describe("live voice audio archive", () => {
     });
 
     expect(result.type).toBe("archived");
-    const [artifact] = getLiveVoiceArtifacts(message.id);
+    const [artifact] = await getLiveVoiceArtifacts(message.id);
     expect(Object.keys(artifact!).sort()).toEqual([
       "archiveKey",
       "archivedAt",
@@ -537,12 +537,11 @@ describe("live voice audio archive", () => {
       "turnId",
     ]);
 
-    const attachmentRows = rawAll<{
+    const attachmentRows = await requireMainDb().all<{
       originalFilename: string;
       mimeType: string;
     }>(
-      "test:listAttachments",
-      `SELECT original_filename AS originalFilename, mime_type AS mimeType
+      `SELECT original_filename AS "originalFilename", mime_type AS "mimeType"
        FROM attachments`,
     );
     expect(attachmentRows).toEqual([

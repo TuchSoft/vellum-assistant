@@ -1,18 +1,13 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import {
   findPersistedSurfaceInfo,
   markSurfaceCompleted,
 } from "../daemon/conversation-surfaces.js";
 import { getMessages } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations, messages } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { findPersistedSurfaceState } from "../runtime/routes/surface-conversation-resolver.js";
-import { getDbPath } from "../util/platform.js";
-import { assertNotLiveDb } from "./assert-not-live-db.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 const CONVERSATION_ID = "conv-compaction-boundary-1";
 const SURFACE_ID = "surface-behind-boundary-1";
@@ -25,22 +20,17 @@ const GUARDIAN = { requesterCanAccessMemory: true };
  * Four real message rows, the oldest carrying a `choice` surface between two
  * text siblings, plus a conversation compacted past that row.
  */
-function seedCompactedConversation(): void {
-  const db = getDb();
-  // Without the test preload these deletes would clear the user's live
-  // workspace database.
-  assertNotLiveDb(getDbPath());
-  db.delete(messages).run();
-  db.delete(conversations).run();
-  db.insert(conversations)
-    .values({
-      id: CONVERSATION_ID,
-      title: null,
-      createdAt: 1,
-      updatedAt: 1,
-      contextCompactedMessageCount: COMPACTED_MESSAGE_COUNT,
-    })
-    .run();
+async function seedCompactedConversation(): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.delete(db.schema.messages);
+  await db.orm.delete(db.schema.conversations);
+  await db.orm.insert(db.schema.conversations).values({
+    id: CONVERSATION_ID,
+    title: null,
+    createdAt: 1,
+    updatedAt: 1,
+    contextCompactedMessageCount: COMPACTED_MESSAGE_COUNT,
+  });
 
   const rows = [
     [
@@ -57,27 +47,27 @@ function seedCompactedConversation(): void {
     [{ type: "text", text: "still waiting" }],
     [{ type: "text", text: "still waiting" }],
   ];
-  rows.forEach((content, i) => {
-    db.insert(messages)
-      .values({
-        id: `msg-${i + 1}`,
-        conversationId: CONVERSATION_ID,
-        role: "assistant",
-        content: JSON.stringify(content),
-        createdAt: i + 1,
-        metadata: null,
-      })
-      .run();
-  });
+  for (const [i, content] of rows.entries()) {
+    await db.orm.insert(db.schema.messages).values({
+      id: `msg-${i + 1}`,
+      conversationId: CONVERSATION_ID,
+      role: "assistant",
+      content: JSON.stringify(content),
+      createdAt: i + 1,
+      metadata: null,
+    });
+  }
 }
 
 /** The surface block as a history reseed would read it back. */
-function readPersistedBlocks(): Array<Record<string, unknown>> {
-  const row = getMessages(CONVERSATION_ID).find((r) => r.id === "msg-1")!;
+async function readPersistedBlocks(): Promise<Array<Record<string, unknown>>> {
+  const row = (await getMessages(CONVERSATION_ID)).find(
+    (r) => r.id === "msg-1",
+  )!;
   return row.content as unknown as Array<Record<string, unknown>>;
 }
 
-describe("a surface behind the context-compaction boundary", () => {
+describePg("a surface behind the context-compaction boundary", () => {
   beforeEach(seedCompactedConversation);
 
   test("is invisible to the compaction-bounded read", () => {
@@ -89,7 +79,7 @@ describe("a surface behind the context-compaction boundary", () => {
     ).toBeUndefined();
   });
 
-  test("is found by the same read once the boundary is lifted", () => {
+  test("is found by the same read once the boundary is lifted", async () => {
     expect(
       findPersistedSurfaceState(CONVERSATION_ID, SURFACE_ID, {
         liveHistoryStartRow: 0,
@@ -98,23 +88,23 @@ describe("a surface behind the context-compaction boundary", () => {
     ).toBe("choice");
   });
 
-  test("still yields its type to the completion path's read", () => {
+  test("still yields its type to the completion path's read", async () => {
     expect(
-      findPersistedSurfaceInfo(CONVERSATION_ID, SURFACE_ID, GUARDIAN)
+      (await findPersistedSurfaceInfo(CONVERSATION_ID, SURFACE_ID, GUARDIAN))
         ?.surfaceType,
     ).toBe("choice");
   });
 
-  test("is completed by the write, leaving its sibling blocks intact", () => {
+  test("is completed by the write, leaving its sibling blocks intact", async () => {
     expect(
-      markSurfaceCompleted(
+      await markSurfaceCompleted(
         { conversationId: CONVERSATION_ID },
         SURFACE_ID,
         'User chose: "Clean up my inbox"',
       ),
     ).toBe(true);
 
-    const blocks = readPersistedBlocks();
+    const blocks = await readPersistedBlocks();
     const surface = blocks.find((b) => b.type === "ui_surface");
     expect(surface?.completed).toBe(true);
     expect(surface?.completionSummary).toBe('User chose: "Clean up my inbox"');

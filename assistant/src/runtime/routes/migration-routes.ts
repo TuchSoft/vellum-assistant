@@ -1022,7 +1022,7 @@ export async function handleMigrationImport(
     // The singleton will be lazily reopened on the next getDb() call.
     resetDb();
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: fileData,
       pathResolver,
       preValidatedManifest: validation.manifest,

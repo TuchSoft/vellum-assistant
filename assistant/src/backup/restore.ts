@@ -119,7 +119,7 @@ export async function restoreFromSnapshot(
 
   resetDbImpl();
 
-  const commitResult = commitImpl({
+  const commitResult = await commitImpl({
     archiveData: fileData,
     pathResolver,
     preValidatedManifest: validation.manifest,

@@ -268,6 +268,7 @@ export function _resetGroupMigrationForTests(): void {
   asyncMigration = null;
 }
 
+// TEMPORANEO - bridge sync per codice non ancora portato. NON copiare. Muore nel port di conversations.
 /**
  * Ensure the schema on the SQLite main database. Serves the unported
  * conversation modules, which still read and write SQLite.

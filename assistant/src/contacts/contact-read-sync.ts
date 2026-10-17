@@ -18,6 +18,7 @@ import { getDb } from "../persistence/db-connection.js";
 import { contactChannels, contacts } from "../persistence/schema/index.js";
 import { canonicalizeInboundIdentity } from "../util/canonicalize-identity.js";
 
+// TEMPORANEO - bridge sync per codice non ancora portato. NON copiare. Muore nel port di conversations.
 /**
  * Resolve the `user_file` for a channel address, case-insensitively (matching
  * the historical `COLLATE NOCASE` lookup). Returns null when no channel or

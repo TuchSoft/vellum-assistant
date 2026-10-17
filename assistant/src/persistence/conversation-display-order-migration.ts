@@ -34,6 +34,7 @@ function isDuplicateColumnError(err: unknown): boolean {
 let sqliteEnsured = false;
 let asyncEnsured = false;
 
+// TEMPORANEO - bridge sync per codice non ancora portato. NON copiare. Muore nel port di conversations.
 /** Ensure the columns on the SQLite main database (the unported modules). */
 export function ensureDisplayOrderMigration(): void {
   if (sqliteEnsured) {

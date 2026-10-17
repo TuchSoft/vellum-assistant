@@ -138,7 +138,7 @@ export async function takeSample(
           freeMb: disk.freeMb,
         }
       : null,
-    activeConversations: readActiveConversations(),
+    activeConversations: await readActiveConversations(),
     // Timestamped at the scan, not the tick start: the disk read above can
     // take seconds, and the CPU rate needs the counters' real interval.
     processes:

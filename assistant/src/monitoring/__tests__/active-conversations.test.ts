@@ -1,57 +1,43 @@
 /**
- * Tests for the monitor-side read of in-flight conversations. A minimal
- * conversations table (the columns the query touches) is created in the
- * per-test workspace database via a separate writer connection; the module
- * under test reads it through its own read-only connection.
+ * Tests for the monitor-side read of in-flight conversations. Rows are written
+ * to the process's Postgres test schema through the shared async facade, which
+ * is also what the module under test reads.
  */
 
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { Database } from "bun:sqlite";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { getDbPath } from "../../util/platform.js";
+import { describePg } from "../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
+import { initializeDb } from "../../persistence/db-init.js";
 import { readActiveConversations } from "../active-conversations.js";
 
-function openWriter(): Database {
-  mkdirSync(dirname(getDbPath()), { recursive: true });
-  const db = new Database(getDbPath());
-  db.run(
-    `CREATE TABLE IF NOT EXISTS conversations (
-       id TEXT PRIMARY KEY,
-       title TEXT,
-       origin_channel TEXT,
-       origin_interface TEXT,
-       processing_started_at INTEGER
-     )`,
-  );
-  return db;
+await initializeDb();
+
+async function clearConversations(): Promise<void> {
+  await requireMainDb().run("DELETE FROM conversations");
 }
 
-beforeEach(() => {
-  const db = openWriter();
-  db.run("DELETE FROM conversations");
-  db.close();
-});
+describePg("readActiveConversations", () => {
+  beforeEach(async () => {
+    await clearConversations();
+  });
 
-describe("readActiveConversations", () => {
-  test("returns processing conversations, longest-running first", () => {
-    const db = openWriter();
-    db.run(
-      "INSERT INTO conversations (id, title, origin_channel, origin_interface, processing_started_at) VALUES (?, ?, ?, ?, ?)",
-      ["conv-new", "Newer turn", "slack", "web", 2_000],
+  test("returns processing conversations, longest-running first", async () => {
+    const db = requireMainDb();
+    await db.run(
+      "INSERT INTO conversations (id, title, origin_channel, origin_interface, processing_started_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ["conv-new", "Newer turn", "slack", "web", 2_000, 0, 0],
     );
-    db.run(
-      "INSERT INTO conversations (id, title, origin_channel, origin_interface, processing_started_at) VALUES (?, ?, ?, ?, ?)",
-      ["conv-old", "Memory consolidation", null, null, 1_000],
+    await db.run(
+      "INSERT INTO conversations (id, title, origin_channel, origin_interface, processing_started_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ["conv-old", "Memory consolidation", null, null, 1_000, 0, 0],
     );
-    db.run(
-      "INSERT INTO conversations (id, title, origin_channel, origin_interface, processing_started_at) VALUES (?, ?, ?, ?, ?)",
-      ["conv-idle", "Finished turn", null, null, null],
+    await db.run(
+      "INSERT INTO conversations (id, title, origin_channel, origin_interface, processing_started_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ["conv-idle", "Finished turn", null, null, null, 0, 0],
     );
-    db.close();
 
-    expect(readActiveConversations()).toEqual([
+    expect(await readActiveConversations()).toEqual([
       {
         conversationId: "conv-old",
         title: "Memory consolidation",
@@ -69,19 +55,17 @@ describe("readActiveConversations", () => {
     ]);
   });
 
-  test("truncates long titles", () => {
-    const db = openWriter();
-    db.run(
-      "INSERT INTO conversations (id, title, processing_started_at) VALUES (?, ?, ?)",
-      ["conv-long", "x".repeat(500), 1_000],
+  test("truncates long titles", async () => {
+    await requireMainDb().run(
+      "INSERT INTO conversations (id, title, processing_started_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      ["conv-long", "x".repeat(500), 1_000, 0, 0],
     );
-    db.close();
 
-    const active = readActiveConversations();
+    const active = await readActiveConversations();
     expect(active![0].title).toHaveLength(80);
   });
 
-  test("returns null when nothing is processing", () => {
-    expect(readActiveConversations()).toBeNull();
+  test("returns null when nothing is processing", async () => {
+    expect(await readActiveConversations()).toBeNull();
   });
 });

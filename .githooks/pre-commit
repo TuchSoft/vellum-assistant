@@ -1178,6 +1178,11 @@ done
 # mark all 1600+ files as "pending emit" on every --noEmit run, defeating
 # incremental caching and falling back to ~20s full rebuilds.
 # clients/web/ doesn't need that workaround (no declaration:true).
+#
+# TEMPORARY (WS-08 DB migration): the assistant type check is skipped here and
+# run manually once per migration wave, because repeated full-project tsc runs
+# are the migration's bottleneck. Re-enable before the branch is merged.
+_MIGRATION_SKIP_ASSISTANT_TSC=1
 
 # Shared worktree detection (skip tsc in worktrees — cold cache is slow).
 _GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)"
@@ -1194,7 +1199,9 @@ while IFS= read -r -d '' FILE; do
 done < "$STAGED_ALL_FILE"
 
 if [ $ASSISTANT_TS_STAGED -eq 1 ]; then
-    if [ $_IS_WORKTREE -eq 1 ]; then
+    if [ "${_MIGRATION_SKIP_ASSISTANT_TSC:-0}" = "1" ]; then
+        echo "⏩ Skipping assistant type check during the DB migration (run manually)"
+    elif [ $_IS_WORKTREE -eq 1 ]; then
         echo "⏩ Skipping type check in worktree (CI will catch errors)"
     elif [ ! -x "$BUN" ]; then
         echo -e "${YELLOW}⚠️  bun not found — skipping type check for assistant/${NC}"

@@ -29,11 +29,12 @@ import { withBootFencedRecoveryDb } from "./db.js";
 
 const log = getLogger("recovery-orphaned-channel-events");
 
-export function recoverOrphanedChannelEvents(): void {
-  withBootFencedRecoveryDb("orphaned-channel-events", (db, bootTime) => {
-    const now = Date.now();
-    const result = db
-      .query(
+export async function recoverOrphanedChannelEvents(): Promise<void> {
+  await withBootFencedRecoveryDb(
+    "orphaned-channel-events",
+    async (db, bootTime) => {
+      const now = Date.now();
+      const changes = await db.run(
         `UPDATE channel_inbound_events
             SET processing_status = 'failed',
                 retry_after = ?,
@@ -41,13 +42,14 @@ export function recoverOrphanedChannelEvents(): void {
           WHERE processing_status = 'pending'
             AND raw_payload IS NOT NULL
             AND created_at < ?`,
-      )
-      .run(now, now, bootTime);
-    if (result.changes > 0) {
-      log.info(
-        { promoted: result.changes, bootTime },
-        "Promoted orphaned pending channel events onto the retry sweep",
+        [now, now, bootTime],
       );
-    }
-  });
+      if (changes > 0) {
+        log.info(
+          { promoted: changes, bootTime },
+          "Promoted orphaned pending channel events onto the retry sweep",
+        );
+      }
+    },
+  );
 }

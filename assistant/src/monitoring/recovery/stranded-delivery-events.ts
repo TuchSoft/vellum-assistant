@@ -41,11 +41,12 @@ import { withBootFencedRecoveryDb } from "./db.js";
 
 const log = getLogger("recovery-stranded-delivery-events");
 
-export function recoverStrandedDeliveryEvents(): void {
-  withBootFencedRecoveryDb("stranded-delivery-events", (db, bootTime) => {
-    const now = Date.now();
-    const result = db
-      .query(
+export async function recoverStrandedDeliveryEvents(): Promise<void> {
+  await withBootFencedRecoveryDb(
+    "stranded-delivery-events",
+    async (db, bootTime) => {
+      const now = Date.now();
+      const changes = await db.run(
         `UPDATE channel_inbound_events
             SET delivery_status = 'failed',
                 retry_after = ?,
@@ -56,13 +57,14 @@ export function recoverStrandedDeliveryEvents(): void {
             AND json_extract(raw_payload, '$.replyCallbackUrl') IS NOT NULL
             AND json_extract(raw_payload, '$.replyMessageId') IS NOT NULL
             AND created_at < ?`,
-      )
-      .run(now, now, bootTime);
-    if (result.changes > 0) {
-      log.info(
-        { promoted: result.changes, bootTime },
-        "Promoted stranded processed channel events onto the delivery-retry sweep",
+        [now, now, bootTime],
       );
-    }
-  });
+      if (changes > 0) {
+        log.info(
+          { promoted: changes, bootTime },
+          "Promoted stranded processed channel events onto the delivery-retry sweep",
+        );
+      }
+    },
+  );
 }

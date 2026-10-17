@@ -16,10 +16,10 @@ export function isUserFacingSubagent(
   );
 }
 
-export function workStartedAfter(
+export async function workStartedAfter(
   message: TurnWorkOrigin,
   cutoff: number,
-): boolean {
+): Promise<boolean> {
   const taskNotification = message.metadata?.subagentNotification;
   if (
     taskNotification &&
@@ -27,7 +27,7 @@ export function workStartedAfter(
     "subagentId" in taskNotification &&
     typeof taskNotification.subagentId === "string"
   ) {
-    const task = getSubagentRecordById(taskNotification.subagentId);
+    const task = await getSubagentRecordById(taskNotification.subagentId);
     if (task) {
       return isUserFacingSubagent(task) && task.createdAt >= cutoff;
     }

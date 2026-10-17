@@ -586,7 +586,7 @@ export class NotificationBroadcaster {
         const persistedDecisionId = decision.persistedDecisionId;
         const hasPersistedDecision = typeof persistedDecisionId === "string";
         if (hasPersistedDecision) {
-          const existingDelivery = findDeliveryByDecisionAndChannel(
+          const existingDelivery = await findDeliveryByDecisionAndChannel(
             persistedDecisionId,
             channel,
           );

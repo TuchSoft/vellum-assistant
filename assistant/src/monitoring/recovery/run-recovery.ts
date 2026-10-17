@@ -34,7 +34,7 @@ const RECOVERY_DELAY_MS = 15_000;
 export interface RecoveryStep {
   readonly name: string;
   /** Reconcile once. Owns its own DB handle and logging; may throw. */
-  run(): void;
+  run(): Promise<void>;
 }
 
 const RECOVERY_STEPS: RecoveryStep[] = [
@@ -49,11 +49,11 @@ const RECOVERY_STEPS: RecoveryStep[] = [
  * (most often because the schema is still migrating) is logged and skipped so
  * one bad step cannot block the rest.
  */
-export function runRecovery(): void {
+export async function runRecovery(): Promise<void> {
   for (const step of RECOVERY_STEPS) {
     log.info({ step: step.name }, "Running recovery step");
     try {
-      step.run();
+      await step.run();
     } catch (err) {
       log.warn({ err, step: step.name }, "Recovery step failed");
     }
@@ -72,7 +72,9 @@ export interface RecoveryHandle {
  * before it fires.
  */
 export function startRecovery(): RecoveryHandle {
-  const timer = setTimeout(runRecovery, RECOVERY_DELAY_MS);
+  const timer = setTimeout(() => {
+    void runRecovery();
+  }, RECOVERY_DELAY_MS);
   timer.unref?.();
   return {
     stop() {

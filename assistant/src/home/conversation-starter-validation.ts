@@ -32,8 +32,8 @@ const ASSISTANT_VOICE_PATTERN = new RegExp(
   "i",
 );
 
-export function buildConversationStarterValidationContext(): ConversationStarterValidationContext {
-  const reference = resolveUserReference();
+export async function buildConversationStarterValidationContext(): Promise<ConversationStarterValidationContext> {
+  const reference = await resolveUserReference();
   const references = new Set<string>();
 
   if (reference !== DEFAULT_USER_REFERENCE) {
@@ -47,10 +47,12 @@ export function buildConversationStarterValidationContext(): ConversationStarter
   return { userReferences: [...references] };
 }
 
-export function isValidConversationStarterText(
+export async function isValidConversationStarterText(
   starter: ConversationStarterText,
-  context = buildConversationStarterValidationContext(),
-): boolean {
+  context?: ConversationStarterValidationContext,
+): Promise<boolean> {
+  const resolvedContext =
+    context ?? (await buildConversationStarterValidationContext());
   const label = starter.label.trim();
   const prompt = starter.prompt.trim();
 
@@ -61,8 +63,8 @@ export function isValidConversationStarterText(
     return false;
   }
   if (
-    mentionsCurrentUser(label, context) ||
-    mentionsCurrentUser(prompt, context)
+    mentionsCurrentUser(label, resolvedContext) ||
+    mentionsCurrentUser(prompt, resolvedContext)
   ) {
     return false;
   }

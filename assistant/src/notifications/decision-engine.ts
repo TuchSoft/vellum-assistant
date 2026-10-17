@@ -1064,7 +1064,7 @@ async function classifyWithLLM(
   const candidateContext = candidateSet
     ? (serializeCandidatesForPrompt(candidateSet) ?? undefined)
     : undefined;
-  const rawIdentityContext = buildCoreIdentityContext();
+  const rawIdentityContext = await buildCoreIdentityContext();
   const identityContext = rawIdentityContext
     ? truncate(rawIdentityContext, MAX_IDENTITY_CONTEXT_CHARS, "\n…[truncated]")
     : undefined;

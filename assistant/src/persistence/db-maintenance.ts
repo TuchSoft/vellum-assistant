@@ -74,7 +74,9 @@ async function runDbMaintenance(): Promise<void> {
   // for later writes — we deliberately do not VACUUM to hand them back to the
   // OS (see the WAL note below).
   try {
-    const deletedRuns = pruneRuns(getConfig().workflows.journalRetentionDays);
+    const deletedRuns = await pruneRuns(
+      getConfig().workflows.journalRetentionDays,
+    );
     if (deletedRuns > 0) {
       log.info({ deletedRuns }, "Pruned expired workflow runs");
     }
@@ -88,7 +90,7 @@ async function runDbMaintenance(): Promise<void> {
   // between the two writes would otherwise keep screenshots of the user's
   // screen indefinitely. Bounded per pass and best-effort inside the sweep,
   // which reports zero rather than throwing, so it needs no guard here.
-  const sweptWatchEntries = sweepOrphanedWatchTimelineEntries();
+  const sweptWatchEntries = await sweepOrphanedWatchTimelineEntries();
   if (sweptWatchEntries > 0) {
     log.info(
       { sweptWatchEntries },

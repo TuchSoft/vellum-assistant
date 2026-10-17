@@ -87,7 +87,10 @@ async function isCurrentUnseenReply(
         if (
           row.id !== turnBoundaryId &&
           isEchoSuppressedUserMessage(metadata) &&
-          !workStartedAfter({ sentAt: row.createdAt, metadata }, startedAfter)
+          !(await workStartedAfter(
+            { sentAt: row.createdAt, metadata },
+            startedAfter,
+          ))
         ) {
           continue;
         }
@@ -264,7 +267,7 @@ export async function emitAssistantReplyNotification(params: {
       )
     )[0];
     const startedAfter = firstAssistantRow?.createdAt ?? assistantRow.createdAt;
-    if (hasPendingBackgroundWork(conversationId, { startedAfter })) {
+    if (await hasPendingBackgroundWork(conversationId, { startedAfter })) {
       return;
     }
 
@@ -309,7 +312,7 @@ export async function emitAssistantReplyNotification(params: {
       logger: rlog,
     });
     if (
-      hasPendingBackgroundWork(conversationId, { startedAfter }) ||
+      (await hasPendingBackgroundWork(conversationId, { startedAfter })) ||
       !(await isCurrentUnseenReply(
         conversationId,
         assistantRow,

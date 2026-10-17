@@ -51,7 +51,7 @@ export function registerConversationNotifiers(
   registerCallQuestionNotifier(
     conversationId,
     async (callSessionId: string, question: string) => {
-      const callSession = getCallSession(callSessionId);
+      const callSession = await getCallSession(callSessionId);
       const callee = callSession?.toNumber ?? "the caller";
       const questionText = `**Live call question** (to ${callee}):\n\n${question}\n\n_Use the call answer API to respond._`;
 

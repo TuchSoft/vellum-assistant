@@ -89,7 +89,7 @@ export async function emitScheduleResultNotification(
     // or any other signal the turn emitted against this conversation, that
     // reached a verdict or a channel. Leaving it alone is what keeps a
     // well-authored schedule from notifying twice.
-    if (hasNotifiedSourceContextSince(conversationId, runStartedAt)) {
+    if (await hasNotifiedSourceContextSince(conversationId, runStartedAt)) {
       return;
     }
 

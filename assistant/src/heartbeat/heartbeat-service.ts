@@ -77,7 +77,7 @@ const GUARDIAN_PERSONA_SCAFFOLD_STRIPPED = stripCommentLines(
 ).trim();
 
 /** @internal Exported for testing. */
-export function isShallowProfile(): boolean {
+export async function isShallowProfile(): Promise<boolean> {
   try {
     const identityPath = getWorkspacePromptPath("IDENTITY.md");
     const rawIdentity = readTextFileSync(identityPath);
@@ -85,7 +85,7 @@ export function isShallowProfile(): boolean {
       rawIdentity != null ? stripCommentLines(rawIdentity) : null;
     // `resolveGuardianPersona` returns already-stripped, trimmed content
     // (or null for missing/empty files).
-    const user = resolveGuardianPersona();
+    const user = await resolveGuardianPersona();
     const userIsEmpty =
       user == null ||
       user.length === 0 ||
@@ -853,11 +853,11 @@ export class HeartbeatService {
     const checklist = this.readChecklist();
     const completedRunCount = await countCompletedHeartbeatRuns();
     // Warm both guardian-delivery cache keys (vellum + unfiltered) so
-    // buildPrompt's sync guardian persona read (isShallowProfile →
+    // buildPrompt's guardian persona read (isShallowProfile →
     // resolveGuardianPersona), including its any-channel fallback, hits fresh
     // keys instead of falling back to default.md on a cold/TTL-expired cache.
     await warmGuardianBindings();
-    const { prompt, includedReengagement } = this.buildPrompt(
+    const { prompt, includedReengagement } = await this.buildPrompt(
       checklist,
       unhealthyProviders,
       completedRunCount,
@@ -954,11 +954,11 @@ export class HeartbeatService {
   }
 
   /** @internal Exposed for testing. */
-  buildPrompt(
+  async buildPrompt(
     checklist: string,
     unhealthyProviders: string[] = [],
     completedRunCount: number = Infinity,
-  ): { prompt: string; includedReengagement: boolean } {
+  ): Promise<{ prompt: string; includedReengagement: boolean }> {
     let prompt = `You are running a periodic heartbeat check. Review the following checklist and take any necessary actions.
 
 <heartbeat-checklist>
@@ -988,7 +988,7 @@ This is one of your first heartbeats. Your user hasn't heard from you yet and ma
     }
 
     let includedReengagement = false;
-    if (isShallowProfile() && isReengagementCooldownElapsed()) {
+    if ((await isShallowProfile()) && isReengagementCooldownElapsed()) {
       includedReengagement = true;
       prompt += `\n\n<relationship-depth>\nYou don't know much about this person yet — their profile is still sparse. If the moment feels right during this beat, gently invite them to share something about themselves. Not an interrogation — something natural like "I realized I don't actually know much about what you do. Fill me in sometime?" Only do this occasionally, not every beat. If they engage, save what you learn.\n</relationship-depth>`;
     }

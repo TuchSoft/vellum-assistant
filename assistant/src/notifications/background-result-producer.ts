@@ -47,11 +47,11 @@ interface CompletedWork {
 }
 
 /** Existing terminal records opt parent continuations into completion delivery. */
-function resolveCompletedWork(
+async function resolveCompletedWork(
   conversationId: string,
   trigger: MessageRow,
   turnTrigger: MessageRow,
-): CompletedWork | undefined {
+): Promise<CompletedWork | undefined> {
   const metadata = parseMessageMetadata(trigger.metadata);
   const turnMetadata =
     trigger.id === turnTrigger.id
@@ -71,7 +71,7 @@ function resolveCompletedWork(
   }
   const terminal = metadata.subagentNotification;
   if (terminal?.status === "completed") {
-    const task = getSubagentRecordById(terminal.subagentId);
+    const task = await getSubagentRecordById(terminal.subagentId);
     if (
       !task ||
       task.status !== "completed" ||
@@ -162,7 +162,7 @@ async function* completionCandidates(
           sharedTurn = undefined;
         }
         if (sharedTurn) {
-          const work = resolveCompletedWork(
+          const work = await resolveCompletedWork(
             conversationId,
             row,
             sharedTurn.trigger,
@@ -192,7 +192,11 @@ async function childDeliveredResult(work: CompletedWork): Promise<boolean> {
     return false;
   }
   if (
-    hasNotifiedSourceContextSince(childId, work.startedAt, RESULT_EVENT_NAMES)
+    await hasNotifiedSourceContextSince(
+      childId,
+      work.startedAt,
+      RESULT_EVENT_NAMES,
+    )
   ) {
     return true;
   }
@@ -261,7 +265,7 @@ export async function emitBackgroundResultNotification(params: {
       return;
     }
     // A parent that only launched more work has not produced the final result.
-    if (hasPendingBackgroundWork(conversationId)) {
+    if (await hasPendingBackgroundWork(conversationId)) {
       return;
     }
     const attention = (
@@ -302,7 +306,7 @@ export async function emitBackgroundResultNotification(params: {
         return;
       }
       if (
-        hasNotifiedSourceContextSince(
+        await hasNotifiedSourceContextSince(
           conversationId,
           successfulTrigger.createdAt,
           RESULT_EVENT_NAMES,

@@ -173,7 +173,7 @@ export async function computeRelationshipState(): Promise<RelationshipState> {
   // resolveGuardianUserContent hits a fresh key instead of falling back to
   // default.md on a cold/TTL-expired cache.
   await getGuardianDelivery({ channelTypes: ["vellum"] });
-  const userMd = resolveGuardianUserContent();
+  const userMd = await resolveGuardianUserContent();
   const soulMd = safeRead(getWorkspacePromptPath("SOUL.md"));
   const identityPath = getWorkspacePromptPath("IDENTITY.md");
   const onboarding = readOnboardingSidecar();
@@ -375,9 +375,9 @@ export async function backfillRelationshipStateIfMissing(): Promise<void> {
  * three sources are unavailable, so `computeRelationshipState()` never
  * throws from this path.
  */
-function resolveGuardianUserContent(): string {
+async function resolveGuardianUserContent(): Promise<string> {
   try {
-    const guardianPath = resolveGuardianPersonaPath();
+    const guardianPath = await resolveGuardianPersonaPath();
     if (guardianPath) {
       const content = safeRead(guardianPath);
       if (content) {

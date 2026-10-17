@@ -28,19 +28,18 @@ import { withBootFencedRecoveryDb } from "./db.js";
 
 const log = getLogger("recovery-stale-processing");
 
-export function clearStaleProcessing(): void {
-  withBootFencedRecoveryDb("stale-processing", (db, bootTime) => {
-    const result = db
-      .query(
-        `UPDATE conversations
+export async function clearStaleProcessing(): Promise<void> {
+  await withBootFencedRecoveryDb("stale-processing", async (db, bootTime) => {
+    const changes = await db.run(
+      `UPDATE conversations
             SET processing_started_at = NULL
           WHERE processing_started_at IS NOT NULL
             AND processing_started_at < ?`,
-      )
-      .run(bootTime);
-    if (result.changes > 0) {
+      [bootTime],
+    );
+    if (changes > 0) {
       log.info(
-        { cleared: result.changes, bootTime },
+        { cleared: changes, bootTime },
         "Cleared stale conversation processing flags from a previous process",
       );
     }

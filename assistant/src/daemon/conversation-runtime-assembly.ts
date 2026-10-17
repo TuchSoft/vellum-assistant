@@ -438,13 +438,15 @@ export function buildActiveSurfaceContext(params: {
  * existing documents with `document_update` instead of issuing duplicate
  * `document_create` calls. Returns `null` when the conversation has none.
  */
-export function buildActiveDocuments(conversationId: string): Array<{
+export async function buildActiveDocuments(
+  conversationId: string,
+): Promise<Array<{
   surfaceId: string;
   title: string;
   wordCount: number;
   updatedAt: number;
-}> | null {
-  const conversationDocs = getDocumentsForConversation(conversationId);
+}> | null> {
+  const conversationDocs = await getDocumentsForConversation(conversationId);
   return conversationDocs.length > 0
     ? conversationDocs.map((d) => ({
         surfaceId: d.surfaceId,
@@ -2378,7 +2380,7 @@ export async function applyRuntimeInjections(
   const channelCapabilities = liveConversation?.channelCapabilities ?? null;
   const slackConversation = channelCapabilities?.channel === "slack";
 
-  const activeDocuments = buildActiveDocuments(conversationId);
+  const activeDocuments = await buildActiveDocuments(conversationId);
 
   const channelCommandContext = liveConversation?.commandIntent ?? null;
   const voiceCallControlPrompt =

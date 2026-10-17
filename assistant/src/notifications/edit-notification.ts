@@ -115,7 +115,7 @@ export async function editNotification(
   }
 
   const signalId = feedItemIdToSignalId(feedItemId);
-  const decision = findLatestDecisionByEventId(signalId);
+  const decision = await findLatestDecisionByEventId(signalId);
   if (!decision) {
     log.info(
       { feedItemId, signalId },
@@ -123,7 +123,9 @@ export async function editNotification(
     );
   }
 
-  const deliveries = decision ? findDeliveriesByDecisionId(decision.id) : [];
+  const deliveries = decision
+    ? await findDeliveriesByDecisionId(decision.id)
+    : [];
   const { channels, rewrittenMessageIds } = await updateChannelDeliveries(
     deliveries,
     { title, body: params.body },

@@ -27,6 +27,8 @@ export interface SqliteIndex {
   name: string;
   unique: boolean;
   columns: string[];
+  /** Partial-index predicate without the leading `WHERE`, when present. */
+  where?: string;
 }
 
 export interface SqliteForeignKey {
@@ -86,6 +88,27 @@ interface RawForeignKey {
 }
 
 /**
+ * Extract the predicate of a partial index from its stored DDL. `PRAGMA
+ * index_list` says an index is partial but not what it filters on, and the
+ * filter is load-bearing: a unique index without it rejects rows the partial
+ * index allowed.
+ */
+function partialIndexPredicate(
+  db: Database,
+  indexName: string,
+): { where?: string } {
+  const row = db
+    .query(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`)
+    .get(indexName) as { sql: string | null } | null;
+  const sql = row?.sql;
+  if (!sql) {
+    return {};
+  }
+  const match = /\sWHERE\s+([\s\S]+)$/i.exec(sql);
+  return match?.[1] ? { where: match[1].trim() } : {};
+}
+
+/**
  * Introspect every user table (excluding SQLite internals) into a
  * {@link SqliteSchema}, in `sqlite_master` name order.
  */
@@ -137,6 +160,7 @@ export function introspectSqlite(db: Database): SqliteSchema {
         name: index.name,
         unique: index.unique === 1,
         columns: indexColumns as string[],
+        ...partialIndexPredicate(db, index.name),
       });
     }
 

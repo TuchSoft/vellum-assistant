@@ -28,11 +28,12 @@ import type {
 } from "./sqlite-model.js";
 
 /**
- * Tables excluded from the Postgres baseline. LLM request logs live in
- * ClickHouse upstream; compaction logs are ClickHouse-only and have no SQLite
- * table, so nothing else needs excluding.
+ * Tables excluded from the Postgres baseline. Nothing is excluded: the
+ * consolidated database carries the request-log tables the conversation store
+ * reads directly. Compaction logs are ClickHouse-only and have no SQLite table,
+ * so there is nothing to exclude for them.
  */
-export const EXCLUDED_TABLES: readonly RegExp[] = [/^llm_request_logs$/];
+export const EXCLUDED_TABLES: readonly RegExp[] = [];
 
 export interface BaselineOptions {
   excludeTables?: readonly RegExp[];
@@ -209,9 +210,10 @@ function foreignKeyStatements(table: SqliteTable): string[] {
 function indexStatements(table: SqliteTable): string[] {
   return table.indexes.map((index) => {
     const unique = index.unique ? "UNIQUE " : "";
+    const where = index.where ? ` WHERE ${index.where}` : "";
     return (
       `CREATE ${unique}INDEX IF NOT EXISTS ${ident(index.name)} ` +
-      `ON ${ident(table.name)} (${index.columns.map(ident).join(", ")})`
+      `ON ${ident(table.name)} (${index.columns.map(ident).join(", ")})${where}`
     );
   });
 }

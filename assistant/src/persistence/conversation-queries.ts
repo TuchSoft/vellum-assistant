@@ -718,7 +718,7 @@ export async function listConversationsByTitlePrefix(
             (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count,
             c.created_at
      FROM conversations c
-     WHERE c.title LIKE ? AND c.archived_at IS NULL
+     WHERE c.title ILIKE ? AND c.archived_at IS NULL
      ORDER BY c.created_at DESC`,
     [`${prefix}%`],
   );
@@ -1195,7 +1195,7 @@ export async function searchConversations(
   // Title-only matches (message-content indexes don't cover conversation titles).
   const titleConditions = [
     sql.raw(standardListingVisibilitySql()),
-    sql`${conversations.title} LIKE ${titlePattern} ESCAPE '\\'`,
+    sql`${conversations.title} ILIKE ${titlePattern} ESCAPE '\\'`,
   ];
   if (!opts?.includeArchived) {
     titleConditions.push(sql`${conversations.archivedAt} IS NULL`);

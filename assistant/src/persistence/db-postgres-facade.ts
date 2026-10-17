@@ -94,10 +94,11 @@ class PostgresAsyncDb implements AsyncDb {
     private readonly sql: PgSql,
     private readonly url: string,
     private readonly baseline: Promise<void> | null,
+    private readonly ormOverride: PgDrizzleDb | null = null,
   ) {}
 
   get orm(): PgDrizzleDb {
-    return ormFor(this.url);
+    return this.ormOverride ?? ormFor(this.url);
   }
 
   private async ready(): Promise<void> {
@@ -145,11 +146,14 @@ class PostgresAsyncDb implements AsyncDb {
 
   async transaction<T>(cb: (tx: AsyncDb) => Promise<T>): Promise<T> {
     await this.ready();
-    const result = await this.sql.begin((tx) =>
-      cb(
-        new PostgresAsyncDb(this.slot, tx as unknown as PgSql, this.url, null),
-      ),
-    );
+    const result = await this.sql.begin((tx) => {
+      const txSql = tx as unknown as PgSql;
+      // Drizzle must be built over the transaction handle, not the pooled
+      // client: otherwise `tx.orm` would run on a different connection and
+      // cannot see the transaction's uncommitted rows or its locks.
+      const txOrm = drizzle(txSql, { schema: pgSchema }) as PgDrizzleDb;
+      return cb(new PostgresAsyncDb(this.slot, txSql, this.url, null, txOrm));
+    });
     return result as T;
   }
 

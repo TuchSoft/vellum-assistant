@@ -138,8 +138,10 @@ await initializeDb();
 }
 
 /** Create a throwaway contact and return its ID, for use as the invite's contactId. */
-function createTargetContact(displayName = "Test Contact"): string {
-  return upsertContact({ displayName }).id;
+async function createTargetContact(
+  displayName = "Test Contact",
+): Promise<string> {
+  return (await upsertContact({ displayName })).id;
 }
 
 function resetTables() {
@@ -158,7 +160,7 @@ function resetRedeemRelay() {
 // ---------------------------------------------------------------------------
 
 describe("invite redeem relay routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     resetRedeemRelay();
   });
@@ -330,7 +332,7 @@ describe("composeInvitePresentation", () => {
   beforeEach(resetTables);
 
   test("voice invites get a guardianInstruction with the contact's first name", async () => {
-    const contactId = createTargetContact("Carolina Example");
+    const contactId = await createTargetContact("Carolina Example");
 
     const invite = await composeInvitePresentation({
       contactId,
@@ -366,7 +368,7 @@ describe("composeInvitePresentation", () => {
     try {
       const rawToken = "raw-token-abc";
       const invite = await composeInvitePresentation({
-        contactId: createTargetContact("Alice"),
+        contactId: await createTargetContact("Alice"),
         invite: {
           id: "inv-tg-1",
           sourceChannel: "telegram",
@@ -399,7 +401,7 @@ describe("composeInvitePresentation", () => {
       status: "active",
     };
     const invite = await composeInvitePresentation({
-      contactId: createTargetContact(),
+      contactId: await createTargetContact(),
       invite: payload,
     });
     expect(invite).toEqual(payload);
@@ -414,7 +416,7 @@ describe("composeInvitePresentation", () => {
 // gateway's triggerInviteCallNative — see the gateway proxy tests. The daemon
 // only performs the provider call from the gateway-supplied fields.
 describe("POST /v1/contacts/invites/:id/call", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     mockStartInviteCallResult = { ok: true, callSid: "CA_test_sid_123" };
     lastStartInviteCallInput = null;

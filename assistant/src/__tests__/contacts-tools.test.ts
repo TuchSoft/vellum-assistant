@@ -49,11 +49,11 @@ mock.module("../ipc/cli-client.js", () => ({
       if (searchContactsOverride !== null) {
         return { ok: true, result: searchContactsOverride };
       }
-      return { ok: true, result: store.searchContacts(body) };
+      return { ok: true, result: await store.searchContacts(body) };
     }
     if (method === "getContact") {
       const id = pathParams.id ?? (body as { id?: string }).id;
-      const contact = id ? store.getContact(id) : null;
+      const contact = id ? await store.getContact(id) : null;
       if (!contact) {
         return { ok: false, error: `Contact "${id}" not found` };
       }
@@ -66,18 +66,18 @@ mock.module("../ipc/cli-client.js", () => ({
       const { keepId, mergeId } = body as { keepId: string; mergeId: string };
       // The tool pre-validates both contacts via getContact, so the fake only
       // needs the survivor row (for keepDisplayName).
-      const keep = store.getContact(keepId);
+      const keep = await store.getContact(keepId);
       if (!keep) {
         return { ok: false, error: `Contact "${keepId}" not found` };
       }
-      store.mergeContactMirror({
+      await store.mergeContactMirror({
         keepContactId: keepId,
         mergeContactId: mergeId,
         keepDisplayName: keep.displayName,
       });
       return {
         ok: true,
-        result: { ok: true, contact: store.getContact(keepId) },
+        result: { ok: true, contact: await store.getContact(keepId) },
       };
     }
     return { ok: false, error: `Unknown IPC method: ${method}` };
@@ -103,7 +103,7 @@ await initializeDb();
 
 let testServer: ReturnType<typeof Bun.serve>;
 
-beforeAll(() => {
+beforeAll(async () => {
   testServer = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -170,11 +170,11 @@ function clearContacts(): void {
 // For test fixtures we go straight to the store, which is still the
 // underlying write path used by the gateway dual-write and the assistant CLI.
 
-function upsertFixture(params: {
+async function upsertFixture(params: {
   display_name: string;
   notes?: string;
   channels?: Array<{ type: string; address: string; is_primary?: boolean }>;
-}): ContactWithChannels {
+}): Promise<ContactWithChannels> {
   return upsertContact({
     displayName: params.display_name,
     notes: params.notes,
@@ -189,7 +189,7 @@ function upsertFixture(params: {
 // ── contact_search ──────────────────────────────────────────────────
 
 describe("contact_search tool", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     searchContactsOverride = null;
     clearContacts();
   });
@@ -225,8 +225,8 @@ describe("contact_search tool", () => {
   });
 
   test("searches by display name", async () => {
-    upsertFixture({ display_name: "Alice Smith" });
-    upsertFixture({ display_name: "Bob Jones" });
+    await upsertFixture({ display_name: "Alice Smith" });
+    await upsertFixture({ display_name: "Bob Jones" });
 
     const result = await executeContactSearch({ query: "Alice" }, ctx);
 
@@ -236,7 +236,7 @@ describe("contact_search tool", () => {
   });
 
   test("searches by channel address", async () => {
-    upsertFixture({
+    await upsertFixture({
       display_name: "Charlie",
       channels: [{ type: "email", address: "charlie@example.com" }],
     });
@@ -251,7 +251,7 @@ describe("contact_search tool", () => {
   });
 
   test("returns no results message when nothing matches", async () => {
-    upsertFixture({ display_name: "Existing" });
+    await upsertFixture({ display_name: "Existing" });
 
     const result = await executeContactSearch({ query: "Nonexistent" }, ctx);
 
@@ -269,7 +269,7 @@ describe("contact_search tool", () => {
   });
 
   test("searches by channel address with type filter", async () => {
-    upsertFixture({
+    await upsertFixture({
       display_name: "Frank",
       channels: [
         { type: "email", address: "frank@example.com" },
@@ -296,7 +296,7 @@ describe("search_contacts route", () => {
   beforeEach(clearContacts);
 
   test("includes externalUserId (= address) on channels for older clients", async () => {
-    const seeded = upsertFixture({
+    const seeded = await upsertFixture({
       display_name: "Dana",
       channels: [{ type: "slack", address: "U12345ABC" }],
     });
@@ -325,16 +325,20 @@ describe("contact_merge tool", () => {
   beforeEach(clearContacts);
 
   test("merges two contacts", async () => {
-    const keepId = upsertFixture({
-      display_name: "Alice (Email)",
-      notes: "Prefers email",
-      channels: [{ type: "email", address: "alice@example.com" }],
-    }).id;
-    const mergeId = upsertFixture({
-      display_name: "Alice (Slack)",
-      notes: "Active on Slack",
-      channels: [{ type: "slack", address: "@alice" }],
-    }).id;
+    const keepId = (
+      await upsertFixture({
+        display_name: "Alice (Email)",
+        notes: "Prefers email",
+        channels: [{ type: "email", address: "alice@example.com" }],
+      })
+    ).id;
+    const mergeId = (
+      await upsertFixture({
+        display_name: "Alice (Slack)",
+        notes: "Active on Slack",
+        channels: [{ type: "slack", address: "@alice" }],
+      })
+    ).id;
 
     const result = await executeContactMerge(
       {
@@ -372,7 +376,7 @@ describe("contact_merge tool", () => {
   });
 
   test("returns error for nonexistent keep_id", async () => {
-    const existingId = upsertFixture({ display_name: "Exists" }).id;
+    const existingId = (await upsertFixture({ display_name: "Exists" })).id;
 
     const result = await executeContactMerge(
       {
@@ -387,7 +391,7 @@ describe("contact_merge tool", () => {
   });
 
   test("returns error for nonexistent merge_id", async () => {
-    const existingId = upsertFixture({ display_name: "Exists" }).id;
+    const existingId = (await upsertFixture({ display_name: "Exists" })).id;
 
     const result = await executeContactMerge(
       {
@@ -402,8 +406,8 @@ describe("contact_merge tool", () => {
   });
 
   test("a cancelled turn stops before the merge", async () => {
-    const keepId = upsertFixture({ display_name: "Keep" }).id;
-    const mergeId = upsertFixture({ display_name: "Donor" }).id;
+    const keepId = (await upsertFixture({ display_name: "Keep" })).id;
+    const mergeId = (await upsertFixture({ display_name: "Donor" })).id;
     const controller = new AbortController();
     controller.abort();
 
@@ -428,8 +432,8 @@ describe("contact_merge tool", () => {
     // finished anyway. Leaving the destructive call and its read-back detached
     // keeps it unsettled instead, which is what makes the loop tell the model
     // the work may still have completed.
-    const keepId = upsertFixture({ display_name: "Keep" }).id;
-    const mergeId = upsertFixture({ display_name: "Donor" }).id;
+    const keepId = (await upsertFixture({ display_name: "Keep" })).id;
+    const mergeId = (await upsertFixture({ display_name: "Donor" })).id;
     ipcCallOptions.length = 0;
     const controller = new AbortController();
 

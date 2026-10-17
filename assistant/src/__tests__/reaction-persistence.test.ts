@@ -118,8 +118,8 @@ function resetState(): void {
 
 const REACTOR_CONTACT_ID = "contact-reactor";
 
-function seedActiveMember(): void {
-  seedContactChannel({
+async function seedActiveMember(): Promise<void> {
+  await seedContactChannel({
     sourceChannel: "slack",
     contactId: REACTOR_CONTACT_ID,
     externalUserId: SLACK_USER_ID,
@@ -211,24 +211,24 @@ function readPersistedMessages(): Array<{
 // ---------------------------------------------------------------------------
 
 describe("isReactionEvent", () => {
-  test("returns true for a stamped reaction kind", () => {
+  test("returns true for a stamped reaction kind", async () => {
     expect(isReactionEvent({ eventKind: "reaction" })).toBe(true);
   });
 
-  test("returns true for replayed reaction sentinels, added and removed", () => {
+  test("returns true for replayed reaction sentinels, added and removed", async () => {
     expect(isReactionEvent({ callbackData: "reaction:thumbsup" })).toBe(true);
     expect(isReactionEvent({ callbackData: "reaction_removed:eyes" })).toBe(
       true,
     );
   });
 
-  test("returns false for non-reaction callback data", () => {
+  test("returns false for non-reaction callback data", async () => {
     expect(isReactionEvent({ callbackData: "apr:req-1:approve_once" })).toBe(
       false,
     );
   });
 
-  test("returns false for a plain message", () => {
+  test("returns false for a plain message", async () => {
     expect(isReactionEvent({})).toBe(false);
   });
 });
@@ -238,7 +238,7 @@ describe("isReactionEvent", () => {
 // ---------------------------------------------------------------------------
 
 describe("Slack reaction event persistence", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
     seedActiveMember();
     msgCounter = 0;
@@ -656,7 +656,7 @@ describe("reaction access control (no verification handshake)", () => {
     ).n;
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
     // The assistant has a guardian (as in production); the reactors below are
     // different users.
@@ -666,7 +666,7 @@ describe("reaction access control (no verification handshake)", () => {
       principalId: GUARDIAN_USER_ID,
       externalChatId: GUARDIAN_DM_CHAT,
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "slack",
       guardianExternalUserId: GUARDIAN_USER_ID,
       guardianDeliveryChatId: GUARDIAN_DM_CHAT,
@@ -713,7 +713,7 @@ describe("reaction access control (no verification handshake)", () => {
     // A pending contact classifies as `unverified_contact` — a known tier, so
     // its reactions are recorded. On a real message it would be re-challenged,
     // but a reaction must not trigger that.
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "slack",
       externalUserId: CONTACT_USER_ID,
       externalChatId: SLACK_CHANNEL_ID,

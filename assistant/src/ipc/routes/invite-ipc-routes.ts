@@ -26,9 +26,9 @@ import type { RouteHandlerArgs } from "../../runtime/routes/types.js";
  * `notifyContactsChanged()` internally, so repeated delivery of the same
  * outcome is safe.
  */
-export function handleInviteRedeemed({ body = {} }: RouteHandlerArgs) {
+export async function handleInviteRedeemed({ body = {} }: RouteHandlerArgs) {
   const outcome = InviteRedemptionOutcomeSchema.parse(body);
-  upsertContactChannel({
+  await upsertContactChannel({
     sourceChannel: outcome.sourceChannel,
     externalUserId: outcome.memberExternalUserId,
     externalChatId: outcome.memberExternalChatId,

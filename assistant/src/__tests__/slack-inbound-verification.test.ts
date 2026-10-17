@@ -118,7 +118,7 @@ await initializeDb();
 
 const TEST_BEARER_TOKEN = "test-token";
 
-function resetState(): void {
+async function resetState(): Promise<void> {
   resetVerificationSessionsSim();
   bridgeState.reset();
   const db = getDb();
@@ -137,7 +137,7 @@ function resetState(): void {
     principalId: "guardian-principal",
     displayName: "guardian-principal",
   });
-  createGuardianBinding({
+  await createGuardianBinding({
     channel: "vellum",
     guardianExternalUserId: "guardian-principal",
     guardianDeliveryChatId: "local",
@@ -181,7 +181,7 @@ function buildSlackInboundRequest(
 // ---------------------------------------------------------------------------
 
 describe("Slack inbound trusted contact verification", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
   });
 
@@ -209,7 +209,7 @@ describe("Slack inbound trusted contact verification", () => {
     // the sender must NOT get a fresh (unusable) self-verify challenge, and the
     // guardian must NOT be re-notified: they already decided to keep this
     // contact out, and blocking is how the prompts are stopped.
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "slack",
       externalUserId: "U0123UNKNOWN",
       displayName: "Alice Unknown",
@@ -237,7 +237,7 @@ describe("Slack inbound trusted contact verification", () => {
     // trust (the default `trusted_contacts` floor) re-fires the flow: a fresh
     // self-verify challenge for the sender and a fresh card for the guardian.
     // This is the D1 behavior — a parked contact is never silently dead-ended.
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "slack",
       externalUserId: "U0123UNKNOWN",
       displayName: "Alice Unknown",
@@ -283,7 +283,7 @@ describe("Slack inbound trusted contact verification", () => {
       externalChatId: "D_GUARDIAN_DM",
       principalId: "guardian-principal",
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "slack",
       guardianExternalUserId: "U_GUARDIAN",
       guardianDeliveryChatId: "D_GUARDIAN_DM",

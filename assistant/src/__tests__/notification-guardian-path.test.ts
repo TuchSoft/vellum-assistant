@@ -113,7 +113,7 @@ function requestForCallSession(callSessionId: string) {
     .sort((a, b) => a.createdAt - b.createdAt)[0];
 }
 
-function resetTables(): void {
+async function resetTables(): Promise<void> {
   const db = getDb();
   bridgeState.reset();
   db.run("DELETE FROM call_pending_questions");
@@ -124,7 +124,7 @@ function resetTables(): void {
   db.run("DELETE FROM contacts");
 
   // Seed the vellum guardian binding (gateway does this at startup in production)
-  createGuardianBinding({
+  await createGuardianBinding({
     channel: "vellum",
     guardianExternalUserId: "test-principal-id",
     guardianDeliveryChatId: "local",
@@ -151,7 +151,7 @@ function resetTables(): void {
 }
 
 describe("ASK_GUARDIAN notification path", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
   });
 

@@ -64,8 +64,8 @@ function resetTables(): void {
   pendingInteractions.clear();
 }
 
-function ensureTestContact(): void {
-  seedContactChannel({
+async function ensureTestContact(): Promise<void> {
+  await seedContactChannel({
     sourceChannel: "telegram",
     externalUserId: "telegram-user-default",
     displayName: "Test User",
@@ -108,7 +108,7 @@ function getAttentionEvents(conversationId: string) {
     .all();
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   resetTables();
   ensureTestContact();
   noopProcessMessage.mockClear();
@@ -266,7 +266,7 @@ describe("Telegram callback seen signals", () => {
     // Create a guardian binding (via contacts) so approval can be handled
     const { createGuardianBinding } =
       await import("./helpers/create-guardian-binding.js");
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",

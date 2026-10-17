@@ -351,7 +351,7 @@ export async function handleListContacts(queryParams: Record<string, string>) {
     // hit the gateway and are independent — run them concurrently.
     const [contacts, guardianIds] = await Promise.all([
       hydrateTelemetryFromGateway(
-        searchContacts({
+        await searchContacts({
           query,
           channelAddress,
           channelType,
@@ -378,7 +378,7 @@ export async function handleListContacts(queryParams: Record<string, string>) {
     // Telemetry hydration and the guardian-id read (for role derivation) both
     // hit the gateway and are independent — run them concurrently.
     const [contacts, guardianIds] = await Promise.all([
-      hydrateTelemetryFromGateway(listContacts(limit, contactType)),
+      hydrateTelemetryFromGateway(await listContacts(limit, contactType)),
       getGuardianContactIds(),
     ]);
     return {
@@ -888,7 +888,7 @@ export const ROUTES: RouteDefinition[] = [
       // Telemetry hydration and the guardian-id read (for role derivation) both
       // hit the gateway and are independent — run them concurrently.
       const [contacts, guardianIds] = await Promise.all([
-        hydrateTelemetryFromGateway(searchContacts(parsed)),
+        hydrateTelemetryFromGateway(await searchContacts(parsed)),
         getGuardianContactIds(),
       ]);
       return contacts.map((c) => prepareContactResponse(c, guardianIds));

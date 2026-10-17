@@ -45,7 +45,7 @@ function resetTables(): void {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("resolveRoutingState", () => {
-  test("guardian actors are always interactive and route-resolvable", () => {
+  test("guardian actors are always interactive and route-resolvable", async () => {
     const ctx: TrustContext = {
       sourceChannel: "telegram",
       trustClass: "guardian",
@@ -60,7 +60,7 @@ describe("resolveRoutingState", () => {
     });
   });
 
-  test("guardian actors are interactive even without guardianExternalUserId", () => {
+  test("guardian actors are interactive even without guardianExternalUserId", async () => {
     // Edge case: guardian is chatting in their own chat, no separate binding needed
     const ctx: TrustContext = {
       sourceChannel: "telegram",
@@ -71,7 +71,7 @@ describe("resolveRoutingState", () => {
     expect(state.promptWaitingAllowed).toBe(true);
   });
 
-  test("trusted contact with resolvable guardian route is interactive", () => {
+  test("trusted contact with resolvable guardian route is interactive", async () => {
     const ctx: TrustContext = {
       sourceChannel: "telegram",
       trustClass: "trusted_contact",
@@ -86,7 +86,7 @@ describe("resolveRoutingState", () => {
     });
   });
 
-  test("trusted contact without guardian route is NOT interactive (fail-fast)", () => {
+  test("trusted contact without guardian route is NOT interactive (fail-fast)", async () => {
     const ctx: TrustContext = {
       sourceChannel: "telegram",
       trustClass: "trusted_contact",
@@ -100,7 +100,7 @@ describe("resolveRoutingState", () => {
     });
   });
 
-  test("unknown actors are never interactive regardless of guardian route", () => {
+  test("unknown actors are never interactive regardless of guardian route", async () => {
     const withRoute: TrustContext = {
       sourceChannel: "telegram",
       trustClass: "unknown",
@@ -118,7 +118,7 @@ describe("resolveRoutingState", () => {
 });
 
 describe("resolveRoutingStateFromRuntime", () => {
-  test("produces same result as resolveRoutingState for guardian runtime context", () => {
+  test("produces same result as resolveRoutingState for guardian runtime context", async () => {
     const runtimeCtx = {
       sourceChannel: "telegram" as const,
       trustClass: "trusted_contact" as const,
@@ -129,7 +129,7 @@ describe("resolveRoutingStateFromRuntime", () => {
     expect(state.guardianRouteResolvable).toBe(true);
   });
 
-  test("trusted contact runtime context without guardian binding is not interactive", () => {
+  test("trusted contact runtime context without guardian binding is not interactive", async () => {
     const runtimeCtx = {
       sourceChannel: "telegram" as const,
       trustClass: "trusted_contact" as const,
@@ -146,11 +146,11 @@ describe("resolveRoutingStateFromRuntime", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("inbound-message-handler trusted-contact interactivity", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     setAdapterProcessMessage(undefined);
     // Insert a test contact so the contacts-based ACL lookup passes
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "telegram",
       externalUserId: "telegram-user-default",
       displayName: "Test User",
@@ -185,7 +185,7 @@ describe("inbound-message-handler trusted-contact interactivity", () => {
 
   test("trusted contact with guardian binding gets interactive turn", async () => {
     // Create guardian binding in contacts table so the trust resolver finds it
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-for-tc",
       guardianDeliveryChatId: "guardian-chat-for-tc",
@@ -277,7 +277,7 @@ describe("inbound-message-handler trusted-contact interactivity", () => {
 
   test("guardian actors remain interactive regardless", async () => {
     // Guardian binding matches the sender — use contacts-first so trust resolver finds it
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -344,7 +344,7 @@ describe("inbound-message-handler trusted-contact interactivity", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("channel-retry-sweep routing state", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
   });
 

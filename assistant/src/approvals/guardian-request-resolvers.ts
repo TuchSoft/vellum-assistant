@@ -312,7 +312,7 @@ export interface GuardianRequestResolver {
    * Kinds without gateway-owned outcomes omit this — their decide is a plain
    * status CAS.
    */
-  prepare?(context: PrepareContext): DecisionOutcomePlan;
+  prepare?(context: PrepareContext): Promise<DecisionOutcomePlan>;
   /** Execute daemon-domain follow-through after the atomic decide commits. */
   resolve(context: ResolverContext): Promise<ResolverResult>;
 }
@@ -665,10 +665,10 @@ interface AccessRequestDerivation {
  * `prepare` (outcome planning) and `resolve` (follow-through) branch
  * identically.
  */
-function deriveAccessRequestDecision(
+async function deriveAccessRequestDecision(
   request: GuardianRequestWire,
   action: ApprovalAction,
-): AccessRequestDerivation {
+): Promise<AccessRequestDerivation> {
   const channel: NotificationSourceChannel = isNotificationSourceChannel(
     request.sourceChannel,
   )
@@ -680,7 +680,7 @@ function deriveAccessRequestDecision(
 
   // Resolve display names from the contacts database for enriched payloads
   const requesterContactResult = requesterExternalUserId
-    ? findContactChannel({
+    ? await findContactChannel({
         channelType: channel,
         address: requesterExternalUserId,
       })
@@ -897,7 +897,7 @@ async function notifyRequesterOfDenial(params: {
 const accessRequestResolver: GuardianRequestResolver = {
   kind: "access_request",
 
-  prepare(ctx: PrepareContext): DecisionOutcomePlan {
+  async prepare(ctx: PrepareContext): Promise<DecisionOutcomePlan> {
     const { request, decision } = ctx;
     const {
       channel,
@@ -906,7 +906,7 @@ const accessRequestResolver: GuardianRequestResolver = {
       requesterDisplayName,
       signals,
       outcome,
-    } = deriveAccessRequestDecision(request, decision.action);
+    } = await deriveAccessRequestDecision(request, decision.action);
 
     if (outcome !== OUTCOME_BY_ACTION[decision.action]) {
       log.info(
@@ -1049,7 +1049,7 @@ const accessRequestResolver: GuardianRequestResolver = {
       requesterChatId,
       requesterDisplayName,
       outcome,
-    } = deriveAccessRequestDecision(request, decision.action);
+    } = await deriveAccessRequestDecision(request, decision.action);
     const decidedByExternalUserId = ctx.actor.actorExternalUserId ?? "";
     const assistantId = DAEMON_INTERNAL_ASSISTANT_ID;
     const desktopDeliverUrl = resolveDeliverCallbackUrlForChannel(channel);
@@ -1090,7 +1090,7 @@ const accessRequestResolver: GuardianRequestResolver = {
       "the requester";
 
     const decidedByContactResult = decidedByExternalUserId
-      ? findContactChannel({
+      ? await findContactChannel({
           channelType: channel,
           address: decidedByExternalUserId,
         })

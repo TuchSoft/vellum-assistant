@@ -213,7 +213,7 @@ describe("inbound invite messages — no daemon-side interception", () => {
   });
 
   test("existing active member sending a normal message is unaffected", async () => {
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "telegram",
       externalUserId: "user-active-member",
       externalChatId: "chat-active",
@@ -234,7 +234,7 @@ describe("inbound invite messages — no daemon-side interception", () => {
   });
 
   test("active member sending a bare 6-digit message is processed as a normal message", async () => {
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "telegram",
       externalUserId: "user-active-member",
       externalChatId: "chat-active",

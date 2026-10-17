@@ -1,12 +1,12 @@
 /**
  * A2A channel configuration handler.
  *
- * - getA2AConfig()     — read a2a.enabled, count active a2a contact_channels
+ * - await getA2AConfig()     — read a2a.enabled, count active a2a contact_channels
  * - setA2AConfig()     — set a2a.enabled = true
  * - clearA2AConfig()   — set a2a.enabled = false
- * - createA2AInvite()  — create a shareable invite token for link-based contact creation
+ * - await createA2AInvite()  — create a shareable invite token for link-based contact creation
  * - completeA2AInvite() — sender-side: claim token and return sender identity
- * - redeemA2AInvite()  — receiver-side: create trusted contact from sender identity
+ * - await redeemA2AInvite()  — receiver-side: create trusted contact from sender identity
  * - acceptA2AInvite()  — self-hosted broker: orchestrate complete + redeem across daemons
  */
 
@@ -30,8 +30,7 @@ import {
   claimA2aInvite,
   createA2aInvite,
 } from "../../persistence/a2a-invite-store.js";
-import { getDb } from "../../persistence/db-connection.js";
-import { assistantContactMetadata } from "../../persistence/schema/index.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import type { HttpErrorResponse } from "../../runtime/http-errors.js";
 import { getLogger } from "../../util/logger.js";
 import { getAssistantName } from "../identity-helpers.js";
@@ -91,13 +90,13 @@ export type AcceptA2AInviteResult = z.infer<typeof AcceptA2AInviteResultSchema>;
 
 // ── Config operations ───────────────────────────────────────────────
 
-export function getA2AConfig(): A2AConfigResult {
+export async function getA2AConfig(): Promise<A2AConfigResult> {
   const config = getConfig();
   const enabled = config.a2a?.enabled ?? false;
 
   // a2a is peer binding outside the human-trust ACL model — the gateway has no
   // canonical a2a channel status, so channel existence is the readiness signal.
-  const contacts = searchContacts({ channelType: "a2a" });
+  const contacts = await searchContacts({ channelType: "a2a" });
   const activeConnections = contacts.reduce((count, c) => {
     return count + c.channels.filter((ch) => ch.type === "a2a").length;
   }, 0);
@@ -105,13 +104,13 @@ export function getA2AConfig(): A2AConfigResult {
   return { success: true, enabled, activeConnections };
 }
 
-export function setA2AConfig(): A2AConfigResult {
+export async function setA2AConfig(): Promise<A2AConfigResult> {
   const raw = loadRawConfig();
   setNestedValue(raw, "a2a.enabled", true);
   saveRawConfig(raw);
   invalidateConfigCache();
 
-  const result = getA2AConfig();
+  const result = await getA2AConfig();
   return { ...result, success: true };
 }
 
@@ -126,13 +125,13 @@ export function clearA2AConfig(): A2AConfigResult {
 
 // ── A2A invite creation ────────────────────────────────────────────
 
-export function createA2AInvite(params: {
+export async function createA2AInvite(params: {
   expiresInHours?: number;
-}): CreateA2AInviteResult {
+}): Promise<CreateA2AInviteResult> {
   // 1. Ensure A2A channel is enabled (auto-enable on first invite)
-  const config = getA2AConfig();
+  const config = await getA2AConfig();
   if (!config.enabled) {
-    setA2AConfig();
+    await setA2AConfig();
   }
 
   // 2. Resolve public base URL
@@ -148,7 +147,7 @@ export function createA2AInvite(params: {
   }
 
   // 3. Create placeholder contact (no channels — will be bound on acceptance)
-  const contact = upsertContact({
+  const contact = await upsertContact({
     displayName: "Pending A2A invite",
     contactType: "assistant",
   });
@@ -172,7 +171,7 @@ export function createA2AInvite(params: {
 
 // ── A2A invite completion (sender side) ───────────────────────────
 
-export function completeA2AInvite(params: {
+export async function completeA2AInvite(params: {
   token: string;
   senderAssistantId: string;
   acceptor: {
@@ -180,7 +179,7 @@ export function completeA2AInvite(params: {
     displayName: string;
     gatewayUrl: string;
   };
-}): CompleteA2AInviteResult {
+}): Promise<CompleteA2AInviteResult> {
   // Resolve sender identity before any mutations so we fail cleanly
   const displayName = getAssistantName() ?? "Vellum Assistant";
   let gatewayUrl: string;
@@ -206,7 +205,7 @@ export function completeA2AInvite(params: {
   const invite = claimResult.invite;
 
   // Promote the placeholder contact with the acceptor's identity
-  upsertContact({
+  await upsertContact({
     id: invite.contactId,
     displayName: params.acceptor.displayName,
     contactType: "assistant",
@@ -219,22 +218,22 @@ export function completeA2AInvite(params: {
   });
 
   // Write assistant contact metadata
-  const db = getDb();
+  const db = requireMainDb();
   const metadataJson = JSON.stringify({
     assistantId: params.acceptor.assistantId,
     gatewayUrl: params.acceptor.gatewayUrl,
   } satisfies VellumAssistantMetadata);
-  db.insert(assistantContactMetadata)
+  await db.orm
+    .insert(db.schema.assistantContactMetadata)
     .values({
       contactId: invite.contactId,
       species: "vellum",
       metadata: metadataJson,
     })
     .onConflictDoUpdate({
-      target: assistantContactMetadata.contactId,
+      target: db.schema.assistantContactMetadata.contactId,
       set: { species: "vellum", metadata: metadataJson },
-    })
-    .run();
+    });
 
   return {
     success: true,
@@ -248,27 +247,27 @@ export function completeA2AInvite(params: {
 
 // ── A2A invite redemption (receiver side) ─────────────────────────
 
-export function redeemA2AInvite(params: {
+export async function redeemA2AInvite(params: {
   sender: {
     assistantId: string;
     displayName: string;
     gatewayUrl: string;
   };
-}): RedeemA2AInviteResult {
+}): Promise<RedeemA2AInviteResult> {
   // 1. Ensure A2A channel is enabled (auto-enable if needed)
-  const config = getA2AConfig();
+  const config = await getA2AConfig();
   if (!config.enabled) {
-    setA2AConfig();
+    await setA2AConfig();
   }
 
   // 2. Check for existing contact with this sender (a2a binding existence)
-  const existing = findContactByAddress("a2a", params.sender.assistantId);
+  const existing = await findContactByAddress("a2a", params.sender.assistantId);
   if (existing && existing.channels.some((ch) => ch.type === "a2a")) {
     return { success: true, alreadyConnected: true, contactId: existing.id };
   }
 
   // 3. Create the sender as a local trusted contact
-  const contact = upsertContact({
+  const contact = await upsertContact({
     displayName: params.sender.displayName,
     contactType: "assistant",
     channels: [
@@ -280,22 +279,22 @@ export function redeemA2AInvite(params: {
   });
 
   // 4. Write assistant contact metadata
-  const db = getDb();
+  const db = requireMainDb();
   const metadataJson = JSON.stringify({
     assistantId: params.sender.assistantId,
     gatewayUrl: params.sender.gatewayUrl,
   } satisfies VellumAssistantMetadata);
-  db.insert(assistantContactMetadata)
+  await db.orm
+    .insert(db.schema.assistantContactMetadata)
     .values({
       contactId: contact.id,
       species: "vellum",
       metadata: metadataJson,
     })
     .onConflictDoUpdate({
-      target: assistantContactMetadata.contactId,
+      target: db.schema.assistantContactMetadata.contactId,
       set: { species: "vellum", metadata: metadataJson },
-    })
-    .run();
+    });
 
   return { success: true, contactId: contact.id };
 }
@@ -413,7 +412,7 @@ export async function acceptA2AInvite(params: {
 
   // 2. Short-circuit if already connected — avoids a network round-trip
   //    and consuming a token on the sender side.
-  const existing = findContactByAddress("a2a", params.senderAssistantId);
+  const existing = await findContactByAddress("a2a", params.senderAssistantId);
   if (existing && existing.channels.some((ch) => ch.type === "a2a")) {
     return { success: true, alreadyConnected: true, contactId: existing.id };
   }
@@ -496,7 +495,7 @@ export async function acceptA2AInvite(params: {
   };
 
   // 5. Create the sender as a local trusted contact
-  const redeemResult = redeemA2AInvite({ sender: senderIdentity });
+  const redeemResult = await redeemA2AInvite({ sender: senderIdentity });
   if (!redeemResult.success) {
     log.warn(
       { error: redeemResult.error },

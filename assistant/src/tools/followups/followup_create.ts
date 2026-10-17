@@ -85,7 +85,7 @@ export async function executeFollowupCreate(
 
   // Validate contact exists if provided
   if (contactId) {
-    const contact = getContact(contactId);
+    const contact = await getContact(contactId);
     if (!contact) {
       return {
         content: `Error: Contact "${contactId}" not found`,

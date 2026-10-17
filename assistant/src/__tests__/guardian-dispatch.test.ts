@@ -111,7 +111,7 @@ function deliveryFor(requestId: string, channel: string) {
   );
 }
 
-function resetTables(): void {
+async function resetTables(): Promise<void> {
   const db = getDb();
   bridgeState.reset();
   db.run("DELETE FROM call_pending_questions");
@@ -123,7 +123,7 @@ function resetTables(): void {
   resetGatewayAclStore();
 
   // Seed the vellum guardian binding (gateway does this at startup in production)
-  createGuardianBinding({
+  await createGuardianBinding({
     channel: "vellum",
     guardianExternalUserId: "test-principal-id",
     guardianDeliveryChatId: "local",
@@ -149,7 +149,7 @@ function resetTables(): void {
 }
 
 describe("guardian-dispatch", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
   });
 
@@ -198,7 +198,7 @@ describe("guardian-dispatch", () => {
     db.run("DELETE FROM contact_channels");
     db.run("DELETE FROM contacts");
     resetGatewayAclStore();
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "vellum",
       guardianExternalUserId: "local-actor-principal",
       guardianDeliveryChatId: "local",

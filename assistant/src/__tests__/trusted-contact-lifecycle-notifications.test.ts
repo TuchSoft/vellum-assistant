@@ -145,20 +145,20 @@ function buildInboundRequest(overrides: Record<string, unknown> = {}): Request {
 // ---------------------------------------------------------------------------
 
 describe("trusted contact lifecycle notification signals", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
   });
 
   test("guardian deny emits guardian_decision and denied signals with display names", async () => {
     // Set up guardian binding and member record (guardians must pass ACL)
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-789",
       guardianDeliveryChatId: "guardian-chat-789",
       guardianPrincipalId: "guardian-user-789",
       verifiedVia: "test",
     });
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "telegram",
       externalUserId: "guardian-user-789",
       externalChatId: "guardian-chat-789",
@@ -168,7 +168,7 @@ describe("trusted contact lifecycle notification signals", () => {
     });
 
     // Set up requester contact with a display name so payloads are enriched
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "telegram",
       externalUserId: "requester-user-456",
       externalChatId: "requester-chat-456",
@@ -237,14 +237,14 @@ describe("trusted contact lifecycle notification signals", () => {
 
   test("guardian approve emits guardian_decision and verification_sent signals with display names", async () => {
     // Set up guardian binding and member record (guardians must pass ACL)
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-789",
       guardianDeliveryChatId: "guardian-chat-789",
       guardianPrincipalId: "guardian-user-789",
       verifiedVia: "test",
     });
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "telegram",
       externalUserId: "guardian-user-789",
       externalChatId: "guardian-chat-789",
@@ -254,7 +254,7 @@ describe("trusted contact lifecycle notification signals", () => {
     });
 
     // Set up requester contact with a display name
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "telegram",
       externalUserId: "requester-user-456",
       externalChatId: "requester-chat-456",
@@ -325,14 +325,14 @@ describe("trusted contact lifecycle notification signals", () => {
 
   test("deduplication keys prevent duplicate signals", async () => {
     // Set up guardian binding and member record (guardians must pass ACL)
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-789",
       guardianDeliveryChatId: "guardian-chat-789",
       guardianPrincipalId: "guardian-user-789",
       verifiedVia: "test",
     });
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "telegram",
       externalUserId: "guardian-user-789",
       externalChatId: "guardian-chat-789",
@@ -394,7 +394,7 @@ describe("trusted contact lifecycle notification signals", () => {
     // contact's displayName to empty string after creation — the signal
     // enrichment code treats empty string the same as null for display
     // purposes.
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-noname-111",
       guardianDeliveryChatId: "guardian-chat-111",
@@ -468,7 +468,7 @@ describe("trusted contact lifecycle notification signals", () => {
 // ---------------------------------------------------------------------------
 
 describe("trusted contact activated notification signal", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
   });
 
@@ -494,7 +494,7 @@ describe("trusted contact activated notification signal", () => {
     expect(activatedSignals.length).toBe(0);
   });
 
-  test("voice access_request resolver has registered handler for access_request kind", () => {
+  test("voice access_request resolver has registered handler for access_request kind", async () => {
     // The access_request resolver is registered during module load. When the
     // source channel is 'voice', it should directly activate the member via
     // upsertContactChannel (no verification session). This test validates the resolver

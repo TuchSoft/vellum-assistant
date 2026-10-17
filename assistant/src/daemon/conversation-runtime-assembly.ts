@@ -203,9 +203,9 @@ export function inboundActorContextFromTrustContext(
  * so callers
  * self-resolve it from the live conversation rather than threading it.
  */
-export function resolveTurnInboundActorContext(
+export async function resolveTurnInboundActorContext(
   trustContext: TrustContext | undefined,
-): InboundActorContext | null {
+): Promise<InboundActorContext | null> {
   if (!trustContext) {
     return null;
   }
@@ -217,7 +217,7 @@ export function resolveTurnInboundActorContext(
   // trust context; notes remain an INFO field joined locally by contact ID.
   resolved.contactInteractionCount = trustContext.requesterInteractionCount;
   if (trustContext.requesterContactId) {
-    const info = findContactInfoById(trustContext.requesterContactId);
+    const info = await findContactInfoById(trustContext.requesterContactId);
     if (info) {
       resolved.contactNotes = info.notes ?? undefined;
     }

@@ -102,7 +102,7 @@ export async function composeInvitePresentation(params: {
   // The invitee's name comes from the bound contact's displayName; fall back
   // to the gateway-stamped friendName when the local mirror lacks the contact.
   const boundContact = params.contactId
-    ? getContact(params.contactId)
+    ? await getContact(params.contactId)
     : undefined;
   const resolvedContactName =
     boundContact?.displayName?.trim() ||

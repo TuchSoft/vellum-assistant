@@ -70,7 +70,7 @@ const ACCEPTOR = {
 };
 
 describe("completeA2AInvite", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     setConfig({
       a2aEnabled: false,
@@ -79,11 +79,11 @@ describe("completeA2AInvite", () => {
     });
   });
 
-  test("happy path: promotes placeholder contact and returns sender identity", () => {
-    const created = createA2AInvite({});
+  test("happy path: promotes placeholder contact and returns sender identity", async () => {
+    const created = await createA2AInvite({});
     expect(created.success).toBe(true);
 
-    const result = completeA2AInvite({
+    const result = await completeA2AInvite({
       token: created.token!,
       senderAssistantId: "sender-platform-id-789",
       acceptor: ACCEPTOR,
@@ -100,21 +100,21 @@ describe("completeA2AInvite", () => {
     const invite = getInviteRow(created.inviteId!);
     expect(invite).not.toBeNull();
 
-    const contact = getContact(invite!.contact_id);
+    const contact = await getContact(invite!.contact_id);
     expect(contact).not.toBeNull();
     expect(contact!.displayName).toBe("Acceptor Bot");
     expect(contact!.channels).toHaveLength(1);
     expect(contact!.channels[0]!.type).toBe("a2a");
   });
 
-  test("contact channel address is acceptor.assistantId.toLowerCase()", () => {
-    const created = createA2AInvite({});
+  test("contact channel address is acceptor.assistantId.toLowerCase()", async () => {
+    const created = await createA2AInvite({});
     const acceptorWithUppercase = {
       ...ACCEPTOR,
       assistantId: "UPPER-Case-ID-123",
     };
 
-    const result = completeA2AInvite({
+    const result = await completeA2AInvite({
       token: created.token!,
       senderAssistantId: "sender-platform-id-789",
       acceptor: acceptorWithUppercase,
@@ -122,13 +122,13 @@ describe("completeA2AInvite", () => {
     expect(result.success).toBe(true);
 
     const invite = getInviteRow(created.inviteId!);
-    const contact = getContact(invite!.contact_id);
+    const contact = await getContact(invite!.contact_id);
     expect(contact!.channels[0]!.address).toBe("upper-case-id-123");
   });
 
-  test("assistantContactMetadata has correct assistantId and gatewayUrl", () => {
-    const created = createA2AInvite({});
-    const result = completeA2AInvite({
+  test("assistantContactMetadata has correct assistantId and gatewayUrl", async () => {
+    const created = await createA2AInvite({});
+    const result = await completeA2AInvite({
       token: created.token!,
       senderAssistantId: "sender-platform-id-789",
       acceptor: ACCEPTOR,
@@ -136,7 +136,7 @@ describe("completeA2AInvite", () => {
     expect(result.success).toBe(true);
 
     const invite = getInviteRow(created.inviteId!);
-    const metadata = getAssistantContactMetadata(invite!.contact_id);
+    const metadata = await getAssistantContactMetadata(invite!.contact_id);
     expect(metadata).not.toBeNull();
     expect(metadata!.species).toBe("vellum");
     expect(metadata!.metadata).toEqual({
@@ -145,8 +145,8 @@ describe("completeA2AInvite", () => {
     });
   });
 
-  test("invalid token returns not_found error", () => {
-    const result = completeA2AInvite({
+  test("invalid token returns not_found error", async () => {
+    const result = await completeA2AInvite({
       token: "invalid-token-that-does-not-exist",
       senderAssistantId: "sender-platform-id-789",
       acceptor: ACCEPTOR,
@@ -156,9 +156,9 @@ describe("completeA2AInvite", () => {
     expect(result.error).toBe("not_found");
   });
 
-  test("expired invite returns expired error", () => {
+  test("expired invite returns expired error", async () => {
     // Create an invite that expires immediately
-    const created = createA2AInvite({ expiresInHours: 0 });
+    const created = await createA2AInvite({ expiresInHours: 0 });
     expect(created.success).toBe(true);
 
     // The invite was just created with 0 hours expiry, so expiresAt ~= now
@@ -169,7 +169,7 @@ describe("completeA2AInvite", () => {
       created.inviteId!,
     ]);
 
-    const result = completeA2AInvite({
+    const result = await completeA2AInvite({
       token: created.token!,
       senderAssistantId: "sender-platform-id-789",
       acceptor: ACCEPTOR,
@@ -179,12 +179,12 @@ describe("completeA2AInvite", () => {
     expect(result.error).toBe("expired");
   });
 
-  test("already-redeemed by same acceptor returns idempotent success", () => {
-    const created = createA2AInvite({});
+  test("already-redeemed by same acceptor returns idempotent success", async () => {
+    const created = await createA2AInvite({});
     expect(created.success).toBe(true);
 
     // First completion
-    const first = completeA2AInvite({
+    const first = await completeA2AInvite({
       token: created.token!,
       senderAssistantId: "sender-platform-id-789",
       acceptor: ACCEPTOR,
@@ -192,7 +192,7 @@ describe("completeA2AInvite", () => {
     expect(first.success).toBe(true);
 
     // Second completion with same acceptor
-    const second = completeA2AInvite({
+    const second = await completeA2AInvite({
       token: created.token!,
       senderAssistantId: "sender-platform-id-789",
       acceptor: ACCEPTOR,
@@ -200,12 +200,12 @@ describe("completeA2AInvite", () => {
     expect(second.success).toBe(true);
   });
 
-  test("already-redeemed by different acceptor returns error", () => {
-    const created = createA2AInvite({});
+  test("already-redeemed by different acceptor returns error", async () => {
+    const created = await createA2AInvite({});
     expect(created.success).toBe(true);
 
     // First completion
-    const first = completeA2AInvite({
+    const first = await completeA2AInvite({
       token: created.token!,
       senderAssistantId: "sender-platform-id-789",
       acceptor: ACCEPTOR,
@@ -213,7 +213,7 @@ describe("completeA2AInvite", () => {
     expect(first.success).toBe(true);
 
     // Second completion with different acceptor
-    const second = completeA2AInvite({
+    const second = await completeA2AInvite({
       token: created.token!,
       senderAssistantId: "sender-platform-id-789",
       acceptor: {
@@ -227,13 +227,13 @@ describe("completeA2AInvite", () => {
     expect(second.error).toBe("already_redeemed_by_other");
   });
 
-  test("fails before claiming token when public base URL is not configured", () => {
-    const created = createA2AInvite({});
+  test("fails before claiming token when public base URL is not configured", async () => {
+    const created = await createA2AInvite({});
     expect(created.success).toBe(true);
 
     setConfig({ publicBaseUrl: "", ingressEnabled: true });
 
-    const result = completeA2AInvite({
+    const result = await completeA2AInvite({
       token: created.token!,
       senderAssistantId: "sender-platform-id-789",
       acceptor: ACCEPTOR,

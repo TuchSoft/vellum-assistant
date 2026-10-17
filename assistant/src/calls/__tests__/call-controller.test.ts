@@ -360,7 +360,7 @@ function pendingRequestByCallSession(callSessionId: string) {
   );
 }
 
-function resetTables() {
+async function resetTables() {
   bridgeState.reset();
   resetTestTables(
     "call_pending_questions",
@@ -373,7 +373,7 @@ function resetTables() {
     "contacts",
   );
   // Seed the vellum guardian binding (gateway does this at startup in production)
-  createGuardianBinding({
+  await createGuardianBinding({
     channel: "vellum",
     guardianExternalUserId: "test-principal-id",
     guardianDeliveryChatId: "local",
@@ -501,7 +501,7 @@ function setupControllerWithOrigin(task?: string) {
 }
 
 describe("call-controller", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     // Reset the bridge mock to default behaviour
     mockStartVoiceTurn.mockImplementation(
@@ -1404,7 +1404,7 @@ describe("call-controller", () => {
 
   // ── handleInterrupt ───────────────────────────────────────────────
 
-  test("handleInterrupt: resets state to idle", () => {
+  test("handleInterrupt: resets state to idle", async () => {
     const { controller } = setupController();
 
     // Calling handleInterrupt should not throw
@@ -1606,7 +1606,7 @@ describe("call-controller", () => {
 
   // ── destroy ───────────────────────────────────────────────────────
 
-  test("destroy: unregisters controller", () => {
+  test("destroy: unregisters controller", async () => {
     const { session, controller } = setupController();
 
     // Controller should be registered
@@ -1618,7 +1618,7 @@ describe("call-controller", () => {
     expect(getCallController(session.id)).toBeUndefined();
   });
 
-  test("destroy: can be called multiple times without error", () => {
+  test("destroy: can be called multiple times without error", async () => {
     const { controller } = setupController();
 
     controller.destroy();
@@ -4675,7 +4675,7 @@ describe("call-controller", () => {
   // ── handleBargeIn ───────────────────────────────────────────────────
 
   describe("handleBargeIn", () => {
-    test("handleBargeIn returns false and does not abort when controller is idle", () => {
+    test("handleBargeIn returns false and does not abort when controller is idle", async () => {
       const { relay, controller } = setupController();
 
       // Controller starts idle after construction

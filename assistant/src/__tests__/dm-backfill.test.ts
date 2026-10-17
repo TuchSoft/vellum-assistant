@@ -131,8 +131,8 @@ function setConfiguredSlackBotUserId(botUserId: string): void {
   saveRawConfig(raw);
 }
 
-function seedActiveMember(): void {
-  seedContactChannel({
+async function seedActiveMember(): Promise<void> {
+  await seedContactChannel({
     sourceChannel: "slack",
     externalUserId: SLACK_DM_USER_ID,
     externalChatId: SLACK_DM_CHANNEL_ID,
@@ -142,8 +142,8 @@ function seedActiveMember(): void {
   });
 }
 
-function seedSlackGuardian(): void {
-  seedContactChannel({
+async function seedSlackGuardian(): Promise<void> {
+  await seedContactChannel({
     sourceChannel: "slack",
     externalUserId: SLACK_DM_USER_ID,
     externalChatId: SLACK_DM_CHANNEL_ID,
@@ -300,9 +300,9 @@ function noopProcessMessage(): Promise<{ messageId: string }> {
 // ---------------------------------------------------------------------------
 
 describe("PR 23 — Slack DM cold-start backfill", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
-    seedActiveMember();
+    await seedActiveMember();
     msgCounter = 0;
     backfillDmMock.mockReset();
     backfillDmMock.mockImplementation(async () => []);
@@ -383,7 +383,7 @@ describe("PR 23 — Slack DM cold-start backfill", () => {
 
   test("guardian DM backfill persists guardian text without external_content wrapping", async () => {
     resetState();
-    seedSlackGuardian();
+    await seedSlackGuardian();
 
     backfillDmMock.mockImplementation(async () => [
       makeBackfilledMessage({

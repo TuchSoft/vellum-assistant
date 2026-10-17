@@ -17,7 +17,7 @@ const mergeContactMirrorCalls: unknown[] = [];
 // implementation unless this file's tests are running, so the mocks cannot
 // leak into sibling suites (e.g. the real-DB merge suite's initializeDb()).
 let mockActive = false;
-beforeAll(() => {
+beforeAll(async () => {
   mockActive = true;
 });
 afterAll(() => {
@@ -36,11 +36,11 @@ const realContactStore = {
 
 mock.module("../../../contacts/contacts-write.js", () => ({
   ...realContactsWrite,
-  upsertContactChannel: (
+  upsertContactChannel: async (
     ...args: Parameters<typeof realContactsWrite.upsertContactChannel>
   ) => {
     if (!mockActive) {
-      return realContactsWrite.upsertContactChannel(...args);
+      return await realContactsWrite.upsertContactChannel(...args);
     }
     upsertContactChannelCalls.push(args[0]);
     return null;
@@ -49,36 +49,36 @@ mock.module("../../../contacts/contacts-write.js", () => ({
 
 mock.module("../../../contacts/contact-store.js", () => ({
   ...realContactStore,
-  upsertContact: (
+  upsertContact: async (
     ...args: Parameters<typeof realContactStore.upsertContact>
   ) => {
     if (!mockActive) {
-      return realContactStore.upsertContact(...args);
+      return await realContactStore.upsertContact(...args);
     }
     upsertContactCalls.push(args[0]);
     return { created: true };
   },
-  deleteContact: (
+  deleteContact: async (
     ...args: Parameters<typeof realContactStore.deleteContact>
   ) => {
     if (!mockActive) {
-      return realContactStore.deleteContact(...args);
+      return await realContactStore.deleteContact(...args);
     }
     deleteContactCalls.push(args[0]);
   },
-  upsertContactMirrorFull: (
+  upsertContactMirrorFull: async (
     ...args: Parameters<typeof realContactStore.upsertContactMirrorFull>
   ) => {
     if (!mockActive) {
-      return realContactStore.upsertContactMirrorFull(...args);
+      return await realContactStore.upsertContactMirrorFull(...args);
     }
     upsertContactMirrorFullCalls.push(args[0]);
   },
-  mergeContactMirror: (
+  mergeContactMirror: async (
     ...args: Parameters<typeof realContactStore.mergeContactMirror>
   ) => {
     if (!mockActive) {
-      return realContactStore.mergeContactMirror(...args);
+      return await realContactStore.mergeContactMirror(...args);
     }
     mergeContactMirrorCalls.push(args[0]);
   },
@@ -95,6 +95,19 @@ mock.module("../../../persistence/db-connection.js", () => ({
     mockActive
       ? { transaction: (fn: () => void) => fn() }
       : realDbConnection.getDb(),
+}));
+
+// The batch handler opens a facade transaction. In mock mode the contact
+// primitives are mocked, so an inline transaction over a stub handle is enough.
+const realFacade = {
+  ...(await import("../../../persistence/db-facade.js")),
+};
+mock.module("../../../persistence/db-facade.js", () => ({
+  ...realFacade,
+  requireMainDb: () =>
+    mockActive
+      ? { transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({}) }
+      : realFacade.requireMainDb(),
 }));
 
 const {
@@ -121,13 +134,13 @@ const MIRROR_OPERATION_IDS = [
 ] as const;
 
 describe("contact identity-mirror IPC-only methods", () => {
-  test("are reachable on the IPC surface by operationId", () => {
+  test("are reachable on the IPC surface by operationId", async () => {
     for (const operationId of MIRROR_OPERATION_IDS) {
       expect(typeof CONTACTS_MIRROR_IPC_METHODS[operationId]).toBe("function");
     }
   });
 
-  test("are NOT in the shared contact ROUTES array", () => {
+  test("are NOT in the shared contact ROUTES array", async () => {
     const sharedIds = new Set(contactRoutes.map((r) => r.operationId));
     for (const operationId of MIRROR_OPERATION_IDS) {
       expect(sharedIds.has(operationId)).toBe(false);
@@ -147,9 +160,9 @@ describe("contact identity-mirror IPC-only methods", () => {
 });
 
 describe("contacts_mirror_upsert_channel", () => {
-  test("maps the wire body onto the info-only channel upsert primitive", () => {
+  test("maps the wire body onto the info-only channel upsert primitive", async () => {
     upsertContactChannelCalls.length = 0;
-    const result = handleContactsMirrorUpsertChannel({
+    const result = await handleContactsMirrorUpsertChannel({
       body: {
         contactId: "co-1",
         channelId: "ch-1",
@@ -181,9 +194,9 @@ describe("contacts_mirror_upsert_channel", () => {
     });
   });
 
-  test("threads channelId + refreshDisplayName through and forces userFileOnCreate null", () => {
+  test("threads channelId + refreshDisplayName through and forces userFileOnCreate null", async () => {
     upsertContactChannelCalls.length = 0;
-    handleContactsMirrorUpsertChannel({
+    await handleContactsMirrorUpsertChannel({
       body: {
         contactId: "co-seed",
         channelId: "gw-ch-42",
@@ -203,9 +216,9 @@ describe("contacts_mirror_upsert_channel", () => {
     expect(call.userFileOnCreate).toBe(null);
   });
 
-  test("defaults refreshDisplayName/channelId to undefined for the invite-binding path", () => {
+  test("defaults refreshDisplayName/channelId to undefined for the invite-binding path", async () => {
     upsertContactChannelCalls.length = 0;
-    handleContactsMirrorUpsertChannel({
+    await handleContactsMirrorUpsertChannel({
       body: {
         contactId: "co-invite",
         type: "telegram",
@@ -222,9 +235,9 @@ describe("contacts_mirror_upsert_channel", () => {
     expect(call.userFileOnCreate).toBe(null);
   });
 
-  test("threads reassignConflictingChannels through to the primitive (seed=false, invite=true)", () => {
+  test("threads reassignConflictingChannels through to the primitive (seed=false, invite=true)", async () => {
     upsertContactChannelCalls.length = 0;
-    handleContactsMirrorUpsertChannel({
+    await handleContactsMirrorUpsertChannel({
       body: {
         contactId: "co-seed",
         type: "slack",
@@ -232,7 +245,7 @@ describe("contacts_mirror_upsert_channel", () => {
         reassignConflictingChannels: false,
       },
     });
-    handleContactsMirrorUpsertChannel({
+    await handleContactsMirrorUpsertChannel({
       body: {
         contactId: "co-invite",
         type: "slack",
@@ -247,18 +260,18 @@ describe("contacts_mirror_upsert_channel", () => {
     expect(inviteCall.reassignConflictingChannels).toBe(true);
   });
 
-  test("leaves reassignConflictingChannels undefined when the wire omits it (primitive defaults)", () => {
+  test("leaves reassignConflictingChannels undefined when the wire omits it (primitive defaults)", async () => {
     upsertContactChannelCalls.length = 0;
-    handleContactsMirrorUpsertChannel({
+    await handleContactsMirrorUpsertChannel({
       body: { contactId: "co-x", type: "slack", address: "UX" },
     });
     const call = upsertContactChannelCalls[0] as Record<string, unknown>;
     expect(call.reassignConflictingChannels).toBeUndefined();
   });
 
-  test("omits externalChatId when absent (COALESCE-preserving seed update)", () => {
+  test("omits externalChatId when absent (COALESCE-preserving seed update)", async () => {
     upsertContactChannelCalls.length = 0;
-    handleContactsMirrorUpsertChannel({
+    await handleContactsMirrorUpsertChannel({
       body: { contactId: "co-2", type: "slack", address: "U123" },
     });
 
@@ -266,17 +279,17 @@ describe("contacts_mirror_upsert_channel", () => {
     expect(call.externalChatId).toBeUndefined();
   });
 
-  test("rejects a body missing the channel type/address", () => {
-    expect(() =>
+  test("rejects a body missing the channel type/address", async () => {
+    await expect(
       handleContactsMirrorUpsertChannel({ body: { address: "U123" } }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 });
 
 describe("contacts_mirror_upsert_contact", () => {
-  test("upserts an identity/display contact row without seeding a persona file", () => {
+  test("upserts an identity/display contact row without seeding a persona file", async () => {
     upsertContactCalls.length = 0;
-    const result = handleContactsMirrorUpsertContact({
+    const result = await handleContactsMirrorUpsertContact({
       body: {
         contactId: "co-guardian",
         displayName: "Guardian",
@@ -295,17 +308,17 @@ describe("contacts_mirror_upsert_contact", () => {
     });
   });
 
-  test("rejects a body missing contactId/displayName", () => {
-    expect(() =>
+  test("rejects a body missing contactId/displayName", async () => {
+    await expect(
       handleContactsMirrorUpsertContact({ body: { contactId: "co-1" } }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 });
 
 describe("contacts_mirror_upsert_full", () => {
-  test("delegates the parsed params to the transactional full-upsert primitive", () => {
+  test("delegates the parsed params to the transactional full-upsert primitive", async () => {
     upsertContactMirrorFullCalls.length = 0;
-    const result = handleContactsMirrorUpsertFull({
+    const result = await handleContactsMirrorUpsertFull({
       body: {
         contactId: "co-full",
         contactType: "assistant",
@@ -345,17 +358,17 @@ describe("contacts_mirror_upsert_full", () => {
     ]);
   });
 
-  test("rejects a body missing contactId", () => {
-    expect(() =>
+  test("rejects a body missing contactId", async () => {
+    await expect(
       handleContactsMirrorUpsertFull({ body: { displayName: "X" } }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 });
 
 describe("contacts_mirror_delete_contact", () => {
-  test("deletes the mirror contact row by id", () => {
+  test("deletes the mirror contact row by id", async () => {
     deleteContactCalls.length = 0;
-    const result = handleContactsMirrorDeleteContact({
+    const result = await handleContactsMirrorDeleteContact({
       body: { contactId: "co-gone" },
     });
 
@@ -363,15 +376,17 @@ describe("contacts_mirror_delete_contact", () => {
     expect(deleteContactCalls).toEqual(["co-gone"]);
   });
 
-  test("rejects a body missing contactId", () => {
-    expect(() => handleContactsMirrorDeleteContact({ body: {} })).toThrow();
+  test("rejects a body missing contactId", async () => {
+    await expect(
+      handleContactsMirrorDeleteContact({ body: {} }),
+    ).rejects.toThrow();
   });
 });
 
 describe("contacts_mirror_merge_contact", () => {
-  test("delegates the parsed params to the transactional merge primitive", () => {
+  test("delegates the parsed params to the transactional merge primitive", async () => {
     mergeContactMirrorCalls.length = 0;
-    const result = handleContactsMirrorMergeContact({
+    const result = await handleContactsMirrorMergeContact({
       body: {
         keepContactId: "co-keep",
         mergeContactId: "co-merge",
@@ -391,8 +406,8 @@ describe("contacts_mirror_merge_contact", () => {
     ]);
   });
 
-  test("rejects a self-merge", () => {
-    expect(() =>
+  test("rejects a self-merge", async () => {
+    await expect(
       handleContactsMirrorMergeContact({
         body: {
           keepContactId: "co-same",
@@ -400,25 +415,25 @@ describe("contacts_mirror_merge_contact", () => {
           keepDisplayName: "Same",
         },
       }),
-    ).toThrow(/must differ/);
+    ).rejects.toThrow(/must differ/);
   });
 
-  test("rejects a body missing keepDisplayName", () => {
-    expect(() =>
+  test("rejects a body missing keepDisplayName", async () => {
+    await expect(
       handleContactsMirrorMergeContact({
         body: { keepContactId: "co-keep", mergeContactId: "co-merge" },
       }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 });
 
 describe("contacts_mirror_apply", () => {
-  test("dispatches each op to its matching single-row primitive, in order", () => {
+  test("dispatches each op to its matching single-row primitive, in order", async () => {
     upsertContactCalls.length = 0;
     upsertContactChannelCalls.length = 0;
     deleteContactCalls.length = 0;
 
-    const result = handleContactsMirrorApply({
+    const result = await handleContactsMirrorApply({
       body: {
         ops: [
           { op: "upsert_contact", contactId: "co-1", displayName: "One" },
@@ -453,15 +468,17 @@ describe("contacts_mirror_apply", () => {
     expect(deleteContactCalls).toEqual(["co-old"]);
   });
 
-  test("rejects an unknown op discriminator", () => {
-    expect(() =>
+  test("rejects an unknown op discriminator", async () => {
+    await expect(
       handleContactsMirrorApply({
         body: { ops: [{ op: "nope", contactId: "co-1" }] },
       }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 
-  test("rejects an empty ops array", () => {
-    expect(() => handleContactsMirrorApply({ body: { ops: [] } })).toThrow();
+  test("rejects an empty ops array", async () => {
+    await expect(
+      handleContactsMirrorApply({ body: { ops: [] } }),
+    ).rejects.toThrow();
   });
 });

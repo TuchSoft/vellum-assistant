@@ -137,7 +137,7 @@ function makeArgs(
 describe("GET /workspace-files", () => {
   const handler = getHandler("workspace-files", "GET");
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetContactTables();
   });
 
@@ -152,7 +152,7 @@ describe("GET /workspace-files", () => {
 
   test("with a guardian: includes users/<slug>.md", async () => {
     seedGatewayGuardian({ channelType: "telegram", address: "Alice" });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "Alice",
       guardianDeliveryChatId: "chat-alice",
@@ -180,7 +180,7 @@ describe("GET /workspace-files", () => {
     expect(result.files.map((f) => f.path)).not.toContain("users/alice.md");
 
     seedGatewayGuardian({ channelType: "telegram", address: "Alice" });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "Alice",
       guardianDeliveryChatId: "chat-alice",
@@ -202,13 +202,13 @@ describe("GET /workspace-files", () => {
 describe("GET /workspace-files/read", () => {
   const handler = getHandler("workspace-files/read", "GET");
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetContactTables();
   });
 
   test("reads a guardian users/<slug>.md file", async () => {
     seedGatewayGuardian({ channelType: "telegram", address: "Alice" });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "Alice",
       guardianDeliveryChatId: "chat-alice",
@@ -275,7 +275,7 @@ describe("PUT integrations/ingress/config", () => {
     return readConfig().ingress as Record<string, unknown>;
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     seedIngress({
       publicBaseUrl: TUNNEL_URL,
       enabled: true,

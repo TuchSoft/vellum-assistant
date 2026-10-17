@@ -130,7 +130,7 @@ export async function handleChannelInbound(
   _approvalConversationGenerator?: ApprovalConversationGenerator,
 ): Promise<Response> {
   const body = await req.json();
-  stampTrustVerdict(body);
+  await stampTrustVerdict(body);
   return wrapHandler(() => _handleChannelInbound({ body }));
 }
 
@@ -143,7 +143,7 @@ export async function handleChannelInbound(
  * Skipped when a test already supplies `trustVerdict` (or sets `sourceMetadata`
  * to null) so absent-verdict / explicit-verdict tests keep their setup.
  */
-function stampTrustVerdict(body: Record<string, unknown>): void {
+async function stampTrustVerdict(body: Record<string, unknown>): Promise<void> {
   const meta = body.sourceMetadata as Record<string, unknown> | undefined;
   if (meta && "trustVerdict" in meta) {
     return;
@@ -156,7 +156,7 @@ function stampTrustVerdict(body: Record<string, unknown>): void {
     return;
   }
 
-  const verdict = resolveLocalTrustVerdict({
+  const verdict = await resolveLocalTrustVerdict({
     channelType,
     actorExternalId,
   });
@@ -164,15 +164,15 @@ function stampTrustVerdict(body: Record<string, unknown>): void {
 }
 
 /** Local mirror of the gateway resolver, reading the daemon contact store. */
-export function resolveLocalTrustVerdict(input: {
+export async function resolveLocalTrustVerdict(input: {
   channelType: string;
   actorExternalId?: string;
-}): TrustVerdict {
+}): Promise<TrustVerdict> {
   const canonicalSenderId = input.actorExternalId ?? null;
 
   // Match the gateway's address-only member resolution (no externalChatId).
   const member = input.actorExternalId
-    ? findContactChannel({
+    ? await findContactChannel({
         channelType: input.channelType,
         address: input.actorExternalId,
       })

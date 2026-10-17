@@ -41,18 +41,20 @@ const OUTCOME = {
 describe("handleInviteRedeemed (invite_redeemed)", () => {
   beforeEach(resetTables);
 
-  test("mirrors the local contact/channel info row from the outcome", () => {
-    const result = handleInviteRedeemed({ body: { ...OUTCOME } }) as {
+  test("mirrors the local contact/channel info row from the outcome", async () => {
+    const result = (await handleInviteRedeemed({
+      body: { ...OUTCOME },
+    })) as {
       ok: boolean;
     };
 
     expect(result.ok).toBe(true);
 
-    const contact = getContact("contact-target-1");
+    const contact = await getContact("contact-target-1");
     expect(contact).not.toBeNull();
     expect(contact!.displayName).toBe("Curated Name");
 
-    const found = findContactChannel({
+    const found = await findContactChannel({
       channelType: "telegram",
       address: "U_SENDER",
     });
@@ -61,9 +63,9 @@ describe("handleInviteRedeemed (invite_redeemed)", () => {
     expect(found!.channel.externalChatId).toBe("chat-sender");
   });
 
-  test("is idempotent for repeated delivery of the same outcome", () => {
-    handleInviteRedeemed({ body: { ...OUTCOME } });
-    handleInviteRedeemed({ body: { ...OUTCOME } });
+  test("is idempotent for repeated delivery of the same outcome", async () => {
+    await handleInviteRedeemed({ body: { ...OUTCOME } });
+    await handleInviteRedeemed({ body: { ...OUTCOME } });
 
     const contactRows = getSqlite()
       .query("SELECT COUNT(*) AS n FROM contacts")
@@ -75,16 +77,16 @@ describe("handleInviteRedeemed (invite_redeemed)", () => {
     expect(contactRows.n).toBe(1);
     expect(channelRows.n).toBe(1);
 
-    const found = findContactChannel({
+    const found = await findContactChannel({
       channelType: "telegram",
       address: "U_SENDER",
     });
     expect(found!.contact.id).toBe("contact-target-1");
   });
 
-  test("rejects a malformed outcome payload", () => {
-    expect(() =>
+  test("rejects a malformed outcome payload", async () => {
+    await expect(
       handleInviteRedeemed({ body: { inviteId: "inv-1" } }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 });

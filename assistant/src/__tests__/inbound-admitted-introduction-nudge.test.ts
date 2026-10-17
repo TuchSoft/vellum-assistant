@@ -68,7 +68,7 @@ import { bridgeState } from "./helpers/gateway-guardian-requests-store-bridge.js
 
 await initializeDb();
 
-function resetState(): void {
+async function resetState(): Promise<void> {
   bridgeState.reset();
   const db = getDb();
   db.run("DELETE FROM channel_inbound_events");
@@ -91,7 +91,7 @@ function resetState(): void {
     displayName: principalId,
     status: "active",
   });
-  createGuardianBinding({
+  await createGuardianBinding({
     channel: "vellum",
     guardianExternalUserId: principalId,
     guardianDeliveryChatId: "local",
@@ -181,7 +181,7 @@ function accessRequests() {
 }
 
 describe("introduction nudge on first admit", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
     installNoopProcessor();
   });

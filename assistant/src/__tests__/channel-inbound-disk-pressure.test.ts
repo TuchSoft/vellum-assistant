@@ -79,8 +79,8 @@ function resetTables(): void {
   db.run("DELETE FROM contacts");
 }
 
-function seedTrustedContact(): void {
-  seedContactChannel({
+async function seedTrustedContact(): Promise<void> {
+  await seedContactChannel({
     sourceChannel: "telegram",
     externalUserId: "telegram-user-1",
     displayName: "Example User",
@@ -112,9 +112,9 @@ function makeInboundRequest(overrides: Record<string, unknown> = {}): Request {
 }
 
 describe("channel inbound disk pressure gate", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
-    seedTrustedContact();
+    await seedTrustedContact();
     setAdapterProcessMessage(undefined);
     deliverChannelReplyMock.mockClear();
     deliverChannelReplyMock.mockImplementation(
@@ -222,7 +222,7 @@ describe("channel inbound disk pressure gate", () => {
   });
 
   test("blocks non-guardian Slack reactions silently (no reply) before persistence while locked", async () => {
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "slack",
       externalUserId: "slack-user-1",
       displayName: "Example Slack User",
@@ -277,13 +277,13 @@ describe("channel inbound disk pressure gate", () => {
 
   test("blocks trusted-contact ingress without creating guardian requests", async () => {
     resetTables();
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-1",
       guardianDeliveryChatId: "guardian-chat-1",
       guardianPrincipalId: "guardian-user-1",
     });
-    seedTrustedContact();
+    await seedTrustedContact();
     const processMessage = mock(async () => {
       throw new Error("processMessage should not run");
     });

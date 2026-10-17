@@ -245,8 +245,8 @@ describe("WhatsApp channel ingress attachment resolution", () => {
     pendingInteractions.clear();
   }
 
-  function ensureWhatsAppContact(): void {
-    seedContactChannel({
+  async function ensureWhatsAppContact(): Promise<void> {
+    await seedContactChannel({
       sourceChannel: "whatsapp",
       externalUserId: WHATSAPP_USER_ID,
       displayName: "WhatsApp Test User",
@@ -255,12 +255,12 @@ describe("WhatsApp channel ingress attachment resolution", () => {
     });
   }
 
-  function makeInboundBody(
+  async function makeInboundBody(
     overrides: Record<string, unknown> = {},
-  ): Record<string, unknown> {
+  ): Promise<Record<string, unknown>> {
     // Mirror the gateway: stamp a trust verdict from the local contact store so
     // the daemon's fail-closed ACL stage admits the request to attachment logic.
-    const trustVerdict = resolveLocalTrustVerdict({
+    const trustVerdict = await resolveLocalTrustVerdict({
       channelType: "whatsapp",
       actorExternalId: WHATSAPP_USER_ID,
     });
@@ -326,7 +326,7 @@ describe("WhatsApp channel ingress attachment resolution", () => {
         method: "POST",
         headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify(
-          makeInboundBody({ attachmentIds: [img.id, doc.id] }),
+          await makeInboundBody({ attachmentIds: [img.id, doc.id] }),
         ),
       },
     );
@@ -347,7 +347,7 @@ describe("WhatsApp channel ingress attachment resolution", () => {
         method: "POST",
         headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify(
-          makeInboundBody({
+          await makeInboundBody({
             attachmentIds: [valid.id, "nonexistent-whatsapp-att"],
           }),
         ),
@@ -373,7 +373,7 @@ describe("WhatsApp channel ingress attachment resolution", () => {
         method: "POST",
         headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify(
-          makeInboundBody({ content: "", attachmentIds: [img.id] }),
+          await makeInboundBody({ content: "", attachmentIds: [img.id] }),
         ),
       },
     );

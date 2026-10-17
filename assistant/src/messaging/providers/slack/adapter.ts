@@ -281,7 +281,7 @@ async function resolveUserInfoUncached(
 ): Promise<SlackUserInfoLookupResult> {
   let contactDisplayName: string | undefined;
   try {
-    const result = findContactChannel({
+    const result = await findContactChannel({
       channelType: "slack",
       address: userId,
     });

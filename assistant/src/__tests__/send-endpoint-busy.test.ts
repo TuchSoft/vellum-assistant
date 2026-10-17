@@ -310,7 +310,7 @@ const AUTH_HEADERS: Record<string, string> = {};
 describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
   let server: RuntimeHttpServer;
   let port: number;
-  beforeEach(() => {
+  beforeEach(async () => {
     const db = getDb();
     db.run("DELETE FROM messages");
     db.run("DELETE FROM conversations");
@@ -321,7 +321,7 @@ describe("POST /v1/messages — queue-if-busy and hub publishing", () => {
     pendingInteractions.clear();
     __resetGuardianDeliveryCacheForTest();
 
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "vellum",
       guardianExternalUserId: "dev-bypass",
       guardianDeliveryChatId: "vellum",

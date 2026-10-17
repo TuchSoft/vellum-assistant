@@ -124,7 +124,7 @@ function mockFetchCapture(opts: MockFetchOptions): {
 describe("acceptA2AInvite", () => {
   let savedFetch: typeof globalThis.fetch;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     savedFetch = globalThis.fetch;
     resetTables();
     setConfig({
@@ -142,7 +142,7 @@ describe("acceptA2AInvite", () => {
 
   test("happy path: creates local contact from sender identity", async () => {
     // Create an invite on the sender side so we have a valid token
-    const created = createA2AInvite({});
+    const created = await createA2AInvite({});
     expect(created.success).toBe(true);
 
     mockFetchOnce({
@@ -167,13 +167,13 @@ describe("acceptA2AInvite", () => {
     expect(result.alreadyConnected).toBeFalsy();
 
     // Verify the contact was created with correct identity
-    const contact = getContact(result.contactId!);
+    const contact = await getContact(result.contactId!);
     expect(contact).not.toBeNull();
     expect(contact!.channels).toHaveLength(1);
     expect(contact!.channels[0]!.type).toBe("a2a");
 
     // Verify assistant metadata
-    const metadata = getAssistantContactMetadata(result.contactId!);
+    const metadata = await getAssistantContactMetadata(result.contactId!);
     expect(metadata).not.toBeNull();
     expect(metadata!.metadata).toEqual({
       assistantId: SENDER_ASSISTANT_ID,
@@ -206,7 +206,7 @@ describe("acceptA2AInvite", () => {
     expect(result.success).toBe(true);
 
     // Verify contact uses invite-link values, NOT the daemon response
-    const metadata = getAssistantContactMetadata(result.contactId!);
+    const metadata = await getAssistantContactMetadata(result.contactId!);
     expect(metadata!.metadata).toEqual({
       assistantId: SENDER_ASSISTANT_ID,
       gatewayUrl: SENDER_GATEWAY_URL,
@@ -232,7 +232,7 @@ describe("acceptA2AInvite", () => {
     });
 
     expect(result.success).toBe(true);
-    const contact = getContact(result.contactId!);
+    const contact = await getContact(result.contactId!);
     expect(contact!.displayName).toBe("My Cool Bot");
   });
 
@@ -255,7 +255,7 @@ describe("acceptA2AInvite", () => {
     });
 
     expect(result.success).toBe(true);
-    const contact = getContact(result.contactId!);
+    const contact = await getContact(result.contactId!);
     expect(contact!.displayName).toBe(SENDER_ASSISTANT_ID);
   });
 
@@ -319,9 +319,9 @@ describe("acceptA2AInvite", () => {
 
     // Stored contact metadata is also normalized (no trailing slashes)
     expect(result.success).toBe(true);
-    const contact = getContact(result.contactId!);
+    const contact = await getContact(result.contactId!);
     expect(contact).toBeTruthy();
-    const meta = getAssistantContactMetadata(result.contactId!);
+    const meta = await getAssistantContactMetadata(result.contactId!);
     expect((meta?.metadata as { gatewayUrl?: string } | null)?.gatewayUrl).toBe(
       SENDER_GATEWAY_URL,
     );
@@ -488,7 +488,7 @@ describe("acceptA2AInvite", () => {
       token: "bad-token",
     });
 
-    const contacts = searchContacts({ channelType: "a2a" });
+    const contacts = await searchContacts({ channelType: "a2a" });
     expect(contacts).toHaveLength(0);
   });
 
@@ -523,7 +523,7 @@ describe("acceptA2AInvite", () => {
     }
   });
 
-  test("allows https LAN peers used by self-hosted accept", () => {
+  test("allows https LAN peers used by self-hosted accept", async () => {
     expect(assertSafeSenderGatewayUrl("https://192.168.1.20:8787").ok).toBe(
       true,
     );

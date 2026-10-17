@@ -48,11 +48,11 @@ function insertChannel(params: {
 const TELEMETRY_KEYS = ["interactionCount", "lastInteraction", "lastSeenAt"];
 
 describe("contact-store surfaces no interaction telemetry", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetContactTables();
   });
 
-  test("getContact returns no telemetry fields on the contact or its channels", () => {
+  test("getContact returns no telemetry fields on the contact or its channels", async () => {
     insertContact("ct_1", "Alice");
     insertChannel({
       id: "ch_a",
@@ -61,7 +61,7 @@ describe("contact-store surfaces no interaction telemetry", () => {
       address: "+15550100",
     });
 
-    const contact = getContact("ct_1");
+    const contact = await getContact("ct_1");
     expect(contact).not.toBeNull();
     for (const key of TELEMETRY_KEYS) {
       expect(key in contact!).toBe(false);
@@ -72,7 +72,7 @@ describe("contact-store surfaces no interaction telemetry", () => {
     }
   });
 
-  test("findContactInfoById returns the notes-only INFO shape (telemetry is gateway-owned)", () => {
+  test("findContactInfoById returns the notes-only INFO shape (telemetry is gateway-owned)", async () => {
     insertContact("ct_2", "Bob");
     insertChannel({
       id: "ch_c",
@@ -81,13 +81,13 @@ describe("contact-store surfaces no interaction telemetry", () => {
       address: "+15550200",
     });
 
-    const info = findContactInfoById("ct_2");
+    const info = await findContactInfoById("ct_2");
     expect(info).not.toBeNull();
     expect(Object.keys(info!)).toEqual(["notes"]);
     expect(info!.notes).toBeNull();
   });
 
-  test("filtered searchContacts carries no telemetry fields", () => {
+  test("filtered searchContacts carries no telemetry fields", async () => {
     insertContact("ct_4", "Dana");
     insertChannel({
       id: "ch_e",
@@ -96,7 +96,7 @@ describe("contact-store surfaces no interaction telemetry", () => {
       address: "+15550400",
     });
 
-    const results = searchContacts({ query: "Dana", limit: 10 });
+    const results = await searchContacts({ query: "Dana", limit: 10 });
     expect(results).toHaveLength(1);
     for (const key of TELEMETRY_KEYS) {
       expect(key in results[0]).toBe(false);

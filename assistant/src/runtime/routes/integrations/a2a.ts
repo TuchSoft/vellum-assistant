@@ -47,14 +47,14 @@ function assertA2AFlag(): void {
 // Handlers
 // ---------------------------------------------------------------------------
 
-function handleGetA2AConfig() {
+async function handleGetA2AConfig() {
   assertA2AFlag();
-  return getA2AConfig();
+  return await getA2AConfig();
 }
 
-function handleSetA2AConfig() {
+async function handleSetA2AConfig() {
   assertA2AFlag();
-  const result = setA2AConfig();
+  const result = await setA2AConfig();
   if (!result.success) {
     throw new BadRequestError(result.error ?? "Failed to enable A2A");
   }
@@ -66,7 +66,7 @@ function handleClearA2AConfig() {
   return clearA2AConfig();
 }
 
-function handleCreateA2AInvite({ body = {} }: RouteHandlerArgs) {
+async function handleCreateA2AInvite({ body = {} }: RouteHandlerArgs) {
   assertA2AFlag();
   const { expiresInHours } = body as { expiresInHours?: unknown };
   if (expiresInHours !== undefined) {
@@ -80,7 +80,7 @@ function handleCreateA2AInvite({ body = {} }: RouteHandlerArgs) {
       );
     }
   }
-  const result = createA2AInvite({
+  const result = await createA2AInvite({
     expiresInHours: expiresInHours as number | undefined,
   });
   if (!result.success) {
@@ -89,7 +89,7 @@ function handleCreateA2AInvite({ body = {} }: RouteHandlerArgs) {
   return result;
 }
 
-function handleCompleteA2AInvite({ body = {} }: RouteHandlerArgs) {
+async function handleCompleteA2AInvite({ body = {} }: RouteHandlerArgs) {
   const { token, senderAssistantId, acceptor } = body as {
     token?: unknown;
     senderAssistantId?: unknown;
@@ -124,7 +124,7 @@ function handleCompleteA2AInvite({ body = {} }: RouteHandlerArgs) {
     );
   }
 
-  const result = completeA2AInvite({
+  const result = await completeA2AInvite({
     token,
     senderAssistantId,
     acceptor: {
@@ -139,7 +139,7 @@ function handleCompleteA2AInvite({ body = {} }: RouteHandlerArgs) {
   return result;
 }
 
-function handleRedeemA2AInvite({ body = {} }: RouteHandlerArgs) {
+async function handleRedeemA2AInvite({ body = {} }: RouteHandlerArgs) {
   const { sender } = body as {
     sender?: {
       assistantId?: unknown;
@@ -162,7 +162,7 @@ function handleRedeemA2AInvite({ body = {} }: RouteHandlerArgs) {
     );
   }
 
-  const result = redeemA2AInvite({
+  const result = await redeemA2AInvite({
     sender: {
       assistantId: sender.assistantId,
       displayName: sender.displayName,

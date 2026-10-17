@@ -1077,7 +1077,7 @@ async function classifyWithLLM(
   try {
     const guardian = anyGuardian((await getGuardianDelivery()) ?? []);
     const notes = guardian
-      ? findContactInfoById(guardian.contactId)?.notes
+      ? (await findContactInfoById(guardian.contactId))?.notes
       : undefined;
     if (notes) {
       recipientNotes = truncate(

@@ -295,7 +295,7 @@ function seedChannelCapabilitiesConversation(
 // ---------------------------------------------------------------------------
 
 describe("resolveChannelCapabilities", () => {
-  test("defaults to vellum when no source channel is provided", () => {
+  test("defaults to vellum when no source channel is provided", async () => {
     const caps = resolveChannelCapabilities();
     expect(caps.channel).toBe("vellum");
     // Without a sourceInterface, desktop UI capabilities are false
@@ -304,7 +304,7 @@ describe("resolveChannelCapabilities", () => {
     expect(caps.supportsVoiceInput).toBe(false);
   });
 
-  test("vellum channel with macos interface has full desktop capabilities", () => {
+  test("vellum channel with macos interface has full desktop capabilities", async () => {
     const caps = resolveChannelCapabilities(undefined, "macos");
     expect(caps.channel).toBe("vellum");
     expect(caps.dashboardCapable).toBe(true);
@@ -312,7 +312,7 @@ describe("resolveChannelCapabilities", () => {
     expect(caps.supportsVoiceInput).toBe(true);
   });
 
-  test("vellum channel with vellum interface supports dynamic UI", () => {
+  test("vellum channel with vellum interface supports dynamic UI", async () => {
     const caps = resolveChannelCapabilities("vellum", "vellum");
     expect(caps.channel).toBe("vellum");
     expect(caps.dashboardCapable).toBe(false);
@@ -320,13 +320,13 @@ describe("resolveChannelCapabilities", () => {
     expect(caps.supportsVoiceInput).toBe(false);
   });
 
-  test("defaults to vellum for null source channel", () => {
+  test("defaults to vellum for null source channel", async () => {
     const caps = resolveChannelCapabilities(null);
     expect(caps.channel).toBe("vellum");
     expect(caps.dashboardCapable).toBe(false);
   });
 
-  test('normalises "dashboard" to "vellum"', () => {
+  test('normalises "dashboard" to "vellum"', async () => {
     const caps = resolveChannelCapabilities("dashboard");
     expect(caps.channel).toBe("vellum");
     // Without macos interface, capabilities are false
@@ -335,7 +335,7 @@ describe("resolveChannelCapabilities", () => {
     expect(caps.supportsVoiceInput).toBe(false);
   });
 
-  test('normalises "http-api" to "vellum"', () => {
+  test('normalises "http-api" to "vellum"', async () => {
     const caps = resolveChannelCapabilities("http-api");
     expect(caps.channel).toBe("vellum");
     expect(caps.dashboardCapable).toBe(false);
@@ -343,25 +343,25 @@ describe("resolveChannelCapabilities", () => {
     expect(caps.supportsVoiceInput).toBe(false);
   });
 
-  test('normalises "mac" to "vellum"', () => {
+  test('normalises "mac" to "vellum"', async () => {
     const caps = resolveChannelCapabilities("mac");
     expect(caps.channel).toBe("vellum");
     expect(caps.dashboardCapable).toBe(false);
   });
 
-  test('normalises "macos" to "vellum"', () => {
+  test('normalises "macos" to "vellum"', async () => {
     const caps = resolveChannelCapabilities("macos");
     expect(caps.channel).toBe("vellum");
     expect(caps.dashboardCapable).toBe(false);
   });
 
-  test('normalises "ios" to "vellum"', () => {
+  test('normalises "ios" to "vellum"', async () => {
     const caps = resolveChannelCapabilities("ios");
     expect(caps.channel).toBe("vellum");
     expect(caps.dashboardCapable).toBe(false);
   });
 
-  test('resolves "telegram" as non-dashboard-capable', () => {
+  test('resolves "telegram" as non-dashboard-capable', async () => {
     const caps = resolveChannelCapabilities("telegram");
     expect(caps.channel).toBe("telegram");
     expect(caps.dashboardCapable).toBe(false);
@@ -369,7 +369,7 @@ describe("resolveChannelCapabilities", () => {
     expect(caps.supportsVoiceInput).toBe(false);
   });
 
-  test('resolves "whatsapp" as all-capabilities-false', () => {
+  test('resolves "whatsapp" as all-capabilities-false', async () => {
     const caps = resolveChannelCapabilities("whatsapp");
     expect(caps.channel).toBe("whatsapp");
     expect(caps.dashboardCapable).toBe(false);
@@ -377,7 +377,7 @@ describe("resolveChannelCapabilities", () => {
     expect(caps.supportsVoiceInput).toBe(false);
   });
 
-  test('resolves "slack" as all-capabilities-false', () => {
+  test('resolves "slack" as all-capabilities-false', async () => {
     const caps = resolveChannelCapabilities("slack");
     expect(caps.channel).toBe("slack");
     expect(caps.dashboardCapable).toBe(false);
@@ -385,7 +385,7 @@ describe("resolveChannelCapabilities", () => {
     expect(caps.supportsVoiceInput).toBe(false);
   });
 
-  test('resolves "email" as all-capabilities-false', () => {
+  test('resolves "email" as all-capabilities-false', async () => {
     const caps = resolveChannelCapabilities("email");
     expect(caps.channel).toBe("email");
     expect(caps.dashboardCapable).toBe(false);
@@ -393,7 +393,7 @@ describe("resolveChannelCapabilities", () => {
     expect(caps.supportsVoiceInput).toBe(false);
   });
 
-  test("unknown channel defaults to all-capabilities-false", () => {
+  test("unknown channel defaults to all-capabilities-false", async () => {
     const caps = resolveChannelCapabilities("unknown-thing");
     expect(caps.channel).toBe("unknown-thing");
     expect(caps.dashboardCapable).toBe(false);
@@ -401,7 +401,7 @@ describe("resolveChannelCapabilities", () => {
     expect(caps.supportsVoiceInput).toBe(false);
   });
 
-  test("supportsInlineOptions is true only for inline-button channels", () => {
+  test("supportsInlineOptions is true only for inline-button channels", async () => {
     // Drives rich approval delivery (and, next, channel-native questions).
     // Same membership as the retired RICH_APPROVAL_CHANNELS set — a channel can
     // render inline buttons yet have no dynamic UI.
@@ -428,12 +428,12 @@ describe("resolveChannelCapabilities", () => {
     ).toBe(false);
   });
 
-  test("propagates chatType when provided", () => {
+  test("propagates chatType when provided", async () => {
     const caps = resolveChannelCapabilities("telegram", null, "group");
     expect(caps.chatType).toBe("group");
   });
 
-  test("chatType is undefined when not provided", () => {
+  test("chatType is undefined when not provided", async () => {
     const caps = resolveChannelCapabilities("telegram");
     expect(caps.chatType).toBeUndefined();
   });
@@ -449,7 +449,7 @@ describe("injectChannelCapabilityContext", () => {
     content: [{ type: "text", text: "Hello" }],
   };
 
-  test("skips injection entirely for desktop happy path (all capabilities true)", () => {
+  test("skips injection entirely for desktop happy path (all capabilities true)", async () => {
     const caps: ChannelCapabilities = {
       channel: "vellum",
       dashboardCapable: true,
@@ -464,7 +464,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(result.content.length).toBe(1);
   });
 
-  test("injects constraint rules for non-dashboard channel", () => {
+  test("injects constraint rules for non-dashboard channel", async () => {
     const caps: ChannelCapabilities = {
       channel: "telegram",
       dashboardCapable: false,
@@ -483,7 +483,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(text).toContain("dashboard_capable: false");
   });
 
-  test("preserves original message content after injection", () => {
+  test("preserves original message content after injection", async () => {
     const caps: ChannelCapabilities = {
       channel: "telegram",
       dashboardCapable: false,
@@ -498,7 +498,7 @@ describe("injectChannelCapabilityContext", () => {
     expect((lastBlock as { type: "text"; text: string }).text).toBe("Hello");
   });
 
-  test("injects group chat etiquette when chatType is group", () => {
+  test("injects group chat etiquette when chatType is group", async () => {
     const caps: ChannelCapabilities = {
       channel: "telegram",
       dashboardCapable: false,
@@ -514,7 +514,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(text).toContain("Stay silent when");
   });
 
-  test("injects group chat etiquette when chatType is supergroup", () => {
+  test("injects group chat etiquette when chatType is supergroup", async () => {
     const caps: ChannelCapabilities = {
       channel: "telegram",
       dashboardCapable: false,
@@ -528,7 +528,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(text).toContain("GROUP CHAT ETIQUETTE");
   });
 
-  test("does NOT inject group chat etiquette for private/DM chats", () => {
+  test("does NOT inject group chat etiquette for private/DM chats", async () => {
     const caps: ChannelCapabilities = {
       channel: "telegram",
       dashboardCapable: false,
@@ -543,7 +543,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(text).not.toContain("Stay silent when");
   });
 
-  test("does NOT inject group chat etiquette when chatType is absent", () => {
+  test("does NOT inject group chat etiquette when chatType is absent", async () => {
     const caps: ChannelCapabilities = {
       channel: "telegram",
       dashboardCapable: false,
@@ -556,7 +556,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(text).not.toContain("GROUP CHAT ETIQUETTE");
   });
 
-  test("includes emoji reaction hint for Slack group chats", () => {
+  test("includes emoji reaction hint for Slack group chats", async () => {
     const caps: ChannelCapabilities = {
       channel: "slack",
       dashboardCapable: false,
@@ -571,7 +571,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(text).toContain("emoji reactions");
   });
 
-  test("allows only task_progress ui_show/ui_update guidance for Slack", () => {
+  test("allows only task_progress ui_show/ui_update guidance for Slack", async () => {
     const caps: ChannelCapabilities = {
       channel: "slack",
       dashboardCapable: false,
@@ -587,7 +587,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(text).not.toContain("Do NOT use ui_show, ui_update, or app_create");
   });
 
-  test("guides non-interactive turns to persist UI for a later capable client", () => {
+  test("guides non-interactive turns to persist UI for a later capable client", async () => {
     const slack: ChannelCapabilities = {
       channel: "slack",
       dashboardCapable: false,
@@ -616,7 +616,7 @@ describe("injectChannelCapabilityContext", () => {
     }
   });
 
-  test("keeps blanket ui_show/ui_update prohibition for other non-dynamic channels", () => {
+  test("keeps blanket ui_show/ui_update prohibition for other non-dynamic channels", async () => {
     const caps: ChannelCapabilities = {
       channel: "phone",
       dashboardCapable: false,
@@ -630,7 +630,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(text).not.toContain("Only use ui_show/ui_update");
   });
 
-  test("still injects for group chats even when all capabilities are true", () => {
+  test("still injects for group chats even when all capabilities are true", async () => {
     const caps: ChannelCapabilities = {
       channel: "slack",
       dashboardCapable: true,
@@ -646,7 +646,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(text).toContain("GROUP CHAT ETIQUETTE");
   });
 
-  test("injects WhatsApp formatting constraint for whatsapp channel", () => {
+  test("injects WhatsApp formatting constraint for whatsapp channel", async () => {
     const caps: ChannelCapabilities = {
       channel: "whatsapp",
       dashboardCapable: false,
@@ -661,7 +661,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(text).toContain("CAPS for emphasis");
   });
 
-  test("does NOT inject WhatsApp formatting for non-whatsapp channels", () => {
+  test("does NOT inject WhatsApp formatting for non-whatsapp channels", async () => {
     const caps: ChannelCapabilities = {
       channel: "telegram",
       dashboardCapable: false,
@@ -674,7 +674,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(text).not.toContain("Do NOT use markdown tables");
   });
 
-  test("injects email send CLI constraint for email channel", () => {
+  test("injects email send CLI constraint for email channel", async () => {
     const caps: ChannelCapabilities = {
       channel: "email",
       dashboardCapable: false,
@@ -689,7 +689,7 @@ describe("injectChannelCapabilityContext", () => {
     expect(text).toContain("--reply-to");
   });
 
-  test("does NOT inject email send CLI constraint for non-email channels", () => {
+  test("does NOT inject email send CLI constraint for non-email channels", async () => {
     const caps: ChannelCapabilities = {
       channel: "telegram",
       dashboardCapable: false,
@@ -709,19 +709,19 @@ describe("injectChannelCapabilityContext", () => {
 // ---------------------------------------------------------------------------
 
 describe("isGroupChatType", () => {
-  test("returns true for group chat types", () => {
+  test("returns true for group chat types", async () => {
     expect(isGroupChatType("group")).toBe(true);
     expect(isGroupChatType("supergroup")).toBe(true);
     expect(isGroupChatType("channel")).toBe(true);
     expect(isGroupChatType("mpim")).toBe(true);
   });
 
-  test("returns false for private/DM chat types", () => {
+  test("returns false for private/DM chat types", async () => {
     expect(isGroupChatType("private")).toBe(false);
     expect(isGroupChatType("im")).toBe(false);
   });
 
-  test("returns false for undefined/empty", () => {
+  test("returns false for undefined/empty", async () => {
     expect(isGroupChatType(undefined)).toBe(false);
     expect(isGroupChatType("")).toBe(false);
   });
@@ -738,7 +738,7 @@ describe("isSlackChannelConversation", () => {
     supportsVoiceInput: false,
   } as const;
 
-  test("returns true for Slack channels (chatType === channel)", () => {
+  test("returns true for Slack channels (chatType === channel)", async () => {
     expect(
       isSlackChannelConversation({
         channel: "slack",
@@ -748,7 +748,7 @@ describe("isSlackChannelConversation", () => {
     ).toBe(true);
   });
 
-  test("returns false for Slack DMs regardless of chatType shape", () => {
+  test("returns false for Slack DMs regardless of chatType shape", async () => {
     // Gateway omits chatType entirely for DM message events, so
     // `isSlackChannelConversation` must return false for both the
     // `chatType === undefined` and `chatType === "im"` shapes.
@@ -764,7 +764,7 @@ describe("isSlackChannelConversation", () => {
     ).toBe(false);
   });
 
-  test("returns false for non-Slack channels", () => {
+  test("returns false for non-Slack channels", async () => {
     expect(
       isSlackChannelConversation({
         channel: "telegram",
@@ -782,7 +782,7 @@ describe("isSlackChannelConversation", () => {
 // ---------------------------------------------------------------------------
 
 describe("stripChannelCapabilityContext", () => {
-  test("strips channel_capabilities blocks from user messages", () => {
+  test("strips channel_capabilities blocks from user messages", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -811,7 +811,7 @@ describe("stripChannelCapabilityContext", () => {
     expect(result[1].content.length).toBe(1);
   });
 
-  test("removes user messages that only contain channel_capabilities", () => {
+  test("removes user messages that only contain channel_capabilities", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -828,7 +828,7 @@ describe("stripChannelCapabilityContext", () => {
     expect(result.length).toBe(0);
   });
 
-  test("leaves messages without channel_capabilities untouched", () => {
+  test("leaves messages without channel_capabilities untouched", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -925,7 +925,7 @@ describe("applyRuntimeInjections with channelCapabilities", () => {
 // ---------------------------------------------------------------------------
 
 describe("trust-gating via channel capabilities", () => {
-  test("vellum channel with macos interface injects macOS guidance", () => {
+  test("vellum channel with macos interface injects macOS guidance", async () => {
     const caps = resolveChannelCapabilities("vellum", "macos");
     const message: Message = {
       role: "user",
@@ -944,7 +944,7 @@ describe("trust-gating via channel capabilities", () => {
     expect(injected).not.toContain("CHANNEL CONSTRAINTS");
   });
 
-  test("vellum channel with Windows client OS injects PowerShell guidance", () => {
+  test("vellum channel with Windows client OS injects PowerShell guidance", async () => {
     const caps: ChannelCapabilities = {
       channel: "vellum",
       dashboardCapable: true,
@@ -967,7 +967,7 @@ describe("trust-gating via channel capabilities", () => {
     expect(injected).not.toContain("CHANNEL CONSTRAINTS");
   });
 
-  test("vellum channel with Linux client OS injects host_bash guidance", () => {
+  test("vellum channel with Linux client OS injects host_bash guidance", async () => {
     const caps: ChannelCapabilities = {
       channel: "vellum",
       dashboardCapable: true,
@@ -989,7 +989,7 @@ describe("trust-gating via channel capabilities", () => {
     expect(injected).not.toContain("CHANNEL CONSTRAINTS");
   });
 
-  test("non-dashboard channel adds constraint rules preventing UI references", () => {
+  test("non-dashboard channel adds constraint rules preventing UI references", async () => {
     const caps = resolveChannelCapabilities("telegram");
     const message: Message = {
       role: "user",
@@ -1007,7 +1007,7 @@ describe("trust-gating via channel capabilities", () => {
     expect(injected).not.toContain("complete those steps");
   });
 
-  test("vellum web interface allows dynamic UI but constrains dashboard references", () => {
+  test("vellum web interface allows dynamic UI but constrains dashboard references", async () => {
     const caps = resolveChannelCapabilities("vellum", "vellum");
     const message: Message = {
       role: "user",
@@ -1038,7 +1038,7 @@ describe("injectChannelCommandContext", () => {
     content: [{ type: "text", text: "Hello" }],
   };
 
-  test("injects start command instructions when type is start", () => {
+  test("injects start command instructions when type is start", async () => {
     const result = injectChannelCommandContext(baseUserMessage, {
       type: "start",
     });
@@ -1049,7 +1049,7 @@ describe("injectChannelCommandContext", () => {
     expect(text).toContain("Do NOT reset conversation");
   });
 
-  test("includes language code and payload when provided", () => {
+  test("includes language code and payload when provided", async () => {
     const result = injectChannelCommandContext(baseUserMessage, {
       type: "start",
       payload: "ref123",
@@ -1061,7 +1061,7 @@ describe("injectChannelCommandContext", () => {
     expect(text).toContain("warm, brief greeting");
   });
 
-  test("does NOT inject start instructions for non-start commands", () => {
+  test("does NOT inject start instructions for non-start commands", async () => {
     const result = injectChannelCommandContext(baseUserMessage, {
       type: "help",
     });
@@ -1109,7 +1109,7 @@ describe("applyRuntimeInjections — injection mode", () => {
   // The reminder fires only when the workspace has PKB content, and the now-md
   // injector only when NOW.md has content; seed both so the full-mode cases
   // exercise the active branch.
-  beforeEach(() => {
+  beforeEach(async () => {
     seedPkbContent();
     seedNowScratchpad("Current focus: shipping PR 3");
     seedActiveSurfaceConversation(
@@ -1311,7 +1311,7 @@ describe("applyRuntimeInjections — injection mode", () => {
 // ---------------------------------------------------------------------------
 
 describe("stripNowScratchpad", () => {
-  test("strips NOW.md blocks from user messages", () => {
+  test("strips NOW.md blocks from user messages", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -1340,7 +1340,7 @@ describe("stripNowScratchpad", () => {
     expect(result[1].content.length).toBe(1);
   });
 
-  test("removes user messages that only contain NOW.md", () => {
+  test("removes user messages that only contain NOW.md", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -1357,7 +1357,7 @@ describe("stripNowScratchpad", () => {
     expect(result.length).toBe(0);
   });
 
-  test("leaves messages without NOW.md untouched", () => {
+  test("leaves messages without NOW.md untouched", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -1376,7 +1376,7 @@ describe("stripNowScratchpad", () => {
 // ---------------------------------------------------------------------------
 
 describe("stripInjectionsForCompaction with NOW.md", () => {
-  test("strips NOW.md blocks alongside other injections", () => {
+  test("strips NOW.md blocks alongside other injections", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -1402,7 +1402,7 @@ describe("stripInjectionsForCompaction with NOW.md", () => {
     );
   });
 
-  test("strips <background_turn> blocks", () => {
+  test("strips <background_turn> blocks", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -1430,7 +1430,7 @@ describe("stripInjectionsForCompaction with NOW.md", () => {
 // ---------------------------------------------------------------------------
 
 describe("stripInjectionsForCompaction preserves persistent blocks", () => {
-  test("<turn_context> blocks are NOT stripped", () => {
+  test("<turn_context> blocks are NOT stripped", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -1452,7 +1452,7 @@ describe("stripInjectionsForCompaction preserves persistent blocks", () => {
     ).toContain("<turn_context>");
   });
 
-  test("<workspace> blocks ARE stripped so the injector re-sources them post-compaction", () => {
+  test("<workspace> blocks ARE stripped so the injector re-sources them post-compaction", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -1474,7 +1474,7 @@ describe("stripInjectionsForCompaction preserves persistent blocks", () => {
     );
   });
 
-  test("legacy <workspace_top_level> blocks ARE stripped for backward compat", () => {
+  test("legacy <workspace_top_level> blocks ARE stripped for backward compat", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -1496,7 +1496,7 @@ describe("stripInjectionsForCompaction preserves persistent blocks", () => {
     );
   });
 
-  test("legacy <channel_turn_context> blocks ARE stripped for backward compat", () => {
+  test("legacy <channel_turn_context> blocks ARE stripped for backward compat", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -1518,7 +1518,7 @@ describe("stripInjectionsForCompaction preserves persistent blocks", () => {
     );
   });
 
-  test("legacy <inbound_actor_context> blocks ARE stripped for backward compat", () => {
+  test("legacy <inbound_actor_context> blocks ARE stripped for backward compat", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -1546,7 +1546,7 @@ describe("stripInjectionsForCompaction preserves persistent blocks", () => {
 // ---------------------------------------------------------------------------
 
 describe("stripInjectionsForCompaction memory/info wrapper matching", () => {
-  test("injected <info>…</info> static-memory block IS stripped", () => {
+  test("injected <info>…</info> static-memory block IS stripped", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -1565,7 +1565,7 @@ describe("stripInjectionsForCompaction memory/info wrapper matching", () => {
     );
   });
 
-  test("injected <memory>…</memory> activation block IS stripped", () => {
+  test("injected <memory>…</memory> activation block IS stripped", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -1584,7 +1584,7 @@ describe("stripInjectionsForCompaction memory/info wrapper matching", () => {
     );
   });
 
-  test("user text merely starting with <info>\\n (no closing tag) is NOT stripped", () => {
+  test("user text merely starting with <info>\\n (no closing tag) is NOT stripped", async () => {
     const userText = "<info>\nHere is what I want to discuss about the markup";
     const messages: Message[] = [
       {
@@ -1601,7 +1601,7 @@ describe("stripInjectionsForCompaction memory/info wrapper matching", () => {
     );
   });
 
-  test("user text merely starting with <memory>\\n (no closing tag) is NOT stripped", () => {
+  test("user text merely starting with <memory>\\n (no closing tag) is NOT stripped", async () => {
     const userText = "<memory>\nplease remember to buy milk";
     const messages: Message[] = [
       {
@@ -1718,7 +1718,7 @@ describe("applyRuntimeInjections with nowScratchpad", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveTurnInboundActorContext", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     contactInfoById = {};
     resolveActorTrustCalls = 0;
   });
@@ -1727,10 +1727,10 @@ describe("resolveTurnInboundActorContext", () => {
    * No trust context means there is no inbound actor to ground the turn on, so
    * the actor section is suppressed.
    */
-  test("returns null when there is no trust context", () => {
+  test("returns null when there is no trust context", async () => {
     // GIVEN a turn with no trust context
     // WHEN the inbound actor context is resolved
-    const actorContext = resolveTurnInboundActorContext(undefined);
+    const actorContext = await resolveTurnInboundActorContext(undefined);
 
     // THEN there is no actor context to inject
     expect(actorContext).toBeNull();
@@ -1740,7 +1740,7 @@ describe("resolveTurnInboundActorContext", () => {
    * Guardian (owner) turns suppress the actor section — the unified turn context
    * only renders actor fields for non-guardian actors.
    */
-  test("returns null on guardian turns", () => {
+  test("returns null on guardian turns", async () => {
     // GIVEN a guardian trust context
     const trustContext: TrustContext = {
       sourceChannel: "vellum",
@@ -1749,7 +1749,7 @@ describe("resolveTurnInboundActorContext", () => {
     };
 
     // WHEN the inbound actor context is resolved
-    const actorContext = resolveTurnInboundActorContext(trustContext);
+    const actorContext = await resolveTurnInboundActorContext(trustContext);
 
     // THEN the actor section is suppressed for the owner
     expect(actorContext).toBeNull();
@@ -1760,7 +1760,7 @@ describe("resolveTurnInboundActorContext", () => {
    * from the verdict-derived trust context — without re-resolving via the
    * actor-trust resolver.
    */
-  test("projects ACL from the verdict-derived trust context", () => {
+  test("projects ACL from the verdict-derived trust context", async () => {
     // GIVEN a trusted-contact trust context carrying verdict-derived ACL fields
     const trustContext: TrustContext = {
       sourceChannel: "telegram",
@@ -1775,7 +1775,7 @@ describe("resolveTurnInboundActorContext", () => {
     };
 
     // WHEN the inbound actor context is resolved
-    const actorContext = resolveTurnInboundActorContext(trustContext);
+    const actorContext = await resolveTurnInboundActorContext(trustContext);
 
     // THEN ACL is projected from the context and no ACL re-read happened
     expect(actorContext).toEqual({
@@ -1798,7 +1798,7 @@ describe("resolveTurnInboundActorContext", () => {
    * while the interaction count is gateway-owned and carried on the verdict
    * (never re-resolved through the ACL store or the local aggregation).
    */
-  test("notes come from the local join; interaction count from the verdict", () => {
+  test("notes come from the local join; interaction count from the verdict", async () => {
     // GIVEN a contact whose notes are available by id
     contactInfoById["contact-42"] = { notes: "prefers async updates" };
     const trustContext: TrustContext = {
@@ -1814,7 +1814,7 @@ describe("resolveTurnInboundActorContext", () => {
     };
 
     // WHEN the inbound actor context is resolved
-    const actorContext = resolveTurnInboundActorContext(trustContext);
+    const actorContext = await resolveTurnInboundActorContext(trustContext);
 
     // THEN notes come from the local join, the count from the verdict, and ACL
     // stays verdict-derived
@@ -1828,7 +1828,7 @@ describe("resolveTurnInboundActorContext", () => {
    * A verdict without member telemetry (unknown sender) leaves the interaction
    * count undefined rather than reviving a local assistant-DB read.
    */
-  test("interaction count is undefined when the verdict carries none", () => {
+  test("interaction count is undefined when the verdict carries none", async () => {
     contactInfoById["contact-99"] = { notes: "some note" };
     const trustContext: TrustContext = {
       sourceChannel: "telegram",
@@ -1839,7 +1839,7 @@ describe("resolveTurnInboundActorContext", () => {
       // No requesterInteractionCount stamped.
     };
 
-    const actorContext = resolveTurnInboundActorContext(trustContext);
+    const actorContext = await resolveTurnInboundActorContext(trustContext);
 
     expect(actorContext?.contactNotes).toBe("some note");
     expect(actorContext?.contactInteractionCount).toBeUndefined();
@@ -1855,7 +1855,7 @@ describe("resolveTurnModelProfileLabel", () => {
    * A null notice key means there is no `model_profile` line to render this
    * turn.
    */
-  test("returns null when the profile notice key is null", () => {
+  test("returns null when the profile notice key is null", async () => {
     // GIVEN a turn without a profile notice to render
     const llm = LLMSchema.parse({
       default: { provider: "anthropic", model: "claude-sonnet-4-7" },
@@ -1872,7 +1872,7 @@ describe("resolveTurnModelProfileLabel", () => {
    * A known profile renders its configured display label paired with the model
    * the call site resolves to.
    */
-  test("renders the profile's label with the resolved model", () => {
+  test("renders the profile's label with the resolved model", async () => {
     // GIVEN a workspace with a labelled "fast" profile
     const llm = LLMSchema.parse({
       default: { provider: "anthropic", model: "claude-sonnet-4-7" },
@@ -1892,7 +1892,7 @@ describe("resolveTurnModelProfileLabel", () => {
    * A profile with no configured label falls back to its raw key so the model
    * still gets a stable identifier.
    */
-  test("falls back to the raw key when the profile has no label", () => {
+  test("falls back to the raw key when the profile has no label", async () => {
     // GIVEN a profile that sets a model but no display label
     const llm = LLMSchema.parse({
       default: { provider: "anthropic", model: "claude-sonnet-4-7" },
@@ -1914,7 +1914,7 @@ describe("resolveTurnModelProfileLabel", () => {
    * seed so the announced model is a deterministic function of the
    * conversation, matching the seeded expansion the provider layer performs.
    */
-  test("announces the seeded mix arm so it matches the turn's model", () => {
+  test("announces the seeded mix arm so it matches the turn's model", async () => {
     // GIVEN a mix profile routing between two models
     const llm = LLMSchema.parse({
       default: { provider: "anthropic", model: "claude-sonnet-4-7" },
@@ -1958,7 +1958,7 @@ describe("resolveTurnModelProfileLabel", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildUnifiedTurnContextBlock", () => {
-  test("guardian case: only timestamp + interface, no actor fields", () => {
+  test("guardian case: only timestamp + interface, no actor fields", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "macos",
@@ -1977,7 +1977,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).not.toContain("trust_class:");
   });
 
-  test("non-guardian trusted_contact: all actor fields + conversational guidance", () => {
+  test("non-guardian trusted_contact: all actor fields + conversational guidance", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "telegram",
@@ -2019,7 +2019,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).toContain("</turn_context>");
   });
 
-  test("non-guardian unknown: all actor fields + unknown guidance", () => {
+  test("non-guardian unknown: all actor fields + unknown guidance", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "telegram",
@@ -2041,7 +2041,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).toContain("</turn_context>");
   });
 
-  test("response discretion only for non-vellum channels", () => {
+  test("response discretion only for non-vellum channels", async () => {
     const vellumOptions: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "macos",
@@ -2062,7 +2062,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(telegramText).toContain("<no_response/>");
   });
 
-  test("adds task_progress hint only for Slack turns", () => {
+  test("adds task_progress hint only for Slack turns", async () => {
     const slackText = buildUnifiedTurnContextBlock({
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "slack",
@@ -2080,7 +2080,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(telegramText).not.toContain("use task_progress");
   });
 
-  test("dedup logic: fields matching canonical_actor_identity are omitted", () => {
+  test("dedup logic: fields matching canonical_actor_identity are omitted", async () => {
     const uuid = "vellum-principal-b77e94f5-67c0-4599-8baa-871b925b3da8";
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
@@ -2116,7 +2116,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).not.toContain("contact_notes:");
   });
 
-  test("sanitization: newlines in actor fields are sanitized", () => {
+  test("sanitization: newlines in actor fields are sanitized", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "telegram",
@@ -2150,7 +2150,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).not.toContain("actor_sender_display_name: Eve\n");
   });
 
-  test("name preference note when member and sender display names both differ", () => {
+  test("name preference note when member and sender display names both differ", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "telegram",
@@ -2176,7 +2176,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     );
   });
 
-  test("omits name_preference_note when member name matches canonical", () => {
+  test("omits name_preference_note when member name matches canonical", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "telegram",
@@ -2203,7 +2203,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).not.toContain("name_preference_note:");
   });
 
-  test("omits interface line when interfaceName not provided", () => {
+  test("omits interface line when interfaceName not provided", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
     };
@@ -2216,7 +2216,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(lines[2]).toBe("</turn_context>");
   });
 
-  test("no response_discretion when channelName is not provided", () => {
+  test("no response_discretion when channelName is not provided", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "macos",
@@ -2226,7 +2226,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).not.toContain("response_discretion:");
   });
 
-  test("contact metadata included for non-default values", () => {
+  test("contact metadata included for non-default values", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "telegram",
@@ -2245,7 +2245,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).toContain("contact_interaction_count: 42");
   });
 
-  test("time_since_last_message: emitted right after current_time when provided", () => {
+  test("time_since_last_message: emitted right after current_time when provided", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "macos",
@@ -2261,7 +2261,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(lines[4]).toBe("</turn_context>");
   });
 
-  test("time_since_last_message: omitted when null", () => {
+  test("time_since_last_message: omitted when null", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "macos",
@@ -2272,7 +2272,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).not.toContain("time_since_last_message");
   });
 
-  test("time_since_last_message: omitted when field absent (backward-compat)", () => {
+  test("time_since_last_message: omitted when field absent (backward-compat)", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "macos",
@@ -2282,7 +2282,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).not.toContain("time_since_last_message");
   });
 
-  test("time_since_last_message: works on non-guardian path", () => {
+  test("time_since_last_message: works on non-guardian path", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",
       interfaceName: "telegram",
@@ -2300,7 +2300,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).toContain("canonical_actor_identity: user-1");
   });
 
-  test("timezone mismatch: omits extra lines when there is no manual override", () => {
+  test("timezone mismatch: omits extra lines when there is no manual override", async () => {
     const text = buildUnifiedTurnContextBlock({
       timestamp: "2026-04-02 (Thursday) 08:00:00 -04:00 (America/New_York)",
       clientTimezone: "America/New_York",
@@ -2315,7 +2315,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).not.toContain("timezone_update_available:");
   });
 
-  test("timezone mismatch: omits extra lines when configured and client timezone match", () => {
+  test("timezone mismatch: omits extra lines when configured and client timezone match", async () => {
     const text = buildUnifiedTurnContextBlock({
       timestamp: "2026-04-02 (Thursday) 08:00:00 -04:00 (America/New_York)",
       configuredUserTimezone: "America/New_York",
@@ -2328,7 +2328,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).not.toContain("timezone_update_available:");
   });
 
-  test("timezone mismatch: emits configured and client device timezone when they differ", () => {
+  test("timezone mismatch: emits configured and client device timezone when they differ", async () => {
     const text = buildUnifiedTurnContextBlock({
       timestamp: "2026-04-02 (Thursday) 08:00:00 -04:00 (America/New_York)",
       configuredUserTimezone: "America/New_York",
@@ -2340,7 +2340,7 @@ describe("buildUnifiedTurnContextBlock", () => {
     expect(text).toContain("client_device_timezone: America/Los_Angeles");
   });
 
-  test("timezone mismatch: emits CLI affordance only in mismatch case", () => {
+  test("timezone mismatch: emits CLI affordance only in mismatch case", async () => {
     const mismatchText = buildUnifiedTurnContextBlock({
       timestamp: "2026-04-02 (Thursday) 08:00:00 -04:00 (America/New_York)",
       configuredUserTimezone: "America/New_York",
@@ -2791,11 +2791,11 @@ function clearSeededSubagents(): void {
 }
 
 describe("buildSubagentStatusBlock", () => {
-  test("returns null for empty children array", () => {
+  test("returns null for empty children array", async () => {
     expect(buildSubagentStatusBlock([])).toBeNull();
   });
 
-  test("formats running subagent with elapsed time", () => {
+  test("formats running subagent with elapsed time", async () => {
     const children = [
       makeSubagentState({
         id: "abc-123",
@@ -2811,7 +2811,7 @@ describe("buildSubagentStatusBlock", () => {
     expect(block).toContain("subagent_read");
   });
 
-  test("formats pending subagent without elapsed time for terminal", () => {
+  test("formats pending subagent without elapsed time for terminal", async () => {
     const children = [
       makeSubagentState({
         id: "def-456",
@@ -2825,7 +2825,7 @@ describe("buildSubagentStatusBlock", () => {
     expect(block).not.toContain("elapsed:");
   });
 
-  test("includes error for failed subagent", () => {
+  test("includes error for failed subagent", async () => {
     const children = [
       makeSubagentState({
         id: "ghi-789",
@@ -2839,7 +2839,7 @@ describe("buildSubagentStatusBlock", () => {
     expect(block).toContain("error: Process exited with code 1");
   });
 
-  test("includes both active and terminal subagents", () => {
+  test("includes both active and terminal subagents", async () => {
     const children = [
       makeSubagentState({ id: "a", label: "researcher", status: "running" }),
       makeSubagentState({ id: "b", label: "coder", status: "completed" }),
@@ -2871,7 +2871,7 @@ describe("applyRuntimeInjections — subagent status", () => {
   // (Conversation.getSubagentChildren delegates to the manager), so register
   // a fallback fake carrying that delegation for the seeded children to
   // surface.
-  beforeEach(() => {
+  beforeEach(async () => {
     setConversation(
       FALLBACK_CONVERSATION_ID,
       asConversation({
@@ -2970,7 +2970,7 @@ describe("applyRuntimeInjections — subagent status", () => {
 });
 
 describe("stripInjectionsForCompaction — subagent status", () => {
-  test("strips <active_subagents> blocks", () => {
+  test("strips <active_subagents> blocks", async () => {
     const messages: Message[] = [
       {
         role: "user",
@@ -3017,7 +3017,7 @@ describe("applyRuntimeInjections — PKB relevance hints", () => {
   // for the fallback conversation id `applyRuntimeInjections` synthesizes and
   // seed it with a query vector so the hint-search branch runs.
   let graphHandle: ConversationGraphMemory;
-  beforeEach(() => {
+  beforeEach(async () => {
     graphHandle = new ConversationGraphMemory("runtime-assembly-fallback");
     graphHandle.recordPkbQueryVectors([0.1, 0.2, 0.3], undefined);
   });
@@ -3260,7 +3260,7 @@ describe("applyRuntimeInjections — PKB relevance hints", () => {
     expect(reminder).toContain("- archive/solid.md");
   });
 
-  test("stripInjectionsForCompaction removes the PKB reminder (flat and hinted)", () => {
+  test("stripInjectionsForCompaction removes the PKB reminder (flat and hinted)", async () => {
     // Verifies the existing strip pipeline still catches the new reminder
     // text — it still opens with `<system_reminder>`, which is already in
     // RUNTIME_INJECTION_PREFIXES.
@@ -4431,7 +4431,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
   // ── trust-filter regression for loadSlackChronologicalMessages ───────
   // For untrusted actors, Slack-sourced rows are still shared channel/thread
   // context, while non-Slack guardian-scoped rows remain private.
-  test("loadSlackChronologicalMessages keeps Slack-visible guardian rows for untrusted actors", () => {
+  test("loadSlackChronologicalMessages keeps Slack-visible guardian rows for untrusted actors", async () => {
     const caps: ChannelCapabilities = {
       channel: "slack",
       dashboardCapable: false,
@@ -4485,7 +4485,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
   // Slack builds provider history from rows rather than `this.messages`, so a
   // guardian card dropped only at `Conversation.loadFromDb` would still reach
   // the model here -- the channel the incident happened on.
-  test("loadSlackChronologicalContext drops guardian card rows", () => {
+  test("loadSlackChronologicalContext drops guardian card rows", async () => {
     const caps: ChannelCapabilities = {
       channel: "slack",
       dashboardCapable: false,
@@ -4535,7 +4535,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
     expect(renderedText).not.toContain("tool-approval-req-1");
   });
 
-  test("loadSlackChronologicalContext preserves summary and filters by Slack watermark", () => {
+  test("loadSlackChronologicalContext preserves summary and filters by Slack watermark", async () => {
     const caps: ChannelCapabilities = {
       channel: "slack",
       dashboardCapable: false,
@@ -4613,7 +4613,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
   // to `createdAt/1000` — as the projection filter does — or it advances past a
   // row the filter then drops while the summary never covered it: silent loss.
   describe("getSlackWatermarkAdvanceForRowPrefix — legacy kept rows", () => {
-    test("skips the advance when a legacy kept row sits at or before the candidate", () => {
+    test("skips the advance when a legacy kept row sits at or before the candidate", async () => {
       const rows: MessageRow[] = [
         userRow({
           id: "summarized-prefix",
@@ -4633,7 +4633,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
       expect(getSlackWatermarkAdvanceForRowPrefix(rows, 1, null)).toBeNull();
     });
 
-    test("advances when a legacy kept row sits strictly after the candidate", () => {
+    test("advances when a legacy kept row sits strictly after the candidate", async () => {
       const rows: MessageRow[] = [
         userRow({
           id: "summarized-prefix",
@@ -4654,7 +4654,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
     });
   });
 
-  test("active-thread focus filters pre-watermark and legacy compacted rows", () => {
+  test("active-thread focus filters pre-watermark and legacy compacted rows", async () => {
     const caps: ChannelCapabilities = {
       channel: "slack",
       dashboardCapable: false,
@@ -4714,7 +4714,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
     expect(result!).not.toContain("legacy compacted row");
   });
 
-  test("long Slack thread stays compacted after a later reply", () => {
+  test("long Slack thread stays compacted after a later reply", async () => {
     const caps: ChannelCapabilities = {
       channel: "slack",
       dashboardCapable: false,
@@ -4786,7 +4786,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
   });
 
   // ── loadSlackChronologicalMessages returns null for non-slack channels ─
-  test("loadSlackChronologicalMessages returns null for non-slack channels", () => {
+  test("loadSlackChronologicalMessages returns null for non-slack channels", async () => {
     const result = loadSlackChronologicalMessages(
       "conv-1",
       {
@@ -5362,7 +5362,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
     expect(allText).toContain("DM question");
   });
 
-  test("loadSlackActiveThreadFocusBlock returns null for non-slack channels", () => {
+  test("loadSlackActiveThreadFocusBlock returns null for non-slack channels", async () => {
     const result = loadSlackActiveThreadFocusBlock(
       "conv-1",
       {
@@ -5377,7 +5377,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
     expect(result).toBeNull();
   });
 
-  test("loadSlackActiveThreadFocusBlock returns null for Slack DMs (no threads)", () => {
+  test("loadSlackActiveThreadFocusBlock returns null for Slack DMs (no threads)", async () => {
     // DMs do not have threads, so the focus block is always a no-op.
     // The loader short-circuits before invoking the row loader so the
     // DB read is skipped entirely. Covers both the gateway-omitted
@@ -5468,7 +5468,7 @@ describe("assembleSlackActiveThreadFocusBlock", () => {
     };
   }
 
-  test("returns null when channel is not Slack", () => {
+  test("returns null when channel is not Slack", async () => {
     const result = assembleSlackActiveThreadFocusBlock([], {
       channel: "telegram",
       dashboardCapable: false,
@@ -5479,7 +5479,7 @@ describe("assembleSlackActiveThreadFocusBlock", () => {
     expect(result).toBeNull();
   });
 
-  test("returns null for Slack DMs (chatType im) regardless of rows", () => {
+  test("returns null for Slack DMs (chatType im) regardless of rows", async () => {
     // DMs do not have threads. Even if a caller mistakenly passes thread-
     // looking metadata, the assembler short-circuits before scanning rows.
     const dmCaps: ChannelCapabilities = { ...SLACK_CAPS, chatType: "im" };
@@ -5498,7 +5498,7 @@ describe("assembleSlackActiveThreadFocusBlock", () => {
     expect(assembleSlackActiveThreadFocusBlock(rows, dmCaps)).toBeNull();
   });
 
-  test("returns null when no rows have slackMeta", () => {
+  test("returns null when no rows have slackMeta", async () => {
     const result = assembleSlackActiveThreadFocusBlock(
       [buildRow("user", "legacy", 1_000, null)],
       SLACK_CAPS,
@@ -5506,7 +5506,7 @@ describe("assembleSlackActiveThreadFocusBlock", () => {
     expect(result).toBeNull();
   });
 
-  test("returns null when latest user row is top-level (no threadTs)", () => {
+  test("returns null when latest user row is top-level (no threadTs)", async () => {
     // Active thread detection scans newest-to-oldest user rows and stops
     // at the first one with slackMeta — if it's top-level, no focus
     // block is built.
@@ -5532,7 +5532,7 @@ describe("assembleSlackActiveThreadFocusBlock", () => {
     expect(result).toBeNull();
   });
 
-  test("collects parent + replies + reactions on the active thread", () => {
+  test("collects parent + replies + reactions on the active thread", async () => {
     const rows: SlackTranscriptInputRow[] = [
       // Parent of the active thread.
       buildRow(
@@ -5590,7 +5590,7 @@ describe("assembleSlackActiveThreadFocusBlock", () => {
     expect(result!).not.toContain("Sibling top-level");
   });
 
-  test("preserves user attribution while leaving assistant text unchanged", () => {
+  test("preserves user attribution while leaving assistant text unchanged", async () => {
     // The `<active_thread>` block is rendered as newline-joined plain text,
     // discarding `Message.role`. User rows keep explicit Slack attribution,
     // while assistant rows remain raw to avoid teaching the model a synthetic
@@ -5626,7 +5626,7 @@ describe("assembleSlackActiveThreadFocusBlock", () => {
     expect(result!).toContain("@user");
   });
 
-  test("assistant reactions are not double-attributed (`@assistant: [... @assistant reacted ...]`)", () => {
+  test("assistant reactions are not double-attributed (`@assistant: [... @assistant reacted ...]`)", async () => {
     // `renderReaction` bakes `@assistant` into the reaction tag line
     // (`[11/14/23 14:28 @assistant reacted 👍 to Mxxxxxx]`). The
     // flattened block should preserve that renderer-owned attribution without
@@ -5686,7 +5686,7 @@ describe("assembleSlackActiveThreadFocusBlock", () => {
     expect(result!).not.toContain("@assistant: Assistant reply");
   });
 
-  test("timezone-aware assistant rows stay unchanged in active-thread focus block", () => {
+  test("timezone-aware assistant rows stay unchanged in active-thread focus block", async () => {
     const rows: SlackTranscriptInputRow[] = [
       buildRow(
         "user",
@@ -5732,7 +5732,7 @@ describe("assembleSlackActiveThreadFocusBlock", () => {
     expect(result!).not.toContain("@assistant: Assistant reply");
   });
 
-  test("assistant content that only looks like a compact tag stays unchanged", () => {
+  test("assistant content that only looks like a compact tag stays unchanged", async () => {
     const compactLookingContent =
       "[nov 14 2023 3:13 PM MT assistant] Assistant reply";
     const rows: SlackTranscriptInputRow[] = [
@@ -5769,7 +5769,7 @@ describe("assembleSlackActiveThreadFocusBlock", () => {
     expect(result!).not.toContain(`@assistant: ${compactLookingContent}`);
   });
 
-  test("assistant reaction overflow trailer is not double-attributed", () => {
+  test("assistant reaction overflow trailer is not double-attributed", async () => {
     // When assistant reactions overflow the per-target cap, `renderSlackTranscript`
     // emits a trailer line (`[…and N more reactions to Mxxxxxx]`) whose role
     // is inherited from the first overflowing reaction — i.e. `assistant`.
@@ -5826,7 +5826,7 @@ describe("assembleSlackActiveThreadFocusBlock", () => {
     expect(result!).not.toMatch(/@assistant: \[…and \d+ more reaction/);
   });
 
-  test("emits a block even when the parent has not been backfilled yet", () => {
+  test("emits a block even when the parent has not been backfilled yet", async () => {
     // The inbound reply detects an `activeThreadTs` from its own
     // `threadTs`, but the parent (`channelTs === activeThreadTs`) has not
     // landed in storage yet (backfill pending). The block must still emit
@@ -5850,7 +5850,7 @@ describe("assembleSlackActiveThreadFocusBlock", () => {
     expect(result!).toContain("<active_thread>");
   });
 
-  test("drops a previously-refused exchange from the focus block", () => {
+  test("drops a previously-refused exchange from the focus block", async () => {
     // A refusal persisted inside the active thread (the flagged prompt plus the
     // canned apology the empty-response plugin rewrote the turn into) must not
     // survive into the `<active_thread>` block. The block is appended to the
@@ -5964,7 +5964,7 @@ describe("assembleSlackChronologicalMessages", () => {
     };
   }
 
-  test("returns null when channel is not Slack", () => {
+  test("returns null when channel is not Slack", async () => {
     const caps: ChannelCapabilities = {
       channel: "telegram",
       dashboardCapable: false,
@@ -5976,7 +5976,7 @@ describe("assembleSlackChronologicalMessages", () => {
     expect(result).toBeNull();
   });
 
-  test("renders for Slack channels (chatType !== 'im')", () => {
+  test("renders for Slack channels (chatType !== 'im')", async () => {
     // The channel branch and the DM branch share this assembler.
     // `applyRuntimeInjections` swaps in the chronological transcript for
     // any Slack conversation (channels and DMs alike); the assembler
@@ -5989,7 +5989,7 @@ describe("assembleSlackChronologicalMessages", () => {
     expect(result).toEqual([]);
   });
 
-  test("renders when chatType is missing entirely", () => {
+  test("renders when chatType is missing entirely", async () => {
     // The assembler treats a missing chatType as a non-DM Slack channel
     // (it does not infer DM from absence). Callers that need to
     // distinguish DMs from channels (e.g. to skip thread-only injections)
@@ -6004,7 +6004,7 @@ describe("assembleSlackChronologicalMessages", () => {
     expect(result).toEqual([]);
   });
 
-  test("DM-only fixture: pure chronological render with no thread tags", () => {
+  test("DM-only fixture: pure chronological render with no thread tags", async () => {
     // Two-turn DM: user → assistant → user. All rows carry slackMeta but
     // none have threadTs (DMs never have threadTs). Output must be a flat
     // chronological transcript with no `→ Mxxxxxx` parent-alias arrows.
@@ -6073,7 +6073,7 @@ describe("assembleSlackChronologicalMessages", () => {
     }
   });
 
-  test("expanded Slack timezone metadata remains renderable", () => {
+  test("expanded Slack timezone metadata remains renderable", async () => {
     const userMeta: SlackMessageMetadata = {
       source: "slack",
       channelId: DM_CHANNEL_ID,
@@ -6103,7 +6103,7 @@ describe("assembleSlackChronologicalMessages", () => {
     );
   });
 
-  test("Slack context skips configured assistant new-thread placeholder rows", () => {
+  test("Slack context skips configured assistant new-thread placeholder rows", async () => {
     const placeholderMeta: SlackMessageMetadata = {
       source: "slack",
       channelId: DM_CHANNEL_ID,
@@ -6152,7 +6152,7 @@ describe("assembleSlackChronologicalMessages", () => {
     expect(rendered).toContain("real bot context");
   });
 
-  test("legacy-DM fixture: pre-upgrade rows (no slackMeta) interleave with post-upgrade rows", () => {
+  test("legacy-DM fixture: pre-upgrade rows (no slackMeta) interleave with post-upgrade rows", async () => {
     // Mix:
     //  - Two pre-upgrade rows (created before PR 16 wired slackMeta into
     //    DM persistence). Their metadata column has no slackMeta sub-key —
@@ -6200,7 +6200,7 @@ describe("assembleSlackChronologicalMessages", () => {
     ]);
   });
 
-  test("malformed slackMeta sub-key falls back to legacy flat render", () => {
+  test("malformed slackMeta sub-key falls back to legacy flat render", async () => {
     // Defensive: if the slackMeta sub-key is present but isn't a valid
     // serialized SlackMessageMetadata, the row is treated as legacy rather
     // than dropped from context.
@@ -6226,12 +6226,12 @@ describe("assembleSlackChronologicalMessages", () => {
     ]);
   });
 
-  test("empty rows yields an empty array (Slack DM with no history)", () => {
+  test("empty rows yields an empty array (Slack DM with no history)", async () => {
     const result = assembleSlackChronologicalMessages([], DM_CAPS);
     expect(result).toEqual([]);
   });
 
-  test("attachment-only user rows emit a placeholder tag line so sender/timestamp attribution is preserved", () => {
+  test("attachment-only user rows emit a placeholder tag line so sender/timestamp attribution is preserved", async () => {
     // Before the placeholder, a row whose content is only an image or file
     // would render without any tag line at all — the model would see the
     // attachment block but lose all sender/timestamp attribution. Emit a
@@ -6305,7 +6305,7 @@ describe("assembleSlackChronologicalMessages", () => {
     }
   });
 
-  test("row content with interleaved text + tool_use preserves tool_use alongside tag line", () => {
+  test("row content with interleaved text + tool_use preserves tool_use alongside tag line", async () => {
     // Replayable content blocks (tool_use, tool_result, thinking, etc.) are
     // preserved alongside the tag line. A row persisted with
     // `[text, tool_use]` renders as `[{type:text, tag-line}, {type:tool_use}]`.
@@ -6365,7 +6365,7 @@ describe("assembleSlackChronologicalMessages", () => {
     });
   });
 
-  test("post-reconciliation: assistant rows with channelTs participate in chronological rendering", () => {
+  test("post-reconciliation: assistant rows with channelTs participate in chronological rendering", async () => {
     // Once `deliverReplyViaCallback` reconciles `channelTs` from the
     // gateway's response, assistant rows carry a fully-formed slackMeta
     // envelope. They must then render through the Slack chronological
@@ -6428,7 +6428,7 @@ describe("assembleSlackChronologicalMessages", () => {
     expect(replyText).not.toContain("→ M");
   });
 
-  test("post-reconciliation: an assistant row on the neutral envelope renders chronologically too", () => {
+  test("post-reconciliation: an assistant row on the neutral envelope renders chronologically too", async () => {
     // A Slack reply row is written with the neutral envelope every channel
     // writes; the chronological assembler reads it through the envelope's
     // Slack view, so it takes the same path as a legacy `slackMeta` row.
@@ -6485,7 +6485,7 @@ describe("assembleSlackChronologicalMessages", () => {
     );
   });
 
-  test("post-reconciliation: assistant row appears in active-thread focus block", () => {
+  test("post-reconciliation: assistant row appears in active-thread focus block", async () => {
     // The active-thread focus block at
     // `conversation-runtime-assembly.ts:1387` filters out rows with null
     // metadata. Before reconciliation, outbound assistant rows were null-
@@ -6565,7 +6565,7 @@ describe("assembleSlackChronologicalMessages", () => {
     expect(focusBlock!).toContain("Follow-up");
   });
 
-  test("multi-step tool turn: preserves tool_use/tool_result pairs across assembled transcript", () => {
+  test("multi-step tool turn: preserves tool_use/tool_result pairs across assembled transcript", async () => {
     // Simulates seven rows of a realistic multi-step tool-using turn:
     //   user("hi")
     //   assistant([text, tool_use(abc)])
@@ -6797,7 +6797,7 @@ describe("assembleSlackChronologicalMessages", () => {
     });
   });
 
-  test("quarantines a previously-refused exchange from the transcript", () => {
+  test("quarantines a previously-refused exchange from the transcript", async () => {
     // A safety-classifier refusal persisted in Slack history — the flagged
     // prompt plus the canned apology the empty-response plugin rewrote the turn
     // into — must not be replayed to the model. Left in, the classifier
@@ -6839,7 +6839,7 @@ describe("assembleSlackChronologicalMessages", () => {
     expect(serialized).toContain("back to normal");
   });
 
-  test("quarantines the refused exchange across an interleaved sibling thread", () => {
+  test("quarantines the refused exchange across an interleaved sibling thread", async () => {
     // Multi-party channel: @alice's flagged prompt roots a thread, the
     // assistant's refusal fallback replies inside it (`threadTs` = the prompt's
     // ts), and @bob posts in a different thread in between. Chronological
@@ -6917,7 +6917,7 @@ describe("assembleSlackChronologicalMessages", () => {
     expect(serialized).toContain("back to normal");
   });
 
-  test("quarantines a threaded refusal that followed a tool call, leaving no orphan tool churn", () => {
+  test("quarantines a threaded refusal that followed a tool call, leaving no orphan tool churn", async () => {
     // @alice's flagged prompt roots a thread; the assistant posts an interim
     // "let me check" reply carrying a `tool_use` (Slack-visible, so it keys to
     // @alice's thread), the tool runs (a synthetic `tool_result` row with NO
@@ -7028,7 +7028,7 @@ describe("assembleSlackChronologicalMessages", () => {
     expect(serialized).toContain("back to normal");
   });
 
-  test("keeps a sibling thread's tool pair interleaved inside a refused exchange", () => {
+  test("keeps a sibling thread's tool pair interleaved inside a refused exchange", async () => {
     // @alice's flagged prompt roots her thread and the refusal fallback lands
     // back in it. In between, @bob's own thread runs a tool call: the assistant
     // posts a Slack-visible interim + `tool_use` (keyed to @bob's thread) and

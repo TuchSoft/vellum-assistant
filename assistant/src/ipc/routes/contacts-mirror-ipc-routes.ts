@@ -20,7 +20,7 @@ import {
   upsertContactMirrorFull,
 } from "../../contacts/contact-store.js";
 import { upsertContactChannel } from "../../contacts/contacts-write.js";
-import { getDb } from "../../persistence/db-connection.js";
+import { type AsyncDb, requireMainDb } from "../../persistence/db-facade.js";
 import type { RouteHandlerArgs } from "../../runtime/routes/types.js";
 
 const ContactTypeSchema = z.enum(["human", "assistant"]);
@@ -65,33 +65,37 @@ const UpsertChannelParamsSchema = z.object({
  * refreshed for inbound seeds (`refreshDisplayName`) and preserved for the
  * invite-binding path.
  */
-export function handleContactsMirrorUpsertChannel({
+export async function handleContactsMirrorUpsertChannel({
   body = {},
 }: RouteHandlerArgs) {
-  applyUpsertChannel(UpsertChannelParamsSchema.parse(body));
+  await applyUpsertChannel(UpsertChannelParamsSchema.parse(body));
   return { ok: true };
 }
 
 /** Run the channel upsert primitive for an already-parsed op payload. */
-function applyUpsertChannel(
+async function applyUpsertChannel(
   params: z.infer<typeof UpsertChannelParamsSchema>,
-): void {
-  upsertContactChannel({
-    sourceChannel: params.type,
-    externalUserId: params.address,
-    externalChatId: params.externalChatId,
-    displayName: params.displayName,
-    contactId: params.contactId,
-    channelId: params.channelId,
-    contactType: params.contactType,
-    notes: params.notes,
-    refreshDisplayName: params.refreshDisplayName,
-    reassignConflictingChannels: params.reassignConflictingChannels,
-    isPrimary: params.isPrimary,
-    // The mirror never seeds a persona file: a mirror-created contact keeps
-    // user_file NULL.
-    userFileOnCreate: null,
-  });
+  conn?: AsyncDb,
+): Promise<void> {
+  await upsertContactChannel(
+    {
+      sourceChannel: params.type,
+      externalUserId: params.address,
+      externalChatId: params.externalChatId,
+      displayName: params.displayName,
+      contactId: params.contactId,
+      channelId: params.channelId,
+      contactType: params.contactType,
+      notes: params.notes,
+      refreshDisplayName: params.refreshDisplayName,
+      reassignConflictingChannels: params.reassignConflictingChannels,
+      isPrimary: params.isPrimary,
+      // The mirror never seeds a persona file: a mirror-created contact keeps
+      // user_file NULL.
+      userFileOnCreate: null,
+    },
+    conn,
+  );
 }
 
 const UpsertContactParamsSchema = z.object({
@@ -107,24 +111,28 @@ const UpsertContactParamsSchema = z.object({
  * contact-prompt bootstrap). `userFile` is left null — the mirror never seeds
  * a persona file.
  */
-export function handleContactsMirrorUpsertContact({
+export async function handleContactsMirrorUpsertContact({
   body = {},
 }: RouteHandlerArgs) {
-  applyUpsertContact(UpsertContactParamsSchema.parse(body));
+  await applyUpsertContact(UpsertContactParamsSchema.parse(body));
   return { ok: true };
 }
 
 /** Run the contact upsert primitive for an already-parsed op payload. */
-function applyUpsertContact(
+async function applyUpsertContact(
   params: z.infer<typeof UpsertContactParamsSchema>,
-): void {
-  upsertContact({
-    id: params.contactId,
-    displayName: params.displayName,
-    contactType: params.contactType,
-    notes: params.notes,
-    userFile: null,
-  });
+  conn?: AsyncDb,
+): Promise<void> {
+  await upsertContact(
+    {
+      id: params.contactId,
+      displayName: params.displayName,
+      contactType: params.contactType,
+      notes: params.notes,
+      userFile: null,
+    },
+    conn,
+  );
 }
 
 const DeleteContactParamsSchema = z.object({
@@ -135,18 +143,19 @@ const DeleteContactParamsSchema = z.object({
  * Delete a contact identity row from the mirror (channels cascade). Replaces
  * the gateway's orphan-GC / rollback / delete raw mirror writes.
  */
-export function handleContactsMirrorDeleteContact({
+export async function handleContactsMirrorDeleteContact({
   body = {},
 }: RouteHandlerArgs) {
-  applyDeleteContact(DeleteContactParamsSchema.parse(body));
+  await applyDeleteContact(DeleteContactParamsSchema.parse(body));
   return { ok: true };
 }
 
 /** Run the contact delete primitive for an already-parsed op payload. */
-function applyDeleteContact(
+async function applyDeleteContact(
   params: z.infer<typeof DeleteContactParamsSchema>,
-): void {
-  deleteContact(params.contactId);
+  conn?: AsyncDb,
+): Promise<void> {
+  await deleteContact(params.contactId, conn);
 }
 
 const UpsertFullChannelSchema = z.object({
@@ -183,10 +192,10 @@ const UpsertFullParamsSchema = z.object({
  * assistant_contact_metadata upsert, and channel conflict-skip /
  * gateway-id-adoption sync (see `upsertContactMirrorFull`).
  */
-export function handleContactsMirrorUpsertFull({
+export async function handleContactsMirrorUpsertFull({
   body = {},
 }: RouteHandlerArgs) {
-  upsertContactMirrorFull(UpsertFullParamsSchema.parse(body));
+  await upsertContactMirrorFull(UpsertFullParamsSchema.parse(body));
   return { ok: true };
 }
 
@@ -208,14 +217,14 @@ const MergeContactParamsSchema = z.object({
  * donor — one daemon-DB transaction, so the mirror is never left partially
  * merged. A donor already gone is a no-op success (idempotent gateway retry).
  */
-export function handleContactsMirrorMergeContact({
+export async function handleContactsMirrorMergeContact({
   body = {},
 }: RouteHandlerArgs) {
   const params = MergeContactParamsSchema.parse(body);
   if (params.keepContactId === params.mergeContactId) {
     throw new Error("keepContactId and mergeContactId must differ");
   }
-  mergeContactMirror(params);
+  await mergeContactMirror(params);
   return { ok: true };
 }
 
@@ -242,19 +251,22 @@ const ApplyParamsSchema = z.object({
  * partially applied. Used by the gateway's transactional mirror sites
  * (guardian bootstrap) whose several writes must land atomically.
  */
-export function handleContactsMirrorApply({ body = {} }: RouteHandlerArgs) {
+export async function handleContactsMirrorApply({
+  body = {},
+}: RouteHandlerArgs) {
   const { ops } = ApplyParamsSchema.parse(body);
-  getDb().transaction(() => {
+  const db = requireMainDb();
+  await db.transaction(async (tx) => {
     for (const op of ops) {
       switch (op.op) {
         case "upsert_channel":
-          applyUpsertChannel(op);
+          await applyUpsertChannel(op, tx);
           break;
         case "upsert_contact":
-          applyUpsertContact(op);
+          await applyUpsertContact(op, tx);
           break;
         case "delete_contact":
-          applyDeleteContact(op);
+          await applyDeleteContact(op, tx);
           break;
       }
     }

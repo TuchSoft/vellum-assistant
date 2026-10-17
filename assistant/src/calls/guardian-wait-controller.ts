@@ -333,7 +333,7 @@ export class GuardianWaitController {
       this.state === "awaiting_guardian_decision" &&
       reason === "transport_closed"
     ) {
-      this.emitCallbackHandoff("transport_closed");
+      void this.emitCallbackHandoff("transport_closed");
     }
     this.clearTimers();
     if (this.state === "idle" || this.state === "awaiting_guardian_decision") {
@@ -377,7 +377,7 @@ export class GuardianWaitController {
     // Emit the callback handoff before clearing wait state so a caller
     // who opted into a callback gets the guardian notification.
     if (resolution === "timeout") {
-      this.emitCallbackHandoff("timeout");
+      void this.emitCallbackHandoff("timeout");
     }
     this.clearTimers();
     this.state = "resolved";
@@ -404,8 +404,10 @@ export class GuardianWaitController {
     });
   }
 
-  private emitCallbackHandoff(reason: "timeout" | "transport_closed"): void {
-    const result = emitAccessRequestCallbackHandoff({
+  private async emitCallbackHandoff(
+    reason: "timeout" | "transport_closed",
+  ): Promise<void> {
+    const result = await emitAccessRequestCallbackHandoff({
       reason,
       callbackOptIn: this.callbackOptIn,
       accessRequestId: this.params?.requestId ?? null,

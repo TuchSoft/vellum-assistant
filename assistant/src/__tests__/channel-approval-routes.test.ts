@@ -204,15 +204,15 @@ function makeInboundRequest(overrides: Record<string, unknown> = {}): Request {
 
 const noopProcessMessage = mock(async () => ({ messageId: "msg-1" }));
 
-function ensureTestContact(): void {
-  seedContactChannel({
+async function ensureTestContact(): Promise<void> {
+  await seedContactChannel({
     sourceChannel: "telegram",
     externalUserId: "telegram-user-default",
     displayName: "Test User",
     status: "active",
     policy: "allow",
   });
-  seedContactChannel({
+  await seedContactChannel({
     sourceChannel: "slack",
     externalUserId: "slack-user-default",
     displayName: "Test User",
@@ -221,7 +221,7 @@ function ensureTestContact(): void {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   resetTables();
   ensureTestContact();
   noopProcessMessage.mockClear();
@@ -262,8 +262,8 @@ describe("stale callback handling without matching pending approval", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("inbound callback metadata triggers decision handling", () => {
-  beforeEach(() => {
-    createGuardianBinding({
+  beforeEach(async () => {
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -359,8 +359,8 @@ describe("inbound callback metadata triggers decision handling", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("inbound text matching approval phrases triggers decision handling", () => {
-  beforeEach(() => {
-    createGuardianBinding({
+  beforeEach(async () => {
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -409,8 +409,8 @@ describe("inbound text matching approval phrases triggers decision handling", ()
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("non-decision messages during pending approval (no conversational engine)", () => {
-  beforeEach(() => {
-    createGuardianBinding({
+  beforeEach(async () => {
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -490,8 +490,8 @@ describe("messages without pending approval proceed normally", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("empty content with callbackData bypasses validation", () => {
-  beforeEach(() => {
-    createGuardianBinding({
+  beforeEach(async () => {
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -604,8 +604,8 @@ describe("empty content with callbackData bypasses validation", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("callback requestId validation", () => {
-  beforeEach(() => {
-    createGuardianBinding({
+  beforeEach(async () => {
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -735,8 +735,8 @@ describe("callback requestId validation", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("no immediate reply after approval decision", () => {
-  beforeEach(() => {
-    createGuardianBinding({
+  beforeEach(async () => {
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -867,8 +867,8 @@ describe("stale callback handling", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("plain-text channel approval decisions", () => {
-  beforeEach(() => {
-    createGuardianBinding({
+  beforeEach(async () => {
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -1038,7 +1038,7 @@ describe("plain-text channel approval decisions", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("deliver-once idempotency guard", () => {
-  test("claimRunDelivery returns true on first call, false on subsequent calls", () => {
+  test("claimRunDelivery returns true on first call, false on subsequent calls", async () => {
     const runId = "run-idem-unit";
     expect(deliveryChannels.claimRunDelivery(runId)).toBe(true);
     expect(deliveryChannels.claimRunDelivery(runId)).toBe(false);
@@ -1046,7 +1046,7 @@ describe("deliver-once idempotency guard", () => {
     deliveryChannels.resetRunDeliveryClaim(runId);
   });
 
-  test("different run IDs are independent", () => {
+  test("different run IDs are independent", async () => {
     expect(deliveryChannels.claimRunDelivery("run-a")).toBe(true);
     expect(deliveryChannels.claimRunDelivery("run-b")).toBe(true);
     expect(deliveryChannels.claimRunDelivery("run-a")).toBe(false);
@@ -1055,7 +1055,7 @@ describe("deliver-once idempotency guard", () => {
     deliveryChannels.resetRunDeliveryClaim("run-b");
   });
 
-  test("resetRunDeliveryClaim allows re-claim", () => {
+  test("resetRunDeliveryClaim allows re-claim", async () => {
     const runId = "run-idem-reset";
     expect(deliveryChannels.claimRunDelivery(runId)).toBe(true);
     deliveryChannels.resetRunDeliveryClaim(runId);
@@ -1073,8 +1073,8 @@ describe("deliver-once idempotency guard", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("conversational approval engine — standard path", () => {
-  beforeEach(() => {
-    createGuardianBinding({
+  beforeEach(async () => {
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -1303,8 +1303,8 @@ describe("conversational approval engine — standard path", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("keep_pending remains conversational — standard path", () => {
-  beforeEach(() => {
-    createGuardianBinding({
+  beforeEach(async () => {
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -1371,8 +1371,8 @@ describe("keep_pending remains conversational — standard path", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("engine decision race condition — standard path", () => {
-  beforeEach(() => {
-    createGuardianBinding({
+  beforeEach(async () => {
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -1444,14 +1444,14 @@ describe("engine decision race condition — standard path", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("non-decision status reply for different channels", () => {
-  beforeEach(() => {
-    createGuardianBinding({
+  beforeEach(async () => {
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
       guardianPrincipalId: "telegram-user-default",
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "slack",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -1561,7 +1561,7 @@ describe("non-decision status reply for different channels", () => {
 describe("background channel processing approval prompts", () => {
   test("marks guardian channel turns interactive and delivers approval prompt when confirmation is pending", async () => {
     // Set up a guardian binding so the sender is recognized as a guardian
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "telegram-user-default",
       guardianDeliveryChatId: "chat-123",
@@ -1625,7 +1625,7 @@ describe("background channel processing approval prompts", () => {
   test("guardian prompt delivery still works when binding ID formatting differs from sender ID", async () => {
     // Guardian binding includes extra whitespace; trust resolution canonicalizes
     // identity and prompt delivery should still treat this sender as the guardian.
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "  telegram-user-default  ",
       guardianDeliveryChatId: "chat-123",
@@ -1686,7 +1686,7 @@ describe("background channel processing approval prompts", () => {
     // Set up a guardian binding for a DIFFERENT user so the sender is a
     // trusted contact (not the guardian). The guardian route is resolvable
     // because the binding exists — approval notifications can be delivered.
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-other",
       guardianDeliveryChatId: "guardian-chat-other",
@@ -1787,7 +1787,7 @@ describe("background channel processing approval prompts", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("NL approval routing via destination-scoped guardian requests", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     noopProcessMessage.mockClear();
   });
@@ -1801,7 +1801,7 @@ describe("NL approval routing via destination-scoped guardian requests", () => {
     ensureConversation("conv-voice-nl-1");
 
     // Create guardian binding for Telegram
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: guardianUserId,
       guardianDeliveryChatId: guardianChatId,
@@ -1858,7 +1858,7 @@ describe("NL approval routing via destination-scoped guardian requests", () => {
     const differentChatId = "different-chat-999";
 
     // Create guardian binding for the guardian user on the different chat
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: guardianUserId,
       guardianDeliveryChatId: differentChatId,
@@ -1912,15 +1912,15 @@ describe("NL approval routing via destination-scoped guardian requests", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("trusted-contact self-approval blocked before guardian approval row exists", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     // Create a guardian binding so the requester resolves as trusted_contact
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-tc-selfapproval",
       guardianDeliveryChatId: "guardian-tc-selfapproval-chat",
       guardianPrincipalId: "guardian-tc-selfapproval",
     });
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "telegram",
       externalUserId: "tc-selfapproval-user",
       displayName: "TC Self-Approval User",

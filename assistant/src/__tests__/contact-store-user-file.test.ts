@@ -43,12 +43,12 @@ function insertContact(params: {
 }
 
 describe("upsertContact user_file selection", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetContactTables();
   });
 
-  test("assigns a fresh slug per contact; principalId is gateway-owned and no longer groups siblings locally", () => {
-    const primary = upsertContact({
+  test("assigns a fresh slug per contact; principalId is gateway-owned and no longer groups siblings locally", async () => {
+    const primary = await upsertContact({
       displayName: "Chris",
       channels: [
         {
@@ -62,7 +62,7 @@ describe("upsertContact user_file selection", () => {
     // A second contact with the same display name no longer inherits the
     // first's userFile via a local principal lookup — it gets a fresh
     // (collision-incremented) slug. Sibling grouping is owned by the gateway.
-    const slack = upsertContact({
+    const slack = await upsertContact({
       displayName: "chris",
       channels: [
         {
@@ -76,8 +76,8 @@ describe("upsertContact user_file selection", () => {
     expect(slack.id).not.toBe(primary.id);
   });
 
-  test("generates a slug from the display name for a brand-new contact", () => {
-    const contact = upsertContact({
+  test("generates a slug from the display name for a brand-new contact", async () => {
+    const contact = await upsertContact({
       displayName: "Alice",
       channels: [
         {
@@ -90,8 +90,8 @@ describe("upsertContact user_file selection", () => {
     expect(contact.userFile).toBe("alice.md");
   });
 
-  test("still auto-increments when principalId is not set and displayName collides", () => {
-    const first = upsertContact({
+  test("still auto-increments when principalId is not set and displayName collides", async () => {
+    const first = await upsertContact({
       displayName: "Bob",
       channels: [
         {
@@ -101,7 +101,7 @@ describe("upsertContact user_file selection", () => {
         },
       ],
     });
-    const second = upsertContact({
+    const second = await upsertContact({
       displayName: "Bob",
       channels: [
         {
@@ -115,7 +115,7 @@ describe("upsertContact user_file selection", () => {
     expect(second.userFile).toBe("bob-2.md");
   });
 
-  test("a null-userFile contact does not block a fresh slug for a new contact", () => {
+  test("a null-userFile contact does not block a fresh slug for a new contact", async () => {
     insertContact({
       id: "seed-null",
       displayName: "legacy",
@@ -123,7 +123,7 @@ describe("upsertContact user_file selection", () => {
       createdAt: Date.now(),
     });
 
-    const contact = upsertContact({
+    const contact = await upsertContact({
       displayName: "Legacy",
       channels: [
         {
@@ -138,22 +138,22 @@ describe("upsertContact user_file selection", () => {
 });
 
 describe("generateUserFileSlug", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetContactTables();
   });
 
-  test("returns base slug when unused", () => {
-    expect(generateUserFileSlug("Alice")).toBe("alice.md");
+  test("returns base slug when unused", async () => {
+    expect(await generateUserFileSlug("Alice")).toBe("alice.md");
   });
 
-  test("auto-increments on collision", () => {
+  test("auto-increments on collision", async () => {
     insertContact({
       id: "a",
       displayName: "Alice",
       userFile: "alice.md",
       createdAt: Date.now(),
     });
-    expect(generateUserFileSlug("Alice")).toBe("alice-2.md");
+    expect(await generateUserFileSlug("Alice")).toBe("alice-2.md");
   });
 });
 
@@ -164,7 +164,7 @@ describe("migrateNormalizeUserFileByPrincipal", () => {
   let db: DrizzleDb;
   let raw: Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     raw = new Database(":memory:");
     raw.exec(/*sql*/ `
       CREATE TABLE contacts (
@@ -209,7 +209,7 @@ describe("migrateNormalizeUserFileByPrincipal", () => {
       .all(principalId) as Array<{ id: string; user_file: string | null }>;
   }
 
-  test("normalizes split user_file values across sibling contacts", () => {
+  test("normalizes split user_file values across sibling contacts", async () => {
     const now = Date.now();
     seedLegacy({
       id: "c1",
@@ -234,7 +234,7 @@ describe("migrateNormalizeUserFileByPrincipal", () => {
     expect(rows[1]?.user_file).toBe("chris.md");
   });
 
-  test("propagates a sibling's user_file to NULL rows", () => {
+  test("propagates a sibling's user_file to NULL rows", async () => {
     const now = Date.now();
     seedLegacy({
       id: "c1",
@@ -258,7 +258,7 @@ describe("migrateNormalizeUserFileByPrincipal", () => {
     expect(rows[1]?.user_file).toBe("chris.md");
   });
 
-  test("prefers non-auto-incremented candidate over auto-incremented older row", () => {
+  test("prefers non-auto-incremented candidate over auto-incremented older row", async () => {
     // Older contact has an auto-incremented name, newer has the clean one.
     // Heuristic should pick the clean one regardless of age.
     const now = Date.now();
@@ -284,7 +284,7 @@ describe("migrateNormalizeUserFileByPrincipal", () => {
     expect(rows[1]?.user_file).toBe("chris.md");
   });
 
-  test("leaves untouched when only one contact exists for a principal", () => {
+  test("leaves untouched when only one contact exists for a principal", async () => {
     seedLegacy({
       id: "solo",
       displayName: "Alone",
@@ -300,7 +300,7 @@ describe("migrateNormalizeUserFileByPrincipal", () => {
     expect(rows[0]?.user_file).toBe("alone.md");
   });
 
-  test("does not classify dated-slug filenames as auto-incremented", () => {
+  test("does not classify dated-slug filenames as auto-incremented", async () => {
     // A display name containing a 4-digit year (e.g. "Dana 2024") produces
     // `dana-2024.md`. The auto-increment suffix only ever appends 1–3 digits
     // (starting at 2), so `dana-2024.md` must be treated as a normal filename
@@ -330,7 +330,7 @@ describe("migrateNormalizeUserFileByPrincipal", () => {
     expect(rows.map((r) => r.user_file).sort()).toEqual(["dana.md", "dana.md"]);
   });
 
-  test("excludes year-like 4-digit tails from the auto-increment class", () => {
+  test("excludes year-like 4-digit tails from the auto-increment class", async () => {
     // `-2.md` is auto-increment; `-1999.md` (year) is not.
     const now = Date.now();
     seedLegacy({
@@ -358,7 +358,7 @@ describe("migrateNormalizeUserFileByPrincipal", () => {
     }
   });
 
-  test("classifies 4+ digit counter tails as auto-incremented", () => {
+  test("classifies 4+ digit counter tails as auto-incremented", async () => {
     // `generateUserFileSlug` has an unbounded `for (let i = 2; ; i++)` loop,
     // so a dense slug space can produce 4+ digit counters like `-1000.md`.
     // Those must still be recognized as auto-increments so siblings are
@@ -389,7 +389,7 @@ describe("migrateNormalizeUserFileByPrincipal", () => {
     }
   });
 
-  test("excludes full date-shaped tails from the auto-increment class", () => {
+  test("excludes full date-shaped tails from the auto-increment class", async () => {
     // `dana-2025-04-13.md` ends with `-13.md` (which otherwise looks like a
     // small counter), but the preceding `-2025-04` marks the whole tail as a
     // date. Must NOT be classified as auto-incremented.
@@ -419,7 +419,7 @@ describe("migrateNormalizeUserFileByPrincipal", () => {
     }
   });
 
-  test("treats year-prefixed single-digit counter slug as auto-incremented", () => {
+  test("treats year-prefixed single-digit counter slug as auto-incremented", async () => {
     // `dana-2025-2.md` is `generateUserFileSlug` output when the base
     // `dana-2025.md` was already taken — it is a collision counter, NOT a
     // date. Counters are emitted without leading zeros (`-2`, `-3`, ...)
@@ -451,7 +451,7 @@ describe("migrateNormalizeUserFileByPrincipal", () => {
     }
   });
 
-  test("treats year-prefixed single-digit tail as base slug when display name generates it", () => {
+  test("treats year-prefixed single-digit tail as base slug when display name generates it", async () => {
     // Ambiguous filename: `dana-2025-4.md` could be either a collision counter
     // on base `dana-2025.md` OR the direct base slug from display name
     // "Dana 2025 4". The classifier must cross-reference the row's display
@@ -484,7 +484,7 @@ describe("migrateNormalizeUserFileByPrincipal", () => {
     }
   });
 
-  test("is idempotent", () => {
+  test("is idempotent", async () => {
     const now = Date.now();
     seedLegacy({
       id: "c1",

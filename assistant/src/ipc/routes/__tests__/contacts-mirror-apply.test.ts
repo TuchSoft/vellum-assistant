@@ -53,12 +53,12 @@ function channelRow(id: string): {
 }
 
 describe("contacts_mirror_apply", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetContacts();
   });
 
-  test("applies a guardian-bootstrap-shaped upsert (contact + primary channel) end to end", () => {
-    const result = handleContactsMirrorApply({
+  test("applies a guardian-bootstrap-shaped upsert (contact + primary channel) end to end", async () => {
+    const result = await handleContactsMirrorApply({
       body: {
         ops: [
           {
@@ -86,8 +86,8 @@ describe("contacts_mirror_apply", () => {
     expect(ch?.external_chat_id).toBe("local");
   });
 
-  test("commits a multi-op batch atomically", () => {
-    handleContactsMirrorApply({
+  test("commits a multi-op batch atomically", async () => {
+    await handleContactsMirrorApply({
       body: {
         ops: [
           { op: "upsert_contact", contactId: "co-a", displayName: "A" },
@@ -107,7 +107,7 @@ describe("contacts_mirror_apply", () => {
     expect(channelRow("ch-a")?.contact_id).toBe("co-a");
   });
 
-  test("re-auth rebind: updates an existing channel's address in place by id", () => {
+  test("re-auth rebind: updates an existing channel's address in place by id", async () => {
     // A guardian channel already mirrored at the OLD actor address.
     const sqlite = getSqlite();
     sqlite
@@ -124,7 +124,7 @@ describe("contacts_mirror_apply", () => {
     // The gateway rebinds the SAME channel id to a NEW address (re-auth). The op
     // must update row g-ch in place, not collide on its id and silently keep the
     // stale address.
-    const result = handleContactsMirrorApply({
+    const result = await handleContactsMirrorApply({
       body: {
         ops: [
           {
@@ -162,7 +162,7 @@ describe("contacts_mirror_apply", () => {
     expect(count.n).toBe(1);
   });
 
-  test("re-auth rebind also works through the single-row upsert_channel handler", () => {
+  test("re-auth rebind also works through the single-row upsert_channel handler", async () => {
     const sqlite = getSqlite();
     sqlite
       .prepare(
@@ -176,7 +176,7 @@ describe("contacts_mirror_apply", () => {
       .run("g2-ch", "g2-co", "vellum", "OLD-2", 1);
 
     // The single-row handler shares the same applier/primitive as the apply op.
-    handleContactsMirrorUpsertChannel({
+    await handleContactsMirrorUpsertChannel({
       body: {
         contactId: "g2-co",
         channelId: "g2-ch",
@@ -199,7 +199,7 @@ describe("contacts_mirror_apply", () => {
     expect(count.n).toBe(1);
   });
 
-  test("re-auth rebind adopts a (type,address) held by another row instead of colliding on the unique index", () => {
+  test("re-auth rebind adopts a (type,address) held by another row instead of colliding on the unique index", async () => {
     const sqlite = getSqlite();
     // Guardian channel at the OLD address.
     sqlite
@@ -228,7 +228,7 @@ describe("contacts_mirror_apply", () => {
 
     // reassignConflictingChannels:true (guardian) → adopt the identity onto the
     // gateway-keyed row: remove the stale duplicate, land g3-ch on NEW-3, no throw.
-    const result = handleContactsMirrorApply({
+    const result = await handleContactsMirrorApply({
       body: {
         ops: [
           {
@@ -270,15 +270,17 @@ describe("contacts_mirror_apply", () => {
     expect(count.n).toBe(1);
   });
 
-  test("rejects an unknown op discriminator", () => {
-    expect(() =>
+  test("rejects an unknown op discriminator", async () => {
+    await expect(
       handleContactsMirrorApply({
         body: { ops: [{ op: "wipe_everything", contactId: "x" }] },
       }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 
-  test("rejects an empty ops array", () => {
-    expect(() => handleContactsMirrorApply({ body: { ops: [] } })).toThrow();
+  test("rejects an empty ops array", async () => {
+    await expect(
+      handleContactsMirrorApply({ body: { ops: [] } }),
+    ).rejects.toThrow();
   });
 });

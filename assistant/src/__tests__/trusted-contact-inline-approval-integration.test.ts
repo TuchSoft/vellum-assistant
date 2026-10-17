@@ -241,7 +241,7 @@ function makeTrustedContactTrustContext(): TrustContext {
 // ===========================================================================
 
 describe("(a) target flow: trusted-contact inline guardian approval end-to-end", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     emittedSignals.length = 0;
     deliveredReplies.length = 0;
@@ -325,7 +325,7 @@ describe("(a) target flow: trusted-contact inline guardian approval end-to-end",
 // ===========================================================================
 
 describe("(b) prompt-path flow: confirmation_request bridges to guardian", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     emittedSignals.length = 0;
     mockGuardianBinding = {
@@ -415,14 +415,14 @@ describe("(b) prompt-path flow: confirmation_request bridges to guardian", () =>
 // ===========================================================================
 
 describe("(c) no-binding flow: trusted contact fails fast without guardian binding", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     emittedSignals.length = 0;
     deliveredReplies.length = 0;
     mockGuardianBinding = null; // No guardian binding
   });
 
-  test("routing state blocks prompt waiting when no guardian binding exists", () => {
+  test("routing state blocks prompt waiting when no guardian binding exists", async () => {
     const ctx: TrustContext = {
       sourceChannel: "telegram",
       trustClass: "trusted_contact",
@@ -476,7 +476,7 @@ describe("(d) unknown actor flow: fail-closed with no interactive approval", () 
     inlineGrantWait: { maxWaitMs: 2_000, intervalMs: 20 },
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     emittedSignals.length = 0;
     mockGuardianBinding = {
@@ -528,7 +528,7 @@ describe("(d) unknown actor flow: fail-closed with no interactive approval", () 
     expect(elapsed).toBeLessThan(200);
   });
 
-  test("unknown actors have promptWaitingAllowed=false regardless of guardian route", () => {
+  test("unknown actors have promptWaitingAllowed=false regardless of guardian route", async () => {
     const withRoute: TrustContext = {
       sourceChannel: "telegram",
       trustClass: "unknown",
@@ -602,7 +602,7 @@ function checkIsBoundGuardianActor(params: {
 }
 
 describe("(e) guardian-only prompt delivery invariant", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     deliveredReplies.length = 0;
     mockPendingApprovals = [
       {
@@ -630,7 +630,7 @@ describe("(e) guardian-only prompt delivery invariant", () => {
     // The prompt watcher would return a noop for trusted contacts
   });
 
-  test("unknown actors do NOT receive approval prompt UI", () => {
+  test("unknown actors do NOT receive approval prompt UI", async () => {
     const result = checkIsBoundGuardianActor({
       trustClass: "unknown",
       guardianExternalUserId: "guardian-1",
@@ -640,7 +640,7 @@ describe("(e) guardian-only prompt delivery invariant", () => {
     expect(result).toBe(false);
   });
 
-  test("guardian actor that matches binding DOES receive approval prompt UI", () => {
+  test("guardian actor that matches binding DOES receive approval prompt UI", async () => {
     const result = checkIsBoundGuardianActor({
       trustClass: "guardian",
       guardianExternalUserId: "guardian-1",
@@ -650,7 +650,7 @@ describe("(e) guardian-only prompt delivery invariant", () => {
     expect(result).toBe(true);
   });
 
-  test("guardian actor with identity mismatch does NOT receive approval prompt UI", () => {
+  test("guardian actor with identity mismatch does NOT receive approval prompt UI", async () => {
     // After guardian rotation, old guardian identity should not receive prompts
     const result = checkIsBoundGuardianActor({
       trustClass: "guardian",
@@ -671,7 +671,7 @@ describe("(f) timeout/stale flow: stale guardian decision after inline wait time
     inlineGrantWait: { maxWaitMs: 100, intervalMs: 20 },
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     emittedSignals.length = 0;
     deliveredReplies.length = 0;
@@ -995,7 +995,7 @@ describe("(f) timeout/stale flow: stale guardian decision after inline wait time
 // ===========================================================================
 
 describe("cross-milestone integration checks", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     emittedSignals.length = 0;
     deliveredReplies.length = 0;
@@ -1070,7 +1070,7 @@ describe("cross-milestone integration checks", () => {
     }
   });
 
-  test("M4: tool_grant_request resolver is correctly registered", () => {
+  test("M4: tool_grant_request resolver is correctly registered", async () => {
     const resolver = getResolver("tool_grant_request");
     expect(resolver).toBeDefined();
     expect(resolver!.kind).toBe("tool_grant_request");
@@ -1192,7 +1192,7 @@ describe("(g) access_request resolver: requester code delivery", () => {
     });
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     deliveredReplies.length = 0;
     emittedSignals.length = 0;
@@ -1420,7 +1420,7 @@ describe("(g) access_request resolver: requester code delivery", () => {
 
   test("guardian-facing reply uses the requester's display name, not the raw ID", async () => {
     // Seed a contact so the resolver can resolve a display name.
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "slack",
       externalUserId: REQUESTER_UID,
       displayName: "Alice",

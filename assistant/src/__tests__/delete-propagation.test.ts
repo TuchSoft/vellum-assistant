@@ -66,8 +66,8 @@ function resetState(): void {
   db.run("DELETE FROM contacts");
 }
 
-function seedActiveDeleteActor(externalChatId: string): void {
-  seedContactChannel({
+async function seedActiveDeleteActor(externalChatId: string): Promise<void> {
+  await seedContactChannel({
     sourceChannel: "slack",
     externalUserId: SLACK_DELETE_ACTOR_ID,
     externalChatId,
@@ -169,7 +169,7 @@ function buildSlackDeleteRequest(opts: {
 }
 
 describe("Discord delete propagation (unattributed)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
     _setDeleteLookupConfigForTests(2, 20);
   });
@@ -568,7 +568,7 @@ describe("Discord delete propagation (unattributed)", () => {
 });
 
 describe("Slack delete propagation", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
     seedActiveDeleteActor("C0123CHANNEL");
     // Keep the lookup retry-loop fast by default so the "no such message"

@@ -46,11 +46,11 @@ function resetTables(): void {
 // ---------------------------------------------------------------------------
 
 describe("trusted contact verification → member activation", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
   });
 
-  test("successful verification creates active member with allow policy", () => {
+  test("successful verification creates active member with allow policy", async () => {
     // Simulate M3: guardian approves, outbound session created for the requester
     const session = createOutboundSession({
       channel: "telegram",
@@ -77,7 +77,7 @@ describe("trusted contact verification → member activation", () => {
     // Simulate the member upsert that inbound-message-handler performs on
     // success. The local mirror persists identity only; the gateway owns the
     // ACL verdict, so the channel lands at the schema-default status.
-    upsertContactChannel({
+    await upsertContactChannel({
       sourceChannel: "telegram",
       externalUserId: "requester-user-123",
       externalChatId: "requester-chat-123",
@@ -86,7 +86,7 @@ describe("trusted contact verification → member activation", () => {
     });
 
     // Verify: member identity record exists
-    const contactResult = findContactChannel({
+    const contactResult = await findContactChannel({
       channelType: "telegram",
       address: "requester-user-123",
     });
@@ -98,7 +98,7 @@ describe("trusted contact verification → member activation", () => {
     expect(contactResult!.channel.type).toBe("telegram");
   });
 
-  test("post-verify message is accepted (ACL check passes)", () => {
+  test("post-verify message is accepted (ACL check passes)", async () => {
     // Create and verify a trusted contact
     const session = createOutboundSession({
       channel: "telegram",
@@ -117,7 +117,7 @@ describe("trusted contact verification → member activation", () => {
     );
 
     // Simulate member upsert on verification success
-    upsertContactChannel({
+    await upsertContactChannel({
       sourceChannel: "telegram",
       externalUserId: "requester-user-456",
       externalChatId: "requester-chat-456",
@@ -125,7 +125,7 @@ describe("trusted contact verification → member activation", () => {
 
     // The local mirror persists the member identity; the gateway owns the ACL
     // verdict the inbound handler enforces.
-    const contactResult = findContactChannel({
+    const contactResult = await findContactChannel({
       channelType: "telegram",
       address: "requester-user-456",
     });
@@ -134,7 +134,7 @@ describe("trusted contact verification → member activation", () => {
     expect(contactResult!.channel.address).toBe("requester-user-456");
   });
 
-  test("member lookup is scoped by channel type", () => {
+  test("member lookup is scoped by channel type", async () => {
     // Create member on the telegram channel
     const session = createOutboundSession({
       channel: "telegram",
@@ -152,14 +152,14 @@ describe("trusted contact verification → member activation", () => {
       "chat-cross-test",
     );
 
-    upsertContactChannel({
+    await upsertContactChannel({
       sourceChannel: "telegram",
       externalUserId: "user-cross-test",
       externalChatId: "chat-cross-test",
     });
 
     // Member should be found via contacts
-    const contactResult = findContactChannel({
+    const contactResult = await findContactChannel({
       channelType: "telegram",
       address: "user-cross-test",
     });
@@ -167,16 +167,16 @@ describe("trusted contact verification → member activation", () => {
     expect(contactResult!.channel.address).toBe("user-cross-test");
 
     // Member should NOT be found for a different channel type
-    const otherChannel = findContactChannel({
+    const otherChannel = await findContactChannel({
       channelType: "slack",
       address: "user-cross-test",
     });
     expect(otherChannel).toBeNull();
   });
 
-  test("re-verification re-upserts the same identity row (revoke is gateway-owned)", () => {
+  test("re-verification re-upserts the same identity row (revoke is gateway-owned)", async () => {
     // Create a member identity row.
-    const member = upsertContactChannel({
+    const member = await upsertContactChannel({
       sourceChannel: "telegram",
       externalUserId: "user-revoked",
       externalChatId: "chat-revoked",
@@ -206,13 +206,13 @@ describe("trusted contact verification → member activation", () => {
       expect(result.verificationType).toBe("trusted_contact");
     }
 
-    upsertContactChannel({
+    await upsertContactChannel({
       sourceChannel: "telegram",
       externalUserId: "user-revoked",
       externalChatId: "chat-revoked",
     });
 
-    const reResolved = findContactChannel({
+    const reResolved = await findContactChannel({
       channelType: "telegram",
       address: "user-revoked",
     });
@@ -220,9 +220,9 @@ describe("trusted contact verification → member activation", () => {
     expect(reResolved!.channel.id).toBe(member!.channel.id);
   });
 
-  test("trusted contact verification does NOT create a guardian binding", () => {
+  test("trusted contact verification does NOT create a guardian binding", async () => {
     // Ensure there's an existing guardian binding we want to preserve
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-original",
       guardianDeliveryChatId: "guardian-chat-original",

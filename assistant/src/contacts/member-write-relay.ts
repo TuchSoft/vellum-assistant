@@ -100,7 +100,7 @@ export async function activateMemberChannel(
     }
   }
 
-  const member = mirrorLocalActivation(params);
+  const member = await mirrorLocalActivation(params);
   const memberId = member?.channel.id ?? gatewayChannelId;
   if (!memberId) {
     // No gateway channel (the relay threw or was skipped) AND no local mirror —
@@ -119,11 +119,11 @@ export async function activateMemberChannel(
  * Best-effort local mirror of the activation. Swallows failures. Persists only
  * the native contact/channel identity row — the gateway owns the ACL verdict.
  */
-function mirrorLocalActivation(
+async function mirrorLocalActivation(
   params: ActivateMemberChannelParams,
-): ContactWriteResult | null {
+): Promise<ContactWriteResult | null> {
   try {
-    return upsertContactChannel({
+    return await upsertContactChannel({
       sourceChannel: params.sourceChannel,
       externalUserId: params.externalUserId,
       externalChatId: params.externalChatId,

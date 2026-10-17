@@ -143,7 +143,7 @@ export async function runMirrorReconcile(): Promise<void> {
         // A channel-less gateway contact (a guardian-authored record) whose
         // mirror row is missing: recreate the identity stub.
         if (!localContactIds.has(contact.id)) {
-          upsertContact({
+          await upsertContact({
             id: contact.id,
             displayName: contact.displayName,
             userFileOnCreate: null,

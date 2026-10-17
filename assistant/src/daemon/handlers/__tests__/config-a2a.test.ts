@@ -34,53 +34,53 @@ function setConfigEnabled(enabled: boolean): void {
 }
 
 describe("getA2AConfig", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     setConfigEnabled(false);
   });
 
-  test("returns enabled: false when a2a is disabled", () => {
-    const result = getA2AConfig();
+  test("returns enabled: false when a2a is disabled", async () => {
+    const result = await getA2AConfig();
     expect(result.success).toBe(true);
     expect(result.enabled).toBe(false);
     expect(result.activeConnections).toBe(0);
   });
 
-  test("returns enabled: true when a2a is enabled", () => {
+  test("returns enabled: true when a2a is enabled", async () => {
     setConfigEnabled(true);
-    const result = getA2AConfig();
+    const result = await getA2AConfig();
     expect(result.success).toBe(true);
     expect(result.enabled).toBe(true);
   });
 });
 
 describe("setA2AConfig", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     setConfigEnabled(false);
   });
 
-  test("enables a2a in config", () => {
-    const result = setA2AConfig();
+  test("enables a2a in config", async () => {
+    const result = await setA2AConfig();
     expect(result.success).toBe(true);
     expect(result.enabled).toBe(true);
   });
 
-  test("is idempotent", () => {
-    setA2AConfig();
-    const result = setA2AConfig();
+  test("is idempotent", async () => {
+    await setA2AConfig();
+    const result = await setA2AConfig();
     expect(result.success).toBe(true);
     expect(result.enabled).toBe(true);
   });
 });
 
 describe("clearA2AConfig", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     setConfigEnabled(true);
   });
 
-  test("disables a2a in config", () => {
+  test("disables a2a in config", async () => {
     const result = clearA2AConfig();
     expect(result.success).toBe(true);
     expect(result.enabled).toBe(false);

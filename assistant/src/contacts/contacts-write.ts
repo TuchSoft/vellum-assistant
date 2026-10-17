@@ -6,6 +6,7 @@
  * mutate ACL state.
  */
 
+import type { AsyncDb } from "../persistence/db-facade.js";
 import {
   findContactChannel,
   getContact,
@@ -21,40 +22,43 @@ import type { ContactType, ContactWriteResult } from "./types.js";
  * native Contact + ContactChannel, or null if no usable identity was provided
  * or the lookup failed after upsert.
  */
-export function upsertContactChannel(params: {
-  sourceChannel: string;
-  externalUserId?: string;
-  externalChatId?: string;
-  displayName?: string;
-  username?: string;
-  contactId?: string;
-  /** Explicit channel id for a NEW channel (identity-mirror path): reuse the
-   *  gateway-minted id so both stores key the channel identically. */
-  channelId?: string;
-  /** Classification for a newly created contact (e.g. 'assistant' for bots). */
-  contactType?: ContactType;
-  /** Notes seeded onto a newly created contact (e.g. bot/app provenance). */
-  notes?: string | null;
-  /** userFile to seed on contact CREATE only (identity-mirror stubs pass null
-   *  for a faithful null-user_file replica); ignored on update. */
-  userFileOnCreate?: string | null;
-  /** Refresh the contact display name from the supplied identity even when a
-   *  contactId is given. Used by the inbound identity-seed mirror, whose intent
-   *  is to keep the mirror name in sync with the platform profile. Defaults to
-   *  false: the invite-binding path preserves the guardian-curated name. */
-  refreshDisplayName?: boolean;
-  /** Reparent a conflicting existing channel (same (type,address) owned by a
-   *  DIFFERENT contact) to this contact. Invite-binding only. The inbound
-   *  identity-seed mirror must pass false so it matches the gateway insert's
-   *  onConflictDoNothing and never steals a channel from its existing contact.
-   *  Defaults to `!!contactId` to preserve the invite-binding callers that
-   *  don't set it explicitly. */
-  reassignConflictingChannels?: boolean;
-  /** Mark the channel primary. Omit to leave an existing channel's flag intact
-   *  and default a new channel to non-primary; the guardian-bootstrap mirror
-   *  passes true so the guardian's sole channel stays primary. */
-  isPrimary?: boolean;
-}): ContactWriteResult | null {
+export async function upsertContactChannel(
+  params: {
+    sourceChannel: string;
+    externalUserId?: string;
+    externalChatId?: string;
+    displayName?: string;
+    username?: string;
+    contactId?: string;
+    /** Explicit channel id for a NEW channel (identity-mirror path): reuse the
+     *  gateway-minted id so both stores key the channel identically. */
+    channelId?: string;
+    /** Classification for a newly created contact (e.g. 'assistant' for bots). */
+    contactType?: ContactType;
+    /** Notes seeded onto a newly created contact (e.g. bot/app provenance). */
+    notes?: string | null;
+    /** userFile to seed on contact CREATE only (identity-mirror stubs pass null
+     *  for a faithful null-user_file replica); ignored on update. */
+    userFileOnCreate?: string | null;
+    /** Refresh the contact display name from the supplied identity even when a
+     *  contactId is given. Used by the inbound identity-seed mirror, whose intent
+     *  is to keep the mirror name in sync with the platform profile. Defaults to
+     *  false: the invite-binding path preserves the guardian-curated name. */
+    refreshDisplayName?: boolean;
+    /** Reparent a conflicting existing channel (same (type,address) owned by a
+     *  DIFFERENT contact) to this contact. Invite-binding only. The inbound
+     *  identity-seed mirror must pass false so it matches the gateway insert's
+     *  onConflictDoNothing and never steals a channel from its existing contact.
+     *  Defaults to `!!contactId` to preserve the invite-binding callers that
+     *  don't set it explicitly. */
+    reassignConflictingChannels?: boolean;
+    /** Mark the channel primary. Omit to leave an existing channel's flag intact
+     *  and default a new channel to non-primary; the guardian-bootstrap mirror
+     *  passes true so the guardian's sole channel stays primary. */
+    isPrimary?: boolean;
+  },
+  conn?: AsyncDb,
+): Promise<ContactWriteResult | null> {
   let address: string;
 
   if (params.externalUserId) {
@@ -73,41 +77,44 @@ export function upsertContactChannel(params: {
   // raw platform identity. The inbound identity-seed mirror opts out
   // (refreshDisplayName) so a changed platform profile name refreshes the row.
   if (params.contactId && !params.refreshDisplayName) {
-    const targetContact = getContact(params.contactId);
+    const targetContact = await getContact(params.contactId, conn);
     if (targetContact?.displayName?.trim().length) {
       displayName = targetContact.displayName;
     }
   }
 
-  upsertContact({
-    id: params.contactId,
-    displayName,
-    // Classification and notes are create-only on this path (see the param
-    // docs above): applying them on update or on channel-identity adoption
-    // would let an inbound seed clobber guardian-authored record fields.
-    contactTypeOnCreate: params.contactType,
-    notesOnCreate: params.notes,
-    userFileOnCreate: params.userFileOnCreate,
-    channels: [
-      {
-        id: params.channelId,
-        type: params.sourceChannel,
-        address,
-        // Pass through undefined so syncChannels preserves an existing
-        // external_chat_id (COALESCE semantics); a new channel still defaults
-        // to null. An explicit value overwrites.
-        externalChatId: params.externalChatId,
-        isPrimary: params.isPrimary,
-      },
-    ],
-    // Reassign a conflicting channel from another contact only when the caller
-    // explicitly asks (invite redemption binding a redeemer's existing channel
-    // to the invite's target). Defaults to `!!contactId` for legacy callers;
-    // the inbound-seed mirror passes false so a first-seen race does not steal
-    // the channel from the contact the gateway insert kept.
-    reassignConflictingChannels:
-      params.reassignConflictingChannels ?? !!params.contactId,
-  });
+  await upsertContact(
+    {
+      id: params.contactId,
+      displayName,
+      // Classification and notes are create-only on this path (see the param
+      // docs above): applying them on update or on channel-identity adoption
+      // would let an inbound seed clobber guardian-authored record fields.
+      contactTypeOnCreate: params.contactType,
+      notesOnCreate: params.notes,
+      userFileOnCreate: params.userFileOnCreate,
+      channels: [
+        {
+          id: params.channelId,
+          type: params.sourceChannel,
+          address,
+          // Pass through undefined so syncChannels preserves an existing
+          // external_chat_id (COALESCE semantics); a new channel still defaults
+          // to null. An explicit value overwrites.
+          externalChatId: params.externalChatId,
+          isPrimary: params.isPrimary,
+        },
+      ],
+      // Reassign a conflicting channel from another contact only when the caller
+      // explicitly asks (invite redemption binding a redeemer's existing channel
+      // to the invite's target). Defaults to `!!contactId` for legacy callers;
+      // the inbound-seed mirror passes false so a first-seen race does not steal
+      // the channel from the contact the gateway insert kept.
+      reassignConflictingChannels:
+        params.reassignConflictingChannels ?? !!params.contactId,
+    },
+    conn,
+  );
 
   // NOTE: We intentionally do NOT seed `users/<slug>.md` here. This is the
   // inbound-message hot path — every new contact (Slack, phone, email, etc)
@@ -115,11 +122,14 @@ export function upsertContactChannel(params: {
   // config-watcher.ts and evict live conversations. Persona-file seeding
   // is handled by the gateway's guardian bootstrap flow.
 
-  const contactResult = findContactChannel({
-    channelType: params.sourceChannel,
-    address,
-    externalChatId: params.externalChatId,
-  });
+  const contactResult = await findContactChannel(
+    {
+      channelType: params.sourceChannel,
+      address,
+      externalChatId: params.externalChatId,
+    },
+    conn,
+  );
 
   if (contactResult) {
     return { contact: contactResult.contact, channel: contactResult.channel };

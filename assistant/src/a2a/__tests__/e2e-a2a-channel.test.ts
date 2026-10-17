@@ -144,7 +144,7 @@ function installFetchMock(): void {
 // Setup / teardown
 // ---------------------------------------------------------------------------
 
-beforeEach(() => {
+beforeEach(async () => {
   resetTables();
   setConfigEnabled(false);
   installFetchMock();
@@ -159,10 +159,10 @@ afterEach(() => {
 // ===========================================================================
 
 describe("e2e: trusted contact setup", () => {
-  test("upsertContact creates a2a channel for assistant contact", () => {
+  test("upsertContact creates a2a channel for assistant contact", async () => {
     setConfigEnabled(true);
 
-    upsertContact({
+    await upsertContact({
       displayName: "Peer Assistant",
       contactType: "assistant",
       channels: [
@@ -175,7 +175,7 @@ describe("e2e: trusted contact setup", () => {
 
     // upsertContact persists the a2a channel identity; the gateway owns the ACL
     // status verdict.
-    const contact = findContactByAddress("a2a", "assistant-b");
+    const contact = await findContactByAddress("a2a", "assistant-b");
     expect(contact).not.toBeNull();
     expect(contact!.channels.some((ch) => ch.type === "a2a")).toBe(true);
     const a2aChannel = contact!.channels.find((ch) => ch.type === "a2a");
@@ -188,7 +188,7 @@ describe("e2e: trusted contact setup", () => {
 // ===========================================================================
 
 describe("e2e: message delivery after trusted contact established", () => {
-  test("task store lifecycle: create -> working -> complete with artifacts", () => {
+  test("task store lifecycle: create -> working -> complete with artifacts", async () => {
     // Create a task as if an inbound A2A message arrived
     const msg = makeRequestMessage({
       parts: [{ kind: "text", text: "Order a coffee for me" }],
@@ -295,36 +295,36 @@ describe("e2e: message delivery after trusted contact established", () => {
 // ===========================================================================
 
 describe("e2e: disabled channel", () => {
-  test("getA2AConfig returns disabled when a2a.enabled is false", () => {
-    const result = getA2AConfig();
+  test("getA2AConfig returns disabled when a2a.enabled is false", async () => {
+    const result = await getA2AConfig();
     expect(result.success).toBe(true);
     expect(result.enabled).toBe(false);
   });
 
-  test("clearA2AConfig disables the channel", () => {
+  test("clearA2AConfig disables the channel", async () => {
     setConfigEnabled(true);
-    const before = getA2AConfig();
+    const before = await getA2AConfig();
     expect(before.enabled).toBe(true);
 
     const result = clearA2AConfig();
     expect(result.success).toBe(true);
     expect(result.enabled).toBe(false);
 
-    const after = getA2AConfig();
+    const after = await getA2AConfig();
     expect(after.enabled).toBe(false);
   });
 
-  test("setA2AConfig enables the channel and clearA2AConfig disables it", () => {
+  test("setA2AConfig enables the channel and clearA2AConfig disables it", async () => {
     // Start disabled
-    expect(getA2AConfig().enabled).toBe(false);
+    expect((await getA2AConfig()).enabled).toBe(false);
 
     // Enable
-    setA2AConfig();
-    expect(getA2AConfig().enabled).toBe(true);
+    await setA2AConfig();
+    expect((await getA2AConfig()).enabled).toBe(true);
 
     // Disable
     clearA2AConfig();
-    expect(getA2AConfig().enabled).toBe(false);
+    expect((await getA2AConfig()).enabled).toBe(false);
   });
 });
 
@@ -333,9 +333,9 @@ describe("e2e: disabled channel", () => {
 // ===========================================================================
 
 describe("e2e: unknown sender blocked (ACL enforcement)", () => {
-  test("no trusted contact exists for the sender assistant", () => {
+  test("no trusted contact exists for the sender assistant", async () => {
     // Verify there is no contact for the unknown sender
-    const contact = findContactByAddress("a2a", "unknown-assistant");
+    const contact = await findContactByAddress("a2a", "unknown-assistant");
     expect(contact).toBeNull();
 
     // Create a task from the unknown sender (as the gateway would)
@@ -354,13 +354,16 @@ describe("e2e: unknown sender blocked (ACL enforcement)", () => {
 
     // The ACL layer performs findContactByAddress to resolve trust.
     // For an unknown sender, this returns null — blocking the message.
-    const senderContact = findContactByAddress("a2a", "unknown-assistant");
+    const senderContact = await findContactByAddress(
+      "a2a",
+      "unknown-assistant",
+    );
     expect(senderContact).toBeNull();
   });
 
   test("trusted contact exists with active a2a channel — ACL passes", async () => {
     // Pre-create a trusted contact for the sender
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "a2a",
       externalUserId: "trusted-assistant",
       displayName: "Trusted Bot",
@@ -369,7 +372,7 @@ describe("e2e: unknown sender blocked (ACL enforcement)", () => {
     });
 
     // Verify the contact exists (the ACL check the runtime performs)
-    const contact = findContactByAddress("a2a", "trusted-assistant");
+    const contact = await findContactByAddress("a2a", "trusted-assistant");
     expect(contact).not.toBeNull();
 
     const a2aChannel = contact!.channels.find((ch) => ch.type === "a2a");
@@ -388,7 +391,7 @@ describe("e2e: unknown sender blocked (ACL enforcement)", () => {
   });
 
   test("contact exists but channel is blocked — ACL would reject", async () => {
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "a2a",
       externalUserId: "blocked-assistant",
       displayName: "Blocked Bot",
@@ -396,7 +399,7 @@ describe("e2e: unknown sender blocked (ACL enforcement)", () => {
       policy: "deny",
     });
 
-    const contact = findContactByAddress("a2a", "blocked-assistant");
+    const contact = await findContactByAddress("a2a", "blocked-assistant");
     expect(contact).not.toBeNull();
 
     const a2aChannel = contact!.channels.find((ch) => ch.type === "a2a");
@@ -497,7 +500,7 @@ describe("e2e: full A2A round-trip", () => {
     setConfigEnabled(true);
 
     // Step 1: Create trusted contact for Assistant B (platform-mediated)
-    seedContactChannel({
+    await seedContactChannel({
       sourceChannel: "a2a",
       externalUserId: "assistant-b",
       displayName: "Assistant B",
@@ -506,7 +509,7 @@ describe("e2e: full A2A round-trip", () => {
     });
 
     // Step 2: Verify trusted contact was created
-    const contact = findContactByAddress("a2a", "assistant-b");
+    const contact = await findContactByAddress("a2a", "assistant-b");
     expect(contact).not.toBeNull();
     const a2aChannel = contact!.channels.find((ch) => ch.type === "a2a")!;
     expect(aclColumns(a2aChannel.id)!.status).toBe("active");
@@ -524,7 +527,7 @@ describe("e2e: full A2A round-trip", () => {
     expect(task.status.state).toBe("submitted");
 
     // ACL check: trusted contact exists
-    const senderContact = findContactByAddress("a2a", "assistant-b");
+    const senderContact = await findContactByAddress("a2a", "assistant-b");
     expect(senderContact).not.toBeNull();
 
     // Step 4: Runtime processes the task

@@ -76,13 +76,16 @@ export async function healGuardianBindingDrift(
   // converges on the JWT principal. The gateway delivery supplies the guardian
   // identity (channel + address) but not the local channel UUID write target,
   // so resolve that locally by the guardian's vellum-channel address.
-  const localContact = findContactByAddress("vellum", guardian.address);
+  const localContact = await findContactByAddress("vellum", guardian.address);
   const localChannel = localContact?.channels.find((c) => c.type === "vellum");
   if (!localContact || !localChannel) {
     return false;
   }
 
-  const updated = repairChannelAddress(localChannel.id, incomingPrincipalId);
+  const updated = await repairChannelAddress(
+    localChannel.id,
+    incomingPrincipalId,
+  );
 
   if (!updated) {
     log.warn(

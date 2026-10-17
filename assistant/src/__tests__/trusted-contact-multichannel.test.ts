@@ -111,7 +111,7 @@ await initializeDb();
 
 const TEST_BEARER_TOKEN = "test-token";
 
-function resetState(): void {
+async function resetState(): Promise<void> {
   resetVerificationSessionsSim();
   const db = getDb();
   db.run("DELETE FROM channel_inbound_events");
@@ -188,8 +188,8 @@ function buildInboundRequest(
 
 for (const config of CHANNEL_CONFIGS) {
   describe(`trusted contact flow on ${config.channel} channel`, () => {
-    beforeEach(() => {
-      resetState();
+    beforeEach(async () => {
+      await resetState();
     });
 
     test("non-member message is denied with rejection reply", async () => {
@@ -223,7 +223,7 @@ for (const config of CHANNEL_CONFIGS) {
     });
 
     test("guardian is notified when a non-member messages", async () => {
-      createGuardianBinding({
+      await createGuardianBinding({
         channel: config.channel,
         guardianExternalUserId: config.guardianExternalUserId,
         guardianDeliveryChatId: config.guardianChatId,
@@ -249,7 +249,7 @@ for (const config of CHANNEL_CONFIGS) {
       );
     });
 
-    test("verification creates active member for channel", () => {
+    test("verification creates active member for channel", async () => {
       const session = createOutboundSession({
         channel: config.channel,
         expectedExternalUserId: config.senderExternalUserId,
@@ -271,7 +271,7 @@ for (const config of CHANNEL_CONFIGS) {
         expect(challengeResult.verificationType).toBe("trusted_contact");
       }
 
-      seedContactChannel({
+      await seedContactChannel({
         sourceChannel: config.channel,
         externalUserId: config.senderExternalUserId,
         externalChatId: config.externalChatId,
@@ -281,7 +281,7 @@ for (const config of CHANNEL_CONFIGS) {
         username: "test_requester",
       });
 
-      const contactResult = findContactChannel({
+      const contactResult = await findContactChannel({
         channelType: config.channel,
         address: config.senderExternalUserId,
       });
@@ -294,9 +294,9 @@ for (const config of CHANNEL_CONFIGS) {
       expect(contactResult!.channel.type).toBe(config.channel);
     });
 
-    test("no cross-channel leakage between member records", () => {
+    test("no cross-channel leakage between member records", async () => {
       // Create a member for this channel
-      seedContactChannel({
+      await seedContactChannel({
         sourceChannel: config.channel,
         externalUserId: config.senderExternalUserId,
         externalChatId: config.externalChatId,
@@ -305,7 +305,7 @@ for (const config of CHANNEL_CONFIGS) {
       });
 
       // Should be found on this channel
-      const sameChanResult = findContactChannel({
+      const sameChanResult = await findContactChannel({
         channelType: config.channel,
         address: config.senderExternalUserId,
       });
@@ -313,7 +313,7 @@ for (const config of CHANNEL_CONFIGS) {
 
       // Should NOT be found on a different channel
       const otherChannel = config.channel === "telegram" ? "slack" : "telegram";
-      const crossChanResult = findContactChannel({
+      const crossChanResult = await findContactChannel({
         channelType: otherChannel,
         address: config.senderExternalUserId,
       });
@@ -327,11 +327,11 @@ for (const config of CHANNEL_CONFIGS) {
 // ---------------------------------------------------------------------------
 
 describe("voice identity binding with E.164 phone numbers", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
   });
 
-  test("voice verification session binds to phone E.164", () => {
+  test("voice verification session binds to phone E.164", async () => {
     const phone = "+15551234567";
     const session = createOutboundSession({
       channel: "phone",
@@ -356,7 +356,7 @@ describe("voice identity binding with E.164 phone numbers", () => {
     }
   });
 
-  test("voice verification rejects mismatched phone identity", () => {
+  test("voice verification rejects mismatched phone identity", async () => {
     const expectedPhone = "+15551234567";
     const wrongPhone = "+15559999999";
 
@@ -385,11 +385,11 @@ describe("voice identity binding with E.164 phone numbers", () => {
 // ---------------------------------------------------------------------------
 
 describe("cross-channel isolation", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
   });
 
-  test("verification sessions are scoped per channel", () => {
+  test("verification sessions are scoped per channel", async () => {
     // Create sessions on both channels
     const telegramSession = createOutboundSession({
       channel: "telegram",

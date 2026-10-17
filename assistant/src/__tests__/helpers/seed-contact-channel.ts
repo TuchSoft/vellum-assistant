@@ -25,7 +25,7 @@ import {
   upsertGatewayAcl,
 } from "./gateway-acl-store.js";
 
-export function seedContactChannel(params: {
+export async function seedContactChannel(params: {
   sourceChannel: string;
   externalUserId?: string;
   externalChatId?: string;
@@ -40,13 +40,13 @@ export function seedContactChannel(params: {
   revokedReason?: string | null;
   blockedReason?: string | null;
   principalId?: string | null;
-}): { contactId: string; channelId: string } {
+}): Promise<{ contactId: string; channelId: string }> {
   const address = params.externalUserId ?? params.externalChatId;
   if (!address) {
     throw new Error("seedContactChannel requires an address");
   }
 
-  const contact = upsertContact({
+  const contact = await upsertContact({
     id: params.contactId,
     displayName: params.displayName ?? address,
     channels: [

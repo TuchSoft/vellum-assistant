@@ -76,16 +76,16 @@ function userFilePath(slug: string): string {
 // from a new contact and evicts live conversations. Seeding is
 // restricted to the guardian-creation path.
 describe("guardian persona seeding and trust-cache invariants", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetContactTables();
   });
 
-  test("upsertContactChannel does NOT seed users/<slug>.md for non-guardian contacts", () => {
+  test("upsertContactChannel does NOT seed users/<slug>.md for non-guardian contacts", async () => {
     // upsertContact assigns a userFile slug to every contact (including
     // non-guardians) via generateUserFileSlug when no principalId/sibling
     // match is found. If upsertContactChannel grows a persona-seeding
     // call, this test will start seeing the file on disk and fail.
-    const result = upsertContactChannel({
+    const result = await upsertContactChannel({
       sourceChannel: "telegram",
       externalUserId: "Bob",
       externalChatId: "chat-bob",
@@ -108,12 +108,12 @@ describe("guardian persona seeding and trust-cache invariants", () => {
 // display name on inbound seeds. It must NOT impose the primitive's
 // guardian-curation semantics (generated user_file, preserved name).
 describe("identity-mirror faithful-replica semantics", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetContactTables();
   });
 
-  test("Finding A: userFileOnCreate:null leaves a mirror-created contact's user_file NULL", () => {
-    const result = upsertContactChannel({
+  test("Finding A: userFileOnCreate:null leaves a mirror-created contact's user_file NULL", async () => {
+    const result = await upsertContactChannel({
       sourceChannel: "telegram",
       externalUserId: "SeedA",
       externalChatId: "chat-seed-a",
@@ -130,8 +130,8 @@ describe("identity-mirror faithful-replica semantics", () => {
     expect(result?.contact.userFile).toBeNull();
   });
 
-  test("an op carrying the gateway channel id adopts it onto a divergent legacy row", () => {
-    upsertContactChannel({
+  test("an op carrying the gateway channel id adopts it onto a divergent legacy row", async () => {
+    await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UADOPTID",
       displayName: "Alice",
@@ -143,7 +143,7 @@ describe("identity-mirror faithful-replica semantics", () => {
 
     // The gateway's row for the same identity lives under a different UUID;
     // the mirror adopts it so both stores key the channel identically.
-    upsertContactChannel({
+    await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UADOPTID",
       displayName: "Alice",
@@ -158,8 +158,8 @@ describe("identity-mirror faithful-replica semantics", () => {
     expect(channelCount("slack", "UADOPTID")).toBe(1);
   });
 
-  test("Finding B: an explicit (gateway-minted) channel id is reused verbatim", () => {
-    const result = upsertContactChannel({
+  test("Finding B: an explicit (gateway-minted) channel id is reused verbatim", async () => {
+    const result = await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UBEE",
       externalChatId: "DBEE",
@@ -173,8 +173,8 @@ describe("identity-mirror faithful-replica semantics", () => {
     expect(result?.channel.id).toBe("gw-channel-777");
   });
 
-  test("Finding C: refreshDisplayName refreshes the mirror name on a follow-up seed", () => {
-    upsertContactChannel({
+  test("Finding C: refreshDisplayName refreshes the mirror name on a follow-up seed", async () => {
+    await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UCEE",
       externalChatId: "DCEE",
@@ -185,7 +185,7 @@ describe("identity-mirror faithful-replica semantics", () => {
       userFileOnCreate: null,
     });
 
-    const refreshed = upsertContactChannel({
+    const refreshed = await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UCEE",
       externalChatId: "DCEE",
@@ -197,8 +197,8 @@ describe("identity-mirror faithful-replica semantics", () => {
     expect(refreshed?.contact.displayName).toBe("New Name");
   });
 
-  test("Finding C: the invite-binding path (no refresh flag) preserves a curated name", () => {
-    upsertContactChannel({
+  test("Finding C: the invite-binding path (no refresh flag) preserves a curated name", async () => {
+    await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UDEE",
       externalChatId: "DDEE",
@@ -211,7 +211,7 @@ describe("identity-mirror faithful-replica semantics", () => {
 
     // Invite binding re-binds the channel with the raw platform name; the
     // curated contact name must NOT be clobbered.
-    const bound = upsertContactChannel({
+    const bound = await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UDEE",
       externalChatId: "DDEE",
@@ -229,13 +229,13 @@ describe("identity-mirror faithful-replica semantics", () => {
 // the mirror pointing at contact #2 while the gateway ACL row keeps contact #1).
 // Only the invite-binding path may reparent.
 describe("mirror channel-reparenting race semantics", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetContactTables();
   });
 
-  test("SEED path (reassignConflictingChannels:false) does NOT reparent a conflicting channel", () => {
+  test("SEED path (reassignConflictingChannels:false) does NOT reparent a conflicting channel", async () => {
     // Contact #1 wins the create race — gateway keeps this via onConflictDoNothing.
-    upsertContactChannel({
+    await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "URACE",
       externalChatId: "DRACE",
@@ -249,7 +249,7 @@ describe("mirror channel-reparenting race semantics", () => {
 
     // Contact #2: a second first-seen seed event with a fresh contact id for the
     // SAME (type,address). Seed semantics: must leave the channel with contact #1.
-    upsertContactChannel({
+    await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "URACE",
       externalChatId: "DRACE",
@@ -273,9 +273,9 @@ describe("mirror channel-reparenting race semantics", () => {
     expect(channelLessContactCount()).toBe(0);
   });
 
-  test("adoption and re-seen seeds never clobber curated record fields", () => {
+  test("adoption and re-seen seeds never clobber curated record fields", async () => {
     // First-seen bot sender: classification and notes land on CREATE.
-    const created = upsertContactChannel({
+    const created = await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UCURATED",
       externalChatId: "DCURATED",
@@ -294,7 +294,7 @@ describe("mirror channel-reparenting race semantics", () => {
     // A later seed for the same identity (mirror row present) carries record
     // fields for gap recovery, but they are create-only: the stored
     // classification and notes stand.
-    const reseen = upsertContactChannel({
+    const reseen = await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UCURATED",
       contactId: "co-curated",
@@ -310,7 +310,7 @@ describe("mirror channel-reparenting race semantics", () => {
 
     // Adoption (a create-shaped op under a foreign id for the same identity)
     // is equally forbidden from touching the adopted contact's record fields.
-    const adopted = upsertContactChannel({
+    const adopted = await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UCURATED",
       contactId: "co-curated-foreign",
@@ -327,8 +327,8 @@ describe("mirror channel-reparenting race semantics", () => {
     expect(contactExists("co-curated-foreign")).toBe(false);
   });
 
-  test("explicit-id create over a conflicting channel adopts the owner instead of minting an empty contact", () => {
-    upsertContactChannel({
+  test("explicit-id create over a conflicting channel adopts the owner instead of minting an empty contact", async () => {
+    await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UADOPT",
       externalChatId: "DADOPT",
@@ -342,7 +342,7 @@ describe("mirror channel-reparenting race semantics", () => {
 
     // A divergence-shaped write: the gateway hands down a contact id the
     // mirror has never seen, for an identity the mirror already parents.
-    const result = upsertContactChannel({
+    const result = await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UADOPT",
       displayName: "Owner Renamed",
@@ -359,8 +359,8 @@ describe("mirror channel-reparenting race semantics", () => {
     expect(channelLessContactCount()).toBe(0);
   });
 
-  test("INVITE-binding path (reassignConflictingChannels:true) DOES reparent", () => {
-    upsertContactChannel({
+  test("INVITE-binding path (reassignConflictingChannels:true) DOES reparent", async () => {
+    await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UBIND",
       externalChatId: "DBIND",
@@ -374,7 +374,7 @@ describe("mirror channel-reparenting race semantics", () => {
 
     // Invite binds the redeemer's existing channel to the invite's target
     // contact — the legitimate reparent.
-    upsertContactChannel({
+    await upsertContactChannel({
       sourceChannel: "slack",
       externalUserId: "UBIND",
       externalChatId: "DBIND",

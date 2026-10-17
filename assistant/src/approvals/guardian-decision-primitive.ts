@@ -396,7 +396,7 @@ export async function applyGuardianDecision(
     persistFailureReason: "decision_persist_failed",
   };
   if (resolver?.prepare) {
-    plan = resolver.prepare({
+    plan = await resolver.prepare({
       request,
       decision: { action: effectiveAction, userText },
       actor: actorContext,

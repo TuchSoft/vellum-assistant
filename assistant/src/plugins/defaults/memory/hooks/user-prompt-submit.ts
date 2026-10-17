@@ -265,7 +265,7 @@ const userPromptSubmitMemoryRetrieval: HookFunction<
   const abortSignal = conversation?.abortController?.signal;
   const isTrustedActor =
     resolveTrustClass(conversation?.trustContext) === "guardian";
-  const actorContext = resolveTurnInboundActorContext(
+  const actorContext = await resolveTurnInboundActorContext(
     conversation?.trustContext,
   );
 

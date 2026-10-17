@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 
 import type { GuardianDelivery } from "@vellumai/gateway-client";
 
-import { findContactByAddress } from "../contacts/contact-store.js";
+import { findContactByAddressSync } from "../contacts/contact-read-sync.js";
 import {
   anyGuardian,
   guardianForChannel,
@@ -89,7 +89,7 @@ function readPersonaFile(filePath: string): string | null {
  */
 function resolveGuardianUserFile(trustContext: TrustContext): string | null {
   if (trustContext.guardianExternalUserId) {
-    const guardianContact = findContactByAddress(
+    const guardianContact = findContactByAddressSync(
       trustContext.sourceChannel,
       trustContext.guardianExternalUserId,
     );
@@ -113,7 +113,10 @@ function resolveGuardianUserFile(trustContext: TrustContext): string | null {
 function guardianDeliveryUserFile(
   guardian: GuardianDelivery,
 ): string | undefined {
-  const contact = findContactByAddress(guardian.channelType, guardian.address);
+  const contact = findContactByAddressSync(
+    guardian.channelType,
+    guardian.address,
+  );
   return contact?.userFile ?? undefined;
 }
 
@@ -150,7 +153,7 @@ function resolveUserFilename(
       }
     } else if (trustContext.requesterExternalUserId) {
       // Channel-routed request — look up contact by channel identity
-      const contactWithChannels = findContactByAddress(
+      const contactWithChannels = findContactByAddressSync(
         trustContext.sourceChannel,
         trustContext.requesterExternalUserId,
       );

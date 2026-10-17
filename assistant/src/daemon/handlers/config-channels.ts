@@ -303,7 +303,7 @@ export async function revokeVerificationForChannel(
     };
   }
 
-  const contactResult = findContactChannel({
+  const contactResult = await findContactChannel({
     channelType: resolvedChannel,
     address: bindingBeforeRevoke.guardianExternalUserId,
     externalChatId: bindingBeforeRevoke.guardianDeliveryChatId,
@@ -381,7 +381,7 @@ export async function verifyTrustedContact(
   contactChannelId: string,
   assistantId: string,
 ): Promise<ChannelVerificationSessionResult> {
-  const channel = getChannelById(contactChannelId);
+  const channel = await getChannelById(contactChannelId);
   if (!channel) {
     return {
       success: false,
@@ -389,7 +389,7 @@ export async function verifyTrustedContact(
     };
   }
 
-  const contact = getContact(channel.contactId);
+  const contact = await getContact(channel.contactId);
   if (!contact) {
     return {
       success: false,

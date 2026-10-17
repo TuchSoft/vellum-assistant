@@ -223,9 +223,9 @@ interface EmitAccessRequestCallbackHandoffResult {
  * Idempotent: uses callbackHandoffNotified guard + deterministic dedupeKey
  * to ensure at most one notification per call/request.
  */
-export function emitAccessRequestCallbackHandoff(
+export async function emitAccessRequestCallbackHandoff(
   params: EmitAccessRequestCallbackHandoffParams,
-): EmitAccessRequestCallbackHandoffResult {
+): Promise<EmitAccessRequestCallbackHandoffResult> {
   if (!params.callbackOptIn) {
     return {
       emitted: false,
@@ -250,7 +250,7 @@ export function emitAccessRequestCallbackHandoff(
   let requesterMemberId: string | null = null;
   if (fromNumber) {
     try {
-      const contactResult = findContactChannel({
+      const contactResult = await findContactChannel({
         channelType: "phone",
         address: fromNumber,
         externalChatId: fromNumber,

@@ -63,7 +63,7 @@ function setConfig(opts: {
 }
 
 describe("createA2AInvite", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetTables();
     setConfig({
       a2aEnabled: false,
@@ -72,8 +72,8 @@ describe("createA2AInvite", () => {
     });
   });
 
-  test("returns success with inviteId, token, expiresAt, senderGatewayUrl", () => {
-    const result = createA2AInvite({});
+  test("returns success with inviteId, token, expiresAt, senderGatewayUrl", async () => {
+    const result = await createA2AInvite({});
     expect(result.success).toBe(true);
     expect(result.inviteId).toBeDefined();
     expect(result.token).toBeDefined();
@@ -82,8 +82,8 @@ describe("createA2AInvite", () => {
     expect(result.error).toBeUndefined();
   });
 
-  test("creates invite in a2a_invites with status=active, max_uses=1", () => {
-    const result = createA2AInvite({});
+  test("creates invite in a2a_invites with status=active, max_uses=1", async () => {
+    const result = await createA2AInvite({});
     expect(result.inviteId).toBeDefined();
 
     const invite = getInviteRow(result.inviteId!);
@@ -92,45 +92,45 @@ describe("createA2AInvite", () => {
     expect(invite!.max_uses).toBe(1);
   });
 
-  test("auto-enables A2A if not already on", () => {
+  test("auto-enables A2A if not already on", async () => {
     // A2A starts disabled
-    expect(getA2AConfig().enabled).toBe(false);
+    expect((await getA2AConfig()).enabled).toBe(false);
 
-    const result = createA2AInvite({});
+    const result = await createA2AInvite({});
     expect(result.success).toBe(true);
 
     // A2A should now be enabled
-    expect(getA2AConfig().enabled).toBe(true);
+    expect((await getA2AConfig()).enabled).toBe(true);
   });
 
-  test("creates placeholder contact with no channels, bound to invite via contactId", () => {
-    const result = createA2AInvite({});
+  test("creates placeholder contact with no channels, bound to invite via contactId", async () => {
+    const result = await createA2AInvite({});
     expect(result.inviteId).toBeDefined();
 
     const invite = getInviteRow(result.inviteId!);
     expect(invite).not.toBeNull();
 
-    const contact = getContact(invite!.contact_id);
+    const contact = await getContact(invite!.contact_id);
     expect(contact).not.toBeNull();
     expect(contact!.displayName).toBe("Pending A2A invite");
     expect(contact!.channels).toHaveLength(0);
   });
 
-  test("returns error when public base URL is not configured", () => {
+  test("returns error when public base URL is not configured", async () => {
     setConfig({
       a2aEnabled: false,
       publicBaseUrl: "",
       ingressEnabled: true,
     });
 
-    const result = createA2AInvite({});
+    const result = await createA2AInvite({});
     expect(result.success).toBe(false);
     expect(result.error).toContain("public base URL");
   });
 
-  test("custom expiry via expiresInHours", () => {
+  test("custom expiry via expiresInHours", async () => {
     const before = Date.now();
-    const result = createA2AInvite({ expiresInHours: 24 });
+    const result = await createA2AInvite({ expiresInHours: 24 });
     const after = Date.now();
     expect(result.success).toBe(true);
 
@@ -143,9 +143,9 @@ describe("createA2AInvite", () => {
     expect(invite!.expires_at).toBeLessThanOrEqual(expectedMaxMs);
   });
 
-  test("default expiry is 72 hours", () => {
+  test("default expiry is 72 hours", async () => {
     const before = Date.now();
-    const result = createA2AInvite({});
+    const result = await createA2AInvite({});
     const after = Date.now();
     expect(result.success).toBe(true);
 

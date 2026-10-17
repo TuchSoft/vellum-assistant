@@ -29,14 +29,14 @@ function parseDisplayNameFromMetadata(
   return null;
 }
 
-export function createGuardianBinding(params: {
+export async function createGuardianBinding(params: {
   channel: string;
   guardianExternalUserId: string;
   guardianDeliveryChatId: string;
   guardianPrincipalId: string;
   verifiedVia?: string;
   metadataJson?: string | null;
-}): GuardianBinding {
+}): Promise<GuardianBinding> {
   const displayName =
     parseDisplayNameFromMetadata(params.metadataJson) ??
     params.guardianExternalUserId;
@@ -44,7 +44,7 @@ export function createGuardianBinding(params: {
   // The production identity upsert no longer writes ACL columns (gateway-owned);
   // seedContactChannel stamps the guardian ACL state directly so the local
   // guardian-resolution reads still under test resolve this binding.
-  const { contactId } = seedContactChannel({
+  const { contactId } = await seedContactChannel({
     sourceChannel: params.channel,
     externalUserId: params.guardianExternalUserId,
     externalChatId: params.guardianDeliveryChatId,
@@ -57,7 +57,7 @@ export function createGuardianBinding(params: {
   });
 
   // Seed persona file (mirrors gateway's production behavior)
-  const userFile = getContact(contactId)?.userFile;
+  const userFile = (await getContact(contactId))?.userFile;
   if (userFile) {
     try {
       ensureGuardianPersonaFile(userFile);

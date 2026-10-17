@@ -357,7 +357,7 @@ async function handleGlobalSearch({
   }
 
   if (categories.has("contacts")) {
-    const contactResults = searchContacts({
+    const contactResults = await searchContacts({
       query: term,
       limit,
     });

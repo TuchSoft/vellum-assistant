@@ -133,7 +133,7 @@ const TEST_BEARER_TOKEN = "test-token";
  * Guardian bindings created in tests must use this principal so the
  * assistant-anchored resolution check in access-request-helper passes.
  */
-function resetState(): string {
+async function resetState(): Promise<string> {
   bridgeState.reset();
   const db = getDb();
   db.run("DELETE FROM channel_inbound_events");
@@ -160,7 +160,7 @@ function resetState(): string {
     principalId,
     displayName: principalId,
   });
-  createGuardianBinding({
+  await createGuardianBinding({
     channel: "vellum",
     guardianExternalUserId: principalId,
     guardianDeliveryChatId: "local",
@@ -206,8 +206,8 @@ function buildInboundRequest(overrides: Record<string, unknown> = {}): Request {
 
 describe("non-member access request notification", () => {
   let anchorPrincipalId: string;
-  beforeEach(() => {
-    anchorPrincipalId = resetState();
+  beforeEach(async () => {
+    anchorPrincipalId = await resetState();
   });
 
   test("non-member message is denied with rejection reply", async () => {
@@ -234,7 +234,7 @@ describe("non-member access request notification", () => {
       externalChatId: "guardian-chat-789",
       principalId: anchorPrincipalId,
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-789",
       guardianDeliveryChatId: "guardian-chat-789",
@@ -285,7 +285,7 @@ describe("non-member access request notification", () => {
       externalChatId: "guardian-chat-789",
       principalId: anchorPrincipalId,
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-789",
       guardianDeliveryChatId: "guardian-chat-789",
@@ -346,7 +346,7 @@ describe("non-member access request notification", () => {
       externalChatId: "guardian-chat-789",
       principalId: anchorPrincipalId,
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-789",
       guardianDeliveryChatId: "guardian-chat-789",
@@ -449,7 +449,7 @@ describe("non-member access request notification", () => {
       externalChatId: "guardian-voice-chat",
       principalId: anchorPrincipalId,
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "phone",
       guardianExternalUserId: "guardian-voice-user",
       guardianDeliveryChatId: "guardian-voice-chat",
@@ -485,7 +485,7 @@ describe("non-member access request notification", () => {
   });
 
   test("no notification when actorExternalId is absent", async () => {
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-789",
       guardianDeliveryChatId: "guardian-chat-789",
@@ -507,8 +507,8 @@ describe("non-member access request notification", () => {
 
 describe("access-request-helper unit tests", () => {
   let anchorPrincipalId: string;
-  beforeEach(() => {
-    anchorPrincipalId = resetState();
+  beforeEach(async () => {
+    anchorPrincipalId = await resetState();
   });
 
   test("notifyGuardianOfAccessRequest returns no_sender_id when actorExternalId is absent", async () => {
@@ -566,7 +566,7 @@ describe("access-request-helper unit tests", () => {
       externalChatId: "voice-chat",
       principalId: "test-principal-id",
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "phone",
       guardianExternalUserId: "guardian-voice",
       guardianDeliveryChatId: "voice-chat",
@@ -628,7 +628,7 @@ describe("access-request-helper unit tests", () => {
       externalChatId: "tg-chat",
       principalId: anchorPrincipalId,
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-tg",
       guardianDeliveryChatId: "tg-chat",
@@ -660,14 +660,14 @@ describe("access-request-helper unit tests", () => {
       externalChatId: "voice-chat",
       principalId: anchorPrincipalId,
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-tg",
       guardianDeliveryChatId: "tg-chat",
       guardianPrincipalId: anchorPrincipalId,
       verifiedVia: "test",
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "phone",
       guardianExternalUserId: "guardian-voice",
       guardianDeliveryChatId: "voice-chat",
@@ -707,7 +707,7 @@ describe("access-request-helper unit tests", () => {
       externalChatId: "tg-chat",
       principalId: anchorPrincipalId,
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-tg",
       guardianDeliveryChatId: "tg-chat",
@@ -923,7 +923,7 @@ describe("access-request-helper unit tests", () => {
       externalChatId: "guardian-chat-456",
       principalId: anchorPrincipalId,
     });
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-456",
       guardianDeliveryChatId: "guardian-chat-456",
@@ -1177,7 +1177,7 @@ describe("access-request-helper unit tests", () => {
 // ---------------------------------------------------------------------------
 
 describe("maybeNotifyGuardianOfAdmittedContact", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
   });
 

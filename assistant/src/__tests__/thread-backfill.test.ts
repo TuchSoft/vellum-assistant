@@ -441,7 +441,7 @@ function seedSlackRow(
 // ---------------------------------------------------------------------------
 
 describe("triggerSlackThreadBackfillIfNeeded — gap detection and persistence", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetState();
   });
 
@@ -1954,8 +1954,10 @@ function resetHttpState(): void {
   setAdapterProcessMessage(undefined);
 }
 
-function seedHttpActiveMember(chatId = HTTP_SLACK_CHANNEL_ID): void {
-  seedContactChannel({
+async function seedHttpActiveMember(
+  chatId = HTTP_SLACK_CHANNEL_ID,
+): Promise<void> {
+  await seedContactChannel({
     sourceChannel: "slack",
     externalUserId: HTTP_SLACK_USER_ID,
     externalChatId: chatId,
@@ -1965,8 +1967,10 @@ function seedHttpActiveMember(chatId = HTTP_SLACK_CHANNEL_ID): void {
   });
 }
 
-function seedHttpGuardianMember(chatId = HTTP_SLACK_CHANNEL_ID): void {
-  seedContactChannel({
+async function seedHttpGuardianMember(
+  chatId = HTTP_SLACK_CHANNEL_ID,
+): Promise<void> {
+  await seedContactChannel({
     sourceChannel: "slack",
     externalUserId: HTTP_SLACK_USER_ID,
     externalChatId: chatId,
@@ -2232,9 +2236,9 @@ async function handleAndCaptureLiveSlackProcessMessage(
 }
 
 describe("handleChannelInbound — Slack thread backfill wiring", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetHttpState();
-    seedHttpActiveMember();
+    await seedHttpActiveMember();
     httpMsgCounter = 0;
   });
 
@@ -2392,7 +2396,7 @@ describe("handleChannelInbound — Slack thread backfill wiring", () => {
   });
 
   test("live Slack guardian keeps raw content without displayContent", async () => {
-    seedHttpGuardianMember();
+    await seedHttpGuardianMember();
     const rawContent = "guardian live Slack text";
     const captured = await handleAndCaptureLiveSlackProcessMessage(
       buildSlackChannelRequest("1700000000.000400", {
@@ -2536,7 +2540,7 @@ describe("handleChannelInbound — Slack thread backfill wiring", () => {
 
   test("cold-start Slack DMs still use backfillDm without thread backfill", async () => {
     const dmChannelId = "D0HTTPDM";
-    seedHttpActiveMember(dmChannelId);
+    await seedHttpActiveMember(dmChannelId);
     backfillDmMock.mockImplementation(async () => [
       makeBackfillMessage({
         id: "1700000000.000100",
@@ -2581,7 +2585,7 @@ describe("handleChannelInbound — Slack thread backfill wiring", () => {
     const dmChannelId = "D0HTTPAPPTHREAD";
     const threadTs = "1700000000.000100";
     const inboundTs = "1700000000.000300";
-    seedHttpActiveMember(dmChannelId);
+    await seedHttpActiveMember(dmChannelId);
     backfillDmMock.mockImplementation(async () => {
       throw new Error("whole-DM backfill should not run for threaded DMs");
     });

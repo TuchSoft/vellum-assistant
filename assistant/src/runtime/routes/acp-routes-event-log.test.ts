@@ -5,7 +5,7 @@
  * `eventLogJson`.
  */
 
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, expect, mock, test } from "bun:test";
 
 import type { AcpSessionState } from "../../acp/index.js";
 import type { AcpSessionUpdateEvent } from "../../api/events/acp-session-update.js";
@@ -29,20 +29,58 @@ mock.module("../../acp/index.js", () => ({
   }),
 }));
 
-// Terminal history rows go through the real DB (like the sibling acp-routes
-// suite), not a `db-connection` module stub. A process-global `db-connection`
-// mock would omit named exports (`getTelemetrySqlite`, …) and poison `getDb`
-// for adjacent route tests that call `initializeDb()` in the same Bun
-// invocation, so we seed real rows via the shared history helper instead.
-import {
-  clearHistory,
-  insertHistoryRow,
-} from "../../acp/__tests__/helpers/acp-history-db.js";
+import { describePg } from "../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { initializeDb } from "../../persistence/db-init.js";
 
 const { ROUTES } = await import("./acp-routes.js");
 
 await initializeDb();
+
+async function clearHistory(): Promise<void> {
+  await requireMainDb().run("DELETE FROM acp_session_history");
+}
+
+async function insertHistoryRow(row: {
+  id: string;
+  agentId?: string;
+  acpSessionId?: string;
+  parentConversationId?: string;
+  status?: string;
+  startedAt?: number;
+  completedAt?: number | null;
+  error?: string | null;
+  stopReason?: string | null;
+  eventLogJson?: string;
+  cwd?: string | null;
+  task?: string | null;
+  parentToolUseId?: string | null;
+  usedTokens?: number | null;
+  contextSize?: number | null;
+  costAmount?: number | null;
+  costCurrency?: string | null;
+}): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.insert(db.schema.acpSessionHistory).values({
+    id: row.id,
+    agentId: row.agentId ?? "claude",
+    acpSessionId: row.acpSessionId ?? "proto-old",
+    parentConversationId: row.parentConversationId ?? "conv-1",
+    startedAt: row.startedAt ?? 1234,
+    completedAt: row.completedAt === undefined ? 5678 : row.completedAt,
+    status: row.status ?? "completed",
+    stopReason: row.stopReason === undefined ? "end_turn" : row.stopReason,
+    error: row.error ?? null,
+    eventLogJson: row.eventLogJson ?? "[]",
+    cwd: row.cwd === undefined ? "/tmp/proj" : row.cwd,
+    task: row.task ?? null,
+    parentToolUseId: row.parentToolUseId ?? null,
+    usedTokens: row.usedTokens ?? null,
+    contextSize: row.contextSize ?? null,
+    costAmount: row.costAmount ?? null,
+    costCurrency: row.costCurrency ?? null,
+  });
+}
 
 function getListHandler() {
   const route = ROUTES.find(
@@ -81,19 +119,19 @@ function makeUpdate(seq: number, content: string): AcpSessionUpdateEvent {
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   inMemoryStates.clear();
   bufferedUpdates.clear();
-  clearHistory();
+  await clearHistory();
 });
 
-afterAll(() => {
+afterAll(async () => {
   inMemoryStates.clear();
   bufferedUpdates.clear();
-  clearHistory();
+  await clearHistory();
 });
 
-describe("GET /v1/acp/sessions — eventLog", () => {
+describePg("GET /v1/acp/sessions — eventLog", () => {
   test("active in-memory session returns eventLog from the live ring buffer with seq", async () => {
     inMemoryStates.set("active", makeInMemoryState("active", "conv-1"));
     bufferedUpdates.set("active", [
@@ -135,7 +173,7 @@ describe("GET /v1/acp/sessions — eventLog", () => {
   });
 
   test("terminal DB row returns its persisted eventLog", async () => {
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "terminal",
       agentId: "claude",
       acpSessionId: "proto-terminal",
@@ -179,7 +217,7 @@ describe("GET /v1/acp/sessions — eventLog", () => {
     inMemoryStates.set("active", makeInMemoryState("active", "conv-1"));
     bufferedUpdates.set("active", [activeToolCall]);
 
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "terminal",
       parentConversationId: "conv-1",
       eventLogJson: JSON.stringify([
@@ -239,7 +277,7 @@ describe("GET /v1/acp/sessions — eventLog", () => {
   });
 
   test("terminal DB row returns persisted task, parentToolUseId, and usage", async () => {
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "terminal-usage",
       parentConversationId: "conv-1",
       task: "Refactor the parser",
@@ -266,7 +304,7 @@ describe("GET /v1/acp/sessions — eventLog", () => {
   });
 
   test("pre-migration terminal row (NULL usage columns) degrades to undefined", async () => {
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "terminal-legacy",
       parentConversationId: "conv-1",
       // task/parentToolUseId/usage columns default to NULL.

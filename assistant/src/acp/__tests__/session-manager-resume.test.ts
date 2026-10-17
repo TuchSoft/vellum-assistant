@@ -10,7 +10,7 @@
  */
 
 import { tmpdir } from "node:os";
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, expect, mock, test } from "bun:test";
 
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 
@@ -273,17 +273,15 @@ const BUN_BIN = "/usr/local/bin/bun";
 /** Key the exec stub uses for the global install. */
 const BUN_ADD_KEY = `${BUN_BIN} add`;
 
+import { eq } from "drizzle-orm";
+
+import { describePg } from "../../__tests__/pg-test-db.js";
 import type { AcpSessionUpdateEvent } from "../../api/events/acp-session-update.js";
 import type { AssistantEvent } from "../../api/index.js";
-import { getSqlite } from "../../persistence/db-connection.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { initializeDb } from "../../persistence/db-init.js";
 import type { AcpSessionState } from "../types.js";
 import { AcpConfigOptionRefusedError } from "../types.js";
-import {
-  clearHistory,
-  insertHistoryRow,
-  readHistoryRow,
-} from "./helpers/acp-history-db.js";
 
 const { AcpResumeError, AcpSessionManager, AcpSessionNotFoundError } =
   await import("../session-manager.js");
@@ -294,11 +292,135 @@ const { _resetAdapterInstallCacheForTests } =
 
 await initializeDb();
 
-function countHistoryRows(): number {
-  const row = getSqlite()
-    .query("SELECT COUNT(*) AS n FROM acp_session_history")
-    .get() as { n: number };
-  return row.n;
+interface HistoryRow {
+  id: string;
+  agent_id: string;
+  acp_session_id: string;
+  parent_conversation_id: string;
+  started_at: number;
+  completed_at: number | null;
+  status: string;
+  stop_reason: string | null;
+  error: string | null;
+  event_log_json: string;
+  cwd: string | null;
+  task: string | null;
+  parent_tool_use_id: string | null;
+  used_tokens: number | null;
+  context_size: number | null;
+  cost_amount: number | null;
+  cost_currency: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  auth_error_code: string | null;
+  auth_error_credential: string | null;
+}
+
+async function clearHistory(): Promise<void> {
+  await requireMainDb().run("DELETE FROM acp_session_history");
+}
+
+async function insertHistoryRow(row: {
+  id: string;
+  agentId?: string;
+  acpSessionId?: string;
+  parentConversationId?: string;
+  startedAt?: number;
+  completedAt?: number | null;
+  status?: string;
+  stopReason?: string | null;
+  error?: string | null;
+  eventLogJson?: string;
+  cwd?: string | null;
+  task?: string | null;
+  parentToolUseId?: string | null;
+  usedTokens?: number | null;
+  contextSize?: number | null;
+  costAmount?: number | null;
+  costCurrency?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  authErrorCode?: string | null;
+  authErrorCredential?: string | null;
+}): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.insert(db.schema.acpSessionHistory).values({
+    id: row.id,
+    agentId: row.agentId ?? "claude",
+    acpSessionId: row.acpSessionId ?? "proto-old",
+    parentConversationId: row.parentConversationId ?? "conv-1",
+    startedAt: row.startedAt ?? 1234,
+    completedAt: row.completedAt === undefined ? 5678 : row.completedAt,
+    status: row.status ?? "completed",
+    stopReason: row.stopReason === undefined ? "end_turn" : row.stopReason,
+    error: row.error ?? null,
+    eventLogJson: row.eventLogJson ?? "[]",
+    cwd: row.cwd === undefined ? "/tmp/proj" : row.cwd,
+    task: row.task ?? null,
+    parentToolUseId: row.parentToolUseId ?? null,
+    usedTokens: row.usedTokens ?? null,
+    contextSize: row.contextSize ?? null,
+    costAmount: row.costAmount ?? null,
+    costCurrency: row.costCurrency ?? null,
+    inputTokens: row.inputTokens ?? null,
+    outputTokens: row.outputTokens ?? null,
+    authErrorCode: row.authErrorCode ?? null,
+    authErrorCredential: row.authErrorCredential ?? null,
+  });
+}
+
+async function readHistoryRow(id: string): Promise<HistoryRow | null> {
+  const db = requireMainDb();
+  const table = db.schema.acpSessionHistory;
+  const [row] = await db.orm.select().from(table).where(eq(table.id, id));
+  if (!row) {
+    return null;
+  }
+  return {
+    id: row.id,
+    agent_id: row.agentId,
+    acp_session_id: row.acpSessionId,
+    parent_conversation_id: row.parentConversationId,
+    started_at: row.startedAt,
+    completed_at: row.completedAt,
+    status: row.status,
+    stop_reason: row.stopReason,
+    error: row.error,
+    event_log_json: row.eventLogJson,
+    cwd: row.cwd,
+    task: row.task,
+    parent_tool_use_id: row.parentToolUseId,
+    used_tokens: row.usedTokens,
+    context_size: row.contextSize,
+    cost_amount: row.costAmount,
+    cost_currency: row.costCurrency,
+    input_tokens: row.inputTokens,
+    output_tokens: row.outputTokens,
+    auth_error_code: row.authErrorCode,
+    auth_error_credential: row.authErrorCredential,
+  };
+}
+
+async function waitForHistoryRow(
+  manager: InstanceType<typeof AcpSessionManager>,
+  id: string,
+): Promise<HistoryRow | null> {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    const row = await readHistoryRow(id);
+    const drained = !internals(manager).eventBuffers.has(id);
+    if (drained || Date.now() >= deadline) {
+      return row;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function countHistoryRows(): Promise<number> {
+  const [row] = await requireMainDb().all<{ n: number }>(
+    "SELECT COUNT(*)::int AS n FROM acp_session_history",
+  );
+  return row!.n;
 }
 
 // ---------------------------------------------------------------------------
@@ -321,8 +443,8 @@ afterAll(() => {
   which.restore();
 });
 
-beforeEach(() => {
-  clearHistory();
+beforeEach(async () => {
+  await clearHistory();
   fakeInstances.length = 0;
   fakeCaps.loadSession = false;
   fakeCaps.resume = false;
@@ -354,11 +476,11 @@ const PERSISTED_EVENT: AcpSessionUpdateEvent = {
   content: "original-run-chunk",
 };
 
-describe("AcpSessionManager.resumeFromHistory", () => {
+describePg("AcpSessionManager.resumeFromHistory", () => {
   test("resumes via session/load with replay suppressed, then steers the loaded session", async () => {
     fakeCaps.loadSession = true;
     replayChunks = ["replayed-1", "replayed-2"];
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "resume-1",
       eventLogJson: JSON.stringify([PERSISTED_EVENT]),
     });
@@ -421,7 +543,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
       { ...PERSISTED_EVENT, seq: 2 },
       { ...PERSISTED_EVENT, seq: 4 },
     ];
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "resume-seq-1",
       eventLogJson: JSON.stringify(persisted),
     });
@@ -445,7 +567,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
   test("prefers session/resume when advertised and never calls loadSession", async () => {
     fakeCaps.loadSession = true;
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "resume-2" });
+    await insertHistoryRow({ id: "resume-2" });
 
     const manager = new AcpSessionManager(4);
     await manager.resumeFromHistory("resume-2", () => {});
@@ -460,7 +582,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
   });
 
   test("legacy row with null cwd raises an actionable error", async () => {
-    insertHistoryRow({ id: "legacy-1", cwd: null });
+    await insertHistoryRow({ id: "legacy-1", cwd: null });
 
     const manager = new AcpSessionManager(4);
     await expect(
@@ -477,7 +599,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
   });
 
   test("row with an empty protocol session id raises an actionable error", async () => {
-    insertHistoryRow({ id: "no-proto-1", acpSessionId: "" });
+    await insertHistoryRow({ id: "no-proto-1", acpSessionId: "" });
 
     const manager = new AcpSessionManager(4);
     await expect(
@@ -486,7 +608,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
   });
 
   test("agent without either capability errors and kills the process", async () => {
-    insertHistoryRow({ id: "no-caps-1" });
+    await insertHistoryRow({ id: "no-caps-1" });
 
     const manager = new AcpSessionManager(4);
     await expect(
@@ -505,7 +627,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
     // path here) with no install, and the SessionEntry tracks its basename for
     // resume-hint gating.
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "installed-resume-1" });
+    await insertHistoryRow({ id: "installed-resume-1" });
     resolveImpl = () => ({
       ok: true,
       agent: {
@@ -535,7 +657,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
     // binary, with the OAuth token injected only at spawn (never during the
     // install).
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "resume-install-1" });
+    await insertHistoryRow({ id: "resume-install-1" });
 
     // Resolver: binary missing until the install flips `installed`, then the
     // real installed binary (a full path, as a global bin would resolve).
@@ -612,7 +734,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
 
   test("install failure on resume surfaces the actionable error (no process spawned)", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "resume-install-fail-1" });
+    await insertHistoryRow({ id: "resume-install-fail-1" });
     resolveImpl = () => ({
       ok: false,
       reason: "binary_not_found",
@@ -642,7 +764,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
   });
 
   test("bun absent on resume surfaces the actionable install hint, attempts no install", async () => {
-    insertHistoryRow({ id: "no-bin-1" });
+    await insertHistoryRow({ id: "no-bin-1" });
     resolveImpl = () => ({
       ok: false,
       reason: "binary_not_found",
@@ -662,7 +784,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
 
   test("already-active id and concurrency limit reuse spawn's guards", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "active-1" });
+    await insertHistoryRow({ id: "active-1" });
 
     const manager = new AcpSessionManager(4);
     await manager.resumeFromHistory("active-1", () => {});
@@ -678,7 +800,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
 
   test("terminal persistence after a resumed run upserts the original row with the merged event log", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "resume-up-1",
       eventLogJson: JSON.stringify([PERSISTED_EVENT]),
     });
@@ -701,8 +823,8 @@ describe("AcpSessionManager.resumeFromHistory", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(countHistoryRows()).toBe(1);
-    const row = readHistoryRow("resume-up-1")!;
+    expect(await countHistoryRows()).toBe(1);
+    const row = (await waitForHistoryRow(manager, "resume-up-1"))!;
     expect(row.status).toBe("completed");
     expect(row.stop_reason).toBe("end_turn");
     expect(row.started_at).toBe(1234);
@@ -716,7 +838,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
 
   test("re-terminate after a resume preserves the persisted task/parentToolUseId/usage when no fresh usage_update fires", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "resume-meta-1",
       eventLogJson: JSON.stringify([PERSISTED_EVENT]),
       task: "Summarize the report",
@@ -737,7 +859,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const row = readHistoryRow("resume-meta-1")!;
+    const row = (await waitForHistoryRow(manager, "resume-meta-1"))!;
     expect(row.status).toBe("completed");
     // The metadata seeded from the prior row is re-persisted, not NULLed.
     expect(row.task).toBe("Summarize the report");
@@ -750,7 +872,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
 
   test("re-terminate after a resume persists fresh usage from a usage_update during the resumed run", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "resume-meta-2",
       eventLogJson: JSON.stringify([PERSISTED_EVENT]),
       task: "Summarize the report",
@@ -773,7 +895,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const row = readHistoryRow("resume-meta-2")!;
+    const row = (await waitForHistoryRow(manager, "resume-meta-2"))!;
     // Task/parentToolUseId still carried from the seeded state; usage updated.
     expect(row.task).toBe("Summarize the report");
     expect(row.parent_tool_use_id).toBe("tool-use-123");
@@ -786,7 +908,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
   test("a resume with no configured model leaves the adapter on its own", async () => {
     fakeCaps.resume = true;
     resumeConfigOptions = [modelOption("default")];
-    insertHistoryRow({ id: "resume-model-1" });
+    await insertHistoryRow({ id: "resume-model-1" });
 
     const manager = new AcpSessionManager(4);
     await manager.resumeFromHistory("resume-model-1", () => {});
@@ -806,7 +928,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
       agent: { command: "claude-agent-acp", args: [], model: "opus" },
     });
     resumeConfigOptions = [modelOption("sonnet")];
-    insertHistoryRow({ id: "resume-model-2" });
+    await insertHistoryRow({ id: "resume-model-2" });
 
     const manager = new AcpSessionManager(4);
     const sent: AssistantEvent[] = [];
@@ -841,7 +963,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
       ok: true,
       agent: { command: "claude-agent-acp", args: [], model: "opus" },
     });
-    insertHistoryRow({ id: "resume-replay-only" });
+    await insertHistoryRow({ id: "resume-replay-only" });
 
     const manager = new AcpSessionManager(4);
     const sent: AssistantEvent[] = [];
@@ -877,7 +999,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
       ok: true,
       agent: { command: "claude-agent-acp", args: [], model: "opus" },
     });
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "resume-selector-gone",
       eventLogJson: JSON.stringify([PERSISTED_EVENT]),
     });
@@ -917,7 +1039,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
       ok: true,
       agent: { command: "claude-agent-acp", args: [], model: "opus" },
     });
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "resume-pin-transport",
       eventLogJson: JSON.stringify([PERSISTED_EVENT]),
     });
@@ -946,7 +1068,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
       ok: true,
       agent: { command: "claude-agent-acp", args: [], model: "opus" },
     });
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "resume-refused-model",
       eventLogJson: JSON.stringify([PERSISTED_EVENT]),
     });
@@ -977,7 +1099,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
 
   test("concurrent resumes of the same id: one wins, the loser fails cleanly without leaking a process", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "race-1" });
+    await insertHistoryRow({ id: "race-1" });
 
     const manager = new AcpSessionManager(4);
     const sent: AssistantEvent[] = [];
@@ -1006,8 +1128,8 @@ describe("AcpSessionManager.resumeFromHistory", () => {
 
   test("concurrent resumes of distinct ids cannot exceed maxConcurrent", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "cap-1" });
-    insertHistoryRow({ id: "cap-2" });
+    await insertHistoryRow({ id: "cap-1" });
+    await insertHistoryRow({ id: "cap-2" });
 
     const manager = new AcpSessionManager(1);
     const [a, b] = await Promise.allSettled([
@@ -1026,7 +1148,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
 
   test("getActiveAndPendingIds surfaces a resume still awaiting env prep", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "pending-vis-1" });
+    await insertHistoryRow({ id: "pending-vis-1" });
     let release!: () => void;
     prepareAgentEnvGate = new Promise((res) => {
       release = res;
@@ -1051,7 +1173,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
 
   test("dispose during prepareAgentEnv aborts the resume before any process spawns", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "dispose-1" });
+    await insertHistoryRow({ id: "dispose-1" });
     let release!: () => void;
     prepareAgentEnvGate = new Promise((res) => {
       release = res;
@@ -1073,7 +1195,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
 
   test("cancel on a resumed session with no in-flight prompt persists and tears down", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "idle-1",
       eventLogJson: JSON.stringify([PERSISTED_EVENT]),
     });
@@ -1089,7 +1211,7 @@ describe("AcpSessionManager.resumeFromHistory", () => {
     expect(internals(manager).sessions.has("idle-1")).toBe(false);
     expect(internals(manager).eventBuffers.has("idle-1")).toBe(false);
 
-    const row = readHistoryRow("idle-1")!;
+    const row = (await waitForHistoryRow(manager, "idle-1"))!;
     expect(row.status).toBe("cancelled");
     expect(row.completed_at).not.toBeNull();
     // The re-seeded event log survived the cancel-side persistence.
@@ -1099,10 +1221,10 @@ describe("AcpSessionManager.resumeFromHistory", () => {
   });
 });
 
-describe("AcpSessionManager.steerOrResume", () => {
+describePg("AcpSessionManager.steerOrResume", () => {
   test("steers an in-memory session directly without a resume", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "sor-live-1" });
+    await insertHistoryRow({ id: "sor-live-1" });
 
     const manager = new AcpSessionManager(4);
     await manager.resumeFromHistory("sor-live-1", () => {});
@@ -1123,7 +1245,7 @@ describe("AcpSessionManager.steerOrResume", () => {
 
   test("session not in memory: resumes from history and fires the instruction atomically", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "sor-resume-1" });
+    await insertHistoryRow({ id: "sor-resume-1" });
 
     const manager = new AcpSessionManager(4);
     const sent: AssistantEvent[] = [];
@@ -1155,7 +1277,7 @@ describe("AcpSessionManager.steerOrResume", () => {
   });
 
   test("resume failure surfaces as AcpResumeError with the actionable hint", async () => {
-    insertHistoryRow({ id: "sor-legacy-1", cwd: null });
+    await insertHistoryRow({ id: "sor-legacy-1", cwd: null });
 
     const manager = new AcpSessionManager(4);
     const promise = manager.steerOrResume("sor-legacy-1", "go", () => {});
@@ -1165,7 +1287,7 @@ describe("AcpSessionManager.steerOrResume", () => {
 
   test("concurrent steerOrResume on the same id: the loser awaits the in-flight resume and steers", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "sor-race-1" });
+    await insertHistoryRow({ id: "sor-race-1" });
 
     const manager = new AcpSessionManager(4);
     const sent: AssistantEvent[] = [];
@@ -1200,7 +1322,7 @@ describe("AcpSessionManager.steerOrResume", () => {
 
   test("steerOrResume arriving in the initializing window awaits the in-flight resume and steers", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "sor-init-1" });
+    await insertHistoryRow({ id: "sor-init-1" });
     let release!: () => void;
     resumeSessionGate = new Promise((res) => {
       release = res;
@@ -1214,11 +1336,16 @@ describe("AcpSessionManager.steerOrResume", () => {
       (msg) => sent.push(msg),
     );
 
-    // Advance microtasks until the first call's resume has registered its
-    // SessionEntry but is still gated inside resumeSession: the session
-    // exists in memory with status "initializing".
+    // Advance until the first call's resume has registered its SessionEntry
+    // but is still gated inside resumeSession: the session exists in memory
+    // with status "initializing". The history read is asynchronous, so this
+    // yields to the event loop rather than spinning on microtasks.
+    const deadline = Date.now() + 2_000;
     while (!internals(manager).sessions.has("sor-init-1")) {
-      await Promise.resolve();
+      if (Date.now() >= deadline) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect((manager.getStatus("sor-init-1") as AcpSessionState).status).toBe(
       "initializing",
@@ -1261,7 +1388,7 @@ describe("AcpSessionManager.steerOrResume", () => {
 
   test("post-resume steer failure tears the resumed session down instead of leaving it idle", async () => {
     fakeCaps.resume = true;
-    insertHistoryRow({ id: "sor-fail-1" });
+    await insertHistoryRow({ id: "sor-fail-1" });
 
     const manager = new AcpSessionManager(4);
     promptThrowsSync = true;
@@ -1274,6 +1401,8 @@ describe("AcpSessionManager.steerOrResume", () => {
     expect(fakeInstances[0]!.killed).toBe(true);
     expect(internals(manager).sessions.has("sor-fail-1")).toBe(false);
     expect(internals(manager).eventBuffers.has("sor-fail-1")).toBe(false);
-    expect(readHistoryRow("sor-fail-1")!.status).toBe("cancelled");
+    expect((await waitForHistoryRow(manager, "sor-fail-1"))!.status).toBe(
+      "cancelled",
+    );
   });
 });

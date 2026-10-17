@@ -38,9 +38,7 @@ import {
 import { getConfig } from "../../config/loader.js";
 import { createGuardianRequestForConfirmation } from "../../permissions/confirmation-guardian-request.js";
 import type { UserDecision } from "../../permissions/types.js";
-import { getDb } from "../../persistence/db-connection.js";
-import { rawChanges } from "../../persistence/raw-query.js";
-import { acpSessionHistory } from "../../persistence/schema/index.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { getLogger } from "../../util/logger.js";
 import { broadcastMessage } from "../assistant-event-hub.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
@@ -347,15 +345,16 @@ async function steerSession({ pathParams, body }: RouteHandlerArgs) {
   // matching "gate before spawning". A resume only happens when the id is
   // absent from memory AND a resumable history row (non-null cwd) exists.
   if (!manager.getActiveAndPendingIds().includes(id)) {
-    const resumable = getDb()
+    const db = requireMainDb();
+    const history = db.schema.acpSessionHistory;
+    const [resumable] = await db.orm
       .select({
-        cwd: acpSessionHistory.cwd,
-        agentId: acpSessionHistory.agentId,
-        parentConversationId: acpSessionHistory.parentConversationId,
+        cwd: history.cwd,
+        agentId: history.agentId,
+        parentConversationId: history.parentConversationId,
       })
-      .from(acpSessionHistory)
-      .where(eq(acpSessionHistory.id, id))
-      .get();
+      .from(history)
+      .where(eq(history.id, id));
     if (resumable?.cwd != null) {
       // Guardian approval is an out-of-band human action that can take far
       // longer than a client's ack timeout (the macOS client uses 10s; the
@@ -491,11 +490,11 @@ async function cancelSession({ pathParams }: RouteHandlerArgs) {
   return { acpSessionId: id, cancelled: true };
 }
 
-function closeSession({ pathParams }: RouteHandlerArgs) {
+async function closeSession({ pathParams }: RouteHandlerArgs) {
   const id = pathParams?.id as string;
   const manager = getAcpSessionManager();
   try {
-    manager.close(id);
+    await manager.close(id);
   } catch {
     throw new NotFoundError("ACP session not found");
   }
@@ -520,10 +519,11 @@ async function listSessions({ queryParams }: RouteHandlerArgs) {
     return resolvedByAgent.get(agentId);
   };
 
-  const { sessions: merged, sawEveryHistoryRow } = listAcpSessionSnapshots({
-    limit,
-    conversationId,
-  });
+  const { sessions: merged, sawEveryHistoryRow } =
+    await listAcpSessionSnapshots({
+      limit,
+      conversationId,
+    });
   // Judged before paging, never after. A stale marker that escaped the page
   // first would stay in the response as an ordinary row once its code was
   // struck, so the retained markers would pile up past the limit.
@@ -569,7 +569,7 @@ async function withCurrentMarkersOnly(
   return judged.map(stripMarkerCredential);
 }
 
-function bulkDeleteSessions({ queryParams }: RouteHandlerArgs) {
+async function bulkDeleteSessions({ queryParams }: RouteHandlerArgs) {
   const status = queryParams?.status;
   if (status !== "completed") {
     throw new BadRequestError(
@@ -584,24 +584,23 @@ function bulkDeleteSessions({ queryParams }: RouteHandlerArgs) {
   // upsert would resurrect it. Mirrors the 409 guard on the single-id
   // delete route.
   const activeIds = getAcpSessionManager().getActiveAndPendingIds();
-  const terminalFilter = inArray(
-    acpSessionHistory.status,
-    TERMINAL_SESSION_STATUSES,
-  );
-  getDb()
-    .delete(acpSessionHistory)
+  const db = requireMainDb();
+  const history = db.schema.acpSessionHistory;
+  const terminalFilter = inArray(history.status, TERMINAL_SESSION_STATUSES);
+  const rows = await db.orm
+    .delete(history)
     .where(
       activeIds.length > 0
-        ? and(terminalFilter, notInArray(acpSessionHistory.id, activeIds))
+        ? and(terminalFilter, notInArray(history.id, activeIds))
         : terminalFilter,
     )
-    .run();
-  const deleted = rawChanges();
+    .returning({ id: history.id });
+  const deleted = rows.length;
   log.info({ deleted }, "Bulk-cleared terminal ACP session history");
   return { deleted };
 }
 
-function deleteSession({ pathParams }: RouteHandlerArgs) {
+async function deleteSession({ pathParams }: RouteHandlerArgs) {
   const id = pathParams?.id as string;
   const manager = getAcpSessionManager();
 
@@ -628,8 +627,13 @@ function deleteSession({ pathParams }: RouteHandlerArgs) {
     // Otherwise fall through to the (idempotent) DB delete.
   }
 
-  getDb().delete(acpSessionHistory).where(eq(acpSessionHistory.id, id)).run();
-  const deleted = rawChanges() > 0;
+  const db = requireMainDb();
+  const history = db.schema.acpSessionHistory;
+  const rows = await db.orm
+    .delete(history)
+    .where(eq(history.id, id))
+    .returning({ id: history.id });
+  const deleted = rows.length > 0;
   log.info({ acpSessionId: id, deleted }, "ACP session history delete");
   return { deleted };
 }
@@ -879,29 +883,29 @@ async function findRecoveryMarker(
   conversationId: string,
   resolvedFor: (agentId: string) => Promise<string | undefined>,
 ): Promise<MergedSession | undefined> {
-  const db = getDb();
+  const db = requireMainDb();
+  const history = db.schema.acpSessionHistory;
   // One ordered read of the newest markers, then the answer is decided in
   // memory. Filtering by agent and credential in SQL meant the planner could
   // only seek to the conversation and then walk its marked history looking for
   // a match, so a run of failures against a replaced credential put that walk
   // back on every snapshot. This shape is the one the index serves: seek,
   // read in order, stop.
-  const markers = db
+  const markers = await db.orm
     .select({
-      id: acpSessionHistory.id,
-      agentId: acpSessionHistory.agentId,
-      credential: acpSessionHistory.authErrorCredential,
+      id: history.id,
+      agentId: history.agentId,
+      credential: history.authErrorCredential,
     })
-    .from(acpSessionHistory)
+    .from(history)
     .where(
       and(
-        eq(acpSessionHistory.parentConversationId, conversationId),
-        isNotNull(acpSessionHistory.authErrorCode),
+        eq(history.parentConversationId, conversationId),
+        isNotNull(history.authErrorCode),
       ),
     )
-    .orderBy(desc(acpSessionHistory.startedAt))
-    .limit(MARKER_SCAN_LIMIT)
-    .all();
+    .orderBy(desc(history.startedAt))
+    .limit(MARKER_SCAN_LIMIT);
 
   for (const marker of markers) {
     if (
@@ -912,11 +916,10 @@ async function findRecoveryMarker(
     ) {
       // Newest-first, so the first match is the one a client would restore
       // from. Only now is the full row worth loading, by primary key.
-      const row = db
+      const [row] = await db.orm
         .select()
-        .from(acpSessionHistory)
-        .where(eq(acpSessionHistory.id, marker.id))
-        .get();
+        .from(history)
+        .where(eq(history.id, marker.id));
       return row ? snapshotHistoryRow(row) : undefined;
     }
   }

@@ -101,7 +101,7 @@ export async function executeAcpStatus(
   const acpSessionId = parsedInput.data.acp_session_id;
   try {
     if (acpSessionId) {
-      const snapshot = getAcpSessionSnapshot(acpSessionId, {
+      const snapshot = await getAcpSessionSnapshot(acpSessionId, {
         includeEventLog: false,
       });
       if (!snapshot) {
@@ -111,10 +111,7 @@ export async function executeAcpStatus(
         };
       }
       const judged = (
-        await withCurrentAuthMarkers(
-          [snapshot],
-          resolvedClaudeCredentialDigest,
-        )
+        await withCurrentAuthMarkers([snapshot], resolvedClaudeCredentialDigest)
       )[0];
       if (!judged) {
         return {
@@ -129,10 +126,12 @@ export async function executeAcpStatus(
     }
 
     const snapshots = selectStatusSnapshots(
-      listAcpSessionSnapshots({
-        limit: STATUS_LIST_LIMIT,
-        includeEventLog: false,
-      }).sessions,
+      (
+        await listAcpSessionSnapshots({
+          limit: STATUS_LIST_LIMIT,
+          includeEventLog: false,
+        })
+      ).sessions,
     );
     if (snapshots.length === 0) {
       return { content: "No ACP sessions found.", isError: false };

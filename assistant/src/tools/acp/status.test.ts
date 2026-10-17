@@ -6,9 +6,12 @@
  * follow-up work without making internal lifecycle guards treat them as live.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import type { AcpSessionState } from "../../acp/types.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
+import { initializeDb } from "../../persistence/db-init.js";
 import type { ToolContext } from "../types.js";
 
 const RUNNING_STATE: AcpSessionState = {
@@ -44,29 +47,72 @@ mock.module("../../acp/acp-claude-oauth.js", () => ({
   storedClaudeTokenDigest: async () => fakeStoredCredential,
 }));
 
-import {
-  clearHistory,
-  insertHistoryRow,
-} from "../../acp/__tests__/helpers/acp-history-db.js";
 import { claudeTokenDigest } from "../../acp/acp-auth-marker-store.js";
-import { initializeDb } from "../../persistence/db-init.js";
 
 const { executeAcpStatus } = await import("./status.js");
 
 await initializeDb();
+
+async function clearHistory(): Promise<void> {
+  await requireMainDb().run("DELETE FROM acp_session_history");
+}
+
+interface HistoryInsert {
+  id: string;
+  acpSessionId?: string;
+  startedAt?: number;
+  completedAt?: number | null;
+  status?: string;
+  stopReason?: string | null;
+  error?: string | null;
+  cwd?: string | null;
+  task?: string | null;
+  usedTokens?: number | null;
+  contextSize?: number | null;
+  authErrorCode?: string | null;
+  authErrorCredential?: string | null;
+}
+
+async function insertHistoryRows(rows: HistoryInsert[]): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.insert(db.schema.acpSessionHistory).values(
+    rows.map((row) => ({
+      id: row.id,
+      agentId: "claude",
+      acpSessionId: row.acpSessionId ?? "proto-old",
+      parentConversationId: "conv-1",
+      startedAt: row.startedAt ?? 1234,
+      completedAt: row.completedAt === undefined ? 5678 : row.completedAt,
+      status: row.status ?? "completed",
+      stopReason: row.stopReason === undefined ? "end_turn" : row.stopReason,
+      error: row.error ?? null,
+      eventLogJson: "[]",
+      cwd: row.cwd === undefined ? "/tmp/proj" : row.cwd,
+      task: row.task ?? null,
+      usedTokens: row.usedTokens ?? null,
+      contextSize: row.contextSize ?? null,
+      authErrorCode: row.authErrorCode ?? null,
+      authErrorCredential: row.authErrorCredential ?? null,
+    })),
+  );
+}
+
+async function insertHistoryRow(row: HistoryInsert): Promise<void> {
+  await insertHistoryRows([row]);
+}
 
 const context = {
   conversationId: "conv-1",
   workingDir: "/tmp",
 } as unknown as ToolContext;
 
-beforeEach(() => {
+beforeEach(async () => {
   liveStates = [];
   fakeStoredCredential = undefined;
-  clearHistory();
+  await clearHistory();
 });
 
-describe("executeAcpStatus", () => {
+describePg("executeAcpStatus", () => {
   test("a live session reports its model but not the picker", async () => {
     liveStates = [RUNNING_STATE];
 
@@ -88,7 +134,7 @@ describe("executeAcpStatus", () => {
   });
 
   test("a cleanly completed resumable session is returned as idle", async () => {
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "completed-1",
       acpSessionId: "proto-completed-1",
       startedAt: 2000,
@@ -127,13 +173,13 @@ describe("executeAcpStatus", () => {
   });
 
   test("failed and cancelled history rows keep their terminal status", async () => {
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "failed-1",
       status: "failed",
       error: "adapter failed",
       cwd: "/tmp/project",
     });
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "cancelled-1",
       status: "cancelled",
       stopReason: "cancelled",
@@ -163,7 +209,7 @@ describe("executeAcpStatus", () => {
   });
 
   test("a completed legacy row without cwd stays terminal", async () => {
-    insertHistoryRow({ id: "legacy-1", status: "completed", cwd: null });
+    await insertHistoryRow({ id: "legacy-1", status: "completed", cwd: null });
 
     const result = await executeAcpStatus(
       { acp_session_id: "legacy-1" },
@@ -178,7 +224,7 @@ describe("executeAcpStatus", () => {
   });
 
   test("a completed run stopped by cancellation stays terminal", async () => {
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "partial-1",
       status: "completed",
       stopReason: "cancelled",
@@ -200,7 +246,7 @@ describe("executeAcpStatus", () => {
 
   test("the listing includes live and persisted idle sessions", async () => {
     liveStates = [RUNNING_STATE];
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "idle-1",
       startedAt: 2000,
       status: "completed",
@@ -227,7 +273,7 @@ describe("executeAcpStatus", () => {
 
   test("live state wins over history for the same id", async () => {
     liveStates = [RUNNING_STATE];
-    insertHistoryRow({
+    await insertHistoryRow({
       id: RUNNING_STATE.id,
       status: "completed",
       cwd: "/tmp/project",
@@ -266,7 +312,7 @@ describe("executeAcpStatus", () => {
 
   test("withholds a persisted auth marker after the credential is replaced", async () => {
     const refused = claudeTokenDigest("sk-ant-oat-refused");
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "auth-failed-1",
       status: "failed",
       error: "authentication required",
@@ -292,7 +338,7 @@ describe("executeAcpStatus", () => {
 
   test("keeps a persisted auth marker while the refused credential is current", async () => {
     const refused = claudeTokenDigest("sk-ant-oat-refused");
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "auth-failed-2",
       status: "failed",
       cwd: "/tmp/project",
@@ -322,15 +368,15 @@ describe("executeAcpStatus", () => {
         startedAt: 1,
       },
     ];
-    for (let i = 0; i < 50; i++) {
-      insertHistoryRow({
+    await insertHistoryRows(
+      Array.from({ length: 50 }, (_, i) => ({
         id: `hist-${i}`,
         acpSessionId: `proto-hist-${i}`,
         startedAt: 1000 + i,
         status: "completed",
         cwd: "/tmp/project",
-      });
-    }
+      })),
+    );
 
     const result = await executeAcpStatus({}, context);
     const payload = JSON.parse(result.content) as Array<{

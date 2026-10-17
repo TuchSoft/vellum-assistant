@@ -15,7 +15,7 @@
  * the session manager and relays the warning a refused model comes back with.
  */
 
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, expect, mock, test } from "bun:test";
 
 import { installAcpConfigStub } from "../../../acp/__tests__/helpers/acp-config-stub.js";
 import { installExecFileStub } from "../../../acp/__tests__/helpers/exec-file-stub.js";
@@ -151,19 +151,17 @@ mock.module("../../../acp/acp-claude-oauth.js", () => ({
 }));
 
 /** Drain pending micro/macrotasks so background resume work settles. */
-const flushAsync = () => new Promise((resolve) => setTimeout(resolve, 0));
+const flushAsync = () => new Promise((resolve) => setTimeout(resolve, 25));
 
 const config = await installAcpConfigStub();
 const which = installWhichStub();
 
-import {
-  clearHistory,
-  insertHistoryRow,
-} from "../../../acp/__tests__/helpers/acp-history-db.js";
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import {
   AcpResumeError,
   AcpSessionNotFoundError,
 } from "../../../acp/session-manager.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import { FailedDependencyError, NotFoundError } from "../errors.js";
 
@@ -172,6 +170,59 @@ const { _resetAdapterInstallCacheForTests } =
   await import("../../../acp/auto-install.js");
 
 await initializeDb();
+
+async function clearHistory(): Promise<void> {
+  await requireMainDb().run("DELETE FROM acp_session_history");
+}
+
+async function insertHistoryRow(row: {
+  id: string;
+  agentId?: string;
+  acpSessionId?: string;
+  parentConversationId?: string;
+  startedAt?: number;
+  completedAt?: number | null;
+  status?: string;
+  stopReason?: string | null;
+  error?: string | null;
+  eventLogJson?: string;
+  cwd?: string | null;
+  task?: string | null;
+  parentToolUseId?: string | null;
+  usedTokens?: number | null;
+  contextSize?: number | null;
+  costAmount?: number | null;
+  costCurrency?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  authErrorCode?: string | null;
+  authErrorCredential?: string | null;
+}): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.insert(db.schema.acpSessionHistory).values({
+    id: row.id,
+    agentId: row.agentId ?? "claude",
+    acpSessionId: row.acpSessionId ?? "proto-old",
+    parentConversationId: row.parentConversationId ?? "conv-1",
+    startedAt: row.startedAt ?? 1234,
+    completedAt: row.completedAt === undefined ? 5678 : row.completedAt,
+    status: row.status ?? "completed",
+    stopReason: row.stopReason === undefined ? "end_turn" : row.stopReason,
+    error: row.error ?? null,
+    eventLogJson: row.eventLogJson ?? "[]",
+    cwd: row.cwd === undefined ? "/tmp/proj" : row.cwd,
+    task: row.task ?? null,
+    parentToolUseId: row.parentToolUseId ?? null,
+    usedTokens: row.usedTokens ?? null,
+    contextSize: row.contextSize ?? null,
+    costAmount: row.costAmount ?? null,
+    costCurrency: row.costCurrency ?? null,
+    inputTokens: row.inputTokens ?? null,
+    outputTokens: row.outputTokens ?? null,
+    authErrorCode: row.authErrorCode ?? null,
+    authErrorCredential: row.authErrorCredential ?? null,
+  });
+}
 
 afterAll(() => {
   which.restore();
@@ -211,9 +262,9 @@ interface ResponseShape {
   }>;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   fakeInMemorySessions = [];
-  clearHistory();
+  await clearHistory();
   resetExecFileStub();
   spawnMock.mockClear();
   spawnResult = DEFAULT_SPAWN_RESULT;
@@ -228,7 +279,7 @@ beforeEach(() => {
   fakeStoredCredential = undefined;
 });
 
-describe("GET /v1/acp/sessions — merged in-memory + history", () => {
+describePg("GET /v1/acp/sessions — merged in-memory + history", () => {
   test("returns an empty array when no sessions exist", async () => {
     const handler = getSessionsHandler();
     const body = (await handler({})) as ResponseShape;
@@ -263,7 +314,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
   });
 
   test("returns only history rows when no in-memory sessions exist", async () => {
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-1",
       agentId: "agent-B",
       acpSessionId: "proto-h1",
@@ -303,7 +354,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
   });
 
   test("does not expose snapshot-only history metadata", async () => {
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-private",
       status: "completed",
       cwd: "/tmp/private-project",
@@ -338,7 +389,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
         },
       },
     ];
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-tokens",
       agentId: "agent-hist",
       acpSessionId: "proto-hist",
@@ -360,7 +411,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
   });
 
   test("omits input/output tokens for history rows without them", async () => {
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-no-tokens",
       status: "completed",
       startedAt: 1000,
@@ -392,7 +443,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
         ],
       },
     ];
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-model",
       agentId: "agent-hist",
       acpSessionId: "proto-hist",
@@ -420,7 +471,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
   });
 
   test("omits the model for history rows written without one", async () => {
-    insertHistoryRow({ id: "hist-no-model", status: "completed" });
+    await insertHistoryRow({ id: "hist-no-model", status: "completed" });
 
     const handler = getSessionsHandler();
     const body = (await handler({})) as ResponseShape;
@@ -441,7 +492,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
         startedAt: 5000,
       },
     ];
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "shared-1",
       agentId: "agent-stale",
       acpSessionId: "proto-stale",
@@ -473,7 +524,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
         startedAt: 3000,
       },
     ];
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-1",
       agentId: "agent-B",
       acpSessionId: "proto-h1",
@@ -510,7 +561,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
         startedAt: 3000,
       },
     ];
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-old",
       agentId: "agent-B",
       acpSessionId: "proto-B",
@@ -518,7 +569,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
       startedAt: 1000,
       status: "completed",
     });
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-older",
       agentId: "agent-B",
       acpSessionId: "proto-B2",
@@ -526,7 +577,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
       startedAt: 500,
       status: "completed",
     });
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-mid",
       agentId: "agent-B",
       acpSessionId: "proto-B3",
@@ -562,7 +613,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
         startedAt: 3500,
       },
     ];
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-match",
       agentId: "agent-B",
       acpSessionId: "p3",
@@ -570,7 +621,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
       startedAt: 2000,
       status: "completed",
     });
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-other",
       agentId: "agent-B",
       acpSessionId: "p4",
@@ -592,7 +643,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
   test("?limit clamps to the maximum (500)", async () => {
     // Insert 3 rows; ensure a wildly-too-large limit doesn't error and the
     // response is bounded by row count rather than the requested value.
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "h1",
       agentId: "a",
       acpSessionId: "p1",
@@ -600,7 +651,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
       startedAt: 100,
       status: "completed",
     });
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "h2",
       agentId: "a",
       acpSessionId: "p2",
@@ -608,7 +659,7 @@ describe("GET /v1/acp/sessions — merged in-memory + history", () => {
       startedAt: 200,
       status: "completed",
     });
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "h3",
       agentId: "a",
       acpSessionId: "p3",
@@ -648,141 +699,144 @@ const SPAWN_BODY = {
 const BUN_BIN = "/usr/local/bin/bun";
 const BUN_ADD_KEY = `${BUN_BIN} add`;
 
-describe("POST /v1/acp/spawn: sandboxed bun auto-install on missing binary", () => {
-  test("known command + bun present: installs via bun, then spawns the real binary", async () => {
-    // Binary appears on PATH only after `bun add --global` runs, simulating a
-    // successful global install that links the adapter bin onto PATH.
-    let binaryOnPath = false;
-    which.setWhich((cmd) => {
-      if (cmd === "bun") {
-        return BUN_BIN;
+describePg(
+  "POST /v1/acp/spawn: sandboxed bun auto-install on missing binary",
+  () => {
+    test("known command + bun present: installs via bun, then spawns the real binary", async () => {
+      // Binary appears on PATH only after `bun add --global` runs, simulating a
+      // successful global install that links the adapter bin onto PATH.
+      let binaryOnPath = false;
+      which.setWhich((cmd) => {
+        if (cmd === "bun") {
+          return BUN_BIN;
+        }
+        if (binaryOnPath) {
+          return `/usr/local/bin/${cmd}`;
+        }
+        return null;
+      });
+      execScripts.set(BUN_ADD_KEY, {
+        stdout: "",
+        onCall: () => {
+          binaryOnPath = true;
+        },
+      });
+
+      const handler = getSpawnHandler();
+      const body = (await handler({ body: SPAWN_BODY })) as Record<
+        string,
+        unknown
+      >;
+
+      expect(body).toEqual({
+        acpSessionId: "acp-route-session",
+        protocolSessionId: "proto-route-session",
+        agent: "claude",
+        requestedModel: null,
+        effectiveModel: "opus",
+      });
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      // The real adapter binary is spawned, not a `bun x` wrapper.
+      const agentConfigArg = (spawnMock.mock.calls[0] as unknown[])[1] as {
+        command: string;
+      };
+      expect(agentConfigArg.command).toBe("claude-agent-acp");
+      // Exactly one install, and it was `bun add --global` (never npm).
+      expect(execFileMock).toHaveBeenCalledTimes(1);
+      const [command, args] = execFileMock.mock.calls[0];
+      expect(command).toBe(BUN_BIN);
+      expect(args).toEqual([
+        "add",
+        "--global",
+        "@agentclientprotocol/claude-agent-acp@0.75.1",
+      ]);
+    });
+
+    test("install runs in a temp dir (not the task cwd) with secrets stripped", async () => {
+      let binaryOnPath = false;
+      which.setWhich((cmd) => {
+        if (cmd === "bun") {
+          return BUN_BIN;
+        }
+        if (binaryOnPath) {
+          return `/usr/local/bin/${cmd}`;
+        }
+        return null;
+      });
+      execScripts.set(BUN_ADD_KEY, {
+        stdout: "",
+        onCall: () => {
+          binaryOnPath = true;
+        },
+      });
+
+      const handler = getSpawnHandler();
+      await handler({ body: { ...SPAWN_BODY, cwd: "/untrusted/project" } });
+
+      const options = execFileMock.mock.calls[0][2] as {
+        cwd?: string;
+        env?: NodeJS.ProcessEnv;
+      };
+      expect(options.cwd).not.toBe("/untrusted/project");
+      expect(options.cwd).toContain("vellum-acp-install-");
+      expect(options.env?.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      expect(options.env?.GEMINI_API_KEY).toBeUndefined();
+      expect(options.env?.BUN_CONFIG_REGISTRY).toBe(
+        "https://registry.npmjs.org/",
+      );
+    });
+
+    test("bun absent: no install attempted, FailedDependencyError with the hint", async () => {
+      which.setWhich({}); // neither bun nor the adapter on PATH
+
+      const handler = getSpawnHandler();
+      const promise = handler({ body: SPAWN_BODY });
+      await expect(promise).rejects.toBeInstanceOf(FailedDependencyError);
+      await expect(promise).rejects.toThrow(
+        /claude-agent-acp is not on PATH.*bun add -g @agentclientprotocol\/claude-agent-acp/,
+      );
+      expect(execFileMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+    });
+
+    test("install failure: FailedDependencyError carries hint and failure reason, never npm", async () => {
+      which.setWhich({ bun: BUN_BIN });
+      execScripts.set(BUN_ADD_KEY, {
+        error: new Error("EACCES: permission denied"),
+      });
+
+      const handler = getSpawnHandler();
+      const promise = handler({ body: SPAWN_BODY });
+      await expect(promise).rejects.toBeInstanceOf(FailedDependencyError);
+      await expect(promise).rejects.toThrow(
+        /claude-agent-acp is not on PATH.*bun add -g @agentclientprotocol\/claude-agent-acp.*auto-install failed.*EACCES/,
+      );
+      for (const call of execFileMock.mock.calls) {
+        expect(call[0]).not.toBe("npm");
       }
-      if (binaryOnPath) {
-        return `/usr/local/bin/${cmd}`;
-      }
-      return null;
-    });
-    execScripts.set(BUN_ADD_KEY, {
-      stdout: "",
-      onCall: () => {
-        binaryOnPath = true;
-      },
+      expect(spawnMock).not.toHaveBeenCalled();
     });
 
-    const handler = getSpawnHandler();
-    const body = (await handler({ body: SPAWN_BODY })) as Record<
-      string,
-      unknown
-    >;
+    test("unknown command: plain hint maps to FailedDependencyError", async () => {
+      // The allowlist itself (no npm invocation for unmapped commands) is
+      // pinned in auto-install.test.ts and spawn.test.ts; this asserts only
+      // the route's transport mapping of the plain-hint failure.
+      config.setConfig({
+        agents: { custom: { command: "custom-bin", args: [] } },
+      });
+      which.setWhich({});
 
-    expect(body).toEqual({
-      acpSessionId: "acp-route-session",
-      protocolSessionId: "proto-route-session",
-      agent: "claude",
-      requestedModel: null,
-      effectiveModel: "opus",
+      const handler = getSpawnHandler();
+      const promise = handler({ body: { ...SPAWN_BODY, agent: "custom" } });
+      await expect(promise).rejects.toBeInstanceOf(FailedDependencyError);
+      await expect(promise).rejects.toThrow(
+        "custom-bin is not on PATH. Install 'custom-bin' and ensure it is on PATH.",
+      );
     });
-    expect(spawnMock).toHaveBeenCalledTimes(1);
-    // The real adapter binary is spawned, not a `bun x` wrapper.
-    const agentConfigArg = (spawnMock.mock.calls[0] as unknown[])[1] as {
-      command: string;
-    };
-    expect(agentConfigArg.command).toBe("claude-agent-acp");
-    // Exactly one install, and it was `bun add --global` (never npm).
-    expect(execFileMock).toHaveBeenCalledTimes(1);
-    const [command, args] = execFileMock.mock.calls[0];
-    expect(command).toBe(BUN_BIN);
-    expect(args).toEqual([
-      "add",
-      "--global",
-      "@agentclientprotocol/claude-agent-acp@0.75.1",
-    ]);
-  });
+  },
+);
 
-  test("install runs in a temp dir (not the task cwd) with secrets stripped", async () => {
-    let binaryOnPath = false;
-    which.setWhich((cmd) => {
-      if (cmd === "bun") {
-        return BUN_BIN;
-      }
-      if (binaryOnPath) {
-        return `/usr/local/bin/${cmd}`;
-      }
-      return null;
-    });
-    execScripts.set(BUN_ADD_KEY, {
-      stdout: "",
-      onCall: () => {
-        binaryOnPath = true;
-      },
-    });
-
-    const handler = getSpawnHandler();
-    await handler({ body: { ...SPAWN_BODY, cwd: "/untrusted/project" } });
-
-    const options = execFileMock.mock.calls[0][2] as {
-      cwd?: string;
-      env?: NodeJS.ProcessEnv;
-    };
-    expect(options.cwd).not.toBe("/untrusted/project");
-    expect(options.cwd).toContain("vellum-acp-install-");
-    expect(options.env?.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    expect(options.env?.GEMINI_API_KEY).toBeUndefined();
-    expect(options.env?.BUN_CONFIG_REGISTRY).toBe(
-      "https://registry.npmjs.org/",
-    );
-  });
-
-  test("bun absent: no install attempted, FailedDependencyError with the hint", async () => {
-    which.setWhich({}); // neither bun nor the adapter on PATH
-
-    const handler = getSpawnHandler();
-    const promise = handler({ body: SPAWN_BODY });
-    await expect(promise).rejects.toBeInstanceOf(FailedDependencyError);
-    await expect(promise).rejects.toThrow(
-      /claude-agent-acp is not on PATH.*bun add -g @agentclientprotocol\/claude-agent-acp/,
-    );
-    expect(execFileMock).not.toHaveBeenCalled();
-    expect(spawnMock).not.toHaveBeenCalled();
-  });
-
-  test("install failure: FailedDependencyError carries hint and failure reason, never npm", async () => {
-    which.setWhich({ bun: BUN_BIN });
-    execScripts.set(BUN_ADD_KEY, {
-      error: new Error("EACCES: permission denied"),
-    });
-
-    const handler = getSpawnHandler();
-    const promise = handler({ body: SPAWN_BODY });
-    await expect(promise).rejects.toBeInstanceOf(FailedDependencyError);
-    await expect(promise).rejects.toThrow(
-      /claude-agent-acp is not on PATH.*bun add -g @agentclientprotocol\/claude-agent-acp.*auto-install failed.*EACCES/,
-    );
-    for (const call of execFileMock.mock.calls) {
-      expect(call[0]).not.toBe("npm");
-    }
-    expect(spawnMock).not.toHaveBeenCalled();
-  });
-
-  test("unknown command: plain hint maps to FailedDependencyError", async () => {
-    // The allowlist itself (no npm invocation for unmapped commands) is
-    // pinned in auto-install.test.ts and spawn.test.ts; this asserts only
-    // the route's transport mapping of the plain-hint failure.
-    config.setConfig({
-      agents: { custom: { command: "custom-bin", args: [] } },
-    });
-    which.setWhich({});
-
-    const handler = getSpawnHandler();
-    const promise = handler({ body: { ...SPAWN_BODY, agent: "custom" } });
-    await expect(promise).rejects.toBeInstanceOf(FailedDependencyError);
-    await expect(promise).rejects.toThrow(
-      "custom-bin is not on PATH. Install 'custom-bin' and ensure it is on PATH.",
-    );
-  });
-});
-
-describe("POST /v1/acp/spawn: model selection", () => {
+describePg("POST /v1/acp/spawn: model selection", () => {
   test("threads the requested model to the session manager", async () => {
     const handler = getSpawnHandler();
     const body = (await handler({
@@ -868,7 +922,7 @@ function getSteerHandler() {
   return route.handler;
 }
 
-describe("POST /v1/acp/:id/steer: resume fallback", () => {
+describePg("POST /v1/acp/:id/steer: resume fallback", () => {
   test("in-memory session steers without a resume", async () => {
     const handler = getSteerHandler();
     const body = await handler({
@@ -955,9 +1009,9 @@ describe("POST /v1/acp/:id/steer: resume fallback", () => {
 // process and is NOT prompted.
 // ---------------------------------------------------------------------------
 
-describe("POST /v1/acp/:id/steer: resume approval gate", () => {
+describePg("POST /v1/acp/:id/steer: resume approval gate", () => {
   test("acks immediately with approvalPending, then resumes once granted", async () => {
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "gone-1",
       agentId: "claude",
       parentConversationId: "conv-z",
@@ -996,7 +1050,7 @@ describe("POST /v1/acp/:id/steer: resume approval gate", () => {
 
   test("denied resume never reaches the session manager and reports an error event", async () => {
     approvalBehavior = "deny";
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "gone-2",
       acpSessionId: "proto-gone-2",
       parentConversationId: "conv-z",
@@ -1026,7 +1080,7 @@ describe("POST /v1/acp/:id/steer: resume approval gate", () => {
   });
 
   test("a legacy row without a persisted cwd is not resumable, so no prompt", async () => {
-    insertHistoryRow({ id: "legacy-2", status: "completed", cwd: null });
+    await insertHistoryRow({ id: "legacy-2", status: "completed", cwd: null });
     steerOrResumeImpl = async (id) => {
       throw new AcpResumeError(
         new Error(`ACP session "${id}" cannot be resumed.`),
@@ -1053,7 +1107,11 @@ describe("POST /v1/acp/:id/steer: resume approval gate", () => {
       },
     ];
     // A resumable row also exists, but the in-memory session wins → steer.
-    insertHistoryRow({ id: "live-2", status: "completed", cwd: "/work/repo" });
+    await insertHistoryRow({
+      id: "live-2",
+      status: "completed",
+      cwd: "/work/repo",
+    });
 
     const handler = getSteerHandler();
     const body = await handler({
@@ -1067,12 +1125,14 @@ describe("POST /v1/acp/:id/steer: resume approval gate", () => {
   });
 });
 
-describe("GET /v1/acp/sessions: a marker answers for itself", () => {
+describePg("GET /v1/acp/sessions: a marker answers for itself", () => {
   const REFUSED = realMarkerStore.claudeTokenDigest("sk-ant-oat-refused");
   const REPLACEMENT = realMarkerStore.claudeTokenDigest("sk-ant-oat-new");
 
-  function markedRow(overrides: Record<string, unknown> = {}) {
-    insertHistoryRow({
+  async function markedRow(
+    overrides: Record<string, unknown> = {},
+  ): Promise<void> {
+    await insertHistoryRow({
       id: "hist-auth",
       agentId: "claude",
       acpSessionId: "proto-auth",
@@ -1088,7 +1148,7 @@ describe("GET /v1/acp/sessions: a marker answers for itself", () => {
   }
 
   test("serves the marker while the refused credential is still the stored one", async () => {
-    markedRow();
+    await markedRow();
     fakeStoredCredential = REFUSED;
 
     const handler = getSessionsHandler();
@@ -1102,7 +1162,7 @@ describe("GET /v1/acp/sessions: a marker answers for itself", () => {
   test("withholds it once a different credential is stored", async () => {
     // The user completed Connect. Nothing swept the row; the comparison is
     // what stops the card rendering, so it needs no ordering to be right.
-    markedRow();
+    await markedRow();
     fakeStoredCredential = REPLACEMENT;
 
     const handler = getSessionsHandler();
@@ -1116,7 +1176,7 @@ describe("GET /v1/acp/sessions: a marker answers for itself", () => {
   test("withholding it twice gives the same answer", async () => {
     // The sweep this replaced could only run once, which is why a restart or a
     // second client used to be able to lose the answer.
-    markedRow();
+    await markedRow();
     fakeStoredCredential = REPLACEMENT;
 
     const handler = getSessionsHandler();
@@ -1134,7 +1194,7 @@ describe("GET /v1/acp/sessions: a marker answers for itself", () => {
   test("serves a marker naming no credential rather than hiding it", async () => {
     // Written before the credential column existed. An unknown credential is
     // no evidence the failure was repaired.
-    markedRow({ authErrorCredential: null });
+    await markedRow({ authErrorCredential: null });
     fakeStoredCredential = REPLACEMENT;
 
     const handler = getSessionsHandler();
@@ -1146,7 +1206,7 @@ describe("GET /v1/acp/sessions: a marker answers for itself", () => {
   });
 
   test("serves the marker when the vault holds nothing", async () => {
-    markedRow();
+    await markedRow();
     fakeStoredCredential = undefined;
 
     const handler = getSessionsHandler();
@@ -1158,175 +1218,181 @@ describe("GET /v1/acp/sessions: a marker answers for itself", () => {
   });
 });
 
-describe("GET /v1/acp/sessions: markers resolve against configured tokens too", () => {
-  const REFUSED = realMarkerStore.claudeTokenDigest("sk-ant-oat-refused");
-  const CONFIGURED = "sk-ant-oat-configured-repair";
+describePg(
+  "GET /v1/acp/sessions: markers resolve against configured tokens too",
+  () => {
+    const REFUSED = realMarkerStore.claudeTokenDigest("sk-ant-oat-refused");
+    const CONFIGURED = "sk-ant-oat-configured-repair";
 
-  function markedRow() {
-    insertHistoryRow({
-      id: "hist-cfg",
-      agentId: "claude",
-      acpSessionId: "proto-cfg",
-      parentConversationId: "conv-cfg",
-      startedAt: 5000,
-      completedAt: 6000,
-      status: "failed",
-      eventLogJson: "[]",
-      authErrorCode: "acp_claude_auth_required",
-      authErrorCredential: REFUSED,
-    });
-  }
-
-  test("withholds the marker when config supplies the repaired token", async () => {
-    // The user fixed auth by setting `acp.agents.claude.env`, not by
-    // connecting. Config wins at spawn, so the next run uses the repaired
-    // token and the old failure is not going to repeat. A vault-only
-    // comparison would keep restoring the card forever, since the vault still
-    // holds the refused value.
-    markedRow();
-    fakeStoredCredential = REFUSED;
-    config.setConfig({
-      agents: {
-        claude: {
-          command: "claude-agent-acp",
-          args: [],
-          env: { CLAUDE_CODE_OAUTH_TOKEN: CONFIGURED },
-        },
-      },
-    });
-
-    const handler = getSessionsHandler();
-    const body = (await handler({
-      queryParams: { conversationId: "conv-cfg" },
-    })) as ResponseShape;
-
-    expect(body.sessions[0].authErrorCode).toBeUndefined();
-  });
-
-  test("serves it when the configured token is the one that was refused", async () => {
-    markedRow();
-    fakeStoredCredential = undefined;
-    config.setConfig({
-      agents: {
-        claude: {
-          command: "claude-agent-acp",
-          args: [],
-          env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat-refused" },
-        },
-      },
-    });
-
-    const handler = getSessionsHandler();
-    const body = (await handler({
-      queryParams: { conversationId: "conv-cfg" },
-    })) as ResponseShape;
-
-    expect(body.sessions[0].authErrorCode).toBe("acp_claude_auth_required");
-  });
-
-  test("never puts the credential digest on the wire", async () => {
-    markedRow();
-    fakeStoredCredential = REFUSED;
-
-    const handler = getSessionsHandler();
-    const body = (await handler({
-      queryParams: { conversationId: "conv-cfg" },
-    })) as ResponseShape;
-
-    expect(body.sessions[0]).not.toHaveProperty("authErrorCredential");
-  });
-});
-
-describe("GET /v1/acp/sessions: retired markers do not accumulate past the page", () => {
-  const REFUSED = realMarkerStore.claudeTokenDigest("sk-ant-oat-refused");
-  const REPLACEMENT = realMarkerStore.claudeTokenDigest("sk-ant-oat-new");
-
-  test("stale marked rows outside the page are dropped, not carried along", async () => {
-    // Marker columns are retained rather than cleared, so every failure a
-    // conversation has ever had still carries one. Letting them escape the
-    // page before the comparison strikes the repaired ones grows the response
-    // without limit, and a client that reads a full page as truncated then
-    // stops retiring runs missing from it.
-    for (let i = 0; i < 6; i++) {
-      insertHistoryRow({
-        id: `hist-old-${i}`,
+    async function markedRow(): Promise<void> {
+      await insertHistoryRow({
+        id: "hist-cfg",
         agentId: "claude",
-        acpSessionId: `proto-old-${i}`,
-        parentConversationId: "conv-many",
-        startedAt: 1000 + i,
-        completedAt: 2000 + i,
+        acpSessionId: "proto-cfg",
+        parentConversationId: "conv-cfg",
+        startedAt: 5000,
+        completedAt: 6000,
         status: "failed",
         eventLogJson: "[]",
         authErrorCode: "acp_claude_auth_required",
         authErrorCredential: REFUSED,
       });
     }
-    // Newer unmarked runs fill the page.
-    for (let i = 0; i < 3; i++) {
-      insertHistoryRow({
-        id: `hist-new-${i}`,
-        agentId: "claude",
-        acpSessionId: `proto-new-${i}`,
-        parentConversationId: "conv-many",
-        startedAt: 9000 + i,
-        completedAt: 9500 + i,
-        status: "completed",
-        eventLogJson: "[]",
+
+    test("withholds the marker when config supplies the repaired token", async () => {
+      // The user fixed auth by setting `acp.agents.claude.env`, not by
+      // connecting. Config wins at spawn, so the next run uses the repaired
+      // token and the old failure is not going to repeat. A vault-only
+      // comparison would keep restoring the card forever, since the vault still
+      // holds the refused value.
+      await markedRow();
+      fakeStoredCredential = REFUSED;
+      config.setConfig({
+        agents: {
+          claude: {
+            command: "claude-agent-acp",
+            args: [],
+            env: { CLAUDE_CODE_OAUTH_TOKEN: CONFIGURED },
+          },
+        },
       });
-    }
-    fakeStoredCredential = REPLACEMENT;
 
-    const handler = getSessionsHandler();
-    const body = (await handler({
-      queryParams: { conversationId: "conv-many", limit: "3" },
-    })) as ResponseShape;
+      const handler = getSessionsHandler();
+      const body = (await handler({
+        queryParams: { conversationId: "conv-cfg" },
+      })) as ResponseShape;
 
-    expect(body.sessions).toHaveLength(3);
-    expect(body.sessions.map((s) => s.id)).toEqual([
-      "hist-new-2",
-      "hist-new-1",
-      "hist-new-0",
-    ]);
-  });
-
-  test("a marker that is still current does escape the page", async () => {
-    insertHistoryRow({
-      id: "hist-live-marker",
-      agentId: "claude",
-      acpSessionId: "proto-live-marker",
-      parentConversationId: "conv-many",
-      startedAt: 1000,
-      completedAt: 2000,
-      status: "failed",
-      eventLogJson: "[]",
-      authErrorCode: "acp_claude_auth_required",
-      authErrorCredential: REFUSED,
+      expect(body.sessions[0].authErrorCode).toBeUndefined();
     });
-    for (let i = 0; i < 3; i++) {
-      insertHistoryRow({
-        id: `hist-fill-${i}`,
-        agentId: "claude",
-        acpSessionId: `proto-fill-${i}`,
-        parentConversationId: "conv-many",
-        startedAt: 9000 + i,
-        completedAt: 9500 + i,
-        status: "completed",
-        eventLogJson: "[]",
+
+    test("serves it when the configured token is the one that was refused", async () => {
+      await markedRow();
+      fakeStoredCredential = undefined;
+      config.setConfig({
+        agents: {
+          claude: {
+            command: "claude-agent-acp",
+            args: [],
+            env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat-refused" },
+          },
+        },
       });
-    }
-    fakeStoredCredential = REFUSED;
 
-    const handler = getSessionsHandler();
-    const body = (await handler({
-      queryParams: { conversationId: "conv-many", limit: "3" },
-    })) as ResponseShape;
+      const handler = getSessionsHandler();
+      const body = (await handler({
+        queryParams: { conversationId: "conv-cfg" },
+      })) as ResponseShape;
 
-    expect(body.sessions).toHaveLength(4);
-    expect(body.sessions.map((s) => s.id)).toContain("hist-live-marker");
-  });
-});
+      expect(body.sessions[0].authErrorCode).toBe("acp_claude_auth_required");
+    });
 
-describe("GET /v1/acp/sessions: current markers are bounded too", () => {
+    test("never puts the credential digest on the wire", async () => {
+      await markedRow();
+      fakeStoredCredential = REFUSED;
+
+      const handler = getSessionsHandler();
+      const body = (await handler({
+        queryParams: { conversationId: "conv-cfg" },
+      })) as ResponseShape;
+
+      expect(body.sessions[0]).not.toHaveProperty("authErrorCredential");
+    });
+  },
+);
+
+describePg(
+  "GET /v1/acp/sessions: retired markers do not accumulate past the page",
+  () => {
+    const REFUSED = realMarkerStore.claudeTokenDigest("sk-ant-oat-refused");
+    const REPLACEMENT = realMarkerStore.claudeTokenDigest("sk-ant-oat-new");
+
+    test("stale marked rows outside the page are dropped, not carried along", async () => {
+      // Marker columns are retained rather than cleared, so every failure a
+      // conversation has ever had still carries one. Letting them escape the
+      // page before the comparison strikes the repaired ones grows the response
+      // without limit, and a client that reads a full page as truncated then
+      // stops retiring runs missing from it.
+      for (let i = 0; i < 6; i++) {
+        await insertHistoryRow({
+          id: `hist-old-${i}`,
+          agentId: "claude",
+          acpSessionId: `proto-old-${i}`,
+          parentConversationId: "conv-many",
+          startedAt: 1000 + i,
+          completedAt: 2000 + i,
+          status: "failed",
+          eventLogJson: "[]",
+          authErrorCode: "acp_claude_auth_required",
+          authErrorCredential: REFUSED,
+        });
+      }
+      // Newer unmarked runs fill the page.
+      for (let i = 0; i < 3; i++) {
+        await insertHistoryRow({
+          id: `hist-new-${i}`,
+          agentId: "claude",
+          acpSessionId: `proto-new-${i}`,
+          parentConversationId: "conv-many",
+          startedAt: 9000 + i,
+          completedAt: 9500 + i,
+          status: "completed",
+          eventLogJson: "[]",
+        });
+      }
+      fakeStoredCredential = REPLACEMENT;
+
+      const handler = getSessionsHandler();
+      const body = (await handler({
+        queryParams: { conversationId: "conv-many", limit: "3" },
+      })) as ResponseShape;
+
+      expect(body.sessions).toHaveLength(3);
+      expect(body.sessions.map((s) => s.id)).toEqual([
+        "hist-new-2",
+        "hist-new-1",
+        "hist-new-0",
+      ]);
+    });
+
+    test("a marker that is still current does escape the page", async () => {
+      await insertHistoryRow({
+        id: "hist-live-marker",
+        agentId: "claude",
+        acpSessionId: "proto-live-marker",
+        parentConversationId: "conv-many",
+        startedAt: 1000,
+        completedAt: 2000,
+        status: "failed",
+        eventLogJson: "[]",
+        authErrorCode: "acp_claude_auth_required",
+        authErrorCredential: REFUSED,
+      });
+      for (let i = 0; i < 3; i++) {
+        await insertHistoryRow({
+          id: `hist-fill-${i}`,
+          agentId: "claude",
+          acpSessionId: `proto-fill-${i}`,
+          parentConversationId: "conv-many",
+          startedAt: 9000 + i,
+          completedAt: 9500 + i,
+          status: "completed",
+          eventLogJson: "[]",
+        });
+      }
+      fakeStoredCredential = REFUSED;
+
+      const handler = getSessionsHandler();
+      const body = (await handler({
+        queryParams: { conversationId: "conv-many", limit: "3" },
+      })) as ResponseShape;
+
+      expect(body.sessions).toHaveLength(4);
+      expect(body.sessions.map((s) => s.id)).toContain("hist-live-marker");
+    });
+  },
+);
+
+describePg("GET /v1/acp/sessions: current markers are bounded too", () => {
   const REFUSED = realMarkerStore.claudeTokenDigest("sk-ant-oat-refused");
 
   test("only the newest marked run escapes the page", async () => {
@@ -1335,7 +1401,7 @@ describe("GET /v1/acp/sessions: current markers are bounded too", () => {
     // newest marked run and stops, so letting the rest escape would grow the
     // response by a full event log apiece for no one's benefit.
     for (let i = 0; i < 5; i++) {
-      insertHistoryRow({
+      await insertHistoryRow({
         id: `hist-marked-${i}`,
         agentId: "claude",
         acpSessionId: `proto-marked-${i}`,
@@ -1350,7 +1416,7 @@ describe("GET /v1/acp/sessions: current markers are bounded too", () => {
       });
     }
     for (let i = 0; i < 2; i++) {
-      insertHistoryRow({
+      await insertHistoryRow({
         id: `hist-recent-${i}`,
         agentId: "claude",
         acpSessionId: `proto-recent-${i}`,
@@ -1376,7 +1442,7 @@ describe("GET /v1/acp/sessions: current markers are bounded too", () => {
   test("markers inside the page are all returned", async () => {
     // The cap is on escaping the page, not on markers as such.
     for (let i = 0; i < 3; i++) {
-      insertHistoryRow({
+      await insertHistoryRow({
         id: `hist-inpage-${i}`,
         agentId: "claude",
         acpSessionId: `proto-inpage-${i}`,
@@ -1406,94 +1472,97 @@ describe("GET /v1/acp/sessions: current markers are bounded too", () => {
   });
 });
 
-describe("GET /v1/acp/sessions: the marker past the page is looked up, not filtered", () => {
-  const REFUSED = realMarkerStore.claudeTokenDigest("sk-ant-oat-refused");
-  const CURRENT = realMarkerStore.claudeTokenDigest("sk-ant-oat-current");
+describePg(
+  "GET /v1/acp/sessions: the marker past the page is looked up, not filtered",
+  () => {
+    const REFUSED = realMarkerStore.claudeTokenDigest("sk-ant-oat-refused");
+    const CURRENT = realMarkerStore.claudeTokenDigest("sk-ant-oat-current");
 
-  test("reaches the newest current marker past a run of stale ones", async () => {
-    // Newest-first, the markers go: stale, stale, current. Taking the newest
-    // marked row and judging it afterwards would return nothing; the lookup
-    // has to ask for the newest row whose credential still matches.
-    const rows: Array<[string, number, string]> = [
-      ["hist-current", 3000, CURRENT],
-      ["hist-stale-a", 4000, REFUSED],
-      ["hist-stale-b", 5000, REFUSED],
-    ];
-    for (const [id, startedAt, credential] of rows) {
-      insertHistoryRow({
-        id,
+    test("reaches the newest current marker past a run of stale ones", async () => {
+      // Newest-first, the markers go: stale, stale, current. Taking the newest
+      // marked row and judging it afterwards would return nothing; the lookup
+      // has to ask for the newest row whose credential still matches.
+      const rows: Array<[string, number, string]> = [
+        ["hist-current", 3000, CURRENT],
+        ["hist-stale-a", 4000, REFUSED],
+        ["hist-stale-b", 5000, REFUSED],
+      ];
+      for (const [id, startedAt, credential] of rows) {
+        await insertHistoryRow({
+          id,
+          agentId: "claude",
+          acpSessionId: `proto-${id}`,
+          parentConversationId: "conv-mixed",
+          startedAt,
+          completedAt: startedAt + 1,
+          status: "failed",
+          eventLogJson: "[]",
+          parentToolUseId: `tool-${id}`,
+          authErrorCode: "acp_claude_auth_required",
+          authErrorCredential: credential,
+        });
+      }
+      await insertHistoryRow({
+        id: "hist-recent",
         agentId: "claude",
-        acpSessionId: `proto-${id}`,
+        acpSessionId: "proto-recent",
         parentConversationId: "conv-mixed",
-        startedAt,
-        completedAt: startedAt + 1,
+        startedAt: 9000,
+        completedAt: 9001,
+        status: "completed",
+        eventLogJson: "[]",
+      });
+      fakeStoredCredential = CURRENT;
+
+      const handler = getSessionsHandler();
+      const body = (await handler({
+        queryParams: { conversationId: "conv-mixed", limit: "1" },
+      })) as ResponseShape;
+
+      expect(body.sessions.map((s) => s.id)).toEqual([
+        "hist-recent",
+        "hist-current",
+      ]);
+      expect(body.sessions[1].authErrorCode).toBe("acp_claude_auth_required");
+    });
+
+    test("reaches nothing when every marker is stale", async () => {
+      await insertHistoryRow({
+        id: "hist-only-stale",
+        agentId: "claude",
+        acpSessionId: "proto-only-stale",
+        parentConversationId: "conv-all-stale",
+        startedAt: 1000,
+        completedAt: 1001,
         status: "failed",
         eventLogJson: "[]",
-        parentToolUseId: `tool-${id}`,
+        parentToolUseId: "tool-stale",
         authErrorCode: "acp_claude_auth_required",
-        authErrorCredential: credential,
+        authErrorCredential: REFUSED,
       });
-    }
-    insertHistoryRow({
-      id: "hist-recent",
-      agentId: "claude",
-      acpSessionId: "proto-recent",
-      parentConversationId: "conv-mixed",
-      startedAt: 9000,
-      completedAt: 9001,
-      status: "completed",
-      eventLogJson: "[]",
+      await insertHistoryRow({
+        id: "hist-newer",
+        agentId: "claude",
+        acpSessionId: "proto-newer",
+        parentConversationId: "conv-all-stale",
+        startedAt: 9000,
+        completedAt: 9001,
+        status: "completed",
+        eventLogJson: "[]",
+      });
+      fakeStoredCredential = CURRENT;
+
+      const handler = getSessionsHandler();
+      const body = (await handler({
+        queryParams: { conversationId: "conv-all-stale", limit: "1" },
+      })) as ResponseShape;
+
+      expect(body.sessions.map((s) => s.id)).toEqual(["hist-newer"]);
     });
-    fakeStoredCredential = CURRENT;
+  },
+);
 
-    const handler = getSessionsHandler();
-    const body = (await handler({
-      queryParams: { conversationId: "conv-mixed", limit: "1" },
-    })) as ResponseShape;
-
-    expect(body.sessions.map((s) => s.id)).toEqual([
-      "hist-recent",
-      "hist-current",
-    ]);
-    expect(body.sessions[1].authErrorCode).toBe("acp_claude_auth_required");
-  });
-
-  test("reaches nothing when every marker is stale", async () => {
-    insertHistoryRow({
-      id: "hist-only-stale",
-      agentId: "claude",
-      acpSessionId: "proto-only-stale",
-      parentConversationId: "conv-all-stale",
-      startedAt: 1000,
-      completedAt: 1001,
-      status: "failed",
-      eventLogJson: "[]",
-      parentToolUseId: "tool-stale",
-      authErrorCode: "acp_claude_auth_required",
-      authErrorCredential: REFUSED,
-    });
-    insertHistoryRow({
-      id: "hist-newer",
-      agentId: "claude",
-      acpSessionId: "proto-newer",
-      parentConversationId: "conv-all-stale",
-      startedAt: 9000,
-      completedAt: 9001,
-      status: "completed",
-      eventLogJson: "[]",
-    });
-    fakeStoredCredential = CURRENT;
-
-    const handler = getSessionsHandler();
-    const body = (await handler({
-      queryParams: { conversationId: "conv-all-stale", limit: "1" },
-    })) as ResponseShape;
-
-    expect(body.sessions.map((s) => s.id)).toEqual(["hist-newer"]);
-  });
-});
-
-describe("GET /v1/acp/sessions: a marker in the merged overflow", () => {
+describePg("GET /v1/acp/sessions: a marker in the merged overflow", () => {
   const REFUSED = realMarkerStore.claudeTokenDigest("sk-ant-oat-refused");
 
   test("surfaces a marker the page cut, even when history was read to the end", async () => {
@@ -1519,7 +1588,7 @@ describe("GET /v1/acp/sessions: a marker in the merged overflow", () => {
         startedAt: 9001,
       },
     ];
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-marked",
       agentId: "claude",
       acpSessionId: "proto-marked",
@@ -1555,7 +1624,7 @@ describe("GET /v1/acp/sessions: a marker in the merged overflow", () => {
         startedAt: 9000,
       },
     ];
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "hist-stale",
       agentId: "claude",
       acpSessionId: "proto-stale",

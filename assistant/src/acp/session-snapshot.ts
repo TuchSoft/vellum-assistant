@@ -1,7 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 
-import { getDb } from "../persistence/db-connection.js";
-import { acpSessionHistory } from "../persistence/schema/index.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { getLogger } from "../util/logger.js";
 import { acpAuthMarkerStillCurrent } from "./acp-auth-marker-store.js";
 import { getAcpSessionManager } from "./index.js";
@@ -86,14 +86,14 @@ function fromLiveState(
   };
 }
 
-function isResumableHistoryRow(
-  row: typeof acpSessionHistory.$inferSelect,
-): boolean {
+type AcpSessionHistoryRow = SchemaTables["acpSessionHistory"]["$inferSelect"];
+
+function isResumableHistoryRow(row: AcpSessionHistoryRow): boolean {
   return Boolean(row.cwd && row.acpSessionId);
 }
 
 export function snapshotHistoryRow(
-  row: typeof acpSessionHistory.$inferSelect,
+  row: AcpSessionHistoryRow,
   opts: SnapshotOptions = { includeEventLog: true },
 ): AcpSessionSnapshot {
   let eventLog: unknown[] | undefined;
@@ -180,17 +180,15 @@ export async function withCurrentAuthMarkers<
       session.authErrorCredential,
       await resolve(session.agentId),
     );
-    judged.push(
-      current ? session : { ...session, authErrorCode: undefined },
-    );
+    judged.push(current ? session : { ...session, authErrorCode: undefined });
   }
   return judged;
 }
 
-export function getAcpSessionSnapshot(
+export async function getAcpSessionSnapshot(
   acpSessionId: string,
   opts: SnapshotOptions = {},
-): AcpSessionSnapshot | undefined {
+): Promise<AcpSessionSnapshot | undefined> {
   const manager = getAcpSessionManager();
   const snapshotOptions = {
     includeEventLog: opts.includeEventLog ?? true,
@@ -202,19 +200,20 @@ export function getAcpSessionSnapshot(
     return fromLiveState(live, manager, snapshotOptions);
   }
 
-  const row = getDb()
+  const db = requireMainDb();
+  const history = db.schema.acpSessionHistory;
+  const [row] = await db.orm
     .select()
-    .from(acpSessionHistory)
-    .where(eq(acpSessionHistory.id, acpSessionId))
-    .get();
+    .from(history)
+    .where(eq(history.id, acpSessionId));
   return row ? snapshotHistoryRow(row, snapshotOptions) : undefined;
 }
 
-export function listAcpSessionSnapshots(opts: {
+export async function listAcpSessionSnapshots(opts: {
   limit: number;
   conversationId?: string;
   includeEventLog?: boolean;
-}): AcpSessionSnapshotPage {
+}): Promise<AcpSessionSnapshotPage> {
   const manager = getAcpSessionManager();
   const inMemory = manager.getStatus() as AcpSessionState[];
   const snapshotOptions = {
@@ -232,18 +231,16 @@ export function listAcpSessionSnapshots(opts: {
     merged.set(state.id, fromLiveState(state, manager, snapshotOptions));
   }
 
-  const db = getDb();
-  const baseQuery = db.select().from(acpSessionHistory);
+  const db = requireMainDb();
+  const history = db.schema.acpSessionHistory;
+  const baseQuery = db.orm.select().from(history);
   const filtered = opts.conversationId
-    ? baseQuery.where(
-        eq(acpSessionHistory.parentConversationId, opts.conversationId),
-      )
+    ? baseQuery.where(eq(history.parentConversationId, opts.conversationId))
     : baseQuery;
   const historyLimit = opts.limit + merged.size;
-  const historyRows = filtered
-    .orderBy(desc(acpSessionHistory.startedAt))
-    .limit(historyLimit)
-    .all();
+  const historyRows = await filtered
+    .orderBy(desc(history.startedAt))
+    .limit(historyLimit);
 
   for (const row of historyRows) {
     if (!merged.has(row.id)) {

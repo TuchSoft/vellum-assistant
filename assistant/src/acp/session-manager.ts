@@ -13,8 +13,8 @@ import type { AcpSessionUpdateEvent } from "../api/events/acp-session-update.js"
 import type { AssistantEvent } from "../api/index.js";
 import { findConversation } from "../daemon/conversation-registry.js";
 import { SYNC_TAGS } from "../daemon/message-types/sync.js";
-import { getDb } from "../persistence/db-connection.js";
-import { acpSessionHistory } from "../persistence/schema/index.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import * as pendingInteractions from "../runtime/pending-interactions.js";
 import { isAbortLikeError } from "../tools/shared/abort.js";
 import { getLogger } from "../util/logger.js";
@@ -168,7 +168,7 @@ function noModelSelectionWarning(agentId: string): string {
  * guards: `cwd` (nullable in the schema for pre-resume-support rows) is
  * guaranteed present.
  */
-type ResumableHistoryRow = typeof acpSessionHistory.$inferSelect & {
+type ResumableHistoryRow = SchemaTables["acpSessionHistory"]["$inferSelect"] & {
   cwd: string;
 };
 
@@ -217,7 +217,7 @@ export class AcpSessionManager {
   private disposed = false;
 
   constructor(private readonly maxConcurrent: number) {
-    this.cleanupStaleRunningRows();
+    void this.cleanupStaleRunningRows();
   }
 
   /**
@@ -232,17 +232,18 @@ export class AcpSessionManager {
    * logged but does not propagate, since failing to clean up stale rows
    * must not block daemon startup.
    */
-  private cleanupStaleRunningRows(): void {
+  private async cleanupStaleRunningRows(): Promise<void> {
     try {
-      getDb()
-        .update(acpSessionHistory)
+      const db = requireMainDb();
+      const history = db.schema.acpSessionHistory;
+      await db.orm
+        .update(history)
         .set({
           status: "cancelled",
           stopReason: "daemon_restarted",
           completedAt: Date.now(),
         })
-        .where(inArray(acpSessionHistory.status, [...ACP_LIVE_STATUSES]))
-        .run();
+        .where(inArray(history.status, [...ACP_LIVE_STATUSES]));
     } catch (err) {
       log.error(
         { err },
@@ -369,7 +370,7 @@ export class AcpSessionManager {
       // over whatever Connect stores until this is written down, so every
       // later spawn repeats the same failure.
       if (isAcpAuthRequired(err)) {
-        noteClaudeTokenRefused(agentConfig.credentialDigest, Date.now());
+        await noteClaudeTokenRefused(agentConfig.credentialDigest, Date.now());
       }
       // No prompt has fired yet, so no permissions can be pending.
       this.teardownSession(acpSessionId, entry);
@@ -402,7 +403,7 @@ export class AcpSessionManager {
         { acpSessionId, agentId, err },
         "ACP spawn failed while applying the model",
       );
-      const failure = this.classifyPinFailure(err, agentId, agentConfig);
+      const failure = await this.classifyPinFailure(err, agentId, agentConfig);
       // No prompt has fired yet, so no permissions can be pending.
       this.teardownSession(acpSessionId, entry);
       throw failure;
@@ -505,11 +506,11 @@ export class AcpSessionManager {
    * recognises, whether the adapter answered with a structured
    * `auth_required` or with Claude's message-shaped 401.
    */
-  private classifyPinFailure(
+  private async classifyPinFailure(
     err: unknown,
     agentId: string,
     agentConfig: { command: string; credentialDigest?: string },
-  ): unknown {
+  ): Promise<unknown> {
     const message = requestErrorReason(err);
     const authCode = claudeAuthRequiredCode(err, message, {
       command: basename(agentConfig.command),
@@ -517,7 +518,7 @@ export class AcpSessionManager {
     if (authCode === undefined && !isAcpAuthRequired(err)) {
       return err;
     }
-    noteClaudeTokenRefused(agentConfig.credentialDigest, Date.now());
+    await noteClaudeTokenRefused(agentConfig.credentialDigest, Date.now());
     return isAcpAuthRequired(err)
       ? err
       : new AcpAuthRequiredError(agentId, message);
@@ -833,7 +834,7 @@ export class AcpSessionManager {
    * before resume support (no cwd), the agent cannot be resolved or
    * auto-installed, or the agent advertises neither resume capability.
    */
-  async resumeFromHistory(
+  resumeFromHistory(
     acpSessionId: string,
     sendToVellum: (msg: AssistantEvent) => void,
   ): Promise<void> {
@@ -841,15 +842,52 @@ export class AcpSessionManager {
       this.sessions.has(acpSessionId) ||
       this.pendingResumes.has(acpSessionId)
     ) {
-      throw new Error(`ACP session "${acpSessionId}" is already active`);
+      return Promise.reject(
+        new Error(`ACP session "${acpSessionId}" is already active`),
+      );
     }
-    this.assertCapacity();
+    try {
+      this.assertCapacity();
+    } catch (err) {
+      return Promise.reject(err);
+    }
 
-    const row = getDb()
+    // The reservation is registered before the first await so a concurrent
+    // resume of the same id (or a spawn racing the cap) fails the guards above
+    // instead of double-registering and leaking the first child process. The
+    // reservation holds the resume's promise until it settles so steerOrResume
+    // can await a concurrent caller's in-flight resume, and so the delete
+    // guards see the id as live while the row's terminal status still reflects
+    // the previous run. Reading the row and resolving the agent (which may
+    // auto-install a missing adapter) happen inside the body, after the slot is
+    // reserved.
+    const resumePromise = async (): Promise<void> => {
+      const row = await this.loadResumableHistoryRow(acpSessionId);
+      await this.performResume(acpSessionId, row, sendToVellum);
+    };
+    const tracked = resumePromise().finally(() => {
+      if (this.pendingResumes.get(acpSessionId) === tracked) {
+        this.pendingResumes.delete(acpSessionId);
+      }
+    });
+    this.pendingResumes.set(acpSessionId, tracked);
+    return tracked;
+  }
+
+  /**
+   * Reads and validates the history row a resume reattaches to. Throws the
+   * not-found error for an unknown id and the actionable messages for rows a
+   * resume cannot use.
+   */
+  private async loadResumableHistoryRow(
+    acpSessionId: string,
+  ): Promise<ResumableHistoryRow> {
+    const db = requireMainDb();
+    const history = db.schema.acpSessionHistory;
+    const [row] = await db.orm
       .select()
-      .from(acpSessionHistory)
-      .where(eq(acpSessionHistory.id, acpSessionId))
-      .get();
+      .from(history)
+      .where(eq(history.id, acpSessionId));
     if (!row) {
       throw new AcpSessionNotFoundError(acpSessionId);
     }
@@ -866,28 +904,7 @@ export class AcpSessionManager {
           `persisted and cannot be resumed. Spawn a new session instead.`,
       );
     }
-
-    // Everything up to here is synchronous. Reserve the id + concurrency
-    // slot BEFORE the first await so a concurrent resume of the same id
-    // (or a spawn racing the cap) fails the guards above instead of
-    // double-registering and leaking the first child process. The
-    // reservation holds the resume's promise until it settles so
-    // steerOrResume can await a concurrent caller's in-flight resume, and
-    // so the delete guards see the id as live while the row's terminal
-    // status still reflects the previous run. Agent resolution (which may
-    // auto-install a missing adapter) is therefore deferred into
-    // performResume, after the slot is reserved.
-    const resumePromise = this.performResume(
-      acpSessionId,
-      row as ResumableHistoryRow,
-      sendToVellum,
-    );
-    this.pendingResumes.set(acpSessionId, resumePromise);
-    try {
-      await resumePromise;
-    } finally {
-      this.pendingResumes.delete(acpSessionId);
-    }
+    return row as ResumableHistoryRow;
   }
 
   /**
@@ -1065,7 +1082,11 @@ export class AcpSessionManager {
         { acpSessionId, agentId: row.agentId, err },
         "ACP resume failed while applying the model",
       );
-      const failure = this.classifyPinFailure(err, row.agentId, agentConfig);
+      const failure = await this.classifyPinFailure(
+        err,
+        row.agentId,
+        agentConfig,
+      );
       this.teardownSession(acpSessionId, entry);
       throw failure;
     }
@@ -1233,7 +1254,7 @@ export class AcpSessionManager {
       // running-idle with no prompt handler to own its cleanup. A cancelled
       // turn needs the same teardown, and then its abort back unwrapped.
       try {
-        this.close(acpSessionId);
+        await this.close(acpSessionId);
       } catch (closeErr) {
         log.warn(
           { acpSessionId, err: closeErr },
@@ -1291,7 +1312,7 @@ export class AcpSessionManager {
     // Re-check the map after the await: the in-flight prompt's handler may
     // have already torn the session down while process.cancel was pending.
     if (!entry.currentPrompt && this.sessions.get(acpSessionId) === entry) {
-      this.persistTerminal(acpSessionId, entry);
+      await this.persistTerminal(acpSessionId, entry);
       this.teardownSession(acpSessionId, entry);
     }
   }
@@ -1340,7 +1361,7 @@ export class AcpSessionManager {
    * persisted row reflects reality. The in-flight prompt's then/catch
    * handler will short-circuit after teardown removes the entry.
    */
-  close(acpSessionId: string): void {
+  close(acpSessionId: string): Promise<void> {
     const entry = this.sessions.get(acpSessionId);
     if (!entry) {
       throw new AcpSessionNotFoundError(acpSessionId);
@@ -1349,8 +1370,12 @@ export class AcpSessionManager {
       entry.state.status = "cancelled";
       entry.state.completedAt = Date.now();
     }
-    this.persistTerminal(acpSessionId, entry);
+    // The write reads the state and buffer synchronously before its first
+    // await, so tearing down first kills the process without waiting on the
+    // database while still letting the caller await the persisted row.
+    const persisted = this.persistTerminal(acpSessionId, entry);
     this.teardownSession(acpSessionId, entry);
+    return persisted;
   }
 
   /**
@@ -1383,9 +1408,9 @@ export class AcpSessionManager {
   /**
    * Kills all agent processes and clears the session map.
    */
-  closeAll(): void {
+  async closeAll(): Promise<void> {
     for (const acpSessionId of [...this.sessions.keys()]) {
-      this.close(acpSessionId);
+      await this.close(acpSessionId);
     }
   }
 
@@ -1460,7 +1485,10 @@ export class AcpSessionManager {
    * not propagate, since the session has already reached a terminal state
    * and clients have been notified.
    */
-  private persistTerminal(acpSessionId: string, entry: SessionEntry): void {
+  private async persistTerminal(
+    acpSessionId: string,
+    entry: SessionEntry,
+  ): Promise<void> {
     const buffer = this.eventBuffers.get(acpSessionId) ?? [];
     // Serialize only the wire-shaped updates — drop the byte-size accounting
     // metadata so persisted rows match the protocol shape clients receive.
@@ -1479,8 +1507,10 @@ export class AcpSessionManager {
       outputTokens: usage?.outputTokens ?? null,
     };
     try {
-      getDb()
-        .insert(acpSessionHistory)
+      const db = requireMainDb();
+      const history = db.schema.acpSessionHistory;
+      await db.orm
+        .insert(history)
         .values({
           id: acpSessionId,
           agentId: entry.state.agentId,
@@ -1496,7 +1526,7 @@ export class AcpSessionManager {
           ...usageColumns,
         })
         .onConflictDoUpdate({
-          target: acpSessionHistory.id,
+          target: history.id,
           set: {
             status: entry.state.status,
             completedAt: entry.state.completedAt ?? null,
@@ -1506,8 +1536,7 @@ export class AcpSessionManager {
             cwd: entry.cwd,
             ...usageColumns,
           },
-        })
-        .run();
+        });
     } catch (err) {
       log.error(
         { acpSessionId, err },
@@ -1535,7 +1564,7 @@ export class AcpSessionManager {
     const stderrMark = entry.process.markStderr();
     const promptPromise = entry.process
       .prompt(acpProtocolSessionId, message)
-      .then((response) => {
+      .then(async (response) => {
         const current = this.sessions.get(acpSessionId);
         // Only mutate state if the session still exists, this is still the
         // current prompt (not stale from a previous steer), and the status
@@ -1587,7 +1616,7 @@ export class AcpSessionManager {
 
           // Persist the terminal row + buffered event log before tearing
           // down (teardown deletes the buffer entry).
-          this.persistTerminal(acpSessionId, current);
+          await this.persistTerminal(acpSessionId, current);
 
           // Free the session slot, deny any pending permissions, and
           // kill the agent process.
@@ -1662,7 +1691,7 @@ export class AcpSessionManager {
           // the marker, because the user may delete this run and clearing
           // history must not put the revoked value back in play.
           if (errorCode !== undefined) {
-            noteClaudeTokenRefused(current.credentialDigest, Date.now());
+            await noteClaudeTokenRefused(current.credentialDigest, Date.now());
           }
           // The live event reaches clients that are listening now, and the
           // card it raises deliberately skips connected-state self-healing, so
@@ -1753,7 +1782,7 @@ export class AcpSessionManager {
           }
 
           // Persist the terminal row before teardown clears the buffer.
-          this.persistTerminal(acpSessionId, current);
+          await this.persistTerminal(acpSessionId, current);
 
           // Free the session slot and deny any pending permissions.
           this.teardownSession(acpSessionId, current);
@@ -1837,8 +1866,8 @@ export class AcpSessionManager {
    * resumes that are mid-await when shutdown happens abort before spawning
    * a child process nothing would ever kill.
    */
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.disposed = true;
-    this.closeAll();
+    await this.closeAll();
   }
 }

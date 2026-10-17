@@ -446,7 +446,7 @@ export async function acpConnectCardStillWarranted(
   // fixed drops the card and lets a second prompt open beside it.
   const { claudeCredentialRefused } =
     await import("./acp-auth-marker-store.js");
-  return claudeCredentialRefused(resolved);
+  return await claudeCredentialRefused(resolved);
 }
 
 /**
@@ -549,7 +549,9 @@ export async function isAcpClaudeTokenExpiring(): Promise<boolean> {
 
 /** The stored refresh token, or null when none was captured. */
 export async function readAcpClaudeRefreshToken(): Promise<string | null> {
-  const token = await getSecureKeyAsync(vaultKey(ACP_OAUTH_REFRESH_TOKEN_FIELD));
+  const token = await getSecureKeyAsync(
+    vaultKey(ACP_OAUTH_REFRESH_TOKEN_FIELD),
+  );
   return token != null && token.length > 0 ? token : null;
 }
 
@@ -639,4 +641,3 @@ export async function forgetAcpClaudeRenewalStateIfUnbound(): Promise<void> {
     await clearRenewalFields();
   });
 }
-

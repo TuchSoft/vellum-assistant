@@ -281,7 +281,7 @@ async function injectOptionalCredential(
 async function configuredClaudeTokenStandsDown(
   configured: string | undefined,
 ): Promise<boolean> {
-  if (!configured || !claudeTokenRefusedByClaude(configured)) {
+  if (!configured || !(await claudeTokenRefusedByClaude(configured))) {
     return false;
   }
   const { storedClaudeTokenDigest } = await import("./acp-claude-oauth.js");

@@ -8,21 +8,120 @@
  * matching the `session cleanup after prompt` style in `acp-session.test.ts`.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
+import { eq } from "drizzle-orm";
+
+import { describePg } from "../../__tests__/pg-test-db.js";
 import type { AcpSessionUpdateEvent } from "../../api/events/acp-session-update.js";
 import type { AssistantEvent } from "../../api/index.js";
-import { getSqlite } from "../../persistence/db-connection.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { initializeDb } from "../../persistence/db-init.js";
 import { VellumAcpClientHandler } from "../client-handler.js";
 import { AcpSessionManager } from "../session-manager.js";
 import type { AcpUsageSnapshot } from "../types.js";
-import {
-  clearHistory,
-  insertHistoryRow,
-  readHistoryRow,
-} from "./helpers/acp-history-db.js";
+
 await initializeDb();
+
+interface HistoryRow {
+  id: string;
+  agent_id: string;
+  acp_session_id: string;
+  parent_conversation_id: string;
+  started_at: number;
+  completed_at: number | null;
+  status: string;
+  stop_reason: string | null;
+  error: string | null;
+  event_log_json: string;
+  cwd: string | null;
+  task: string | null;
+  parent_tool_use_id: string | null;
+  used_tokens: number | null;
+  context_size: number | null;
+  cost_amount: number | null;
+  cost_currency: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  auth_error_code: string | null;
+  auth_error_credential: string | null;
+}
+
+async function clearHistory(): Promise<void> {
+  await requireMainDb().run("DELETE FROM acp_session_history");
+}
+
+async function insertHistoryRow(row: {
+  id: string;
+  agentId?: string;
+  acpSessionId?: string;
+  parentConversationId?: string;
+  startedAt?: number;
+  completedAt?: number | null;
+  status?: string;
+  stopReason?: string | null;
+  error?: string | null;
+  eventLogJson?: string;
+  cwd?: string | null;
+}): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.insert(db.schema.acpSessionHistory).values({
+    id: row.id,
+    agentId: row.agentId ?? "claude",
+    acpSessionId: row.acpSessionId ?? "proto-old",
+    parentConversationId: row.parentConversationId ?? "conv-1",
+    startedAt: row.startedAt ?? 1234,
+    completedAt: row.completedAt === undefined ? 5678 : row.completedAt,
+    status: row.status ?? "completed",
+    stopReason: row.stopReason === undefined ? "end_turn" : row.stopReason,
+    error: row.error ?? null,
+    eventLogJson: row.eventLogJson ?? "[]",
+    cwd: row.cwd === undefined ? "/tmp/proj" : row.cwd,
+  });
+}
+
+async function readHistoryRow(id: string): Promise<HistoryRow | null> {
+  const db = requireMainDb();
+  const table = db.schema.acpSessionHistory;
+  const [row] = await db.orm.select().from(table).where(eq(table.id, id));
+  if (!row) {
+    return null;
+  }
+  return {
+    id: row.id,
+    agent_id: row.agentId,
+    acp_session_id: row.acpSessionId,
+    parent_conversation_id: row.parentConversationId,
+    started_at: row.startedAt,
+    completed_at: row.completedAt,
+    status: row.status,
+    stop_reason: row.stopReason,
+    error: row.error,
+    event_log_json: row.eventLogJson,
+    cwd: row.cwd,
+    task: row.task,
+    parent_tool_use_id: row.parentToolUseId,
+    used_tokens: row.usedTokens,
+    context_size: row.contextSize,
+    cost_amount: row.costAmount,
+    cost_currency: row.costCurrency,
+    input_tokens: row.inputTokens,
+    output_tokens: row.outputTokens,
+    auth_error_code: row.authErrorCode,
+    auth_error_credential: row.authErrorCredential,
+  };
+}
+
+async function waitForHistoryRow(id: string): Promise<HistoryRow | null> {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    const row = await readHistoryRow(id);
+    if (row || Date.now() >= deadline) {
+      return row;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 /**
  * Builds a manager with a fake session pre-injected and returns the handles
@@ -150,9 +249,9 @@ function buildSessionWithFakeProcess(opts: {
   };
 }
 
-describe("AcpSessionManager — terminal persistence", () => {
-  beforeEach(() => {
-    clearHistory();
+describePg("AcpSessionManager — terminal persistence", () => {
+  beforeEach(async () => {
+    await clearHistory();
   });
 
   test("persists a row with the buffered event log on completion and drops the buffer", async () => {
@@ -198,7 +297,7 @@ describe("AcpSessionManager — terminal persistence", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const row = readHistoryRow(id);
+    const row = await waitForHistoryRow(id);
     expect(row).not.toBeNull();
     expect(row!.status).toBe("completed");
     expect(row!.stop_reason).toBe("end_turn");
@@ -274,7 +373,7 @@ describe("AcpSessionManager — terminal persistence", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const row = readHistoryRow(id);
+    const row = await waitForHistoryRow(id);
     expect(row).not.toBeNull();
     const log = JSON.parse(row!.event_log_json) as AcpSessionUpdateEvent[];
     expect(log).toHaveLength(2);
@@ -302,7 +401,7 @@ describe("AcpSessionManager — terminal persistence", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const row = readHistoryRow(id);
+    const row = await waitForHistoryRow(id);
     expect(row).not.toBeNull();
     expect(row!.status).toBe("failed");
     expect(row!.error).toBe("agent died");
@@ -346,7 +445,7 @@ describe("AcpSessionManager — terminal persistence", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const row = readHistoryRow(id);
+    const row = await waitForHistoryRow(id);
     expect(row).not.toBeNull();
     const log = JSON.parse(row!.event_log_json) as AcpSessionUpdateEvent[];
     expect(log).toHaveLength(200);
@@ -380,7 +479,7 @@ describe("AcpSessionManager — terminal persistence", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const row = readHistoryRow(id);
+    const row = await waitForHistoryRow(id);
     expect(row).not.toBeNull();
     const log = JSON.parse(row!.event_log_json) as AcpSessionUpdateEvent[];
     expect(log.length).toBeLessThan(80);
@@ -404,7 +503,7 @@ describe("AcpSessionManager — terminal persistence", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const row = readHistoryRow(id);
+    const row = await waitForHistoryRow(id);
     expect(row).not.toBeNull();
     expect(row!.cwd).toBe("/Users/me/projects/widget");
   });
@@ -430,7 +529,7 @@ describe("AcpSessionManager — terminal persistence", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const row = readHistoryRow(id);
+    const row = await waitForHistoryRow(id);
     expect(row).not.toBeNull();
     expect(row!.task).toBe("Summarize the report");
     expect(row!.parent_tool_use_id).toBe("tool-use-123");
@@ -454,7 +553,7 @@ describe("AcpSessionManager — terminal persistence", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const row = readHistoryRow(id);
+    const row = await waitForHistoryRow(id);
     expect(row).not.toBeNull();
     expect(row!.task).toBe("Do work without usage");
     expect(row!.parent_tool_use_id).toBeNull();
@@ -508,7 +607,7 @@ describe("AcpSessionManager — terminal persistence", () => {
       contextSize: 200_000,
     });
 
-    const row = readHistoryRow(id);
+    const row = await waitForHistoryRow(id);
     expect(row).not.toBeNull();
     expect(row!.input_tokens).toBe(5000);
     expect(row!.output_tokens).toBe(800);
@@ -544,14 +643,14 @@ describe("AcpSessionManager — terminal persistence", () => {
 
     expect(sent.find((m) => m.type === "acp_session_usage")).toBeUndefined();
 
-    const row = readHistoryRow(id);
+    const row = await waitForHistoryRow(id);
     expect(row).not.toBeNull();
     expect(row!.input_tokens).toBeNull();
     expect(row!.output_tokens).toBeNull();
   });
 
-  test("legacy rows without a cwd read back as null", () => {
-    insertHistoryRow({
+  test("legacy rows without a cwd read back as null", async () => {
+    await insertHistoryRow({
       id: "legacy-row-1",
       agentId: "agent-legacy",
       acpSessionId: "proto-legacy",
@@ -563,7 +662,7 @@ describe("AcpSessionManager — terminal persistence", () => {
       cwd: null,
     });
 
-    const row = readHistoryRow("legacy-row-1");
+    const row = await waitForHistoryRow("legacy-row-1");
     expect(row).not.toBeNull();
     expect(row!.cwd).toBeNull();
   });
@@ -572,7 +671,7 @@ describe("AcpSessionManager — terminal persistence", () => {
     const id = "session-upsert-1";
     // Simulate the row left behind by the original run that a resumed run
     // reuses the id of.
-    insertHistoryRow({
+    await insertHistoryRow({
       id,
       agentId: "agent-up",
       acpSessionId: "proto-up",
@@ -604,12 +703,13 @@ describe("AcpSessionManager — terminal persistence", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const count = getSqlite()
-      .query(`SELECT COUNT(*) AS n FROM acp_session_history WHERE id = ?`)
-      .get(id) as { n: number };
-    expect(count.n).toBe(1);
+    const [count] = await requireMainDb().all<{ n: number }>(
+      "SELECT COUNT(*)::int AS n FROM acp_session_history WHERE id = ?",
+      [id],
+    );
+    expect(count!.n).toBe(1);
 
-    const row = readHistoryRow(id);
+    const row = await waitForHistoryRow(id);
     expect(row).not.toBeNull();
     expect(row!.status).toBe("completed");
     expect(row!.stop_reason).toBe("end_turn");
@@ -632,7 +732,7 @@ describe("AcpSessionManager — terminal persistence", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const row = readHistoryRow(id);
+    const row = await waitForHistoryRow(id);
     expect(row).not.toBeNull();
     expect(row!.event_log_json).toBe("[]");
     expect(row!.status).toBe("completed");

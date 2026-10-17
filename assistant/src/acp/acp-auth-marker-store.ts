@@ -2,11 +2,7 @@ import { createHash } from "node:crypto";
 
 import { and, desc, eq, isNotNull } from "drizzle-orm";
 
-import { getDb } from "../persistence/db-connection.js";
-import {
-  acpRefusedCredentials,
-  acpSessionHistory,
-} from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { getLogger } from "../util/logger.js";
 
 const log = getLogger("acp-auth-marker-store");
@@ -68,19 +64,19 @@ export function acpAuthMarkerStillCurrent(
  * losing the record costs one more failed spawn rather than the failure
  * handling itself.
  */
-export function noteClaudeTokenRefused(
+export async function noteClaudeTokenRefused(
   digest: string | undefined,
   refusedAt: number,
-): void {
+): Promise<void> {
   if (digest === undefined) {
     return;
   }
   try {
-    getDb()
-      .insert(acpRefusedCredentials)
+    const db = requireMainDb();
+    await db.orm
+      .insert(db.schema.acpRefusedCredentials)
       .values({ digest, refusedAt })
-      .onConflictDoNothing()
-      .run();
+      .onConflictDoNothing();
   } catch (err) {
     log.error(
       { err },
@@ -97,8 +93,10 @@ export function noteClaudeTokenRefused(
  * configured token, which is what would have happened before it was ever
  * refused.
  */
-export function claudeTokenRefusedByClaude(token: string): boolean {
-  return claudeCredentialRefused(claudeTokenDigest(token));
+export async function claudeTokenRefusedByClaude(
+  token: string,
+): Promise<boolean> {
+  return await claudeCredentialRefused(claudeTokenDigest(token));
 }
 
 /**
@@ -109,14 +107,17 @@ export function claudeTokenRefusedByClaude(token: string): boolean {
  * credential a spawn would pick, and "would pick it" is not the same as
  * "it works".
  */
-export function claudeCredentialRefused(digest: string): boolean {
+export async function claudeCredentialRefused(
+  digest: string,
+): Promise<boolean> {
   try {
-    const row = getDb()
-      .select({ digest: acpRefusedCredentials.digest })
-      .from(acpRefusedCredentials)
-      .where(eq(acpRefusedCredentials.digest, digest))
-      .limit(1)
-      .get();
+    const db = requireMainDb();
+    const refused = db.schema.acpRefusedCredentials;
+    const [row] = await db.orm
+      .select({ digest: refused.digest })
+      .from(refused)
+      .where(eq(refused.digest, digest))
+      .limit(1);
     return row !== undefined;
   } catch (err) {
     log.error(
@@ -148,21 +149,22 @@ export async function conversationHasCurrentAcpMarker(
   conversationId: string,
 ): Promise<boolean> {
   try {
-    const rows = getDb()
+    const db = requireMainDb();
+    const history = db.schema.acpSessionHistory;
+    const rows = await db.orm
       .select({
-        agentId: acpSessionHistory.agentId,
-        credential: acpSessionHistory.authErrorCredential,
+        agentId: history.agentId,
+        credential: history.authErrorCredential,
       })
-      .from(acpSessionHistory)
+      .from(history)
       .where(
         and(
-          eq(acpSessionHistory.parentConversationId, conversationId),
-          isNotNull(acpSessionHistory.authErrorCode),
+          eq(history.parentConversationId, conversationId),
+          isNotNull(history.authErrorCode),
         ),
       )
-      .orderBy(desc(acpSessionHistory.startedAt))
-      .limit(MARKER_SCAN_LIMIT)
-      .all();
+      .orderBy(desc(history.startedAt))
+      .limit(MARKER_SCAN_LIMIT);
     if (rows.length === 0) {
       return false;
     }

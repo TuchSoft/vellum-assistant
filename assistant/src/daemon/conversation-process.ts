@@ -216,10 +216,10 @@ function resolveQueuedTurnInterfaceContext(
 }
 
 /** Build a SlashContext from the current conversation state and config. */
-export function buildSlashContext(
+export async function buildSlashContext(
   content: string,
   conversation: Conversation,
-): SlashContext | undefined {
+): Promise<SlashContext | undefined> {
   const turnInterface = conversation.getTurnInterfaceContext();
   return buildSlashContextForContent(content, {
     conversationId: conversation.conversationId,
@@ -582,27 +582,38 @@ async function dispatchDrainWithRestore(
   pending.add(queuedDispatch);
   conversation.pendingQueuedDispatches.set(runId, pending);
   const cancelDispatch = () => {
-    const unpersisted: QueuedMessage[] = [];
-    for (const message of messages) {
-      if (getMessageById(message.requestId, conversation.conversationId)) {
-        message.onEvent({
-          type: "generation_cancelled",
-          conversationId: conversation.conversationId,
-        });
-      } else {
-        unpersisted.push(message);
+    void (async () => {
+      const unpersisted: QueuedMessage[] = [];
+      for (const message of messages) {
+        if (
+          await getMessageById(message.requestId, conversation.conversationId)
+        ) {
+          message.onEvent({
+            type: "generation_cancelled",
+            conversationId: conversation.conversationId,
+          });
+        } else {
+          unpersisted.push(message);
+        }
       }
-    }
-    if (unpersisted.length === 0) {
-      return;
-    }
-    requeueDrainedMessages(
-      conversation,
-      unpersisted,
-      steered,
-      "Restoring cancelled dispatch for queue teardown",
-    );
-    discardQueueOnAbort(conversation, (queued) => unpersisted.includes(queued));
+      if (unpersisted.length === 0) {
+        return;
+      }
+      requeueDrainedMessages(
+        conversation,
+        unpersisted,
+        steered,
+        "Restoring cancelled dispatch for queue teardown",
+      );
+      discardQueueOnAbort(conversation, (queued) =>
+        unpersisted.includes(queued),
+      );
+    })().catch((err) => {
+      log.warn(
+        { err, conversationId: conversation.conversationId },
+        "Failed to restore cancelled queue dispatch",
+      );
+    });
   };
   controller.signal.addEventListener("abort", cancelDispatch, { once: true });
   try {
@@ -817,7 +828,7 @@ async function drainSingleMessage(
   // Resolve slash commands for queued messages
   const slashResult = await resolveSlash(
     next.content,
-    buildSlashContext(next.content, conversation),
+    await buildSlashContext(next.content, conversation),
   );
 
   if (signal?.aborted) {
@@ -1482,7 +1493,7 @@ async function drainBatch(
 
     const qmSlash = await resolveSlash(
       qm.content,
-      buildSlashContext(qm.content, conversation),
+      await buildSlashContext(qm.content, conversation),
     );
     if (signal?.aborted) {
       break;
@@ -2119,7 +2130,7 @@ export async function processMessage(
   // Resolve slash commands before persistence
   const slashResult = await resolveSlash(
     content,
-    buildSlashContext(content, conversation),
+    await buildSlashContext(content, conversation),
   );
 
   // Unknown slash command — persist the exchange (user + assistant) so the

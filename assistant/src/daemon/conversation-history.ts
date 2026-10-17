@@ -17,7 +17,6 @@ import { getSummaryFromContextMessage } from "../plugins/defaults/compaction/win
 import type { ContentBlock, Message } from "../providers/types.js";
 import { getLogger } from "../util/logger.js";
 import type { ConversationModeSessionCoordinator } from "./conversation-mode-session.js";
-import { bestEffortModeSessionTracking } from "./mode-session-tracking.js";
 import { startsNewTurn } from "./summarize-boundary.js";
 
 const log = getLogger("conversation-history");
@@ -147,11 +146,11 @@ async function cleanupQdrantVectors(
  * user messages. This ensures the database matches what the client sees
  * during streaming (one consolidated message per user request).
  */
-export function consolidateAssistantMessages(
+export async function consolidateAssistantMessages(
   conversationId: string,
   userMessageId: string,
-): boolean {
-  const allMessages = getMessages(conversationId);
+): Promise<boolean> {
+  const allMessages = await getMessages(conversationId);
   const userMsgIndex = allMessages.findIndex((m) => m.id === userMessageId);
   if (userMsgIndex === -1) {
     return false;
@@ -195,7 +194,7 @@ export function consolidateAssistantMessages(
     // and collect IDs for vector cleanup
     const allSegmentIds: string[] = [];
     for (const id of messagesToDelete) {
-      const deleted = deleteMessageById(id);
+      const deleted = await deleteMessageById(id);
       didMutate = true;
       allSegmentIds.push(...deleted.segmentIds);
     }
@@ -288,7 +287,7 @@ export function consolidateAssistantMessages(
 
   // Update the first assistant message with all content
   const firstAssistantMsg = messagesToConsolidate[0];
-  updateMessageContent(
+  await updateMessageContent(
     firstAssistantMsg.id,
     JSON.stringify(consolidatedContent),
   );
@@ -307,7 +306,7 @@ export function consolidateAssistantMessages(
     ...messagesToDelete,
   ];
   if (messageIdsToDelete.length > 0) {
-    const relinked = relinkAttachments(
+    const relinked = await relinkAttachments(
       messageIdsToDelete,
       firstAssistantMsg.id,
     );
@@ -318,18 +317,18 @@ export function consolidateAssistantMessages(
       );
     }
 
-    relinkLlmRequestLogs(messageIdsToDelete, firstAssistantMsg.id);
+    await relinkLlmRequestLogs(messageIdsToDelete, firstAssistantMsg.id);
   }
 
   // Delete the other assistant messages and internal tool_result messages,
   // and collect IDs for vector cleanup
   const allSegmentIds: string[] = [];
   for (let i = 1; i < messagesToConsolidate.length; i++) {
-    const deleted = deleteMessageById(messagesToConsolidate[i].id);
+    const deleted = await deleteMessageById(messagesToConsolidate[i].id);
     allSegmentIds.push(...deleted.segmentIds);
   }
   for (const id of messagesToDelete) {
-    const deleted = deleteMessageById(id);
+    const deleted = await deleteMessageById(id);
     allSegmentIds.push(...deleted.segmentIds);
   }
 
@@ -373,7 +372,9 @@ export interface HistoryConversationContext {
  * Remove the last user+assistant exchange from memory and DB.
  * Returns the number of messages removed.
  */
-export function undo(conversation: HistoryConversationContext): number {
+export async function undo(
+  conversation: HistoryConversationContext,
+): Promise<number> {
   if (conversation.isProcessing()) {
     return 0;
   }
@@ -383,9 +384,14 @@ export function undo(conversation: HistoryConversationContext): number {
     return 0;
   }
 
-  bestEffortModeSessionTracking("conversation wait invalidation", () =>
-    conversation.modeSessions.invalidateAllStructuralWaits(),
-  );
+  try {
+    await conversation.modeSessions.invalidateAllStructuralWaits();
+  } catch (err) {
+    log.warn(
+      { err, conversationId: conversation.conversationId },
+      "Mode-session tracking failed",
+    );
+  }
 
   const removed = conversation.messages.length - lastUserIdx;
   conversation.messages = conversation.messages.slice(0, lastUserIdx);
@@ -403,15 +409,15 @@ export function undo(conversation: HistoryConversationContext): number {
   // deleteLastExchange when the loop peeled back tool_result messages.
   let hadToolResult = false;
   do {
-    deleteLastExchange(conversation.conversationId);
-    if (isLastUserMessageToolResult(conversation.conversationId)) {
+    await deleteLastExchange(conversation.conversationId);
+    if (await isLastUserMessageToolResult(conversation.conversationId)) {
       hadToolResult = true;
     } else {
       break;
     }
   } while (true);
   if (hadToolResult) {
-    deleteLastExchange(conversation.conversationId);
+    await deleteLastExchange(conversation.conversationId);
   }
 
   return removed;
@@ -455,10 +461,10 @@ export function extractUserPromptText(content: ContentBlock[]): string {
  * fired asynchronously here. The anchor's `turnOutcome` failure stamp is
  * cleared — it described the discarded turn.
  */
-export function discardLastAssistantDisplayTurn(
+export async function discardLastAssistantDisplayTurn(
   conversationId: string,
-): DiscardedAssistantTail | null {
-  const rows = getMessages(conversationId);
+): Promise<DiscardedAssistantTail | null> {
+  const rows = await getMessages(conversationId);
   let anchorIndex = -1;
   for (let i = rows.length - 1; i >= 0; i--) {
     if (startsNewTurn(rows[i])) {
@@ -474,13 +480,13 @@ export function discardLastAssistantDisplayTurn(
   const deletedMessageIds: string[] = [];
   const segmentIds: string[] = [];
   for (let i = tail.length - 1; i >= 0; i--) {
-    const deleted = deleteMessageById(tail[i].id);
+    const deleted = await deleteMessageById(tail[i].id);
     deletedMessageIds.push(tail[i].id);
     segmentIds.push(...deleted.segmentIds);
   }
 
   const anchor = rows[anchorIndex];
-  updateMessageMetadata(anchor.id, {
+  await updateMessageMetadata(anchor.id, {
     turnOutcome: null,
     turnFailureCode: null,
   });

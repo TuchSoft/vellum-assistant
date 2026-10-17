@@ -785,10 +785,10 @@ export function stripNowScratchpad(messages: Message[]): Message[] {
  * Best-effort: this trims cost, it does not decide what the turn means, so a
  * failed read degrades to the untrimmed history rather than failing the turn.
  */
-export function applySightFrameRetention(
+export async function applySightFrameRetention(
   messages: Message[],
   conversationId: string,
-): Message[] {
+): Promise<Message[]> {
   // A frame always traces back to an attachment row, so a history holding no
   // attributable image can be answered without reading any rows. That is the
   // overwhelming majority of turns, and this pass sits on the per-turn critical
@@ -797,7 +797,7 @@ export function applySightFrameRetention(
     return messages;
   }
   try {
-    const captureTimes = selectSightFrameCaptureTimes(conversationId);
+    const captureTimes = await selectSightFrameCaptureTimes(conversationId);
     if (captureTimes.size === 0) {
       return messages;
     }
@@ -1561,19 +1561,19 @@ function assembleSlackChronologicalContext(
  * Returns `null` when the channel is not Slack — callers should fall
  * through to the default in-memory message history.
  */
-export function loadSlackChronologicalMessages(
+export async function loadSlackChronologicalMessages(
   conversationId: string,
   capabilities: ChannelCapabilities,
   options: {
-    loader?: (id: string) => MessageRow[];
+    loader?: (id: string) => MessageRow[] | Promise<MessageRow[]>;
     trustClass?: TrustClass;
     contextSummary?: string | null;
     contextCompactedMessageCount?: number;
     slackContextCompactionWatermarkTs?: string | null;
   } = {},
-): Message[] | null {
+): Promise<Message[] | null> {
   return (
-    loadSlackChronologicalContext(conversationId, capabilities, options)
+    (await loadSlackChronologicalContext(conversationId, capabilities, options))
       ?.messages ?? null
   );
 }
@@ -1589,22 +1589,22 @@ export function loadSlackChronologicalMessages(
  * the next successful Slack compaction replaces that count boundary with a
  * durable Slack timestamp watermark.
  */
-export function loadSlackChronologicalContext(
+export async function loadSlackChronologicalContext(
   conversationId: string,
   capabilities: ChannelCapabilities,
   options: {
-    loader?: (id: string) => MessageRow[];
+    loader?: (id: string) => MessageRow[] | Promise<MessageRow[]>;
     trustClass?: TrustClass;
     contextSummary?: string | null;
     contextCompactedMessageCount?: number;
     slackContextCompactionWatermarkTs?: string | null;
   } = {},
-): SlackChronologicalContext | null {
+): Promise<SlackChronologicalContext | null> {
   if (capabilities.channel !== "slack") {
     return null;
   }
   const loader = options.loader ?? defaultGetMessages;
-  const allRows = loader(conversationId);
+  const allRows = await loader(conversationId);
   const scopedRows = filterSlackConversationRowsForActor(
     allRows,
     options.trustClass,
@@ -1801,16 +1801,16 @@ export function assembleSlackActiveThreadFocusBlock(
  * Slack, or when it is a Slack DM (DMs have no threads), so callers can
  * skip the injection entirely without paying for a DB read.
  */
-export function loadSlackActiveThreadFocusBlock(
+export async function loadSlackActiveThreadFocusBlock(
   conversationId: string,
   capabilities: ChannelCapabilities,
   options: {
-    loader?: (id: string) => MessageRow[];
+    loader?: (id: string) => MessageRow[] | Promise<MessageRow[]>;
     trustClass?: TrustClass;
     contextCompactedMessageCount?: number;
     slackContextCompactionWatermarkTs?: string | null;
   } = {},
-): string | null {
+): Promise<string | null> {
   if (capabilities.channel !== "slack") {
     return null;
   }
@@ -1818,7 +1818,7 @@ export function loadSlackActiveThreadFocusBlock(
     return null;
   }
   const loader = options.loader ?? defaultGetMessages;
-  const allRows = loader(conversationId);
+  const allRows = await loader(conversationId);
   const scopedRows = filterSlackConversationRowsForActor(
     allRows,
     options.trustClass,

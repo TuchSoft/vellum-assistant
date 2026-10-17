@@ -17,9 +17,9 @@ import { getEffectiveEnabledPluginSet } from "./conversation-tool-setup.js";
 const log = getLogger("conversation-plugin-scope");
 
 /** Resolve `conversationId`'s effective plugin scope; `null` = no restriction. */
-export function resolveConversationPluginScope(
+export async function resolveConversationPluginScope(
   conversationId: string,
-): Set<string> | null {
+): Promise<Set<string> | null> {
   const live = findConversationOrSubagent(conversationId);
   if (live) {
     return getEffectiveEnabledPluginSet(live);
@@ -28,7 +28,7 @@ export function resolveConversationPluginScope(
   // here must not break hook discovery — fail open to no restriction so the
   // turn's hooks still run, rather than dropping every plugin's lifecycle hook.
   try {
-    const enabledPlugins = getConversationEnabledPlugins(conversationId);
+    const enabledPlugins = await getConversationEnabledPlugins(conversationId);
     return getEffectiveEnabledPluginSet({ enabledPlugins });
   } catch (err) {
     log.debug(

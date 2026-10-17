@@ -990,6 +990,7 @@ export class Conversation {
    * @internal
    */
   originChannel: ChannelId | undefined = undefined;
+  /** @internal */ private conversationCreatedAt: number | null = null;
   /** @internal */ activityVersion = 0;
   /** Last emitted activity state message, retained for replay on SSE reconnection. */
   /** @internal */ lastActivityStateMsg: AssistantEvent | null = null;
@@ -1124,13 +1125,12 @@ export class Conversation {
       resolveTools,
       onToolsSent: createWireToolSurfaceRecorder(this),
       resolveConversationDir: () => {
-        const conv = getConversation(this.conversationId);
-        if (!conv) {
+        if (this.conversationCreatedAt === null) {
           return null;
         }
         return getResolvedConversationDirPath(
           this.conversationId,
-          conv.createdAt,
+          this.conversationCreatedAt,
         );
       },
       // Compaction rebuilds history from the stored rows, so it can retain
@@ -1141,7 +1141,7 @@ export class Conversation {
       // repeats rather than sharing the pre-run pass's map: compactions are
       // rare, and a map captured before the turn's awaits would describe a
       // conversation that has since gained rows.
-      transformCompactedHistory: (messages) =>
+      transformCompactedHistory: async (messages) =>
         applySightFrameRetention(messages, this.conversationId),
     });
     createContextWindowManager({
@@ -1380,7 +1380,7 @@ export class Conversation {
     this.loadedHistoryStale = false;
     const trustClass = this.trustContext?.trustClass;
     const canAccessMemory = resolveCapabilities(trustClass).canAccessMemory;
-    const allDbMessages = getMessages(this.conversationId);
+    const allDbMessages = await getMessages(this.conversationId);
     const dbMessages = canAccessMemory
       ? allDbMessages
       : filterMessagesForUntrustedActor(allDbMessages);
@@ -1397,7 +1397,8 @@ export class Conversation {
     // the viewer's trust class.
     this.turnCount = allDbMessages.filter((m) => startsNewTurn(m)).length;
 
-    const conv = getConversation(this.conversationId);
+    const conv = await getConversation(this.conversationId);
+    this.conversationCreatedAt = conv?.createdAt ?? null;
     this.conversationType = conv?.conversationType ?? undefined;
     this.originInterface = parseInterfaceId(conv?.originInterface) ?? undefined;
     this.originChannel = parseChannelId(conv?.originChannel) ?? undefined;
@@ -2557,7 +2558,7 @@ export class Conversation {
     // conversation so updates that arrived inside the debounce window
     // still land in the DB before teardown. Flushing also clears the
     // pending entries, so no separate cancel call is needed.
-    flushPendingSurfaceDataPersists(this.conversationId);
+    void flushPendingSurfaceDataPersists(this.conversationId);
     // Only dispose the per-conversation CU and app-control proxies.
     // Bash/File/Transfer are singletons — their lifecycle is managed by
     // static disposeInstance().
@@ -2757,13 +2758,20 @@ export class Conversation {
     if (this.hostCuProxy && this.hostCuProxy !== proxy) {
       const previousProxy = this.hostCuProxy;
       bestEffortModeSessionTracking("computer use proxy replacement", () => {
-        this.computerUseModeSessions.endTask({
-          turnId: this.currentRequestId,
-          source: {
-            sourceId: previousProxy.sourceId,
-            generation: previousProxy.resetGeneration,
-          },
-        });
+        void this.computerUseModeSessions
+          .endTask({
+            turnId: this.currentRequestId,
+            source: {
+              sourceId: previousProxy.sourceId,
+              generation: previousProxy.resetGeneration,
+            },
+          })
+          .catch((err) => {
+            log.warn(
+              { err, conversationId: this.conversationId },
+              "Mode-session tracking failed",
+            );
+          });
       });
       this.hostCuProxy.dispose();
     }
@@ -3089,7 +3097,7 @@ export class Conversation {
    * run input itself. Best-effort inside, so a failed row read degrades to the
    * untrimmed history.
    */
-  trimAgedSightFrames(messages: Message[]): Message[] {
+  async trimAgedSightFrames(messages: Message[]): Promise<Message[]> {
     return applySightFrameRetention(messages, this.conversationId);
   }
 
@@ -3180,7 +3188,7 @@ export class Conversation {
     const slackChronologicalContext =
       opts?.fixedTailStartIndex == null &&
       this.channelCapabilities?.channel === "slack"
-        ? loadSlackChronologicalContext(
+        ? await loadSlackChronologicalContext(
             this.conversationId,
             this.channelCapabilities,
             {
@@ -3199,7 +3207,7 @@ export class Conversation {
     // to prevent. Safe against the caller-fixed boundary below: the pass
     // replaces blocks inside messages and never adds, drops, or reorders one,
     // so `fixedTailStartIndex` still names the same message.
-    const messagesToCompact = this.trimAgedSightFrames(
+    const messagesToCompact = await this.trimAgedSightFrames(
       slackChronologicalContext?.messages ?? this.messages,
     );
     const compactedRowCountAtCall = this.contextCompactedMessageCount;
@@ -3622,7 +3630,7 @@ export class Conversation {
     return this.messages;
   }
 
-  undo(): number {
+  async undo(): Promise<number> {
     return undoImpl(this as HistoryConversationContext);
   }
 

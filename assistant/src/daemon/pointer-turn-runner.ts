@@ -67,13 +67,13 @@ export async function runPointerMessageTurn(
     // messages array during runAgentLoop.
     const rollback = async (extraMessageIds?: string[]) => {
       try {
-        deleteMessageById(messageId);
+        await deleteMessageById(messageId);
       } catch {
         /* best effort */
       }
       for (const id of extraMessageIds ?? []) {
         try {
-          deleteMessageById(id);
+          await deleteMessageById(id);
         } catch {
           /* best effort */
         }
@@ -100,7 +100,7 @@ export async function runPointerMessageTurn(
     // improvement could tag messages with a per-run correlation
     // ID so rollback only targets its own output.
     const preRunMessageIds = new Set(
-      getMessages(conversationId).map((m) => m.id),
+      (await getMessages(conversationId)).map((m) => m.id),
     );
 
     let agentLoopError: string | undefined;
@@ -132,7 +132,7 @@ export async function runPointerMessageTurn(
     // the pre-run snapshot. This captures all messages added to the
     // conversation during the loop window, which may include messages
     // from concurrent pointer events (see over-capture caveat above).
-    const postRunMessages = getMessages(conversationId);
+    const postRunMessages = await getMessages(conversationId);
     const createdMessageIds = postRunMessages
       .filter((m) => !preRunMessageIds.has(m.id) && m.id !== messageId)
       .map((m) => m.id);

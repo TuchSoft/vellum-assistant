@@ -93,7 +93,6 @@ import type {
 } from "./message-protocol.js";
 import { INTERACTIVE_SURFACE_TYPES } from "./message-protocol.js";
 import { isRowVisibleToUntrustedActor } from "./message-provenance.js";
-import { bestEffortModeSessionTracking } from "./mode-session-tracking.js";
 import type { TrustContext } from "./trust-context-types.js";
 import { restingTrust } from "./trust-context-types.js";
 import { turnActorPrincipalId } from "./turn-actor.js";
@@ -204,41 +203,54 @@ function acceptModeSessionSurfaceResponse(
   requestId: string,
   surfaceId: string,
 ): void {
-  bestEffortModeSessionTracking("surface response admission", () =>
-    ctx.modeSessions?.acceptTurn(requestId, {
-      kind: "surface",
-      responseId: surfaceId,
-    }),
-  );
+  const admission = ctx.modeSessions?.acceptTurn(requestId, {
+    kind: "surface",
+    responseId: surfaceId,
+  });
+  if (!admission) {
+    return;
+  }
+  void admission.catch((err) => {
+    log.warn(
+      { err, conversationId: ctx.conversationId },
+      "Mode-session tracking failed",
+    );
+  });
 }
 
 function invalidateModeSessionSurfaceWait(
   ctx: Partial<Pick<Conversation, "modeSessions">>,
   surfaceId: string,
 ): void {
-  bestEffortModeSessionTracking("surface wait invalidation", () =>
-    ctx.modeSessions?.invalidateStructuralWait({
-      kind: "surface",
-      responseId: surfaceId,
-    }),
-  );
+  const invalidation = ctx.modeSessions?.invalidateStructuralWait({
+    kind: "surface",
+    responseId: surfaceId,
+  });
+  if (!invalidation) {
+    return;
+  }
+  void invalidation.catch((err) => {
+    log.warn({ err, surfaceId }, "Mode-session tracking failed");
+  });
 }
 
 function settleModeSessionSurfaceWait(
   ctx: Pick<Conversation, "conversationId" | "modeSessions">,
   surfaceId: string,
 ): void {
-  try {
-    ctx.modeSessions?.settleStructuralWait(
-      { kind: "surface", responseId: surfaceId },
-      { status: "completed", endReason: "surface_launch_settled" },
-    );
-  } catch (err) {
+  const settlement = ctx.modeSessions?.settleStructuralWait(
+    { kind: "surface", responseId: surfaceId },
+    { status: "completed", endReason: "surface_launch_settled" },
+  );
+  if (!settlement) {
+    return;
+  }
+  void settlement.catch((err) => {
     log.warn(
       { err, conversationId: ctx.conversationId, surfaceId },
       "Mode-session launcher settlement failed",
     );
-  }
+  });
 }
 
 /**
@@ -311,13 +323,13 @@ type PersistedSurfaceHit = {
  * {@link findPersistedSurfaceInfo}), and it throws rather than swallowing DB
  * errors so each caller keeps its own logging.
  */
-function findPersistedSurfaceBlock(
+async function findPersistedSurfaceBlock(
   conversationId: string,
   surfaceId: string,
   opts: { filterByProvenance: boolean },
-): PersistedSurfaceHit | undefined {
+): Promise<PersistedSurfaceHit | undefined> {
   const { filterByProvenance } = opts;
-  const rows = getMessages(conversationId);
+  const rows = await getMessages(conversationId);
   for (let r = rows.length - 1; r >= 0; r--) {
     if (filterByProvenance && !isRowVisibleToUntrustedActor(rows[r].metadata)) {
       continue;
@@ -347,20 +359,20 @@ function findPersistedSurfaceBlock(
  * the scan simply finds nothing and bails. The next update after
  * `handleMessageComplete` runs will pick up the now-persisted row.
  */
-function persistSurfaceData(
+async function persistSurfaceData(
   conversationId: string,
   surfaceId: string,
   data: SurfaceData,
-): void {
+): Promise<void> {
   try {
-    const hit = findPersistedSurfaceBlock(conversationId, surfaceId, {
+    const hit = await findPersistedSurfaceBlock(conversationId, surfaceId, {
       filterByProvenance: false,
     });
     if (!hit) {
       return;
     }
     hit.block.data = data;
-    updateMessageContent(hit.rowId, JSON.stringify(hit.blocks));
+    await updateMessageContent(hit.rowId, JSON.stringify(hit.blocks));
   } catch (err) {
     log.debug(
       { err, surfaceId, conversationId },
@@ -385,7 +397,7 @@ export function scheduleSurfaceDataPersist(
   }
   const timer = setTimeout(() => {
     pendingSurfacePersists.delete(surfaceId);
-    persistSurfaceData(conversationId, surfaceId, data);
+    void persistSurfaceData(conversationId, surfaceId, data);
   }, SURFACE_PERSIST_DEBOUNCE_MS);
   pendingSurfacePersists.set(surfaceId, { timer, conversationId, data });
 }
@@ -395,14 +407,16 @@ export function scheduleSurfaceDataPersist(
  * surface completion so the final state is durable before the surface
  * record transitions to `completed`.
  */
-export function flushSurfaceDataPersist(surfaceId: string): void {
+export async function flushSurfaceDataPersist(
+  surfaceId: string,
+): Promise<void> {
   const pending = pendingSurfacePersists.get(surfaceId);
   if (!pending) {
     return;
   }
   clearTimeout(pending.timer);
   pendingSurfacePersists.delete(surfaceId);
-  persistSurfaceData(pending.conversationId, surfaceId, pending.data);
+  await persistSurfaceData(pending.conversationId, surfaceId, pending.data);
 }
 
 /**
@@ -446,14 +460,16 @@ export function cancelPendingSurfaceDataPersists(
  * the DB before the conversation goes away. Each entry is removed from
  * the pending map after its write fires.
  */
-export function flushPendingSurfaceDataPersists(conversationId?: string): void {
+export async function flushPendingSurfaceDataPersists(
+  conversationId?: string,
+): Promise<void> {
   for (const [surfaceId, pending] of pendingSurfacePersists) {
     if (conversationId && pending.conversationId !== conversationId) {
       continue;
     }
     clearTimeout(pending.timer);
     pendingSurfacePersists.delete(surfaceId);
-    persistSurfaceData(pending.conversationId, surfaceId, pending.data);
+    await persistSurfaceData(pending.conversationId, surfaceId, pending.data);
   }
 }
 
@@ -475,7 +491,7 @@ export function flushPendingSurfaceDataPersists(conversationId?: string): void {
  * carries it, instead of landing as a fresh pending card the next reseed
  * reactivates.
  */
-export function markSurfaceCompleted(
+export async function markSurfaceCompleted(
   ctx: {
     conversationId: string;
     messages?: Array<{ content: unknown }>;
@@ -483,19 +499,19 @@ export function markSurfaceCompleted(
   },
   surfaceId: string,
   summary: string,
-): boolean {
+): Promise<boolean> {
   // Force-flush any pending debounced data persist so the completion
   // patch lands on top of the latest data instead of racing with it.
-  flushSurfaceDataPersist(surfaceId);
+  await flushSurfaceDataPersist(surfaceId);
 
   try {
-    const hit = findPersistedSurfaceBlock(ctx.conversationId, surfaceId, {
+    const hit = await findPersistedSurfaceBlock(ctx.conversationId, surfaceId, {
       filterByProvenance: false,
     });
     if (hit) {
       hit.block.completed = true;
       hit.block.completionSummary = summary;
-      updateMessageContent(hit.rowId, JSON.stringify(hit.blocks));
+      await updateMessageContent(hit.rowId, JSON.stringify(hit.blocks));
     } else {
       // Mutated in place so a later `ui_update` that respreads the entry
       // carries the completion forward.
@@ -578,13 +594,13 @@ type PersistedSurfaceInfo = {
  * Exported for its unit test only, and not a supported read API. In-repo callers
  * go through `handleSurfaceAction`.
  */
-export function findPersistedSurfaceInfo(
+export async function findPersistedSurfaceInfo(
   conversationId: string,
   surfaceId: string,
   opts: { requesterCanAccessMemory: boolean },
-): PersistedSurfaceInfo | undefined {
+): Promise<PersistedSurfaceInfo | undefined> {
   try {
-    const hit = findPersistedSurfaceBlock(conversationId, surfaceId, {
+    const hit = await findPersistedSurfaceBlock(conversationId, surfaceId, {
       filterByProvenance: !opts.requesterCanAccessMemory,
     });
     if (!hit) {
@@ -628,12 +644,12 @@ export function findPersistedSurfaceInfo(
  * whose own receipt depends on the card staying completed across a reload
  * (the expiry sweep) holds that receipt back on false and retries.
  */
-export function completeSurfaceAndNotify(
+export async function completeSurfaceAndNotify(
   conversationId: string,
   surfaceId: string,
   summary: string,
-): boolean {
-  const persisted = markSurfaceCompleted(
+): Promise<boolean> {
+  const persisted = await markSurfaceCompleted(
     { conversationId },
     surfaceId,
     summary,
@@ -654,10 +670,10 @@ export function completeSurfaceAndNotify(
  * pending debounced data persist first so a late `ui_update` snapshot cannot
  * re-add the block, then strips the block from in-memory messages and the DB.
  */
-export function removeSurfaceBlock(
+export async function removeSurfaceBlock(
   ctx: { conversationId: string; messages?: Array<{ content: unknown }> },
   surfaceId: string,
-): void {
+): Promise<void> {
   cancelSurfaceDataPersist(surfaceId);
 
   if (ctx.messages) {
@@ -678,12 +694,12 @@ export function removeSurfaceBlock(
   }
 
   try {
-    const hit = findPersistedSurfaceBlock(ctx.conversationId, surfaceId, {
+    const hit = await findPersistedSurfaceBlock(ctx.conversationId, surfaceId, {
       filterByProvenance: false,
     });
     if (hit) {
       hit.blocks.splice(hit.blockIndex, 1);
-      updateMessageContent(hit.rowId, JSON.stringify(hit.blocks));
+      await updateMessageContent(hit.rowId, JSON.stringify(hit.blocks));
     }
   } catch (err) {
     log.warn({ err, surfaceId }, "Failed to remove dismissed surface from DB");
@@ -1946,7 +1962,7 @@ const ONE_SHOT_SURFACE_TYPES = [
  * type is missing the persisted block supplies both, read at most once per
  * action and only once the decision actually needs it.
  */
-function maybeCompleteSurfaceAfterAction(
+async function maybeCompleteSurfaceAfterAction(
   ctx: Conversation,
   surfaceId: string,
   actionId: string,
@@ -1966,9 +1982,13 @@ function maybeCompleteSurfaceAfterAction(
   // carries its own summary and decides on its own. Type and labels come from
   // the same read so the decision and the summary can never disagree.
   if (surfaceType === undefined && !requestedSummary) {
-    const persisted = findPersistedSurfaceInfo(ctx.conversationId, surfaceId, {
-      requesterCanAccessMemory: opts.requesterCanAccessMemory,
-    });
+    const persisted = await findPersistedSurfaceInfo(
+      ctx.conversationId,
+      surfaceId,
+      {
+        requesterCanAccessMemory: opts.requesterCanAccessMemory,
+      },
+    );
     surfaceType = persisted?.surfaceType;
     surfaceData = persisted?.data ?? surfaceData;
   }
@@ -1982,7 +2002,7 @@ function maybeCompleteSurfaceAfterAction(
   const summary =
     requestedSummary ??
     buildCompletionSummary(surfaceType, actionId, actionData, surfaceData);
-  if (!markSurfaceCompleted(ctx, surfaceId, summary)) {
+  if (!(await markSurfaceCompleted(ctx, surfaceId, summary))) {
     return;
   }
   broadcastMessage({
@@ -2072,7 +2092,7 @@ export async function handleSurfaceAction(
       summary,
       submittedData: data,
     });
-    markSurfaceCompleted(ctx, surfaceId, summary);
+    await markSurfaceCompleted(ctx, surfaceId, summary);
 
     // Terminal user commit on a standalone surface (submit, not cancel/dismiss)
     // — record an activation milestone if tagged. Must run before
@@ -2346,12 +2366,18 @@ export async function handleSurfaceAction(
     // (and the one-shot tag stays intact for the user's retry).
     maybeEmitActivationMoment(ctx, surfaceId);
 
-    maybeCompleteSurfaceAfterAction(ctx, surfaceId, actionId, mergedData, {
-      liveSurfaceType: stored?.surfaceType,
-      liveSurfaceData: stored?.data as Record<string, unknown> | undefined,
-      requesterCanAccessMemory,
-      submittedData: actionDataForText,
-    });
+    await maybeCompleteSurfaceAfterAction(
+      ctx,
+      surfaceId,
+      actionId,
+      mergedData,
+      {
+        liveSurfaceType: stored?.surfaceType,
+        liveSurfaceData: stored?.data as Record<string, unknown> | undefined,
+        requesterCanAccessMemory,
+        submittedData: actionDataForText,
+      },
+    );
 
     // One-shot: clear accumulated state now that the message has been accepted.
     // Deferred until after rejection check so state is preserved for retry on rejection.
@@ -2602,7 +2628,7 @@ export async function handleSurfaceAction(
   // one-shot tag stays intact for the user's retry).
   maybeEmitActivationMoment(ctx, surfaceId);
 
-  maybeCompleteSurfaceAfterAction(ctx, surfaceId, actionId, mergedData, {
+  await maybeCompleteSurfaceAfterAction(ctx, surfaceId, actionId, mergedData, {
     liveSurfaceType: pending.surfaceType,
     liveSurfaceData: surfaceData,
     requesterCanAccessMemory,
@@ -3173,10 +3199,10 @@ function taskProgressStillRunning(data: Record<string, unknown>): boolean {
  * resumes on a later turn is advanced back to `in_progress` by its own
  * `ui_update`, exactly as it would advance a step it is starting.
  */
-export function settleRunningTaskProgressSurfaces(
+export async function settleRunningTaskProgressSurfaces(
   ctx: Conversation,
   rlog: pino.Logger,
-): void {
+): Promise<void> {
   for (const [surfaceId, entry] of ctx.surfaceState) {
     if (entry.surfaceType !== "card" || !taskProgressStillRunning(entry.data)) {
       continue;
@@ -3201,7 +3227,7 @@ export function settleRunningTaskProgressSurfaces(
       applySurfaceUpdate(ctx, surfaceId, patch);
       // A settle is the last write of the turn, with no burst to coalesce, so
       // land it now rather than leaving it to the debounce window.
-      flushSurfaceDataPersist(surfaceId);
+      await flushSurfaceDataPersist(surfaceId);
     } catch (err) {
       rlog.warn({ err, surfaceId }, "Failed to settle task_progress card");
     }
@@ -3262,15 +3288,13 @@ export async function surfaceProxyResolver(
           : typeof input.answer === "string"
             ? input.answer
             : "Task complete";
-      bestEffortModeSessionTracking("computer completion", () =>
-        ctx.computerUseModeSessions.endTask({
-          turnId: ctx.currentRequestId,
-          source: {
-            sourceId: hostCuProxy.sourceId,
-            generation: hostCuProxy.resetGeneration,
-          },
-        }),
-      );
+      await ctx.computerUseModeSessions.endTask({
+        turnId: ctx.currentRequestId,
+        source: {
+          sourceId: hostCuProxy.sourceId,
+          generation: hostCuProxy.resetGeneration,
+        },
+      });
       hostCuProxy.endTask(ctx.conversationId);
       return { content: summary, isError: false };
     }
@@ -3322,14 +3346,21 @@ export async function surfaceProxyResolver(
       sourceActorPrincipalId,
       toolName !== POINT_AT_PROXY_TOOL && turnId
         ? () => {
-            ctx.computerUseModeSessions.recordAction({
-              turnId,
-              source: {
-                sourceId: hostCuProxy.sourceId,
-                generation: hostCuProxy.resetGeneration,
-              },
-              at: activityAt,
-            });
+            void ctx.computerUseModeSessions
+              .recordAction({
+                turnId,
+                source: {
+                  sourceId: hostCuProxy.sourceId,
+                  generation: hostCuProxy.resetGeneration,
+                },
+                at: activityAt,
+              })
+              .catch((err) => {
+                log.warn(
+                  { err, conversationId: ctx.conversationId },
+                  "Mode-session tracking failed",
+                );
+              });
           }
         : undefined,
     );
@@ -3823,7 +3854,7 @@ export async function surfaceProxyResolver(
       );
       // A `ui_show` surface owns a persisted block, so the completion has to
       // land before the client is told the card is answered.
-      if (!markSurfaceCompleted(ctx, surfaceId, summary)) {
+      if (!(await markSurfaceCompleted(ctx, surfaceId, summary))) {
         // Tearing the live entries down here would strand the card that the
         // next reseed restores, so leave them for a retry and tell the model
         // the dismissal did not land.
@@ -3856,7 +3887,7 @@ export async function surfaceProxyResolver(
       if (turnIdx !== -1) {
         ctx.currentTurnSurfaces.splice(turnIdx, 1);
       }
-      removeSurfaceBlock(ctx, surfaceId);
+      await removeSurfaceBlock(ctx, surfaceId);
     }
     ctx.pendingSurfaceActions.delete(surfaceId);
     ctx.surfaceState.delete(surfaceId);

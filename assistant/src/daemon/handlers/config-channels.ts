@@ -229,7 +229,7 @@ export async function getVerificationStatus(
   // Resolve username from external conversation store.
   let guardianUsername: string | undefined;
   if (binding?.guardianDeliveryChatId) {
-    const ext = getBindingByChannelChat(
+    const ext = await getBindingByChannelChat(
       resolvedChannel,
       binding.guardianDeliveryChatId,
     );

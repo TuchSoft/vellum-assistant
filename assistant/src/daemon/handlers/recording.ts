@@ -518,7 +518,7 @@ async function finalizeAndPublishRecording(params: {
       "Created assistant message for recording attachment",
     );
 
-    const attachment = attachFileBackedAttachmentToMessage(
+    const attachment = await attachFileBackedAttachmentToMessage(
       messageId,
       0,
       filename,
@@ -541,7 +541,7 @@ async function finalizeAndPublishRecording(params: {
     );
 
     // Sync the recording message (with attachment) to the disk view
-    const convForDisk = getConversation(conversationId);
+    const convForDisk = await getConversation(conversationId);
     if (convForDisk) {
       syncMessageToDisk(conversationId, messageId, convForDisk.createdAt);
     }

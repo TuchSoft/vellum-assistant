@@ -89,13 +89,13 @@ export interface InterruptedTurnReconciliation {
  * soon as migrations settle. The wakes themselves must wait for full startup
  * (providers, CES) and run via {@link resumeInterruptedConversations}.
  */
-export function reconcileInterruptedConversations(
+export async function reconcileInterruptedConversations(
   resumeEnabled: boolean,
-): InterruptedTurnReconciliation {
+): Promise<InterruptedTurnReconciliation> {
   if (!resumeEnabled) {
     return { resume: [], capped: [], trustUnrecoverable: [] };
   }
-  const interrupted = listInterruptedConversations();
+  const interrupted = await listInterruptedConversations();
   const resume: InterruptedResumeTarget[] = [];
   const capped: string[] = [];
   const trustUnrecoverable: string[] = [];
@@ -104,7 +104,7 @@ export function reconcileInterruptedConversations(
       capped.push(row.id);
       continue;
     }
-    const trustContext = recoverRestingTrustContext(row.id);
+    const trustContext = await recoverRestingTrustContext(row.id);
     if (!trustContext) {
       trustUnrecoverable.push(row.id);
       continue;

@@ -49,10 +49,10 @@ const INTERNAL_ORIGIN_CHANNEL = "vellum";
  *   guardian trust. Trust is granted only on an origin positively recognized as
  *   local, never on the absence of a recognizable one.
  */
-export function recoverRestingTrustContext(
+export async function recoverRestingTrustContext(
   conversationId: string,
-): TrustContext | null {
-  const conversation = getConversation(conversationId);
+): Promise<TrustContext | null> {
+  const conversation = await getConversation(conversationId);
   if (!conversation) {
     return null;
   }

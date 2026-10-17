@@ -154,7 +154,6 @@ import type {
   SurfaceAction,
   UiSurfaceShow,
 } from "./message-protocol.js";
-import { bestEffortModeSessionTracking } from "./mode-session-tracking.js";
 import { referenceMediaBlocksForPersist } from "./persist-media-references.js";
 import { buildProviderRejectionLogFields } from "./provider-rejection-log-fields.js";
 import { turnOrRestingTrust } from "./trust-context-types.js";
@@ -1219,7 +1218,7 @@ async function reserveInflightMessageRow(
   role: "assistant" | "user",
   metadata: Record<string, unknown> | undefined,
 ): Promise<{ id: string; createdAt: number }> {
-  const writer = createInflightContentWriter(conversationId);
+  const writer = await createInflightContentWriter(conversationId);
   const reserved = await reserveMessage(
     conversationId,
     role,
@@ -1261,7 +1260,7 @@ async function persistLoopMessageContent(
     // so a partial write can't leave them out of sync; the updates
     // shallow-merge onto the channel provenance stamped at reserve.
     await withSqliteRetry(
-      () => updateMessageContent(messageId, contentJson, metadataUpdates),
+      async () => updateMessageContent(messageId, contentJson, metadataUpdates),
       {
         op,
         context: { messageId },
@@ -1648,7 +1647,7 @@ export async function handleLlmCallStarted(
   // committed row is never touched here.
   if (state.assistantRowAwaitingFinalization && state.lastAssistantMessageId) {
     try {
-      deleteMessageById(state.lastAssistantMessageId);
+      await deleteMessageById(state.lastAssistantMessageId);
     } catch (err) {
       // Non-fatal: a leaked empty row is preferable to a turn-level throw.
       deps.rlog.warn(
@@ -1670,13 +1669,18 @@ export async function handleLlmCallStarted(
     metadata,
   );
   state.lastAssistantMessageId = reservedRow.id;
-  bestEffortModeSessionTracking("assistant row reservation", () =>
-    deps.ctx.modeSessions.trackPersistedRow(
+  try {
+    await deps.ctx.modeSessions.trackPersistedRow(
       deps.reqId,
       reservedRow.id,
       reservedRow.createdAt,
-    ),
-  );
+    );
+  } catch (err) {
+    deps.rlog.warn(
+      { err, messageId: reservedRow.id },
+      "Mode-session tracking failed",
+    );
+  }
   state.assistantRowAwaitingFinalization = true;
   // Fresh row → fresh accumulator. If an earlier (failed) LLM call
   // within the same run left partial state behind, the
@@ -1814,11 +1818,11 @@ function handleThinkingDelta(
   schedulePartialFlush(state, deps);
 }
 
-export function handleToolUse(
+export async function handleToolUse(
   state: EventHandlerState,
   deps: EventHandlerDeps,
   event: Extract<AgentEvent, { type: "tool_use" }>,
-): void {
+): Promise<void> {
   state.toolUseIdToName.set(event.id, event.name);
   const computerUseToolName = resolveComputerUseToolName(
     event.name,
@@ -1882,14 +1886,18 @@ export function handleToolUse(
   // Stamp the start time onto the already-durable tool_use block so a snapshot
   // fetched mid-tool (refresh / reconnect) carries it and clients can render a
   // running timer without having seen the live `tool_use_start` event.
-  recordToolStartOnPersistedMessage(state, event.id, startedAt);
+  await recordToolStartOnPersistedMessage(state, event.id, startedAt);
   // Mirror the first-byte preview timestamp onto the same durable block so a
   // mid-tool snapshot keeps the perceived-start anchor instead of falling back
   // to execution start. The block exists now (message_complete wrote it before
   // this tool event), unlike at `tool_use_preview_start` time.
   const previewStartedAt = state.toolPreviewStartedAt.get(event.id);
   if (previewStartedAt != null) {
-    recordToolPreviewStartOnPersistedMessage(state, event.id, previewStartedAt);
+    await recordToolPreviewStartOnPersistedMessage(
+      state,
+      event.id,
+      previewStartedAt,
+    );
   }
   const statusText = computeToolUseStatusText(event.name, event.input);
   deps.ctx.emitActivityState("tool_running", "tool_use_start", {
@@ -2255,10 +2263,10 @@ async function persistPendingToolResultRow(
     deps.ctx.conversationId,
     buildToolResultMetadata(deps),
   );
-  bestEffortModeSessionTracking("tool result persistence", () => {
-    const row = getMessageById(rowId, deps.ctx.conversationId);
+  try {
+    const row = await getMessageById(rowId, deps.ctx.conversationId);
     if (row) {
-      deps.ctx.modeSessions.trackPersistedRow(
+      await deps.ctx.modeSessions.trackPersistedRow(
         deps.reqId,
         rowId,
         row.createdAt,
@@ -2267,7 +2275,12 @@ async function persistPendingToolResultRow(
         },
       );
     }
-  });
+  } catch (err) {
+    deps.rlog.warn(
+      { err, rowId },
+      "Failed to read tool result row for mode-session tracking (non-fatal)",
+    );
+  }
   // Snapshot the batch after the reservation resolves so the last of the
   // concurrent writers reflects the fullest batch. On-arrival writes go to
   // the in-flight delta file; the finalize seam folds the row inline.
@@ -2287,7 +2300,7 @@ async function persistPendingToolResultRow(
   if (persisted) {
     recordConversationPersistedSeq(deps.ctx.conversationId, seq);
   }
-  const conv = getConversation(deps.ctx.conversationId);
+  const conv = await getConversation(deps.ctx.conversationId);
   if (conv != null) {
     syncMessageToDisk(deps.ctx.conversationId, rowId, conv.createdAt);
   }
@@ -2318,7 +2331,7 @@ export async function finalizePendingToolResultRow(
   // `getConversation` returns `ConversationRow | null`, so `!= null` gates on a
   // real row (skipping media referencing / disk sync when the conversation was
   // not found rather than asking those helpers to resolve a missing id).
-  const conv = getConversation(conversationId);
+  const conv = await getConversation(conversationId);
   // Swap any base64 media the tools produced (screenshots, generated images)
   // for workspace references so the blob stays in the attachment store, out of
   // this row and the lexical index. Runs once, here at finalize (on-arrival
@@ -2382,7 +2395,7 @@ export async function finalizePendingToolResultRow(
   // finalized tool-result content explicitly here (mirroring the assistant-row
   // finalize) once it is durable. Non-fatal: a memory hiccup must not escalate
   // a successful turn into a throw.
-  const row = getMessageById(rowId, conversationId);
+  const row = await getMessageById(rowId, conversationId);
   if (row) {
     let provenanceTrustClass:
       | "guardian"
@@ -2635,7 +2648,7 @@ export async function handleToolResult(
   // otherwise reload into history that has lost their answer.
   if (event.answeredQuestion) {
     state.toolAnsweredQuestions.set(event.toolUseId, event.answeredQuestion);
-    recordAnsweredQuestionOnPersistedMessage(
+    await recordAnsweredQuestionOnPersistedMessage(
       state,
       event.toolUseId,
       event.answeredQuestion,
@@ -2696,7 +2709,7 @@ export async function handleToolResult(
   });
   if (allToolsDone && state.currentTurnToolUseIds.length > 0) {
     try {
-      annotatePersistedAssistantMessage(state, deps);
+      await annotatePersistedAssistantMessage(state, deps);
     } catch (err) {
       log.warn(
         { err, conversationId: deps.ctx.conversationId },
@@ -2766,18 +2779,18 @@ export async function handleToolResult(
  * the turn's tools complete, so a transient `SQLITE_BUSY` here must not abort
  * the turn. `what` names the field for the failure log.
  */
-function stampToolUseBlockEarly(
+async function stampToolUseBlockEarly(
   state: EventHandlerState,
   toolUseId: string,
   what: string,
   apply: (block: Record<string, unknown>) => boolean,
-): void {
+): Promise<void> {
   const messageId = state.lastAssistantMessageId;
   if (!messageId) {
     return;
   }
 
-  const row = getMessageById(messageId);
+  const row = await getMessageById(messageId);
   if (!row) {
     return;
   }
@@ -2796,7 +2809,7 @@ function stampToolUseBlockEarly(
       return;
     }
     try {
-      updateMessageContent(messageId, JSON.stringify(content));
+      await updateMessageContent(messageId, JSON.stringify(content));
     } catch (err) {
       log.error(
         { err, messageId },
@@ -2815,8 +2828,8 @@ function recordToolStartOnPersistedMessage(
   state: EventHandlerState,
   toolUseId: string,
   startedAt: number,
-): void {
-  stampToolUseBlockEarly(state, toolUseId, "tool start time", (rec) => {
+): Promise<void> {
+  return stampToolUseBlockEarly(state, toolUseId, "tool start time", (rec) => {
     if (rec._startedAt === startedAt) {
       return false;
     }
@@ -2837,14 +2850,19 @@ function recordToolPreviewStartOnPersistedMessage(
   state: EventHandlerState,
   toolUseId: string,
   previewStartedAt: number,
-): void {
-  stampToolUseBlockEarly(state, toolUseId, "tool preview-start time", (rec) => {
-    if (rec._previewStartedAt === previewStartedAt) {
-      return false;
-    }
-    rec._previewStartedAt = previewStartedAt;
-    return true;
-  });
+): Promise<void> {
+  return stampToolUseBlockEarly(
+    state,
+    toolUseId,
+    "tool preview-start time",
+    (rec) => {
+      if (rec._previewStartedAt === previewStartedAt) {
+        return false;
+      }
+      rec._previewStartedAt = previewStartedAt;
+      return true;
+    },
+  );
 }
 
 /**
@@ -2856,25 +2874,30 @@ function recordAnsweredQuestionOnPersistedMessage(
   state: EventHandlerState,
   toolUseId: string,
   answeredQuestion: AnsweredQuestion,
-): void {
-  stampToolUseBlockEarly(state, toolUseId, "answered question", (rec) => {
-    // Narrow the persisted marker rather than casting it: the row is data read
-    // back from the database, so its shape is an assumption until checked. Any
-    // value that is not a record with a string `requestId` is treated as absent
-    // and overwritten, which is the safe direction for a dedup check.
-    const existing: unknown = rec._answeredQuestion;
-    const existingRequestId =
-      typeof existing === "object" &&
-      existing !== null &&
-      typeof (existing as { requestId?: unknown }).requestId === "string"
-        ? (existing as { requestId: string }).requestId
-        : undefined;
-    if (existingRequestId === answeredQuestion.requestId) {
-      return false;
-    }
-    rec._answeredQuestion = answeredQuestion;
-    return true;
-  });
+): Promise<void> {
+  return stampToolUseBlockEarly(
+    state,
+    toolUseId,
+    "answered question",
+    (rec) => {
+      // Narrow the persisted marker rather than casting it: the row is data read
+      // back from the database, so its shape is an assumption until checked. Any
+      // value that is not a record with a string `requestId` is treated as absent
+      // and overwritten, which is the safe direction for a dedup check.
+      const existing: unknown = rec._answeredQuestion;
+      const existingRequestId =
+        typeof existing === "object" &&
+        existing !== null &&
+        typeof (existing as { requestId?: unknown }).requestId === "string"
+          ? (existing as { requestId: string }).requestId
+          : undefined;
+      if (existingRequestId === answeredQuestion.requestId) {
+        return false;
+      }
+      rec._answeredQuestion = answeredQuestion;
+      return true;
+    },
+  );
 }
 
 /**
@@ -2883,16 +2906,16 @@ function recordAnsweredQuestionOnPersistedMessage(
  * and update the DB. This runs post-tool-execution so the metadata maps are
  * fully populated (unlike message_complete which fires before tools run).
  */
-function annotatePersistedAssistantMessage(
+async function annotatePersistedAssistantMessage(
   state: EventHandlerState,
   deps: EventHandlerDeps,
-): void {
+): Promise<void> {
   const messageId = state.lastAssistantMessageId;
   if (!messageId) {
     return;
   }
 
-  const row = getMessageById(messageId);
+  const row = await getMessageById(messageId);
   if (!row) {
     return;
   }
@@ -3021,7 +3044,7 @@ function annotatePersistedAssistantMessage(
     // try/catch (and `dispatchAgentEvent` swallows `tool_result` handler
     // errors), so a transient `SQLITE_BUSY` here is logged and the turn
     // continues — it never reaches the turn-level catch.
-    updateMessageContent(messageId, JSON.stringify(content));
+    await updateMessageContent(messageId, JSON.stringify(content));
   }
 
   // Clear for the next turn
@@ -3230,20 +3253,25 @@ export async function handleMessageComplete(
     deps.rlog,
   );
   if (toolResultRowId) {
-    bestEffortModeSessionTracking("tool result finalization", () => {
-      const toolResultRow = getMessageById(
+    try {
+      const toolResultRow = await getMessageById(
         toolResultRowId,
         deps.ctx.conversationId,
       );
       if (toolResultRow) {
-        deps.ctx.modeSessions.trackPersistedRow(
+        await deps.ctx.modeSessions.trackPersistedRow(
           deps.reqId,
           toolResultRowId,
           toolResultRow.createdAt,
           { startsDisplayBoundary: false },
         );
       }
-    });
+    } catch (err) {
+      deps.rlog.warn(
+        { err, toolResultRowId },
+        "Failed to read finalized tool result row for mode-session tracking (non-fatal)",
+      );
+    }
   }
 
   // Accumulate directives + warnings from the assistant content for
@@ -3655,7 +3683,7 @@ export async function dispatchAgentEvent(
         handleThinkingDelta(state, deps, event);
         break;
       case "tool_use":
-        handleToolUse(state, deps, event);
+        await handleToolUse(state, deps, event);
         break;
       case "tool_use_preview_start":
         handleToolUsePreviewStart(state, deps, event);

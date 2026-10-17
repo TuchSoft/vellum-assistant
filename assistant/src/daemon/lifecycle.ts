@@ -293,7 +293,7 @@ export async function runDaemon(): Promise<void> {
     // failed-migration DB the column may be unreadable, and that must not
     // flip startup into the migration-failed path.
     try {
-      floorSeqAbove(getMaxPersistedConversationSeq());
+      floorSeqAbove(await getMaxPersistedConversationSeq());
     } catch (err) {
       log.warn(
         { err },
@@ -306,7 +306,7 @@ export async function runDaemon(): Promise<void> {
       validationError: initResult.validationError,
     };
     const modeSessionRecovery = migrationsOk
-      ? recoverModeSessionsBeforeDbReady()
+      ? await recoverModeSessionsBeforeDbReady()
       : null;
     if (modeSessionRecovery?.ok && modeSessionRecovery.interruptedCount > 0) {
       log.info(
@@ -639,7 +639,7 @@ export async function runDaemon(): Promise<void> {
   let conversationsToResume: InterruptedResumeTarget[] = [];
   if (dbReady) {
     try {
-      const reconciled = reconcileInterruptedConversations(
+      const reconciled = await reconcileInterruptedConversations(
         config.conversations.resumeProcessingOnStartup,
       );
       conversationsToResume = reconciled.resume;

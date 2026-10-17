@@ -192,9 +192,11 @@ export async function resolveAssistantAttachments(
         block.source.filename ??
         toolImageFilename(block.source.media_type, toolName);
       if (block.source.type === "workspace_ref") {
-        const stored = getAttachmentsByIds([block.source.attachmentId], {
-          hydrateFileData: true,
-        })[0];
+        const stored = (
+          await getAttachmentsByIds([block.source.attachmentId], {
+            hydrateFileData: true,
+          })
+        )[0];
         if (stored?.dataBase64) {
           toolDrafts.push({
             sourceType: "tool_block",
@@ -251,13 +253,15 @@ export async function resolveAssistantAttachments(
       let stored;
       try {
         stored = draft.existingAttachmentId
-          ? getAttachmentsByIds([
-              linkAttachmentToMessage(
-                lastAssistantMessageId,
-                draft.existingAttachmentId,
-                i,
-              ),
-            ])[0]
+          ? (
+              await getAttachmentsByIds([
+                await linkAttachmentToMessage(
+                  lastAssistantMessageId,
+                  draft.existingAttachmentId,
+                  i,
+                ),
+              ])
+            )[0]
           : await attachInlineAttachmentToMessage(
               lastAssistantMessageId,
               i,
@@ -297,7 +301,7 @@ export async function resolveAssistantAttachments(
         if (existing) {
           thumbnailData = existing;
         } else {
-          const diskFilePath = getFilePathForAttachment(stored.id);
+          const diskFilePath = await getFilePathForAttachment(stored.id);
           const generated = diskFilePath
             ? await generateVideoThumbnailFromPath(diskFilePath)
             : await generateVideoThumbnail(draft.dataBase64);
@@ -326,7 +330,7 @@ export async function resolveAssistantAttachments(
       }
     }
     if (computerUseScreenshotAttachmentIds.length > 0) {
-      updateMessageMetadata(lastAssistantMessageId, {
+      await updateMessageMetadata(lastAssistantMessageId, {
         [COMPUTER_USE_SCREENSHOT_ATTACHMENT_IDS_KEY]:
           computerUseScreenshotAttachmentIds,
       });

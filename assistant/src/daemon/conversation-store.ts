@@ -214,13 +214,13 @@ export function getConversationIfExists(
  * Exported for callers that keep working after their acquire returns: holding
  * the instance says nothing about the row still being the one behind it.
  */
-export function isSameIncarnation(
+export async function isSameIncarnation(
   conversationId: string,
   createdAt: number | null,
-): boolean {
+): Promise<boolean> {
   return (
     createdAt !== null &&
-    getConversation(conversationId)?.createdAt === createdAt
+    (await getConversation(conversationId))?.createdAt === createdAt
   );
 }
 
@@ -239,7 +239,7 @@ async function acquireConversation(
   // incarnation every later acceptance point below answers for.
   let incarnation: number | null = null;
   if (!createIfMissing) {
-    incarnation = getConversation(conversationId)?.createdAt ?? null;
+    incarnation = (await getConversation(conversationId))?.createdAt ?? null;
     if (incarnation === null) {
       return null;
     }
@@ -316,13 +316,15 @@ async function acquireConversation(
         // question: that row is a different conversation, and this caller was
         // never asked to persist into it.
         if (joined) {
-          return isSameIncarnation(conversationId, incarnation) ? joined : null;
+          return (await isSameIncarnation(conversationId, incarnation))
+            ? joined
+            : null;
         }
         // A declining flight reports its own incarnation gone, which says
         // nothing about a later one this caller may hold. Taking that null
         // would refuse work the id can still accept, so this reconsults, and
         // only its own row being gone ends it.
-        if (!isSameIncarnation(conversationId, incarnation)) {
+        if (!(await isSameIncarnation(conversationId, incarnation))) {
           return null;
         }
         continue;
@@ -368,7 +370,10 @@ async function acquireConversation(
       // a delete can land in any of them. This is the last instant before the
       // row insert below and nothing between the two awaits, so a non-creating
       // acquire that finds its incarnation gone here never writes it back.
-      if (!createIfMissing && !isSameIncarnation(conversationId, incarnation)) {
+      if (
+        !createIfMissing &&
+        !(await isSameIncarnation(conversationId, incarnation))
+      ) {
         return null;
       }
 
@@ -404,7 +409,7 @@ async function acquireConversation(
       // nothing, so the in-memory Conversation hydrates from whatever rows
       // already exist without leaking a sidebar-visible row. `loadFromDb`
       // tolerates a missing row.
-      if (!ephemeral && !getConversation(conversationId)) {
+      if (!ephemeral && !(await getConversation(conversationId))) {
         if (storedOptions?.conversationType) {
           if (!ADOPTABLE_CONVERSATION_ID_RE.test(conversationId)) {
             throw new Error(
@@ -450,7 +455,10 @@ async function acquireConversation(
       // conversation with no row behind it, which later session work finds and
       // reuses. The creating path keeps its own window: it cannot answer null,
       // and a caller that was asked to build owns what it built.
-      if (!createIfMissing && !isSameIncarnation(conversationId, incarnation)) {
+      if (
+        !createIfMissing &&
+        !(await isSameIncarnation(conversationId, incarnation))
+      ) {
         newConversation.dispose();
         return null;
       }

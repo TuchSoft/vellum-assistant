@@ -24,10 +24,7 @@ import { bestEffortModeSessionTracking } from "./mode-session-tracking.js";
 const log = getLogger("conversation-mode-session");
 
 export type ModeSessionStructuralKind =
-  | "question"
-  | "confirmation"
-  | "secret"
-  | "surface";
+  "question" | "confirmation" | "secret" | "surface";
 
 interface ModeSessionSourceRegistration {
   sourceId: string;
@@ -97,15 +94,18 @@ export interface ConversationModeSessionCoordinatorDependencies {
     conversationId: string;
     mode: ModeSessionMode;
     sourceStartedAt: number;
-  }): ModeSessionWriteResult;
-  getSession(conversationId: string, id: string): ModeSessionSummary | null;
+  }): Promise<ModeSessionWriteResult>;
+  getSession(
+    conversationId: string,
+    id: string,
+  ): Promise<ModeSessionSummary | null>;
   updateActivity(input: {
     id: string;
     conversationId: string;
     expectedRevision: number;
     lastActivityAt: number;
     lastOwnedMessageId?: string | null;
-  }): ModeSessionWriteResult;
+  }): Promise<ModeSessionWriteResult>;
   updateBoundaries(input: {
     id: string;
     conversationId: string;
@@ -113,12 +113,12 @@ export interface ConversationModeSessionCoordinatorDependencies {
     firstIncluded: { at: number; messageId: string } | null;
     lastActivityAt: number;
     lastOwnedMessageId: string | null;
-  }): ModeSessionWriteResult;
+  }): Promise<ModeSessionWriteResult>;
   advanceRevision(input: {
     id: string;
     conversationId: string;
     expectedRevision: number;
-  }): ModeSessionWriteResult;
+  }): Promise<ModeSessionWriteResult>;
   finalize(input: {
     id: string;
     conversationId: string;
@@ -128,8 +128,8 @@ export interface ConversationModeSessionCoordinatorDependencies {
     endReason: string;
     lastActivityAt?: number;
     lastOwnedMessageId?: string | null;
-  }): ModeSessionWriteResult;
-  stampMessage(messageId: string, owner: ModeSession): void;
+  }): Promise<ModeSessionWriteResult>;
+  stampMessage(messageId: string, owner: ModeSession): Promise<void>;
   publishMessagesChanged(conversationId: string): void;
 }
 
@@ -175,8 +175,8 @@ const defaultDependencies: ConversationModeSessionCoordinatorDependencies = {
         : {}),
     });
   },
-  stampMessage: (messageId, owner) => {
-    updateMessageMetadata(messageId, { modeSession: owner });
+  stampMessage: async (messageId, owner) => {
+    await updateMessageMetadata(messageId, { modeSession: owner });
   },
   publishMessagesChanged: publishConversationMessagesChanged,
 };
@@ -254,12 +254,12 @@ export class ConversationModeSessionCoordinator {
     };
   }
 
-  activateSource(
+  async activateSource(
     activation: ModeSessionSourceActivation,
-  ): ModeSessionSourceHandle | undefined {
+  ): Promise<ModeSessionSourceHandle | undefined> {
     const current = this.#sources.get(activation.sourceId);
     if (current && current.generation === activation.generation) {
-      return this.#readActiveSession(current.session.id)
+      return (await this.#readActiveSession(current.session.id))
         ? {
             sourceId: activation.sourceId,
             generation: current.generation,
@@ -272,7 +272,7 @@ export class ConversationModeSessionCoordinator {
       return undefined;
     }
 
-    const result = this.#dependencies.beginSession({
+    const result = await this.#dependencies.beginSession({
       id: this.#dependencies.createId(),
       conversationId: this.#conversationId,
       mode: activation.mode,
@@ -289,10 +289,10 @@ export class ConversationModeSessionCoordinator {
     });
   }
 
-  retireSource(
+  async retireSource(
     source: ModeSessionSourceReference,
     disposition?: ModeSessionTerminalDisposition,
-  ): boolean {
+  ): Promise<boolean> {
     const key = source.sourceId;
     const currentSource = this.#sources.get(key);
     if (
@@ -320,20 +320,20 @@ export class ConversationModeSessionCoordinator {
     }
     try {
       if (removedWait || disposition) {
-        this.#publishRuntimeChange(currentSource.session.id);
+        await this.#publishRuntimeChange(currentSource.session.id);
       }
     } finally {
       if (disposition) {
-        this.#finalizeRetiredSessionIfSettled(currentSource.session.id);
+        await this.#finalizeRetiredSessionIfSettled(currentSource.session.id);
       }
     }
     return true;
   }
 
-  acceptTurn(
+  async acceptTurn(
     turnId: string,
     structuralResponse?: ModeSessionStructuralResponse,
-  ): ModeSession | undefined {
+  ): Promise<ModeSession | undefined> {
     const turn = this.#turns.get(turnId) ?? { rows: [] };
     this.#turns.set(turnId, turn);
     if (!structuralResponse || turn.owner) {
@@ -348,19 +348,19 @@ export class ConversationModeSessionCoordinator {
     if (!association || association.conversationId !== this.#conversationId) {
       return undefined;
     }
-    const session = this.#readActiveSession(association.owner.id);
+    const session = await this.#readActiveSession(association.owner.id);
     this.#structuralAssociations.delete(key);
     if (!session || session.mode !== association.owner.mode) {
       return undefined;
     }
     turn.owner = association.owner;
     this.#clearRuntimeState(association.owner.id);
-    this.#publishRuntimeChange(association.owner.id);
-    this.#repairTrackedRows(turn);
+    await this.#publishRuntimeChange(association.owner.id);
+    await this.#repairTrackedRows(turn);
     return turn.owner;
   }
 
-  trackPersistedRow(
+  async trackPersistedRow(
     turnId: string,
     messageId: string,
     at: number,
@@ -368,7 +368,7 @@ export class ConversationModeSessionCoordinator {
       startsDisplayBoundary?: boolean;
       publishMessagesChanged?: boolean;
     },
-  ): void {
+  ): Promise<void> {
     const turn = this.#turns.get(turnId) ?? { rows: [] };
     this.#turns.set(turnId, turn);
     if (turn.rows.some((row) => row.id === messageId)) {
@@ -382,15 +382,18 @@ export class ConversationModeSessionCoordinator {
     };
     turn.rows.push(row);
     if (turn.owner) {
-      this.#repairTrackedRows(turn, options?.publishMessagesChanged ?? true);
+      await this.#repairTrackedRows(
+        turn,
+        options?.publishMessagesChanged ?? true,
+      );
     }
   }
 
-  claimTurn(
+  async claimTurn(
     turnId: string,
     sourceReference: ModeSessionSourceReference,
     activityAt: number,
-  ): ModeSession | undefined {
+  ): Promise<ModeSession | undefined> {
     const turn = this.#turns.get(turnId) ?? { rows: [] };
     this.#turns.set(turnId, turn);
     if (turn.owner) {
@@ -405,14 +408,14 @@ export class ConversationModeSessionCoordinator {
     ) {
       return undefined;
     }
-    const session = this.#readActiveSession(source.session.id);
+    const session = await this.#readActiveSession(source.session.id);
     if (!session || session.mode !== source.session.mode) {
       return undefined;
     }
 
     turn.owner = source.session;
-    this.#repairTrackedRows(turn);
-    this.recordActivity(turnId, activityAt);
+    await this.#repairTrackedRows(turn);
+    await this.recordActivity(turnId, activityAt);
     return turn.owner;
   }
 
@@ -437,7 +440,10 @@ export class ConversationModeSessionCoordinator {
     return false;
   }
 
-  transferTurn(fromTurnId: string, toTurnId: string): ModeSession | undefined {
+  async transferTurn(
+    fromTurnId: string,
+    toTurnId: string,
+  ): Promise<ModeSession | undefined> {
     if (fromTurnId === toTurnId) {
       return this.#turns.get(toTurnId)?.owner;
     }
@@ -447,26 +453,41 @@ export class ConversationModeSessionCoordinator {
       return destination?.owner;
     }
     if (destination?.owner && destination.owner.id !== turn.owner.id) {
-      bestEffortModeSessionTracking("handoff origin settlement", () =>
-        this.releaseTurn(fromTurnId, {
+      try {
+        await this.releaseTurn(fromTurnId, {
           status: "completed",
           endReason: "handoff_settled",
-        }),
-      );
+        });
+      } catch (err) {
+        log.warn(
+          { err, conversationId: this.#conversationId },
+          "Mode-session tracking failed",
+        );
+      }
       return destination.owner;
     }
-    bestEffortModeSessionTracking("handoff origin rows", () =>
-      this.#repairTrackedRows(turn),
-    );
+    try {
+      await this.#repairTrackedRows(turn);
+    } catch (err) {
+      log.warn(
+        { err, conversationId: this.#conversationId },
+        "Mode-session tracking failed",
+      );
+    }
     const transferred: TurnState = destination ?? { rows: [] };
     transferred.owner ??= turn.owner;
     transferred.runtimeState ??= turn.runtimeState;
     transferred.terminalDisposition ??= turn.terminalDisposition;
     this.#turns.set(toTurnId, transferred);
     this.#turns.delete(fromTurnId);
-    bestEffortModeSessionTracking("handoff destination rows", () =>
-      this.#repairTrackedRows(transferred),
-    );
+    try {
+      await this.#repairTrackedRows(transferred);
+    } catch (err) {
+      log.warn(
+        { err, conversationId: this.#conversationId },
+        "Mode-session tracking failed",
+      );
+    }
     return transferred.owner;
   }
 
@@ -484,7 +505,7 @@ export class ConversationModeSessionCoordinator {
     return this.#hasSourceLifetimeSource(owner.id);
   }
 
-  recordActivity(turnId: string, at: number): boolean {
+  async recordActivity(turnId: string, at: number): Promise<boolean> {
     const turn = this.#turns.get(turnId);
     if (!turn?.owner) {
       return false;
@@ -501,14 +522,14 @@ export class ConversationModeSessionCoordinator {
     );
   }
 
-  recordStructuralWait(
+  async recordStructuralWait(
     turnId: string,
     response: ModeSessionStructuralResponse,
-  ): boolean {
+  ): Promise<boolean> {
     const turn = this.#turns.get(turnId);
     if (
       !turn?.owner ||
-      !this.#readActiveSession(turn.owner.id) ||
+      !(await this.#readActiveSession(turn.owner.id)) ||
       !this.#hasEligibleSource(turn.owner.id)
     ) {
       return false;
@@ -522,11 +543,13 @@ export class ConversationModeSessionCoordinator {
       },
     );
     turn.runtimeState = "waiting";
-    this.#publishRuntimeChange(turn.owner.id);
+    await this.#publishRuntimeChange(turn.owner.id);
     return true;
   }
 
-  invalidateStructuralWait(response: ModeSessionStructuralResponse): boolean {
+  async invalidateStructuralWait(
+    response: ModeSessionStructuralResponse,
+  ): Promise<boolean> {
     const association = this.#takeStructuralAssociation(response);
     if (!association) {
       return false;
@@ -534,7 +557,7 @@ export class ConversationModeSessionCoordinator {
     if (this.#hasAssociationForOwner(association.owner.id)) {
       return true;
     }
-    this.#settleStructuralOwner(
+    await this.#settleStructuralOwner(
       association.owner.id,
       {
         status: "completed",
@@ -545,10 +568,10 @@ export class ConversationModeSessionCoordinator {
     return true;
   }
 
-  settleStructuralWait(
+  async settleStructuralWait(
     response: ModeSessionStructuralResponse,
     disposition: ModeSessionTerminalDisposition,
-  ): boolean {
+  ): Promise<boolean> {
     const association = this.#takeStructuralAssociation(response);
     if (!association) {
       return false;
@@ -556,18 +579,18 @@ export class ConversationModeSessionCoordinator {
     if (this.#hasAssociationForOwner(association.owner.id)) {
       return true;
     }
-    this.#settleStructuralOwner(association.owner.id, disposition);
+    await this.#settleStructuralOwner(association.owner.id, disposition);
     return true;
   }
 
-  #settleStructuralOwner(
+  async #settleStructuralOwner(
     sessionId: string,
     disposition: ModeSessionTerminalDisposition,
     completeAtLastActivity = false,
-  ): void {
+  ): Promise<void> {
     if (this.#hasSourceLifetimeSource(sessionId)) {
       this.#clearRuntimeState(sessionId);
-      this.#publishRuntimeChange(sessionId);
+      await this.#publishRuntimeChange(sessionId);
       return;
     }
     const existing = this.#retiredDispositions.get(sessionId);
@@ -586,13 +609,13 @@ export class ConversationModeSessionCoordinator {
     }
     this.#retireSourcesForOwner(sessionId);
     try {
-      this.#publishRuntimeChange(sessionId);
+      await this.#publishRuntimeChange(sessionId);
     } finally {
-      this.#finalizeRetiredSessionIfSettled(sessionId);
+      await this.#finalizeRetiredSessionIfSettled(sessionId);
     }
   }
 
-  invalidateAllStructuralWaits(): number {
+  async invalidateAllStructuralWaits(): Promise<number> {
     const ownerIds = new Set(
       [...this.#structuralAssociations.values()].map(
         (association) => association.owner.id,
@@ -603,7 +626,7 @@ export class ConversationModeSessionCoordinator {
     let settlementError: unknown;
     for (const ownerId of ownerIds) {
       try {
-        this.#settleStructuralOwner(
+        await this.#settleStructuralOwner(
           ownerId,
           {
             status: "completed",
@@ -621,42 +644,44 @@ export class ConversationModeSessionCoordinator {
     return count;
   }
 
-  beginDraining(turnId: string): boolean {
+  async beginDraining(turnId: string): Promise<boolean> {
     const turn = this.#turns.get(turnId);
-    if (!turn?.owner || !this.#readActiveSession(turn.owner.id)) {
+    if (!turn?.owner || !(await this.#readActiveSession(turn.owner.id))) {
       return false;
     }
     turn.runtimeState = "finishing";
-    this.#publishRuntimeChange(turn.owner.id);
+    await this.#publishRuntimeChange(turn.owner.id);
     return true;
   }
 
-  finalizeTurn(input: {
+  async finalizeTurn(input: {
     turnId: string;
     status: "completed" | "interrupted";
     endedAt: number | null;
     endReason: string;
     lastActivityAt?: number;
-  }): boolean {
+  }): Promise<boolean> {
     const turn = this.#turns.get(input.turnId);
     if (!turn?.owner) {
       return false;
     }
-    this.#repairTrackedRows(turn);
+    await this.#repairTrackedRows(turn);
     const lastOwnedMessageId = lastStampedRow(turn.rows)?.id;
-    const finalized = this.#mutateActiveSession(turn.owner.id, (session) =>
-      this.#dependencies.finalize({
-        id: session.id,
-        conversationId: this.#conversationId,
-        expectedRevision: session.revision,
-        status: input.status,
-        endedAt: input.endedAt,
-        endReason: input.endReason,
-        ...(input.lastActivityAt !== undefined
-          ? { lastActivityAt: input.lastActivityAt }
-          : {}),
-        ...(lastOwnedMessageId ? { lastOwnedMessageId } : {}),
-      }),
+    const finalized = await this.#mutateActiveSession(
+      turn.owner.id,
+      (session) =>
+        this.#dependencies.finalize({
+          id: session.id,
+          conversationId: this.#conversationId,
+          expectedRevision: session.revision,
+          status: input.status,
+          endedAt: input.endedAt,
+          endReason: input.endReason,
+          ...(input.lastActivityAt !== undefined
+            ? { lastActivityAt: input.lastActivityAt }
+            : {}),
+          ...(lastOwnedMessageId ? { lastOwnedMessageId } : {}),
+        }),
     );
     if (finalized) {
       this.#turns.delete(input.turnId);
@@ -668,15 +693,15 @@ export class ConversationModeSessionCoordinator {
     return finalized;
   }
 
-  releaseTurn(
+  async releaseTurn(
     turnId: string,
     fallbackDisposition?: ModeSessionTerminalDisposition,
-  ): void {
+  ): Promise<void> {
     const turn = this.#turns.get(turnId);
     let repairError: unknown;
     if (turn?.owner) {
       try {
-        this.#repairTrackedRows(turn);
+        await this.#repairTrackedRows(turn);
       } catch (err) {
         repairError = err;
       }
@@ -715,13 +740,13 @@ export class ConversationModeSessionCoordinator {
     if (owner) {
       if (shouldRetireOwner) {
         try {
-          this.#publishRuntimeChange(owner.id);
+          await this.#publishRuntimeChange(owner.id);
         } catch (err) {
           retirementError = err;
         }
       }
       try {
-        this.#finalizeRetiredSessionIfSettled(owner.id);
+        await this.#finalizeRetiredSessionIfSettled(owner.id);
       } catch (err) {
         retirementError ??= err;
       }
@@ -768,24 +793,28 @@ export class ConversationModeSessionCoordinator {
     return this.#descriptorFor(summary);
   }
 
-  #readActiveSession(sessionId: string): ModeSessionSummary | null {
-    const session = this.#dependencies.getSession(
+  async #readActiveSession(
+    sessionId: string,
+  ): Promise<ModeSessionSummary | null> {
+    const session = await this.#dependencies.getSession(
       this.#conversationId,
       sessionId,
     );
     return session?.status === "active" ? session : null;
   }
 
-  #mutateActiveSession(
+  async #mutateActiveSession(
     sessionId: string,
-    mutate: (session: ModeSessionSummary) => ModeSessionWriteResult,
-  ): boolean {
-    let session = this.#readActiveSession(sessionId);
+    mutate: (
+      session: ModeSessionSummary,
+    ) => ModeSessionWriteResult | Promise<ModeSessionWriteResult>,
+  ): Promise<boolean> {
+    let session = await this.#readActiveSession(sessionId);
     if (!session) {
       return false;
     }
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = mutate(session);
+      const result = await mutate(session);
       if (result.ok) {
         return true;
       }
@@ -801,18 +830,22 @@ export class ConversationModeSessionCoordinator {
     return false;
   }
 
-  #repairTrackedRows(turn: TurnState, publishMessagesChanged = true): boolean {
+  async #repairTrackedRows(
+    turn: TurnState,
+    publishMessagesChanged = true,
+  ): Promise<boolean> {
     if (!turn.owner) {
       return false;
     }
     let changed = false;
     for (const row of turn.rows) {
-      changed = this.#stampRow(row, turn.owner) || changed;
+      changed = (await this.#stampRow(row, turn.owner)) || changed;
     }
     const stampedRows = turn.rows.filter((row) => row.stamped);
     if (stampedRows.length > 0) {
       changed =
-        this.#updateOrdinaryBoundaries(turn.owner, stampedRows) || changed;
+        (await this.#updateOrdinaryBoundaries(turn.owner, stampedRows)) ||
+        changed;
     }
     if (changed && publishMessagesChanged) {
       this.#dependencies.publishMessagesChanged(this.#conversationId);
@@ -820,12 +853,12 @@ export class ConversationModeSessionCoordinator {
     return changed;
   }
 
-  #stampRow(row: TrackedRow, owner: ModeSession): boolean {
+  async #stampRow(row: TrackedRow, owner: ModeSession): Promise<boolean> {
     if (row.stamped) {
       return false;
     }
     try {
-      this.#dependencies.stampMessage(row.id, owner);
+      await this.#dependencies.stampMessage(row.id, owner);
       row.stamped = true;
       return true;
     } catch {
@@ -833,7 +866,10 @@ export class ConversationModeSessionCoordinator {
     }
   }
 
-  #updateOrdinaryBoundaries(owner: ModeSession, rows: TrackedRow[]): boolean {
+  async #updateOrdinaryBoundaries(
+    owner: ModeSession,
+    rows: TrackedRow[],
+  ): Promise<boolean> {
     if (rows.length === 0) {
       return false;
     }
@@ -916,7 +952,7 @@ export class ConversationModeSessionCoordinator {
     }
   }
 
-  #finalizeRetiredSessionIfSettled(sessionId: string): boolean {
+  async #finalizeRetiredSessionIfSettled(sessionId: string): Promise<boolean> {
     const disposition = this.#retiredDispositions.get(sessionId);
     if (!disposition) {
       return false;
@@ -929,7 +965,7 @@ export class ConversationModeSessionCoordinator {
     const endedAt = Date.now();
     let finalized = false;
     try {
-      finalized = this.#mutateActiveSession(sessionId, (session) =>
+      finalized = await this.#mutateActiveSession(sessionId, (session) =>
         this.#dependencies.finalize({
           id: session.id,
           conversationId: this.#conversationId,
@@ -992,8 +1028,8 @@ export class ConversationModeSessionCoordinator {
     return association;
   }
 
-  #publishRuntimeChange(sessionId: string): boolean {
-    const advanced = this.#mutateActiveSession(sessionId, (session) =>
+  async #publishRuntimeChange(sessionId: string): Promise<boolean> {
+    const advanced = await this.#mutateActiveSession(sessionId, (session) =>
       this.#dependencies.advanceRevision({
         id: session.id,
         conversationId: this.#conversationId,

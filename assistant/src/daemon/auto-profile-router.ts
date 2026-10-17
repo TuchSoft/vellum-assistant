@@ -76,11 +76,7 @@ const ROUTING_INSTRUCTIONS =
   "Which model profile should answer the user's latest message? Judge the work the reply needs, using the recent conversation to interpret short follow-ups. Pick the cheapest profile that will still produce a good answer.";
 
 export type AutoProfileRouteOutcome =
-  | "routed"
-  | "unavailable"
-  | "timeout"
-  | "error"
-  | "fallback";
+  "routed" | "unavailable" | "timeout" | "error" | "fallback";
 
 export interface AutoProfileRoute {
   profile: DefaultProfileKey;
@@ -370,20 +366,24 @@ export function clearAutoProfilePreviewsForTesting(): void {
  * counted over rows that carry spoken text so tool traffic cannot crowd a
  * short follow-up's context out of the page.
  */
-function recentHistoryFromDb(conversationId: string | undefined): Message[] {
+async function recentHistoryFromDb(
+  conversationId: string | undefined,
+): Promise<Message[]> {
   const resolved = conversationId
-    ? resolveConversationId(conversationId)
+    ? await resolveConversationId(conversationId)
     : null;
   if (!resolved) {
     return [];
   }
-  return getMessagesPaginated(
-    resolved,
-    PREVIEW_HISTORY_ROWS,
-    undefined,
-    (row) =>
-      (row.role === "user" || row.role === "assistant") &&
-      plainTextOf(row.content).length > 0,
+  return (
+    await getMessagesPaginated(
+      resolved,
+      PREVIEW_HISTORY_ROWS,
+      undefined,
+      (row) =>
+        (row.role === "user" || row.role === "assistant") &&
+        plainTextOf(row.content).length > 0,
+    )
   ).messages.map((row) => ({
     role: row.role as Message["role"],
     content: row.content,
@@ -409,7 +409,7 @@ export async function previewAutoProfile(args: {
   if (profiles[AUTO_PROFILE_KEY]?.source !== "managed") {
     return null;
   }
-  const history = recentHistoryFromDb(args.conversationId);
+  const history = await recentHistoryFromDb(args.conversationId);
   const route = await routeAutoProfile({
     conversationId: args.conversationId ?? NO_CONVERSATION_KEY,
     history,

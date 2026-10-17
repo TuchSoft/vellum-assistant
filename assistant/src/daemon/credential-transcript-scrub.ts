@@ -98,7 +98,7 @@ export async function scrubStoredCredentialFromTranscripts(
   }
   const targets = buildSearchTargets(value);
   try {
-    result.dbMessagesScrubbed = sweepDbMessages(targets);
+    result.dbMessagesScrubbed = await sweepDbMessages(targets);
   } catch (err) {
     log.warn(
       { err, valueLength: value.length },
@@ -180,7 +180,7 @@ function escapeLikeLiteral(literal: string): string {
   return literal.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
-function sweepDbMessages(targets: readonly string[]): number {
+async function sweepDbMessages(targets: readonly string[]): Promise<number> {
   // Module contract: callers can invoke this at any point in the daemon
   // lifecycle, so readiness is checked rather than assumed (see
   // assistant/CLAUDE.md § DB migration readiness gating).
@@ -221,7 +221,7 @@ function sweepDbMessages(targets: readonly string[]): number {
       if (!next.changed) {
         continue;
       }
-      updateMessageContent(row.id, next.content);
+      await updateMessageContent(row.id, next.content);
       // `updateMessageContent` is a pure CRUD primitive: reindex the changed
       // searchable text ourselves (mutate-then-reindex, as consolidation does).
       enqueueLexicalIndexForMessage(row.id);

@@ -33,26 +33,26 @@ export interface WorkspaceConversationContext {
  * when no live conversation is found (no active conversation, or a context with
  * no conversation id) or when the rendered context is empty.
  */
-export function resolveWorkspaceTopLevelContext(
+export async function resolveWorkspaceTopLevelContext(
   conversationId: string | undefined,
-): string | null {
+): Promise<string | null> {
   const conversation = findConversationOrSubagent(conversationId);
   if (!conversation) {
     return null;
   }
-  refreshWorkspaceTopLevelContextIfNeeded(conversation);
+  await refreshWorkspaceTopLevelContextIfNeeded(conversation);
   return conversation.workspaceTopLevelContext;
 }
 
 /** Refresh workspace top-level directory context if needed. */
-export function refreshWorkspaceTopLevelContextIfNeeded(
+export async function refreshWorkspaceTopLevelContextIfNeeded(
   ctx: WorkspaceConversationContext,
-): void {
+): Promise<void> {
   if (!ctx.workspaceTopLevelDirty && ctx.workspaceTopLevelContext != null) {
     return;
   }
   const snapshot = scanTopLevelDirectories(ctx.workingDir);
-  const conversation = getConversation(ctx.conversationId);
+  const conversation = await getConversation(ctx.conversationId);
   let currentConversationPath: string | null = null;
   if (conversation && typeof conversation.createdAt === "number") {
     const { resolvedDirName } = resolveConversationDirectoryPaths(

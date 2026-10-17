@@ -248,7 +248,7 @@ export async function persistWakeTailMessage(
     }
   }
   try {
-    const convRow = getConversation(conversation.conversationId);
+    const convRow = await getConversation(conversation.conversationId);
     if (convRow) {
       syncMessageToDisk(
         conversation.conversationId,
@@ -323,7 +323,7 @@ export async function persistWakeTriggerMessage(
     { metadata, skipIndexing: true },
   );
   try {
-    const convRow = getConversation(conversation.conversationId);
+    const convRow = await getConversation(conversation.conversationId);
     if (convRow) {
       syncMessageToDisk(
         conversation.conversationId,

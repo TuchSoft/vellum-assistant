@@ -59,7 +59,7 @@ export async function launchConversation(
   }
 
   const conversationKey = `launcher-${randomUUID()}`;
-  const { conversationId } = getOrCreateConversationKey(conversationKey);
+  const { conversationId } = await getOrCreateConversationKey(conversationKey);
 
   const conversation = await getOrCreateConversation(conversationId);
 

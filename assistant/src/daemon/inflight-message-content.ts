@@ -79,10 +79,10 @@ export interface InflightContentWriter {
  * resolved — callers then reserve a plain inline row and fall back to
  * direct row writes, which is always correct, just not contention-free.
  */
-export function createInflightContentWriter(
+export async function createInflightContentWriter(
   conversationId: string,
-): InflightContentWriter | null {
-  const conv = getConversation(conversationId);
+): Promise<InflightContentWriter | null> {
+  const conv = await getConversation(conversationId);
   if (!conv || !Number.isFinite(conv.createdAt)) {
     return null;
   }
@@ -227,7 +227,7 @@ export async function finalizeStrandedInflightContent(
 ): Promise<void> {
   for (const writer of writers.values()) {
     try {
-      const row = getMessageById(writer.messageId, writer.conversationId);
+      const row = await getMessageById(writer.messageId, writer.conversationId);
       if (row && row.finalized === 0) {
         await finalizeInflightContent(
           writer,

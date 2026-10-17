@@ -104,7 +104,10 @@ export function buildDeferredFinalizeEffect(params: {
 }): () => Promise<void> {
   const { conversationId, assistantMessageId, contentJson, rlog } = params;
   return async () => {
-    const finalizedRow = getMessageById(assistantMessageId, conversationId);
+    const finalizedRow = await getMessageById(
+      assistantMessageId,
+      conversationId,
+    );
     if (!finalizedRow) {
       return;
     }
@@ -136,7 +139,7 @@ export function buildDeferredFinalizeEffect(params: {
     // here to keep the lexical index in lockstep with the segment index.
     enqueueLexicalIndexForMessage(assistantMessageId);
     try {
-      const attentionStateChanged = projectAssistantMessage({
+      const attentionStateChanged = await projectAssistantMessage({
         conversationId,
         messageId: assistantMessageId,
         messageAt: finalizedRow.createdAt,
@@ -194,7 +197,7 @@ export async function settleTurnContent(params: {
   // escape into the loop's outer catch.
   let liveConversation: ConversationRow | null = null;
   try {
-    liveConversation = getConversation(ctx.conversationId);
+    liveConversation = await getConversation(ctx.conversationId);
   } catch (err) {
     rlog.warn({ err }, "Failed to read conversation for end-of-turn work");
   }
@@ -319,7 +322,7 @@ export async function runDeferredTurnTail(params: {
   // not escape into the detached tail's caller.
   let conversation: ConversationRow | null = null;
   try {
-    conversation = getConversation(conversationId);
+    conversation = await getConversation(conversationId);
   } catch (err) {
     rlog.warn({ err }, "Failed to read conversation for end-of-turn work");
   }

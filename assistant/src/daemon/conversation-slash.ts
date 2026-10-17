@@ -79,10 +79,10 @@ export interface SlashContextSource {
   userMessageInterface?: InterfaceId;
 }
 
-export function buildSlashContextForContent(
+export async function buildSlashContextForContent(
   content: string,
   source: SlashContextSource,
-): SlashContext | undefined {
+): Promise<SlashContext | undefined> {
   if (classifySlash(content) === "passthrough") {
     return undefined;
   }
@@ -91,7 +91,9 @@ export function buildSlashContextForContent(
   const contextWindow = resolveEffectiveContextWindow({
     llm: config.llm,
     callSite: "mainAgent",
-    overrideProfile: getConversationOverrideProfile(source.conversationId),
+    overrideProfile: await getConversationOverrideProfile(
+      source.conversationId,
+    ),
   });
   return {
     messageCount: source.messageCount,
@@ -123,8 +125,7 @@ const DEPRECATED_MODEL_SHORTCUTS = new Set([
 // ── /model command (inference profile switcher) ──────────────────────
 
 type ModelCommandParse =
-  | { kind: "list" }
-  | { kind: "switch"; profileName: string };
+  { kind: "list" } | { kind: "switch"; profileName: string };
 
 /**
  * Parse `/model` and `/model <name>` forms. Returns `null` for any input

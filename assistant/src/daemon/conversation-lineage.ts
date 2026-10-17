@@ -27,13 +27,13 @@ export const MAX_LINEAGE_DEPTH = 16;
  * A failed durable read is swallowed: linking artifacts to a partial chain is
  * better than failing the caller, which is always a best-effort side effect.
  */
-function parentOf(conversationId: string): string | undefined {
+async function parentOf(conversationId: string): Promise<string | undefined> {
   const resident = findConversationOrSubagent(conversationId);
   if (resident?.parentConversationId) {
     return resident.parentConversationId;
   }
   try {
-    return getPersistedParentConversationId(conversationId);
+    return await getPersistedParentConversationId(conversationId);
   } catch {
     return undefined;
   }
@@ -57,13 +57,15 @@ function parentOf(conversationId: string): string | undefined {
  * which can therefore be shorter than the true ancestry. Bounded by
  * {@link MAX_LINEAGE_DEPTH} and a visited set, so a cycle terminates.
  */
-export function resolveConversationLineage(conversationId: string): string[] {
+export async function resolveConversationLineage(
+  conversationId: string,
+): Promise<string[]> {
   const lineage = [conversationId];
   const visited = new Set([conversationId]);
 
   let current = conversationId;
   while (lineage.length < MAX_LINEAGE_DEPTH) {
-    const parent = parentOf(current);
+    const parent = await parentOf(current);
     if (!parent || visited.has(parent)) {
       break;
     }

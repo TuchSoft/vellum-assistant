@@ -28,7 +28,7 @@ export async function performConversationSearch(
 ) {
   // Treat "*" as a list-all wildcard — FTS treats it as a literal character.
   if (params.query.trim() === "*") {
-    const rows = listConversations({
+    const rows = await listConversations({
       limit: params.limit,
       archiveStatus: params.includeArchived ? "all" : "active",
     });
@@ -61,11 +61,11 @@ export interface MessageContentResult {
  * Get the full content of a single message by ID.
  * Returns null if the message is not found.
  */
-export function getMessageContent(
+export async function getMessageContent(
   messageId: string,
   conversationId?: string,
-): MessageContentResult | null {
-  const dbMessage = getMessageById(messageId, conversationId);
+): Promise<MessageContentResult | null> {
+  const dbMessage = await getMessageById(messageId, conversationId);
   if (!dbMessage) {
     return null;
   }

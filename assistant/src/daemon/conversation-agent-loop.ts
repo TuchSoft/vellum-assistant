@@ -163,7 +163,6 @@ import {
   unregisterInflightTurn,
 } from "./inflight-turn-registry.js";
 import type { UsageStats } from "./message-protocol.js";
-import { bestEffortModeSessionTracking } from "./mode-session-tracking.js";
 import {
   persistReactionRecords,
   type QueuedReactionRecord,
@@ -315,61 +314,63 @@ function turnEndedAwaitingUser(ctx: Conversation): boolean {
 function recordModeSessionStructuralWaits(
   ctx: Conversation,
   turnId: string,
-): boolean {
-  let recorded = false;
-  for (const interaction of getPendingInteractionsByConversation(
-    ctx.conversationId,
-  )) {
-    const kind =
-      interaction.kind === "acp_confirmation"
-        ? "confirmation"
-        : interaction.kind;
-    if (kind !== "confirmation" && kind !== "question" && kind !== "secret") {
-      continue;
+): Promise<boolean> {
+  return (async () => {
+    let recorded = false;
+    for (const interaction of getPendingInteractionsByConversation(
+      ctx.conversationId,
+    )) {
+      const kind =
+        interaction.kind === "acp_confirmation"
+          ? "confirmation"
+          : interaction.kind;
+      if (kind !== "confirmation" && kind !== "question" && kind !== "secret") {
+        continue;
+      }
+      recorded =
+        (await ctx.modeSessions.recordStructuralWait(turnId, {
+          kind,
+          responseId: interaction.requestId,
+        })) || recorded;
     }
-    recorded =
-      ctx.modeSessions.recordStructuralWait(turnId, {
-        kind,
-        responseId: interaction.requestId,
-      }) || recorded;
-  }
-  for (const surfaceId of blockingPendingSurfaceIds(ctx)) {
-    recorded =
-      ctx.modeSessions.recordStructuralWait(turnId, {
-        kind: "surface",
-        responseId: surfaceId,
-      }) || recorded;
-  }
-  return recorded;
+    for (const surfaceId of blockingPendingSurfaceIds(ctx)) {
+      recorded =
+        (await ctx.modeSessions.recordStructuralWait(turnId, {
+          kind: "surface",
+          responseId: surfaceId,
+        })) || recorded;
+    }
+    return recorded;
+  })();
 }
 
-function settleModeSessionTurn(
+async function settleModeSessionTurn(
   ctx: Conversation,
   turnId: string,
   fallback: { status: "completed" | "interrupted"; endReason: string },
-): void {
+): Promise<void> {
   try {
     if (!ctx.modeSessions.getTurnOwner(turnId)) {
-      ctx.modeSessions.releaseTurn(turnId);
+      await ctx.modeSessions.releaseTurn(turnId);
       return;
     }
     if (
       fallback.status === "completed" &&
-      recordModeSessionStructuralWaits(ctx, turnId)
+      (await recordModeSessionStructuralWaits(ctx, turnId))
     ) {
-      ctx.modeSessions.releaseTurn(turnId);
+      await ctx.modeSessions.releaseTurn(turnId);
       return;
     }
     if (ctx.modeSessions.keepsSessionOpenAfterTurn(turnId)) {
-      ctx.modeSessions.releaseTurn(turnId);
+      await ctx.modeSessions.releaseTurn(turnId);
       return;
     }
     const disposition = ctx.modeSessions.getTerminalDisposition(turnId);
     if (disposition) {
-      ctx.modeSessions.releaseTurn(turnId, fallback);
+      await ctx.modeSessions.releaseTurn(turnId, fallback);
       return;
     }
-    const finalized = ctx.modeSessions.finalizeTurn({
+    const finalized = await ctx.modeSessions.finalizeTurn({
       turnId,
       status: fallback.status,
       endedAt: Date.now(),
@@ -377,7 +378,7 @@ function settleModeSessionTurn(
       lastActivityAt: Date.now(),
     });
     if (!finalized) {
-      ctx.modeSessions.releaseTurn(turnId, fallback);
+      await ctx.modeSessions.releaseTurn(turnId, fallback);
     }
   } catch (err) {
     log.warn(
@@ -385,7 +386,7 @@ function settleModeSessionTurn(
       "Mode-session turn settlement failed",
     );
     try {
-      ctx.modeSessions.releaseTurn(turnId, fallback);
+      await ctx.modeSessions.releaseTurn(turnId, fallback);
     } catch (releaseErr) {
       log.warn(
         { err: releaseErr, conversationId: ctx.conversationId, turnId },
@@ -634,9 +635,7 @@ export async function runAgentLoopImpl(
   // exit). The wrapper reads it to persist the matching user-facing notice
   // after the tool-result flush; null when the turn did not end in overflow.
   let overflowTerminalReason:
-    | "context_too_large"
-    | "budget_yield_unrecovered"
-    | null = null;
+    "context_too_large" | "budget_yield_unrecovered" | null = null;
   // Set when the loop ends the turn as `budget_yield_unrecovered`. SSE emission
   // happens immediately at the detection site; assistant-row persistence is
   // deferred until after the pendingToolResults flush so we don't orphan
@@ -645,8 +644,7 @@ export async function runAgentLoopImpl(
     typeof budgetYieldUnrecoveredClassification
   > | null = null;
   let emitTerminalExit:
-    | ((reason: AgentLoopExitReason) => Promise<void>)
-    | null = null;
+    ((reason: AgentLoopExitReason) => Promise<void>) | null = null;
 
   // Expose the turn's request origin (e.g. "memory_consolidation") on the live
   // conversation so the tool context — and through it `buildPolicyContext` —
@@ -703,7 +701,7 @@ export async function runAgentLoopImpl(
           return null;
         }
         const userMessage = plainTextOf(
-          getMessageById(userMessageId)?.content ?? [],
+          (await getMessageById(userMessageId))?.content ?? [],
         );
         // A draft the composer already previewed carries its pick over, so
         // the reply lands on the profile the pill showed with no second call.
@@ -906,12 +904,12 @@ export async function runAgentLoopImpl(
   // message from a different channel can't overwrite it mid-flight.
   // When context is unavailable (e.g. regenerate after daemon restart),
   // fall back to the conversation's persisted origin channel.
-  const capturedTurnChannelContext: TurnChannelContext = (() => {
+  const capturedTurnChannelContext: TurnChannelContext = await (async () => {
     const live = ctx.getTurnChannelContext();
     if (live) {
       return live;
     }
-    const origin = getConversationOriginChannel(ctx.conversationId);
+    const origin = await getConversationOriginChannel(ctx.conversationId);
     if (origin) {
       return { userMessageChannel: origin, assistantMessageChannel: origin };
     }
@@ -925,23 +923,24 @@ export async function runAgentLoopImpl(
   // Interface and channel are orthogonal dimensions, so when interface
   // context is missing we default explicitly to 'vellum' instead of
   // deriving from channel.
-  const capturedTurnInterfaceContext: TurnInterfaceContext = (() => {
-    const live = ctx.getTurnInterfaceContext();
-    if (live) {
-      return live;
-    }
-    const origin = getConversationOriginInterface(ctx.conversationId);
-    if (origin) {
+  const capturedTurnInterfaceContext: TurnInterfaceContext =
+    await (async () => {
+      const live = ctx.getTurnInterfaceContext();
+      if (live) {
+        return live;
+      }
+      const origin = await getConversationOriginInterface(ctx.conversationId);
+      if (origin) {
+        return {
+          userMessageInterface: origin,
+          assistantMessageInterface: origin,
+        };
+      }
       return {
-        userMessageInterface: origin,
-        assistantMessageInterface: origin,
+        userMessageInterface: "web" as InterfaceId,
+        assistantMessageInterface: "web" as InterfaceId,
       };
-    }
-    return {
-      userMessageInterface: "web" as InterfaceId,
-      assistantMessageInterface: "web" as InterfaceId,
-    };
-  })();
+    })();
 
   const diskPressureDecision = classifyDiskPressureTurnPolicy(
     getDiskPressureStatus(),
@@ -1278,16 +1277,21 @@ export async function runAgentLoopImpl(
         // An unannounced dismissal keeps its pending entry so client and
         // daemon agree the card is still live and the one-interactive-surface
         // gate keeps holding; the next user message sweeps it again.
-        if (!markSurfaceCompleted(ctx, surfaceId, "Dismissed")) {
+        if (!(await markSurfaceCompleted(ctx, surfaceId, "Dismissed"))) {
           continue;
         }
         ctx.pendingSurfaceActions.delete(surfaceId);
-        bestEffortModeSessionTracking("stale surface wait invalidation", () =>
-          ctx.modeSessions.invalidateStructuralWait({
+        try {
+          await ctx.modeSessions.invalidateStructuralWait({
             kind: "surface",
             responseId: surfaceId,
-          }),
-        );
+          });
+        } catch (err) {
+          rlog.warn(
+            { err, conversationId: ctx.conversationId },
+            "Mode-session tracking failed",
+          );
+        }
         onEvent({
           type: "ui_surface_complete",
           conversationId: ctx.conversationId,
@@ -1300,7 +1304,7 @@ export async function runAgentLoopImpl(
     const isFirstMessage = ctx.messages.length === 1;
     const isSlackConversation = ctx.channelCapabilities?.channel === "slack";
     const loadCurrentSlackChronologicalContext =
-      (): SlackChronologicalContext | null => {
+      async (): Promise<SlackChronologicalContext | null> => {
         if (!isSlackConversation) {
           return null;
         }
@@ -1317,7 +1321,7 @@ export async function runAgentLoopImpl(
         );
       };
     let slackChronologicalContext: SlackChronologicalContext | null =
-      loadCurrentSlackChronologicalContext();
+      await loadCurrentSlackChronologicalContext();
     const getSlackProvenanceContextForCompactionBasis = (
       messages: Message[],
       compactedMessages: number,
@@ -1482,9 +1486,9 @@ export async function runAgentLoopImpl(
     // normal back-and-forth turns.
     const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
     let timeSinceLastMessage: string | null = null;
-    const currentUserMessage = getMessageById(userMessageId);
+    const currentUserMessage = await getMessageById(userMessageId);
     if (currentUserMessage) {
-      const prevUserTs = getLastUserTimestampBefore(
+      const prevUserTs = await getLastUserTimestampBefore(
         ctx.conversationId,
         currentUserMessage.createdAt,
       );
@@ -1609,7 +1613,7 @@ export async function runAgentLoopImpl(
     // the conversation supplies), so the bound holds across a compaction rather
     // than only from the next turn. The overflow ladder's media stubbing still
     // governs everything the user deliberately attached.
-    const runMessages = applySightFrameRetention(
+    const runMessages = await applySightFrameRetention(
       repairedMessages,
       ctx.conversationId,
     );
@@ -1619,7 +1623,7 @@ export async function runAgentLoopImpl(
     ctx.contextWindowManager.resetOverflowRecovery();
 
     const shouldGenerateTitle = isReplaceableTitle(
-      getConversation(ctx.conversationId)?.title ?? null,
+      (await getConversation(ctx.conversationId))?.title ?? null,
     );
 
     const deps: EventHandlerDeps = {
@@ -1837,23 +1841,25 @@ export async function runAgentLoopImpl(
         rlog,
       );
       if (toolResultRowId) {
-        bestEffortModeSessionTracking(
-          "remaining tool result finalization",
-          () => {
-            const toolResultRow = getMessageById(
+        try {
+          const toolResultRow = await getMessageById(
+            toolResultRowId,
+            ctx.conversationId,
+          );
+          if (toolResultRow) {
+            await ctx.modeSessions.trackPersistedRow(
+              reqId,
               toolResultRowId,
-              ctx.conversationId,
+              toolResultRow.createdAt,
+              { startsDisplayBoundary: false },
             );
-            if (toolResultRow) {
-              ctx.modeSessions.trackPersistedRow(
-                reqId,
-                toolResultRowId,
-                toolResultRow.createdAt,
-                { startsDisplayBoundary: false },
-              );
-            }
-          },
-        );
+          }
+        } catch (err) {
+          rlog.warn(
+            { err, toolResultRowId },
+            "Failed to read remaining tool result row (non-fatal)",
+          );
+        }
       }
     }
 
@@ -1886,12 +1892,10 @@ export async function runAgentLoopImpl(
           { metadata: yieldNoticeMetadata },
         );
         yieldNoticePersistedId = yieldRow.id;
-        bestEffortModeSessionTracking("budget yield notice persistence", () =>
-          ctx.modeSessions.trackPersistedRow(
-            reqId,
-            yieldRow.id,
-            yieldRow.createdAt,
-          ),
+        await ctx.modeSessions.trackPersistedRow(
+          reqId,
+          yieldRow.id,
+          yieldRow.createdAt,
         );
       } catch (err) {
         // Non-fatal — a DB hiccup must not escalate a budget-yield exit into
@@ -1982,7 +1986,7 @@ export async function runAgentLoopImpl(
         : "";
       if (isNoResponseOnlyText(tailText)) {
         try {
-          updateMessageMetadata(state.lastAssistantMessageId, {
+          await updateMessageMetadata(state.lastAssistantMessageId, {
             messageKind: NO_RESPONSE_MESSAGE_KIND,
           });
         } catch (err) {
@@ -2030,7 +2034,7 @@ export async function runAgentLoopImpl(
         state.lastAssistantMessageId
       ) {
         try {
-          deleteMessageById(state.lastAssistantMessageId);
+          await deleteMessageById(state.lastAssistantMessageId);
           deletedReservedAssistantMessage = true;
           state.lastAssistantMessageId = undefined;
           state.assistantRowAwaitingFinalization = false;
@@ -2094,12 +2098,10 @@ export async function runAgentLoopImpl(
         // (or a downstream handler) doesn't try to clean up an id that
         // already corresponds to a finalized row.
         state.lastAssistantMessageId = errorRow.id;
-        bestEffortModeSessionTracking("provider error notice persistence", () =>
-          ctx.modeSessions.trackPersistedRow(
-            reqId,
-            errorRow.id,
-            errorRow.createdAt,
-          ),
+        await ctx.modeSessions.trackPersistedRow(
+          reqId,
+          errorRow.id,
+          errorRow.createdAt,
         );
         state.assistantRowAwaitingFinalization = false;
         newMessages.push(errorAssistantMessage);
@@ -2201,7 +2203,7 @@ export async function runAgentLoopImpl(
     // card either way, so a card settled here would read as finished work
     // the model then resumes without a visible restart.
     if (!isPreemptedByNewMessage(abortController.signal.reason)) {
-      settleRunningTaskProgressSurfaces(ctx, rlog);
+      await settleRunningTaskProgressSurfaces(ctx, rlog);
     }
 
     // Fast-path: when the user cancelled, skip expensive post-loop work
@@ -2353,20 +2355,20 @@ export async function runAgentLoopImpl(
     if (yieldedForHandoff) {
       const nextRequestId = ctx.queue.snapshot()[0]?.requestId;
       if (nextRequestId) {
-        ctx.modeSessions.transferTurn(reqId, nextRequestId);
+        await ctx.modeSessions.transferTurn(reqId, nextRequestId);
       } else {
-        settleModeSessionTurn(ctx, reqId, {
+        await settleModeSessionTurn(ctx, reqId, {
           status: "completed",
           endReason: "handoff_settled",
         });
       }
     } else if (abortController.signal.aborted) {
-      settleModeSessionTurn(ctx, reqId, {
+      await settleModeSessionTurn(ctx, reqId, {
         status: "interrupted",
         endReason: "cancelled",
       });
     } else {
-      settleModeSessionTurn(ctx, reqId, {
+      await settleModeSessionTurn(ctx, reqId, {
         status: "completed",
         endReason: "turn_settled",
       });
@@ -2392,7 +2394,7 @@ export async function runAgentLoopImpl(
     clearConversationNotices(ctx.conversationId);
     // A turn that threw out of the loop is over too; see the happy path.
     if (!isPreemptedByNewMessage(abortController.signal.reason)) {
-      settleRunningTaskProgressSurfaces(ctx, rlog);
+      await settleRunningTaskProgressSurfaces(ctx, rlog);
     }
     const errorCtx = {
       phase: "agent_loop" as const,
@@ -2449,7 +2451,7 @@ export async function runAgentLoopImpl(
         "Failed to settle interrupted turn content before mode-session finalization",
       );
     }
-    settleModeSessionTurn(ctx, reqId, {
+    await settleModeSessionTurn(ctx, reqId, {
       status: "interrupted",
       endReason: isUserCancellation(err, errorCtx) ? "cancelled" : "error",
     });

@@ -433,7 +433,7 @@ async function prepareConversationForMessage(
   });
 
   const attachments = attachmentIds
-    ? resolveAttachmentsForPersist(attachmentIds)
+    ? await resolveAttachmentsForPersist(attachmentIds)
     : [];
 
   return { conversation, attachments };
@@ -496,7 +496,7 @@ export async function processMessage(
   const emitEvent = buildEventEmitter(options?.onEvent);
 
   const serverInterfaceCtx = conversation.getTurnInterfaceContext();
-  const slashContext = buildSlashContextForContent(content, {
+  const slashContext = await buildSlashContextForContent(content, {
     conversationId,
     messageCount: conversation.getMessages().length,
     inputTokens: conversation.usageStats.inputTokens,
@@ -596,7 +596,7 @@ export async function processMessage(
 
     if (serverTurnCtx || serverInterfaceCtx) {
       try {
-        const convForMeta = getConversation(conversationId);
+        const convForMeta = await getConversation(conversationId);
         if (convForMeta) {
           updateMetaFile(convForMeta);
         }

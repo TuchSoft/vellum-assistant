@@ -21,7 +21,7 @@ export function bestEffortModeSessionTracking<T>(
 }
 
 /** Retire a refused source while already accepted turn output keeps its owner. */
-export function claimModeSessionTurn(
+export async function claimModeSessionTurn(
   coordinator: Pick<
     ConversationModeSessionCoordinator,
     "claimTurn" | "retireSource"
@@ -29,26 +29,36 @@ export function claimModeSessionTurn(
   turnId: string,
   handle: ModeSessionSourceHandle,
   at: number,
-): ModeSession | undefined {
+): Promise<ModeSession | undefined> {
   let owner: ModeSession | undefined;
   try {
-    owner = coordinator.claimTurn(turnId, handle, at);
+    owner = await coordinator.claimTurn(turnId, handle, at);
   } catch (err) {
-    bestEffortModeSessionTracking("failed admission cleanup", () =>
-      coordinator.retireSource(handle, {
+    try {
+      await coordinator.retireSource(handle, {
         status: "interrupted",
         endReason: "tracking_failed",
-      }),
-    );
+      });
+    } catch (cleanupErr) {
+      log.warn(
+        { err: cleanupErr, operation: "failed admission cleanup" },
+        "Mode-session tracking failed",
+      );
+    }
     throw err;
   }
   if (!owner || owner.id !== handle.id) {
-    bestEffortModeSessionTracking("refused admission cleanup", () =>
-      coordinator.retireSource(handle, {
+    try {
+      await coordinator.retireSource(handle, {
         status: "interrupted",
         endReason: "tracking_refused",
-      }),
-    );
+      });
+    } catch (cleanupErr) {
+      log.warn(
+        { err: cleanupErr, operation: "refused admission cleanup" },
+        "Mode-session tracking failed",
+      );
+    }
   }
   return owner;
 }

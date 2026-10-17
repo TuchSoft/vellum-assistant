@@ -85,7 +85,6 @@ import type { SlackInboundMessageMetadata } from "./handlers/shared.js";
 import type { UserMessageAttachment } from "./message-protocol.js";
 import { actorAuthorProvenance } from "./message-provenance.js";
 import type { ConversationTransportMetadata } from "./message-types/conversations.js";
-import { bestEffortModeSessionTracking } from "./mode-session-tracking.js";
 import {
   assembleUserContentBlocks,
   offloadLinkPlan,
@@ -316,7 +315,7 @@ async function computeReferenceImageDimensions(
   attachmentId: string,
   mediaType: string,
 ): Promise<{ width: number; height: number } | null> {
-  const bytes = getAttachmentContent(attachmentId);
+  const bytes = await getAttachmentContent(attachmentId);
   if (!bytes) {
     return null;
   }
@@ -366,8 +365,8 @@ async function materializeUserAttachment(
   a: MessageAttachmentInput,
 ): Promise<MaterializeOutcome> {
   try {
-    if (a.id && attachmentExists(a.id)) {
-      const stored = scopeAttachmentToMessageConversation(
+    if (a.id && (await attachmentExists(a.id))) {
+      const stored = await scopeAttachmentToMessageConversation(
         conversationId,
         conversationCreatedAt,
         a.id,
@@ -1418,7 +1417,7 @@ export async function persistQueuedMessageBody(
     // message link (message_attachments) is written after addMessage below,
     // once the message id exists.
     const conversationCreatedAt =
-      getConversation(ctx.conversationId)?.createdAt ?? Date.now();
+      (await getConversation(ctx.conversationId))?.createdAt ?? Date.now();
     preparedAttachments = await prepareUserAttachmentReferences(
       ctx.conversationId,
       conversationCreatedAt,
@@ -1506,14 +1505,14 @@ export async function persistQueuedMessageBody(
 
     const activeSurfaceId =
       options.activeSurfaceId ?? ctx.currentActiveSurfaceId;
-    bestEffortModeSessionTracking("persist_user_message", () => {
-      ctx.modeSessions?.acceptTurn(
+    try {
+      await ctx.modeSessions?.acceptTurn(
         requestId,
         activeSurfaceId
           ? { kind: "surface", responseId: activeSurfaceId }
           : undefined,
       );
-      ctx.modeSessions?.trackPersistedRow(
+      await ctx.modeSessions?.trackPersistedRow(
         requestId,
         persistedUserMessage.id,
         persistedUserMessage.createdAt,
@@ -1522,7 +1521,12 @@ export async function persistQueuedMessageBody(
           publishMessagesChanged: options.publishModeSessionChanges ?? true,
         },
       );
-    });
+    } catch (err) {
+      log.warn(
+        { err, conversationId: ctx.conversationId },
+        "Mode-session tracking failed",
+      );
+    }
 
     if (turnCtx) {
       setConversationOriginChannelIfUnset(
@@ -1539,7 +1543,7 @@ export async function persistQueuedMessageBody(
 
     // Rewrite meta.json so the on-disk metadata reflects the origin channel
     if (turnCtx || turnIfCtx) {
-      const convForMeta = getConversation(ctx.conversationId);
+      const convForMeta = await getConversation(ctx.conversationId);
       if (convForMeta) {
         updateMetaFile(convForMeta);
       }
@@ -1565,13 +1569,13 @@ export async function persistQueuedMessageBody(
         continue;
       }
       try {
-        const scopedAttachmentId = linkAttachmentToMessage(
+        const scopedAttachmentId = await linkAttachmentToMessage(
           persistedUserMessage.id,
           p.link.attachmentId,
           p.position,
         );
         attachmentInputs[p.position].storedPath =
-          getFilePathForAttachment(scopedAttachmentId) ?? undefined;
+          (await getFilePathForAttachment(scopedAttachmentId)) ?? undefined;
       } catch (err) {
         const inline = await inlineBlockForAttachment(
           attachmentInputs[p.position],
@@ -1593,7 +1597,7 @@ export async function persistQueuedMessageBody(
       }
     }
     if (repairedBlocks) {
-      updateMessageContent(
+      await updateMessageContent(
         persistedUserMessage.id,
         JSON.stringify(
           assembleUserContentBlocks(
@@ -1609,13 +1613,14 @@ export async function persistQueuedMessageBody(
       preparedAttachments.reduce((max, p) => Math.max(max, p.position), -1) + 1;
     for (const attachmentId of portedAttachmentIds) {
       try {
-        const scopedId = linkAttachmentToMessage(
+        const scopedId = await linkAttachmentToMessage(
           persistedUserMessage.id,
           attachmentId,
           nextPortPosition,
         );
         nextPortPosition += 1;
-        const storedPath = getFilePathForAttachment(scopedId) ?? undefined;
+        const storedPath =
+          (await getFilePathForAttachment(scopedId)) ?? undefined;
         // Display-only offloads stay linked (GC + persisted workspace_ref)
         // but must not be named on the model-facing list.
         if (
@@ -1641,7 +1646,9 @@ export async function persistQueuedMessageBody(
     // an identical annotation block (prefix-cache parity).
     const attachmentStoredPaths = extractAttachmentStoredPaths(sentAttachments);
     if (attachmentStoredPaths) {
-      updateMessageMetadata(persistedUserMessage.id, { attachmentStoredPaths });
+      await updateMessageMetadata(persistedUserMessage.id, {
+        attachmentStoredPaths,
+      });
     }
 
     // This is the first user row after a handover, so it carries the note that
@@ -1655,7 +1662,7 @@ export async function persistQueuedMessageBody(
     const carriesInterruptNote = ctx.pendingInterruptNote === true;
     if (carriesInterruptNote) {
       ctx.pendingInterruptNote = false;
-      updateMessageMetadata(persistedUserMessage.id, {
+      await updateMessageMetadata(persistedUserMessage.id, {
         interruptedPriorTurn: true,
       });
     }
@@ -1690,7 +1697,7 @@ export async function persistQueuedMessageBody(
     pushedToHistory = true;
 
     // Sync the persisted user message (with attachments) to the disk view
-    const conv = getConversation(ctx.conversationId);
+    const conv = await getConversation(ctx.conversationId);
     if (conv) {
       syncMessageToDisk(
         ctx.conversationId,

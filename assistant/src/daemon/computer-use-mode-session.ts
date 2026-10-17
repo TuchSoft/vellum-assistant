@@ -34,14 +34,14 @@ export class ComputerUseModeSessionProducer {
     this.#isTrackingEnabled = isTrackingEnabled;
   }
 
-  recordAction(input: {
+  async recordAction(input: {
     turnId: string;
     source: ComputerUseSourceIdentity;
     at: number;
-  }): ModeSession | undefined {
+  }): Promise<ModeSession | undefined> {
     const existingOwner = this.#coordinator.getTurnOwner(input.turnId);
     if (existingOwner) {
-      this.#coordinator.recordActivity(input.turnId, input.at);
+      await this.#coordinator.recordActivity(input.turnId, input.at);
       return existingOwner;
     }
 
@@ -49,7 +49,7 @@ export class ComputerUseModeSessionProducer {
       return undefined;
     }
 
-    const handle = this.#coordinator.activateSource({
+    const handle = await this.#coordinator.activateSource({
       ...input.source,
       mode: "computer_use",
       sourceStartedAt: input.at,
@@ -57,7 +57,7 @@ export class ComputerUseModeSessionProducer {
     if (!handle) {
       return undefined;
     }
-    const owner = claimModeSessionTurn(
+    const owner = await claimModeSessionTurn(
       this.#coordinator,
       input.turnId,
       handle,
@@ -69,14 +69,14 @@ export class ComputerUseModeSessionProducer {
     return owner;
   }
 
-  endTask(input: {
+  async endTask(input: {
     turnId?: string;
     source: ComputerUseSourceIdentity;
     disposition?: {
       status: "completed" | "interrupted";
       endReason: string;
     };
-  }): boolean {
+  }): Promise<boolean> {
     const handle = this.#activeHandle;
     if (
       !handle ||
@@ -87,7 +87,7 @@ export class ComputerUseModeSessionProducer {
     }
 
     this.#activeHandle = undefined;
-    const retired = this.#coordinator.retireSource(
+    const retired = await this.#coordinator.retireSource(
       handle,
       input.disposition ?? {
         status: "completed",
@@ -98,7 +98,7 @@ export class ComputerUseModeSessionProducer {
       input.turnId &&
       this.#coordinator.getTurnOwner(input.turnId)?.id === handle.id
     ) {
-      this.#coordinator.beginDraining(input.turnId);
+      await this.#coordinator.beginDraining(input.turnId);
     }
     return retired;
   }

@@ -404,6 +404,10 @@ export function createToolExecutor(
     // a concurrent owner meta command (/status, /clean) that mutates the live
     // trustContext cannot elevate the in-flight turn to guardian.
     const turnTrust = ctx.getTurnOrRestingTrust() ?? FALLBACK_TURN_TRUST;
+    const channelPermissionChannelId =
+      turnTrust.sourceChannel && turnTrust.sourceChannel !== "vellum"
+        ? (await getBindingByConversation(ctx.conversationId))?.externalChatId
+        : undefined;
 
     const toolContext: ToolContext = {
       workingDir: ctx.workingDir,
@@ -434,10 +438,7 @@ export function createToolExecutor(
       // channel-scoped cell governs regardless of adapter. Internal turns
       // ("vellum" — the fallback and control-plane channel — or no source
       // channel at all) never have a binding, so they skip the lookup.
-      channelPermissionChannelId:
-        turnTrust.sourceChannel && turnTrust.sourceChannel !== "vellum"
-          ? getBindingByConversation(ctx.conversationId)?.externalChatId
-          : undefined,
+      channelPermissionChannelId,
       onOutput,
       signal: ctx.abortController?.signal,
       allowedToolNames: ctx.allowedToolNames,
@@ -970,19 +971,18 @@ export function createWireToolSurfaceRecorder(
       // Unknown before the first prompt build or for a verbatim override.
       delegateIndependentTasks: ctx.renderedDelegateIndependentTasks ?? null,
     };
-    try {
-      ctx.recordedToolSurfaceHash = recordConversationToolSurface(
-        ctx.conversationId,
-        surface,
-        ctx.recordedToolSurfaceHash,
-      );
-    } catch (err) {
+    const previousHash = ctx.recordedToolSurfaceHash;
+    ctx.recordedToolSurfaceHash = hashConversationToolSurface(surface);
+    void recordConversationToolSurface(
+      ctx.conversationId,
+      surface,
+      previousHash,
+    ).catch((err) => {
       log.warn(
         { err, conversationId: ctx.conversationId },
         "failed to record the conversation's wire tool surface; continuing",
       );
-      ctx.recordedToolSurfaceHash = hashConversationToolSurface(surface);
-    }
+    });
   };
 }
 

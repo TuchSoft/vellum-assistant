@@ -80,7 +80,7 @@ export async function switchConversation(conversationId: string): Promise<{
   conversationType: ReturnType<typeof normalizeConversationType>;
   inferenceProfile?: string;
 } | null> {
-  const conversation = getConversation(conversationId);
+  const conversation = await getConversation(conversationId);
   if (!conversation) {
     return null;
   }
@@ -143,14 +143,14 @@ export function cancelGeneration(conversationId: string): boolean {
 export async function undoLastMessage(
   conversationId: string,
 ): Promise<{ removedCount: number } | null> {
-  const resolvedId = resolveConversationId(conversationId);
+  const resolvedId = await resolveConversationId(conversationId);
   if (!resolvedId) {
     return null;
   }
   conversationId = resolvedId;
   const conversation = await getOrCreateConversation(conversationId);
   touchConversation(conversationId);
-  const removedCount = conversation.undo();
+  const removedCount = await conversation.undo();
   return { removedCount };
 }
 
@@ -180,7 +180,7 @@ export async function resolveMetaSlashCommand(
   conversationId: string,
   command: string,
 ): Promise<MetaSlashCommandResult | null> {
-  const resolvedId = resolveConversationId(conversationId);
+  const resolvedId = await resolveConversationId(conversationId);
   if (!resolvedId) {
     return null;
   }
@@ -211,7 +211,7 @@ export async function resolveMetaSlashCommand(
 
     const slashResult = await resolveSlash(
       command,
-      buildSlashContext(command, conversation),
+      await buildSlashContext(command, conversation),
     );
 
     if (slashResult.kind === "clean") {

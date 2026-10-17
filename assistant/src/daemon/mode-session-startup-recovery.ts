@@ -3,15 +3,14 @@ import { recoverActiveConversationModeSessions } from "../persistence/conversati
 import { setDbReady } from "./daemon-readiness.js";
 
 export type ModeSessionStartupRecoveryResult =
-  | { ok: true; interruptedCount: number }
-  | { ok: false; error: unknown };
+  { ok: true; interruptedCount: number } | { ok: false; error: unknown };
 
 /** Runs after migrations; auxiliary recovery failure disables tracking for this boot. */
-export function recoverModeSessionsBeforeDbReady(
-  recover: () => number = recoverActiveConversationModeSessions,
-): ModeSessionStartupRecoveryResult {
+export async function recoverModeSessionsBeforeDbReady(
+  recover: () => Promise<number> = recoverActiveConversationModeSessions,
+): Promise<ModeSessionStartupRecoveryResult> {
   try {
-    const interruptedCount = recover();
+    const interruptedCount = await recover();
     setModeSessionRecoveryHealthy(true);
     return { ok: true, interruptedCount };
   } catch (error) {

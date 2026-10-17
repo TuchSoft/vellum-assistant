@@ -44,11 +44,11 @@ export class BrowserModeSessionProducer {
     this.#isTrackingEnabled = isTrackingEnabled;
   }
 
-  beginOperation(input: {
+  async beginOperation(input: {
     turnId: string;
     lifecycle: BrowserOperationLifecycle;
     at: number;
-  }): BrowserOperationToken | undefined {
+  }): Promise<BrowserOperationToken | undefined> {
     if (input.lifecycle === "status") {
       return undefined;
     }
@@ -72,7 +72,7 @@ export class BrowserModeSessionProducer {
       if (!handle) {
         return undefined;
       }
-      const owner = claimModeSessionTurn(
+      const owner = await claimModeSessionTurn(
         this.#coordinator,
         input.turnId,
         handle,
@@ -93,7 +93,7 @@ export class BrowserModeSessionProducer {
       return undefined;
     }
 
-    const handle = this.#coordinator.activateSource({
+    const handle = await this.#coordinator.activateSource({
       sourceId: BROWSER_SOURCE_ID,
       generation: this.#generation,
       mode: "browser",
@@ -102,7 +102,7 @@ export class BrowserModeSessionProducer {
     if (!handle) {
       return undefined;
     }
-    const owner = claimModeSessionTurn(
+    const owner = await claimModeSessionTurn(
       this.#coordinator,
       input.turnId,
       handle,
@@ -122,7 +122,7 @@ export class BrowserModeSessionProducer {
     };
   }
 
-  finishOperation(
+  async finishOperation(
     token: BrowserOperationToken | undefined,
     outcome: {
       at: number;
@@ -130,7 +130,7 @@ export class BrowserModeSessionProducer {
       cancelled: boolean;
       terminalReason?: "browser_closed" | "browser_detached";
     },
-  ): boolean {
+  ): Promise<boolean> {
     if (!token) {
       return false;
     }
@@ -140,7 +140,7 @@ export class BrowserModeSessionProducer {
       if (!handle || !this.#isCurrent(handle)) {
         return false;
       }
-      return this.#retire(handle, {
+      return await this.#retire(handle, {
         status: "interrupted",
         endReason: "browser_operation_cancelled",
       });
@@ -151,7 +151,7 @@ export class BrowserModeSessionProducer {
         return false;
       }
       if (!outcome.isError) {
-        return this.#retire(handle, {
+        return await this.#retire(handle, {
           status: "completed",
           endReason: outcome.terminalReason ?? "browser_closed",
         });
@@ -171,12 +171,12 @@ export class BrowserModeSessionProducer {
     );
   }
 
-  #retire(
+  async #retire(
     handle: ModeSessionSourceHandle,
     disposition: ModeSessionTerminalDisposition,
-  ): boolean {
+  ): Promise<boolean> {
     try {
-      return this.#coordinator.retireSource(handle, disposition);
+      return await this.#coordinator.retireSource(handle, disposition);
     } finally {
       if (this.#isCurrent(handle)) {
         this.#activeHandle = undefined;

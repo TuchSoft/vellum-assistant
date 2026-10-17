@@ -50,9 +50,9 @@ function rememberOrder(order: string[], surfaceId: string): void {
  * views reuse {@link isRowVisibleToUntrustedActor} and do not add
  * live-only cards that never appeared in a visible persisted row.
  */
-export function listConversationSurfaceSnapshots(
+export async function listConversationSurfaceSnapshots(
   conversationId: string,
-): ConversationSurfaceSnapshot[] {
+): Promise<ConversationSurfaceSnapshot[]> {
   const conversation = findConversationOrSubagent(conversationId);
   if (!conversation) {
     return [];
@@ -67,7 +67,7 @@ export function listConversationSurfaceSnapshots(
   const order: string[] = [];
   const records = new Map<string, ConversationSurfaceSnapshot>();
 
-  const rows = getMessages(conversationId);
+  const rows = await getMessages(conversationId);
   for (const row of rows) {
     if (filterByProvenance && !isRowVisibleToUntrustedActor(row.metadata)) {
       continue;

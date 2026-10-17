@@ -14,8 +14,7 @@
 
 import { and, eq } from "drizzle-orm";
 
-import { getDb } from "../persistence/db-connection.js";
-import { notificationEvents } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { getLogger } from "../util/logger.js";
 import { composeFallbackCopy } from "./copy-composer.js";
 import type { NotificationSignal } from "./signal.js";
@@ -71,7 +70,7 @@ export async function runDeterministicChecks(
   }
 
   // Check 3: Dedupe
-  const dedupeCheck = checkDedupe(
+  const dedupeCheck = await checkDedupe(
     signal,
     decision,
     context.dedupeWindowMs ?? DEFAULT_DEDUPE_WINDOW_MS,
@@ -200,27 +199,27 @@ function checkChannelAvailability(
  * Check if a signal with the same dedupeKey was already processed
  * within the dedupe window. Uses the events-store table directly.
  */
-function checkDedupe(
+async function checkDedupe(
   signal: NotificationSignal,
   decision: NotificationDecision,
   windowMs: number,
-): CheckResult {
+): Promise<CheckResult> {
   if (!decision.dedupeKey) {
     return { passed: true };
   }
 
   try {
-    const db = getDb();
+    const db = requireMainDb();
+    const events = db.schema.notificationEvents;
     const cutoff = Date.now() - windowMs;
 
-    const existing = db
+    const existing = await db.orm
       .select({
-        id: notificationEvents.id,
-        createdAt: notificationEvents.createdAt,
+        id: events.id,
+        createdAt: events.createdAt,
       })
-      .from(notificationEvents)
-      .where(and(eq(notificationEvents.dedupeKey, decision.dedupeKey)))
-      .all();
+      .from(events)
+      .where(and(eq(events.dedupeKey, decision.dedupeKey)));
 
     // Filter by created_at > cutoff (the events store already checked
     // dedupe on insert, but this catches cases where the engine is

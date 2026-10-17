@@ -13,13 +13,7 @@
 import { and, desc, eq, isNotNull } from "drizzle-orm";
 
 import { listPendingRequestsByScopeOrEmpty } from "../channels/gateway-guardian-requests.js";
-import { getDb } from "../persistence/db-connection.js";
-import {
-  conversations,
-  notificationDecisions,
-  notificationDeliveries,
-  notificationEvents,
-} from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { getLogger } from "../util/logger.js";
 import type { NotificationChannel } from "./types.js";
 
@@ -105,45 +99,39 @@ async function buildCandidatesForChannel(
   channel: NotificationChannel,
   cutoffMs: number,
 ): Promise<ConversationCandidate[]> {
-  const db = getDb();
+  const db = requireMainDb();
+  const deliveries = db.schema.notificationDeliveries;
+  const decisions = db.schema.notificationDecisions;
+  const events = db.schema.notificationEvents;
+  const conversationRows = db.schema.conversations;
 
   // Find recent notification deliveries for this channel that have a
   // conversationId and were successfully sent.
-  const rows = db
+  const rows = await db.orm
     .select({
-      conversationId: notificationDeliveries.conversationId,
-      channel: notificationDeliveries.channel,
-      deliverySentAt: notificationDeliveries.sentAt,
-      sourceEventName: notificationEvents.sourceEventName,
-      convTitle: conversations.title,
-      convUpdatedAt: conversations.updatedAt,
+      conversationId: deliveries.conversationId,
+      channel: deliveries.channel,
+      deliverySentAt: deliveries.sentAt,
+      sourceEventName: events.sourceEventName,
+      convTitle: conversationRows.title,
+      convUpdatedAt: conversationRows.updatedAt,
     })
-    .from(notificationDeliveries)
+    .from(deliveries)
+    .innerJoin(decisions, eq(deliveries.notificationDecisionId, decisions.id))
+    .innerJoin(events, eq(decisions.notificationEventId, events.id))
     .innerJoin(
-      notificationDecisions,
-      eq(
-        notificationDeliveries.notificationDecisionId,
-        notificationDecisions.id,
-      ),
-    )
-    .innerJoin(
-      notificationEvents,
-      eq(notificationDecisions.notificationEventId, notificationEvents.id),
-    )
-    .innerJoin(
-      conversations,
-      eq(notificationDeliveries.conversationId, conversations.id),
+      conversationRows,
+      eq(deliveries.conversationId, conversationRows.id),
     )
     .where(
       and(
-        eq(notificationDeliveries.channel, channel),
-        eq(notificationDeliveries.status, "sent"),
-        isNotNull(notificationDeliveries.conversationId),
+        eq(deliveries.channel, channel),
+        eq(deliveries.status, "sent"),
+        isNotNull(deliveries.conversationId),
       ),
     )
-    .orderBy(desc(notificationDeliveries.sentAt))
-    .limit(MAX_CANDIDATES_PER_CHANNEL * 3) // over-fetch to allow deduplication
-    .all();
+    .orderBy(desc(deliveries.sentAt))
+    .limit(MAX_CANDIDATES_PER_CHANNEL * 3); // over-fetch to allow deduplication
 
   // Deduplicate by conversationId (keep the most recent delivery per conversation)
   const seen = new Set<string>();

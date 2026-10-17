@@ -9,8 +9,7 @@
 
 import { desc, eq } from "drizzle-orm";
 
-import { getDb } from "../persistence/db-connection.js";
-import { notificationDecisions } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 
 export interface NotificationDecisionRow {
   id: string;
@@ -38,10 +37,11 @@ export interface CreateDecisionParams {
 }
 
 /** Insert a new decision record. */
-export function createDecision(
+export async function createDecision(
   params: CreateDecisionParams,
-): NotificationDecisionRow {
-  const db = getDb();
+): Promise<NotificationDecisionRow> {
+  const db = requireMainDb();
+  const decisions = db.schema.notificationDecisions;
   const now = Date.now();
 
   const row = {
@@ -59,7 +59,7 @@ export function createDecision(
     createdAt: now,
   };
 
-  db.insert(notificationDecisions).values(row).run();
+  await db.orm.insert(decisions).values(row);
 
   return {
     ...row,
@@ -75,8 +75,12 @@ export interface UpdateDecisionParams {
 }
 
 /** Update an existing decision row (e.g. after routing intent enforcement). */
-export function updateDecision(id: string, params: UpdateDecisionParams): void {
-  const db = getDb();
+export async function updateDecision(
+  id: string,
+  params: UpdateDecisionParams,
+): Promise<void> {
+  const db = requireMainDb();
+  const decisions = db.schema.notificationDecisions;
   const updates: Record<string, unknown> = {};
   if (params.selectedChannels !== undefined) {
     updates.selectedChannels = JSON.stringify(params.selectedChannels);
@@ -91,10 +95,7 @@ export function updateDecision(id: string, params: UpdateDecisionParams): void {
     return;
   }
 
-  db.update(notificationDecisions)
-    .set(updates)
-    .where(eq(notificationDecisions.id, id))
-    .run();
+  await db.orm.update(decisions).set(updates).where(eq(decisions.id, id));
 }
 
 /**
@@ -103,16 +104,17 @@ export function updateDecision(id: string, params: UpdateDecisionParams): void {
  * decision per event today, but ordering by createdAt DESC keeps this
  * stable if that ever changes (e.g. re-decisions on retry).
  */
-export function findLatestDecisionByEventId(
+export async function findLatestDecisionByEventId(
   eventId: string,
-): NotificationDecisionRow | undefined {
-  const db = getDb();
-  const row = db
+): Promise<NotificationDecisionRow | undefined> {
+  const db = requireMainDb();
+  const decisions = db.schema.notificationDecisions;
+  const [row] = await db.orm
     .select()
-    .from(notificationDecisions)
-    .where(eq(notificationDecisions.notificationEventId, eventId))
-    .orderBy(desc(notificationDecisions.createdAt))
-    .get();
+    .from(decisions)
+    .where(eq(decisions.notificationEventId, eventId))
+    .orderBy(desc(decisions.createdAt))
+    .limit(1);
   if (!row) {
     return undefined;
   }

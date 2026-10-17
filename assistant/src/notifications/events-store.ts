@@ -8,12 +8,8 @@
 
 import { and, desc, eq, gte, inArray, or } from "drizzle-orm";
 
-import { getDb } from "../persistence/db-connection.js";
-import {
-  notificationDecisions,
-  notificationDeliveries,
-  notificationEvents,
-} from "../persistence/schema/index.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import type { AttentionHints } from "./signal.js";
 
 export interface NotificationEventRow {
@@ -29,7 +25,7 @@ export interface NotificationEventRow {
 }
 
 function rowToEvent(
-  row: typeof notificationEvents.$inferSelect,
+  row: SchemaTables["notificationEvents"]["$inferSelect"],
 ): NotificationEventRow {
   return {
     id: row.id,
@@ -55,10 +51,11 @@ export interface CreateEventParams {
 }
 
 /** Create a new notification event. Returns null if a duplicate dedupe_key exists. */
-export function createEvent(
+export async function createEvent(
   params: CreateEventParams,
-): NotificationEventRow | null {
-  const db = getDb();
+): Promise<NotificationEventRow | null> {
+  const db = requireMainDb();
+  const events = db.schema.notificationEvents;
   const now = Date.now();
 
   // Normalize empty strings to null so the falsy check below and the DB
@@ -68,11 +65,11 @@ export function createEvent(
 
   // If there's a dedupe key, check for duplicates first
   if (normalizedDedupeKey) {
-    const existing = db
+    const [existing] = await db.orm
       .select()
-      .from(notificationEvents)
-      .where(and(eq(notificationEvents.dedupeKey, normalizedDedupeKey)))
-      .get();
+      .from(events)
+      .where(and(eq(events.dedupeKey, normalizedDedupeKey)))
+      .limit(1);
     if (existing) {
       return null;
     }
@@ -90,7 +87,7 @@ export function createEvent(
     updatedAt: now,
   };
 
-  db.insert(notificationEvents).values(row).run();
+  await db.orm.insert(events).values(row);
 
   return row;
 }
@@ -101,15 +98,16 @@ export function createEvent(
  * claim so a later event may take it while this row stays for the audit
  * trail.
  */
-export function setEventDedupeKey(
+export async function setEventDedupeKey(
   eventId: string,
   dedupeKey: string | null,
-): void {
-  const db = getDb();
-  db.update(notificationEvents)
+): Promise<void> {
+  const db = requireMainDb();
+  const events = db.schema.notificationEvents;
+  await db.orm
+    .update(events)
     .set({ dedupeKey, updatedAt: Date.now() })
-    .where(eq(notificationEvents.id, eventId))
-    .run();
+    .where(eq(events.id, eventId));
 }
 
 export interface ListEventsFilters {
@@ -118,27 +116,27 @@ export interface ListEventsFilters {
 }
 
 /** List notification events with optional filters. */
-export function listEvents(
+export async function listEvents(
   filters?: ListEventsFilters,
-): NotificationEventRow[] {
-  const db = getDb();
+): Promise<NotificationEventRow[]> {
+  const db = requireMainDb();
+  const events = db.schema.notificationEvents;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const conditions: any[] = [];
 
   if (filters?.sourceEventName) {
-    conditions.push(
-      eq(notificationEvents.sourceEventName, filters.sourceEventName),
-    );
+    conditions.push(eq(events.sourceEventName, filters.sourceEventName));
   }
 
   const limit = filters?.limit ?? 50;
 
-  const query = db.select().from(notificationEvents);
+  const query = db.orm.select().from(events);
 
-  const rows = (conditions.length > 0 ? query.where(and(...conditions)) : query)
-    .orderBy(desc(notificationEvents.createdAt))
-    .limit(limit)
-    .all();
+  const rows = await (
+    conditions.length > 0 ? query.where(and(...conditions)) : query
+  )
+    .orderBy(desc(events.createdAt))
+    .limit(limit);
 
   return rows.map(rowToEvent);
 }
@@ -171,40 +169,33 @@ export function listEvents(
  * so an unbounded probe would see last week's notification and silence every
  * run after the first.
  */
-export function hasNotifiedSourceContextSince(
+export async function hasNotifiedSourceContextSince(
   sourceContextId: string,
   sinceMs: number,
   sourceEventNames?: readonly string[],
-): boolean {
-  const db = getDb();
-  const row = db
-    .select({ id: notificationEvents.id })
-    .from(notificationEvents)
-    .innerJoin(
-      notificationDecisions,
-      eq(notificationDecisions.notificationEventId, notificationEvents.id),
-    )
-    .leftJoin(
-      notificationDeliveries,
-      eq(
-        notificationDeliveries.notificationDecisionId,
-        notificationDecisions.id,
-      ),
-    )
+): Promise<boolean> {
+  const db = requireMainDb();
+  const events = db.schema.notificationEvents;
+  const decisions = db.schema.notificationDecisions;
+  const deliveries = db.schema.notificationDeliveries;
+  const [row] = await db.orm
+    .select({ id: events.id })
+    .from(events)
+    .innerJoin(decisions, eq(decisions.notificationEventId, events.id))
+    .leftJoin(deliveries, eq(deliveries.notificationDecisionId, decisions.id))
     .where(
       and(
-        eq(notificationEvents.sourceContextId, sourceContextId),
-        gte(notificationEvents.createdAt, sinceMs),
+        eq(events.sourceContextId, sourceContextId),
+        gte(events.createdAt, sinceMs),
         sourceEventNames
-          ? inArray(notificationEvents.sourceEventName, [...sourceEventNames])
+          ? inArray(events.sourceEventName, [...sourceEventNames])
           : undefined,
         or(
-          eq(notificationDecisions.shouldNotify, 0),
-          inArray(notificationDeliveries.status, ["pending", "sent"]),
+          eq(decisions.shouldNotify, 0),
+          inArray(deliveries.status, ["pending", "sent"]),
         ),
       ),
     )
-    .limit(1)
-    .get();
+    .limit(1);
   return row !== undefined;
 }

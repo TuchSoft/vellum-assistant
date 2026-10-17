@@ -8,9 +8,8 @@
 
 import { and, eq } from "drizzle-orm";
 
-import { getDb } from "../persistence/db-connection.js";
-import { rawChanges } from "../persistence/raw-query.js";
-import { notificationDeliveries } from "../persistence/schema/index.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import type {
   NotificationChannel,
   NotificationDeliveryStatus,
@@ -44,7 +43,7 @@ export interface NotificationDeliveryRow {
 }
 
 function rowToDelivery(
-  row: typeof notificationDeliveries.$inferSelect,
+  row: SchemaTables["notificationDeliveries"]["$inferSelect"],
 ): NotificationDeliveryRow {
   return {
     id: row.id,
@@ -94,10 +93,11 @@ export interface CreateDeliveryParams {
 }
 
 /** Create a new delivery audit record. */
-export function createDelivery(
+export async function createDelivery(
   params: CreateDeliveryParams,
-): NotificationDeliveryRow {
-  const db = getDb();
+): Promise<NotificationDeliveryRow> {
+  const db = requireMainDb();
+  const deliveries = db.schema.notificationDeliveries;
   const now = Date.now();
 
   const row = {
@@ -131,19 +131,20 @@ export function createDelivery(
     updatedAt: now,
   };
 
-  db.insert(notificationDeliveries).values(row).run();
+  await db.orm.insert(deliveries).values(row);
 
   return row;
 }
 
 /** Update the status of an existing delivery record. */
-export function updateDeliveryStatus(
+export async function updateDeliveryStatus(
   id: string,
   status: NotificationDeliveryStatus,
   error?: { code?: string; message?: string },
   patch?: { messageId?: string; canonicalMessageId?: string },
-): boolean {
-  const db = getDb();
+): Promise<boolean> {
+  const db = requireMainDb();
+  const deliveries = db.schema.notificationDeliveries;
   const now = Date.now();
 
   const updates: Record<string, unknown> = { status, updatedAt: now };
@@ -163,12 +164,13 @@ export function updateDeliveryStatus(
     updates.canonicalMessageId = patch.canonicalMessageId;
   }
 
-  db.update(notificationDeliveries)
+  const updated = await db.orm
+    .update(deliveries)
     .set(updates)
-    .where(eq(notificationDeliveries.id, id))
-    .run();
+    .where(eq(deliveries.id, id))
+    .returning({ id: deliveries.id });
 
-  return rawChanges() > 0;
+  return updated.length > 0;
 }
 
 /**
@@ -177,10 +179,12 @@ export function updateDeliveryStatus(
  * Used by the edit pipeline so the delivery audit reflects the latest
  * title/body shown to the user, not just the original send.
  */
-export function updateDeliveryRenderedCopy(
+export async function updateDeliveryRenderedCopy(
   id: string,
   patch: { renderedTitle?: string; renderedBody?: string },
-): boolean {
+): Promise<boolean> {
+  const db = requireMainDb();
+  const deliveries = db.schema.notificationDeliveries;
   const updates: Record<string, unknown> = { updatedAt: Date.now() };
   if (patch.renderedTitle !== undefined) {
     updates.renderedTitle = patch.renderedTitle;
@@ -192,43 +196,44 @@ export function updateDeliveryRenderedCopy(
     return false;
   }
 
-  getDb()
-    .update(notificationDeliveries)
+  const updated = await db.orm
+    .update(deliveries)
     .set(updates)
-    .where(eq(notificationDeliveries.id, id))
-    .run();
+    .where(eq(deliveries.id, id))
+    .returning({ id: deliveries.id });
 
-  return rawChanges() > 0;
+  return updated.length > 0;
 }
 
 /** Check whether a delivery already exists for a given decision+channel pair. */
-export function findDeliveryByDecisionAndChannel(
+export async function findDeliveryByDecisionAndChannel(
   decisionId: string,
   channel: NotificationChannel,
-): NotificationDeliveryRow | undefined {
-  const db = getDb();
-  const row = db
+): Promise<NotificationDeliveryRow | undefined> {
+  const db = requireMainDb();
+  const deliveries = db.schema.notificationDeliveries;
+  const [row] = await db.orm
     .select()
-    .from(notificationDeliveries)
+    .from(deliveries)
     .where(
       and(
-        eq(notificationDeliveries.notificationDecisionId, decisionId),
-        eq(notificationDeliveries.channel, channel),
+        eq(deliveries.notificationDecisionId, decisionId),
+        eq(deliveries.channel, channel),
       ),
     )
-    .get();
+    .limit(1);
   return row ? rowToDelivery(row) : undefined;
 }
 
 /** Return every delivery row for a given decision. */
-export function findDeliveriesByDecisionId(
+export async function findDeliveriesByDecisionId(
   decisionId: string,
-): NotificationDeliveryRow[] {
-  const db = getDb();
-  const rows = db
+): Promise<NotificationDeliveryRow[]> {
+  const db = requireMainDb();
+  const deliveries = db.schema.notificationDeliveries;
+  const rows = await db.orm
     .select()
-    .from(notificationDeliveries)
-    .where(eq(notificationDeliveries.notificationDecisionId, decisionId))
-    .all();
+    .from(deliveries)
+    .where(eq(deliveries.notificationDecisionId, decisionId));
   return rows.map(rowToDelivery);
 }

@@ -34,8 +34,7 @@ import { ContactsIdentitySnapshotIpcResponseSchema } from "@vellumai/gateway-cli
 
 import { getDbMigrationReadiness } from "../daemon/daemon-readiness.js";
 import { ipcCallPersistent } from "../ipc/gateway-client.js";
-import { getDb } from "../persistence/db-connection.js";
-import { contactChannels, contacts } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { getLogger } from "../util/logger.js";
 import { upsertContact } from "./contact-store.js";
 import { upsertContactChannel } from "./contacts-write.js";
@@ -108,27 +107,27 @@ export async function runMirrorReconcile(): Promise<void> {
     const result = await ipcCallPersistent("contacts_identity_snapshot", {});
     const snapshot = ContactsIdentitySnapshotIpcResponseSchema.parse(result);
 
-    const db = getDb();
+    const db = requireMainDb();
+    const contactsTable = db.schema.contacts;
+    const channelsTable = db.schema.contactChannels;
     const localContactIds = new Set(
-      db
-        .select({ id: contacts.id })
-        .from(contacts)
-        .all()
-        .map((r) => r.id),
+      (await db.orm.select({ id: contactsTable.id }).from(contactsTable)).map(
+        (r) => r.id,
+      ),
     );
     const localByTypeAddress = new Map(
-      db
-        .select({
-          id: contactChannels.id,
-          contactId: contactChannels.contactId,
-          type: contactChannels.type,
-          address: contactChannels.address,
-          externalChatId: contactChannels.externalChatId,
-          isPrimary: contactChannels.isPrimary,
-        })
-        .from(contactChannels)
-        .all()
-        .map((row) => [channelKey(row.type, row.address), row]),
+      (
+        await db.orm
+          .select({
+            id: channelsTable.id,
+            contactId: channelsTable.contactId,
+            type: channelsTable.type,
+            address: channelsTable.address,
+            externalChatId: channelsTable.externalChatId,
+            isPrimary: channelsTable.isPrimary,
+          })
+          .from(channelsTable)
+      ).map((row) => [channelKey(row.type, row.address), row]),
     );
 
     let healed = 0;
@@ -176,7 +175,7 @@ export async function runMirrorReconcile(): Promise<void> {
         // The identity-mirror primitive adopts the gateway ids on create,
         // reassigns a divergent owner (the gateway owns channel ownership),
         // and preserves an existing contact's curated name and record fields.
-        upsertContactChannel({
+        await upsertContactChannel({
           sourceChannel: channel.type,
           externalUserId: channel.address,
           externalChatId: channel.externalChatId ?? undefined,

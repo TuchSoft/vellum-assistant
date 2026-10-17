@@ -1,7 +1,8 @@
-import { getDb } from "../persistence/db-connection.js";
+import { eq } from "drizzle-orm";
+
+import { requireMainDb } from "../persistence/db-facade.js";
 import { catalogProviderForProfile } from "../providers/connection-resolution.js";
 import { ROUTING_IDENTITY_PROVIDERS } from "../providers/inference/auth.js";
-import { getConnection } from "../providers/inference/connections.js";
 import {
   catalogMaxOutputTokens,
   getCatalogProviderForModel,
@@ -37,10 +38,10 @@ import {
  * (bodies owned by the code catalog) pass through untouched. Idempotent,
  * pure, and the result never aliases `dflt`'s nested objects.
  */
-export function completeCustomProfile(
+export async function completeCustomProfile(
   dflt: LLMConfigBase,
   profile: ProfileEntry,
-): ProfileEntry {
+): Promise<ProfileEntry> {
   if (profile.mix != null || profile.source === "managed") {
     return profile;
   }
@@ -159,7 +160,9 @@ export function completeCustomProfile(
       // Folding to the entry name is only safe against a verified row; a
       // dangling or kind-disagreeing binding stays in the legacy field,
       // where the collapse migration's recovery can judge it.
-      if (bindingRowKind(dflt.provider_connection) === completed.provider) {
+      if (
+        (await bindingRowKind(dflt.provider_connection)) === completed.provider
+      ) {
         completed.provider = dflt.provider_connection;
       } else {
         completed.provider_connection = dflt.provider_connection;
@@ -197,9 +200,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * The provider kind stored on a connection row, or null when the row is
  * missing or the DB is unavailable (both mean "unverifiable" to callers).
  */
-function bindingRowKind(name: string): string | null {
+async function bindingRowKind(name: string): Promise<string | null> {
   try {
-    return getConnection(getDb(), name)?.provider ?? null;
+    const db = requireMainDb();
+    const connections = db.schema.providerConnections;
+    const [row] = await db.orm
+      .select({ provider: connections.provider })
+      .from(connections)
+      .where(eq(connections.name, name))
+      .limit(1);
+    return row?.provider ?? null;
   } catch {
     return null;
   }

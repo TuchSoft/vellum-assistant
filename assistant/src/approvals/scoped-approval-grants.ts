@@ -14,9 +14,8 @@
 import { and, eq, sql } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
-import { getDb } from "../persistence/db-connection.js";
-import { rawChanges } from "../persistence/raw-query.js";
-import { scopedApprovalGrants } from "../persistence/schema/index.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { getLogger } from "../util/logger.js";
 
 const log = getLogger("scoped-approval-grants");
@@ -61,7 +60,7 @@ const MAX_CAS_RETRIES = 3;
 // ---------------------------------------------------------------------------
 
 function rowToGrant(
-  row: typeof scopedApprovalGrants.$inferSelect,
+  row: SchemaTables["scopedApprovalGrants"]["$inferSelect"],
 ): ScopedApprovalGrant {
   return {
     id: row.id,
@@ -104,10 +103,11 @@ export interface CreateScopedApprovalGrantParams {
   expiresAt: number;
 }
 
-function createScopedApprovalGrant(
+async function createScopedApprovalGrant(
   params: CreateScopedApprovalGrantParams,
-): ScopedApprovalGrant {
-  const db = getDb();
+): Promise<ScopedApprovalGrant> {
+  const db = requireMainDb();
+  const grants = db.schema.scopedApprovalGrants;
   const now = Date.now();
   const id = uuid();
 
@@ -132,7 +132,7 @@ function createScopedApprovalGrant(
     updatedAt: now,
   };
 
-  db.insert(scopedApprovalGrants).values(row).run();
+  await db.orm.insert(grants).values(row);
 
   log.info(
     {
@@ -167,30 +167,30 @@ export interface ConsumeByRequestIdResult {
  * given `requestId`.  Uses compare-and-swap on the `status` column so
  * concurrent consumers race safely — at most one wins.
  */
-function consumeScopedApprovalGrantByRequestId(
+async function consumeScopedApprovalGrantByRequestId(
   requestId: string,
   consumingRequestId: string,
   now?: number,
-): ConsumeByRequestIdResult {
-  const db = getDb();
+): Promise<ConsumeByRequestIdResult> {
+  const db = requireMainDb();
+  const grants = db.schema.scopedApprovalGrants;
   const currentTime = now ?? Date.now();
 
   // Two-step select-then-update with LIMIT 1 to consume exactly one grant
   // even if duplicate rows exist (the index on request_id is non-unique).
   for (let attempt = 0; attempt <= MAX_CAS_RETRIES; attempt++) {
-    const candidate = db
-      .select({ id: scopedApprovalGrants.id })
-      .from(scopedApprovalGrants)
+    const [candidate] = await db.orm
+      .select({ id: grants.id })
+      .from(grants)
       .where(
         and(
-          eq(scopedApprovalGrants.requestId, requestId),
-          eq(scopedApprovalGrants.scopeMode, "request_id"),
-          eq(scopedApprovalGrants.status, "active"),
-          sql`${scopedApprovalGrants.expiresAt} > ${currentTime}`,
+          eq(grants.requestId, requestId),
+          eq(grants.scopeMode, "request_id"),
+          eq(grants.status, "active"),
+          sql`${grants.expiresAt} > ${currentTime}`,
         ),
       )
-      .limit(1)
-      .get();
+      .limit(1);
 
     if (!candidate) {
       // Debug, not info: the inline grant wait and the voice retry loop call
@@ -209,32 +209,28 @@ function consumeScopedApprovalGrantByRequestId(
       return { ok: false, grant: null };
     }
 
-    db.update(scopedApprovalGrants)
+    const updated = await db.orm
+      .update(grants)
       .set({
         status: "consumed",
         consumedAt: currentTime,
         consumedByRequestId: consumingRequestId,
         updatedAt: currentTime,
       })
-      .where(
-        and(
-          eq(scopedApprovalGrants.id, candidate.id),
-          eq(scopedApprovalGrants.status, "active"),
-        ),
-      )
-      .run();
+      .where(and(eq(grants.id, candidate.id), eq(grants.status, "active")))
+      .returning({ id: grants.id });
 
-    if (rawChanges() === 0) {
+    if (updated.length === 0) {
       // CAS failed — another consumer raced and won this candidate; retry with next match
       continue;
     }
 
     // Fetch the consumed grant to return to the caller
-    const row = db
+    const [row] = await db.orm
       .select()
-      .from(scopedApprovalGrants)
-      .where(eq(scopedApprovalGrants.id, candidate.id))
-      .get();
+      .from(grants)
+      .where(eq(grants.id, candidate.id))
+      .limit(1);
 
     const grant = row ? rowToGrant(row) : null;
     log.info(
@@ -298,73 +294,71 @@ export interface ConsumeByToolSignatureResult {
  * times before giving up. This prevents false denials when multiple matching
  * grants exist but a concurrent consumer steals the first pick.
  */
-function consumeScopedApprovalGrantByToolSignature(
+async function consumeScopedApprovalGrantByToolSignature(
   params: ConsumeByToolSignatureParams,
-): ConsumeByToolSignatureResult {
-  const db = getDb();
+): Promise<ConsumeByToolSignatureResult> {
+  const db = requireMainDb();
+  const grants = db.schema.scopedApprovalGrants;
   const currentTime = params.now ?? Date.now();
 
   const conditions = [
-    eq(scopedApprovalGrants.toolName, params.toolName),
-    eq(scopedApprovalGrants.inputDigest, params.inputDigest),
-    eq(scopedApprovalGrants.scopeMode, "tool_signature"),
-    eq(scopedApprovalGrants.status, "active"),
-    sql`${scopedApprovalGrants.expiresAt} > ${currentTime}`,
+    eq(grants.toolName, params.toolName),
+    eq(grants.inputDigest, params.inputDigest),
+    eq(grants.scopeMode, "tool_signature"),
+    eq(grants.status, "active"),
+    sql`${grants.expiresAt} > ${currentTime}`,
   ];
 
   // Context constraints: grant field must be NULL (any) or match exactly
   if (params.executionChannel !== undefined) {
     conditions.push(
-      sql`(${scopedApprovalGrants.executionChannel} IS NULL OR ${scopedApprovalGrants.executionChannel} = ${params.executionChannel})`,
+      sql`(${grants.executionChannel} IS NULL OR ${grants.executionChannel} = ${params.executionChannel})`,
     );
   } else {
     // If caller provides no execution channel, only match grants with NULL (any)
-    conditions.push(sql`${scopedApprovalGrants.executionChannel} IS NULL`);
+    conditions.push(sql`${grants.executionChannel} IS NULL`);
   }
 
   if (params.conversationId !== undefined) {
     conditions.push(
-      sql`(${scopedApprovalGrants.conversationId} IS NULL OR ${scopedApprovalGrants.conversationId} = ${params.conversationId})`,
+      sql`(${grants.conversationId} IS NULL OR ${grants.conversationId} = ${params.conversationId})`,
     );
   } else {
-    conditions.push(sql`${scopedApprovalGrants.conversationId} IS NULL`);
+    conditions.push(sql`${grants.conversationId} IS NULL`);
   }
 
   if (params.callSessionId !== undefined) {
     conditions.push(
-      sql`(${scopedApprovalGrants.callSessionId} IS NULL OR ${scopedApprovalGrants.callSessionId} = ${params.callSessionId})`,
+      sql`(${grants.callSessionId} IS NULL OR ${grants.callSessionId} = ${params.callSessionId})`,
     );
   } else {
-    conditions.push(sql`${scopedApprovalGrants.callSessionId} IS NULL`);
+    conditions.push(sql`${grants.callSessionId} IS NULL`);
   }
 
   if (params.requesterExternalUserId !== undefined) {
     conditions.push(
-      sql`(${scopedApprovalGrants.requesterExternalUserId} IS NULL OR ${scopedApprovalGrants.requesterExternalUserId} = ${params.requesterExternalUserId})`,
+      sql`(${grants.requesterExternalUserId} IS NULL OR ${grants.requesterExternalUserId} = ${params.requesterExternalUserId})`,
     );
   } else {
-    conditions.push(
-      sql`${scopedApprovalGrants.requesterExternalUserId} IS NULL`,
-    );
+    conditions.push(sql`${grants.requesterExternalUserId} IS NULL`);
   }
 
-  const specificityOrder = sql`(CASE WHEN ${scopedApprovalGrants.executionChannel} IS NOT NULL THEN 1 ELSE 0 END
-         + CASE WHEN ${scopedApprovalGrants.conversationId} IS NOT NULL THEN 1 ELSE 0 END
-         + CASE WHEN ${scopedApprovalGrants.callSessionId} IS NOT NULL THEN 1 ELSE 0 END
-         + CASE WHEN ${scopedApprovalGrants.requesterExternalUserId} IS NOT NULL THEN 1 ELSE 0 END) DESC`;
+  const specificityOrder = sql`(CASE WHEN ${grants.executionChannel} IS NOT NULL THEN 1 ELSE 0 END
+         + CASE WHEN ${grants.conversationId} IS NOT NULL THEN 1 ELSE 0 END
+         + CASE WHEN ${grants.callSessionId} IS NOT NULL THEN 1 ELSE 0 END
+         + CASE WHEN ${grants.requesterExternalUserId} IS NOT NULL THEN 1 ELSE 0 END) DESC`;
 
   // Retry loop: if CAS fails because another consumer stole our candidate,
   // re-select and try again — another matching active grant may still exist.
   for (let attempt = 0; attempt <= MAX_CAS_RETRIES; attempt++) {
     // Select a single matching grant to consume (prefer most specific: fewest NULL scope fields).
     // This avoids burning multiple grants when a wildcard grant and a specific grant both match.
-    const candidate = db
-      .select({ id: scopedApprovalGrants.id })
-      .from(scopedApprovalGrants)
+    const [candidate] = await db.orm
+      .select({ id: grants.id })
+      .from(grants)
       .where(and(...conditions))
       .orderBy(specificityOrder)
-      .limit(1)
-      .get();
+      .limit(1);
 
     if (!candidate) {
       // Debug for the same reason as the request-id miss above: polled.
@@ -380,32 +374,28 @@ function consumeScopedApprovalGrantByToolSignature(
       return { ok: false, grant: null };
     }
 
-    db.update(scopedApprovalGrants)
+    const updated = await db.orm
+      .update(grants)
       .set({
         status: "consumed",
         consumedAt: currentTime,
         consumedByRequestId: params.consumingRequestId,
         updatedAt: currentTime,
       })
-      .where(
-        and(
-          eq(scopedApprovalGrants.id, candidate.id),
-          eq(scopedApprovalGrants.status, "active"),
-        ),
-      )
-      .run();
+      .where(and(eq(grants.id, candidate.id), eq(grants.status, "active")))
+      .returning({ id: grants.id });
 
-    if (rawChanges() === 0) {
+    if (updated.length === 0) {
       // CAS failed — another consumer raced and won this candidate; retry with next match
       continue;
     }
 
     // Fetch the consumed grant
-    const row = db
+    const [row] = await db.orm
       .select()
-      .from(scopedApprovalGrants)
-      .where(eq(scopedApprovalGrants.id, candidate.id))
-      .get();
+      .from(grants)
+      .where(eq(grants.id, candidate.id))
+      .limit(1);
 
     const grant = row ? rowToGrant(row) : null;
     log.info(
@@ -443,24 +433,28 @@ function consumeScopedApprovalGrantByToolSignature(
  * Bulk-expire all active grants whose `expiresAt` is at or before `now`.
  * Returns the number of grants expired.
  */
-export function expireScopedApprovalGrants(now?: number): number {
-  const db = getDb();
+export async function expireScopedApprovalGrants(
+  now?: number,
+): Promise<number> {
+  const db = requireMainDb();
+  const grants = db.schema.scopedApprovalGrants;
   const currentTime = now ?? Date.now();
 
-  db.update(scopedApprovalGrants)
+  const expired = await db.orm
+    .update(grants)
     .set({
       status: "expired",
       updatedAt: currentTime,
     })
     .where(
       and(
-        eq(scopedApprovalGrants.status, "active"),
-        sql`${scopedApprovalGrants.expiresAt} <= ${currentTime}`,
+        eq(grants.status, "active"),
+        sql`${grants.expiresAt} <= ${currentTime}`,
       ),
     )
-    .run();
+    .returning({ id: grants.id });
 
-  const count = rawChanges();
+  const count = expired.length;
   if (count > 0) {
     log.info(
       { event: "scoped_grant_expired", count },
@@ -488,29 +482,24 @@ export interface RevokeContextParams {
  *
  * Typical use: revoke all grants for a call session when the call ends.
  */
-export function revokeScopedApprovalGrantsForContext(
+export async function revokeScopedApprovalGrantsForContext(
   params: RevokeContextParams,
   now?: number,
-): number {
-  const db = getDb();
+): Promise<number> {
+  const db = requireMainDb();
+  const grants = db.schema.scopedApprovalGrants;
   const currentTime = now ?? Date.now();
 
-  const conditions = [eq(scopedApprovalGrants.status, "active")];
+  const conditions = [eq(grants.status, "active")];
 
   if (params.conversationId !== undefined) {
-    conditions.push(
-      eq(scopedApprovalGrants.conversationId, params.conversationId),
-    );
+    conditions.push(eq(grants.conversationId, params.conversationId));
   }
   if (params.callSessionId !== undefined) {
-    conditions.push(
-      eq(scopedApprovalGrants.callSessionId, params.callSessionId),
-    );
+    conditions.push(eq(grants.callSessionId, params.callSessionId));
   }
   if (params.requestChannel !== undefined) {
-    conditions.push(
-      eq(scopedApprovalGrants.requestChannel, params.requestChannel),
-    );
+    conditions.push(eq(grants.requestChannel, params.requestChannel));
   }
 
   // Guard: at least one context filter must be provided to avoid revoking ALL active grants
@@ -520,15 +509,16 @@ export function revokeScopedApprovalGrantsForContext(
     );
   }
 
-  db.update(scopedApprovalGrants)
+  const revoked = await db.orm
+    .update(grants)
     .set({
       status: "revoked",
       updatedAt: currentTime,
     })
     .where(and(...conditions))
-    .run();
+    .returning({ id: grants.id });
 
-  const count = rawChanges();
+  const count = revoked.length;
   if (count > 0) {
     log.info(
       {

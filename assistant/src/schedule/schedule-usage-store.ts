@@ -1,4 +1,4 @@
-import { rawAll } from "../persistence/raw-query.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { buildScheduleAttributionSubquery } from "../persistence/schedule-attribution-sql.js";
 
 export interface ScheduleUsageSummary {
@@ -15,21 +15,21 @@ interface ScheduleUsageSummaryRow {
   event_count: number | null;
 }
 
-export function getScheduleUsageSummaries({
+export async function getScheduleUsageSummaries({
   from,
   to,
 }: {
   from: number;
   to: number;
-}): ScheduleUsageSummary[] {
+}): Promise<ScheduleUsageSummary[]> {
   const now = Date.now();
   const scheduleAttribution = buildScheduleAttributionSubquery({
     eventAlias: "e",
     now,
     selectExpression: "schedule_attr_runs.job_id",
   });
-  const rows = rawAll<ScheduleUsageSummaryRow>(
-    "scheduleUsage:getSummaries",
+  const db = requireMainDb();
+  const rows = await db.all<ScheduleUsageSummaryRow>(
     /*sql*/ `
     WITH run_counts AS (
       SELECT
@@ -68,11 +68,7 @@ export function getScheduleUsageSummaries({
     LEFT JOIN usage_totals ON usage_totals.schedule_id = cron_jobs.id
     ORDER BY cron_jobs.created_at ASC, cron_jobs.id ASC
     `,
-    from,
-    to,
-    ...scheduleAttribution.params,
-    from,
-    to,
+    [from, to, ...scheduleAttribution.params, from, to],
   );
 
   return rows.map((row) => ({

@@ -6,9 +6,9 @@ import { getLogger } from "../../util/logger.js";
 import { getLogsDbPath } from "../../util/logs-db-path.js";
 import { purgeConversationSegments } from "../conversation-crud.js";
 import { runAsyncSqlite } from "../db-async-query.js";
-import { getDb } from "../db-connection.js";
+import { requireMainDb } from "../db-facade.js";
 import { enqueueMemoryJob, type MemoryJob } from "../jobs-store.js";
-import { rawAll, rawLogsRun, rawRun, rawTelemetryRun } from "../raw-query.js";
+import { rawLogsRun } from "../raw-query.js";
 
 const log = getLogger("memory-jobs-worker");
 
@@ -161,14 +161,14 @@ function parseDeletedCount(stdout: string | undefined): number {
  * Tables with onDelete cascade on conversation FK (memory_segments,
  * conversation_keys, channel_inbound_events, message_runs, call_sessions,
  * external_conversation_bindings) are handled automatically. Tables without
- * cascade (messages, tool_invocations, plus llm_request_logs and
- * conversation-scoped telemetry_events rows on their dedicated connections)
- * are deleted explicitly before removing the conversation row.
+ * cascade (messages, tool_invocations, plus conversation-scoped
+ * llm_request_logs rows on the dedicated logs connection) are deleted
+ * explicitly before removing the conversation row.
  */
-export function pruneOldConversationsJob(
+export async function pruneOldConversationsJob(
   job: MemoryJob,
   config: AssistantConfig,
-): void {
+): Promise<void> {
   const retentionDays =
     typeof job.payload.retentionDays === "number" &&
     Number.isFinite(job.payload.retentionDays) &&
@@ -185,37 +185,32 @@ export function pruneOldConversationsJob(
 
   const cutoffMs = Date.now() - retentionDays * 86_400_000;
 
-  const stale = rawAll<{ id: string }>(
-    "cleanup:pruneOldConversations:stale",
+  const db = requireMainDb();
+  const stale = await db.all<{ id: string }>(
     `SELECT id FROM conversations WHERE updated_at < ? ORDER BY updated_at ASC LIMIT ?`,
-    cutoffMs,
-    PRUNE_BATCH_LIMIT,
+    [cutoffMs, PRUNE_BATCH_LIMIT],
   );
   if (stale.length === 0) {
     return;
   }
 
-  const db = getDb();
   const prunedIds: string[] = [];
   for (const { id } of stale) {
-    db.transaction(() => {
+    await db.transaction(async (tx) => {
       // Re-check staleness inside the transaction to avoid racing with a conversation
       // that became active again between the initial SELECT and this DELETE.
-      const still = rawAll<{ id: string }>(
-        "cleanup:pruneOldConversations:recheck",
+      const still = await tx.all<{ id: string }>(
         `SELECT id FROM conversations WHERE id = ? AND updated_at < ?`,
-        id,
-        cutoffMs,
+        [id, cutoffMs],
       );
       if (still.length === 0) {
         return;
       }
 
-      // Non-cascading tables. llm_request_logs and conversation-scoped
-      // telemetry_events rows live in the dedicated logs/telemetry
-      // connections, so they are deleted there (outside this main-DB
+      // Non-cascading tables. llm_request_logs lives on the dedicated logs
+      // connection, so it is deleted there (outside this main-DB
       // transaction). Both run before the main-DB deletes: a failure leaves
-      // the conversation row in place so the prune retries — unshipped
+      // the conversation row in place so the prune retries, and unshipped
       // telemetry events must never outlive their pruned conversation and
       // flush later.
       rawLogsRun(
@@ -223,27 +218,15 @@ export function pruneOldConversationsJob(
         `DELETE FROM llm_request_logs WHERE conversation_id = ?`,
         id,
       );
-      rawTelemetryRun(
-        "cleanup:pruneOldConversations:telemetry",
-        `DELETE FROM telemetry_events WHERE conversation_id = ?`,
+      await tx.run(`DELETE FROM telemetry_events WHERE conversation_id = ?`, [
         id,
-      );
-      rawRun(
-        "cleanup:pruneOldConversations:toolInv",
-        `DELETE FROM tool_invocations WHERE conversation_id = ?`,
+      ]);
+      await tx.run(`DELETE FROM tool_invocations WHERE conversation_id = ?`, [
         id,
-      );
-      rawRun(
-        "cleanup:pruneOldConversations:messages",
-        `DELETE FROM messages WHERE conversation_id = ?`,
-        id,
-      );
+      ]);
+      await tx.run(`DELETE FROM messages WHERE conversation_id = ?`, [id]);
       // Conversation row deletion cascades to remaining dependent tables
-      rawRun(
-        "cleanup:pruneOldConversations:conv",
-        `DELETE FROM conversations WHERE id = ?`,
-        id,
-      );
+      await tx.run(`DELETE FROM conversations WHERE id = ?`, [id]);
       prunedIds.push(id);
     });
   }
@@ -255,7 +238,7 @@ export function pruneOldConversationsJob(
   // direct purge removes them regardless. The hook still handles the derived
   // per-conversation tables and cancels the conversation's pending jobs.
   for (const id of prunedIds) {
-    purgeConversationSegments(id);
+    await purgeConversationSegments(id);
     void runHook(HOOKS.CONVERSATION_DELETED, { conversationId: id });
   }
   const pruned = prunedIds.length;

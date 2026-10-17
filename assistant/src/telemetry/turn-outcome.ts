@@ -61,18 +61,19 @@ export interface TurnOutcomeExtras {
  * callers run while the conversation is still processing.
  *
  * Best-effort: telemetry stamping must never break the turn path, so every
- * error is logged and swallowed.
+ * error is logged and swallowed. Callers await it so the stamp lands before
+ * the turn settles.
  */
-export function stampTurnOutcome(
+export async function stampTurnOutcome(
   userMessageId: string,
   outcome: TurnOutcome,
   extras: TurnOutcomeExtras = {},
-): void {
+): Promise<void> {
   try {
     // The failure* keys are read back by `readTurnFailure` only; the turn
     // telemetry projection (`queryUnreportedTurnEvents`) extracts none of
     // them, so nothing here changes the platform wire contract.
-    updateMessageMetadata(userMessageId, {
+    await updateMessageMetadata(userMessageId, {
       turnOutcome: outcome,
       ...(extras.batchedInto ? { turnBatchedInto: extras.batchedInto } : {}),
       ...(extras.failureCode ? { turnFailureCode: extras.failureCode } : {}),

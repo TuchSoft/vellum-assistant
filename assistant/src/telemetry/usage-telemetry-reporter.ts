@@ -2,7 +2,7 @@
  * Usage telemetry reporter.
  *
  * Periodically flushes unreported telemetry events (LLM usage, turns,
- * lifecycle, ...) from the local SQLite databases and POSTs them to the
+ * lifecycle, ...) from the local databases and POSTs them to the
  * platform telemetry endpoint. Each event type is a
  * {@link TelemetryEventSource}; the reporter is a generic engine over the
  * source list it is constructed with, acknowledging each source after a
@@ -139,7 +139,7 @@ function startReporterWithSources(
  * Started even when share_analytics consent is opted out: flush() re-checks
  * consent each cycle and, when opted out, sends nothing but advances its
  * sources' watermarks (including the final flush in stop()). Not gated on DB
- * readiness: getDb() can still work when initializeDb() failed mid-migration,
+ * readiness: the database can still work when initializeDb() failed mid-migration,
  * in which case message writes keep producing rows the opt-out branch must
  * keep covered. The reporter is degraded-mode safe — flush() treats DB errors
  * as non-fatal.

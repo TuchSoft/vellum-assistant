@@ -1,6 +1,5 @@
 import { and, asc, eq, gt, isNotNull, ne, or } from "drizzle-orm";
 
-import { toolInvocations } from "../persistence/schema/index.js";
 import { getTelemetryMainDb } from "./telemetry-main-db.js";
 
 /**
@@ -57,12 +56,13 @@ export interface UnreportedToolExecutedEvent {
  * alone, so rows older than `auditLog.retentionDays` may rotate away before
  * they are reported.
  */
-export function queryUnreportedToolExecutedEvents(
+export async function queryUnreportedToolExecutedEvents(
   afterCreatedAt: number,
   afterId: string | undefined,
   limit: number,
-): UnreportedToolExecutedEvent[] {
+): Promise<UnreportedToolExecutedEvent[]> {
   const db = getTelemetryMainDb();
+  const toolInvocations = db.schema.toolInvocations;
   const cursorPredicate = afterId
     ? or(
         gt(toolInvocations.createdAt, afterCreatedAt),
@@ -72,7 +72,7 @@ export function queryUnreportedToolExecutedEvents(
         ),
       )
     : gt(toolInvocations.createdAt, afterCreatedAt);
-  return db
+  return db.orm
     .select({
       id: toolInvocations.id,
       toolName: toolInvocations.toolName,
@@ -97,6 +97,5 @@ export function queryUnreportedToolExecutedEvents(
       ),
     )
     .orderBy(asc(toolInvocations.createdAt), asc(toolInvocations.id))
-    .limit(limit)
-    .all();
+    .limit(limit);
 }

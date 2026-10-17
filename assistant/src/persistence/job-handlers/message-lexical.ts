@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 
 import type { AssistantConfig } from "../../config/types.js";
 import { getLogger } from "../../util/logger.js";
-import { getDb } from "../db-connection.js";
+import { requireMainDb } from "../db-facade.js";
 import { generateSparseEmbedding } from "../embeddings/embedding-backend.js";
 import {
   getMessagesLexicalIndex,
@@ -14,7 +14,6 @@ import { withQdrantBreaker } from "../embeddings/qdrant-circuit-breaker.js";
 import { resolveQdrantUrl } from "../embeddings/qdrant-client.js";
 import { asString } from "../job-utils.js";
 import { enqueueMemoryJob, type MemoryJob } from "../jobs-store.js";
-import { messages } from "../schema/index.js";
 import { projectPersistedRowText } from "../user-facing-content.js";
 
 const log = getLogger("messages-lexical-enqueue");
@@ -82,8 +81,9 @@ export async function indexMessageLexicalJob(
     return;
   }
 
-  const db = getDb();
-  const row = db
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const rows = await db.orm
     .select({
       id: messages.id,
       conversationId: messages.conversationId,
@@ -93,7 +93,8 @@ export async function indexMessageLexicalJob(
     })
     .from(messages)
     .where(and(eq(messages.id, messageId), eq(messages.finalized, 1)))
-    .get();
+    .limit(1);
+  const row = rows[0];
 
   // The message may have been deleted between enqueue and dispatch, so no-op.
   if (!row) {
@@ -158,7 +159,7 @@ export async function deleteMessageLexicalJob(
 
 /**
  * Enqueue an `index_message_lexical` job for a single message so its content is
- * (re)indexed into the lexical (Qdrant) index off the SQLite write path. Called
+ * (re)indexed into the lexical (Qdrant) index off the database write path. Called
  * wherever a message's content becomes durable — on persist and on the
  * streaming/import finalize seams that mirror the segment indexer
  * (`indexMessageNow`).

@@ -5,13 +5,8 @@ import {
   recordPhoneCallEnded,
   recordPhoneCallStarted,
 } from "../onboarding/onboarding-events-store.js";
-import { getDb } from "../persistence/db-connection.js";
-import { rawChanges, rawRun } from "../persistence/raw-query.js";
-import {
-  callEvents,
-  callPendingQuestions,
-  callSessions,
-} from "../persistence/schema/index.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { fireAndForgetTelemetry } from "../telemetry/fire-and-forget.js";
 import {
   type PhoneCallDirection,
@@ -36,7 +31,7 @@ const log = getLogger("call-store");
 // ── Helpers ──────────────────────────────────────────────────────────
 
 const parseCallSession = createRowMapper<
-  typeof callSessions.$inferSelect,
+  SchemaTables["callSessions"]["$inferSelect"],
   CallSession
 >({
   id: "id",
@@ -66,7 +61,7 @@ const parseCallSession = createRowMapper<
 });
 
 const parseCallEvent = createRowMapper<
-  typeof callEvents.$inferSelect,
+  SchemaTables["callEvents"]["$inferSelect"],
   CallEvent
 >({
   id: "id",
@@ -77,7 +72,7 @@ const parseCallEvent = createRowMapper<
 });
 
 const parsePendingQuestion = createRowMapper<
-  typeof callPendingQuestions.$inferSelect,
+  SchemaTables["callPendingQuestions"]["$inferSelect"],
   CallPendingQuestion
 >({
   id: "id",
@@ -111,8 +106,8 @@ export function createCallSession(opts: {
   callerIdentitySource?: string;
   skipDisclosure?: boolean;
   initiatedFromConversationId?: string;
-}): CallSession {
-  const db = getDb();
+}): Promise<CallSession> {
+  const db = requireMainDb();
   const now = Date.now();
   const skipDisclosure = opts.skipDisclosure ?? false;
   const row = {
@@ -138,7 +133,7 @@ export function createCallSession(opts: {
     createdAt: now,
     updatedAt: now,
   };
-  db.insert(callSessions).values(row).run();
+  await db.orm.insert(db.schema.callSessions).values(row);
   // The call is attempted the moment its row exists, which is before the
   // provider dials: a call that never connects is exactly the one the funnel
   // needs to count. An outbound attempt the ingress preflight rejects never
@@ -153,37 +148,44 @@ export function createCallSession(opts: {
   return { ...row, skipDisclosure };
 }
 
-export function getCallSession(id: string): CallSession | null {
-  const db = getDb();
-  const row = db
+export async function getCallSession(id: string): Promise<CallSession | null> {
+  const db = requireMainDb();
+  const callSessions = db.schema.callSessions;
+  const rows = await db.orm
     .select()
     .from(callSessions)
     .where(eq(callSessions.id, id))
-    .get();
+    .limit(1);
+  const row = rows[0];
   if (!row) {
     return null;
   }
   return parseCallSession(row);
 }
 
-export function getCallSessionByCallSid(callSid: string): CallSession | null {
-  const db = getDb();
-  const row = db
+export async function getCallSessionByCallSid(
+  callSid: string,
+): Promise<CallSession | null> {
+  const db = requireMainDb();
+  const callSessions = db.schema.callSessions;
+  const rows = await db.orm
     .select()
     .from(callSessions)
     .where(eq(callSessions.providerCallSid, callSid))
-    .get();
+    .limit(1);
+  const row = rows[0];
   if (!row) {
     return null;
   }
   return parseCallSession(row);
 }
 
-export function getActiveCallSessionForConversation(
+export async function getActiveCallSessionForConversation(
   conversationId: string,
-): CallSession | null {
-  const db = getDb();
-  const row = db
+): Promise<CallSession | null> {
+  const db = requireMainDb();
+  const callSessions = db.schema.callSessions;
+  const rows = await db.orm
     .select()
     .from(callSessions)
     .where(
@@ -196,14 +198,15 @@ export function getActiveCallSessionForConversation(
       ),
     )
     .orderBy(desc(callSessions.createdAt))
-    .get();
+    .limit(1);
+  const row = rows[0];
   if (!row) {
     return null;
   }
   return parseCallSession(row);
 }
 
-export function updateCallSession(
+export async function updateCallSession(
   id: string,
   updates: Partial<
     Pick<
@@ -218,15 +221,16 @@ export function updateCallSession(
     >
   >,
   opts?: { beforeLeaseSync?: () => void },
-): void {
-  const db = getDb();
+): Promise<void> {
+  const db = requireMainDb();
+  const callSessions = db.schema.callSessions;
   const shouldSyncActiveLease =
     Object.prototype.hasOwnProperty.call(updates, "providerCallSid") ||
     Object.prototype.hasOwnProperty.call(updates, "status");
 
   // Validate status transition when a new status is provided
   if (updates.status) {
-    const current = getCallSession(id);
+    const current = await getCallSession(id);
     if (current) {
       const result = validateTransition(
         current.status,
@@ -247,23 +251,23 @@ export function updateCallSession(
     }
   }
 
-  db.update(callSessions)
+  await db.orm
+    .update(callSessions)
     .set({ ...updates, updatedAt: Date.now() })
-    .where(eq(callSessions.id, id))
-    .run();
+    .where(eq(callSessions.id, id));
 
   // Terminal states are immutable and the validator above rejects any write
   // that follows one, so the first terminal transition to get here is the only
   // one: the ended event needs no separate once-only latch.
   if (updates.status && isTerminalState(updates.status)) {
-    recordCallEndedEvent(id, updates.status);
+    await recordCallEndedEvent(id, updates.status);
   }
 
   opts?.beforeLeaseSync?.();
 
   if (shouldSyncActiveLease) {
     try {
-      syncActiveCallLeaseFromSession(getCallSession(id));
+      syncActiveCallLeaseFromSession(await getCallSession(id));
     } catch (err) {
       log.warn(
         { callSessionId: id, err },
@@ -279,13 +283,14 @@ export function updateCallSession(
  * Whether the call's own event log holds an event of this type. Existence
  * only: the row itself is never read.
  */
-function hasCallEvent(
+async function hasCallEvent(
   id: string,
   eventType: CallEventType,
   payloadContains?: string,
-): boolean {
-  const db = getDb();
-  const row = db
+): Promise<boolean> {
+  const db = requireMainDb();
+  const callEvents = db.schema.callEvents;
+  const rows = await db.orm
     .select({ id: callEvents.id })
     .from(callEvents)
     .where(
@@ -297,9 +302,8 @@ function hasCallEvent(
           : []),
       ),
     )
-    .limit(1)
-    .get();
-  return row !== undefined;
+    .limit(1);
+  return rows.length > 0;
 }
 
 /**
@@ -314,12 +318,15 @@ function hasCallEvent(
  * an event type of its own would be the real fix, but that vocabulary is read
  * by other consumers and is not this change's to alter.
  */
-function recordCallEndedEvent(id: string, status: CallStatus): void {
-  const spoke = hasCallEvent(id, "caller_spoke", '"transcript"');
+async function recordCallEndedEvent(
+  id: string,
+  status: CallStatus,
+): Promise<void> {
+  const spoke = await hasCallEvent(id, "caller_spoke", '"transcript"');
   const silence = spoke
     ? null
     : phoneCallSilenceReason({
-        connected: hasCallEvent(id, "call_connected"),
+        connected: await hasCallEvent(id, "call_connected"),
       });
 
   fireAndForgetTelemetry(
@@ -337,26 +344,26 @@ function recordCallEndedEvent(id: string, status: CallStatus): void {
  * (i.e. not completed, failed, or cancelled). Used during daemon startup
  * to reconcile in-flight calls.
  */
-export function listRecoverableCalls(): CallSession[] {
-  const db = getDb();
-  const rows = db
+export async function listRecoverableCalls(): Promise<CallSession[]> {
+  const db = requireMainDb();
+  const callSessions = db.schema.callSessions;
+  const rows = await db.orm
     .select()
     .from(callSessions)
     .where(
       notInArray(callSessions.status, ["completed", "failed", "cancelled"]),
-    )
-    .all();
+    );
   return rows.map(parseCallSession);
 }
 
 // ── Call Events ──────────────────────────────────────────────────────
 
-export function recordCallEvent(
+export async function recordCallEvent(
   callSessionId: string,
   eventType: CallEventType,
   payload?: Record<string, unknown>,
-): CallEvent {
-  const db = getDb();
+): Promise<CallEvent> {
+  const db = requireMainDb();
   const now = Date.now();
   const event = {
     id: uuid(),
@@ -365,28 +372,30 @@ export function recordCallEvent(
     payloadJson: JSON.stringify(payload ?? {}),
     createdAt: now,
   };
-  db.insert(callEvents).values(event).run();
+  await db.orm.insert(db.schema.callEvents).values(event);
   return event;
 }
 
-export function getCallEvents(callSessionId: string): CallEvent[] {
-  const db = getDb();
-  const rows = db
+export async function getCallEvents(
+  callSessionId: string,
+): Promise<CallEvent[]> {
+  const db = requireMainDb();
+  const callEvents = db.schema.callEvents;
+  const rows = await db.orm
     .select()
     .from(callEvents)
     .where(eq(callEvents.callSessionId, callSessionId))
-    .orderBy(callEvents.createdAt)
-    .all();
+    .orderBy(callEvents.createdAt);
   return rows.map(parseCallEvent);
 }
 
 // ── Pending Questions ────────────────────────────────────────────────
 
-export function createPendingQuestion(
+export async function createPendingQuestion(
   callSessionId: string,
   questionText: string,
-): CallPendingQuestion {
-  const db = getDb();
+): Promise<CallPendingQuestion> {
+  const db = requireMainDb();
   const now = Date.now();
   const question = {
     id: uuid(),
@@ -397,15 +406,16 @@ export function createPendingQuestion(
     answeredAt: null,
     answerText: null,
   };
-  db.insert(callPendingQuestions).values(question).run();
+  await db.orm.insert(db.schema.callPendingQuestions).values(question);
   return question;
 }
 
-export function getPendingQuestion(
+export async function getPendingQuestion(
   callSessionId: string,
-): CallPendingQuestion | null {
-  const db = getDb();
-  const row = db
+): Promise<CallPendingQuestion | null> {
+  const db = requireMainDb();
+  const callPendingQuestions = db.schema.callPendingQuestions;
+  const rows = await db.orm
     .select()
     .from(callPendingQuestions)
     .where(
@@ -415,17 +425,22 @@ export function getPendingQuestion(
       ),
     )
     .orderBy(desc(callPendingQuestions.askedAt))
-    .limit(1)
-    .get();
+    .limit(1);
+  const row = rows[0];
   if (!row) {
     return null;
   }
   return parsePendingQuestion(row);
 }
 
-export function answerPendingQuestion(id: string, answerText: string): void {
-  const db = getDb();
-  db.update(callPendingQuestions)
+export async function answerPendingQuestion(
+  id: string,
+  answerText: string,
+): Promise<void> {
+  const db = requireMainDb();
+  const callPendingQuestions = db.schema.callPendingQuestions;
+  const updated = await db.orm
+    .update(callPendingQuestions)
     .set({
       status: "answered",
       answerText,
@@ -437,8 +452,8 @@ export function answerPendingQuestion(id: string, answerText: string): void {
         eq(callPendingQuestions.status, "pending"),
       ),
     )
-    .run();
-  if (rawChanges() === 0) {
+    .returning({ id: callPendingQuestions.id });
+  if (updated.length === 0) {
     log.warn(
       { questionId: id },
       "answerPendingQuestion: no rows updated — question may have already been answered or expired",
@@ -446,17 +461,20 @@ export function answerPendingQuestion(id: string, answerText: string): void {
   }
 }
 
-export function expirePendingQuestions(callSessionId: string): void {
-  const db = getDb();
-  db.update(callPendingQuestions)
+export async function expirePendingQuestions(
+  callSessionId: string,
+): Promise<void> {
+  const db = requireMainDb();
+  const callPendingQuestions = db.schema.callPendingQuestions;
+  await db.orm
+    .update(callPendingQuestions)
     .set({ status: "expired" })
     .where(
       and(
         eq(callPendingQuestions.callSessionId, callSessionId),
         eq(callPendingQuestions.status, "pending"),
       ),
-    )
-    .run();
+    );
 }
 
 // ── Callback Idempotency ─────────────────────────────────────────────
@@ -495,27 +513,21 @@ export function buildCallbackDedupeKey(
  * operations require it so that handler A cannot accidentally release or
  * finalize a claim that was reclaimed by handler B after expiry.
  */
-export function claimCallback(
+export async function claimCallback(
   dedupeKey: string,
   callSessionId: string,
-): string | null {
+): Promise<string | null> {
+  const db = requireMainDb();
   // Clear any expired orphaned claims so they can be reprocessed
-  rawRun(
-    "calls:claimCallback:clearExpired",
+  await db.run(
     `DELETE FROM processed_callbacks WHERE dedupe_key = ? AND created_at < ?`,
-    dedupeKey,
-    Date.now() - CLAIM_EXPIRY_MS,
+    [dedupeKey, Date.now() - CLAIM_EXPIRY_MS],
   );
 
   const claimId = uuid();
-  const changes = rawRun(
-    "calls:claimCallback:insert",
-    `INSERT OR IGNORE INTO processed_callbacks (id, dedupe_key, call_session_id, claim_id, created_at) VALUES (?, ?, ?, ?, ?)`,
-    uuid(),
-    dedupeKey,
-    callSessionId,
-    claimId,
-    Date.now(),
+  const changes = await db.run(
+    `INSERT INTO processed_callbacks (id, dedupe_key, call_session_id, claim_id, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+    [uuid(), dedupeKey, callSessionId, claimId, Date.now()],
   );
   return changes > 0 ? claimId : null;
 }
@@ -527,12 +539,14 @@ export function claimCallback(
  * Only deletes the row if both dedupe_key AND claim_id match, preventing
  * handler A from releasing a claim that was reclaimed by handler B.
  */
-export function releaseCallbackClaim(dedupeKey: string, claimId: string): void {
-  rawRun(
-    "calls:releaseCallbackClaim",
+export async function releaseCallbackClaim(
+  dedupeKey: string,
+  claimId: string,
+): Promise<void> {
+  const db = requireMainDb();
+  await db.run(
     `DELETE FROM processed_callbacks WHERE dedupe_key = ? AND claim_id = ?`,
-    dedupeKey,
-    claimId,
+    [dedupeKey, claimId],
   );
 }
 
@@ -550,18 +564,16 @@ export function releaseCallbackClaim(dedupeKey: string, claimId: string): void {
  * business writes already happened but the dedupe row belongs to someone
  * else, so duplicate processing may occur on later retries.
  */
-export function finalizeCallbackClaim(
+export async function finalizeCallbackClaim(
   dedupeKey: string,
   claimId: string,
-): boolean {
+): Promise<boolean> {
+  const db = requireMainDb();
   // Set created_at far in the future so expiry check never matches
   const NEVER_EXPIRE = Date.now() + 100 * 365 * 24 * 60 * 60 * 1000; // ~100 years
-  const changes = rawRun(
-    "calls:finalizeCallbackClaim",
+  const changes = await db.run(
     `UPDATE processed_callbacks SET created_at = ? WHERE dedupe_key = ? AND claim_id = ?`,
-    NEVER_EXPIRE,
-    dedupeKey,
-    claimId,
+    [NEVER_EXPIRE, dedupeKey, claimId],
   );
   if (changes === 0) {
     log.warn(

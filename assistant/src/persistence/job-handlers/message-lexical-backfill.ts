@@ -11,7 +11,7 @@ import {
   setMemoryCheckpoint,
   writeMessageCursorCheckpoint,
 } from "../checkpoints.js";
-import { getDb } from "../db-connection.js";
+import { requireMainDb } from "../db-facade.js";
 import { generateSparseEmbedding } from "../embeddings/embedding-backend.js";
 import { withQdrantBreaker } from "../embeddings/qdrant-circuit-breaker.js";
 import {
@@ -19,7 +19,6 @@ import {
   hasActiveJobOfType,
   type MemoryJob,
 } from "../jobs-store.js";
-import { messages } from "../schema/index.js";
 import { projectPersistedRowText } from "../user-facing-content.js";
 import { resolveLexicalIndex } from "./message-lexical.js";
 
@@ -111,7 +110,8 @@ export async function backfillLexicalIndexJob(
   job: MemoryJob,
   config: AssistantConfig,
 ): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
+  const messages = db.schema.messages;
   const force = job.payload.force === true;
   if (force) {
     await resetMessageCursorCheckpoint(
@@ -130,7 +130,7 @@ export async function backfillLexicalIndexJob(
     LEXICAL_BACKFILL_CHECKPOINT_KEY,
     LEXICAL_BACKFILL_CHECKPOINT_ID_KEY,
   );
-  const batch = db
+  const batch = await db.orm
     .select({
       id: messages.id,
       conversationId: messages.conversationId,
@@ -152,8 +152,7 @@ export async function backfillLexicalIndexJob(
       ),
     )
     .orderBy(asc(messages.createdAt), asc(messages.id))
-    .limit(BATCH_SIZE)
-    .all();
+    .limit(BATCH_SIZE);
 
   if (batch.length > 0) {
     const index = resolveLexicalIndex(config);

@@ -8,8 +8,7 @@ import type {
   UsageEventInput,
 } from "../usage/types.js";
 import { APP_VERSION } from "../version.js";
-import { getDb } from "./db-connection.js";
-import { rawAll } from "./raw-query.js";
+import { requireMainDb } from "./db-facade.js";
 import {
   realUserTurnContentFilter,
   realUserTurnContentFilterSql,
@@ -21,7 +20,6 @@ import {
   type ScheduleAttributionFilter,
   type ScheduleAttributionSqlParam,
 } from "./schedule-attribution-sql.js";
-import { conversations, llmUsageEvents } from "./schema/index.js";
 import {
   bucketEventsByDay,
   bucketEventsByHour,
@@ -53,27 +51,32 @@ import {
  * parent row is gone. Best-effort: a lookup failure degrades to null
  * (same as the pre-column behavior) rather than dropping the usage row.
  */
-function lookupConversationType(conversationId: string | null): string | null {
+async function lookupConversationType(
+  conversationId: string | null,
+): Promise<string | null> {
   if (conversationId === null) {
     return null;
   }
   try {
-    const row = getDb()
+    const db = requireMainDb();
+    const conversations = db.schema.conversations;
+    const rows = await db.orm
       .select({ conversationType: conversations.conversationType })
       .from(conversations)
       .where(eq(conversations.id, conversationId))
-      .get();
-    return row?.conversationType ?? null;
+      .limit(1);
+    return rows[0]?.conversationType ?? null;
   } catch {
     return null;
   }
 }
 
-export function recordUsageEvent(
+export async function recordUsageEvent(
   input: UsageEventInput,
   pricing: PricingResult,
-): UsageEvent {
-  const db = getDb();
+): Promise<UsageEvent> {
+  const db = requireMainDb();
+  const llmUsageEvents = db.schema.llmUsageEvents;
   const event: UsageEvent = {
     id: uuid(),
     createdAt: Date.now(),
@@ -87,40 +90,38 @@ export function recordUsageEvent(
     pricingStatus: pricing.pricingStatus,
     assistantVersion: APP_VERSION,
   };
-  db.insert(llmUsageEvents)
-    .values({
-      id: event.id,
-      createdAt: event.createdAt,
-      conversationId: event.conversationId,
-      runId: event.runId,
-      cronRunId: event.cronRunId,
-      requestId: event.requestId,
-      actor: event.actor,
-      callSite: event.callSite,
-      inferenceProfile: event.inferenceProfile,
-      inferenceProfileSource: event.inferenceProfileSource,
-      provider: event.provider,
-      model: event.model,
-      inputTokens: event.inputTokens,
-      outputTokens: event.outputTokens,
-      cacheCreationInputTokens: event.cacheCreationInputTokens,
-      cacheReadInputTokens: event.cacheReadInputTokens,
-      rawUsage: event.rawUsage === null ? null : JSON.stringify(event.rawUsage),
-      estimatedCostUsd: event.estimatedCostUsd,
-      pricingStatus: event.pricingStatus,
-      llmCallCount: event.llmCallCount,
-      metadataJson: null,
-      // Capture the assistant's version at RECORD time so a batch flush
-      // days later doesn't mis-attribute this row to whatever version
-      // the assistant happens to be running on at upload time. See
-      // migration 267 + `TelemetryEventBase.assistant_version` (wire).
-      assistantVersion: event.assistantVersion,
-      // Capture the parent conversation's type at RECORD time for the
-      // same reason: the conversation row may be deleted before the
-      // telemetry flush joins against it. See migration 353.
-      conversationType: lookupConversationType(event.conversationId),
-    })
-    .run();
+  await db.orm.insert(llmUsageEvents).values({
+    id: event.id,
+    createdAt: event.createdAt,
+    conversationId: event.conversationId,
+    runId: event.runId,
+    cronRunId: event.cronRunId,
+    requestId: event.requestId,
+    actor: event.actor,
+    callSite: event.callSite,
+    inferenceProfile: event.inferenceProfile,
+    inferenceProfileSource: event.inferenceProfileSource,
+    provider: event.provider,
+    model: event.model,
+    inputTokens: event.inputTokens,
+    outputTokens: event.outputTokens,
+    cacheCreationInputTokens: event.cacheCreationInputTokens,
+    cacheReadInputTokens: event.cacheReadInputTokens,
+    rawUsage: event.rawUsage === null ? null : JSON.stringify(event.rawUsage),
+    estimatedCostUsd: event.estimatedCostUsd,
+    pricingStatus: event.pricingStatus,
+    llmCallCount: event.llmCallCount,
+    metadataJson: null,
+    // Capture the assistant's version at RECORD time so a batch flush
+    // days later doesn't mis-attribute this row to whatever version
+    // the assistant happens to be running on at upload time. See
+    // migration 267 + `TelemetryEventBase.assistant_version` (wire).
+    assistantVersion: event.assistantVersion,
+    // Capture the parent conversation's type at RECORD time for the
+    // same reason: the conversation row may be deleted before the
+    // telemetry flush joins against it. See migration 353.
+    conversationType: await lookupConversationType(event.conversationId),
+  });
   return event;
 }
 
@@ -200,14 +201,16 @@ function parseRawUsage(value: string | null): Record<string, unknown> | null {
   }
 }
 
-export function listUsageEvents(options?: { limit?: number }): UsageEvent[] {
-  const db = getDb();
-  const rows = db
+export async function listUsageEvents(options?: {
+  limit?: number;
+}): Promise<UsageEvent[]> {
+  const db = requireMainDb();
+  const llmUsageEvents = db.schema.llmUsageEvents;
+  const rows = await db.orm
     .select()
     .from(llmUsageEvents)
     .orderBy(desc(llmUsageEvents.createdAt))
-    .limit(options?.limit ?? 100)
-    .all();
+    .limit(options?.limit ?? 100);
   return rows.map(rowToUsageEvent);
 }
 
@@ -278,12 +281,13 @@ export interface UnreportedUsageEvent extends UsageEvent {
   subagentSpawnMode: string | null;
 }
 
-export function queryUnreportedUsageEvents(
+export async function queryUnreportedUsageEvents(
   afterCreatedAt: number,
   afterId: string | undefined,
   limit: number,
-): UnreportedUsageEvent[] {
+): Promise<UnreportedUsageEvent[]> {
   const db = getTelemetryMainDb();
+  const { conversations, llmUsageEvents } = db.schema;
   // Spawn linkage: `parent_conversation_id` (subagent spawns) with a
   // fallback to `fork_parent_conversation_id` (retrospective forks — one
   // hop up the fork chain is the intended attribution). The fallback is
@@ -328,7 +332,7 @@ export function queryUnreportedUsageEvents(
   // two indexes stay aligned: an LLM call fired during processing of
   // turn N reports `turn_index = N`, matching what the turn event
   // stream emitted for the triggering user message.
-  const rows = db
+  const rows = await db.orm
     .select({
       id: llmUsageEvents.id,
       createdAt: llmUsageEvents.createdAt,
@@ -412,8 +416,7 @@ export function queryUnreportedUsageEvents(
         : gt(llmUsageEvents.createdAt, afterCreatedAt),
     )
     .orderBy(asc(llmUsageEvents.createdAt), asc(llmUsageEvents.id))
-    .limit(limit)
-    .all();
+    .limit(limit);
   return rows.map((row) => ({
     ...rowToUsageEvent(row),
     conversationType: row.conversationType,
@@ -543,36 +546,37 @@ function buildUsageAggregationWhere(
 /**
  * Return aggregate usage for a single conversation (e.g. a subagent).
  */
-export function getConversationUsageTotals(conversationId: string): {
+export async function getConversationUsageTotals(
+  conversationId: string,
+): Promise<{
   inputTokens: number;
   outputTokens: number;
   estimatedCost: number;
-} {
-  const rows = rawAll<{
+}> {
+  const db = requireMainDb();
+  const row = await db.get<{
     total_input: number;
     total_output: number;
     total_cost: number | null;
   }>(
-    "usage:getConversationTotals",
     /*sql*/ `
     SELECT
       COALESCE(SUM(input_tokens + COALESCE(cache_creation_input_tokens, 0) + COALESCE(cache_read_input_tokens, 0)), 0) AS total_input,
       COALESCE(SUM(output_tokens), 0) AS total_output,
       COALESCE(SUM(estimated_cost_usd), 0) AS total_cost
     FROM llm_usage_events
-    WHERE conversation_id = ?1
+    WHERE conversation_id = ?
     `,
-    conversationId,
+    [conversationId],
   );
-  const row = rows[0];
   return {
-    inputTokens: row.total_input,
-    outputTokens: row.total_output,
-    estimatedCost: row.total_cost ?? 0,
+    inputTokens: row?.total_input ?? 0,
+    outputTokens: row?.total_output ?? 0,
+    estimatedCost: row?.total_cost ?? 0,
   };
 }
 
-export function getUsageCostForConversationWindow({
+export async function getUsageCostForConversationWindow({
   conversationId,
   from,
   to,
@@ -580,21 +584,19 @@ export function getUsageCostForConversationWindow({
   conversationId: string;
   from: number;
   to: number;
-}): number {
-  const rows = rawAll<{ total_cost: number | null }>(
-    "usage:costForConversationWindow",
+}): Promise<number> {
+  const db = requireMainDb();
+  const row = await db.get<{ total_cost: number | null }>(
     /*sql*/ `
     SELECT COALESCE(SUM(estimated_cost_usd), 0) AS total_cost
     FROM llm_usage_events
-    WHERE conversation_id = ?1
-      AND created_at >= ?2
-      AND created_at <= ?3
+    WHERE conversation_id = ?
+      AND created_at >= ?
+      AND created_at <= ?
     `,
-    conversationId,
-    from,
-    to,
+    [conversationId, from, to],
   );
-  return rows[0]?.total_cost ?? 0;
+  return row?.total_cost ?? 0;
 }
 
 /**
@@ -604,7 +606,7 @@ export function getUsageCostForConversationWindow({
  * matches no real rows, so they are costed purely by `cronRunId`; the window
  * branch is included only when a real `conversationId` is supplied.
  */
-export function getUsageCostForRun({
+export async function getUsageCostForRun({
   cronRunId,
   conversationId,
   from,
@@ -614,25 +616,25 @@ export function getUsageCostForRun({
   conversationId?: string;
   from: number;
   to: number;
-}): number {
-  let predicate = "cron_run_id = ?1";
+}): Promise<number> {
+  let predicate = "cron_run_id = ?";
   const params: UsageQueryParam[] = [cronRunId];
   if (conversationId) {
     // Fallback for unstamped legacy rows only; the stamp takes precedence.
     predicate +=
-      " OR (cron_run_id IS NULL AND conversation_id = ?2 AND created_at >= ?3 AND created_at <= ?4)";
+      " OR (cron_run_id IS NULL AND conversation_id = ? AND created_at >= ? AND created_at <= ?)";
     params.push(conversationId, from, to);
   }
-  const rows = rawAll<{ total_cost: number | null }>(
-    "usage:costForRun",
+  const db = requireMainDb();
+  const row = await db.get<{ total_cost: number | null }>(
     /*sql*/ `
     SELECT COALESCE(SUM(estimated_cost_usd), 0) AS total_cost
     FROM llm_usage_events
     WHERE ${predicate}
     `,
-    ...params,
+    params,
   );
-  return rows[0]?.total_cost ?? 0;
+  return row?.total_cost ?? 0;
 }
 
 /**
@@ -641,16 +643,18 @@ export function getUsageCostForRun({
  * `conversation_id` are excluded, and the result is deduped. Returns an empty
  * array for an unknown or un-stamped run.
  */
-export function listRunConversationIds(cronRunId: string): string[] {
-  const rows = rawAll<{ conversation_id: string }>(
-    "usage:listRunConversationIds",
+export async function listRunConversationIds(
+  cronRunId: string,
+): Promise<string[]> {
+  const db = requireMainDb();
+  const rows = await db.all<{ conversation_id: string }>(
     /*sql*/ `
     SELECT DISTINCT conversation_id
     FROM llm_usage_events
-    WHERE cron_run_id = ?1
+    WHERE cron_run_id = ?
       AND conversation_id IS NOT NULL
     `,
-    cronRunId,
+    [cronRunId],
   );
   return rows.map((row) => row.conversation_id);
 }
@@ -658,13 +662,13 @@ export function listRunConversationIds(cronRunId: string): string[] {
 /**
  * Return aggregate totals for all usage events within the given time range.
  */
-export function getUsageTotals(
+export async function getUsageTotals(
   range: UsageTimeRange,
   filter?: UsageAggregationFilter,
-): UsageTotals {
+): Promise<UsageTotals> {
   const where = buildUsageAggregationWhere(range, filter);
-  const rows = rawAll<TotalsRow>(
-    "usage:getTotals",
+  const db = requireMainDb();
+  const row = await db.get<TotalsRow>(
     /*sql*/ `
     SELECT
       COALESCE(SUM(input_tokens), 0)                              AS total_input_tokens,
@@ -678,18 +682,17 @@ export function getUsageTotals(
     FROM llm_usage_events
     WHERE ${where.sql}
     `,
-    ...where.params,
+    where.params,
   );
-  const row = rows[0];
   return {
-    totalInputTokens: row.total_input_tokens,
-    totalOutputTokens: row.total_output_tokens,
-    totalCacheCreationTokens: row.total_cache_creation_tokens,
-    totalCacheReadTokens: row.total_cache_read_tokens,
-    totalEstimatedCostUsd: row.total_estimated_cost_usd ?? 0,
-    eventCount: row.event_count,
-    pricedEventCount: row.priced_event_count,
-    unpricedEventCount: row.unpriced_event_count,
+    totalInputTokens: row?.total_input_tokens ?? 0,
+    totalOutputTokens: row?.total_output_tokens ?? 0,
+    totalCacheCreationTokens: row?.total_cache_creation_tokens ?? 0,
+    totalCacheReadTokens: row?.total_cache_read_tokens ?? 0,
+    totalEstimatedCostUsd: row?.total_estimated_cost_usd ?? 0,
+    eventCount: row?.event_count ?? 0,
+    pricedEventCount: row?.priced_event_count ?? 0,
+    unpricedEventCount: row?.unpriced_event_count ?? 0,
   };
 }
 
@@ -719,13 +722,13 @@ const USAGE_PREAGG_BUCKET_MS = 15 * 60 * 1000;
  * returned row's `created_at` is its UTC bucket start, which the JS bucketing
  * maps to the same local bucket every raw event in that window would map to.
  */
-function fetchRawBucketRows(
+async function fetchRawBucketRows(
   range: UsageTimeRange,
   filter?: UsageAggregationFilter,
-): UsageEventBucketRow[] {
+): Promise<UsageEventBucketRow[]> {
   const where = buildUsageAggregationWhere(range, filter);
-  return rawAll<UsageEventBucketRow>(
-    "usage:fetchRawBucketRows",
+  const db = requireMainDb();
+  return db.all<UsageEventBucketRow>(
     /*sql*/ `
     SELECT
       (created_at / ${USAGE_PREAGG_BUCKET_MS}) * ${USAGE_PREAGG_BUCKET_MS} AS created_at,
@@ -738,7 +741,7 @@ function fetchRawBucketRows(
     GROUP BY (created_at / ${USAGE_PREAGG_BUCKET_MS})
     ORDER BY created_at ASC
     `,
-    ...where.params,
+    where.params,
   );
 }
 
@@ -751,13 +754,13 @@ function fetchRawBucketRows(
  * with zero-value buckets. DST-short and DST-long local days are handled
  * correctly.
  */
-export function getUsageDayBuckets(
+export async function getUsageDayBuckets(
   range: UsageTimeRange,
   tz: string = "UTC",
   options: UsageBucketOptions = {},
   filter?: UsageAggregationFilter,
-): UsageDayBucket[] {
-  const rows = fetchRawBucketRows(range, filter);
+): Promise<UsageDayBucket[]> {
+  const rows = await fetchRawBucketRows(range, filter);
   return bucketEventsByDay(rows, range, tz, options);
 }
 
@@ -770,13 +773,13 @@ export function getUsageDayBuckets(
  * buckets. DST fall-back produces two distinct buckets for the duplicated hour;
  * DST spring-forward produces 23 buckets for the affected day.
  */
-export function getUsageHourBuckets(
+export async function getUsageHourBuckets(
   range: UsageTimeRange,
   tz: string = "UTC",
   options: UsageBucketOptions = {},
   filter?: UsageAggregationFilter,
-): UsageDayBucket[] {
-  const rows = fetchRawBucketRows(range, filter);
+): Promise<UsageDayBucket[]> {
+  const rows = await fetchRawBucketRows(range, filter);
   return bucketEventsByHour(rows, range, tz, options);
 }
 
@@ -838,21 +841,21 @@ function mapGroupRow(
  * Return grouped breakdowns across the given time range, ordered by total
  * estimated cost descending (most expensive group first).
  */
-export function getUsageGroupBreakdown(
+export async function getUsageGroupBreakdown(
   range: UsageTimeRange,
   groupBy: GroupByDimension,
   filter?: UsageAggregationFilter,
-): UsageGroupBreakdown[] {
+): Promise<UsageGroupBreakdown[]> {
   // Runtime allowlist — defense-in-depth against SQL injection via type assertions.
   assertGroupByDimension(groupBy);
 
+  const db = requireMainDb();
   const normalizedFilter = normalizeScheduleAttributionFilter(filter);
 
   // Conversation grouping requires a JOIN with conversations to resolve titles.
   if (groupBy === "conversation") {
     const where = buildUsageAggregationWhere(range, normalizedFilter, "e");
-    const rows = rawAll<GroupRow>(
-      "usage:groupBreakdown:conversation",
+    const rows = await db.all<GroupRow>(
       /*sql*/ `
       SELECT
         CASE WHEN e.conversation_id IS NULL THEN 'Other'
@@ -889,7 +892,7 @@ export function getUsageGroupBreakdown(
       ORDER BY total_estimated_cost_usd DESC
       LIMIT 50
       `,
-      ...where.params,
+      where.params,
     );
     return rows.map((row) => mapGroupRow(row, groupBy));
   }
@@ -903,8 +906,7 @@ export function getUsageGroupBreakdown(
       now,
       selectExpression: "schedule_attr_runs.job_id",
     });
-    const rows = rawAll<GroupRow>(
-      "usage:groupBreakdown:schedule",
+    const rows = await db.all<GroupRow>(
       /*sql*/ `
       WITH schedule_usage AS (
         SELECT
@@ -934,16 +936,14 @@ export function getUsageGroupBreakdown(
       GROUP BY schedule_usage.group_key
       ORDER BY total_estimated_cost_usd DESC
       `,
-      ...groupKeySubquery.params,
-      ...where.params,
+      [...groupKeySubquery.params, ...where.params],
     );
     return rows.map((row) => mapGroupRow(row, groupBy));
   }
 
   const column = GROUP_BY_COLUMNS[groupBy];
   const where = buildUsageAggregationWhere(range, normalizedFilter, "e");
-  const rows = rawAll<GroupRow>(
-    "usage:groupBreakdown:column",
+  const rows = await db.all<GroupRow>(
     /*sql*/ `
     SELECT
       e.${column}                                      AS group_key,
@@ -960,24 +960,25 @@ export function getUsageGroupBreakdown(
     GROUP BY e.${column}
     ORDER BY total_estimated_cost_usd DESC
     `,
-    ...where.params,
+    where.params,
   );
   return rows.map((row) => mapGroupRow(row, groupBy));
 }
 
-export function getUsageGroupedSeries(
+export async function getUsageGroupedSeries(
   range: UsageTimeRange,
   groupBy: GroupByDimension,
   granularity: UsageGranularity,
   tz: string = "UTC",
   options: UsageBucketOptions = {},
   filter?: UsageAggregationFilter,
-): UsageGroupedSeriesBucket[] {
+): Promise<UsageGroupedSeriesBucket[]> {
   assertGroupByDimension(groupBy);
   if (groupBy === "conversation") {
     throw new Error("Grouped usage series does not support conversation");
   }
 
+  const db = requireMainDb();
   const normalizedFilter = normalizeScheduleAttributionFilter(filter);
   let rows: UsageGroupedBucketRow[];
 
@@ -990,8 +991,7 @@ export function getUsageGroupedSeries(
       now,
       selectExpression: "schedule_attr_runs.job_id",
     });
-    rows = rawAll<UsageGroupedBucketRow>(
-      "usage:groupedSeries:schedule",
+    rows = await db.all<UsageGroupedBucketRow>(
       /*sql*/ `
       WITH schedule_usage AS (
         SELECT
@@ -1018,14 +1018,12 @@ export function getUsageGroupedSeries(
       GROUP BY (schedule_usage.created_at / ${USAGE_PREAGG_BUCKET_MS}), schedule_usage.group_key
       ORDER BY created_at ASC
       `,
-      ...groupKeySubquery.params,
-      ...where.params,
+      [...groupKeySubquery.params, ...where.params],
     );
   } else {
     const column = GROUP_BY_COLUMNS[groupBy];
     const where = buildUsageAggregationWhere(range, normalizedFilter, "e");
-    rows = rawAll<UsageGroupedBucketRow>(
-      "usage:groupedSeries:column",
+    rows = await db.all<UsageGroupedBucketRow>(
       /*sql*/ `
       SELECT
         (e.created_at / ${USAGE_PREAGG_BUCKET_MS}) * ${USAGE_PREAGG_BUCKET_MS} AS created_at,
@@ -1039,7 +1037,7 @@ export function getUsageGroupedSeries(
       GROUP BY (e.created_at / ${USAGE_PREAGG_BUCKET_MS}), e.${column}
       ORDER BY created_at ASC
       `,
-      ...where.params,
+      where.params,
     );
   }
 

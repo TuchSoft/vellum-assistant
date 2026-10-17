@@ -326,7 +326,7 @@ export class WatchStreamSession {
         return;
       }
 
-      const started = this.manager.start({
+      const started = await this.manager.start({
         sourceActorPrincipalId,
         onObservation: () => {
           this.handleObservation();

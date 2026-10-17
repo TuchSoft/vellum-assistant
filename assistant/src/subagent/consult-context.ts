@@ -270,7 +270,7 @@ async function buildWorkspaceSection(
   try {
     const { resolveWorkspaceTopLevelContext } =
       await import("../daemon/conversation-workspace.js");
-    const workspace = resolveWorkspaceTopLevelContext(conversationId);
+    const workspace = await resolveWorkspaceTopLevelContext(conversationId);
     if (workspace) {
       parts.push(truncate(workspace, 4000));
     }

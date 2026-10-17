@@ -111,7 +111,7 @@ const workspaceContextInjector: Injector = {
     if (mode !== "full") {
       return null;
     }
-    const text = resolveWorkspaceTopLevelContext(ctx.conversationId);
+    const text = await resolveWorkspaceTopLevelContext(ctx.conversationId);
     if (!text) {
       return null;
     }

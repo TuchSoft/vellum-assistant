@@ -930,7 +930,7 @@ export async function runDueSchedulesOnce(
           "Executing wake schedule",
         );
         const result = await wakeAgentForOpportunity(
-          buildWakeScheduleOptions(job, wakeConversationId),
+          await buildWakeScheduleOptions(job, wakeConversationId),
         );
 
         if (result.reason === "timeout" && isOneShot) {

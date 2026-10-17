@@ -121,7 +121,7 @@ export async function captionImageBlocks(
     // Persist the original to a known, content-hash-deduped location so it
     // survives the text substitution and stays findable on disk. Resolve a
     // reference source to its bytes first (a no-op for inline base64).
-    const resolvedForPersist = resolveMediaSourceData(image.source);
+    const resolvedForPersist = await resolveMediaSourceData(image.source);
     if (resolvedForPersist) {
       persistImage(resolvedForPersist.data, resolvedForPersist.media_type);
     }

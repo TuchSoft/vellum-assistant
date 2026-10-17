@@ -14,12 +14,14 @@ import {
  */
 
 /** Image blocks in stored message content, with their bytes resolved. */
-export function extractMediaBlocks(raw: string): Array<{
-  type: "image";
-  data: Buffer;
-  mimeType: string;
-  index: number;
-}> {
+export async function extractMediaBlocks(raw: string): Promise<
+  Array<{
+    type: "image";
+    data: Buffer;
+    mimeType: string;
+    index: number;
+  }>
+> {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) {
@@ -36,7 +38,7 @@ export function extractMediaBlocks(raw: string): Array<{
       if (block.type === "image") {
         // The source may be inline base64 or a workspace reference;
         // resolveMediaSourceData resolves both to base64 bytes.
-        const resolved = resolveMediaSourceData(block.source);
+        const resolved = await resolveMediaSourceData(block.source);
         if (!resolved) {
           continue;
         }

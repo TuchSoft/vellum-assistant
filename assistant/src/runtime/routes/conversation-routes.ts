@@ -2803,7 +2803,7 @@ export async function handleSendMessage(
       // `contentAfterScan` already carries the scan-rewritten content when
       // applicable; reuse it here for consistency.
       const rawContent = contentAfterScan;
-      const slashContext = buildSlashContextForContent(rawContent, {
+      const slashContext = await buildSlashContextForContent(rawContent, {
         conversationId: mapping.conversationId,
         messageCount: conversation.getMessages().length,
         inputTokens: conversation.usageStats.inputTokens,

@@ -586,7 +586,7 @@ async function defaultResolveTarget(
       await import("../daemon/conversation-resting-trust.js");
     const wakeTrust =
       opts.trustContext ??
-      recoverRestingTrustContext(conversationId) ??
+      (await recoverRestingTrustContext(conversationId)) ??
       undefined;
     return await getOrCreateConversation(conversationId, {
       trustContext: wakeTrust,
@@ -1116,7 +1116,7 @@ export async function wakeAgentForOpportunity(
     // inside messages without adding, dropping, or reordering one, so
     // `baselineLength` and `wakeHintMessageCount` still index the same
     // positions.
-    const runInput: Message[] = conversation.trimAgedSightFrames([
+    const runInput: Message[] = await conversation.trimAgedSightFrames([
       ...baseline,
       ...wakeMessages,
     ]);

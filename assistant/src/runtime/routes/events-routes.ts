@@ -271,7 +271,7 @@ export async function handleSubscribeAssistantEvents(
     heartbeatIntervalMs?: number;
     shedReporter?: SseShedReporter;
   },
-): ReadableStream<Uint8Array> {
+): Promise<ReadableStream<Uint8Array>> {
   const { queryParams, headers, abortSignal } = args;
 
   const rawConversationId = queryParams?.conversationId;

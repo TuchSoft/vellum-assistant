@@ -26,7 +26,7 @@ export async function loadImageRefData(
     return null;
   }
 
-  const mediaBlocks = extractMediaBlocks(msg.content);
+  const mediaBlocks = await extractMediaBlocks(msg.content);
   const block = mediaBlocks.find((b) => b.index === ref.blockIndex);
   if (!block) {
     return null;

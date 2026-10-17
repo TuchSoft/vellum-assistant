@@ -83,7 +83,7 @@ export async function captionImage(
 ): Promise<CaptionResult> {
   // Hash the image's content (resolving a reference source to its bytes, a
   // no-op for inline base64) so the caption cache keys on the image itself.
-  const resolved = resolveMediaSourceData(image.source);
+  const resolved = await resolveMediaSourceData(image.source);
   if (!resolved) {
     return { status: "failed" };
   }

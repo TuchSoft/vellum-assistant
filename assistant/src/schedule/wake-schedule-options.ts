@@ -74,12 +74,12 @@ function hasOwnerAuthoredWakeTarget(
  * scheduler's due-tick has no caller to authorize; `schedules/:id/run` refuses
  * a non-owner before reaching this function.
  */
-export function buildWakeScheduleOptions(
+export async function buildWakeScheduleOptions(
   job: WakeScheduleFields,
   wakeConversationId: string,
-): WakeOptions {
+): Promise<WakeOptions> {
   const trustContext = hasOwnerAuthoredWakeTarget(job, wakeConversationId)
-    ? recoverRestingTrustContext(wakeConversationId)
+    ? await recoverRestingTrustContext(wakeConversationId)
     : null;
   return {
     conversationId: wakeConversationId,

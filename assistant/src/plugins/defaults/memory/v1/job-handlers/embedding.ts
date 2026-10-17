@@ -119,7 +119,7 @@ export async function embedAttachmentJob(job: MemoryJob): Promise<void> {
     return;
   }
 
-  const mediaBlocks = extractMediaBlocks(message.content);
+  const mediaBlocks = await extractMediaBlocks(message.content);
   const block = mediaBlocks.find((b) => b.index === blockIndex);
   if (!block) {
     return;

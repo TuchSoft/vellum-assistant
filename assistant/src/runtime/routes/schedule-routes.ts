@@ -1490,7 +1490,7 @@ async function handleRunScheduleNow(
     const { wakeAgentForOpportunity } = await import("../agent-wake.js");
     try {
       await wakeAgentForOpportunity(
-        buildWakeScheduleOptions(schedule, schedule.wakeConversationId),
+        await buildWakeScheduleOptions(schedule, schedule.wakeConversationId),
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

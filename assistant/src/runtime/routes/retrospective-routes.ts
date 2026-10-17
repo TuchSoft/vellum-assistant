@@ -78,7 +78,7 @@ async function listRetrospectiveConversations(
   return merged.slice(0, limit);
 }
 
-function readRetrospectiveConfigResponse() {
+async function readRetrospectiveConfigResponse() {
   const config = getConfig();
   const available = isMemoryEnabled();
   const enabled = available && config.memory.retrospective.enabled;
@@ -86,7 +86,8 @@ function readRetrospectiveConfigResponse() {
   // Retrospectives have no global schedule — runs are triggered per
   // conversation after activity, so a future run time is never known.
   const nextRunAt = null;
-  const lastRunAt = listRetrospectiveConversations(1)[0]?.row.createdAt ?? null;
+  const lastRunAt =
+    (await listRetrospectiveConversations(1))[0]?.row.createdAt ?? null;
   return {
     available,
     enabled,
@@ -133,7 +134,7 @@ export const ROUTES: RouteDefinition[] = [
       success: z.boolean(),
     }),
     handler: async (_args: RouteHandlerArgs) => {
-      return readRetrospectiveConfigResponse();
+      return await readRetrospectiveConfigResponse();
     },
   },
   {

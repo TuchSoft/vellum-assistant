@@ -81,7 +81,7 @@ async function handleBrowserExecute({
   const { context, conversation } = resolved;
   const typedOperation = operation as BrowserOperation;
   const operationToken = conversation?.currentRequestId
-    ? bestEffortModeSessionTracking("browser admission", () =>
+    ? await bestEffortModeSessionTracking("browser admission", () =>
         conversation.browserModeSessions.beginOperation({
           turnId: conversation.currentRequestId!,
           lifecycle: browserOperationLifecycle(typedOperation),

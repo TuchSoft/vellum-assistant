@@ -1055,7 +1055,7 @@ export async function retrieveForTurn(
           const img = imageBlocks[i];
           // Resolve the image bytes whether stored inline or as a workspace
           // reference; skip when the bytes can't be read.
-          const resolved = resolveMediaSourceData(img.source);
+          const resolved = await resolveMediaSourceData(img.source);
           if (!resolved) {
             continue;
           }

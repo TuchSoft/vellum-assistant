@@ -47,7 +47,7 @@ function handleListBookmarks(): { bookmarks: BookmarkSummary[] } {
 
 async function handleCreateBookmark({
   body = {},
-}: RouteHandlerArgs): BookmarkSummary {
+}: RouteHandlerArgs): Promise<BookmarkSummary> {
   const messageId = body.messageId as string | undefined;
   const conversationId = body.conversationId as string | undefined;
 

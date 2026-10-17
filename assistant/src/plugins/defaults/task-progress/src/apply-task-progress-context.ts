@@ -1,7 +1,4 @@
-import {
-  type ContentBlock,
-  type Message,
-} from "@vellumai/plugin-api";
+import { type ContentBlock, type Message } from "@vellumai/plugin-api";
 
 import {
   type ConversationSurfaceSnapshot,
@@ -78,12 +75,12 @@ function attachToTrailingUserMessage(
  * active task-progress cards. Assigns a new message array when the history
  * changes so the snapshot is not written back as ordinary transcript.
  */
-export function applyTaskProgressContext(
+export async function applyTaskProgressContext(
   conversationId: string,
   messages: Message[],
-): Message[] {
+): Promise<Message[]> {
   const snapshots: ConversationSurfaceSnapshot[] =
-    listConversationSurfaceSnapshots(conversationId);
+    await listConversationSurfaceSnapshots(conversationId);
   const snapshotText = formatActiveTaskProgressSnapshot(snapshots);
   const stripped = stripActiveTaskProgressBlocks(messages);
   if (snapshotText.length === 0) {

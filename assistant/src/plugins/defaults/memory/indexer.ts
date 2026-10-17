@@ -223,7 +223,9 @@ export async function indexMessageNow(
   // ── Batch extraction tracking ──────────────────────────────────────
   // Instead of per-message extraction, track pending unextracted messages
   // and trigger batch extraction when the threshold is reached or after idle.
-  const isAutoAnalysisSource = isAutoAnalysisConversation(input.conversationId);
+  const isAutoAnalysisSource = await isAutoAnalysisConversation(
+    input.conversationId,
+  );
   if (
     shouldExtract &&
     isTrustedActor &&

@@ -308,7 +308,7 @@ async function advanceSlackEditedAtWatermark(params: {
   sourceMessageId: string;
   sourceThreadId?: string;
   slackEditedTs: string;
-}): void {
+}): Promise<void> {
   const {
     messageId,
     existingRow: row,
@@ -379,7 +379,7 @@ async function applySlackEditMetadata(params: {
   sourceThreadId?: string;
   newContent: string;
   slackEditedTs?: string;
-}): boolean {
+}): Promise<boolean> {
   const {
     messageId,
     existingRow: row,

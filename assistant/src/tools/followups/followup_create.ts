@@ -112,7 +112,7 @@ export async function executeFollowupCreate(
       ? now + expectedResponseHours * 60 * 60 * 1000
       : null;
 
-    const followUp = createFollowUp({
+    const followUp = await createFollowUp({
       channel: channel.trim(),
       conversationId: conversationId.trim(),
       contactId: contactId ?? null,

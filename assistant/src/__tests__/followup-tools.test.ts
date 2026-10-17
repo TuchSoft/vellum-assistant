@@ -1,18 +1,14 @@
-import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { executeFollowupCreate } from "../tools/followups/followup_create.js";
 import { executeFollowupList } from "../tools/followups/followup_list.js";
 import { executeFollowupResolve } from "../tools/followups/followup_resolve.js";
 import type { ToolContext } from "../tools/types.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
-
-function getRawDb(): Database {
-  return (getDb() as unknown as { $client: Database }).$client;
-}
 
 const ctx: ToolContext = {
   workingDir: "/tmp",
@@ -20,8 +16,8 @@ const ctx: ToolContext = {
   trustClass: "guardian",
 };
 
-function clearFollowups(): void {
-  getRawDb().run("DELETE FROM followups");
+async function clearFollowups(): Promise<void> {
+  await requireMainDb().run("DELETE FROM followups");
 }
 
 function extractFollowupId(content: string): string {
@@ -32,8 +28,10 @@ function extractFollowupId(content: string): string {
 
 // ── followup_create ─────────────────────────────────────────────────
 
-describe("followup_create tool", () => {
-  beforeEach(clearFollowups);
+describePg("followup_create tool", () => {
+  beforeEach(async () => {
+    await clearFollowups();
+  });
 
   test("creates a follow-up with required fields", async () => {
     const result = await executeFollowupCreate(
@@ -149,8 +147,10 @@ describe("followup_create tool", () => {
 
 // ── followup_list ───────────────────────────────────────────────────
 
-describe("followup_list tool", () => {
-  beforeEach(clearFollowups);
+describePg("followup_list tool", () => {
+  beforeEach(async () => {
+    await clearFollowups();
+  });
 
   test("returns empty message when no follow-ups exist", async () => {
     const result = await executeFollowupList({}, ctx);
@@ -216,8 +216,10 @@ describe("followup_list tool", () => {
 
 // ── followup_resolve ────────────────────────────────────────────────
 
-describe("followup_resolve tool", () => {
-  beforeEach(clearFollowups);
+describePg("followup_resolve tool", () => {
+  beforeEach(async () => {
+    await clearFollowups();
+  });
 
   test("resolves a follow-up by ID", async () => {
     const createResult = await executeFollowupCreate(

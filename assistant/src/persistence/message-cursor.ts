@@ -13,8 +13,7 @@
 import { eq } from "drizzle-orm";
 
 import type { LineageBound } from "./conversation-lineage.js";
-import { getDb } from "./db-connection.js";
-import { messages } from "./schema/index.js";
+import { requireMainDb } from "./db-facade.js";
 
 export { messagesAfterBoundFilter } from "./conversation-lineage.js";
 
@@ -46,12 +45,15 @@ export type MessagesAfterBound =
   | { kind: "vanished" };
 
 /** The `(createdAt, id)` bound of a single message, or null when it is gone. */
-export function loadMessageBound(messageId: string): LineageBound | null {
-  const row = getDb()
+export async function loadMessageBound(
+  messageId: string,
+): Promise<LineageBound | null> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const [row] = await db.orm
     .select({ createdAt: messages.createdAt, id: messages.id })
     .from(messages)
-    .where(eq(messages.id, messageId))
-    .get();
+    .where(eq(messages.id, messageId));
   return row ?? null;
 }
 
@@ -60,14 +62,14 @@ export function loadMessageBound(messageId: string): LineageBound | null {
  * wins; a cursor whose row is gone falls back to the `createdAt` it carries,
  * paired with its id so same-millisecond neighbours keep their order.
  */
-export function resolveMessagesAfterBound(
+export async function resolveMessagesAfterBound(
   after: MessagesAfterRef,
-): MessagesAfterBound {
+): Promise<MessagesAfterBound> {
   const id = typeof after === "string" ? after : (after?.id ?? "");
   if (id === "") {
     return { kind: "all" };
   }
-  const live = loadMessageBound(id);
+  const live = await loadMessageBound(id);
   if (live) {
     return { kind: "after", bound: live };
   }

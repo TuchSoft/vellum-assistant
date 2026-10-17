@@ -20,16 +20,12 @@ import {
 import { v4 as uuid } from "uuid";
 
 import { UserError } from "../util/errors.js";
-import { getDb } from "./db-connection.js";
+import type { AsyncDb, SchemaTables } from "./db-facade.js";
+import { requireMainDb } from "./db-facade.js";
 import {
   latestAssistantMessage,
   latestAssistantMessageBefore,
 } from "./message-reads.js";
-import {
-  conversationAssistantAttentionState,
-  conversationAttentionEvents,
-  conversations,
-} from "./schema/index.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -74,6 +70,9 @@ export interface AttentionState {
   updatedAt: number;
 }
 
+type AttentionStateRow =
+  SchemaTables["conversationAssistantAttentionState"]["$inferSelect"];
+
 /**
  * True when the latest assistant cursor is ahead of the last-seen cursor.
  *
@@ -109,37 +108,20 @@ export function hasUnseenLatestAssistantMessage(
  * the TS predicate.
  */
 export function unseenAttentionStateConditions(): SQL[] {
+  const attentionState =
+    requireMainDb().schema.conversationAssistantAttentionState;
   return [
-    sql`${conversationAssistantAttentionState.latestAssistantMessageAt} IS NOT NULL`,
+    sql`${attentionState.latestAssistantMessageAt} IS NOT NULL`,
     or(
-      isNull(conversationAssistantAttentionState.lastSeenAssistantMessageAt),
-      sql`${conversationAssistantAttentionState.lastSeenAssistantMessageAt} < ${conversationAssistantAttentionState.latestAssistantMessageAt}`,
+      isNull(attentionState.lastSeenAssistantMessageAt),
+      sql`${attentionState.lastSeenAssistantMessageAt} < ${attentionState.latestAssistantMessageAt}`,
     )!,
   ];
 }
 
 // ── Row mappers ──────────────────────────────────────────────────────
 
-function rowToEvent(
-  row: typeof conversationAttentionEvents.$inferSelect,
-): AttentionEvent {
-  return {
-    id: row.id,
-    conversationId: row.conversationId,
-    sourceChannel: row.sourceChannel,
-    signalType: row.signalType as SignalType,
-    confidence: row.confidence as Confidence,
-    source: row.source,
-    evidenceText: row.evidenceText,
-    metadataJson: row.metadataJson,
-    observedAt: row.observedAt,
-    createdAt: row.createdAt,
-  };
-}
-
-function rowToState(
-  row: typeof conversationAssistantAttentionState.$inferSelect,
-): AttentionState {
+function rowToState(row: AttentionStateRow): AttentionState {
   return {
     conversationId: row.conversationId,
     latestAssistantMessageId: row.latestAssistantMessageId,
@@ -163,41 +145,37 @@ function rowToState(
  * Update the latest-assistant cursor when a new assistant message is persisted.
  * Monotonic: the cursor never moves backward.
  */
-export function projectAssistantMessage(params: {
+export async function projectAssistantMessage(params: {
   conversationId: string;
   messageId: string;
   messageAt: number;
-}): boolean {
+}): Promise<boolean> {
   const { conversationId, messageId, messageAt } = params;
-  const db = getDb();
+  const db = requireMainDb();
+  const attentionState = db.schema.conversationAssistantAttentionState;
   const now = Date.now();
 
-  const existing = db
+  const [existing] = await db.orm
     .select()
-    .from(conversationAssistantAttentionState)
-    .where(
-      eq(conversationAssistantAttentionState.conversationId, conversationId),
-    )
-    .get();
+    .from(attentionState)
+    .where(eq(attentionState.conversationId, conversationId));
 
   if (!existing) {
-    db.insert(conversationAssistantAttentionState)
-      .values({
-        conversationId,
-        latestAssistantMessageId: messageId,
-        latestAssistantMessageAt: messageAt,
-        lastSeenAssistantMessageId: null,
-        lastSeenAssistantMessageAt: null,
-        lastSeenEventAt: null,
-        lastSeenConfidence: null,
-        lastSeenSignalType: null,
-        lastSeenSourceChannel: null,
-        lastSeenSource: null,
-        lastSeenEvidenceText: null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+    await db.orm.insert(attentionState).values({
+      conversationId,
+      latestAssistantMessageId: messageId,
+      latestAssistantMessageAt: messageAt,
+      lastSeenAssistantMessageId: null,
+      lastSeenAssistantMessageAt: null,
+      lastSeenEventAt: null,
+      lastSeenConfidence: null,
+      lastSeenSignalType: null,
+      lastSeenSourceChannel: null,
+      lastSeenSource: null,
+      lastSeenEvidenceText: null,
+      createdAt: now,
+      updatedAt: now,
+    });
     return true;
   }
 
@@ -221,16 +199,14 @@ export function projectAssistantMessage(params: {
     (existing.lastSeenAssistantMessageAt != null &&
       existing.lastSeenAssistantMessageAt >= existing.latestAssistantMessageAt);
 
-  db.update(conversationAssistantAttentionState)
+  await db.orm
+    .update(attentionState)
     .set({
       latestAssistantMessageId: messageId,
       latestAssistantMessageAt: messageAt,
       updatedAt: now,
     })
-    .where(
-      eq(conversationAssistantAttentionState.conversationId, conversationId),
-    )
-    .run();
+    .where(eq(attentionState.conversationId, conversationId));
 
   return wasSeen;
 }
@@ -239,11 +215,11 @@ export function projectAssistantMessage(params: {
  * Seed a forked conversation's assistant-attention projection so copied
  * assistant history is treated as already seen from the outset.
  */
-export function seedForkedConversationAttention(params: {
+export async function seedForkedConversationAttention(params: {
   conversationId: string;
   latestAssistantMessageId: string | null;
   latestAssistantMessageAt: number | null;
-}): void {
+}): Promise<void> {
   const { conversationId, latestAssistantMessageId, latestAssistantMessageAt } =
     params;
 
@@ -251,38 +227,35 @@ export function seedForkedConversationAttention(params: {
     return;
   }
 
-  const db = getDb();
+  const db = requireMainDb();
+  const attentionState = db.schema.conversationAssistantAttentionState;
   const now = Date.now();
-  const existing = db
+  const [existing] = await db.orm
     .select()
-    .from(conversationAssistantAttentionState)
-    .where(
-      eq(conversationAssistantAttentionState.conversationId, conversationId),
-    )
-    .get();
+    .from(attentionState)
+    .where(eq(attentionState.conversationId, conversationId));
 
   if (!existing) {
-    db.insert(conversationAssistantAttentionState)
-      .values({
-        conversationId,
-        latestAssistantMessageId,
-        latestAssistantMessageAt,
-        lastSeenAssistantMessageId: latestAssistantMessageId,
-        lastSeenAssistantMessageAt: latestAssistantMessageAt,
-        lastSeenEventAt: null,
-        lastSeenConfidence: null,
-        lastSeenSignalType: null,
-        lastSeenSourceChannel: null,
-        lastSeenSource: null,
-        lastSeenEvidenceText: null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+    await db.orm.insert(attentionState).values({
+      conversationId,
+      latestAssistantMessageId,
+      latestAssistantMessageAt,
+      lastSeenAssistantMessageId: latestAssistantMessageId,
+      lastSeenAssistantMessageAt: latestAssistantMessageAt,
+      lastSeenEventAt: null,
+      lastSeenConfidence: null,
+      lastSeenSignalType: null,
+      lastSeenSourceChannel: null,
+      lastSeenSource: null,
+      lastSeenEvidenceText: null,
+      createdAt: now,
+      updatedAt: now,
+    });
     return;
   }
 
-  db.update(conversationAssistantAttentionState)
+  await db.orm
+    .update(attentionState)
     .set({
       latestAssistantMessageId,
       latestAssistantMessageAt,
@@ -296,10 +269,7 @@ export function seedForkedConversationAttention(params: {
       lastSeenEvidenceText: null,
       updatedAt: now,
     })
-    .where(
-      eq(conversationAssistantAttentionState.conversationId, conversationId),
-    )
-    .run();
+    .where(eq(attentionState.conversationId, conversationId));
 }
 
 // ── recordConversationSeenSignal ─────────────────────────────────────
@@ -308,7 +278,7 @@ export function seedForkedConversationAttention(params: {
  * Record a "seen" signal: appends an immutable event row and advances the
  * seen cursor in the state projection to the current latest assistant message.
  */
-export function recordConversationSeenSignal(params: {
+export async function recordConversationSeenSignal(params: {
   conversationId: string;
   sourceChannel: string;
   signalType: SignalType;
@@ -317,7 +287,7 @@ export function recordConversationSeenSignal(params: {
   evidenceText?: string;
   metadata?: Record<string, unknown>;
   observedAt?: number;
-}): AttentionEvent {
+}): Promise<AttentionEvent> {
   const {
     conversationId,
     sourceChannel,
@@ -329,13 +299,15 @@ export function recordConversationSeenSignal(params: {
     observedAt,
   } = params;
 
-  const db = getDb();
+  const db = requireMainDb();
+  const attentionEvents = db.schema.conversationAttentionEvents;
+  const attentionState = db.schema.conversationAssistantAttentionState;
   const now = Date.now();
   const eventId = uuid();
   const eventObservedAt = observedAt ?? now;
   const metadataJson = metadata ? JSON.stringify(metadata) : "{}";
 
-  const event: typeof conversationAttentionEvents.$inferInsert = {
+  const event: SchemaTables["conversationAttentionEvents"]["$inferInsert"] = {
     id: eventId,
     conversationId,
     sourceChannel,
@@ -348,18 +320,15 @@ export function recordConversationSeenSignal(params: {
     createdAt: now,
   };
 
-  db.transaction((tx) => {
+  await db.transaction(async (tx) => {
     // 1. Append immutable evidence row
-    tx.insert(conversationAttentionEvents).values(event).run();
+    await tx.orm.insert(attentionEvents).values(event);
 
     // 2. Advance the seen cursor to the current latest assistant message
-    const state = tx
+    const [state] = await tx.orm
       .select()
-      .from(conversationAssistantAttentionState)
-      .where(
-        eq(conversationAssistantAttentionState.conversationId, conversationId),
-      )
-      .get();
+      .from(attentionState)
+      .where(eq(attentionState.conversationId, conversationId));
 
     if (!state) {
       // No state row yet — look up the conversation's latest assistant message so
@@ -368,28 +337,28 @@ export function recordConversationSeenSignal(params: {
       // the accessor: a still-streaming reply is not a reply the user has seen,
       // and anchoring the watermark on it would classify the finished reply as
       // seen the moment it completes.
-      const latestMsg = latestAssistantMessage(conversationId, { db: tx });
+      const latestMsg = await latestAssistantMessage(conversationId, {
+        db: tx,
+      });
 
       const latestMsgId = latestMsg?.id ?? null;
       const latestMsgAt = latestMsg?.createdAt ?? null;
 
-      tx.insert(conversationAssistantAttentionState)
-        .values({
-          conversationId,
-          latestAssistantMessageId: latestMsgId,
-          latestAssistantMessageAt: latestMsgAt,
-          lastSeenAssistantMessageId: latestMsgId,
-          lastSeenAssistantMessageAt: latestMsgAt,
-          lastSeenEventAt: eventObservedAt,
-          lastSeenConfidence: confidence,
-          lastSeenSignalType: signalType,
-          lastSeenSourceChannel: sourceChannel,
-          lastSeenSource: source,
-          lastSeenEvidenceText: evidenceText ?? null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .run();
+      await tx.orm.insert(attentionState).values({
+        conversationId,
+        latestAssistantMessageId: latestMsgId,
+        latestAssistantMessageAt: latestMsgAt,
+        lastSeenAssistantMessageId: latestMsgId,
+        lastSeenAssistantMessageAt: latestMsgAt,
+        lastSeenEventAt: eventObservedAt,
+        lastSeenConfidence: confidence,
+        lastSeenSignalType: signalType,
+        lastSeenSourceChannel: sourceChannel,
+        lastSeenSource: source,
+        lastSeenEvidenceText: evidenceText ?? null,
+        createdAt: now,
+        updatedAt: now,
+      });
       return;
     }
 
@@ -425,30 +394,39 @@ export function recordConversationSeenSignal(params: {
       updates.lastSeenAssistantMessageAt = state.latestAssistantMessageAt;
     }
 
-    tx.update(conversationAssistantAttentionState)
+    await tx.orm
+      .update(attentionState)
       .set(updates)
-      .where(
-        eq(conversationAssistantAttentionState.conversationId, conversationId),
-      )
-      .run();
+      .where(eq(attentionState.conversationId, conversationId));
   });
 
-  return rowToEvent(event as typeof conversationAttentionEvents.$inferSelect);
+  return {
+    id: eventId,
+    conversationId,
+    sourceChannel,
+    signalType,
+    confidence,
+    source,
+    evidenceText: evidenceText ?? null,
+    metadataJson,
+    observedAt: eventObservedAt,
+    createdAt: now,
+  };
 }
 
 // ── markConversationUnread ───────────────────────────────────────────
 
-function resolveAssistantCursor(params: {
-  db: Pick<ReturnType<typeof getDb>, "select">;
+async function resolveAssistantCursor(params: {
+  db: AsyncDb;
   conversationId: string;
   latestAssistantMessageId?: string | null;
   latestAssistantMessageAt?: number | null;
-}): {
+}): Promise<{
   latestAssistantMessageId: string;
   latestAssistantMessageAt: number;
   previousAssistantMessageId: string | null;
   previousAssistantMessageAt: number | null;
-} | null {
+} | null> {
   const {
     db,
     conversationId,
@@ -457,7 +435,7 @@ function resolveAssistantCursor(params: {
   } = params;
 
   if (latestAssistantMessageId && latestAssistantMessageAt != null) {
-    const previousMessage = latestAssistantMessageBefore(
+    const previousMessage = await latestAssistantMessageBefore(
       conversationId,
       latestAssistantMessageAt,
       { db },
@@ -471,13 +449,13 @@ function resolveAssistantCursor(params: {
     };
   }
 
-  const latestMessage = latestAssistantMessage(conversationId, { db });
+  const latestMessage = await latestAssistantMessage(conversationId, { db });
 
   if (!latestMessage) {
     return null;
   }
 
-  const previousMessage = latestAssistantMessageBefore(
+  const previousMessage = await latestAssistantMessageBefore(
     conversationId,
     latestMessage.createdAt,
     { db },
@@ -500,21 +478,21 @@ function resolveAssistantCursor(params: {
  * `false` when the conversation was already unread (no-op).
  * Throws `UserError` when there is no assistant message to mark unread.
  */
-export function markConversationUnread(conversationId: string): boolean {
-  const db = getDb();
+export async function markConversationUnread(
+  conversationId: string,
+): Promise<boolean> {
+  const db = requireMainDb();
+  const attentionState = db.schema.conversationAssistantAttentionState;
   const now = Date.now();
   let changed = false;
 
-  db.transaction((tx) => {
-    const state = tx
+  await db.transaction(async (tx) => {
+    const [state] = await tx.orm
       .select()
-      .from(conversationAssistantAttentionState)
-      .where(
-        eq(conversationAssistantAttentionState.conversationId, conversationId),
-      )
-      .get();
+      .from(attentionState)
+      .where(eq(attentionState.conversationId, conversationId));
 
-    const cursor = resolveAssistantCursor({
+    const cursor = await resolveAssistantCursor({
       db: tx,
       conversationId,
       latestAssistantMessageId: state?.latestAssistantMessageId,
@@ -537,37 +515,33 @@ export function markConversationUnread(conversationId: string): boolean {
     }
 
     if (!state) {
-      tx.insert(conversationAssistantAttentionState)
-        .values({
-          conversationId,
-          latestAssistantMessageId: cursor.latestAssistantMessageId,
-          latestAssistantMessageAt: cursor.latestAssistantMessageAt,
-          lastSeenAssistantMessageId: cursor.previousAssistantMessageId,
-          lastSeenAssistantMessageAt: cursor.previousAssistantMessageAt,
-          lastSeenEventAt: null,
-          lastSeenConfidence: null,
-          lastSeenSignalType: null,
-          lastSeenSourceChannel: null,
-          lastSeenSource: null,
-          lastSeenEvidenceText: null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .run();
+      await tx.orm.insert(attentionState).values({
+        conversationId,
+        latestAssistantMessageId: cursor.latestAssistantMessageId,
+        latestAssistantMessageAt: cursor.latestAssistantMessageAt,
+        lastSeenAssistantMessageId: cursor.previousAssistantMessageId,
+        lastSeenAssistantMessageAt: cursor.previousAssistantMessageAt,
+        lastSeenEventAt: null,
+        lastSeenConfidence: null,
+        lastSeenSignalType: null,
+        lastSeenSourceChannel: null,
+        lastSeenSource: null,
+        lastSeenEvidenceText: null,
+        createdAt: now,
+        updatedAt: now,
+      });
       changed = true;
       return;
     }
 
-    tx.update(conversationAssistantAttentionState)
+    await tx.orm
+      .update(attentionState)
       .set({
         lastSeenAssistantMessageId: cursor.previousAssistantMessageId,
         lastSeenAssistantMessageAt: cursor.previousAssistantMessageAt,
         updatedAt: now,
       })
-      .where(
-        eq(conversationAssistantAttentionState.conversationId, conversationId),
-      )
-      .run();
+      .where(eq(attentionState.conversationId, conversationId));
     changed = true;
   });
 
@@ -580,24 +554,19 @@ export function markConversationUnread(conversationId: string): boolean {
  * Batch read for conversation list enrichment.
  * Returns a map of conversationId -> AttentionState.
  */
-export function getAttentionStateByConversationIds(
+export async function getAttentionStateByConversationIds(
   conversationIds: string[],
-): Map<string, AttentionState> {
+): Promise<Map<string, AttentionState>> {
   if (conversationIds.length === 0) {
     return new Map();
   }
 
-  const db = getDb();
-  const rows = db
+  const db = requireMainDb();
+  const attentionState = db.schema.conversationAssistantAttentionState;
+  const rows = await db.orm
     .select()
-    .from(conversationAssistantAttentionState)
-    .where(
-      inArray(
-        conversationAssistantAttentionState.conversationId,
-        conversationIds,
-      ),
-    )
-    .all();
+    .from(attentionState)
+    .where(inArray(attentionState.conversationId, conversationIds));
 
   const result = new Map<string, AttentionState>();
   for (const row of rows) {
@@ -622,9 +591,9 @@ export interface ListConversationAttentionParams {
  * Filtered list for assistant/LLM reporting API.
  * Supports filters: state (seen/unseen/all), source channel, limit, before cursor.
  */
-export function listConversationAttention(
+export async function listConversationAttention(
   params: ListConversationAttentionParams,
-): AttentionState[] {
+): Promise<AttentionState[]> {
   const {
     state: filterState = "all",
     sourceChannel,
@@ -633,9 +602,10 @@ export function listConversationAttention(
     before,
   } = params;
 
-  const db = getDb();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const conditions: any[] = [];
+  const db = requireMainDb();
+  const attentionState = db.schema.conversationAssistantAttentionState;
+  const conversations = db.schema.conversations;
+  const conditions: SQL[] = [];
 
   if (sourceChannel) {
     conditions.push(eq(conversations.originChannel, sourceChannel));
@@ -646,9 +616,7 @@ export function listConversationAttention(
   }
 
   if (before !== undefined) {
-    conditions.push(
-      lt(conversationAssistantAttentionState.latestAssistantMessageAt, before),
-    );
+    conditions.push(lt(attentionState.latestAssistantMessageAt, before));
   }
 
   if (filterState === "unseen") {
@@ -657,52 +625,45 @@ export function listConversationAttention(
   } else if (filterState === "seen") {
     // Seen: seen cursor equals latest assistant message
     conditions.push(
-      sql`${conversationAssistantAttentionState.latestAssistantMessageAt} IS NOT NULL`,
+      sql`${attentionState.latestAssistantMessageAt} IS NOT NULL`,
     );
     conditions.push(
-      sql`${conversationAssistantAttentionState.lastSeenAssistantMessageAt} = ${conversationAssistantAttentionState.latestAssistantMessageAt}`,
+      sql`${attentionState.lastSeenAssistantMessageAt} = ${attentionState.latestAssistantMessageAt}`,
     );
   }
 
-  let query = db
+  let query = db.orm
     .select({
-      conversationId: conversationAssistantAttentionState.conversationId,
-      latestAssistantMessageId:
-        conversationAssistantAttentionState.latestAssistantMessageId,
-      latestAssistantMessageAt:
-        conversationAssistantAttentionState.latestAssistantMessageAt,
-      lastSeenAssistantMessageId:
-        conversationAssistantAttentionState.lastSeenAssistantMessageId,
-      lastSeenAssistantMessageAt:
-        conversationAssistantAttentionState.lastSeenAssistantMessageAt,
-      lastSeenEventAt: conversationAssistantAttentionState.lastSeenEventAt,
-      lastSeenConfidence:
-        conversationAssistantAttentionState.lastSeenConfidence,
-      lastSeenSignalType:
-        conversationAssistantAttentionState.lastSeenSignalType,
-      lastSeenSourceChannel:
-        conversationAssistantAttentionState.lastSeenSourceChannel,
-      lastSeenSource: conversationAssistantAttentionState.lastSeenSource,
-      lastSeenEvidenceText:
-        conversationAssistantAttentionState.lastSeenEvidenceText,
-      createdAt: conversationAssistantAttentionState.createdAt,
-      updatedAt: conversationAssistantAttentionState.updatedAt,
+      conversationId: attentionState.conversationId,
+      latestAssistantMessageId: attentionState.latestAssistantMessageId,
+      latestAssistantMessageAt: attentionState.latestAssistantMessageAt,
+      lastSeenAssistantMessageId: attentionState.lastSeenAssistantMessageId,
+      lastSeenAssistantMessageAt: attentionState.lastSeenAssistantMessageAt,
+      lastSeenEventAt: attentionState.lastSeenEventAt,
+      lastSeenConfidence: attentionState.lastSeenConfidence,
+      lastSeenSignalType: attentionState.lastSeenSignalType,
+      lastSeenSourceChannel: attentionState.lastSeenSourceChannel,
+      lastSeenSource: attentionState.lastSeenSource,
+      lastSeenEvidenceText: attentionState.lastSeenEvidenceText,
+      createdAt: attentionState.createdAt,
+      updatedAt: attentionState.updatedAt,
     })
-    .from(conversationAssistantAttentionState);
+    .from(attentionState);
 
   // Only join conversations table when filtering by source or sourceChannel
   if (source || sourceChannel) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     query = (query as any).innerJoin(
       conversations,
-      eq(conversationAssistantAttentionState.conversationId, conversations.id),
+      eq(attentionState.conversationId, conversations.id),
     );
   }
 
-  const rows = (conditions.length > 0 ? query.where(and(...conditions)) : query)
-    .orderBy(desc(conversationAssistantAttentionState.latestAssistantMessageAt))
-    .limit(limit)
-    .all();
+  const rows = await (
+    conditions.length > 0 ? query.where(and(...conditions)) : query
+  )
+    .orderBy(desc(attentionState.latestAssistantMessageAt))
+    .limit(limit);
 
   return rows.map(rowToState);
 }

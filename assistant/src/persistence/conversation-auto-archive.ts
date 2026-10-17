@@ -15,24 +15,18 @@ import {
 import { ACP_LIVE_STATUSES } from "../acp/types.js";
 import { TERMINAL_STATUSES } from "../subagent/types.js";
 import { unseenAttentionStateConditions } from "./conversation-attention-store.js";
-import { ensureGroupMigration } from "./conversation-group-migration.js";
+import { ensureGroupMigrationAsync } from "./conversation-group-migration.js";
 import {
   MEMORY_V2_CONSOLIDATION_SOURCE,
   NATIVE_ORIGIN_CHANNEL,
   PINNED_GROUP_ID,
 } from "./conversation-types.js";
-import { getDb } from "./db-connection.js";
-import { rawChanges } from "./raw-query.js";
-import {
-  acpSessionHistory,
-  conversationAssistantAttentionState,
-  conversationModeSessions,
-  conversations,
-  externalConversationBindings,
-  workflowRuns,
-} from "./schema/index.js";
+import type { AsyncDb, SchemaTables } from "./db-facade.js";
+import { requireMainDb } from "./db-facade.js";
 
-const activityAt = sql<number>`max(coalesce(${conversations.lastMessageAt}, ${conversations.createdAt}), coalesce(${conversations.lastReopenedAt}, ${conversations.createdAt}))`;
+function activityAtExpression(conversations: SchemaTables["conversations"]) {
+  return sql<number>`max(coalesce(${conversations.lastMessageAt}, ${conversations.createdAt}), coalesce(${conversations.lastReopenedAt}, ${conversations.createdAt}))`;
+}
 
 export interface AutoArchiveCandidate {
   id: string;
@@ -42,8 +36,15 @@ export interface AutoArchiveCandidate {
   activityAt: number;
 }
 
-function eligibleForAutoArchive(cutoff: number) {
-  const db = getDb();
+function eligibleForAutoArchive(db: AsyncDb, cutoff: number) {
+  const conversations = db.schema.conversations;
+  const conversationAssistantAttentionState =
+    db.schema.conversationAssistantAttentionState;
+  const acpSessionHistory = db.schema.acpSessionHistory;
+  const conversationModeSessions = db.schema.conversationModeSessions;
+  const workflowRuns = db.schema.workflowRuns;
+  const externalConversationBindings = db.schema.externalConversationBindings;
+  const activityAt = activityAtExpression(conversations);
   const origin = sql`coalesce((select ${externalConversationBindings.sourceChannel} from ${externalConversationBindings} where ${externalConversationBindings.conversationId} = ${conversations.id}), ${conversations.originChannel}, ${NATIVE_ORIGIN_CHANNEL})`;
   return and(
     isNull(conversations.archivedAt),
@@ -60,8 +61,10 @@ function eligibleForAutoArchive(cutoff: number) {
     or(eq(origin, NATIVE_ORIGIN_CHANNEL), sql`${origin} like 'notification:%'`),
     lte(activityAt, cutoff),
     notExists(
-      db
-        .select({ id: conversationAssistantAttentionState.conversationId })
+      db.orm
+        .select({
+          id: conversationAssistantAttentionState.conversationId,
+        })
         .from(conversationAssistantAttentionState)
         .where(
           and(
@@ -74,7 +77,7 @@ function eligibleForAutoArchive(cutoff: number) {
         ),
     ),
     notExists(
-      db
+      db.orm
         .select({ id: acpSessionHistory.id })
         .from(acpSessionHistory)
         .where(
@@ -85,7 +88,7 @@ function eligibleForAutoArchive(cutoff: number) {
         ),
     ),
     notExists(
-      db
+      db.orm
         .select({ id: workflowRuns.id })
         .from(workflowRuns)
         .where(
@@ -96,7 +99,7 @@ function eligibleForAutoArchive(cutoff: number) {
         ),
     ),
     notExists(
-      db
+      db.orm
         .select({ id: conversationModeSessions.id })
         .from(conversationModeSessions)
         .where(
@@ -113,13 +116,16 @@ function eligibleForAutoArchive(cutoff: number) {
   );
 }
 
-export function listAutoArchiveCandidates(options: {
+export async function listAutoArchiveCandidates(options: {
   cutoff: number;
   limit: number;
   after?: Pick<AutoArchiveCandidate, "activityAt" | "id">;
-}): AutoArchiveCandidate[] {
-  ensureGroupMigration();
-  return getDb()
+}): Promise<AutoArchiveCandidate[]> {
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const activityAt = activityAtExpression(conversations);
+  return await db.orm
     .select({
       id: conversations.id,
       createdAt: conversations.createdAt,
@@ -130,7 +136,7 @@ export function listAutoArchiveCandidates(options: {
     .from(conversations)
     .where(
       and(
-        eligibleForAutoArchive(options.cutoff),
+        eligibleForAutoArchive(db, options.cutoff),
         options.after
           ? or(
               gt(activityAt, options.after.activityAt),
@@ -143,28 +149,29 @@ export function listAutoArchiveCandidates(options: {
       ),
     )
     .orderBy(asc(activityAt), asc(conversations.id))
-    .limit(options.limit)
-    .all();
+    .limit(options.limit);
 }
 
 /** The sampled cursors and current eligibility are checked by the write itself. */
-export function archiveInactiveConversation(
+export async function archiveInactiveConversation(
   candidate: AutoArchiveCandidate,
   cutoff: number,
   archivedAt: number,
-): boolean {
-  getDb()
+): Promise<boolean> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const rows = await db.orm
     .update(conversations)
     .set({ archivedAt, updatedAt: archivedAt })
     .where(
       and(
         eq(conversations.id, candidate.id),
         eq(conversations.createdAt, candidate.createdAt),
-        sql`${conversations.lastMessageAt} is ${candidate.lastMessageAt}`,
-        sql`${conversations.lastReopenedAt} is ${candidate.lastReopenedAt}`,
-        eligibleForAutoArchive(cutoff),
+        sql`${conversations.lastMessageAt} is not distinct from ${candidate.lastMessageAt}`,
+        sql`${conversations.lastReopenedAt} is not distinct from ${candidate.lastReopenedAt}`,
+        eligibleForAutoArchive(db, cutoff),
       ),
     )
-    .run();
-  return rawChanges() > 0;
+    .returning({ id: conversations.id });
+  return rows.length > 0;
 }

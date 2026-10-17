@@ -5,11 +5,12 @@ import { isLiveAcpStatus } from "../acp/types.js";
 import { findConversation } from "../daemon/conversation-registry.js";
 import { hasPendingTurnFinalization } from "../daemon/turn-finalization.js";
 import { hasPendingBackgroundWork } from "../notifications/has-pending-background-work.js";
-import { getDb } from "../persistence/db-connection.js";
-import { acpSessionHistory } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { getByConversation } from "../runtime/pending-interactions.js";
 
-export function hasAutoArchiveBlockingWork(conversationId: string): boolean {
+export async function hasAutoArchiveBlockingWork(
+  conversationId: string,
+): Promise<boolean> {
   const conversation = findConversation(conversationId);
   if (
     conversation?.hasInFlightWork() ||
@@ -43,19 +44,21 @@ export function hasAutoArchiveBlockingWork(conversationId: string): boolean {
   const pendingIds = manager
     .getActiveAndPendingIds()
     .filter((id) => !registered.has(id));
+  if (pendingIds.length === 0) {
+    return false;
+  }
   // An ACP resume reserves its history id before it registers a live session.
-  return (
-    pendingIds.length > 0 &&
-    getDb()
-      .select({ id: acpSessionHistory.id })
-      .from(acpSessionHistory)
-      .where(
-        and(
-          eq(acpSessionHistory.parentConversationId, conversationId),
-          inArray(acpSessionHistory.id, pendingIds),
-        ),
-      )
-      .limit(1)
-      .get() !== undefined
-  );
+  const db = requireMainDb();
+  const acpSessionHistory = db.schema.acpSessionHistory;
+  const rows = await db.orm
+    .select({ id: acpSessionHistory.id })
+    .from(acpSessionHistory)
+    .where(
+      and(
+        eq(acpSessionHistory.parentConversationId, conversationId),
+        inArray(acpSessionHistory.id, pendingIds),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
 }

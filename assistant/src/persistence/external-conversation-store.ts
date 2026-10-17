@@ -8,10 +8,9 @@
  */
 
 import { and, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
-import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
-import { getDb } from "./db-connection.js";
-import { externalConversationBindings } from "./schema/index.js";
+import { requireMainDb } from "./db-facade.js";
 
 export interface ExternalConversationBinding {
   conversationId: string;
@@ -57,7 +56,7 @@ export function normalizeExternalThreadId(
  */
 function keepStoredIfAbsent<T extends string | null | undefined>(
   value: T,
-  column: AnySQLiteColumn,
+  column: AnyPgColumn,
 ): Exclude<T, undefined> | SQL {
   return value === undefined
     ? sql`${column}`
@@ -75,31 +74,33 @@ function normalizeExternalChatName(
  * Insert or update an external conversation binding on conflict (conversationId).
  * On conflict, updates channel metadata and timestamps.
  */
-export function upsertBinding(input: UpsertBindingInput): void {
-  const db = getDb();
+export async function upsertBinding(input: UpsertBindingInput): Promise<void> {
+  const db = requireMainDb();
+  const externalConversationBindings = db.schema.externalConversationBindings;
   const now = Date.now();
   const externalThreadId = normalizeExternalThreadId(input.externalThreadId);
   const externalChatName = normalizeExternalChatName(input.externalChatName);
 
   // If a stale binding exists for this channel/chat/thread tuple under a
   // different conversationId, remove it first so the unique index is not violated.
-  const existing = getBindingByChannelChatThread(
+  const existing = await getBindingByChannelChatThread(
     input.sourceChannel,
     input.externalChatId,
     externalThreadId,
   );
   if (existing && existing.conversationId !== input.conversationId) {
-    db.delete(externalConversationBindings)
+    await db.orm
+      .delete(externalConversationBindings)
       .where(
         eq(
           externalConversationBindings.conversationId,
           existing.conversationId,
         ),
-      )
-      .run();
+      );
   }
 
-  db.insert(externalConversationBindings)
+  await db.orm
+    .insert(externalConversationBindings)
     .values({
       conversationId: input.conversationId,
       sourceChannel: input.sourceChannel,
@@ -146,8 +147,7 @@ export function upsertBinding(input: UpsertBindingInput): void {
         updatedAt: now,
         lastInboundAt: now,
       },
-    })
-    .run();
+    });
 }
 
 /**
@@ -155,35 +155,37 @@ export function upsertBinding(input: UpsertBindingInput): void {
  * Similar to upsertBinding but touches lastOutboundAt instead of lastInboundAt,
  * and only requires channel identifiers (no sender metadata needed).
  */
-export function upsertOutboundBinding(input: {
+export async function upsertOutboundBinding(input: {
   conversationId: string;
   sourceChannel: string;
   externalChatId: string;
   externalThreadId?: string | null;
-}): void {
-  const db = getDb();
+}): Promise<void> {
+  const db = requireMainDb();
+  const externalConversationBindings = db.schema.externalConversationBindings;
   const now = Date.now();
   const externalThreadId = normalizeExternalThreadId(input.externalThreadId);
 
   // If a stale binding exists for this channel/chat/thread tuple under a
   // different conversationId, remove it first so the unique index is not violated.
-  const existing = getBindingByChannelChatThread(
+  const existing = await getBindingByChannelChatThread(
     input.sourceChannel,
     input.externalChatId,
     externalThreadId,
   );
   if (existing && existing.conversationId !== input.conversationId) {
-    db.delete(externalConversationBindings)
+    await db.orm
+      .delete(externalConversationBindings)
       .where(
         eq(
           externalConversationBindings.conversationId,
           existing.conversationId,
         ),
-      )
-      .run();
+      );
   }
 
-  db.insert(externalConversationBindings)
+  await db.orm
+    .insert(externalConversationBindings)
     .values({
       conversationId: input.conversationId,
       sourceChannel: input.sourceChannel,
@@ -205,65 +207,70 @@ export function upsertOutboundBinding(input: {
         updatedAt: now,
         lastOutboundAt: now,
       },
-    })
-    .run();
+    });
 }
 
-export function updateExternalChatName(
+export async function updateExternalChatName(
   conversationId: string,
   externalChatName: string,
-): void {
-  const db = getDb();
+): Promise<void> {
   const trimmedName = externalChatName.trim();
   if (!trimmedName) {
     return;
   }
 
-  db.update(externalConversationBindings)
+  const db = requireMainDb();
+  const externalConversationBindings = db.schema.externalConversationBindings;
+  await db.orm
+    .update(externalConversationBindings)
     .set({
       externalChatName: trimmedName,
       updatedAt: Date.now(),
     })
-    .where(eq(externalConversationBindings.conversationId, conversationId))
-    .run();
+    .where(eq(externalConversationBindings.conversationId, conversationId));
 }
 
 /**
  * Look up an external binding by conversation ID.
  */
-export function getBindingByConversation(
+export async function getBindingByConversation(
   conversationId: string,
-): ExternalConversationBinding | null {
-  const db = getDb();
-  const row = db
+): Promise<ExternalConversationBinding | null> {
+  const db = requireMainDb();
+  const externalConversationBindings = db.schema.externalConversationBindings;
+  const [row] = await db.orm
     .select()
     .from(externalConversationBindings)
-    .where(eq(externalConversationBindings.conversationId, conversationId))
-    .get();
+    .where(eq(externalConversationBindings.conversationId, conversationId));
   return row ?? null;
 }
 
 /**
  * Look up an external binding by channel + external chat ID.
  */
-export function getBindingByChannelChat(
+export async function getBindingByChannelChat(
   sourceChannel: string,
   externalChatId: string,
-): ExternalConversationBinding | null {
-  return getBindingByChannelChatThread(sourceChannel, externalChatId, null);
+): Promise<ExternalConversationBinding | null> {
+  return await getBindingByChannelChatThread(
+    sourceChannel,
+    externalChatId,
+    null,
+  );
 }
 
 /**
  * Look up an external binding by channel + external chat ID + optional thread ID.
  */
-export function getBindingByChannelChatThread(
+export async function getBindingByChannelChatThread(
   sourceChannel: string,
   externalChatId: string,
   externalThreadId?: string | null,
-): ExternalConversationBinding | null {
-  const db = getDb();
+): Promise<ExternalConversationBinding | null> {
+  const db = requireMainDb();
+  const externalConversationBindings = db.schema.externalConversationBindings;
   const normalizedThreadId = normalizeExternalThreadId(externalThreadId);
-  const row = db
+  const [row] = await db.orm
     .select()
     .from(externalConversationBindings)
     .where(
@@ -277,8 +284,7 @@ export function getBindingByChannelChatThread(
             )
           : isNull(externalConversationBindings.externalThreadId),
       ),
-    )
-    .get();
+    );
   return row ?? null;
 }
 
@@ -286,19 +292,20 @@ export function getBindingByChannelChatThread(
  * Remove an external binding by channel + external chat ID.
  * Used when disconnecting a synced conversation by its channel identifiers.
  */
-export function deleteBindingByChannelChat(
+export async function deleteBindingByChannelChat(
   sourceChannel: string,
   externalChatId: string,
-): void {
-  const db = getDb();
-  db.delete(externalConversationBindings)
+): Promise<void> {
+  const db = requireMainDb();
+  const externalConversationBindings = db.schema.externalConversationBindings;
+  await db.orm
+    .delete(externalConversationBindings)
     .where(
       and(
         eq(externalConversationBindings.sourceChannel, sourceChannel),
         eq(externalConversationBindings.externalChatId, externalChatId),
       ),
-    )
-    .run();
+    );
 }
 
 /**
@@ -307,68 +314,70 @@ export function deleteBindingByChannelChat(
  * resetting a chat's main conversation so sibling thread/topic conversations
  * in the same chat keep their bindings.
  */
-export function deleteBindingByChannelChatNullThread(
+export async function deleteBindingByChannelChatNullThread(
   sourceChannel: string,
   externalChatId: string,
-): void {
-  const db = getDb();
-  db.delete(externalConversationBindings)
+): Promise<void> {
+  const db = requireMainDb();
+  const externalConversationBindings = db.schema.externalConversationBindings;
+  await db.orm
+    .delete(externalConversationBindings)
     .where(
       and(
         eq(externalConversationBindings.sourceChannel, sourceChannel),
         eq(externalConversationBindings.externalChatId, externalChatId),
         isNull(externalConversationBindings.externalThreadId),
       ),
-    )
-    .run();
+    );
 }
 
 /**
  * Remove an external binding by channel + external chat ID + thread ID.
  */
-export function deleteBindingByChannelChatThread(
+export async function deleteBindingByChannelChatThread(
   sourceChannel: string,
   externalChatId: string,
   externalThreadId: string,
-): void {
-  const db = getDb();
+): Promise<void> {
   const normalizedThreadId = normalizeExternalThreadId(externalThreadId);
   if (!normalizedThreadId) {
-    deleteBindingByChannelChat(sourceChannel, externalChatId);
+    await deleteBindingByChannelChat(sourceChannel, externalChatId);
     return;
   }
-  db.delete(externalConversationBindings)
+  const db = requireMainDb();
+  const externalConversationBindings = db.schema.externalConversationBindings;
+  await db.orm
+    .delete(externalConversationBindings)
     .where(
       and(
         eq(externalConversationBindings.sourceChannel, sourceChannel),
         eq(externalConversationBindings.externalChatId, externalChatId),
         eq(externalConversationBindings.externalThreadId, normalizedThreadId),
       ),
-    )
-    .run();
+    );
 }
 
 /**
  * Get bindings for multiple conversation IDs at once.
  * Returns a map of conversationId -> binding for efficient lookup.
  */
-export function getBindingsForConversations(
+export async function getBindingsForConversations(
   conversationIds: string[],
-): Map<string, ExternalConversationBinding> {
+): Promise<Map<string, ExternalConversationBinding>> {
   if (conversationIds.length === 0) {
     return new Map();
   }
 
-  const db = getDb();
+  const db = requireMainDb();
+  const externalConversationBindings = db.schema.externalConversationBindings;
   const result = new Map<string, ExternalConversationBinding>();
 
-  const all = db
+  const all = await db.orm
     .select()
     .from(externalConversationBindings)
     .where(
       inArray(externalConversationBindings.conversationId, conversationIds),
-    )
-    .all();
+    );
 
   for (const row of all) {
     result.set(row.conversationId, row);

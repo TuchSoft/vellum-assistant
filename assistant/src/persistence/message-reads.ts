@@ -23,8 +23,8 @@
 
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 
-import { type DrizzleDb, getDb } from "./db-connection.js";
-import { messages } from "./schema/index.js";
+import type { AsyncDb } from "./db-facade.js";
+import { requireMainDb } from "./db-facade.js";
 
 /** `(id, createdAt)` of a message, the shape cursor and watermark logic needs. */
 export interface MessageRef {
@@ -33,13 +33,13 @@ export interface MessageRef {
 }
 
 /**
- * Structural read handle: anything that can `select` like the shared
- * connection, which includes the connection itself and an open transaction.
- * Every accessor takes `opts.db` with this type and defaults to the shared
- * connection, so a caller holding its own handle (a transaction, an injected
- * or in-memory database) reads the same database it writes.
+ * Structural read handle: any facade connection, which includes the shared
+ * connection and an open transaction. Every accessor takes `opts.db` with this
+ * type and defaults to the shared connection, so a caller holding its own
+ * handle (a transaction, an injected or in-memory database) reads the same
+ * database it writes.
  */
-export type MessageReadHandle = Pick<DrizzleDb, "select">;
+export type MessageReadHandle = AsyncDb;
 
 /**
  * The newest completed assistant message in a conversation, or null when it
@@ -51,11 +51,14 @@ export type MessageReadHandle = Pick<DrizzleDb, "select">;
  *
  * `db` lets a caller inside a transaction read through its own handle.
  */
-export function latestAssistantMessage(
+export async function latestAssistantMessage(
   conversationId: string,
   opts?: { db?: MessageReadHandle },
-): MessageRef | null {
-  return newestFinalizedAssistantRow(conversationId, opts?.db ?? getDb());
+): Promise<MessageRef | null> {
+  return await newestFinalizedAssistantRow(
+    conversationId,
+    opts?.db ?? requireMainDb(),
+  );
 }
 
 /**
@@ -63,24 +66,25 @@ export function latestAssistantMessage(
  * Strict comparison: rewind logic that landed on a same-timestamp sibling
  * would classify the latest reply as already seen.
  */
-export function latestAssistantMessageBefore(
+export async function latestAssistantMessageBefore(
   conversationId: string,
   createdAt: number,
   opts?: { db?: MessageReadHandle },
-): MessageRef | null {
-  return newestFinalizedAssistantRow(
+): Promise<MessageRef | null> {
+  return await newestFinalizedAssistantRow(
     conversationId,
-    opts?.db ?? getDb(),
+    opts?.db ?? requireMainDb(),
     createdAt,
   );
 }
 
-function newestFinalizedAssistantRow(
+async function newestFinalizedAssistantRow(
   conversationId: string,
   db: MessageReadHandle,
   strictlyBefore?: number,
-): MessageRef | null {
-  const row = db
+): Promise<MessageRef | null> {
+  const messages = db.schema.messages;
+  const [row] = await db.orm
     .select({ id: messages.id, createdAt: messages.createdAt })
     .from(messages)
     .where(
@@ -94,25 +98,26 @@ function newestFinalizedAssistantRow(
       ),
     )
     .orderBy(desc(messages.createdAt), desc(messages.id))
-    .limit(1)
-    .get();
+    .limit(1);
   return row ?? null;
 }
 
 /**
- * Raw `content` of the last user-role row in a conversation, in insertion
- * order (`rowid DESC`, not `createdAt`), or null when there is none.
+ * Raw `content` of the last user-role row in a conversation, in `(createdAt,
+ * id)` order, or null when there is none.
  *
- * Insertion order is load-bearing for the undo path this serves: same-
- * millisecond rows must resolve to the one written last. User rows are always
+ * Ordering is load-bearing for the undo path this serves: rows written in the
+ * same millisecond must resolve deterministically. User rows are always
  * written finalized, so no completeness predicate applies; only assistant
  * turns stream.
  */
-export function latestUserMessageRawContent(
+export async function latestUserMessageRawContent(
   conversationId: string,
   opts?: { db?: MessageReadHandle },
-): string | null {
-  const row = (opts?.db ?? getDb())
+): Promise<string | null> {
+  const db = opts?.db ?? requireMainDb();
+  const messages = db.schema.messages;
+  const [row] = await db.orm
     .select({ content: messages.content })
     .from(messages)
     .where(
@@ -121,9 +126,8 @@ export function latestUserMessageRawContent(
         eq(messages.role, "user"),
       ),
     )
-    .orderBy(sql`rowid DESC`)
-    .limit(1)
-    .get();
+    .orderBy(desc(messages.createdAt), desc(messages.id))
+    .limit(1);
   return row?.content ?? null;
 }
 
@@ -135,15 +139,17 @@ export function latestUserMessageRawContent(
  * where a streaming reply still counts as activity. A caller needing
  * completed-only aggregates should say so here rather than post-filtering.
  */
-export function countMessagesByRoleForConversations(
+export async function countMessagesByRoleForConversations(
   conversationIds: string[],
   role: string,
   opts?: { db?: MessageReadHandle },
-): Map<string, { count: number; lastAt: number }> {
+): Promise<Map<string, { count: number; lastAt: number }>> {
   if (conversationIds.length === 0) {
     return new Map();
   }
-  const rows = (opts?.db ?? getDb())
+  const db = opts?.db ?? requireMainDb();
+  const messages = db.schema.messages;
+  const rows = await db.orm
     .select({
       conversationId: messages.conversationId,
       count: sql<number>`COUNT(*)`.as("count"),
@@ -156,8 +162,7 @@ export function countMessagesByRoleForConversations(
         eq(messages.role, role),
       ),
     )
-    .groupBy(messages.conversationId)
-    .all();
+    .groupBy(messages.conversationId);
   return new Map(
     rows.map((r) => [
       r.conversationId,
@@ -173,21 +178,20 @@ export function countMessagesByRoleForConversations(
  * rows referencing messages), and a streaming row exists. An empty input
  * returns an empty set without querying.
  */
-export function existingMessageIds(
+export async function existingMessageIds(
   messageIds: string[],
   opts?: { db?: MessageReadHandle },
-): Set<string> {
+): Promise<Set<string>> {
   if (messageIds.length === 0) {
     return new Set();
   }
-  return new Set(
-    (opts?.db ?? getDb())
-      .select({ id: messages.id })
-      .from(messages)
-      .where(inArray(messages.id, messageIds))
-      .all()
-      .map((r) => r.id),
-  );
+  const db = opts?.db ?? requireMainDb();
+  const messages = db.schema.messages;
+  const rows = await db.orm
+    .select({ id: messages.id })
+    .from(messages)
+    .where(inArray(messages.id, messageIds));
+  return new Set(rows.map((r) => r.id));
 }
 
 /**
@@ -199,20 +203,20 @@ export function existingMessageIds(
  * cursor bookkeeping) hold ids taken from rows they have already reviewed.
  * An empty input returns an empty map without querying.
  */
-export function messageCreatedAtByIds(
+export async function messageCreatedAtByIds(
   messageIds: readonly string[],
   opts?: { db?: MessageReadHandle },
-): Map<string, number> {
-  const db = opts?.db ?? getDb();
+): Promise<Map<string, number>> {
+  const db = opts?.db ?? requireMainDb();
+  const messages = db.schema.messages;
   const result = new Map<string, number>();
-  // Chunked so a whole-conversation id list stays under SQLite's bound
-  // parameter limit.
+  // Chunked so a whole-conversation id list keeps each statement's bind
+  // parameter count bounded.
   for (let offset = 0; offset < messageIds.length; offset += 500) {
-    const rows = db
+    const rows = await db.orm
       .select({ id: messages.id, createdAt: messages.createdAt })
       .from(messages)
-      .where(inArray(messages.id, messageIds.slice(offset, offset + 500)))
-      .all();
+      .where(inArray(messages.id, messageIds.slice(offset, offset + 500)));
     for (const row of rows) {
       result.set(row.id, row.createdAt);
     }
@@ -228,14 +232,15 @@ export function messageCreatedAtByIds(
  * a rendered row, an attachment link), and a rendered row may still be
  * streaming.
  */
-export function messageConversationId(
+export async function messageConversationId(
   messageId: string,
   opts?: { db?: MessageReadHandle },
-): string | null {
-  const row = (opts?.db ?? getDb())
+): Promise<string | null> {
+  const db = opts?.db ?? requireMainDb();
+  const messages = db.schema.messages;
+  const [row] = await db.orm
     .select({ conversationId: messages.conversationId })
     .from(messages)
-    .where(eq(messages.id, messageId))
-    .get();
+    .where(eq(messages.id, messageId));
   return row?.conversationId ?? null;
 }

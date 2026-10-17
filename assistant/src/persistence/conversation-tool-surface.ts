@@ -3,8 +3,7 @@ import { createHash } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 
 import type { ToolDefinition } from "../providers/types.js";
-import { getDb } from "./db-connection.js";
-import { conversationToolSurfaces } from "./schema/index.js";
+import { requireMainDb } from "./db-facade.js";
 
 /**
  * Per-conversation record of what the most recent live turn sent to the
@@ -71,11 +70,11 @@ function hashSurface(
  * upsert only rewrites a row whose stored hash differs, so a conversation
  * reloaded from disk never rewrites an unchanged surface either.
  */
-export function recordConversationToolSurface(
+export async function recordConversationToolSurface(
   conversationId: string,
   surface: ConversationToolSurface,
   knownHash?: string,
-): string {
+): Promise<string> {
   const toolsJson = JSON.stringify(surface.tools);
   const { delegateIndependentTasks } = surface;
   const toolsHash = hashSurface(toolsJson, delegateIndependentTasks);
@@ -83,7 +82,9 @@ export function recordConversationToolSurface(
     return toolsHash;
   }
   const updatedAt = Date.now();
-  getDb()
+  const db = requireMainDb();
+  const conversationToolSurfaces = db.schema.conversationToolSurfaces;
+  await db.orm
     .insert(conversationToolSurfaces)
     .values({
       conversationId,
@@ -96,8 +97,7 @@ export function recordConversationToolSurface(
       target: conversationToolSurfaces.conversationId,
       set: { toolsJson, toolsHash, delegateIndependentTasks, updatedAt },
       setWhere: sql`${conversationToolSurfaces.toolsHash} <> excluded.tools_hash`,
-    })
-    .run();
+    });
   return toolsHash;
 }
 
@@ -105,18 +105,19 @@ export function recordConversationToolSurface(
  * The surface the conversation's most recent live turn sent, or `null` when
  * no turn has recorded one (or the stored JSON is unreadable).
  */
-export function getConversationToolSurface(
+export async function getConversationToolSurface(
   conversationId: string,
-): ConversationToolSurface | null {
-  const row = getDb()
+): Promise<ConversationToolSurface | null> {
+  const db = requireMainDb();
+  const conversationToolSurfaces = db.schema.conversationToolSurfaces;
+  const [row] = await db.orm
     .select({
       toolsJson: conversationToolSurfaces.toolsJson,
       delegateIndependentTasks:
         conversationToolSurfaces.delegateIndependentTasks,
     })
     .from(conversationToolSurfaces)
-    .where(eq(conversationToolSurfaces.conversationId, conversationId))
-    .get();
+    .where(eq(conversationToolSurfaces.conversationId, conversationId));
   if (!row) {
     return null;
   }

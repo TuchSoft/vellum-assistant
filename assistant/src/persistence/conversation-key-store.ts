@@ -17,8 +17,7 @@ import { getLogger } from "../util/logger.js";
 import { initConversationDir } from "./conversation-disk-view.js";
 import { GENERATING_TITLE } from "./conversation-title-service.js";
 import type { NonScheduledConversationType } from "./conversation-types.js";
-import { getDb } from "./db-connection.js";
-import { conversationKeys, conversations } from "./schema/index.js";
+import { requireMainDb } from "./db-facade.js";
 
 const log = getLogger("conversation-key-store");
 
@@ -54,15 +53,15 @@ export interface ConversationKeyMapping {
  * Look up the conversation ID for a given conversationKey.
  * Returns `null` if no mapping exists yet.
  */
-export function getConversationByKey(
+export async function getConversationByKey(
   conversationKey: string,
-): ConversationKeyMapping | null {
-  const db = getDb();
-  const result = db
+): Promise<ConversationKeyMapping | null> {
+  const db = requireMainDb();
+  const conversationKeys = db.schema.conversationKeys;
+  const [result] = await db.orm
     .select()
     .from(conversationKeys)
-    .where(eq(conversationKeys.conversationKey, conversationKey))
-    .get();
+    .where(eq(conversationKeys.conversationKey, conversationKey));
   return result ?? null;
 }
 
@@ -74,29 +73,31 @@ export function getConversationByKey(
  * same key will create a fresh conversation.
  *
  */
-export function deleteConversationKey(conversationKey: string): void {
-  const db = getDb();
-  db.delete(conversationKeys)
-    .where(eq(conversationKeys.conversationKey, conversationKey))
-    .run();
+export async function deleteConversationKey(
+  conversationKey: string,
+): Promise<void> {
+  const db = requireMainDb();
+  const conversationKeys = db.schema.conversationKeys;
+  await db.orm
+    .delete(conversationKeys)
+    .where(eq(conversationKeys.conversationKey, conversationKey));
 }
 
 /**
  * Map a conversation key to an existing conversation ID (no creation).
  */
-export function setConversationKey(
+export async function setConversationKey(
   conversationKey: string,
   conversationId: string,
-): void {
-  const db = getDb();
-  db.insert(conversationKeys)
-    .values({
-      id: uuid(),
-      conversationKey,
-      conversationId,
-      createdAt: Date.now(),
-    })
-    .run();
+): Promise<void> {
+  const db = requireMainDb();
+  const conversationKeys = db.schema.conversationKeys;
+  await db.orm.insert(conversationKeys).values({
+    id: uuid(),
+    conversationKey,
+    conversationId,
+    createdAt: Date.now(),
+  });
 }
 
 /**
@@ -106,20 +107,21 @@ export function setConversationKey(
  * avoid unique-constraint races when concurrent first messages attempt
  * to migrate a legacy key to a new scoped alias.
  */
-export function setConversationKeyIfAbsent(
+export async function setConversationKeyIfAbsent(
   conversationKey: string,
   conversationId: string,
-): void {
-  const db = getDb();
-  db.insert(conversationKeys)
+): Promise<void> {
+  const db = requireMainDb();
+  const conversationKeys = db.schema.conversationKeys;
+  await db.orm
+    .insert(conversationKeys)
     .values({
       id: uuid(),
       conversationKey,
       conversationId,
       createdAt: Date.now(),
     })
-    .onConflictDoNothing()
-    .run();
+    .onConflictDoNothing();
 }
 
 /**
@@ -130,25 +132,27 @@ export function setConversationKeyIfAbsent(
  * Useful for endpoints (regenerate, undo, seen) that receive IDs from clients
  * which may be conversation keys rather than internal IDs.
  */
-export function resolveConversationId(idOrKey: string): string | null {
-  const db = getDb();
+export async function resolveConversationId(
+  idOrKey: string,
+): Promise<string | null> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const conversationKeys = db.schema.conversationKeys;
 
   // Fast path: check if it's already a valid conversation ID.
-  const direct = db
+  const [direct] = await db.orm
     .select({ id: conversations.id })
     .from(conversations)
-    .where(eq(conversations.id, idOrKey))
-    .get();
+    .where(eq(conversations.id, idOrKey));
   if (direct) {
     return direct.id;
   }
 
   // Slow path: check if it's a conversation key.
-  const mapping = db
+  const [mapping] = await db.orm
     .select()
     .from(conversationKeys)
-    .where(eq(conversationKeys.conversationKey, idOrKey))
-    .get();
+    .where(eq(conversationKeys.conversationKey, idOrKey));
   return mapping?.conversationId ?? null;
 }
 
@@ -159,7 +163,7 @@ export function resolveConversationId(idOrKey: string): string | null {
  * Otherwise, creates a new conversation and mapping atomically within a
  * single transaction to prevent race conditions and orphaned rows.
  */
-export function getOrCreateConversation(
+export async function getOrCreateConversation(
   conversationKey: string,
   opts?: {
     conversationType?: NonScheduledConversationType;
@@ -184,27 +188,27 @@ export function getOrCreateConversation(
     /** The caller records creation after required setup succeeds. */
     deferBootstrapCleanup?: boolean;
   },
-): {
+): Promise<{
   conversationId: string;
   conversationType: string;
   created: boolean;
-} {
-  const db = getDb();
+}> {
+  const db = requireMainDb();
+  const conversationKeys = db.schema.conversationKeys;
+  const conversations = db.schema.conversations;
   const conversationType = opts?.conversationType ?? "standard";
 
-  const result = db.transaction((tx) => {
-    const existing = tx
+  const result = await db.transaction(async (tx) => {
+    const [existing] = await tx.orm
       .select()
       .from(conversationKeys)
-      .where(eq(conversationKeys.conversationKey, conversationKey))
-      .get();
+      .where(eq(conversationKeys.conversationKey, conversationKey));
 
     if (existing) {
-      const conv = tx
+      const [conv] = await tx.orm
         .select({ conversationType: conversations.conversationType })
         .from(conversations)
-        .where(eq(conversations.id, existing.conversationId))
-        .get();
+        .where(eq(conversations.id, existing.conversationId));
       return {
         conversationId: existing.conversationId,
         conversationType: conv?.conversationType ?? "standard",
@@ -215,26 +219,22 @@ export function getOrCreateConversation(
     // Check if the conversationKey itself is an existing conversation ID.
     // This happens when the client loads a conversation from the conversations list
     // and uses the server's conversationId as its local conversationKey.
-    const existingConversation = tx
+    const [existingConversation] = await tx.orm
       .select({ id: conversations.id })
       .from(conversations)
-      .where(eq(conversations.id, conversationKey))
-      .get();
+      .where(eq(conversations.id, conversationKey));
 
     if (existingConversation) {
-      tx.insert(conversationKeys)
-        .values({
-          id: uuid(),
-          conversationKey,
-          conversationId: existingConversation.id,
-          createdAt: Date.now(),
-        })
-        .run();
-      const conv = tx
+      await tx.orm.insert(conversationKeys).values({
+        id: uuid(),
+        conversationKey,
+        conversationId: existingConversation.id,
+        createdAt: Date.now(),
+      });
+      const [conv] = await tx.orm
         .select({ conversationType: conversations.conversationType })
         .from(conversations)
-        .where(eq(conversations.id, existingConversation.id))
-        .get();
+        .where(eq(conversations.id, existingConversation.id));
       return {
         conversationId: existingConversation.id,
         conversationType: conv?.conversationType ?? "standard",
@@ -250,37 +250,33 @@ export function getOrCreateConversation(
     // (same seed as `createConversation`; 0 is stored as NULL).
     const initialSeq = getCurrentSeq();
 
-    tx.insert(conversations)
-      .values({
-        id: conversationId,
-        title,
-        seq: initialSeq > 0 ? initialSeq : null,
-        // A caller-supplied title is user-set: mark it non-auto (0) so the
-        // async LLM title generator's `canReplaceTitle` check won't overwrite
-        // it. Without one, omit the column so it takes its default
-        // (AUTO_TITLE_LLM) and follows the auto-generated placeholder flow.
-        ...(customTitle ? { isAutoTitle: 0 } : {}),
-        createdAt: now,
-        updatedAt: now,
-        totalInputTokens: 0,
-        totalOutputTokens: 0,
-        totalEstimatedCost: 0,
-        contextSummary: null,
-        contextCompactedMessageCount: 0,
-        contextCompactedAt: null,
-        conversationType,
-        originChannel: opts?.origin ?? null,
-      })
-      .run();
+    await tx.orm.insert(conversations).values({
+      id: conversationId,
+      title,
+      seq: initialSeq > 0 ? initialSeq : null,
+      // A caller-supplied title is user-set: mark it non-auto (0) so the
+      // async LLM title generator's `canReplaceTitle` check won't overwrite
+      // it. Without one, omit the column so it takes its default
+      // (AUTO_TITLE_LLM) and follows the auto-generated placeholder flow.
+      ...(customTitle ? { isAutoTitle: 0 } : {}),
+      createdAt: now,
+      updatedAt: now,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalEstimatedCost: 0,
+      contextSummary: null,
+      contextCompactedMessageCount: 0,
+      contextCompactedAt: null,
+      conversationType,
+      originChannel: opts?.origin ?? null,
+    });
 
-    tx.insert(conversationKeys)
-      .values({
-        id: uuid(),
-        conversationKey,
-        conversationId,
-        createdAt: now,
-      })
-      .run();
+    await tx.orm.insert(conversationKeys).values({
+      id: uuid(),
+      conversationKey,
+      conversationId,
+      createdAt: now,
+    });
 
     return {
       conversationId,

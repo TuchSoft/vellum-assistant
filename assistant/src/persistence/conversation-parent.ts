@@ -1,7 +1,6 @@
 import { eq } from "drizzle-orm";
 
-import { getDb } from "./db-connection.js";
-import { conversations } from "./schema/index.js";
+import { requireMainDb } from "./db-facade.js";
 
 /**
  * The durable spawn parent of a conversation: the `parent_conversation_id`
@@ -15,13 +14,14 @@ import { conversations } from "./schema/index.js";
  *
  * A single-row primary-key lookup.
  */
-export function getPersistedParentConversationId(
+export async function getPersistedParentConversationId(
   conversationId: string,
-): string | undefined {
-  const row = getDb()
+): Promise<string | undefined> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const [row] = await db.orm
     .select({ parentConversationId: conversations.parentConversationId })
     .from(conversations)
-    .where(eq(conversations.id, conversationId))
-    .get();
+    .where(eq(conversations.id, conversationId));
   return row?.parentConversationId ?? undefined;
 }

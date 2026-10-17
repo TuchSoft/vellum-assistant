@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 import type { ConsentState } from "../platform/consent-cache.js";
 
@@ -30,7 +30,6 @@ mock.module("../telemetry/watchdog-direct-emit.js", () => ({
   },
 }));
 
-import * as dbConnection from "../persistence/db-connection.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { GATEWAY_PRINCIPALS } from "../runtime/auth/route-policy.js";
 import {
@@ -54,6 +53,23 @@ async function pendingAuthFallbackPayloads(): Promise<
   return rows.map(
     (row) => JSON.parse(row.payload) as AuthFallbackTelemetryEvent,
   );
+}
+
+/** Run `fn` with the shared connection URL blanked out. */
+async function withTelemetryDbUnavailable(
+  fn: () => Promise<void>,
+): Promise<void> {
+  const savedUrl = process.env.VELLUM_DATABASE_URL;
+  process.env.VELLUM_DATABASE_URL = "";
+  try {
+    await fn();
+  } finally {
+    if (savedUrl === undefined) {
+      delete process.env.VELLUM_DATABASE_URL;
+    } else {
+      process.env.VELLUM_DATABASE_URL = savedUrl;
+    }
+  }
 }
 
 const route = ROUTES.find(
@@ -129,30 +145,9 @@ describe("internal-telemetry-routes: auth-fallback", () => {
   });
 
   test("throws 503 when consent is on but the telemetry DB is unavailable, so the gateway re-queues", async () => {
-    const savedSlotUrl = process.env.VELLUM_TELEMETRY_DATABASE_URL;
-    const savedGenericUrl = process.env.VELLUM_DATABASE_URL;
-    process.env.VELLUM_TELEMETRY_DATABASE_URL = "";
-    process.env.VELLUM_DATABASE_URL = "";
-    const spySqlite = spyOn(dbConnection, "getTelemetrySqlite").mockReturnValue(
-      null,
-    );
-    const spyDb = spyOn(dbConnection, "getTelemetryDb").mockReturnValue(null);
-    try {
+    await withTelemetryDbUnavailable(async () => {
       await expect(call(VALID_BODY)).rejects.toThrow(ServiceUnavailableError);
-    } finally {
-      spySqlite.mockRestore();
-      spyDb.mockRestore();
-      if (savedSlotUrl === undefined) {
-        delete process.env.VELLUM_TELEMETRY_DATABASE_URL;
-      } else {
-        process.env.VELLUM_TELEMETRY_DATABASE_URL = savedSlotUrl;
-      }
-      if (savedGenericUrl === undefined) {
-        delete process.env.VELLUM_DATABASE_URL;
-      } else {
-        process.env.VELLUM_DATABASE_URL = savedGenericUrl;
-      }
-    }
+    });
     expect((await pendingAuthFallbackPayloads()).length).toBe(0);
 
     // Once the DB is back the same batch records normally.
@@ -161,30 +156,9 @@ describe("internal-telemetry-routes: auth-fallback", () => {
 
   test("throws 503 (not skipped) when consent is unknown and the telemetry DB is unavailable", async () => {
     shareAnalytics = "unknown";
-    const savedSlotUrl = process.env.VELLUM_TELEMETRY_DATABASE_URL;
-    const savedGenericUrl = process.env.VELLUM_DATABASE_URL;
-    process.env.VELLUM_TELEMETRY_DATABASE_URL = "";
-    process.env.VELLUM_DATABASE_URL = "";
-    const spySqlite = spyOn(dbConnection, "getTelemetrySqlite").mockReturnValue(
-      null,
-    );
-    const spyDb = spyOn(dbConnection, "getTelemetryDb").mockReturnValue(null);
-    try {
+    await withTelemetryDbUnavailable(async () => {
       await expect(call(VALID_BODY)).rejects.toThrow(ServiceUnavailableError);
-    } finally {
-      spySqlite.mockRestore();
-      spyDb.mockRestore();
-      if (savedSlotUrl === undefined) {
-        delete process.env.VELLUM_TELEMETRY_DATABASE_URL;
-      } else {
-        process.env.VELLUM_TELEMETRY_DATABASE_URL = savedSlotUrl;
-      }
-      if (savedGenericUrl === undefined) {
-        delete process.env.VELLUM_DATABASE_URL;
-      } else {
-        process.env.VELLUM_DATABASE_URL = savedGenericUrl;
-      }
-    }
+    });
     expect((await pendingAuthFallbackPayloads()).length).toBe(0);
   });
 

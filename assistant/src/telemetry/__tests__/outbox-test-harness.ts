@@ -1,4 +1,4 @@
-import { mock, spyOn } from "bun:test";
+import { mock } from "bun:test";
 
 import type { ConsentState } from "../../platform/consent-cache.js";
 
@@ -24,7 +24,6 @@ mock.module("../../platform/consent-cache.js", () => ({
   getCachedShareDiagnosticsVersion: () => shareDiagnosticsVersion,
 }));
 
-import * as dbConnection from "../../persistence/db-connection.js";
 import { getTelemetryAsyncDb } from "../../persistence/db-facade.js";
 import { initializeDb } from "../../persistence/db-init.js";
 import { queryTelemetryOutboxBatch } from "../telemetry-events-outbox.js";
@@ -79,32 +78,16 @@ export async function pendingOutboxPayloads<T = Record<string, unknown>>(
 export async function withTelemetryDbUnavailable(
   fn: () => Promise<void>,
 ): Promise<void> {
-  // The async facade resolves its backend at call time. Under SQLite it reads
-  // `dbConnection.getTelemetrySqlite()`; under Postgres it reads the slot's
-  // connection URL. Blank both the SQLite accessors and the URL env so the
-  // facade reports the slot unavailable regardless of backend.
-  const savedSlotUrl = process.env.VELLUM_TELEMETRY_DATABASE_URL;
-  const savedGenericUrl = process.env.VELLUM_DATABASE_URL;
-  process.env.VELLUM_TELEMETRY_DATABASE_URL = "";
+  // The facade resolves its connection at call time from the shared URL.
+  const savedUrl = process.env.VELLUM_DATABASE_URL;
   process.env.VELLUM_DATABASE_URL = "";
-  const spySqlite = spyOn(dbConnection, "getTelemetrySqlite").mockReturnValue(
-    null,
-  );
-  const spyDb = spyOn(dbConnection, "getTelemetryDb").mockReturnValue(null);
   try {
     await fn();
   } finally {
-    spySqlite.mockRestore();
-    spyDb.mockRestore();
-    if (savedSlotUrl === undefined) {
-      delete process.env.VELLUM_TELEMETRY_DATABASE_URL;
-    } else {
-      process.env.VELLUM_TELEMETRY_DATABASE_URL = savedSlotUrl;
-    }
-    if (savedGenericUrl === undefined) {
+    if (savedUrl === undefined) {
       delete process.env.VELLUM_DATABASE_URL;
     } else {
-      process.env.VELLUM_DATABASE_URL = savedGenericUrl;
+      process.env.VELLUM_DATABASE_URL = savedUrl;
     }
   }
 }

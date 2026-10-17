@@ -8,8 +8,12 @@
 import { eq } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
-import { getDb } from "./db-connection.js";
-import { mediaAssets, mediaKeyframes, processingStages } from "./schema.js";
+import type { SchemaTables } from "./db-facade.js";
+import { requireMainDb } from "./db-facade.js";
+
+type MediaAssetRow = SchemaTables["mediaAssets"]["$inferSelect"];
+type ProcessingStageRow = SchemaTables["processingStages"]["$inferSelect"];
+type MediaKeyframeRow = SchemaTables["mediaKeyframes"]["$inferSelect"];
 
 // ---------------------------------------------------------------------------
 // Types
@@ -72,7 +76,7 @@ export async function computeFileHashStreaming(
 // Media asset CRUD
 // ---------------------------------------------------------------------------
 
-export function registerMediaAsset(params: {
+export async function registerMediaAsset(params: {
   title: string;
   filePath: string;
   mimeType: string;
@@ -80,15 +84,16 @@ export function registerMediaAsset(params: {
   fileHash: string;
   mediaType: MediaType;
   metadata?: Record<string, unknown>;
-}): MediaAsset {
-  const db = getDb();
+}): Promise<MediaAsset> {
+  const db = requireMainDb();
+  const mediaAssets = db.schema.mediaAssets;
 
   // Dedup: if an asset with the same content hash already exists, return it
-  const existing = db
+  const existingRows = await db.orm
     .select()
     .from(mediaAssets)
-    .where(eq(mediaAssets.fileHash, params.fileHash))
-    .get();
+    .where(eq(mediaAssets.fileHash, params.fileHash));
+  const existing = existingRows[0];
 
   if (existing) {
     return parseAssetRow(existing);
@@ -109,7 +114,7 @@ export function registerMediaAsset(params: {
     updatedAt: now,
   };
 
-  db.insert(mediaAssets).values(record).run();
+  await db.orm.insert(mediaAssets).values(record);
 
   return {
     ...record,
@@ -117,62 +122,79 @@ export function registerMediaAsset(params: {
   };
 }
 
-export function getMediaAssetById(id: string): MediaAsset | null {
-  const db = getDb();
-  const row = db.select().from(mediaAssets).where(eq(mediaAssets.id, id)).get();
+export async function getMediaAssetById(
+  id: string,
+): Promise<MediaAsset | null> {
+  const db = requireMainDb();
+  const mediaAssets = db.schema.mediaAssets;
+  const rows = await db.orm
+    .select()
+    .from(mediaAssets)
+    .where(eq(mediaAssets.id, id));
+  const row = rows[0];
   return row ? parseAssetRow(row) : null;
 }
 
-export function getMediaAssetByFilePath(filePath: string): MediaAsset | null {
-  const db = getDb();
-  const row = db
+export async function getMediaAssetByFilePath(
+  filePath: string,
+): Promise<MediaAsset | null> {
+  const db = requireMainDb();
+  const mediaAssets = db.schema.mediaAssets;
+  const rows = await db.orm
     .select()
     .from(mediaAssets)
-    .where(eq(mediaAssets.filePath, filePath))
-    .get();
+    .where(eq(mediaAssets.filePath, filePath));
+  const row = rows[0];
   return row ? parseAssetRow(row) : null;
 }
 
-export function getMediaAssetByHash(fileHash: string): MediaAsset | null {
-  const db = getDb();
-  const row = db
+export async function getMediaAssetByHash(
+  fileHash: string,
+): Promise<MediaAsset | null> {
+  const db = requireMainDb();
+  const mediaAssets = db.schema.mediaAssets;
+  const rows = await db.orm
     .select()
     .from(mediaAssets)
-    .where(eq(mediaAssets.fileHash, fileHash))
-    .get();
+    .where(eq(mediaAssets.fileHash, fileHash));
+  const row = rows[0];
   return row ? parseAssetRow(row) : null;
 }
 
-export function getMediaAssetsByStatus(status: MediaAssetStatus): MediaAsset[] {
-  const db = getDb();
-  const rows = db
+export async function getMediaAssetsByStatus(
+  status: MediaAssetStatus,
+): Promise<MediaAsset[]> {
+  const db = requireMainDb();
+  const mediaAssets = db.schema.mediaAssets;
+  const rows = await db.orm
     .select()
     .from(mediaAssets)
-    .where(eq(mediaAssets.status, status))
-    .all();
+    .where(eq(mediaAssets.status, status));
   return rows.map(parseAssetRow);
 }
 
-export function updateMediaAssetStatus(
+export async function updateMediaAssetStatus(
   id: string,
   status: MediaAssetStatus,
-): void {
-  const db = getDb();
-  db.update(mediaAssets)
+): Promise<void> {
+  const db = requireMainDb();
+  const mediaAssets = db.schema.mediaAssets;
+  await db.orm
+    .update(mediaAssets)
     .set({ status, updatedAt: Date.now() })
-    .where(eq(mediaAssets.id, id))
-    .run();
+    .where(eq(mediaAssets.id, id));
 }
 
 // ---------------------------------------------------------------------------
 // Processing stage CRUD
 // ---------------------------------------------------------------------------
 
-export function createProcessingStage(params: {
+export async function createProcessingStage(params: {
   assetId: string;
   stage: string;
-}): ProcessingStage {
-  const db = getDb();
+}): Promise<ProcessingStage> {
+  const db = requireMainDb();
+  const processingStages = db.schema.processingStages;
   const record = {
     id: uuid(),
     assetId: params.assetId,
@@ -184,23 +206,23 @@ export function createProcessingStage(params: {
     completedAt: null,
   };
 
-  db.insert(processingStages).values(record).run();
+  await db.orm.insert(processingStages).values(record);
   return record;
 }
 
-export function getProcessingStagesForAsset(
+export async function getProcessingStagesForAsset(
   assetId: string,
-): ProcessingStage[] {
-  const db = getDb();
-  const rows = db
+): Promise<ProcessingStage[]> {
+  const db = requireMainDb();
+  const processingStages = db.schema.processingStages;
+  const rows = await db.orm
     .select()
     .from(processingStages)
-    .where(eq(processingStages.assetId, assetId))
-    .all();
+    .where(eq(processingStages.assetId, assetId));
   return rows.map(parseStageRow);
 }
 
-export function updateProcessingStage(
+export async function updateProcessingStage(
   id: string,
   updates: Partial<
     Pick<
@@ -208,19 +230,20 @@ export function updateProcessingStage(
       "status" | "progress" | "lastError" | "startedAt" | "completedAt"
     >
   >,
-): void {
-  const db = getDb();
-  db.update(processingStages)
+): Promise<void> {
+  const db = requireMainDb();
+  const processingStages = db.schema.processingStages;
+  await db.orm
+    .update(processingStages)
     .set(updates)
-    .where(eq(processingStages.id, id))
-    .run();
+    .where(eq(processingStages.id, id));
 }
 
 // ---------------------------------------------------------------------------
 // Row parsing
 // ---------------------------------------------------------------------------
 
-function parseAssetRow(row: typeof mediaAssets.$inferSelect): MediaAsset {
+function parseAssetRow(row: MediaAssetRow): MediaAsset {
   let metadata: Record<string, unknown> | null = null;
   if (row.metadata) {
     try {
@@ -244,9 +267,7 @@ function parseAssetRow(row: typeof mediaAssets.$inferSelect): MediaAsset {
   };
 }
 
-function parseStageRow(
-  row: typeof processingStages.$inferSelect,
-): ProcessingStage {
+function parseStageRow(row: ProcessingStageRow): ProcessingStage {
   return {
     id: row.id,
     assetId: row.assetId,
@@ -272,15 +293,16 @@ export interface MediaKeyframe {
   createdAt: number;
 }
 
-export function insertKeyframesBatch(
+export async function insertKeyframesBatch(
   rows: Array<{
     assetId: string;
     timestamp: number;
     filePath: string;
     metadata?: Record<string, unknown>;
   }>,
-): MediaKeyframe[] {
-  const db = getDb();
+): Promise<MediaKeyframe[]> {
+  const db = requireMainDb();
+  const mediaKeyframes = db.schema.mediaKeyframes;
   const now = Date.now();
   const records = rows.map((r) => ({
     id: uuid(),
@@ -291,7 +313,7 @@ export function insertKeyframesBatch(
     createdAt: now,
   }));
   if (records.length > 0) {
-    db.insert(mediaKeyframes).values(records).run();
+    await db.orm.insert(mediaKeyframes).values(records);
   }
   return records.map((rec, i) => ({
     ...rec,
@@ -299,24 +321,27 @@ export function insertKeyframesBatch(
   }));
 }
 
-export function getKeyframesForAsset(assetId: string): MediaKeyframe[] {
-  const db = getDb();
-  const rows = db
+export async function getKeyframesForAsset(
+  assetId: string,
+): Promise<MediaKeyframe[]> {
+  const db = requireMainDb();
+  const mediaKeyframes = db.schema.mediaKeyframes;
+  const rows = await db.orm
     .select()
     .from(mediaKeyframes)
-    .where(eq(mediaKeyframes.assetId, assetId))
-    .all();
+    .where(eq(mediaKeyframes.assetId, assetId));
   return rows.map(parseKeyframeRow);
 }
 
-export function deleteKeyframesForAsset(assetId: string): void {
-  const db = getDb();
-  db.delete(mediaKeyframes).where(eq(mediaKeyframes.assetId, assetId)).run();
+export async function deleteKeyframesForAsset(assetId: string): Promise<void> {
+  const db = requireMainDb();
+  const mediaKeyframes = db.schema.mediaKeyframes;
+  await db.orm
+    .delete(mediaKeyframes)
+    .where(eq(mediaKeyframes.assetId, assetId));
 }
 
-function parseKeyframeRow(
-  row: typeof mediaKeyframes.$inferSelect,
-): MediaKeyframe {
+function parseKeyframeRow(row: MediaKeyframeRow): MediaKeyframe {
   let metadata: Record<string, unknown> | null = null;
   if (row.metadata) {
     try {

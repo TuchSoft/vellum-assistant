@@ -29,9 +29,7 @@ import {
 import { getLogger } from "../util/logger.js";
 import { getWorkspaceDir } from "../util/platform.js";
 import { getConversationAttachmentsDirPath } from "./conversation-directories.js";
-import { getDb } from "./db-connection.js";
-import { rawAll, rawGet, rawRun } from "./raw-query.js";
-import { attachments, messageAttachments, messages } from "./schema.js";
+import { requireMainDb } from "./db-facade.js";
 
 export interface StoredAttachment {
   id: string;
@@ -111,87 +109,87 @@ interface AttachmentRow {
   sourcePath: string | null;
 }
 
-function getAttachmentRow(attachmentId: string): AttachmentRow | null {
-  return (
-    rawGet<AttachmentRow>(
-      "attachments:getAttachmentRow",
-      `SELECT
-         id,
-         original_filename AS originalFilename,
-         mime_type AS mimeType,
-         size_bytes AS sizeBytes,
-         kind,
-         data_base64 AS dataBase64,
-         content_hash AS contentHash,
-         thumbnail_base64 AS thumbnailBase64,
-         file_path AS filePath,
-         created_at AS createdAt,
-         source_path AS sourcePath
-       FROM attachments
-       WHERE id = ?`,
-      attachmentId,
-    ) ?? null
+async function getAttachmentRow(
+  attachmentId: string,
+): Promise<AttachmentRow | null> {
+  const db = requireMainDb();
+  return await db.get<AttachmentRow>(
+    `SELECT
+       id,
+       original_filename AS "originalFilename",
+       mime_type AS "mimeType",
+       size_bytes AS "sizeBytes",
+       kind,
+       data_base64 AS "dataBase64",
+       content_hash AS "contentHash",
+       thumbnail_base64 AS "thumbnailBase64",
+       file_path AS "filePath",
+       created_at AS "createdAt",
+       source_path AS "sourcePath"
+     FROM attachments
+     WHERE id = ?`,
+    [attachmentId],
   );
 }
 
-function getMessageConversationContext(
+async function getMessageConversationContext(
   messageId: string,
-): { conversationId: string; conversationCreatedAt: number } | null {
+): Promise<{ conversationId: string; conversationCreatedAt: number } | null> {
   // Any-state read, deliberately: the id names a message the caller is
   // already linking an attachment to, and a rendered row may still be
   // streaming. Existence and ownership are the question, not completeness.
-  return (
-    rawGet<{ conversationId: string; conversationCreatedAt: number }>(
-      "attachments:getMessageConversationContext",
-      `SELECT
-         m.conversation_id AS conversationId,
-         c.created_at AS conversationCreatedAt
-       FROM messages m
-       JOIN conversations c ON c.id = m.conversation_id
-       WHERE m.id = ?`,
-      messageId,
-    ) ?? null
+  const db = requireMainDb();
+  return await db.get<{
+    conversationId: string;
+    conversationCreatedAt: number;
+  }>(
+    `SELECT
+       m.conversation_id AS "conversationId",
+       c.created_at AS "conversationCreatedAt"
+     FROM messages m
+     JOIN conversations c ON c.id = m.conversation_id
+     WHERE m.id = ?`,
+    [messageId],
   );
 }
 
-function listLinkedConversationIds(attachmentId: string): string[] {
-  return rawAll<{ conversationId: string }>(
-    "attachments:listLinkedConversationIds",
-    `SELECT DISTINCT m.conversation_id AS conversationId
+async function listLinkedConversationIds(
+  attachmentId: string,
+): Promise<string[]> {
+  const db = requireMainDb();
+  const rows = await db.all<{ conversationId: string }>(
+    `SELECT DISTINCT m.conversation_id AS "conversationId"
      FROM message_attachments ma
      JOIN messages m ON m.id = ma.message_id
      WHERE ma.attachment_id = ?`,
-    attachmentId,
-  ).map((row) => row.conversationId);
+    [attachmentId],
+  );
+  return rows.map((row) => row.conversationId);
 }
 
-function cloneAttachmentRow(row: AttachmentRow): AttachmentRow {
+async function cloneAttachmentRow(row: AttachmentRow): Promise<AttachmentRow> {
   const clonedId = uuid();
-  const db = getDb();
+  const db = requireMainDb();
   const now = Date.now();
 
-  db.insert(attachments)
-    .values({
-      id: clonedId,
-      originalFilename: row.originalFilename,
-      mimeType: row.mimeType,
-      sizeBytes: row.sizeBytes,
-      kind: row.kind,
-      dataBase64: row.dataBase64,
-      contentHash: null,
-      thumbnailBase64: row.thumbnailBase64,
-      filePath: row.filePath,
-      createdAt: now,
-    })
-    .run();
+  await db.orm.insert(db.schema.attachments).values({
+    id: clonedId,
+    originalFilename: row.originalFilename,
+    mimeType: row.mimeType,
+    sizeBytes: row.sizeBytes,
+    kind: row.kind,
+    dataBase64: row.dataBase64,
+    contentHash: null,
+    thumbnailBase64: row.thumbnailBase64,
+    filePath: row.filePath,
+    createdAt: now,
+  });
 
   if (row.sourcePath) {
-    rawRun(
-      "attachments:cloneAttachmentRow",
-      `UPDATE attachments SET source_path = ? WHERE id = ?`,
+    await db.run(`UPDATE attachments SET source_path = ? WHERE id = ?`, [
       row.sourcePath,
       clonedId,
-    );
+    ]);
   }
 
   return {
@@ -201,13 +199,13 @@ function cloneAttachmentRow(row: AttachmentRow): AttachmentRow {
   };
 }
 
-function insertMessageAttachmentLink(
+async function insertMessageAttachmentLink(
   messageId: string,
   attachmentId: string,
   position: number,
-): void {
-  rawRun(
-    "attachments:insertMessageAttachmentLink",
+): Promise<void> {
+  const db = requireMainDb();
+  await db.run(
     `INSERT INTO message_attachments
        (id, message_id, attachment_id, position, created_at)
      SELECT ?, ?, ?, ?, ?
@@ -215,47 +213,46 @@ function insertMessageAttachmentLink(
        SELECT 1 FROM message_attachments
        WHERE message_id = ? AND attachment_id = ?
      )`,
-    uuid(),
-    messageId,
-    attachmentId,
-    position,
-    Date.now(),
-    messageId,
-    attachmentId,
+    [
+      uuid(),
+      messageId,
+      attachmentId,
+      position,
+      Date.now(),
+      messageId,
+      attachmentId,
+    ],
   );
 }
 
-function persistAttachmentFilePath(
+async function persistAttachmentFilePath(
   attachmentId: string,
   targetPath: string,
   sourcePath?: string | null,
-): void {
+): Promise<void> {
+  const db = requireMainDb();
   if (sourcePath) {
-    rawRun(
-      "attachments:persistFilePath:withSource",
+    await db.run(
       `UPDATE attachments
        SET file_path = ?, data_base64 = '', source_path = COALESCE(source_path, ?)
        WHERE id = ?`,
-      targetPath,
-      sourcePath,
-      attachmentId,
+      [targetPath, sourcePath, attachmentId],
     );
     return;
   }
 
-  rawRun(
-    "attachments:persistFilePath:plain",
+  await db.run(
     `UPDATE attachments SET file_path = ?, data_base64 = '' WHERE id = ?`,
-    targetPath,
-    attachmentId,
+    [targetPath, attachmentId],
   );
 }
 
-function materializeAttachmentIntoConversation(
+async function materializeAttachmentIntoConversation(
   row: AttachmentRow,
   conversationId: string,
   conversationCreatedAt: number,
-): void {
+): Promise<void> {
+  const db = requireMainDb();
   const attachDir = getConversationAttachmentsDirPath(
     conversationId,
     conversationCreatedAt,
@@ -268,11 +265,9 @@ function materializeAttachmentIntoConversation(
     dirname(row.filePath) === attachDir
   ) {
     if (row.dataBase64) {
-      rawRun(
-        "attachments:materialize:clearData",
-        `UPDATE attachments SET data_base64 = '' WHERE id = ?`,
+      await db.run(`UPDATE attachments SET data_base64 = '' WHERE id = ?`, [
         row.id,
-      );
+      ]);
     }
     return;
   }
@@ -310,7 +305,7 @@ function materializeAttachmentIntoConversation(
       copyFileSync(readablePath, targetPath);
     }
 
-    persistAttachmentFilePath(row.id, targetPath, sourcePath);
+    await persistAttachmentFilePath(row.id, targetPath, sourcePath);
   } catch (err) {
     // Only the copy this call was making. `resolveUniqueFilename` picked a name
     // nothing occupied, so whatever sits at `targetPath` now is this attempt's
@@ -356,31 +351,31 @@ function materializeAttachmentIntoConversation(
   }
 }
 
-function scopeAttachmentToConversation(
+async function scopeAttachmentToConversation(
   attachmentId: string,
   conversationId: string,
   conversationCreatedAt: number,
-): string {
-  let row = getAttachmentRow(attachmentId);
+): Promise<string> {
+  let row = await getAttachmentRow(attachmentId);
   if (!row) {
     throw new Error(`Attachment not found: ${attachmentId}`);
   }
 
-  const linkedConversationIds = listLinkedConversationIds(attachmentId);
+  const linkedConversationIds = await listLinkedConversationIds(attachmentId);
   const cloned = linkedConversationIds.some((id) => id !== conversationId);
   if (cloned) {
-    row = cloneAttachmentRow(row);
+    row = await cloneAttachmentRow(row);
   }
 
   try {
-    materializeAttachmentIntoConversation(
+    await materializeAttachmentIntoConversation(
       row,
       conversationId,
       conversationCreatedAt,
     );
   } catch (err) {
     if (cloned) {
-      discardFailedCloneRow(row.id);
+      await discardFailedCloneRow(row.id);
     }
     throw err;
   }
@@ -404,13 +399,10 @@ function scopeAttachmentToConversation(
  * Best effort. Rethrowing the original failure matters more than the row, and
  * the caller converts that failure into an inline fallback either way.
  */
-function discardFailedCloneRow(clonedId: string): void {
+async function discardFailedCloneRow(clonedId: string): Promise<void> {
   try {
-    rawRun(
-      "attachments:discardFailedCloneRow",
-      `DELETE FROM attachments WHERE id = ?`,
-      clonedId,
-    );
+    const db = requireMainDb();
+    await db.run(`DELETE FROM attachments WHERE id = ?`, [clonedId]);
   } catch (err) {
     getLogger("attachments-store").warn(
       { err, attachmentId: clonedId },
@@ -427,17 +419,17 @@ function discardFailedCloneRow(clonedId: string): void {
  * workspace reference. The message link is written separately once the message
  * id exists. Returns null when the attachment row cannot be read after scoping.
  */
-export function scopeAttachmentToMessageConversation(
+export async function scopeAttachmentToMessageConversation(
   conversationId: string,
   conversationCreatedAt: number,
   attachmentId: string,
-): (StoredAttachment & { filePath: string | null }) | null {
-  const scopedId = scopeAttachmentToConversation(
+): Promise<(StoredAttachment & { filePath: string | null }) | null> {
+  const scopedId = await scopeAttachmentToConversation(
     attachmentId,
     conversationId,
     conversationCreatedAt,
   );
-  const row = getAttachmentRow(scopedId);
+  const row = await getAttachmentRow(scopedId);
   if (!row) {
     return null;
   }
@@ -680,7 +672,7 @@ export async function uploadAttachmentFromBytes(
 
   writeFileSync(stagedPath, norm.bytes);
 
-  return uploadFileBackedAttachment(
+  return await uploadFileBackedAttachment(
     storedFilename,
     norm.mimeType,
     stagedPath,
@@ -707,38 +699,34 @@ export async function uploadAttachmentFromBytes(
  * `media_type` on every replay of the message, so a wrong one makes the
  * provider reject the conversation on every later turn.
  */
-export function uploadFileBackedAttachment(
+export async function uploadFileBackedAttachment(
   filename: string,
   mimeType: string,
   filePath: string,
   sizeBytes: number,
-): StoredAttachment & { filePath: string } {
+): Promise<StoredAttachment & { filePath: string }> {
   const now = Date.now();
   const sniffed = sniffImageFileMimeType(filePath);
   const storedMimeType = sniffed && sniffed !== mimeType ? sniffed : mimeType;
   const kind = classifyKind(storedMimeType);
   const id = uuid();
-  const db = getDb();
+  const db = requireMainDb();
 
-  db.insert(attachments)
-    .values({
-      id,
-      originalFilename: filename,
-      mimeType: storedMimeType,
-      sizeBytes,
-      kind,
-      dataBase64: "",
-      filePath,
-      createdAt: now,
-    })
-    .run();
+  await db.orm.insert(db.schema.attachments).values({
+    id,
+    originalFilename: filename,
+    mimeType: storedMimeType,
+    sizeBytes,
+    kind,
+    dataBase64: "",
+    filePath,
+    createdAt: now,
+  });
 
-  rawRun(
-    "attachments:uploadFileBacked:sourcePath",
-    `UPDATE attachments SET source_path = ? WHERE id = ?`,
+  await db.run(`UPDATE attachments SET source_path = ? WHERE id = ?`, [
     filePath,
     id,
-  );
+  ]);
 
   return {
     id,
@@ -754,33 +742,35 @@ export function uploadFileBackedAttachment(
 
 /**
  * Returns the file_path for an attachment, or null if not set.
- * Now uses Drizzle since filePath is in the schema.
+ * Uses Drizzle because filePath is in the schema.
  */
-export function getFilePathForAttachment(attachmentId: string): string | null {
-  const db = getDb();
-  const row = db
+export async function getFilePathForAttachment(
+  attachmentId: string,
+): Promise<string | null> {
+  const db = requireMainDb();
+  const attachments = db.schema.attachments;
+  const rows = await db.orm
     .select({ filePath: attachments.filePath })
     .from(attachments)
-    .where(eq(attachments.id, attachmentId))
-    .get();
-  return row?.filePath ?? null;
+    .where(eq(attachments.id, attachmentId));
+  return rows[0]?.filePath ?? null;
 }
 
 /**
  * Returns a Map of attachment ID → source_path for attachments that have a non-null source_path.
  * Uses raw SQL since source_path is added via runtime migration and is not in the Drizzle schema.
  */
-export function getSourcePathsForAttachments(
+export async function getSourcePathsForAttachments(
   attachmentIds: string[],
-): Map<string, string> {
+): Promise<Map<string, string>> {
   if (attachmentIds.length === 0) {
     return new Map();
   }
+  const db = requireMainDb();
   const placeholders = attachmentIds.map(() => "?").join(", ");
-  const rows = rawAll<{ id: string; source_path: string }>(
-    "attachments:getSourcePaths",
+  const rows = await db.all<{ id: string; source_path: string }>(
     `SELECT id, source_path FROM attachments WHERE id IN (${placeholders}) AND source_path IS NOT NULL`,
-    ...attachmentIds,
+    attachmentIds,
   );
   return new Map(rows.map((r) => [r.id, r.source_path]));
 }
@@ -790,26 +780,29 @@ export function getSourcePathsForAttachments(
  * Returns the workspace-internal file path if found, or null otherwise.
  * Useful as a fallback when the original source_path is outside the sandbox.
  */
-export function getFilePathBySourcePath(
+export async function getFilePathBySourcePath(
   sourcePath: string,
   conversationId: string,
-): string | null {
+): Promise<string | null> {
   try {
-    const row = rawGet<{ file_path: string | null }>(
-      "attachments:getFilePathBySourcePath",
+    const db = requireMainDb();
+    const row = await db.get<{ file_path: string | null }>(
       `SELECT a.file_path FROM attachments a
        JOIN message_attachments ma ON ma.attachment_id = a.id
        JOIN messages m ON m.id = ma.message_id
        WHERE a.source_path = ? AND m.conversation_id = ?
        ORDER BY a.created_at DESC LIMIT 1`,
-      sourcePath,
-      conversationId,
+      [sourcePath, conversationId],
     );
     return row?.file_path ?? null;
   } catch (err) {
     // Some test contexts exercise the tool wrapper before attachment tables
     // are initialized. In that case, there is no stored fallback path to use.
-    if (err instanceof Error && err.message.includes("no such table")) {
+    if (
+      err instanceof Error &&
+      (err.message.includes("no such table") ||
+        err.message.includes('relation "attachments" does not exist'))
+    ) {
       return null;
     }
     throw err;
@@ -825,8 +818,10 @@ export function getFilePathBySourcePath(
  * bytes, use `mediaSourceBytes` / `resolveMediaSourceData` in
  * `providers/media-resolve.ts`, which delegates here for the attachment route.
  */
-export function getAttachmentContent(attachmentId: string): Buffer | null {
-  const row = getAttachmentRow(attachmentId);
+export async function getAttachmentContent(
+  attachmentId: string,
+): Promise<Buffer | null> {
+  const row = await getAttachmentRow(attachmentId);
   if (!row) {
     return null;
   }
@@ -908,7 +903,7 @@ export async function uploadAttachment(
   ));
   const sizeBytes = computeSizeBytesFromBase64(dataBase64);
 
-  const db = getDb();
+  const db = requireMainDb();
   const now = Date.now();
   const kind = classifyKind(mimeType);
 
@@ -924,15 +919,13 @@ export async function uploadAttachment(
     createdAt: now,
   };
 
-  db.insert(attachments).values(record).run();
+  await db.orm.insert(db.schema.attachments).values(record);
 
   if (sourcePath) {
-    rawRun(
-      "attachments:uploadAttachment:sourcePath",
-      `UPDATE attachments SET source_path = ? WHERE id = ?`,
+    await db.run(`UPDATE attachments SET source_path = ? WHERE id = ?`, [
       sourcePath,
       record.id,
-    );
+    ]);
   }
 
   return {
@@ -998,29 +991,25 @@ export async function createInlineAttachment(
   const now = Date.now();
   const id = uuid();
   const kind = classifyKind(mimeType);
-  const db = getDb();
+  const db = requireMainDb();
 
-  db.insert(attachments)
-    .values({
-      id,
-      originalFilename: filename,
-      mimeType,
-      sizeBytes,
-      kind,
-      dataBase64: "",
-      filePath: targetPath,
-      contentHash: null,
-      createdAt: now,
-    })
-    .run();
+  await db.orm.insert(db.schema.attachments).values({
+    id,
+    originalFilename: filename,
+    mimeType,
+    sizeBytes,
+    kind,
+    dataBase64: "",
+    filePath: targetPath,
+    contentHash: null,
+    createdAt: now,
+  });
 
   if (options?.sourcePath) {
-    rawRun(
-      "attachments:createInline:sourcePath",
-      `UPDATE attachments SET source_path = ? WHERE id = ?`,
+    await db.run(`UPDATE attachments SET source_path = ? WHERE id = ?`, [
       options.sourcePath,
       id,
-    );
+    ]);
   }
 
   return {
@@ -1043,7 +1032,7 @@ export async function attachInlineAttachmentToMessage(
   dataBase64: string,
   options?: CreateInlineAttachmentOptions,
 ): Promise<StoredAttachment & { filePath: string }> {
-  const ctx = getMessageConversationContext(messageId);
+  const ctx = await getMessageConversationContext(messageId);
   if (!ctx) {
     throw new Error(`Message not found: ${messageId}`);
   }
@@ -1056,19 +1045,19 @@ export async function attachInlineAttachmentToMessage(
     dataBase64,
     options,
   );
-  insertMessageAttachmentLink(messageId, stored.id, position);
+  await insertMessageAttachmentLink(messageId, stored.id, position);
   return stored;
 }
 
-export function attachFileBackedAttachmentToMessage(
+export async function attachFileBackedAttachmentToMessage(
   messageId: string,
   position: number,
   filename: string,
   mimeType: string,
   sourceFilePath: string,
   sizeBytes: number,
-): StoredAttachment & { filePath: string } {
-  const ctx = getMessageConversationContext(messageId);
+): Promise<StoredAttachment & { filePath: string }> {
+  const ctx = await getMessageConversationContext(messageId);
   if (!ctx) {
     throw new Error(`Message not found: ${messageId}`);
   }
@@ -1085,28 +1074,24 @@ export function attachFileBackedAttachmentToMessage(
   const now = Date.now();
   const id = uuid();
   const kind = classifyKind(mimeType);
-  const db = getDb();
+  const db = requireMainDb();
 
-  db.insert(attachments)
-    .values({
-      id,
-      originalFilename: filename,
-      mimeType,
-      sizeBytes,
-      kind,
-      dataBase64: "",
-      filePath: targetPath,
-      createdAt: now,
-    })
-    .run();
+  await db.orm.insert(db.schema.attachments).values({
+    id,
+    originalFilename: filename,
+    mimeType,
+    sizeBytes,
+    kind,
+    dataBase64: "",
+    filePath: targetPath,
+    createdAt: now,
+  });
 
-  rawRun(
-    "attachments:attachFileBacked:source",
-    `UPDATE attachments SET source_path = ? WHERE id = ?`,
+  await db.run(`UPDATE attachments SET source_path = ? WHERE id = ?`, [
     sourceFilePath,
     id,
-  );
-  insertMessageAttachmentLink(messageId, id, position);
+  ]);
+  await insertMessageAttachmentLink(messageId, id, position);
 
   return {
     id,
@@ -1123,15 +1108,16 @@ export function attachFileBackedAttachmentToMessage(
 /**
  * Update the thumbnail for an existing attachment.
  */
-export function setAttachmentThumbnail(
+export async function setAttachmentThumbnail(
   attachmentId: string,
   thumbnailBase64: string,
-): void {
-  const db = getDb();
-  db.update(attachments)
+): Promise<void> {
+  const db = requireMainDb();
+  const attachments = db.schema.attachments;
+  await db.orm
+    .update(attachments)
     .set({ thumbnailBase64 })
-    .where(eq(attachments.id, attachmentId))
-    .run();
+    .where(eq(attachments.id, attachmentId));
 }
 
 export type DeleteAttachmentResult =
@@ -1139,13 +1125,17 @@ export type DeleteAttachmentResult =
   | "not_found"
   | "still_referenced";
 
-export function deleteAttachment(attachmentId: string): DeleteAttachmentResult {
-  const db = getDb();
-  const existing = db
+export async function deleteAttachment(
+  attachmentId: string,
+): Promise<DeleteAttachmentResult> {
+  const db = requireMainDb();
+  const attachments = db.schema.attachments;
+  const messageAttachments = db.schema.messageAttachments;
+  const rows = await db.orm
     .select({ id: attachments.id, filePath: attachments.filePath })
     .from(attachments)
-    .where(eq(attachments.id, attachmentId))
-    .get();
+    .where(eq(attachments.id, attachmentId));
+  const existing = rows[0];
 
   if (!existing) {
     return "not_found";
@@ -1153,20 +1143,19 @@ export function deleteAttachment(attachmentId: string): DeleteAttachmentResult {
 
   // An attachment row can still be shared by multiple messages inside the same
   // conversation. Only delete it when no remaining links point to the row.
-  const refCount = db
+  const links = await db.orm
     .select({ id: messageAttachments.id })
     .from(messageAttachments)
-    .where(eq(messageAttachments.attachmentId, attachmentId))
-    .all().length;
+    .where(eq(messageAttachments.attachmentId, attachmentId));
 
-  if (refCount > 0) {
+  if (links.length > 0) {
     return "still_referenced";
   }
 
   // Collect file path BEFORE deleting the DB row (the row contains the path reference)
   const { filePath } = existing;
 
-  db.delete(attachments).where(eq(attachments.id, attachmentId)).run();
+  await db.orm.delete(attachments).where(eq(attachments.id, attachmentId));
 
   // Clean up on-disk file only after the DB row has been removed
   if (filePath) {
@@ -1180,22 +1169,23 @@ export function deleteAttachment(attachmentId: string): DeleteAttachmentResult {
   return "deleted";
 }
 
-export function getAttachmentsByIds(
+export async function getAttachmentsByIds(
   ids: string[],
   options?: { hydrateFileData?: boolean },
-): Array<StoredAttachment & { dataBase64: string }> {
+): Promise<Array<StoredAttachment & { dataBase64: string }>> {
   if (ids.length === 0) {
     return [];
   }
-  const db = getDb();
+  const db = requireMainDb();
+  const attachments = db.schema.attachments;
   const hydrateFileData = options?.hydrateFileData ?? false;
   const results: Array<StoredAttachment & { dataBase64: string }> = [];
   for (const id of ids) {
-    const row = db
+    const rows = await db.orm
       .select()
       .from(attachments)
-      .where(eq(attachments.id, id))
-      .get();
+      .where(eq(attachments.id, id));
+    const row = rows[0];
     if (row) {
       // File-backed attachments store data on disk with dataBase64 = "".
       // Only hydrate base64 from disk when callers explicitly opt in,
@@ -1233,17 +1223,21 @@ export function getAttachmentsByIds(
  * attachment row are dropped, so a caller that needs to know an id was bad
  * compares the returned length against what it asked for.
  */
-export function resolveAttachmentsForPersist(attachmentIds: string[]): Array<{
-  id: string;
-  filename: string;
-  mimeType: string;
-  data: string;
-  filePath?: string;
-}> {
-  const resolved = getAttachmentsByIds(attachmentIds, {
+export async function resolveAttachmentsForPersist(
+  attachmentIds: string[],
+): Promise<
+  Array<{
+    id: string;
+    filename: string;
+    mimeType: string;
+    data: string;
+    filePath?: string;
+  }>
+> {
+  const resolved = await getAttachmentsByIds(attachmentIds, {
     hydrateFileData: true,
   });
-  const sourcePaths = getSourcePathsForAttachments(attachmentIds);
+  const sourcePaths = await getSourcePathsForAttachments(attachmentIds);
   return resolved.map((a) => ({
     id: a.id,
     filename: a.originalFilename,
@@ -1253,17 +1247,19 @@ export function resolveAttachmentsForPersist(attachmentIds: string[]): Array<{
   }));
 }
 
-export function linkAttachmentToMessage(
+export async function linkAttachmentToMessage(
   messageId: string,
   attachmentId: string,
   position: number,
-): string {
-  const ctx = getMessageConversationContext(messageId);
+): Promise<string> {
+  const ctx = await getMessageConversationContext(messageId);
   if (!ctx) {
     throw new Error(`Message not found: ${messageId}`);
   }
 
-  const existing = getDb()
+  const db = requireMainDb();
+  const messageAttachments = db.schema.messageAttachments;
+  const existingRows = await db.orm
     .select({ attachmentId: messageAttachments.attachmentId })
     .from(messageAttachments)
     .where(
@@ -1271,37 +1267,37 @@ export function linkAttachmentToMessage(
         eq(messageAttachments.messageId, messageId),
         eq(messageAttachments.attachmentId, attachmentId),
       ),
-    )
-    .get();
+    );
+  const existing = existingRows[0];
   if (existing) {
     return existing.attachmentId;
   }
 
-  const scopedAttachmentId = scopeAttachmentToConversation(
+  const scopedAttachmentId = await scopeAttachmentToConversation(
     attachmentId,
     ctx.conversationId,
     ctx.conversationCreatedAt,
   );
-  insertMessageAttachmentLink(messageId, scopedAttachmentId, position);
+  await insertMessageAttachmentLink(messageId, scopedAttachmentId, position);
   return scopedAttachmentId;
 }
 
 /**
  * Return all attachments linked to a message, ordered by position.
  */
-export function getAttachmentsForMessage(
+export async function getAttachmentsForMessage(
   messageId: string,
-): Array<StoredAttachment & { dataBase64: string }> {
-  const db = getDb();
-  const links = db
+): Promise<Array<StoredAttachment & { dataBase64: string }>> {
+  const db = requireMainDb();
+  const messageAttachments = db.schema.messageAttachments;
+  const links = await db.orm
     .select({
       attachmentId: messageAttachments.attachmentId,
       position: messageAttachments.position,
     })
     .from(messageAttachments)
     .where(eq(messageAttachments.messageId, messageId))
-    .orderBy(messageAttachments.position)
-    .all();
+    .orderBy(messageAttachments.position);
 
   if (links.length === 0) {
     return [];
@@ -1310,19 +1306,19 @@ export function getAttachmentsForMessage(
   const ids = links
     .map((l) => l.attachmentId)
     .filter((id): id is string => id != null);
-  return getAttachmentsByIds(ids, { hydrateFileData: true });
+  return await getAttachmentsByIds(ids, { hydrateFileData: true });
 }
 
 /**
  * Return metadata (no dataBase64) for all attachments linked to a message.
  * Use this instead of getAttachmentsForMessage when you only need the
- * id/filename/mimeType/sizeBytes/kind fields — avoids deserializing
+ * id/filename/mimeType/sizeBytes/kind fields, avoiding deserialization of
  * potentially large base64 blobs from the database.
  */
-export function getAttachmentMetadataForMessage(
+export async function getAttachmentMetadataForMessage(
   messageId: string,
-): StoredAttachment[] {
-  return getAttachmentMetadataForMessages([messageId]).map(
+): Promise<StoredAttachment[]> {
+  return (await getAttachmentMetadataForMessages([messageId])).map(
     (row) => row.attachment,
   );
 }
@@ -1337,14 +1333,15 @@ export interface MessageAttachmentMetadata {
  * Return linked attachment metadata together with the metadata of each source
  * message. Rows follow the requested message order, then link position.
  */
-export function getAttachmentMetadataForMessages(
+export async function getAttachmentMetadataForMessages(
   messageIds: string[],
-): MessageAttachmentMetadata[] {
+): Promise<MessageAttachmentMetadata[]> {
   if (messageIds.length === 0) {
     return [];
   }
-  const db = getDb();
-  const rows = db
+  const db = requireMainDb();
+  const { attachments, messageAttachments, messages } = db.schema;
+  const rows = await db.orm
     .select({
       messageId: messageAttachments.messageId,
       messageMetadata: messages.metadata,
@@ -1360,8 +1357,7 @@ export function getAttachmentMetadataForMessages(
     .from(messageAttachments)
     .innerJoin(messages, eq(messages.id, messageAttachments.messageId))
     .innerJoin(attachments, eq(attachments.id, messageAttachments.attachmentId))
-    .where(inArray(messageAttachments.messageId, messageIds))
-    .all();
+    .where(inArray(messageAttachments.messageId, messageIds));
   const messageOrder = new Map(messageIds.map((id, index) => [id, index]));
   rows.sort((a, b) => {
     const messageDelta =
@@ -1379,27 +1375,27 @@ export function getAttachmentMetadataForMessages(
 }
 
 /**
- * Lightweight existence check — queries only the attachment ID column
+ * Lightweight existence check: queries only the attachment ID column
  * without reading file contents from disk.
  */
-export function attachmentExists(attachmentId: string): boolean {
-  const db = getDb();
-  const row = db
+export async function attachmentExists(attachmentId: string): Promise<boolean> {
+  const db = requireMainDb();
+  const attachments = db.schema.attachments;
+  const rows = await db.orm
     .select({ id: attachments.id })
     .from(attachments)
-    .where(eq(attachments.id, attachmentId))
-    .get();
-  return !!row;
+    .where(eq(attachments.id, attachmentId));
+  return !!rows[0];
 }
 
 /**
  * Retrieve a single attachment by ID.
  */
-export function getAttachmentById(
+export async function getAttachmentById(
   attachmentId: string,
   options?: { hydrateFileData?: boolean },
-): (StoredAttachment & { dataBase64: string }) | null {
-  const results = getAttachmentsByIds([attachmentId], options);
+): Promise<(StoredAttachment & { dataBase64: string }) | null> {
+  const results = await getAttachmentsByIds([attachmentId], options);
   return results[0] ?? null;
 }
 
@@ -1411,20 +1407,23 @@ export function getAttachmentById(
  *
  * Returns the number of orphaned attachments removed.
  */
-export function deleteOrphanAttachments(candidateIds: string[]): number {
+export async function deleteOrphanAttachments(
+  candidateIds: string[],
+): Promise<number> {
   if (candidateIds.length === 0) {
     return 0;
   }
 
-  const db = getDb();
+  const db = requireMainDb();
+  const attachments = db.schema.attachments;
 
   // Identify truly orphaned attachment IDs first (not referenced by any message)
   const placeholders = candidateIds.map(() => "?").join(", ");
-  const orphanIds = rawAll<{ id: string }>(
-    "attachments:deleteOrphan:select",
+  const orphanRows = await db.all<{ id: string }>(
     `SELECT id FROM attachments WHERE id IN (${placeholders}) AND id NOT IN (SELECT attachment_id FROM message_attachments)`,
-    ...candidateIds,
-  ).map((row) => row.id);
+    candidateIds,
+  );
+  const orphanIds = orphanRows.map((row) => row.id);
 
   if (orphanIds.length === 0) {
     return 0;
@@ -1433,23 +1432,22 @@ export function deleteOrphanAttachments(candidateIds: string[]): number {
   // Collect file paths BEFORE deleting the DB rows via Drizzle
   const orphanFilePaths: string[] = [];
   for (const id of orphanIds) {
-    const row = db
+    const rows = await db.orm
       .select({ filePath: attachments.filePath })
       .from(attachments)
-      .where(eq(attachments.id, id))
-      .get();
+      .where(eq(attachments.id, id));
+    const row = rows[0];
     if (row?.filePath) {
       orphanFilePaths.push(row.filePath);
     }
   }
 
-  // Delete the orphaned DB rows first — if this fails, the on-disk files
+  // Delete the orphaned DB rows first: if this fails, the on-disk files
   // remain intact alongside their DB rows, so nothing is left inconsistent.
   const orphanPlaceholders = orphanIds.map(() => "?").join(", ");
-  const deletedCount = rawRun(
-    "attachments:deleteOrphan:delete",
+  const deletedCount = await db.run(
     `DELETE FROM attachments WHERE id IN (${orphanPlaceholders})`,
-    ...orphanIds,
+    orphanIds,
   );
 
   // Clean up on-disk files only after the DB rows have been removed
@@ -1461,7 +1459,7 @@ export function deleteOrphanAttachments(candidateIds: string[]): number {
     // destroys another conversation's data, which is what the staging-dir
     // guard in `materializeAttachmentIntoConversation` avoids at the other end
     // of the same window.
-    if (attachmentFilePathStillReferenced(filePath)) {
+    if (await attachmentFilePathStillReferenced(filePath)) {
       continue;
     }
     try {
@@ -1475,12 +1473,13 @@ export function deleteOrphanAttachments(candidateIds: string[]): number {
 }
 
 /** True while any surviving attachment row still names this file. */
-function attachmentFilePathStillReferenced(filePath: string): boolean {
-  return (
-    rawGet<{ id: string }>(
-      "attachments:filePathStillReferenced",
-      `SELECT id FROM attachments WHERE file_path = ? LIMIT 1`,
-      filePath,
-    ) !== null
+async function attachmentFilePathStillReferenced(
+  filePath: string,
+): Promise<boolean> {
+  const db = requireMainDb();
+  const row = await db.get<{ id: string }>(
+    `SELECT id FROM attachments WHERE file_path = ? LIMIT 1`,
+    [filePath],
   );
+  return row !== null;
 }

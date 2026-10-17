@@ -5,17 +5,7 @@
  * finding messages by source identifiers, and managing raw payload storage.
  */
 
-import {
-  and,
-  desc,
-  eq,
-  isNotNull,
-  like,
-  ne,
-  notExists,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, desc, eq, isNotNull, like, ne, notExists, or } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
 import type { ChannelId } from "../channels/types.js";
@@ -31,14 +21,7 @@ import {
   setConversationKeyIfAbsent,
 } from "./conversation-key-store.js";
 import type { NonScheduledConversationType } from "./conversation-types.js";
-import { getDb } from "./db-connection.js";
-import {
-  channelInboundEvents,
-  channelOutboundPosts,
-  conversationKeys,
-  conversations,
-  messages,
-} from "./schema.js";
+import { requireMainDb } from "./db-facade.js";
 
 export interface InboundResult {
   accepted: boolean;
@@ -116,13 +99,14 @@ export function buildScopedConversationKey(
   return `${CONVERSATION_KEY_SCOPE}:${sourceChannel}:${externalChatId}`;
 }
 
-function legacySlackConversationHasThreadEvidence(
+async function legacySlackConversationHasThreadEvidence(
   conversationId: string,
   externalChatId: string,
   sourceThreadId: string,
-): boolean {
-  const db = getDb();
-  const inboundEvidence = db
+): Promise<boolean> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  const evidenceRows = await db.orm
     .select({ id: channelInboundEvents.id })
     .from(channelInboundEvents)
     .where(
@@ -135,8 +119,8 @@ function legacySlackConversationHasThreadEvidence(
           eq(channelInboundEvents.externalMessageId, sourceThreadId),
         ),
       ),
-    )
-    .get();
+    );
+  const inboundEvidence = evidenceRows[0];
 
   if (inboundEvidence) {
     return true;
@@ -146,7 +130,7 @@ function legacySlackConversationHasThreadEvidence(
   // the post was recorded in. Every id a delivered post was acknowledged
   // under is in the outbound index, split posts included, so this lookup
   // is exact and not bounded by the scan below.
-  const rooted = findMessageByProviderMessageId(
+  const rooted = await findMessageByProviderMessageId(
     "slack",
     externalChatId,
     sourceThreadId,
@@ -202,12 +186,12 @@ export interface ResolveInboundConversationOptions {
   origin?: ChannelId;
 }
 
-export function resolveInboundConversation(
+export async function resolveInboundConversation(
   sourceChannel: string,
   externalChatId: string,
   sourceThreadId?: string | null,
   opts?: ResolveInboundConversationOptions,
-): { conversationId: string } {
+): Promise<{ conversationId: string }> {
   const threadedKey = buildScopedConversationKey(
     sourceChannel,
     externalChatId,
@@ -237,11 +221,11 @@ export function resolveInboundConversation(
   const legacyMapping = getConversationByKey(legacyKey);
   if (
     legacyMapping &&
-    legacySlackConversationHasThreadEvidence(
+    (await legacySlackConversationHasThreadEvidence(
       legacyMapping.conversationId,
       externalChatId,
       threadId,
-    )
+    ))
   ) {
     setConversationKeyIfAbsent(threadedKey, legacyMapping.conversationId);
     const aliasedMapping = getConversationByKey(threadedKey);
@@ -262,11 +246,11 @@ export function resolveInboundConversation(
  * access-request card to the originating conversation, and a denied
  * inbound must never mint a conversation as a side effect.
  */
-export function findInboundConversationId(
+export async function findInboundConversationId(
   sourceChannel: string,
   externalChatId: string,
   sourceThreadId?: string | null,
-): string | null {
+): Promise<string | null> {
   const threadedKey = buildScopedConversationKey(
     sourceChannel,
     externalChatId,
@@ -286,11 +270,11 @@ export function findInboundConversationId(
   const legacyMapping = getConversationByKey(legacyKey);
   if (
     legacyMapping &&
-    legacySlackConversationHasThreadEvidence(
+    (await legacySlackConversationHasThreadEvidence(
       legacyMapping.conversationId,
       externalChatId,
       threadId,
-    )
+    ))
   ) {
     return legacyMapping.conversationId;
   }
@@ -315,12 +299,14 @@ export function findInboundConversationId(
  * an event is a redelivery before doing work that recording would otherwise
  * gate (routing a guardian decision, for one).
  */
-export function findInboundEvent(
+export async function findInboundEvent(
   sourceChannel: string,
   externalChatId: string,
   externalMessageId: string,
-): { eventId: string; conversationId: string } | null {
-  const row = getDb()
+): Promise<{ eventId: string; conversationId: string } | null> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  const rows = await db.orm
     .select({
       id: channelInboundEvents.id,
       conversationId: channelInboundEvents.conversationId,
@@ -332,8 +318,8 @@ export function findInboundEvent(
         eq(channelInboundEvents.externalChatId, externalChatId),
         eq(channelInboundEvents.externalMessageId, externalMessageId),
       ),
-    )
-    .get();
+    );
+  const row = rows[0];
   return row ? { eventId: row.id, conversationId: row.conversationId } : null;
 }
 
@@ -356,19 +342,25 @@ export function findInboundEvent(
  * beyond whichever bound applies the lookup gives up and the caller drops
  * the annotation, which is the same outcome as never finding it at all.
  */
-export function findMessageByProviderMessageId(
+export async function findMessageByProviderMessageId(
   sourceChannel: string,
   externalChatId: string,
   providerMessageId: string,
   opts?: { maxScan?: number },
-): { messageId: string; conversationId: string } | null {
-  const db = getDb();
+): Promise<{ messageId: string; conversationId: string } | null> {
+  const db = requireMainDb();
+  const {
+    channelInboundEvents,
+    channelOutboundPosts,
+    conversationKeys,
+    messages,
+  } = db.schema;
 
   // The `channel_outbound_posts` index is the resolution contract: exact,
   // unbounded by recency, one indexed read. It covers every post delivered
   // since the table exists; the batched envelope scan below survives only
   // as the transitional fallback for rows reconciled before it.
-  const indexed = db
+  const indexedRows = await db.orm
     .select({
       messageId: channelOutboundPosts.messageId,
       conversationId: channelOutboundPosts.conversationId,
@@ -380,8 +372,8 @@ export function findMessageByProviderMessageId(
         eq(channelOutboundPosts.externalChatId, externalChatId),
         eq(channelOutboundPosts.providerMessageId, providerMessageId),
       ),
-    )
-    .get();
+    );
+  const indexed = indexedRows[0];
   if (indexed) {
     return indexed;
   }
@@ -395,7 +387,7 @@ export function findMessageByProviderMessageId(
       PROVIDER_MESSAGE_ID_SCAN_BATCH_SIZE,
       maxScan - offset,
     );
-    const rows = db
+    const rows = await db.orm
       .select({
         id: messages.id,
         conversationId: messages.conversationId,
@@ -424,7 +416,7 @@ export function findMessageByProviderMessageId(
           // would burn the scan budget on messages the primary path already
           // answers.
           notExists(
-            db
+            db.orm
               .select({ id: channelInboundEvents.id })
               .from(channelInboundEvents)
               .where(
@@ -438,8 +430,7 @@ export function findMessageByProviderMessageId(
       )
       .orderBy(desc(messages.createdAt))
       .limit(batchLimit)
-      .offset(offset)
-      .all();
+      .offset(offset);
 
     for (const row of rows) {
       const meta = readProviderMetadata(row.metadata, {
@@ -468,15 +459,16 @@ export function findMessageByProviderMessageId(
  * reconciliation alongside the row's `providerMeta` envelope; the envelope
  * stays the row's self-description, this table is the resolution index.
  */
-export function recordOutboundPost(post: {
+export async function recordOutboundPost(post: {
   sourceChannel: string;
   externalChatId: string;
   providerMessageId: string;
   messageId: string;
   conversationId: string;
-}): void {
-  const db = getDb();
-  db.insert(channelOutboundPosts)
+}): Promise<void> {
+  const db = requireMainDb();
+  await db.orm
+    .insert(db.schema.channelOutboundPosts)
     .values({
       sourceChannel: post.sourceChannel,
       externalChatId: post.externalChatId,
@@ -485,8 +477,7 @@ export function recordOutboundPost(post: {
       conversationId: post.conversationId,
       createdAt: Date.now(),
     })
-    .onConflictDoNothing()
-    .run();
+    .onConflictDoNothing();
 }
 
 /**
@@ -497,13 +488,14 @@ export function recordOutboundPost(post: {
  * returns without paying a retry window. Bounded to the newest handful of
  * rows: the race it detects is one delivery round-trip wide.
  */
-export function hasUnreconciledOutboundRow(
+export async function hasUnreconciledOutboundRow(
   sourceChannel: string,
   externalChatId: string,
-): boolean {
-  const db = getDb();
+): Promise<boolean> {
+  const db = requireMainDb();
+  const { channelInboundEvents, conversationKeys, messages } = db.schema;
   const keyPrefix = `${CONVERSATION_KEY_SCOPE}:${sourceChannel}:${externalChatId}`;
-  const rows = db
+  const rows = await db.orm
     .select({ metadata: messages.metadata })
     .from(messages)
     .innerJoin(
@@ -522,7 +514,7 @@ export function hasUnreconciledOutboundRow(
         // resolves keeps this probe's small window counting only rows that
         // could actually be an unreconciled outbound post.
         notExists(
-          db
+          db.orm
             .select({ id: channelInboundEvents.id })
             .from(channelInboundEvents)
             .where(
@@ -535,8 +527,7 @@ export function hasUnreconciledOutboundRow(
       ),
     )
     .orderBy(desc(messages.createdAt))
-    .limit(UNRECONCILED_OUTBOUND_ROW_SCAN)
-    .all();
+    .limit(UNRECONCILED_OUTBOUND_ROW_SCAN);
   for (const row of rows) {
     const meta = readProviderMetadata(row.metadata);
     if (
@@ -550,15 +541,16 @@ export function hasUnreconciledOutboundRow(
   return false;
 }
 
-export function recordInbound(
+export async function recordInbound(
   sourceChannel: string,
   externalChatId: string,
   externalMessageId: string,
   options?: RecordInboundOptions,
-): InboundResult {
-  const db = getDb();
+): Promise<InboundResult> {
+  const db = requireMainDb();
+  const { channelInboundEvents, conversations } = db.schema;
 
-  const existing = db
+  const rows = await db.orm
     .select({
       id: channelInboundEvents.id,
       conversationId: channelInboundEvents.conversationId,
@@ -570,8 +562,8 @@ export function recordInbound(
         eq(channelInboundEvents.externalChatId, externalChatId),
         eq(channelInboundEvents.externalMessageId, externalMessageId),
       ),
-    )
-    .get();
+    );
+  const existing = rows[0];
 
   if (existing) {
     return {
@@ -584,7 +576,7 @@ export function recordInbound(
 
   const mapping = options?.conversationId
     ? { conversationId: options.conversationId }
-    : resolveInboundConversation(
+    : await resolveInboundConversation(
         sourceChannel,
         externalChatId,
         options?.sourceThreadId,
@@ -592,24 +584,22 @@ export function recordInbound(
   const now = Date.now();
   const eventId = uuid();
 
-  db.transaction((tx) => {
-    tx.update(conversations)
+  await db.transaction(async (tx) => {
+    await tx.orm
+      .update(conversations)
       .set({ updatedAt: now })
-      .where(eq(conversations.id, mapping.conversationId))
-      .run();
-    tx.insert(channelInboundEvents)
-      .values({
-        id: eventId,
-        sourceChannel,
-        externalChatId,
-        externalMessageId,
-        sourceMessageId: options?.sourceMessageId ?? null,
-        conversationId: mapping.conversationId,
-        deliveryStatus: "pending",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+      .where(eq(conversations.id, mapping.conversationId));
+    await tx.orm.insert(channelInboundEvents).values({
+      id: eventId,
+      sourceChannel,
+      externalChatId,
+      externalMessageId,
+      sourceMessageId: options?.sourceMessageId ?? null,
+      conversationId: mapping.conversationId,
+      deliveryStatus: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
   });
 
   return {
@@ -626,36 +616,41 @@ export function recordInbound(
  * so that webhook retries can re-attempt instead of short-circuiting as
  * duplicates.
  */
-export function deleteInbound(eventId: string): void {
-  const db = getDb();
-  db.delete(channelInboundEvents)
-    .where(eq(channelInboundEvents.id, eventId))
-    .run();
+export async function deleteInbound(eventId: string): Promise<void> {
+  const db = requireMainDb();
+  await db.orm
+    .delete(db.schema.channelInboundEvents)
+    .where(eq(db.schema.channelInboundEvents.id, eventId));
 }
 
 /**
  * Link an inbound event to the user message it created, so edits can
  * later find the correct message by source_message_id -> message_id.
  */
-export function linkMessage(eventId: string, messageId: string): void {
-  const db = getDb();
-  db.update(channelInboundEvents)
+export async function linkMessage(
+  eventId: string,
+  messageId: string,
+): Promise<void> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  await db.orm
+    .update(channelInboundEvents)
     .set({ messageId, updatedAt: Date.now() })
-    .where(eq(channelInboundEvents.id, eventId))
-    .run();
+    .where(eq(channelInboundEvents.id, eventId));
 }
 
 /**
  * Find the message ID linked to the original inbound event for a given
  * platform-level message identifier (e.g. Telegram message_id).
  */
-export function findMessageBySourceId(
+export async function findMessageBySourceId(
   sourceChannel: string,
   externalChatId: string,
   sourceMessageId: string,
-): { messageId: string; conversationId: string } | null {
-  const db = getDb();
-  const row = db
+): Promise<{ messageId: string; conversationId: string } | null> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  const rows = await db.orm
     .select({
       messageId: channelInboundEvents.messageId,
       conversationId: channelInboundEvents.conversationId,
@@ -668,8 +663,8 @@ export function findMessageBySourceId(
         eq(channelInboundEvents.sourceMessageId, sourceMessageId),
         isNotNull(channelInboundEvents.messageId),
       ),
-    )
-    .get();
+    );
+  const row = rows[0];
 
   if (!row || !row.messageId) {
     return null;
@@ -684,13 +679,14 @@ export function findMessageBySourceId(
  * for a message the daemon never saw can return immediately instead of
  * holding its conversation's serialized lane through the retry window.
  */
-export function hasInboundEventForSource(
+export async function hasInboundEventForSource(
   sourceChannel: string,
   externalChatId: string,
   sourceMessageId: string,
-): boolean {
-  const db = getDb();
-  const row = db
+): Promise<boolean> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  const rows = await db.orm
     .select({ id: channelInboundEvents.id })
     .from(channelInboundEvents)
     .where(
@@ -699,9 +695,8 @@ export function hasInboundEventForSource(
         eq(channelInboundEvents.externalChatId, externalChatId),
         eq(channelInboundEvents.sourceMessageId, sourceMessageId),
       ),
-    )
-    .get();
-  return row !== undefined;
+    );
+  return !!rows[0];
 }
 
 /**
@@ -722,17 +717,16 @@ export interface LatestInboundEventReference {
  * Used to anchor guardian-facing approval cards to the channel message
  * that triggered the request.
  *
- * Orders by `rowid` rather than `created_at`: rows are insert-only so the
- * two orderings agree, and the conversation-id index stores equal keys in
- * rowid order — a backward index scan finds the newest row without sorting
- * the conversation's full event history.
+ * Orders by `created_at` descending: rows are insert-only, so insertion order
+ * and timestamp order agree.
  */
-export function getLatestInboundEventReference(
+export async function getLatestInboundEventReference(
   conversationId: string,
   sourceChannel: string,
-): LatestInboundEventReference | null {
-  const db = getDb();
-  const row = db
+): Promise<LatestInboundEventReference | null> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  const rows = await db.orm
     .select({
       externalChatId: channelInboundEvents.externalChatId,
       externalMessageId: channelInboundEvents.externalMessageId,
@@ -745,25 +739,25 @@ export function getLatestInboundEventReference(
         eq(channelInboundEvents.sourceChannel, sourceChannel),
       ),
     )
-    .orderBy(desc(sql`rowid`))
-    .limit(1)
-    .get();
-  return row ?? null;
+    .orderBy(desc(channelInboundEvents.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 /**
  * Store the raw request payload on an inbound event so it can be
  * replayed later if processing fails.
  */
-export function storePayload(
+export async function storePayload(
   eventId: string,
   payload: Record<string, unknown>,
-): void {
-  const db = getDb();
-  db.update(channelInboundEvents)
+): Promise<void> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  await db.orm
+    .update(channelInboundEvents)
     .set({ rawPayload: JSON.stringify(payload), updatedAt: Date.now() })
-    .where(eq(channelInboundEvents.id, eventId))
-    .run();
+    .where(eq(channelInboundEvents.id, eventId));
 }
 
 /**
@@ -785,28 +779,28 @@ function parseRawPayloadObject(
  * keys. No-ops when the event has no payload or the stored value is not a JSON
  * object.
  */
-function mergeRawPayload(
+async function mergeRawPayload(
   eventId: string,
   patch: Record<string, unknown>,
-): void {
-  const db = getDb();
-  const row = db
+): Promise<void> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  const rows = await db.orm
     .select({ rawPayload: channelInboundEvents.rawPayload })
     .from(channelInboundEvents)
-    .where(eq(channelInboundEvents.id, eventId))
-    .get();
-  const payload = parseRawPayloadObject(row?.rawPayload);
+    .where(eq(channelInboundEvents.id, eventId));
+  const payload = parseRawPayloadObject(rows[0]?.rawPayload);
   if (!payload) {
     return;
   }
 
-  db.update(channelInboundEvents)
+  await db.orm
+    .update(channelInboundEvents)
     .set({
       rawPayload: JSON.stringify({ ...payload, ...patch }),
       updatedAt: Date.now(),
     })
-    .where(eq(channelInboundEvents.id, eventId))
-    .run();
+    .where(eq(channelInboundEvents.id, eventId));
 }
 
 /**
@@ -814,11 +808,11 @@ function mergeRawPayload(
  * delivery retries target that exact response instead of the latest message in
  * the conversation.
  */
-export function storeReplyMessageId(
+export async function storeReplyMessageId(
   eventId: string,
   replyMessageId: string,
-): void {
-  mergeRawPayload(eventId, { replyMessageId });
+): Promise<void> {
+  await mergeRawPayload(eventId, { replyMessageId });
 }
 
 /**
@@ -826,8 +820,11 @@ export function storeReplyMessageId(
  * A processing retry reconciles its durable delivery into this message instead
  * of opening a second stream, preventing a duplicate reply.
  */
-export function storeStreamedReplyTs(eventId: string, streamTs: string): void {
-  mergeRawPayload(eventId, { slackStreamMessageTs: streamTs });
+export async function storeStreamedReplyTs(
+  eventId: string,
+  streamTs: string,
+): Promise<void> {
+  await mergeRawPayload(eventId, { slackStreamMessageTs: streamTs });
 }
 
 /**
@@ -840,11 +837,11 @@ export function storeStreamedReplyTs(eventId: string, streamTs: string): void {
  * payload was cleared (e.g. a secret-bearing ingress), so cleared secrets are
  * never resurrected.
  */
-export function storeInboundSlackMetadata(
+export async function storeInboundSlackMetadata(
   eventId: string,
   slackInbound: SlackInboundMessageMetadata,
-): void {
-  mergeRawPayload(eventId, { slackInbound });
+): Promise<void> {
+  await mergeRawPayload(eventId, { slackInbound });
 }
 
 /**
@@ -855,11 +852,11 @@ export function storeInboundSlackMetadata(
  * an identical `providerMeta` envelope. No-ops when the payload was cleared
  * (e.g. a secret-bearing ingress), so cleared secrets are never resurrected.
  */
-export function storeInboundChannelMetadata(
+export async function storeInboundChannelMetadata(
   eventId: string,
   channelInbound: ProviderMessageMetadata,
-): void {
-  mergeRawPayload(eventId, { channelInbound });
+): Promise<void> {
+  await mergeRawPayload(eventId, { channelInbound });
 }
 
 /**
@@ -872,12 +869,13 @@ export function storeInboundChannelMetadata(
  * survives on the sibling row — the redelivery reads it here to edit that
  * message in place instead of posting the persisted reply a second time.
  */
-export function getSiblingStreamedReplyTs(
+export async function getSiblingStreamedReplyTs(
   messageId: string,
   excludeEventId: string,
-): string | undefined {
-  const db = getDb();
-  const rows = db
+): Promise<string | undefined> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  const rows = await db.orm
     .select({ rawPayload: channelInboundEvents.rawPayload })
     .from(channelInboundEvents)
     .where(
@@ -885,8 +883,7 @@ export function getSiblingStreamedReplyTs(
         eq(channelInboundEvents.messageId, messageId),
         ne(channelInboundEvents.id, excludeEventId),
       ),
-    )
-    .all();
+    );
 
   for (const row of rows) {
     const ts = parseRawPayloadObject(row.rawPayload)?.slackStreamMessageTs;
@@ -901,10 +898,11 @@ export function getSiblingStreamedReplyTs(
  * Clear a previously stored payload. Used when the ingress check
  * detects secret-bearing content — the payload must not remain on disk.
  */
-export function clearPayload(eventId: string): void {
-  const db = getDb();
-  db.update(channelInboundEvents)
+export async function clearPayload(eventId: string): Promise<void> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  await db.orm
+    .update(channelInboundEvents)
     .set({ rawPayload: null, updatedAt: Date.now() })
-    .where(eq(channelInboundEvents.id, eventId))
-    .run();
+    .where(eq(channelInboundEvents.id, eventId));
 }

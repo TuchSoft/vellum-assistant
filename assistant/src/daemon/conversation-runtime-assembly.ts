@@ -2465,13 +2465,17 @@ export async function applyRuntimeInjections(
   // boundary (raw `contextCompactedMessageCount` / watermark) so rows already
   // folded into the summary are excluded.
   const slackActiveThreadFocusBlock = channelCapabilities
-    ? loadSlackActiveThreadFocusBlock(conversationId, channelCapabilities, {
-        trustClass: liveConversation?.getTrustContext()?.trustClass,
-        contextCompactedMessageCount:
-          liveConversation?.contextCompactedMessageCount,
-        slackContextCompactionWatermarkTs:
-          liveConversation?.slackContextCompactionWatermarkTs,
-      })
+    ? await loadSlackActiveThreadFocusBlock(
+        conversationId,
+        channelCapabilities,
+        {
+          trustClass: liveConversation?.getTrustContext()?.trustClass,
+          contextCompactedMessageCount:
+            liveConversation?.contextCompactedMessageCount,
+          slackContextCompactionWatermarkTs:
+            liveConversation?.slackContextCompactionWatermarkTs,
+        },
+      )
     : null;
 
   // The Slack chronological transcript that the `slack-messages` injector

@@ -1172,7 +1172,9 @@ export interface AgentLoopConstructorOptions {
    * turn. Callers that hold no conversation (workflow leaf runs) omit it and
    * the compacted history is installed as built.
    */
-  transformCompactedHistory?: (messages: Message[]) => Message[];
+  transformCompactedHistory?: (
+    messages: Message[],
+  ) => Message[] | Promise<Message[]>;
 }
 
 export class AgentLoop {
@@ -1197,7 +1199,7 @@ export class AgentLoop {
 
   /** See {@link AgentLoopConstructorOptions.transformCompactedHistory}. */
   private readonly transformCompactedHistory:
-    | ((messages: Message[]) => Message[])
+    | ((messages: Message[]) => Message[] | Promise<Message[]>)
     | null;
 
   /**
@@ -1321,15 +1323,15 @@ export class AgentLoop {
    * the caller's own passes cover the next turn. Kept best-effort for the same
    * reason the caller's pre-run pass is.
    */
-  private applyCompactedHistoryTransform(
+  private async applyCompactedHistoryTransform(
     compacted: Message[],
     rlog: ReturnType<typeof getLogger>,
-  ): Message[] {
+  ): Promise<Message[]> {
     if (!this.transformCompactedHistory) {
       return compacted;
     }
     try {
-      return this.transformCompactedHistory(compacted);
+      return await this.transformCompactedHistory(compacted);
     } catch (err) {
       rlog.warn(
         { err },
@@ -1935,7 +1937,7 @@ export class AgentLoop {
                   // provider call further down this same iteration sends it, so
                   // content compaction reintroduced has to be brought back
                   // within the caller's bounds here or it ships un-trimmed.
-                  history = this.applyCompactedHistoryTransform(
+                  history = await this.applyCompactedHistoryTransform(
                     attempt.history,
                     rlog,
                   );

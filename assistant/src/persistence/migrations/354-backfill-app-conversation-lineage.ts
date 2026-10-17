@@ -12,17 +12,17 @@ const log = getLogger("migration:backfill-app-conversation-lineage");
  * direct. Processing only direct associations keeps the migration idempotent:
  * an inherited ancestor never becomes a new lineage seed on a later run.
  */
-export function migrateBackfillAppConversationLineage(): void {
+export async function migrateBackfillAppConversationLineage(): Promise<void> {
   let appsUpdated = 0;
   let associationsAdded = 0;
 
-  for (const app of listApps()) {
+  for (const app of await listApps()) {
     let appUpdated = false;
     for (const conversationId of app.conversationIds ?? []) {
       if (!isDirectAppConversation(app, conversationId)) {
         continue;
       }
-      const added = linkAppToConversationLineage(app.id, conversationId);
+      const added = await linkAppToConversationLineage(app.id, conversationId);
       if (added > 0) {
         associationsAdded += added;
         appUpdated = true;

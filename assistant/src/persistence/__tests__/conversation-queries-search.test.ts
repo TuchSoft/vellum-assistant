@@ -10,9 +10,9 @@
  * is never consulted and only titles can match.
  *
  * The lexical index is mocked at the `conversation-search-lexical` seam so no
- * real Qdrant is required; a real SQLite DB backs the visibility/archived SQL.
+ * real Qdrant is required; a real Postgres test schema backs the visibility/archived SQL.
  */
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, expect, mock, test } from "bun:test";
 
 import type { MessageLexicalSearchResult } from "../embeddings/messages-lexical-index.js";
 
@@ -44,6 +44,7 @@ mock.module("../jobs-store.js", () => ({
   isMemoryEnabled: () => memoryEnabled,
 }));
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import {
   deleteMemoryCheckpoint,
   LEXICAL_BACKFILL_COMPLETE_KEY,
@@ -51,11 +52,7 @@ import {
 } from "../checkpoints.js";
 import { createConversation } from "../conversation-crud.js";
 import { searchConversations } from "../conversation-queries.js";
-import { getDb } from "../db-connection.js";
-import { initializeDb } from "../db-init.js";
-import { rawRun } from "../raw-query.js";
-
-await initializeDb();
+import { requireMainDb } from "../db-facade.js";
 
 /**
  * Mark the messages lexical-index backfill complete. Content search is gated
@@ -64,52 +61,46 @@ await initializeDb();
  * tests below index candidates as if the backfill has drained, so they set
  * this marker; the gate itself is covered by its own test.
  */
-function markBackfillComplete(): void {
-  setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
+async function markBackfillComplete(): Promise<void> {
+  await setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
 }
 
-function resetTables(): void {
-  const db = getDb();
-  db.run(`DELETE FROM messages`);
-  db.run(`DELETE FROM conversations`);
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM messages`);
+  await db.run(`DELETE FROM conversations`);
 }
 
 /**
  * Insert a message row directly. `id` is caller-supplied so tests can wire the
  * exact ids the mocked lexical index returns as candidates.
  */
-function insertMessage(
+async function insertMessage(
   id: string,
   conversationId: string,
   content: string,
   createdAt = 1000,
-): void {
-  rawRun(
-    "test:insertMessage",
+): Promise<void> {
+  await requireMainDb().run(
     "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
-    id,
-    conversationId,
-    "user",
-    content,
-    createdAt,
+    [id, conversationId, "user", content, createdAt],
   );
 }
 
-function setConversationType(conversationId: string, type: string): void {
-  rawRun(
-    "test:setConversationType",
+async function setConversationType(
+  conversationId: string,
+  type: string,
+): Promise<void> {
+  await requireMainDb().run(
     "UPDATE conversations SET conversation_type = ? WHERE id = ?",
-    type,
-    conversationId,
+    [type, conversationId],
   );
 }
 
-function archive(conversationId: string): void {
-  rawRun(
-    "test:archiveConversation",
+async function archive(conversationId: string): Promise<void> {
+  await requireMainDb().run(
     "UPDATE conversations SET archived_at = ? WHERE id = ?",
-    Date.now(),
-    conversationId,
+    [Date.now(), conversationId],
   );
 }
 
@@ -124,24 +115,28 @@ afterAll(() => {
   mock.restore();
 });
 
-describe("searchConversations · qdrant lexical index", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("searchConversations · qdrant lexical index", () => {
+  beforeEach(async () => {
+    await resetTables();
     memoryEnabled = true;
     // Content search is available once the index is populated: memory enabled
     // + backfill complete. These tests exercise that post-backfill path.
-    markBackfillComplete();
+    await markBackfillComplete();
     searchMessageIdsLexicalMock.mockClear();
     searchMessageIdsLexicalMock.mockImplementation(async () => []);
   });
 
   test("sources content candidates exclusively from the lexical index", async () => {
-    const conv = createConversation("Notes");
-    insertMessage("m-1", conv.id, "the flux capacitor needs recalibration");
+    const conv = await createConversation("Notes");
+    await insertMessage(
+      "m-1",
+      conv.id,
+      "the flux capacitor needs recalibration",
+    );
     // A message matching the query text that the lexical index does NOT
     // return: if the query still surfaces it, candidates are coming from
     // somewhere other than the index.
-    insertMessage("m-2", conv.id, "flux capacitor decoy", 2000);
+    await insertMessage("m-2", conv.id, "flux capacitor decoy", 2000);
 
     lexicalReturns(["m-1"]);
 
@@ -162,10 +157,10 @@ describe("searchConversations · qdrant lexical index", () => {
   });
 
   test("does not issue a second lexical round-trip for per-conversation messages", async () => {
-    const convA = createConversation("A");
-    const convB = createConversation("B");
-    insertMessage("a-1", convA.id, "shared token alpha", 1000);
-    insertMessage("b-1", convB.id, "shared token beta", 1000);
+    const convA = await createConversation("A");
+    const convB = await createConversation("B");
+    await insertMessage("a-1", convA.id, "shared token alpha", 1000);
+    await insertMessage("b-1", convB.id, "shared token beta", 1000);
 
     lexicalReturns(["a-1", "b-1"]);
 
@@ -183,8 +178,8 @@ describe("searchConversations · qdrant lexical index", () => {
   });
 
   test("over-fetches a wide message-candidate pool (cap on distinct conversations, not messages)", async () => {
-    const conv = createConversation("Notes");
-    insertMessage("m-1", conv.id, "flux capacitor");
+    const conv = await createConversation("Notes");
+    await insertMessage("m-1", conv.id, "flux capacitor");
     lexicalReturns(["m-1"]);
 
     await searchConversations("flux capacitor");
@@ -201,16 +196,21 @@ describe("searchConversations · qdrant lexical index", () => {
     // `chatty` has many matching messages; `other` has a single one. If the
     // cap were on messages (and chatty's messages ranked first), `other` could
     // be crowded out. The distinct-conversation cap must surface both.
-    const chatty = createConversation("Chatty");
-    const other = createConversation("Other");
+    const chatty = await createConversation("Chatty");
+    const other = await createConversation("Other");
 
     const chattyIds: string[] = [];
     for (let i = 0; i < 50; i++) {
       const id = `chatty-${i}`;
-      insertMessage(id, chatty.id, `flux capacitor mention ${i}`, 1000 + i);
+      await insertMessage(
+        id,
+        chatty.id,
+        `flux capacitor mention ${i}`,
+        1000 + i,
+      );
       chattyIds.push(id);
     }
-    insertMessage("other-1", other.id, "flux capacitor once", 999);
+    await insertMessage("other-1", other.id, "flux capacitor once", 999);
 
     // Rank ALL of chatty's messages ahead of other's single message — the
     // worst case for a message-level cap.
@@ -235,11 +235,15 @@ describe("searchConversations · qdrant lexical index", () => {
   });
 
   test("applies the same visibility filtering (excludes non-surfaced background)", async () => {
-    const background = createConversation({
+    const background = await createConversation({
       title: "bg-run",
       conversationType: "background",
     });
-    insertMessage("bg-1", background.id, "flux capacitor in the background");
+    await insertMessage(
+      "bg-1",
+      background.id,
+      "flux capacitor in the background",
+    );
 
     lexicalReturns(["bg-1"]);
 
@@ -249,9 +253,9 @@ describe("searchConversations · qdrant lexical index", () => {
   });
 
   test("applies the same archived filtering (excludes archived conversations)", async () => {
-    const conv = createConversation("Archived notes");
-    insertMessage("arch-1", conv.id, "flux capacitor archived");
-    archive(conv.id);
+    const conv = await createConversation("Archived notes");
+    await insertMessage("arch-1", conv.id, "flux capacitor archived");
+    await archive(conv.id);
 
     lexicalReturns(["arch-1"]);
 
@@ -264,11 +268,11 @@ describe("searchConversations · qdrant lexical index", () => {
     // archived_at IS NULL filter is what this toggles, so verifying the
     // result flips on/off across the same data proves the flag is plumbed
     // through both the SQL fragment AND the lexical-candidate join path.
-    const arch = createConversation("Archived notes");
-    insertMessage("arch-1", arch.id, "flux capacitor archived");
-    archive(arch.id);
-    const active = createConversation("Active notes");
-    insertMessage("act-1", active.id, "flux capacitor still here");
+    const arch = await createConversation("Archived notes");
+    await insertMessage("arch-1", arch.id, "flux capacitor archived");
+    await archive(arch.id);
+    const active = await createConversation("Active notes");
+    await insertMessage("act-1", active.id, "flux capacitor still here");
 
     lexicalReturns(["arch-1", "act-1"]);
 
@@ -286,8 +290,8 @@ describe("searchConversations · qdrant lexical index", () => {
     // and a separate `sql` predicate. The previous test exercises the raw
     // SQL fragment; this one exercises the Drizzle arm — different code
     // path, same opt-in semantics.
-    const archTitle = createConversation("Flux capacitor retrospective");
-    archive(archTitle.id);
+    const archTitle = await createConversation("Flux capacitor retrospective");
+    await archive(archTitle.id);
 
     lexicalReturns([]);
 
@@ -299,9 +303,9 @@ describe("searchConversations · qdrant lexical index", () => {
   });
 
   test("excludes private conversations even when the index returns their messages", async () => {
-    const priv = createConversation("Private notes");
-    setConversationType(priv.id, "private");
-    insertMessage("p-1", priv.id, "flux capacitor secret");
+    const priv = await createConversation("Private notes");
+    await setConversationType(priv.id, "private");
+    await insertMessage("p-1", priv.id, "flux capacitor secret");
 
     lexicalReturns(["p-1"]);
 
@@ -309,7 +313,7 @@ describe("searchConversations · qdrant lexical index", () => {
   });
 
   test("title-only matches still work without any lexical candidates", async () => {
-    const conv = createConversation("Quarterly metrics rollup");
+    const conv = await createConversation("Quarterly metrics rollup");
 
     // Index returns nothing for the content query; the title LIKE arm still
     // finds the conversation.
@@ -325,9 +329,13 @@ describe("searchConversations · qdrant lexical index", () => {
   test("returns title matches only when the lexical lookup throws", async () => {
     // Content matching is index-only: a lexical failure is logged and the
     // content arm contributes nothing — no messages.content scan recovers it.
-    const contentOnly = createConversation("Degrade notes");
-    insertMessage("c-1", contentOnly.id, "flux capacitor mentioned in content");
-    const titleMatch = createConversation("Flux capacitor planning");
+    const contentOnly = await createConversation("Degrade notes");
+    await insertMessage(
+      "c-1",
+      contentOnly.id,
+      "flux capacitor mentioned in content",
+    );
+    const titleMatch = await createConversation("Flux capacitor planning");
 
     searchMessageIdsLexicalMock.mockImplementation(async () => {
       throw new Error("qdrant unreachable");
@@ -347,8 +355,8 @@ describe("searchConversations · qdrant lexical index", () => {
     // serve regardless of the memory feature's state, so disabling memory
     // must not degrade search to title-only.
     memoryEnabled = false;
-    const conv = createConversation("Notes");
-    insertMessage("m-1", conv.id, "flux capacitor in content only");
+    const conv = await createConversation("Notes");
+    await insertMessage("m-1", conv.id, "flux capacitor in content only");
     lexicalReturns(["m-1"]);
 
     const results = await searchConversations("flux capacitor");
@@ -366,10 +374,14 @@ describe("searchConversations · qdrant lexical index", () => {
     // partially populated and a read would silently miss older content. With
     // the completion checkpoint UNSET, the index must not be consulted at
     // all; only titles can match.
-    deleteMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY);
-    const contentOnly = createConversation("Notes");
-    insertMessage("m-1", contentOnly.id, "flux capacitor in content only");
-    const titleMatch = createConversation("Flux capacitor planning");
+    await deleteMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY);
+    const contentOnly = await createConversation("Notes");
+    await insertMessage(
+      "m-1",
+      contentOnly.id,
+      "flux capacitor in content only",
+    );
+    const titleMatch = await createConversation("Flux capacitor planning");
     lexicalReturns(["m-1"]);
 
     const results = await searchConversations("flux capacitor");
@@ -382,17 +394,19 @@ describe("searchConversations · qdrant lexical index", () => {
   test("includes a surfaced background conversation via lexical candidates", async () => {
     // Surfacing flips a background conversation into the visible listing set,
     // so its content matches must surface like any standard conversation's.
-    const surfaced = createConversation({
+    const surfaced = await createConversation({
       title: "bg-run",
       conversationType: "background",
     });
-    rawRun(
-      "test:setSurfaced",
+    await requireMainDb().run(
       "UPDATE conversations SET surfaced_at = ? WHERE id = ?",
-      Date.now(),
-      surfaced.id,
+      [Date.now(), surfaced.id],
     );
-    insertMessage("sb-1", surfaced.id, "flux capacitor surfaced background");
+    await insertMessage(
+      "sb-1",
+      surfaced.id,
+      "flux capacitor surfaced background",
+    );
 
     lexicalReturns(["sb-1"]);
 
@@ -408,9 +422,9 @@ describe("searchConversations · qdrant lexical index", () => {
     // Single-char / non-ASCII queries produce no tokens, so neither FTS nor the
     // sparse encoder yields terms. Content matching is index-only, so only the
     // title LIKE arm can match such queries.
-    const contentOnly = createConversation("Symbols");
-    insertMessage("s-1", contentOnly.id, "review the C§ draft");
-    const titleMatch = createConversation("C§ symbol reference");
+    const contentOnly = await createConversation("Symbols");
+    await insertMessage("s-1", contentOnly.id, "review the C§ draft");
+    const titleMatch = await createConversation("C§ symbol reference");
 
     const results = await searchConversations("C§");
 
@@ -420,8 +434,8 @@ describe("searchConversations · qdrant lexical index", () => {
   });
 
   test("returns [] when the index yields no candidates and nothing matches by title", async () => {
-    const conv = createConversation("Unrelated");
-    insertMessage("u-1", conv.id, "totally different content");
+    const conv = await createConversation("Unrelated");
+    await insertMessage("u-1", conv.id, "totally different content");
 
     lexicalReturns([]);
 

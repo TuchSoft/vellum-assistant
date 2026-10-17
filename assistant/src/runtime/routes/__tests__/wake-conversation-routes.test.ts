@@ -50,14 +50,14 @@ const handler = (() => {
   return route.handler;
 })();
 
-function makeConversation(): string {
-  return createConversation({ conversationType: "scheduled" }).id;
+async function makeConversation(): Promise<string> {
+  return (await createConversation({ conversationType: "scheduled" })).id;
 }
 
 describe("wake_conversation principal-gated elevation", () => {
   test("local principal → non-interactive clientless wake that imposes no trust of its own", async () => {
     wakeCalls.length = 0;
-    const conversationId = makeConversation();
+    const conversationId = await makeConversation();
     const result = await handler({
       body: { conversationId, hint: "poll result", cronRunId: "run-1" },
       headers: { "x-vellum-principal-type": "local" },
@@ -74,7 +74,7 @@ describe("wake_conversation principal-gated elevation", () => {
 
   test("actor principal → interactive, no elevation, ignores body cronRunId", async () => {
     wakeCalls.length = 0;
-    const conversationId = makeConversation();
+    const conversationId = await makeConversation();
     await handler({
       body: { conversationId, hint: "poll result", cronRunId: "attacker-run" },
       headers: { "x-vellum-principal-type": "actor" },
@@ -86,7 +86,7 @@ describe("wake_conversation principal-gated elevation", () => {
 
   test("missing principal type defaults to no elevation (fail-safe)", async () => {
     wakeCalls.length = 0;
-    const conversationId = makeConversation();
+    const conversationId = await makeConversation();
     await handler({
       body: { conversationId, hint: "poll", cronRunId: "ignored-run" },
     });
@@ -99,7 +99,7 @@ describe("wake_conversation principal-gated elevation", () => {
 describe("wake_conversation schedule profile pin", () => {
   test("local principal → woken turn runs on the schedule's pinned profile", async () => {
     wakeCalls.length = 0;
-    const conversationId = makeConversation();
+    const conversationId = await makeConversation();
     await handler({
       body: { conversationId, hint: "poll result", scheduleId: "sched-pinned" },
       headers: { "x-vellum-principal-type": "local" },
@@ -109,7 +109,7 @@ describe("wake_conversation schedule profile pin", () => {
 
   test("schedule with no pinned profile leaves resolution unchanged", async () => {
     wakeCalls.length = 0;
-    const conversationId = makeConversation();
+    const conversationId = await makeConversation();
     await handler({
       body: {
         conversationId,
@@ -123,7 +123,7 @@ describe("wake_conversation schedule profile pin", () => {
 
   test("unknown scheduleId resolves as an ordinary wake", async () => {
     wakeCalls.length = 0;
-    const conversationId = makeConversation();
+    const conversationId = await makeConversation();
     const result = await handler({
       body: { conversationId, hint: "poll result", scheduleId: "sched-gone" },
       headers: { "x-vellum-principal-type": "local" },
@@ -134,7 +134,7 @@ describe("wake_conversation schedule profile pin", () => {
 
   test("actor principal → body scheduleId is ignored", async () => {
     wakeCalls.length = 0;
-    const conversationId = makeConversation();
+    const conversationId = await makeConversation();
     await handler({
       body: { conversationId, hint: "poll result", scheduleId: "sched-pinned" },
       headers: { "x-vellum-principal-type": "actor" },
@@ -146,7 +146,7 @@ describe("wake_conversation schedule profile pin", () => {
 describe("wake_conversation background dispatch", () => {
   test("local principal + background:true → returns dispatched without awaiting the turn", async () => {
     wakeCalls.length = 0;
-    const conversationId = makeConversation();
+    const conversationId = await makeConversation();
     const result = await handler({
       body: { conversationId, hint: "poll result", background: true },
       headers: { "x-vellum-principal-type": "local" },
@@ -164,7 +164,7 @@ describe("wake_conversation background dispatch", () => {
 
   test("actor principal + background:true → runs synchronously (no dispatcher)", async () => {
     wakeCalls.length = 0;
-    const conversationId = makeConversation();
+    const conversationId = await makeConversation();
     const result = await handler({
       body: { conversationId, hint: "poll result", background: true },
       headers: { "x-vellum-principal-type": "actor" },
@@ -177,7 +177,7 @@ describe("wake_conversation background dispatch", () => {
 describe("wake_conversation fencing", () => {
   test("persist + externalContent fence untrusted data, keep hint trusted", async () => {
     wakeCalls.length = 0;
-    const conversationId = makeConversation();
+    const conversationId = await makeConversation();
     await handler({
       body: {
         conversationId,
@@ -198,7 +198,7 @@ describe("wake_conversation fencing", () => {
 
   test("persist alone sets persistTriggerAsEvent without untrustedOutput", async () => {
     wakeCalls.length = 0;
-    const conversationId = makeConversation();
+    const conversationId = await makeConversation();
     await handler({
       body: { conversationId, hint: "wake up", persist: true },
       headers: { "x-vellum-principal-type": "local" },

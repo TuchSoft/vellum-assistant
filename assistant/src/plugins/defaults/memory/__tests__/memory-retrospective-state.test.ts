@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { setConfig } from "../../../../__tests__/helpers/set-config.js";
+import { describePg } from "../../../../__tests__/pg-test-db.js";
 
 // Disable memory so persistence writes don't index into the real memory
 // pipeline (both flags default true under the real loader).
@@ -8,12 +9,11 @@ setConfig("memory", { enabled: false, v2: { enabled: false } });
 
 import { createConversation } from "../../../../persistence/conversation-crud.js";
 import {
-  getDb,
   getMemorySqlite,
   resetDb,
 } from "../../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { initializeDb } from "../../../../persistence/db-init.js";
-import { messages } from "../../../../persistence/schema/index.js";
 import {
   _resetRetrospectiveCursorColumnForTests,
   appendToRememberedLog,
@@ -37,13 +37,13 @@ function resetTables(): void {
 }
 
 describe("appendToRememberedLog", () => {
-  test("appends new entries after existing ones, order preserved", () => {
+  test("appends new entries after existing ones, order preserved", async () => {
     expect(appendToRememberedLog(["a", "b"], ["c"])).toEqual(["a", "b", "c"]);
     expect(appendToRememberedLog([], ["x"])).toEqual(["x"]);
     expect(appendToRememberedLog(["x"], [])).toEqual(["x"]);
   });
 
-  test("entry cap keeps the most recent entries", () => {
+  test("entry cap keeps the most recent entries", async () => {
     const existing = Array.from({ length: 99 }, (_, i) => `old-${i}`);
     const result = appendToRememberedLog(existing, ["new-1", "new-2", "new-3"]);
 
@@ -53,7 +53,7 @@ describe("appendToRememberedLog", () => {
     expect(result.at(-1)).toBe("new-3");
   });
 
-  test("byte cap binds before the entry cap when entries are large", () => {
+  test("byte cap binds before the entry cap when entries are large", async () => {
     // 20 entries of ~1 KB each — well under the entry cap but over 8 KB.
     const entries = Array.from(
       { length: 20 },
@@ -70,19 +70,19 @@ describe("appendToRememberedLog", () => {
     expect(result.at(-1)).toBe(entries.at(-1));
   });
 
-  test("a single entry larger than the byte cap yields an empty log", () => {
+  test("a single entry larger than the byte cap yields an empty log", async () => {
     const huge = "y".repeat(REMEMBERED_LOG_MAX_BYTES + 1);
     expect(appendToRememberedLog([], [huge])).toEqual([]);
   });
 });
 
-describe("memory-retrospective-state remembered log persistence", () => {
-  beforeEach(() => {
+describePg("memory-retrospective-state remembered log persistence", () => {
+  beforeEach(async () => {
     resetTables();
   });
 
-  test("upsert persists the log and getRetrospectiveState parses it back", () => {
-    upsertRetrospectiveState({
+  test("upsert persists the log and getRetrospectiveState parses it back", async () => {
+    await upsertRetrospectiveState({
       conversationId: "conv-log",
       lastProcessedMessageId: "m1",
       lastRunAt: 1000,
@@ -94,14 +94,14 @@ describe("memory-retrospective-state remembered log persistence", () => {
     expect(state?.lastProcessedMessageId).toBe("m1");
   });
 
-  test("upsert without rememberedLog preserves the stored log", () => {
-    upsertRetrospectiveState({
+  test("upsert without rememberedLog preserves the stored log", async () => {
+    await upsertRetrospectiveState({
       conversationId: "conv-preserve",
       lastProcessedMessageId: "m1",
       lastRunAt: 1000,
       rememberedLog: ["keep me"],
     });
-    upsertRetrospectiveState({
+    await upsertRetrospectiveState({
       conversationId: "conv-preserve",
       lastProcessedMessageId: "m2",
       lastRunAt: 2000,
@@ -112,8 +112,8 @@ describe("memory-retrospective-state remembered log persistence", () => {
     expect(state?.rememberedLog).toEqual(["keep me"]);
   });
 
-  test("missing/NULL column value parses as an empty log", () => {
-    upsertRetrospectiveState({
+  test("missing/NULL column value parses as an empty log", async () => {
+    await upsertRetrospectiveState({
       conversationId: "conv-null-log",
       lastProcessedMessageId: "m1",
       lastRunAt: 1000,
@@ -122,8 +122,8 @@ describe("memory-retrospective-state remembered log persistence", () => {
     expect(getRetrospectiveState("conv-null-log")?.rememberedLog).toEqual([]);
   });
 
-  test("malformed stored JSON degrades to an empty log instead of throwing", () => {
-    upsertRetrospectiveState({
+  test("malformed stored JSON degrades to an empty log instead of throwing", async () => {
+    await upsertRetrospectiveState({
       conversationId: "conv-corrupt",
       lastProcessedMessageId: "m1",
       lastRunAt: 1000,
@@ -138,38 +138,38 @@ describe("memory-retrospective-state remembered log persistence", () => {
     expect(getRetrospectiveState("conv-corrupt")?.rememberedLog).toEqual([]);
   });
 
-  test("bumpRetrospectiveLastRunAt seeds the empty-string sentinel with an empty log and preserves an existing log", () => {
+  test("bumpRetrospectiveLastRunAt seeds the empty-string sentinel with an empty log and preserves an existing log", async () => {
     // Failure-only row: "" sentinel, empty log.
-    bumpRetrospectiveLastRunAt("conv-failure-only", 1000);
+    await bumpRetrospectiveLastRunAt("conv-failure-only", 1000);
     const freshState = getRetrospectiveState("conv-failure-only");
     expect(freshState?.lastProcessedMessageId).toBe("");
     expect(freshState?.rememberedLog).toEqual([]);
 
     // Existing row with a log: a failure bump must not clobber it.
-    upsertRetrospectiveState({
+    await upsertRetrospectiveState({
       conversationId: "conv-seasoned",
       lastProcessedMessageId: "m1",
       lastRunAt: 1000,
       rememberedLog: ["survives failures"],
     });
-    bumpRetrospectiveLastRunAt("conv-seasoned", 2000);
+    await bumpRetrospectiveLastRunAt("conv-seasoned", 2000);
     const seasonedState = getRetrospectiveState("conv-seasoned");
     expect(seasonedState?.lastRunAt).toBe(2000);
     expect(seasonedState?.rememberedLog).toEqual(["survives failures"]);
   });
 
-  test("forkRetrospectiveState copies the log verbatim to the forked child", () => {
-    upsertRetrospectiveState({
+  test("forkRetrospectiveState copies the log verbatim to the forked child", async () => {
+    await upsertRetrospectiveState({
       conversationId: "conv-fork-source",
       lastProcessedMessageId: "",
       lastRunAt: 1000,
       rememberedLog: ["parent baseline"],
     });
 
-    forkRetrospectiveState({
+    await forkRetrospectiveState({
       // The main-DB handle is unused now; the write lands on the memory
       // connection.
-      database: getDb(),
+      database: requireMainDb(),
       sourceConversationId: "conv-fork-source",
       forkedConversationId: "conv-fork-child",
       forkedMessageIds: new Map(),
@@ -182,8 +182,8 @@ describe("memory-retrospective-state remembered log persistence", () => {
   });
 });
 
-describe("memory-retrospective-state cursor timestamp", () => {
-  beforeEach(() => {
+describePg("memory-retrospective-state cursor timestamp", () => {
+  beforeEach(async () => {
     resetTables();
   });
 
@@ -237,23 +237,17 @@ describe("memory-retrospective-state cursor timestamp", () => {
   });
 
   test("forking carries the forked pointer's createdAt, read through the main handle", async () => {
-    const db = getDb();
-    createConversation({ id: "conv-fork-ts-src" });
-    createConversation({ id: "conv-fork-ts-dst" });
+    const db = requireMainDb();
+    await createConversation({ id: "conv-fork-ts-src" });
+    await createConversation({ id: "conv-fork-ts-dst" });
     for (const [id, conversationId] of [
       ["src-m1", "conv-fork-ts-src"],
       ["dst-m1", "conv-fork-ts-dst"],
     ] as const) {
-      db.insert(messages)
-        .values({
-          id,
-          conversationId,
-          role: "user",
-          content: "[]",
-          createdAt: 4_000,
-          metadata: null,
-        })
-        .run();
+      await db.run(
+        "INSERT INTO messages (id, conversation_id, role, content, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+        [id, conversationId, "user", "[]", 4_000, null],
+      );
     }
     await upsertRetrospectiveState({
       conversationId: "conv-fork-ts-src",
@@ -262,7 +256,7 @@ describe("memory-retrospective-state cursor timestamp", () => {
       lastRunAt: 1,
     });
 
-    forkRetrospectiveState({
+    await forkRetrospectiveState({
       database: db,
       sourceConversationId: "conv-fork-ts-src",
       forkedConversationId: "conv-fork-ts-dst",
@@ -274,14 +268,14 @@ describe("memory-retrospective-state cursor timestamp", () => {
     expect(child?.lastProcessedMessageId).toBe("dst-m1");
     expect(child?.lastProcessedCreatedAt).toBe(4_000);
 
-    db.run(`DELETE FROM messages`);
-    db.run(`DELETE FROM conversations`);
+    await db.run(`DELETE FROM messages`);
+    await db.run(`DELETE FROM conversations`);
   });
 
   test("a source cursor whose row was regenerated away is placed by its stored bound, not clamped past the copies", async () => {
-    const db = getDb();
-    createConversation({ id: "conv-fork-bound-src" });
-    createConversation({ id: "conv-fork-bound-dst" });
+    const db = requireMainDb();
+    await createConversation({ id: "conv-fork-bound-src" });
+    await createConversation({ id: "conv-fork-bound-dst" });
     // src-m2 (createdAt 2_000) was the cursor; a regenerate deleted it and
     // src-m3 replaced it. The fork copies src-m1 and src-m3.
     for (const [id, conversationId, createdAt] of [
@@ -290,16 +284,10 @@ describe("memory-retrospective-state cursor timestamp", () => {
       ["dst-m1", "conv-fork-bound-dst", 1_000],
       ["dst-m3", "conv-fork-bound-dst", 3_000],
     ] as const) {
-      db.insert(messages)
-        .values({
-          id,
-          conversationId,
-          role: "user",
-          content: "[]",
-          createdAt,
-          metadata: null,
-        })
-        .run();
+      await db.run(
+        "INSERT INTO messages (id, conversation_id, role, content, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+        [id, conversationId, "user", "[]", createdAt, null],
+      );
     }
     await upsertRetrospectiveState({
       conversationId: "conv-fork-bound-src",
@@ -308,7 +296,7 @@ describe("memory-retrospective-state cursor timestamp", () => {
       lastRunAt: 1,
     });
 
-    forkRetrospectiveState({
+    await forkRetrospectiveState({
       database: db,
       sourceConversationId: "conv-fork-bound-src",
       forkedConversationId: "conv-fork-bound-dst",
@@ -330,7 +318,7 @@ describe("memory-retrospective-state cursor timestamp", () => {
       lastProcessedCreatedAt: 500,
       lastRunAt: 1,
     });
-    forkRetrospectiveState({
+    await forkRetrospectiveState({
       database: db,
       sourceConversationId: "conv-fork-bound-src",
       forkedConversationId: "conv-fork-bound-dst",
@@ -344,11 +332,11 @@ describe("memory-retrospective-state cursor timestamp", () => {
       getRetrospectiveState("conv-fork-bound-dst")?.lastProcessedMessageId,
     ).toBe("");
 
-    db.run(`DELETE FROM messages`);
-    db.run(`DELETE FROM conversations`);
+    await db.run(`DELETE FROM messages`);
+    await db.run(`DELETE FROM conversations`);
   });
 
-  test("ensureRetrospectiveCursorColumn adds the column to a legacy table once and is a no-op after", () => {
+  test("ensureRetrospectiveCursorColumn adds the column to a legacy table once and is a no-op after", async () => {
     const raw = getMemorySqlite()!;
     raw.exec("DROP TABLE memory_retrospective_state");
     raw.exec(`
@@ -372,7 +360,7 @@ describe("memory-retrospective-state cursor timestamp", () => {
     ).toHaveLength(1);
   });
 
-  test("a replaced memory connection is probed again, so a restored database without the column gets it", () => {
+  test("a replaced memory connection is probed again, so a restored database without the column gets it", async () => {
     expect(ensureRetrospectiveCursorColumn("test")).toBe(true);
 
     // What a restore or import does: the stored connections are dropped and
@@ -402,17 +390,17 @@ describe("fail-soft when the underlying statement fails", () => {
   // degrade like the null-connection case — log a warning and no-op — rather
   // than throwing out and aborting the user-visible fork. Dropped last so no
   // later test in this file sees the missing table.
-  test("forkRetrospectiveState no-ops when the target table is missing", () => {
+  test("forkRetrospectiveState no-ops when the target table is missing", async () => {
     getMemorySqlite()!.exec("DROP TABLE memory_retrospective_state");
 
-    expect(() =>
+    await expect(
       forkRetrospectiveState({
-        database: getDb(),
+        database: requireMainDb(),
         sourceConversationId: "conv-parent",
         forkedConversationId: "conv-child",
         forkedMessageIds: new Map(),
         lastCopiedSourceMessageId: null,
       }),
-    ).not.toThrow();
+    ).resolves.toBeUndefined();
   });
 });

@@ -144,7 +144,7 @@ function setup(opts: {
       thresholdCalls.push({ conversationId, executionContext, cellQuery });
       return opts.threshold ?? "none";
     },
-    getBindingByConversation: (conversationId: string) =>
+    getBindingByConversation: async (conversationId: string) =>
       opts.bindingExternalChatId
         ? ({
             conversationId,

@@ -54,12 +54,12 @@ function makeConversationRow(
   };
 }
 
-function serialize(
+async function serialize(
   conversation: ConversationRow,
   groupId: string | null = null,
   isPinned = false,
 ) {
-  return serializeConversationSummary({
+  return await serializeConversationSummary({
     conversation,
     displayMeta: { displayOrder: null, isPinned, groupId },
     parentCache: new Map(),
@@ -68,8 +68,8 @@ function serialize(
 }
 
 describe("serializeConversationSummary · surfaced groupId normalization", () => {
-  test("surfaced row with persisted system:background serializes as system:all", () => {
-    const summary = serialize(
+  test("surfaced row with persisted system:background serializes as system:all", async () => {
+    const summary = await serialize(
       makeConversationRow({ surfacedAt: 1704067200000 }),
       "system:background",
     );
@@ -77,8 +77,8 @@ describe("serializeConversationSummary · surfaced groupId normalization", () =>
     expect(summary.surfacedAt).toBe(1704067200000);
   });
 
-  test("surfaced row with persisted system:scheduled serializes as system:all", () => {
-    const summary = serialize(
+  test("surfaced row with persisted system:scheduled serializes as system:all", async () => {
+    const summary = await serialize(
       makeConversationRow({
         conversationType: "scheduled",
         source: "schedule",
@@ -90,18 +90,18 @@ describe("serializeConversationSummary · surfaced groupId normalization", () =>
     expect(summary.surfacedAt).toBe(1704067200000);
   });
 
-  test("surfaced row with null persisted group serializes as system:all", () => {
+  test("surfaced row with null persisted group serializes as system:all", async () => {
     // Legacy clients re-derive a null groupId into Background/Scheduled from
     // `source`, so the surfaced normalization must cover the null case too.
-    const summary = serialize(
+    const summary = await serialize(
       makeConversationRow({ surfacedAt: 1704067200000 }),
       null,
     );
     expect(summary.groupId).toBe("system:all");
   });
 
-  test("after demotion (surfaced_at cleared) the original group comes back", () => {
-    const summary = serialize(
+  test("after demotion (surfaced_at cleared) the original group comes back", async () => {
+    const summary = await serialize(
       makeConversationRow({ surfacedAt: null }),
       "system:background",
     );
@@ -109,10 +109,10 @@ describe("serializeConversationSummary · surfaced groupId normalization", () =>
     expect(summary.surfacedAt).toBeUndefined();
   });
 
-  test("a custom group wins over surfacing", () => {
+  test("a custom group wins over surfacing", async () => {
     // Mirrors web's getEffectiveGroupId precedence: user-created groups
     // take priority over the surfaced promotion.
-    const summary = serialize(
+    const summary = await serialize(
       makeConversationRow({ surfacedAt: 1704067200000 }),
       "group-custom-1",
     );
@@ -120,8 +120,8 @@ describe("serializeConversationSummary · surfaced groupId normalization", () =>
     expect(summary.surfacedAt).toBe(1704067200000);
   });
 
-  test("a pin wins over surfacing", () => {
-    const summary = serialize(
+  test("a pin wins over surfacing", async () => {
+    const summary = await serialize(
       makeConversationRow({ surfacedAt: 1704067200000 }),
       "system:pinned",
       true,
@@ -130,38 +130,42 @@ describe("serializeConversationSummary · surfaced groupId normalization", () =>
     expect("isPinned" in summary && summary.isPinned).toBe(true);
   });
 
-  test("non-surfaced rows pass the persisted group through untouched", () => {
-    expect(serialize(makeConversationRow(), null).groupId).toBeNull();
-    expect(serialize(makeConversationRow(), "system:scheduled").groupId).toBe(
-      "system:scheduled",
-    );
-    expect(serialize(makeConversationRow(), "group-custom-1").groupId).toBe(
-      "group-custom-1",
-    );
+  test("non-surfaced rows pass the persisted group through untouched", async () => {
+    expect((await serialize(makeConversationRow(), null)).groupId).toBeNull();
+    expect(
+      (await serialize(makeConversationRow(), "system:scheduled")).groupId,
+    ).toBe("system:scheduled");
+    expect(
+      (await serialize(makeConversationRow(), "group-custom-1")).groupId,
+    ).toBe("group-custom-1");
   });
 });
 
 describe("serializeConversationSummary · enabledPlugins", () => {
-  test("serializes a non-empty plugin scope", () => {
-    const summary = serialize(
+  test("serializes a non-empty plugin scope", async () => {
+    const summary = await serialize(
       makeConversationRow({ enabledPlugins: ["plugin-a", "plugin-b"] }),
     );
     expect(summary.enabledPlugins).toEqual(["plugin-a", "plugin-b"]);
   });
 
-  test("preserves an explicit empty scope (user cleared all optional plugins)", () => {
-    const summary = serialize(makeConversationRow({ enabledPlugins: [] }));
+  test("preserves an explicit empty scope (user cleared all optional plugins)", async () => {
+    const summary = await serialize(
+      makeConversationRow({ enabledPlugins: [] }),
+    );
     expect(summary.enabledPlugins).toEqual([]);
   });
 
-  test("omits the field when there is no per-chat restriction (null)", () => {
-    const summary = serialize(makeConversationRow({ enabledPlugins: null }));
+  test("omits the field when there is no per-chat restriction (null)", async () => {
+    const summary = await serialize(
+      makeConversationRow({ enabledPlugins: null }),
+    );
     expect("enabledPlugins" in summary).toBe(false);
   });
 });
 
 describe("serializeConversationSummary · title keys", () => {
-  test("resolves a stored title key for the locale", () => {
+  test("resolves a stored title key for the locale", async () => {
     const summary = serializeConversationSummary({
       conversation: makeConversationRow({
         title: "conversation.title.generating",
@@ -175,15 +179,17 @@ describe("serializeConversationSummary · title keys", () => {
     expect("titleState" in summary).toBe(false);
   });
 
-  test("passes a stored display string through", () => {
-    const summary = serialize(
+  test("passes a stored display string through", async () => {
+    const summary = await serialize(
       makeConversationRow({ title: "Untitled Conversation" }),
     );
     expect(summary.title).toBe("Untitled Conversation");
   });
 
-  test("passes a custom title through", () => {
-    const summary = serialize(makeConversationRow({ title: "Weekly planning" }));
+  test("passes a custom title through", async () => {
+    const summary = await serialize(
+      makeConversationRow({ title: "Weekly planning" }),
+    );
     expect(summary.title).toBe("Weekly planning");
   });
 });

@@ -282,7 +282,7 @@ describe("getLastInteractiveUserMessageTimestamp", () => {
     insertMessage("assistant", Date.now());
 
     // WHEN the last user message timestamp is read
-    const result = getLastInteractiveUserMessageTimestamp();
+    const result = await getLastInteractiveUserMessageTimestamp();
 
     // THEN it reports 0 (no user activity)
     expect(result).toBe(0);
@@ -298,7 +298,7 @@ describe("getLastInteractiveUserMessageTimestamp", () => {
     insertMessage("assistant", base);
 
     // WHEN the last user message timestamp is read
-    const result = getLastInteractiveUserMessageTimestamp();
+    const result = await getLastInteractiveUserMessageTimestamp();
 
     // THEN it returns the most recent user message, not the assistant row
     expect(result).toBe(base - 5_000);
@@ -317,7 +317,7 @@ describe("getLastInteractiveUserMessageTimestamp", () => {
     insertMessage("user", base - 60 * 60 * 1000);
 
     // WHEN the last user message timestamp is read
-    const result = getLastInteractiveUserMessageTimestamp();
+    const result = await getLastInteractiveUserMessageTimestamp();
 
     // THEN it reports the genuinely most recent turn, not the last-inserted one
     expect(result).toBe(base - 5_000);
@@ -336,7 +336,7 @@ describe("getLastInteractiveUserMessageTimestamp", () => {
     insertMessage("user", base - 1_000, "scheduled");
 
     // WHEN the last interactive user message timestamp is read
-    const result = getLastInteractiveUserMessageTimestamp();
+    const result = await getLastInteractiveUserMessageTimestamp();
 
     // THEN only the interactive conversation's message counts
     expect(result).toBe(base - 10_000);

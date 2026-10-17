@@ -257,7 +257,9 @@ describe("createChannelReplySession", () => {
     const session = createChannelReplySession({
       replyCallbackUrl: CALLBACK_URL,
       chatId: CHANNEL,
-      onStreamOpen: (ts) => opened.push(ts),
+      onStreamOpen: (ts) => {
+        opened.push(ts);
+      },
     })!;
 
     session.observeEvent(textDelta("The complete answer."));
@@ -273,7 +275,9 @@ describe("createChannelReplySession", () => {
     const session = createChannelReplySession({
       replyCallbackUrl: CALLBACK_URL,
       chatId: CHANNEL,
-      onStreamOpen: (ts) => opened.push(ts),
+      onStreamOpen: (ts) => {
+        opened.push(ts);
+      },
     })!;
 
     session.observeEvent(textDelta("The complete answer."));

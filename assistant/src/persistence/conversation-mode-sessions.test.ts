@@ -1,8 +1,6 @@
-import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
-
+import { describePg } from "../__tests__/pg-test-db.js";
 import {
   advanceConversationModeSessionRevision,
   beginConversationModeSession,
@@ -13,32 +11,23 @@ import {
   updateConversationModeSessionActivity,
   updateConversationModeSessionBoundaries,
 } from "./conversation-mode-sessions.js";
-import { migrateCreateConversationModeSessions } from "./migrations/381-create-conversation-mode-sessions.js";
-import * as schema from "./schema.js";
+import { requireMainDb } from "./db-facade.js";
 
-function createStore() {
-  const sqlite = new Database(":memory:");
-  sqlite.exec(/* sql */ `
-    PRAGMA foreign_keys = ON;
-    CREATE TABLE conversations (id TEXT PRIMARY KEY);
-    CREATE TABLE messages (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'assistant',
-      created_at INTEGER NOT NULL,
-      metadata TEXT
-    );
-    INSERT INTO conversations (id) VALUES ('conv-123'), ('conv-456');
-  `);
-  const db = drizzle(sqlite, { schema });
-  migrateCreateConversationModeSessions(db);
-  return { sqlite, db, options: { db } };
+async function createStore() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM conversation_mode_sessions");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
+  await db.run(
+    "INSERT INTO conversations (id, created_at, updated_at) VALUES ('conv-123', 0, 0), ('conv-456', 0, 0)",
+  );
+  return { db, options: { db } };
 }
 
-describe("conversation mode session store", () => {
-  test("records activity and display boundaries with monotonic revisions", () => {
-    const { options } = createStore();
-    const started = beginConversationModeSession(
+describePg("conversation mode session store", () => {
+  test("records activity and display boundaries with monotonic revisions", async () => {
+    const { options } = await createStore();
+    const started = await beginConversationModeSession(
       {
         id: "session-123",
         conversationId: "conv-123",
@@ -56,7 +45,7 @@ describe("conversation mode session store", () => {
       },
     });
 
-    const activity = updateConversationModeSessionActivity(
+    const activity = await updateConversationModeSessionActivity(
       {
         id: "session-123",
         conversationId: "conv-123",
@@ -75,7 +64,7 @@ describe("conversation mode session store", () => {
       },
     });
 
-    const boundaries = updateConversationModeSessionBoundaries(
+    const boundaries = await updateConversationModeSessionBoundaries(
       {
         id: "session-123",
         conversationId: "conv-123",
@@ -98,7 +87,7 @@ describe("conversation mode session store", () => {
     });
 
     expect(
-      updateConversationModeSessionActivity(
+      await updateConversationModeSessionActivity(
         {
           id: "session-123",
           conversationId: "conv-123",
@@ -113,9 +102,9 @@ describe("conversation mode session store", () => {
     });
   });
 
-  test("rejects stale writes and keeps terminal records immutable", () => {
-    const { options } = createStore();
-    beginConversationModeSession(
+  test("rejects stale writes and keeps terminal records immutable", async () => {
+    const { options } = await createStore();
+    await beginConversationModeSession(
       {
         id: "session-123",
         conversationId: "conv-123",
@@ -124,7 +113,7 @@ describe("conversation mode session store", () => {
       },
       options,
     );
-    const advanced = advanceConversationModeSessionRevision(
+    const advanced = await advanceConversationModeSessionRevision(
       {
         id: "session-123",
         conversationId: "conv-123",
@@ -135,7 +124,7 @@ describe("conversation mode session store", () => {
     expect(advanced).toMatchObject({ ok: true, session: { revision: 2 } });
 
     expect(
-      finalizeConversationModeSession(
+      await finalizeConversationModeSession(
         {
           id: "session-123",
           conversationId: "conv-123",
@@ -152,7 +141,7 @@ describe("conversation mode session store", () => {
       session: { revision: 2, status: "active" },
     });
 
-    const finalized = finalizeConversationModeSession(
+    const finalized = await finalizeConversationModeSession(
       {
         id: "session-123",
         conversationId: "conv-123",
@@ -169,7 +158,7 @@ describe("conversation mode session store", () => {
     });
 
     expect(
-      finalizeConversationModeSession(
+      await finalizeConversationModeSession(
         {
           id: "session-123",
           conversationId: "conv-123",
@@ -186,7 +175,7 @@ describe("conversation mode session store", () => {
     });
 
     expect(
-      finalizeConversationModeSession(
+      await finalizeConversationModeSession(
         {
           id: "session-123",
           conversationId: "conv-123",
@@ -204,9 +193,9 @@ describe("conversation mode session store", () => {
     });
   });
 
-  test("rejects a terminal timestamp before confirmed activity", () => {
-    const { options } = createStore();
-    beginConversationModeSession(
+  test("rejects a terminal timestamp before confirmed activity", async () => {
+    const { options } = await createStore();
+    await beginConversationModeSession(
       {
         id: "session-123",
         conversationId: "conv-123",
@@ -216,7 +205,7 @@ describe("conversation mode session store", () => {
       options,
     );
 
-    expect(() =>
+    await expect(
       finalizeConversationModeSession(
         {
           id: "session-123",
@@ -228,15 +217,15 @@ describe("conversation mode session store", () => {
         },
         options,
       ),
-    ).toThrow("Mode session end cannot precede its last activity");
+    ).rejects.toThrow("Mode session end cannot precede its last activity");
     expect(
-      getConversationModeSession("conv-123", "session-123", options),
+      await getConversationModeSession("conv-123", "session-123", options),
     ).toMatchObject({ status: "active", revision: 1 });
   });
 
-  test("does not reopen an existing id and scopes batched reads by conversation", () => {
-    const { options } = createStore();
-    beginConversationModeSession(
+  test("does not reopen an existing id and scopes batched reads by conversation", async () => {
+    const { options } = await createStore();
+    await beginConversationModeSession(
       {
         id: "session-123",
         conversationId: "conv-123",
@@ -245,7 +234,7 @@ describe("conversation mode session store", () => {
       },
       options,
     );
-    beginConversationModeSession(
+    await beginConversationModeSession(
       {
         id: "session-456",
         conversationId: "conv-456",
@@ -256,7 +245,7 @@ describe("conversation mode session store", () => {
     );
 
     expect(
-      beginConversationModeSession(
+      await beginConversationModeSession(
         {
           id: "session-123",
           conversationId: "conv-123",
@@ -272,20 +261,22 @@ describe("conversation mode session store", () => {
     });
 
     expect(
-      listConversationModeSessionsByIds(
-        "conv-123",
-        ["session-456", "session-123", "session-123"],
-        options,
+      (
+        await listConversationModeSessionsByIds(
+          "conv-123",
+          ["session-456", "session-123", "session-123"],
+          options,
+        )
       ).map((session) => session.id),
     ).toEqual(["session-123"]);
-    expect(getConversationModeSession("conv-123", "session-456", options)).toBe(
-      null,
-    );
+    expect(
+      await getConversationModeSession("conv-123", "session-456", options),
+    ).toBe(null);
   });
 
-  test("repairs replaceable boundaries without reopening a terminal session", () => {
-    const { sqlite, options } = createStore();
-    beginConversationModeSession(
+  test("repairs replaceable boundaries without reopening a terminal session", async () => {
+    const { db, options } = await createStore();
+    await beginConversationModeSession(
       {
         id: "session-123",
         conversationId: "conv-123",
@@ -294,7 +285,7 @@ describe("conversation mode session store", () => {
       },
       options,
     );
-    updateConversationModeSessionBoundaries(
+    await updateConversationModeSessionBoundaries(
       {
         id: "session-123",
         conversationId: "conv-123",
@@ -305,7 +296,7 @@ describe("conversation mode session store", () => {
       },
       options,
     );
-    finalizeConversationModeSession(
+    await finalizeConversationModeSession(
       {
         id: "session-123",
         conversationId: "conv-123",
@@ -316,23 +307,36 @@ describe("conversation mode session store", () => {
       },
       options,
     );
-    sqlite.exec(/* sql */ `
-      INSERT INTO messages (id, conversation_id, created_at, metadata)
-      VALUES
-        ('message-leading', 'conv-123', 110, '{"modeSession":{"mode":"browser","id":"session-123"}}'),
-        ('message-middle', 'conv-123', 120, '{"modeSession":{"mode":"browser","id":"session-123"},"sentAt":115}'),
-        ('message-last', 'conv-123', 130, '{"modeSession":{"mode":"browser","id":"session-123"}}'),
-        ('message-other', 'conv-456', 90, '{"modeSession":{"mode":"browser","id":"session-123"}}');
-    `);
-    sqlite.exec(
+    await db.run(
+      "INSERT INTO messages (id, conversation_id, created_at, metadata) VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)",
+      [
+        "message-leading",
+        "conv-123",
+        110,
+        '{"modeSession":{"mode":"browser","id":"session-123"}}',
+        "message-middle",
+        "conv-123",
+        120,
+        '{"modeSession":{"mode":"browser","id":"session-123"},"sentAt":115}',
+        "message-last",
+        "conv-123",
+        130,
+        '{"modeSession":{"mode":"browser","id":"session-123"}}',
+        "message-other",
+        "conv-456",
+        90,
+        '{"modeSession":{"mode":"browser","id":"session-123"}}',
+      ],
+    );
+    await db.run(
       "UPDATE messages SET role = 'user' WHERE id = 'message-leading'",
     );
 
-    expect(repairConversationModeSessionBoundaries("conv-123", options)).toBe(
-      1,
-    );
     expect(
-      getConversationModeSession("conv-123", "session-123", options),
+      await repairConversationModeSessionBoundaries("conv-123", options),
+    ).toBe(1);
+    expect(
+      await getConversationModeSession("conv-123", "session-123", options),
     ).toMatchObject({
       status: "completed",
       endedAt: 150,
@@ -345,9 +349,9 @@ describe("conversation mode session store", () => {
     });
   });
 
-  test("repairs Ambient to an assistant-first boundary while Live keeps its leading frame", () => {
-    const { sqlite, options } = createStore();
-    beginConversationModeSession(
+  test("repairs Ambient to an assistant-first boundary while Live keeps its leading frame", async () => {
+    const { db, options } = await createStore();
+    await beginConversationModeSession(
       {
         id: "ambient-session",
         conversationId: "conv-123",
@@ -356,7 +360,7 @@ describe("conversation mode session store", () => {
       },
       options,
     );
-    beginConversationModeSession(
+    await beginConversationModeSession(
       {
         id: "live-session",
         conversationId: "conv-123",
@@ -365,17 +369,42 @@ describe("conversation mode session store", () => {
       },
       options,
     );
-    sqlite.exec(/* sql */ `
-      INSERT INTO messages (id, conversation_id, role, created_at, metadata)
-      VALUES
-        ('ambient-deleted', 'conv-123', 'user', 105, '{"modeSession":{"mode":"ambient","id":"ambient-session"}}'),
-        ('ambient-frame', 'conv-123', 'user', 110, '{"modeSession":{"mode":"ambient","id":"ambient-session"}}'),
-        ('ambient-assistant', 'conv-123', 'assistant', 120, '{"modeSession":{"mode":"ambient","id":"ambient-session"}}'),
-        ('live-deleted', 'conv-123', 'user', 205, '{"modeSession":{"mode":"live_vision","id":"live-session"}}'),
-        ('live-frame', 'conv-123', 'user', 210, '{"modeSession":{"mode":"live_vision","id":"live-session"}}'),
-        ('live-assistant', 'conv-123', 'assistant', 220, '{"modeSession":{"mode":"live_vision","id":"live-session"}}');
-    `);
-    updateConversationModeSessionBoundaries(
+    await db.run(
+      "INSERT INTO messages (id, conversation_id, role, created_at, metadata) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)",
+      [
+        "ambient-deleted",
+        "conv-123",
+        "user",
+        105,
+        '{"modeSession":{"mode":"ambient","id":"ambient-session"}}',
+        "ambient-frame",
+        "conv-123",
+        "user",
+        110,
+        '{"modeSession":{"mode":"ambient","id":"ambient-session"}}',
+        "ambient-assistant",
+        "conv-123",
+        "assistant",
+        120,
+        '{"modeSession":{"mode":"ambient","id":"ambient-session"}}',
+        "live-deleted",
+        "conv-123",
+        "user",
+        205,
+        '{"modeSession":{"mode":"live_vision","id":"live-session"}}',
+        "live-frame",
+        "conv-123",
+        "user",
+        210,
+        '{"modeSession":{"mode":"live_vision","id":"live-session"}}',
+        "live-assistant",
+        "conv-123",
+        "assistant",
+        220,
+        '{"modeSession":{"mode":"live_vision","id":"live-session"}}',
+      ],
+    );
+    await updateConversationModeSessionBoundaries(
       {
         id: "ambient-session",
         conversationId: "conv-123",
@@ -386,7 +415,7 @@ describe("conversation mode session store", () => {
       },
       options,
     );
-    updateConversationModeSessionBoundaries(
+    await updateConversationModeSessionBoundaries(
       {
         id: "live-session",
         conversationId: "conv-123",
@@ -397,15 +426,15 @@ describe("conversation mode session store", () => {
       },
       options,
     );
-    sqlite.exec(
+    await db.run(
       "DELETE FROM messages WHERE id IN ('ambient-deleted', 'live-deleted')",
     );
 
-    expect(repairConversationModeSessionBoundaries("conv-123", options)).toBe(
-      2,
-    );
     expect(
-      getConversationModeSession("conv-123", "ambient-session", options),
+      await repairConversationModeSessionBoundaries("conv-123", options),
+    ).toBe(2);
+    expect(
+      await getConversationModeSession("conv-123", "ambient-session", options),
     ).toMatchObject({
       firstIncludedAt: 120,
       firstIncludedMessageId: "ambient-assistant",
@@ -413,7 +442,7 @@ describe("conversation mode session store", () => {
       lastActivityAt: 120,
     });
     expect(
-      getConversationModeSession("conv-123", "live-session", options),
+      await getConversationModeSession("conv-123", "live-session", options),
     ).toMatchObject({
       firstIncludedAt: 210,
       firstIncludedMessageId: "live-frame",

@@ -1,16 +1,15 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import { AUTO_ANALYSIS_SOURCE } from "../../../persistence/auto-analysis-constants.js";
 import { createConversation } from "../../../persistence/conversation-crud.js";
-import { getDb } from "../../../persistence/db-connection.js";
-import { initializeDb } from "../../../persistence/db-init.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { isAutoAnalysisConversation } from "../auto-analysis-guard.js";
-await initializeDb();
 
-function resetTables(): void {
-  const db = getDb();
-  db.run(`DELETE FROM messages`);
-  db.run(`DELETE FROM conversations`);
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM messages`);
+  await db.run(`DELETE FROM conversations`);
 }
 
 describe("auto-analysis constants", () => {
@@ -19,25 +18,25 @@ describe("auto-analysis constants", () => {
   });
 });
 
-describe("isAutoAnalysisConversation", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("isAutoAnalysisConversation", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
-  test("returns true for a conversation with source = 'auto-analysis'", () => {
-    const conv = createConversation({
+  test("returns true for a conversation with source = 'auto-analysis'", async () => {
+    const conv = await createConversation({
       title: "analysis",
       source: AUTO_ANALYSIS_SOURCE,
     });
-    expect(isAutoAnalysisConversation(conv.id)).toBe(true);
+    expect(await isAutoAnalysisConversation(conv.id)).toBe(true);
   });
 
-  test("returns false for a conversation with source = 'user'", () => {
-    const conv = createConversation("regular user conversation");
-    expect(isAutoAnalysisConversation(conv.id)).toBe(false);
+  test("returns false for a conversation with source = 'user'", async () => {
+    const conv = await createConversation("regular user conversation");
+    expect(await isAutoAnalysisConversation(conv.id)).toBe(false);
   });
 
-  test("returns false for a non-existent conversation", () => {
-    expect(isAutoAnalysisConversation("does-not-exist")).toBe(false);
+  test("returns false for a non-existent conversation", async () => {
+    expect(await isAutoAnalysisConversation("does-not-exist")).toBe(false);
   });
 });

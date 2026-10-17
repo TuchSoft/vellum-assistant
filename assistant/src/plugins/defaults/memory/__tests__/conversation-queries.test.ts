@@ -1,7 +1,6 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { eq } from "drizzle-orm";
-
+import { describePg } from "../../../../__tests__/pg-test-db.js";
 import { createConversation } from "../../../../persistence/conversation-crud.js";
 import {
   buildExcerpt,
@@ -13,33 +12,30 @@ import {
   listPinnedConversations,
   searchConversations,
 } from "../../../../persistence/conversation-queries.js";
-import { getDb } from "../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../persistence/db-init.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import {
   appendContentDeltas,
   resolveContentRefPath,
 } from "../../../../persistence/message-content-file.js";
-import { rawRun } from "../../../../persistence/raw-query.js";
-import { conversations } from "../../../../persistence/schema/index.js";
 
-await initializeDb();
-
-function resetTables(): void {
-  const db = getDb();
-  db.run(`DELETE FROM messages`);
-  db.run(`DELETE FROM conversations`);
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM messages`);
+  await db.run(`DELETE FROM conversations`);
 }
 
-function setConversationType(conversationId: string, type: string): void {
-  const db = getDb();
-  db.update(conversations)
-    .set({ conversationType: type })
-    .where(eq(conversations.id, conversationId))
-    .run();
+async function setConversationType(
+  conversationId: string,
+  type: string,
+): Promise<void> {
+  await requireMainDb().run(
+    "UPDATE conversations SET conversation_type = ? WHERE id = ?",
+    [type, conversationId],
+  );
 }
 
 describe("buildExcerpt", () => {
-  test("does not expose external_content tags for legacy plain-string rows", () => {
+  test("does not expose external_content tags for legacy plain-string rows", async () => {
     const excerpt = buildExcerpt(
       '<external_content source="slack">\nSearchable Slack text\n</external_content>',
       "external_content",
@@ -50,7 +46,7 @@ describe("buildExcerpt", () => {
     expect(excerpt).not.toContain("</external_content>");
   });
 
-  test("does not expose external_content tags for legacy text block rows", () => {
+  test("does not expose external_content tags for legacy text block rows", async () => {
     const excerpt = buildExcerpt(
       JSON.stringify([
         {
@@ -66,7 +62,7 @@ describe("buildExcerpt", () => {
     expect(excerpt).not.toContain("</external_content>");
   });
 
-  test("extracts thinking text instead of returning raw JSON", () => {
+  test("extracts thinking text instead of returning raw JSON", async () => {
     const excerpt = buildExcerpt(
       JSON.stringify([
         {
@@ -82,7 +78,7 @@ describe("buildExcerpt", () => {
     expect(excerpt).not.toContain('[{"type"');
   });
 
-  test("falls back to legible text when the query only matches JSON structure", () => {
+  test("falls back to legible text when the query only matches JSON structure", async () => {
     const excerpt = buildExcerpt(
       JSON.stringify([
         { type: "thinking", thinking: "Plain reasoning text", signature: "s" },
@@ -93,7 +89,7 @@ describe("buildExcerpt", () => {
     expect(excerpt).toBe("Plain reasoning text");
   });
 
-  test("extracts string-form tool_result content", () => {
+  test("extracts string-form tool_result content", async () => {
     const excerpt = buildExcerpt(
       JSON.stringify([
         {
@@ -108,7 +104,7 @@ describe("buildExcerpt", () => {
     expect(excerpt).toBe("Command output line");
   });
 
-  test("does not expose external_content tags for string-form tool_result content", () => {
+  test("does not expose external_content tags for string-form tool_result content", async () => {
     const excerpt = buildExcerpt(
       JSON.stringify([
         {
@@ -125,7 +121,7 @@ describe("buildExcerpt", () => {
     expect(excerpt).not.toContain("<external_content");
   });
 
-  test("extracts file block extracted_text", () => {
+  test("extracts file block extracted_text", async () => {
     const excerpt = buildExcerpt(
       JSON.stringify([
         {
@@ -140,7 +136,7 @@ describe("buildExcerpt", () => {
     expect(excerpt).toBe("Quarterly revenue grew nine percent");
   });
 
-  test("still extracts array-form tool_result inner text", () => {
+  test("still extracts array-form tool_result inner text", async () => {
     const excerpt = buildExcerpt(
       JSON.stringify([
         {
@@ -155,7 +151,7 @@ describe("buildExcerpt", () => {
     expect(excerpt).toBe("Inner tool text");
   });
 
-  test("centers the excerpt on a token match when the query is not contiguous", () => {
+  test("centers the excerpt on a token match when the query is not contiguous", async () => {
     const filler = "start padding ".repeat(25);
     const excerpt = buildExcerpt(
       JSON.stringify([
@@ -169,7 +165,7 @@ describe("buildExcerpt", () => {
     expect(excerpt.startsWith("…")).toBe(true);
   });
 
-  test("keeps the match near the front of the display excerpt", () => {
+  test("keeps the match near the front of the display excerpt", async () => {
     const prefix = "p".repeat(200);
     const excerpt = buildExcerpt(
       JSON.stringify([{ type: "text", text: `${prefix} alpha trailing text` }]),
@@ -181,7 +177,7 @@ describe("buildExcerpt", () => {
     expect(alphaIndex).toBeLessThanOrEqual(32);
   });
 
-  test("whole-query matches also respect tokenizer boundaries", () => {
+  test("whole-query matches also respect tokenizer boundaries", async () => {
     const filler = "party planning notes ".repeat(10);
     const excerpt = buildExcerpt(
       JSON.stringify([{ type: "text", text: `${filler}art supplies list` }]),
@@ -191,7 +187,7 @@ describe("buildExcerpt", () => {
     expect(excerpt).toContain("art supplies");
   });
 
-  test("ignores token substrings inside larger words when centering", () => {
+  test("ignores token substrings inside larger words when centering", async () => {
     const filler = "party planning notes ".repeat(10);
     const excerpt = buildExcerpt(
       JSON.stringify([{ type: "text", text: `${filler}alpha appears here` }]),
@@ -201,7 +197,7 @@ describe("buildExcerpt", () => {
     expect(excerpt).toContain("alpha");
   });
 
-  test("keeps the excerpt window aligned when lowercasing changes string length", () => {
+  test("keeps the excerpt window aligned when lowercasing changes string length", async () => {
     const prefix = "İ".repeat(120);
     const excerpt = buildExcerpt(
       JSON.stringify([
@@ -214,7 +210,7 @@ describe("buildExcerpt", () => {
     expect(excerpt).toContain("beta");
   });
 
-  test("returns an empty excerpt for messages with no legible text", () => {
+  test("returns an empty excerpt for messages with no legible text", async () => {
     const excerpt = buildExcerpt(
       JSON.stringify([
         { type: "tool_use", id: "toolu_01", name: "bash", input: {} },
@@ -225,11 +221,11 @@ describe("buildExcerpt", () => {
     expect(excerpt).toBe("");
   });
 
-  test("returns an empty excerpt for non-block JSON objects", () => {
+  test("returns an empty excerpt for non-block JSON objects", async () => {
     expect(buildExcerpt('{"foo":"bar"}', "foo")).toBe("");
   });
 
-  test("returns an empty excerpt for unresolved content refs", () => {
+  test("returns an empty excerpt for unresolved content refs", async () => {
     const excerpt = buildExcerpt(
       JSON.stringify({ ref: "conversations/missing-conv/msg-1.jsonl" }),
       "anything",
@@ -238,7 +234,7 @@ describe("buildExcerpt", () => {
     expect(excerpt).toBe("");
   });
 
-  test("folds and extracts text for resolvable content refs", () => {
+  test("folds and extracts text for resolvable content refs", async () => {
     const ref = "conversations/excerpt-test/msg-1.jsonl";
     const absPath = resolveContentRefPath(ref);
     expect(absPath).not.toBeNull();
@@ -257,7 +253,7 @@ describe("buildExcerpt", () => {
 });
 
 describe("buildRecallEvidenceExcerpt", () => {
-  test("preserves external_content boundaries for legacy plain-string rows", () => {
+  test("preserves external_content boundaries for legacy plain-string rows", async () => {
     const excerpt = buildRecallEvidenceExcerpt(
       '<external_content source="slack" origin="@alice">\nSearchable Slack text\n</external_content>',
       "Slack",
@@ -268,7 +264,7 @@ describe("buildRecallEvidenceExcerpt", () => {
     );
   });
 
-  test("preserves external_content boundaries for legacy text block rows", () => {
+  test("preserves external_content boundaries for legacy text block rows", async () => {
     const excerpt = buildRecallEvidenceExcerpt(
       JSON.stringify([
         {
@@ -284,7 +280,7 @@ describe("buildRecallEvidenceExcerpt", () => {
     );
   });
 
-  test("preserves external_content boundaries when joined with other text blocks", () => {
+  test("preserves external_content boundaries when joined with other text blocks", async () => {
     const excerpt = buildRecallEvidenceExcerpt(
       JSON.stringify([
         {
@@ -304,7 +300,7 @@ describe("buildRecallEvidenceExcerpt", () => {
     );
   });
 
-  test("does not unwrap malformed or mixed external_content text", () => {
+  test("does not unwrap malformed or mixed external_content text", async () => {
     const malformed =
       '<external_content source="slack">Malformed Slack text</external_content>';
     const mixed =
@@ -316,7 +312,7 @@ describe("buildRecallEvidenceExcerpt", () => {
     );
   });
 
-  test("extracts thinking text for recall evidence", () => {
+  test("extracts thinking text for recall evidence", async () => {
     const excerpt = buildRecallEvidenceExcerpt(
       JSON.stringify([
         {
@@ -331,7 +327,7 @@ describe("buildRecallEvidenceExcerpt", () => {
     expect(excerpt).toBe("Recall reasoning detail");
   });
 
-  test("preserves external_content boundaries for string-form tool_result content", () => {
+  test("preserves external_content boundaries for string-form tool_result content", async () => {
     const excerpt = buildRecallEvidenceExcerpt(
       JSON.stringify([
         {
@@ -349,7 +345,7 @@ describe("buildRecallEvidenceExcerpt", () => {
     );
   });
 
-  test("keeps the wide leading window for recall evidence", () => {
+  test("keeps the wide leading window for recall evidence", async () => {
     const prefix = "p".repeat(200);
     const excerpt = buildRecallEvidenceExcerpt(
       JSON.stringify([{ type: "text", text: `${prefix} alpha trailing text` }]),
@@ -359,7 +355,7 @@ describe("buildRecallEvidenceExcerpt", () => {
     expect(excerpt.indexOf("alpha")).toBeGreaterThan(50);
   });
 
-  test("keeps the raw fallback for messages with no legible text", () => {
+  test("keeps the raw fallback for messages with no legible text", async () => {
     const raw = JSON.stringify([
       { type: "tool_use", id: "toolu_01", name: "bash", input: {} },
     ]);
@@ -370,61 +366,71 @@ describe("buildRecallEvidenceExcerpt", () => {
   });
 });
 
-describe("countConversations", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("countConversations", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
-  test("excludes 'private', 'background', and 'scheduled' rows from the foreground count", () => {
-    createConversation("foreground-1");
-    createConversation("foreground-2");
+  test("excludes 'private', 'background', and 'scheduled' rows from the foreground count", async () => {
+    await createConversation("foreground-1");
+    await createConversation("foreground-2");
 
-    const priv = createConversation("private-1");
-    setConversationType(priv.id, "private");
+    const priv = await createConversation("private-1");
+    await setConversationType(priv.id, "private");
 
-    createConversation({ title: "bg-1", conversationType: "background" });
-    createConversation({ title: "sched-1", conversationType: "scheduled" });
+    await createConversation({ title: "bg-1", conversationType: "background" });
+    await createConversation({
+      title: "sched-1",
+      conversationType: "scheduled",
+    });
 
-    expect(countConversations()).toBe(2);
+    expect(await countConversations()).toBe(2);
   });
 
-  test("background-only count excludes private rows", () => {
-    createConversation("foreground-1");
-    createConversation({ title: "bg-1", conversationType: "background" });
-    createConversation({ title: "sched-1", conversationType: "scheduled" });
+  test("background-only count excludes private rows", async () => {
+    await createConversation("foreground-1");
+    await createConversation({ title: "bg-1", conversationType: "background" });
+    await createConversation({
+      title: "sched-1",
+      conversationType: "scheduled",
+    });
 
-    const priv = createConversation("private-1");
-    setConversationType(priv.id, "private");
+    const priv = await createConversation("private-1");
+    await setConversationType(priv.id, "private");
 
-    expect(countConversations({ conversationType: "background" })).toBe(2);
+    expect(await countConversations({ conversationType: "background" })).toBe(
+      2,
+    );
   });
 
-  test("includes standard conversations with group_id system:background in background count", () => {
+  test("includes standard conversations with group_id system:background in background count", async () => {
     // GIVEN a standard conversation routed to system:background (e.g. heartbeat)
-    createConversation({
+    await createConversation({
       title: "heartbeat-1",
       source: "heartbeat",
       groupId: "system:background",
     });
 
     // AND a regular foreground conversation
-    createConversation("foreground-1");
+    await createConversation("foreground-1");
 
     // WHEN counting background conversations
-    const bgCount = countConversations({ conversationType: "background" });
+    const bgCount = await countConversations({
+      conversationType: "background",
+    });
 
     // THEN the heartbeat conversation is included
     expect(bgCount).toBe(1);
 
     // AND excluded from the foreground count
-    expect(countConversations({ conversationType: "standard" })).toBe(1);
+    expect(await countConversations({ conversationType: "standard" })).toBe(1);
   });
 
-  test("excludes standard conversations with group_id system:background from foreground count", () => {
+  test("excludes standard conversations with group_id system:background from foreground count", async () => {
     // GIVEN two foreground conversations and one heartbeat
-    createConversation("foreground-1");
-    createConversation("foreground-2");
-    createConversation({
+    await createConversation("foreground-1");
+    await createConversation("foreground-2");
+    await createConversation({
       title: "heartbeat-1",
       source: "heartbeat",
       groupId: "system:background",
@@ -432,67 +438,63 @@ describe("countConversations", () => {
 
     // WHEN counting foreground conversations
     // THEN the heartbeat is excluded
-    expect(countConversations({ conversationType: "standard" })).toBe(2);
+    expect(await countConversations({ conversationType: "standard" })).toBe(2);
   });
 
-  test('"scheduled" count returns only scheduled rows', () => {
+  test('"scheduled" count returns only scheduled rows', async () => {
     // GIVEN one scheduled, one background, and one foreground conversation
-    createConversation({ title: "sched-1", conversationType: "scheduled" });
-    createConversation({ title: "bg-1", conversationType: "background" });
-    createConversation("foreground-1");
+    await createConversation({
+      title: "sched-1",
+      conversationType: "scheduled",
+    });
+    await createConversation({ title: "bg-1", conversationType: "background" });
+    await createConversation("foreground-1");
 
     // WHEN counting scheduled conversations
     // THEN only the scheduled row is counted (background is excluded)
-    expect(countConversations({ conversationType: "scheduled" })).toBe(1);
+    expect(await countConversations({ conversationType: "scheduled" })).toBe(1);
   });
 
   describe("archiveStatus", () => {
-    test("defaults to active — archived rows are excluded from the count", () => {
+    test("defaults to active — archived rows are excluded from the count", async () => {
       // GIVEN one live and one archived foreground conversation
-      createConversation("live-1");
-      const archived = createConversation("archived-1");
-      rawRun(
-        "test:archiveConversation",
+      await createConversation("live-1");
+      const archived = await createConversation("archived-1");
+      await requireMainDb().run(
         "UPDATE conversations SET archived_at = ? WHERE id = ?",
-        Date.now(),
-        archived.id,
+        [Date.now(), archived.id],
       );
 
-      expect(countConversations()).toBe(1);
+      expect(await countConversations()).toBe(1);
     });
 
-    test('archiveStatus "archived" returns the archived count only', () => {
-      createConversation("live-1");
-      const a1 = createConversation("archived-1");
-      const a2 = createConversation("archived-2");
-      rawRun(
-        "test:archiveConversations",
+    test('archiveStatus "archived" returns the archived count only', async () => {
+      await createConversation("live-1");
+      const a1 = await createConversation("archived-1");
+      const a2 = await createConversation("archived-2");
+      await requireMainDb().run(
         "UPDATE conversations SET archived_at = ? WHERE id IN (?, ?)",
-        Date.now(),
-        a1.id,
-        a2.id,
+        [Date.now(), a1.id, a2.id],
       );
 
       expect(
-        countConversations({
+        await countConversations({
           conversationType: "standard",
           archiveStatus: "archived",
         }),
       ).toBe(2);
     });
 
-    test('archiveStatus "all" returns both', () => {
-      createConversation("live-1");
-      const archived = createConversation("archived-1");
-      rawRun(
-        "test:archiveConversation",
+    test('archiveStatus "all" returns both', async () => {
+      await createConversation("live-1");
+      const archived = await createConversation("archived-1");
+      await requireMainDb().run(
         "UPDATE conversations SET archived_at = ? WHERE id = ?",
-        Date.now(),
-        archived.id,
+        [Date.now(), archived.id],
       );
 
       expect(
-        countConversations({
+        await countConversations({
           conversationType: "standard",
           archiveStatus: "all",
         }),
@@ -501,27 +503,27 @@ describe("countConversations", () => {
   });
 });
 
-describe("listConversations", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("listConversations", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
-  test("background fetch includes conversations with group_id system:background regardless of conversationType", () => {
+  test("background fetch includes conversations with group_id system:background regardless of conversationType", async () => {
     // GIVEN a heartbeat conversation (conversationType standard, group_id system:background)
-    createConversation({
+    await createConversation({
       title: "heartbeat-1",
       source: "heartbeat",
       groupId: "system:background",
     });
 
     // AND a real background conversation
-    createConversation({ title: "bg-1", conversationType: "background" });
+    await createConversation({ title: "bg-1", conversationType: "background" });
 
     // AND a foreground conversation
-    createConversation("foreground-1");
+    await createConversation("foreground-1");
 
     // WHEN listing background conversations
-    const bgList = listConversations({
+    const bgList = await listConversations({
       limit: 100,
       conversationType: "background",
     });
@@ -533,19 +535,19 @@ describe("listConversations", () => {
     expect(titles).toContain("bg-1");
   });
 
-  test("foreground fetch excludes conversations with group_id system:background", () => {
+  test("foreground fetch excludes conversations with group_id system:background", async () => {
     // GIVEN a heartbeat conversation (conversationType standard, group_id system:background)
-    createConversation({
+    await createConversation({
       title: "heartbeat-1",
       source: "heartbeat",
       groupId: "system:background",
     });
 
     // AND a foreground conversation
-    createConversation("foreground-1");
+    await createConversation("foreground-1");
 
     // WHEN listing foreground conversations
-    const fgList = listConversations({
+    const fgList = await listConversations({
       limit: 100,
       conversationType: "standard",
     });
@@ -555,17 +557,16 @@ describe("listConversations", () => {
     expect(fgList[0]!.title).toBe("foreground-1");
   });
 
-  test("conversations with group_id system:scheduled are included in background fetch", () => {
+  test("conversations with group_id system:scheduled are included in background fetch", async () => {
     // GIVEN a conversation with group_id system:scheduled but conversationType standard
-    const conv = createConversation("schedule-routed");
-    rawRun(
-      "test:setGroupScheduled",
+    const conv = await createConversation("schedule-routed");
+    await requireMainDb().run(
       "UPDATE conversations SET group_id = 'system:scheduled' WHERE id = ?",
-      conv.id,
+      [conv.id],
     );
 
     // WHEN listing background conversations
-    const bgList = listConversations({
+    const bgList = await listConversations({
       limit: 100,
       conversationType: "background",
     });
@@ -575,21 +576,24 @@ describe("listConversations", () => {
     expect(bgList[0]!.title).toBe("schedule-routed");
 
     // AND not in the foreground list
-    const fgList = listConversations({
+    const fgList = await listConversations({
       limit: 100,
       conversationType: "standard",
     });
     expect(fgList).toHaveLength(0);
   });
 
-  test('"scheduled" fetch returns only scheduled rows and excludes plain background', () => {
+  test('"scheduled" fetch returns only scheduled rows and excludes plain background', async () => {
     // GIVEN a scheduled conversation, a background conversation, and a foreground one
-    createConversation({ title: "sched-1", conversationType: "scheduled" });
-    createConversation({ title: "bg-1", conversationType: "background" });
-    createConversation("foreground-1");
+    await createConversation({
+      title: "sched-1",
+      conversationType: "scheduled",
+    });
+    await createConversation({ title: "bg-1", conversationType: "background" });
+    await createConversation("foreground-1");
 
     // WHEN listing scheduled conversations
-    const scheduledList = listConversations({
+    const scheduledList = await listConversations({
       limit: 100,
       conversationType: "scheduled",
     });
@@ -599,25 +603,23 @@ describe("listConversations", () => {
     expect(scheduledList[0]!.title).toBe("sched-1");
   });
 
-  test('"scheduled" fetch includes standard rows routed to group_id system:scheduled but not system:background', () => {
+  test('"scheduled" fetch includes standard rows routed to group_id system:scheduled but not system:background', async () => {
     // GIVEN a standard conversation routed to system:scheduled
-    const scheduledRouted = createConversation("schedule-routed");
-    rawRun(
-      "test:setGroupScheduled",
+    const scheduledRouted = await createConversation("schedule-routed");
+    await requireMainDb().run(
       "UPDATE conversations SET group_id = 'system:scheduled' WHERE id = ?",
-      scheduledRouted.id,
+      [scheduledRouted.id],
     );
 
     // AND a standard conversation routed to system:background
-    const backgroundRouted = createConversation("background-routed");
-    rawRun(
-      "test:setGroupBackground",
+    const backgroundRouted = await createConversation("background-routed");
+    await requireMainDb().run(
       "UPDATE conversations SET group_id = 'system:background' WHERE id = ?",
-      backgroundRouted.id,
+      [backgroundRouted.id],
     );
 
     // WHEN listing scheduled conversations
-    const scheduledList = listConversations({
+    const scheduledList = await listConversations({
       limit: 100,
       conversationType: "scheduled",
     });
@@ -627,16 +629,16 @@ describe("listConversations", () => {
     expect(scheduledList[0]!.title).toBe("schedule-routed");
   });
 
-  test('"scheduled" fetch excludes subagent runs', () => {
+  test('"scheduled" fetch excludes subagent runs', async () => {
     // GIVEN a scheduled conversation produced by a subagent
-    createConversation({
+    await createConversation({
       title: "subagent-sched",
       conversationType: "scheduled",
       source: "subagent",
     });
 
     // WHEN listing scheduled conversations
-    const scheduledList = listConversations({
+    const scheduledList = await listConversations({
       limit: 100,
       conversationType: "scheduled",
     });
@@ -646,19 +648,17 @@ describe("listConversations", () => {
   });
 
   describe("archiveStatus", () => {
-    test("defaults to active — archived rows are excluded", () => {
+    test("defaults to active — archived rows are excluded", async () => {
       // GIVEN a live conversation and an archived one
-      createConversation("live-1");
-      const archived = createConversation("archived-1");
-      rawRun(
-        "test:archiveConversation",
+      await createConversation("live-1");
+      const archived = await createConversation("archived-1");
+      await requireMainDb().run(
         "UPDATE conversations SET archived_at = ? WHERE id = ?",
-        Date.now(),
-        archived.id,
+        [Date.now(), archived.id],
       );
 
       // WHEN listing without an explicit archiveStatus
-      const rows = listConversations({
+      const rows = await listConversations({
         limit: 100,
         conversationType: "standard",
       });
@@ -668,19 +668,17 @@ describe("listConversations", () => {
       expect(rows[0]!.title).toBe("live-1");
     });
 
-    test('archiveStatus "archived" returns only archived rows', () => {
+    test('archiveStatus "archived" returns only archived rows', async () => {
       // GIVEN a live conversation and an archived one
-      createConversation("live-1");
-      const archived = createConversation("archived-1");
-      rawRun(
-        "test:archiveConversation",
+      await createConversation("live-1");
+      const archived = await createConversation("archived-1");
+      await requireMainDb().run(
         "UPDATE conversations SET archived_at = ? WHERE id = ?",
-        Date.now(),
-        archived.id,
+        [Date.now(), archived.id],
       );
 
       // WHEN listing with archiveStatus "archived"
-      const rows = listConversations({
+      const rows = await listConversations({
         limit: 100,
         conversationType: "standard",
         archiveStatus: "archived",
@@ -691,19 +689,17 @@ describe("listConversations", () => {
       expect(rows[0]!.title).toBe("archived-1");
     });
 
-    test('archiveStatus "all" returns both active and archived rows', () => {
+    test('archiveStatus "all" returns both active and archived rows', async () => {
       // GIVEN a live conversation and an archived one
-      createConversation("live-1");
-      const archived = createConversation("archived-1");
-      rawRun(
-        "test:archiveConversation",
+      await createConversation("live-1");
+      const archived = await createConversation("archived-1");
+      await requireMainDb().run(
         "UPDATE conversations SET archived_at = ? WHERE id = ?",
-        Date.now(),
-        archived.id,
+        [Date.now(), archived.id],
       );
 
       // WHEN listing with archiveStatus "all"
-      const rows = listConversations({
+      const rows = await listConversations({
         limit: 100,
         conversationType: "standard",
         archiveStatus: "all",
@@ -716,23 +712,20 @@ describe("listConversations", () => {
       expect(titles).toContain("archived-1");
     });
 
-    test('archiveStatus "archived" composes with background-only', () => {
+    test('archiveStatus "archived" composes with background-only', async () => {
       // GIVEN an archived background conversation and an archived foreground one
-      const archivedBg = createConversation({
+      const archivedBg = await createConversation({
         title: "archived-bg",
         conversationType: "background",
       });
-      const archivedFg = createConversation("archived-fg");
-      rawRun(
-        "test:archiveConversations",
+      const archivedFg = await createConversation("archived-fg");
+      await requireMainDb().run(
         "UPDATE conversations SET archived_at = ? WHERE id IN (?, ?)",
-        Date.now(),
-        archivedBg.id,
-        archivedFg.id,
+        [Date.now(), archivedBg.id, archivedFg.id],
       );
 
       // WHEN listing archived background conversations
-      const rows = listConversations({
+      const rows = await listConversations({
         limit: 100,
         conversationType: "background",
         archiveStatus: "archived",
@@ -745,24 +738,24 @@ describe("listConversations", () => {
   });
 });
 
-describe("listConversationsBySource", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("listConversationsBySource", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
-  test("returns only conversations whose source matches exactly", () => {
-    createConversation({
+  test("returns only conversations whose source matches exactly", async () => {
+    await createConversation({
       title: "consol-1",
       source: "memory_v2_consolidation",
     });
-    createConversation({
+    await createConversation({
       title: "consol-2",
       source: "memory_v2_consolidation",
     });
-    createConversation({ title: "heartbeat-1", source: "heartbeat" });
-    createConversation({ title: "user-1", source: "user" });
+    await createConversation({ title: "heartbeat-1", source: "heartbeat" });
+    await createConversation({ title: "user-1", source: "user" });
 
-    const results = listConversationsBySource("memory_v2_consolidation");
+    const results = await listConversationsBySource("memory_v2_consolidation");
 
     expect(results).toHaveLength(2);
     expect(results.map((r) => r.title).sort()).toEqual([
@@ -771,103 +764,103 @@ describe("listConversationsBySource", () => {
     ]);
   });
 
-  test("orders by createdAt descending", () => {
-    const a = createConversation({
+  test("orders by createdAt descending", async () => {
+    const a = await createConversation({
       title: "a",
       source: "memory_v2_consolidation",
     });
-    const b = createConversation({
+    const b = await createConversation({
       title: "b",
       source: "memory_v2_consolidation",
     });
-    const c = createConversation({
+    const c = await createConversation({
       title: "c",
       source: "memory_v2_consolidation",
     });
     // Force distinct createdAt regardless of ms-clock granularity.
-    rawRun(
-      "test:setCreatedAt",
+    await requireMainDb().run(
       "UPDATE conversations SET created_at = ? WHERE id = ?",
-      1000,
-      a.id,
+      [1000, a.id],
     );
-    rawRun(
-      "test:setCreatedAt",
+    await requireMainDb().run(
       "UPDATE conversations SET created_at = ? WHERE id = ?",
-      3000,
-      b.id,
+      [3000, b.id],
     );
-    rawRun(
-      "test:setCreatedAt",
+    await requireMainDb().run(
       "UPDATE conversations SET created_at = ? WHERE id = ?",
-      2000,
-      c.id,
+      [2000, c.id],
     );
 
-    const results = listConversationsBySource("memory_v2_consolidation");
+    const results = await listConversationsBySource("memory_v2_consolidation");
 
     expect(results.map((r) => r.id)).toEqual([b.id, c.id, a.id]);
   });
 
-  test("honors the limit parameter", () => {
+  test("honors the limit parameter", async () => {
     for (let i = 0; i < 5; i++) {
-      createConversation({
+      await createConversation({
         title: `consol-${i}`,
         source: "memory_v2_consolidation",
       });
     }
 
-    const results = listConversationsBySource("memory_v2_consolidation", 3);
+    const results = await listConversationsBySource(
+      "memory_v2_consolidation",
+      3,
+    );
 
     expect(results).toHaveLength(3);
   });
 
-  test("includes archived rows by default", () => {
-    const conv = createConversation({
+  test("includes archived rows by default", async () => {
+    const conv = await createConversation({
       title: "archived",
       source: "memory_v2_consolidation",
     });
-    rawRun(
-      "test:archiveConversation",
+    await requireMainDb().run(
       "UPDATE conversations SET archived_at = ? WHERE id = ?",
-      Date.now(),
-      conv.id,
+      [Date.now(), conv.id],
     );
 
-    const results = listConversationsBySource("memory_v2_consolidation");
+    const results = await listConversationsBySource("memory_v2_consolidation");
 
     expect(results).toHaveLength(1);
     expect(results[0]!.archivedAt).not.toBeNull();
   });
 
-  test("excludes archived rows when includeArchived is false", () => {
-    const archived = createConversation({
+  test("excludes archived rows when includeArchived is false", async () => {
+    const archived = await createConversation({
       title: "archived",
       source: "memory_v2_consolidation",
     });
-    createConversation({ title: "live", source: "memory_v2_consolidation" });
-    rawRun(
-      "test:archiveConversation",
+    await createConversation({
+      title: "live",
+      source: "memory_v2_consolidation",
+    });
+    await requireMainDb().run(
       "UPDATE conversations SET archived_at = ? WHERE id = ?",
-      Date.now(),
-      archived.id,
+      [Date.now(), archived.id],
     );
 
-    const results = listConversationsBySource("memory_v2_consolidation", 20, {
-      includeArchived: false,
-    });
+    const results = await listConversationsBySource(
+      "memory_v2_consolidation",
+      20,
+      {
+        includeArchived: false,
+      },
+    );
 
     expect(results).toHaveLength(1);
     expect(results[0]!.title).toBe("live");
   });
 
-  test("does not apply the subagent-exclusion that listConversations does", () => {
+  test("does not apply the subagent-exclusion that listConversations does", async () => {
     // The defensive `source != 'subagent'` carve-out in listConversations is
     // a foreground/background bucketing concern. A caller asking for the
     // exact `subagent` source via this query gets exactly that.
-    createConversation({ title: "sub-1", source: "subagent" });
+    await createConversation({ title: "sub-1", source: "subagent" });
 
-    const results = listConversationsBySource("subagent");
+    const results = await listConversationsBySource("subagent");
 
     expect(results).toHaveLength(1);
     expect(results[0]!.title).toBe("sub-1");
@@ -877,26 +870,24 @@ describe("listConversationsBySource", () => {
 // Content-arm (lexical candidate) surfacing behavior is covered in
 // `persistence/__tests__/conversation-queries-search.test.ts`, which mocks the
 // lexical index; this suite covers the title arm's surfacing rules.
-describe("searchConversations · surfaced conversations", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("searchConversations · surfaced conversations", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
-  function setSurfaced(conversationId: string): void {
-    rawRun(
-      "test:setSurfaced",
+  async function setSurfaced(conversationId: string): Promise<void> {
+    await requireMainDb().run(
       "UPDATE conversations SET surfaced_at = ? WHERE id = ?",
-      Date.now(),
-      conversationId,
+      [Date.now(), conversationId],
     );
   }
 
   test("a surfaced background conversation is found by title search", async () => {
-    const surfaced = createConversation({
+    const surfaced = await createConversation({
       title: "Quarterly metrics rollup",
       conversationType: "background",
     });
-    setSurfaced(surfaced.id);
+    await setSurfaced(surfaced.id);
 
     const results = await searchConversations("Quarterly metrics");
 
@@ -904,7 +895,7 @@ describe("searchConversations · surfaced conversations", () => {
   });
 
   test("a non-surfaced background conversation stays excluded from title search", async () => {
-    createConversation({
+    await createConversation({
       title: "Quarterly metrics rollup",
       conversationType: "background",
     });
@@ -913,175 +904,173 @@ describe("searchConversations · surfaced conversations", () => {
   });
 
   test("private conversations are never included, even with surfaced_at set", async () => {
-    const priv = createConversation("Quarterly metrics rollup");
-    setConversationType(priv.id, "private");
-    setSurfaced(priv.id);
+    const priv = await createConversation("Quarterly metrics rollup");
+    await setConversationType(priv.id, "private");
+    await setSurfaced(priv.id);
 
     expect(await searchConversations("Quarterly metrics")).toEqual([]);
   });
 
   test("surfaced subagent runs stay excluded from title search", async () => {
-    const subagent = createConversation({
+    const subagent = await createConversation({
       title: "Quarterly metrics rollup",
       conversationType: "background",
       source: "subagent",
     });
-    setSurfaced(subagent.id);
+    await setSurfaced(subagent.id);
 
     expect(await searchConversations("Quarterly metrics")).toEqual([]);
   });
 });
 
-describe("listPinnedConversations · surfaced conversations", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("listPinnedConversations · surfaced conversations", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
-  function setSurfaced(conversationId: string): void {
-    rawRun(
-      "test:setSurfaced",
+  async function setSurfaced(conversationId: string): Promise<void> {
+    await requireMainDb().run(
       "UPDATE conversations SET surfaced_at = ? WHERE id = ?",
-      Date.now(),
-      conversationId,
+      [Date.now(), conversationId],
     );
   }
 
-  function setPinned(conversationId: string): void {
-    rawRun(
-      "test:setPinned",
+  async function setPinned(conversationId: string): Promise<void> {
+    await requireMainDb().run(
       "UPDATE conversations SET is_pinned = 1 WHERE id = ?",
-      conversationId,
+      [conversationId],
     );
   }
 
-  test("a pinned surfaced background conversation is returned", () => {
-    const surfaced = createConversation({
+  test("a pinned surfaced background conversation is returned", async () => {
+    const surfaced = await createConversation({
       title: "bg-pinned-surfaced",
       conversationType: "background",
     });
-    setSurfaced(surfaced.id);
-    setPinned(surfaced.id);
+    await setSurfaced(surfaced.id);
+    await setPinned(surfaced.id);
 
-    const results = listPinnedConversations();
+    const results = await listPinnedConversations();
 
     expect(results.map((r) => r.id)).toEqual([surfaced.id]);
   });
 
-  test("a pinned non-surfaced background conversation stays excluded", () => {
-    const background = createConversation({
+  test("a pinned non-surfaced background conversation stays excluded", async () => {
+    const background = await createConversation({
       title: "bg-pinned-hidden",
       conversationType: "background",
     });
-    setPinned(background.id);
+    await setPinned(background.id);
 
-    expect(listPinnedConversations()).toEqual([]);
+    expect(await listPinnedConversations()).toEqual([]);
   });
 
-  test("pinned private conversations are never included, even with surfaced_at set", () => {
-    const priv = createConversation("private-pinned");
-    setConversationType(priv.id, "private");
-    setSurfaced(priv.id);
-    setPinned(priv.id);
+  test("pinned private conversations are never included, even with surfaced_at set", async () => {
+    const priv = await createConversation("private-pinned");
+    await setConversationType(priv.id, "private");
+    await setSurfaced(priv.id);
+    await setPinned(priv.id);
 
-    expect(listPinnedConversations()).toEqual([]);
+    expect(await listPinnedConversations()).toEqual([]);
   });
 
-  test("pinned surfaced subagent runs stay excluded", () => {
-    const subagent = createConversation({
+  test("pinned surfaced subagent runs stay excluded", async () => {
+    const subagent = await createConversation({
       title: "subagent-pinned",
       conversationType: "background",
       source: "subagent",
     });
-    setSurfaced(subagent.id);
-    setPinned(subagent.id);
+    await setSurfaced(subagent.id);
+    await setPinned(subagent.id);
 
-    expect(listPinnedConversations()).toEqual([]);
+    expect(await listPinnedConversations()).toEqual([]);
   });
 });
 
-describe("getMessageRoleStatsByConversation", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("getMessageRoleStatsByConversation", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
-  function insertMessage(
+  async function insertMessage(
     conversationId: string,
     role: string,
     createdAt: number,
-  ): void {
-    rawRun(
-      "test:insertMessage",
+  ): Promise<void> {
+    await requireMainDb().run(
       "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
-      `msg-${conversationId}-${role}-${createdAt}`,
-      conversationId,
-      role,
-      "x",
-      createdAt,
+      [
+        `msg-${conversationId}-${role}-${createdAt}`,
+        conversationId,
+        role,
+        "x",
+        createdAt,
+      ],
     );
   }
 
-  test("returns empty map for empty input", () => {
-    const result = getMessageRoleStatsByConversation([]);
+  test("returns empty map for empty input", async () => {
+    const result = await getMessageRoleStatsByConversation([]);
     expect(result.size).toBe(0);
   });
 
-  test("returns empty map when conversations exist but no matching role", () => {
-    const a = createConversation("a");
-    insertMessage(a.id, "user", 1000);
+  test("returns empty map when conversations exist but no matching role", async () => {
+    const a = await createConversation("a");
+    await insertMessage(a.id, "user", 1000);
 
-    const result = getMessageRoleStatsByConversation([a.id], "assistant");
+    const result = await getMessageRoleStatsByConversation([a.id], "assistant");
 
     expect(result.size).toBe(0);
   });
 
-  test("counts assistant messages and returns max createdAt", () => {
-    const a = createConversation("a");
-    insertMessage(a.id, "user", 1000);
-    insertMessage(a.id, "assistant", 1500);
-    insertMessage(a.id, "assistant", 2500);
-    insertMessage(a.id, "assistant", 2000);
+  test("counts assistant messages and returns max createdAt", async () => {
+    const a = await createConversation("a");
+    await insertMessage(a.id, "user", 1000);
+    await insertMessage(a.id, "assistant", 1500);
+    await insertMessage(a.id, "assistant", 2500);
+    await insertMessage(a.id, "assistant", 2000);
 
-    const result = getMessageRoleStatsByConversation([a.id], "assistant");
+    const result = await getMessageRoleStatsByConversation([a.id], "assistant");
 
     expect(result.size).toBe(1);
     expect(result.get(a.id)).toEqual({ count: 3, lastAt: 2500 });
   });
 
-  test("does not count messages from other roles", () => {
-    const a = createConversation("a");
-    insertMessage(a.id, "user", 1000);
-    insertMessage(a.id, "user", 2000);
-    insertMessage(a.id, "system", 1500);
-    insertMessage(a.id, "assistant", 3000);
+  test("does not count messages from other roles", async () => {
+    const a = await createConversation("a");
+    await insertMessage(a.id, "user", 1000);
+    await insertMessage(a.id, "user", 2000);
+    await insertMessage(a.id, "system", 1500);
+    await insertMessage(a.id, "assistant", 3000);
 
-    const result = getMessageRoleStatsByConversation([a.id], "assistant");
+    const result = await getMessageRoleStatsByConversation([a.id], "assistant");
 
     expect(result.get(a.id)).toEqual({ count: 1, lastAt: 3000 });
   });
 
-  test("scopes to the supplied conversation ids", () => {
-    const a = createConversation("a");
-    const b = createConversation("b");
-    insertMessage(a.id, "assistant", 1000);
-    insertMessage(b.id, "assistant", 2000);
+  test("scopes to the supplied conversation ids", async () => {
+    const a = await createConversation("a");
+    const b = await createConversation("b");
+    await insertMessage(a.id, "assistant", 1000);
+    await insertMessage(b.id, "assistant", 2000);
 
-    const result = getMessageRoleStatsByConversation([a.id], "assistant");
+    const result = await getMessageRoleStatsByConversation([a.id], "assistant");
 
     expect(result.size).toBe(1);
     expect(result.has(a.id)).toBe(true);
     expect(result.has(b.id)).toBe(false);
   });
 
-  test("aggregates per-conversation across many ids in a single query", () => {
-    const a = createConversation("a");
-    const b = createConversation("b");
-    const c = createConversation("c");
-    insertMessage(a.id, "assistant", 1000);
-    insertMessage(a.id, "assistant", 1500);
-    insertMessage(b.id, "assistant", 2000);
+  test("aggregates per-conversation across many ids in a single query", async () => {
+    const a = await createConversation("a");
+    const b = await createConversation("b");
+    const c = await createConversation("c");
+    await insertMessage(a.id, "assistant", 1000);
+    await insertMessage(a.id, "assistant", 1500);
+    await insertMessage(b.id, "assistant", 2000);
     // c has no assistant messages → absent from the result.
 
-    const result = getMessageRoleStatsByConversation(
+    const result = await getMessageRoleStatsByConversation(
       [a.id, b.id, c.id],
       "assistant",
     );
@@ -1092,16 +1081,16 @@ describe("getMessageRoleStatsByConversation", () => {
     expect(result.has(c.id)).toBe(false);
   });
 
-  test("role parameter selects the counted role (defaults to assistant)", () => {
-    const a = createConversation("a");
-    insertMessage(a.id, "user", 1000);
-    insertMessage(a.id, "user", 2000);
-    insertMessage(a.id, "assistant", 1500);
+  test("role parameter selects the counted role (defaults to assistant)", async () => {
+    const a = await createConversation("a");
+    await insertMessage(a.id, "user", 1000);
+    await insertMessage(a.id, "user", 2000);
+    await insertMessage(a.id, "assistant", 1500);
 
-    const assistants = getMessageRoleStatsByConversation([a.id]);
+    const assistants = await getMessageRoleStatsByConversation([a.id]);
     expect(assistants.get(a.id)).toEqual({ count: 1, lastAt: 1500 });
 
-    const users = getMessageRoleStatsByConversation([a.id], "user");
+    const users = await getMessageRoleStatsByConversation([a.id], "user");
     expect(users.get(a.id)).toEqual({ count: 2, lastAt: 2000 });
   });
 });

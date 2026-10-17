@@ -1,22 +1,17 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { eq } from "drizzle-orm";
-
+import { describePg } from "../../../../__tests__/pg-test-db.js";
 import {
   createConversation,
   type MessageRow,
 } from "../../../../persistence/conversation-crud.js";
-import { getDb } from "../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../persistence/db-init.js";
-import { messages } from "../../../../persistence/schema/index.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import {
   countRetrospectiveMessagesAfter,
   getRetrospectiveMessagesAfter,
   hasQualifyingUserMessageAfter,
   messagesHaveUserActivity,
 } from "../memory-retrospective-accounting.js";
-
-await initializeDb();
 
 const CONV = "conv-accounting";
 
@@ -78,127 +73,132 @@ const SCRIPTED_UNTAGGED_METADATA = JSON.stringify({
 });
 
 let seq = 0;
-function insertRaw(opts: {
+async function insertRaw(opts: {
   role: string;
   content: string;
   createdAt: number;
   id?: string;
   metadata?: string;
-}): string {
+}): Promise<string> {
   const id = opts.id ?? `msg-${String(++seq).padStart(4, "0")}`;
-  getDb()
-    .insert(messages)
-    .values({
-      id,
-      conversationId: CONV,
-      role: opts.role,
-      content: opts.content,
-      createdAt: opts.createdAt,
-      metadata: opts.metadata ?? null,
-    })
-    .run();
+  await requireMainDb().run(
+    "INSERT INTO messages (id, conversation_id, role, content, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+    [id, CONV, opts.role, opts.content, opts.createdAt, opts.metadata ?? null],
+  );
   return id;
 }
 
-describe("hasQualifyingUserMessageAfter", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM messages`);
-    db.run(`DELETE FROM conversations`);
-    createConversation({ id: CONV });
+describePg("hasQualifyingUserMessageAfter", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM messages`);
+    await db.run(`DELETE FROM conversations`);
+    await createConversation({ id: CONV });
   });
 
-  test("assistant-only tail does not qualify", () => {
-    insertRaw({ role: "assistant", content: TEXT, createdAt: 1_000 });
-    insertRaw({ role: "assistant", content: TEXT, createdAt: 2_000 });
+  test("assistant-only tail does not qualify", async () => {
+    await insertRaw({ role: "assistant", content: TEXT, createdAt: 1_000 });
+    await insertRaw({ role: "assistant", content: TEXT, createdAt: 2_000 });
 
-    expect(hasQualifyingUserMessageAfter(CONV, null)).toBe(false);
+    expect(await hasQualifyingUserMessageAfter(CONV, null)).toBe(false);
   });
 
-  test("tool_result-only user rows do not qualify", () => {
-    insertRaw({ role: "assistant", content: TEXT, createdAt: 1_000 });
-    insertRaw({ role: "user", content: TOOL_RESULT_ONLY, createdAt: 2_000 });
+  test("tool_result-only user rows do not qualify", async () => {
+    await insertRaw({ role: "assistant", content: TEXT, createdAt: 1_000 });
+    await insertRaw({
+      role: "user",
+      content: TOOL_RESULT_ONLY,
+      createdAt: 2_000,
+    });
 
-    expect(hasQualifyingUserMessageAfter(CONV, null)).toBe(false);
+    expect(await hasQualifyingUserMessageAfter(CONV, null)).toBe(false);
   });
 
-  test("a user text row qualifies", () => {
-    insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
+  test("a user text row qualifies", async () => {
+    await insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
 
-    expect(hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
+    expect(await hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
   });
 
-  test("a mixed tool_result + text user row qualifies", () => {
-    insertRaw({ role: "user", content: MIXED, createdAt: 1_000 });
+  test("a mixed tool_result + text user row qualifies", async () => {
+    await insertRaw({ role: "user", content: MIXED, createdAt: 1_000 });
 
-    expect(hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
+    expect(await hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
   });
 
-  test("non-array user content qualifies (fails toward running)", () => {
+  test("non-array user content qualifies (fails toward running)", async () => {
     // File-backed rows persist a `{ ref }` object; legacy rows persist a
     // bare string. Neither shape can prove the row is a tool-result carrier.
-    insertRaw({
+    await insertRaw({
       role: "user",
       content: JSON.stringify({ ref: "deltas/abc" }),
       createdAt: 1_000,
     });
-    expect(hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
+    expect(await hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
 
-    getDb().run(`DELETE FROM messages`);
-    insertRaw({ role: "user", content: "plain legacy text", createdAt: 1_000 });
-    expect(hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
+    await requireMainDb().run(`DELETE FROM messages`);
+    await insertRaw({
+      role: "user",
+      content: "plain legacy text",
+      createdAt: 1_000,
+    });
+    expect(await hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
   });
 
-  test("an empty content array does not qualify", () => {
-    insertRaw({ role: "user", content: "[]", createdAt: 1_000 });
+  test("an empty content array does not qualify", async () => {
+    await insertRaw({ role: "user", content: "[]", createdAt: 1_000 });
 
-    expect(hasQualifyingUserMessageAfter(CONV, null)).toBe(false);
+    expect(await hasQualifyingUserMessageAfter(CONV, null)).toBe(false);
   });
 
-  test("only rows after the cursor count", () => {
-    const cursor = insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
-    insertRaw({ role: "assistant", content: TEXT, createdAt: 2_000 });
+  test("only rows after the cursor count", async () => {
+    const cursor = await insertRaw({
+      role: "user",
+      content: TEXT,
+      createdAt: 1_000,
+    });
+    await insertRaw({ role: "assistant", content: TEXT, createdAt: 2_000 });
 
-    expect(hasQualifyingUserMessageAfter(CONV, cursor)).toBe(false);
+    expect(await hasQualifyingUserMessageAfter(CONV, cursor)).toBe(false);
 
-    insertRaw({ role: "user", content: TEXT, createdAt: 3_000 });
-    expect(hasQualifyingUserMessageAfter(CONV, cursor)).toBe(true);
+    await insertRaw({ role: "user", content: TEXT, createdAt: 3_000 });
+    expect(await hasQualifyingUserMessageAfter(CONV, cursor)).toBe(true);
   });
 
-  test("the empty-string sentinel scans the whole conversation", () => {
-    insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
+  test("the empty-string sentinel scans the whole conversation", async () => {
+    await insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
 
-    expect(hasQualifyingUserMessageAfter(CONV, "")).toBe(true);
+    expect(await hasQualifyingUserMessageAfter(CONV, "")).toBe(true);
   });
 
-  test("a vanished cursor reference means no new work", () => {
-    insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
+  test("a vanished cursor reference means no new work", async () => {
+    await insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
 
-    expect(hasQualifyingUserMessageAfter(CONV, "msg-gone")).toBe(false);
+    expect(await hasQualifyingUserMessageAfter(CONV, "msg-gone")).toBe(false);
   });
 
-  test("rows sharing the cursor's timestamp are split by the id tie-break", () => {
-    insertRaw({
+  test("rows sharing the cursor's timestamp are split by the id tie-break", async () => {
+    await insertRaw({
       role: "user",
       content: TEXT,
       createdAt: 1_000,
       id: "msg-before",
     });
-    insertRaw({
+    await insertRaw({
       role: "user",
       content: TOOL_RESULT_ONLY,
       createdAt: 1_000,
       id: "msg-cursor",
     });
-    expect(hasQualifyingUserMessageAfter(CONV, "msg-cursor")).toBe(false);
+    expect(await hasQualifyingUserMessageAfter(CONV, "msg-cursor")).toBe(false);
 
-    insertRaw({
+    await insertRaw({
       role: "user",
       content: TEXT,
       createdAt: 1_000,
       id: "msg-later",
     });
-    expect(hasQualifyingUserMessageAfter(CONV, "msg-cursor")).toBe(true);
+    expect(await hasQualifyingUserMessageAfter(CONV, "msg-cursor")).toBe(true);
   });
 });
 
@@ -210,7 +210,7 @@ describe("messagesHaveUserActivity", () => {
     return { role, content } as unknown as Pick<MessageRow, "role" | "content">;
   }
 
-  test("a user text row counts as user activity", () => {
+  test("a user text row counts as user activity", async () => {
     expect(
       messagesHaveUserActivity([
         row("assistant", [{ type: "text", text: "recap" }]),
@@ -219,7 +219,7 @@ describe("messagesHaveUserActivity", () => {
     ).toBe(true);
   });
 
-  test("tool_result-only user rows do not count", () => {
+  test("tool_result-only user rows do not count", async () => {
     expect(
       messagesHaveUserActivity([
         row("assistant", [{ type: "text", text: "recap" }]),
@@ -230,7 +230,7 @@ describe("messagesHaveUserActivity", () => {
     ).toBe(false);
   });
 
-  test("a mixed tool_result + text user row counts", () => {
+  test("a mixed tool_result + text user row counts", async () => {
     expect(
       messagesHaveUserActivity([
         row("user", [
@@ -241,7 +241,7 @@ describe("messagesHaveUserActivity", () => {
     ).toBe(true);
   });
 
-  test("assistant rows never count, and an empty slice has no activity", () => {
+  test("assistant rows never count, and an empty slice has no activity", async () => {
     expect(
       messagesHaveUserActivity([
         row("assistant", [{ type: "text", text: "hello" }]),
@@ -251,65 +251,66 @@ describe("messagesHaveUserActivity", () => {
   });
 });
 
-describe("getRetrospectiveMessagesAfter", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM messages`);
-    db.run(`DELETE FROM conversations`);
-    createConversation({ id: CONV });
+describePg("getRetrospectiveMessagesAfter", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM messages`);
+    await db.run(`DELETE FROM conversations`);
+    await createConversation({ id: CONV });
   });
 
-  test("truncates at a stale mid-slice unfinalized row so the cursor never passes it", () => {
-    const first = insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
-    const stale = insertRaw({
+  test("truncates at a stale mid-slice unfinalized row so the cursor never passes it", async () => {
+    const first = await insertRaw({
+      role: "user",
+      content: TEXT,
+      createdAt: 1_000,
+    });
+    const stale = await insertRaw({
       role: "assistant",
       content: TEXT,
       createdAt: 2_000,
     });
-    insertRaw({ role: "user", content: TEXT, createdAt: 3_000 });
-    insertRaw({ role: "assistant", content: TEXT, createdAt: 4_000 });
-    getDb()
-      .update(messages)
-      .set({ finalized: 0 })
-      .where(eq(messages.id, stale))
-      .run();
+    await insertRaw({ role: "user", content: TEXT, createdAt: 3_000 });
+    await insertRaw({ role: "assistant", content: TEXT, createdAt: 4_000 });
+    await requireMainDb().run(
+      "UPDATE messages SET finalized = 0 WHERE id = ?",
+      [stale],
+    );
 
-    const slice = getRetrospectiveMessagesAfter(CONV, null);
+    const slice = await getRetrospectiveMessagesAfter(CONV, null);
 
     // The slice stops BEFORE the stale row: taking the later finalized rows
     // as the cutoff would advance the cursor past the stale row, and once it
     // finalizes it would sit behind the cursor, unreviewed forever.
     expect(slice.map((row) => row.id)).toEqual([first]);
 
-    getDb()
-      .update(messages)
-      .set({ finalized: 1 })
-      .where(eq(messages.id, stale))
-      .run();
+    await requireMainDb().run(
+      "UPDATE messages SET finalized = 1 WHERE id = ?",
+      [stale],
+    );
 
     // Once the row resolves, the slice continues past it.
-    expect(getRetrospectiveMessagesAfter(CONV, null)).toHaveLength(4);
+    expect(await getRetrospectiveMessagesAfter(CONV, null)).toHaveLength(4);
   });
 
-  test("excludes unfinalized rows so the cutoff stays on rows a fork holds", () => {
-    insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
-    const lastFinalized = insertRaw({
+  test("excludes unfinalized rows so the cutoff stays on rows a fork holds", async () => {
+    await insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
+    const lastFinalized = await insertRaw({
       role: "assistant",
       content: TEXT,
       createdAt: 2_000,
     });
-    const streaming = insertRaw({
+    const streaming = await insertRaw({
       role: "assistant",
       content: TEXT,
       createdAt: 3_000,
     });
-    getDb()
-      .update(messages)
-      .set({ finalized: 0 })
-      .where(eq(messages.id, streaming))
-      .run();
+    await requireMainDb().run(
+      "UPDATE messages SET finalized = 0 WHERE id = ?",
+      [streaming],
+    );
 
-    const slice = getRetrospectiveMessagesAfter(CONV, null);
+    const slice = await getRetrospectiveMessagesAfter(CONV, null);
 
     // The invariant: no slice member is unfinalized, and the cutoff the job
     // would take (the last slice row) is a row the retrospective fork
@@ -320,17 +321,20 @@ describe("getRetrospectiveMessagesAfter", () => {
   });
 });
 
-describe("ambient camera frames are not retrospective work", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM messages`);
-    db.run(`DELETE FROM conversations`);
-    createConversation({ id: CONV });
+describePg("ambient camera frames are not retrospective work", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM messages`);
+    await db.run(`DELETE FROM conversations`);
+    await createConversation({ id: CONV });
   });
 
   /** One kept frame, as the live-voice persist writes it. */
-  function insertSightFrame(createdAt: number, attachmentId: string): string {
-    return insertRaw({
+  async function insertSightFrame(
+    createdAt: number,
+    attachmentId: string,
+  ): Promise<string> {
+    return await insertRaw({
       role: "user",
       content: SIGHT_FRAME_CONTENT,
       createdAt,
@@ -338,145 +342,148 @@ describe("ambient camera frames are not retrospective work", () => {
     });
   }
 
-  test("a camera-only tail does not qualify as user activity", () => {
+  test("a camera-only tail does not qualify as user activity", async () => {
     // A phone lying face up on a desk persists one of these every few
     // seconds. Nobody said anything, so there is nothing to review.
-    insertSightFrame(1_000, "att-a");
-    insertSightFrame(2_000, "att-b");
-    insertSightFrame(3_000, "att-c");
+    await insertSightFrame(1_000, "att-a");
+    await insertSightFrame(2_000, "att-b");
+    await insertSightFrame(3_000, "att-c");
 
-    expect(hasQualifyingUserMessageAfter(CONV, null)).toBe(false);
+    expect(await hasQualifyingUserMessageAfter(CONV, null)).toBe(false);
   });
 
-  test("one real message among the frames does qualify", () => {
-    insertSightFrame(1_000, "att-a");
-    insertRaw({ role: "user", content: TEXT, createdAt: 2_000 });
-    insertSightFrame(3_000, "att-b");
+  test("one real message among the frames does qualify", async () => {
+    await insertSightFrame(1_000, "att-a");
+    await insertRaw({ role: "user", content: TEXT, createdAt: 2_000 });
+    await insertSightFrame(3_000, "att-b");
 
-    expect(hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
+    expect(await hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
   });
 
-  test("frames are left out of the count that decides a run is due", () => {
-    insertSightFrame(1_000, "att-a");
-    insertSightFrame(2_000, "att-b");
+  test("frames are left out of the count that decides a run is due", async () => {
+    await insertSightFrame(1_000, "att-a");
+    await insertSightFrame(2_000, "att-b");
 
-    expect(countRetrospectiveMessagesAfter(CONV, null)).toBe(0);
+    expect(await countRetrospectiveMessagesAfter(CONV, null)).toBe(0);
 
-    insertRaw({ role: "user", content: TEXT, createdAt: 3_000 });
+    await insertRaw({ role: "user", content: TEXT, createdAt: 3_000 });
 
-    expect(countRetrospectiveMessagesAfter(CONV, null)).toBe(1);
+    expect(await countRetrospectiveMessagesAfter(CONV, null)).toBe(1);
   });
 
-  test("frames are left out of the slice a run would review", () => {
-    insertSightFrame(1_000, "att-a");
-    const real = insertRaw({
+  test("frames are left out of the slice a run would review", async () => {
+    await insertSightFrame(1_000, "att-a");
+    const real = await insertRaw({
       role: "user",
       content: TEXT,
       createdAt: 2_000,
     });
-    insertSightFrame(3_000, "att-b");
+    await insertSightFrame(3_000, "att-b");
 
-    const slice = getRetrospectiveMessagesAfter(CONV, null);
+    const slice = await getRetrospectiveMessagesAfter(CONV, null);
 
     // The cutoff lands on the real message, so the frames are neither
     // reviewed nor skipped over.
     expect(slice.map((row) => row.id)).toEqual([real]);
   });
 
-  test("a spoken turn that carried a frame is real work", () => {
+  test("a spoken turn that carried a frame is real work", async () => {
     // Camera mode parks a frame continuously, so in a camera call EVERY
     // spoken turn carries the tag. Excluding on the tag alone would mean a
     // conversation held entirely in camera mode never earns a retrospective.
-    const spoken = insertRaw({
+    const spoken = await insertRaw({
       role: "user",
       content: TEXT,
       createdAt: 1_000,
       metadata: riddenTurnMetadata("att-frame-1"),
     });
 
-    expect(hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
-    expect(countRetrospectiveMessagesAfter(CONV, null)).toBe(1);
-    expect(getRetrospectiveMessagesAfter(CONV, null).map((r) => r.id)).toEqual([
-      spoken,
-    ]);
+    expect(await hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
+    expect(await countRetrospectiveMessagesAfter(CONV, null)).toBe(1);
+    expect(
+      (await getRetrospectiveMessagesAfter(CONV, null)).map((r) => r.id),
+    ).toEqual([spoken]);
   });
 
-  test("an auto-sent row without the tag is untouched by this exclusion", () => {
+  test("an auto-sent row without the tag is untouched by this exclusion", async () => {
     // `scripted` covers onboarding sends and other machine-authored turns.
     // They counted before the camera existed and must keep counting.
-    const onboarding = insertRaw({
+    const onboarding = await insertRaw({
       role: "user",
       content: TEXT,
       createdAt: 1_000,
       metadata: SCRIPTED_UNTAGGED_METADATA,
     });
 
-    expect(countRetrospectiveMessagesAfter(CONV, null)).toBe(1);
-    expect(getRetrospectiveMessagesAfter(CONV, null).map((r) => r.id)).toEqual([
-      onboarding,
-    ]);
+    expect(await countRetrospectiveMessagesAfter(CONV, null)).toBe(1);
+    expect(
+      (await getRetrospectiveMessagesAfter(CONV, null)).map((r) => r.id),
+    ).toEqual([onboarding]);
   });
 
-  test("keeps are excluded even among the speech they punctuate", () => {
-    insertSightFrame(1_000, "att-a");
-    const spoken = insertRaw({
+  test("keeps are excluded even among the speech they punctuate", async () => {
+    await insertSightFrame(1_000, "att-a");
+    const spoken = await insertRaw({
       role: "user",
       content: TEXT,
       createdAt: 2_000,
       metadata: riddenTurnMetadata("att-frame-1"),
     });
-    insertSightFrame(3_000, "att-b");
+    await insertSightFrame(3_000, "att-b");
 
-    expect(countRetrospectiveMessagesAfter(CONV, null)).toBe(1);
-    expect(getRetrospectiveMessagesAfter(CONV, null).map((r) => r.id)).toEqual([
-      spoken,
-    ]);
-    expect(hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
-  });
-});
-
-describe("retrospective accounting: a cursor survives its row's deletion", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM messages`);
-    db.run(`DELETE FROM conversations`);
-    createConversation({ id: CONV });
-  });
-
-  test("a deleted cursor row with a stored timestamp still bounds the count, the slice, and the user-activity probe", () => {
-    insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
-    const reply = insertRaw({
-      role: "assistant",
-      content: TEXT,
-      createdAt: 2_000,
-    });
-    // Regenerate: the reply the cursor sits on is discarded and replaced.
-    getDb().delete(messages).where(eq(messages.id, reply)).run();
-    const regenerated = insertRaw({
-      role: "assistant",
-      content: TEXT,
-      createdAt: 3_000,
-    });
-    const followUp = insertRaw({
-      role: "user",
-      content: TEXT,
-      createdAt: 4_000,
-    });
-
-    const cursor = { id: reply, createdAt: 2_000 };
-    expect(countRetrospectiveMessagesAfter(CONV, cursor)).toBe(2);
+    expect(await countRetrospectiveMessagesAfter(CONV, null)).toBe(1);
     expect(
-      getRetrospectiveMessagesAfter(CONV, cursor).map((r) => r.id),
-    ).toEqual([regenerated, followUp]);
-    expect(hasQualifyingUserMessageAfter(CONV, cursor)).toBe(true);
-  });
-
-  test("a deleted cursor row without a timestamp still reads as no new work", () => {
-    insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
-
-    const cursor = { id: "gone", createdAt: null };
-    expect(countRetrospectiveMessagesAfter(CONV, cursor)).toBe(0);
-    expect(getRetrospectiveMessagesAfter(CONV, cursor)).toEqual([]);
-    expect(hasQualifyingUserMessageAfter(CONV, cursor)).toBe(false);
+      (await getRetrospectiveMessagesAfter(CONV, null)).map((r) => r.id),
+    ).toEqual([spoken]);
+    expect(await hasQualifyingUserMessageAfter(CONV, null)).toBe(true);
   });
 });
+
+describePg(
+  "retrospective accounting: a cursor survives its row's deletion",
+  () => {
+    beforeEach(async () => {
+      const db = requireMainDb();
+      await db.run(`DELETE FROM messages`);
+      await db.run(`DELETE FROM conversations`);
+      await createConversation({ id: CONV });
+    });
+
+    test("a deleted cursor row with a stored timestamp still bounds the count, the slice, and the user-activity probe", async () => {
+      await insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
+      const reply = await insertRaw({
+        role: "assistant",
+        content: TEXT,
+        createdAt: 2_000,
+      });
+      // Regenerate: the reply the cursor sits on is discarded and replaced.
+      await requireMainDb().run("DELETE FROM messages WHERE id = ?", [reply]);
+      const regenerated = await insertRaw({
+        role: "assistant",
+        content: TEXT,
+        createdAt: 3_000,
+      });
+      const followUp = await insertRaw({
+        role: "user",
+        content: TEXT,
+        createdAt: 4_000,
+      });
+
+      const cursor = { id: reply, createdAt: 2_000 };
+      expect(await countRetrospectiveMessagesAfter(CONV, cursor)).toBe(2);
+      expect(
+        (await getRetrospectiveMessagesAfter(CONV, cursor)).map((r) => r.id),
+      ).toEqual([regenerated, followUp]);
+      expect(await hasQualifyingUserMessageAfter(CONV, cursor)).toBe(true);
+    });
+
+    test("a deleted cursor row without a timestamp still reads as no new work", async () => {
+      await insertRaw({ role: "user", content: TEXT, createdAt: 1_000 });
+
+      const cursor = { id: "gone", createdAt: null };
+      expect(await countRetrospectiveMessagesAfter(CONV, cursor)).toBe(0);
+      expect(await getRetrospectiveMessagesAfter(CONV, cursor)).toEqual([]);
+      expect(await hasQualifyingUserMessageAfter(CONV, cursor)).toBe(false);
+    });
+  },
+);

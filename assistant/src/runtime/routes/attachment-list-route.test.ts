@@ -7,10 +7,9 @@
  * on a stub's idea of them.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { eq } from "drizzle-orm";
-
+import { describePg } from "../../__tests__/pg-test-db.js";
 import { isToolResultOnlyUserMessage } from "../../conversations/message-consolidation.js";
 import {
   linkAttachmentToMessage,
@@ -23,16 +22,9 @@ import {
   forkConversationForRetrospective,
   type MessageRow,
 } from "../../persistence/conversation-crud.js";
-import { getDb } from "../../persistence/db-connection.js";
-import { initializeDb } from "../../persistence/db-init.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { resolveMessageContentBlocks } from "../../persistence/message-content-file.js";
-import {
-  messageAttachments,
-  messages,
-} from "../../persistence/schema/index.js";
 import { BadRequestError } from "./errors.js";
-
-await initializeDb();
 
 const { ROUTES } = await import("./attachment-routes.js");
 
@@ -52,52 +44,56 @@ interface ListResult {
   hasMore: boolean;
 }
 
-function listAttachments(queryParams: Record<string, string>): ListResult {
+async function listAttachments(
+  queryParams: Record<string, string>,
+): Promise<ListResult> {
   const route = ROUTES.find((r) => r.operationId === "attachment_list");
   if (!route) {
     throw new Error("attachment_list route not registered");
   }
-  return route.handler({ queryParams }) as ListResult;
+  return (await route.handler({ queryParams })) as ListResult;
 }
 
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
-function setCreatedAt(messageId: string, createdAt: number): void {
-  getDb()
-    .update(messages)
-    .set({ createdAt })
-    .where(eq(messages.id, messageId))
-    .run();
+async function setCreatedAt(
+  messageId: string,
+  createdAt: number,
+): Promise<void> {
+  await requireMainDb().run("UPDATE messages SET created_at = ? WHERE id = ?", [
+    createdAt,
+    messageId,
+  ]);
 }
 
-function setFinalized(messageId: string, finalized: number): void {
-  getDb()
-    .update(messages)
-    .set({ finalized })
-    .where(eq(messages.id, messageId))
-    .run();
+async function setFinalized(
+  messageId: string,
+  finalized: number,
+): Promise<void> {
+  await requireMainDb().run("UPDATE messages SET finalized = ? WHERE id = ?", [
+    finalized,
+    messageId,
+  ]);
 }
 
-function setLinkId(attachmentId: string, linkId: string): void {
-  getDb()
-    .update(messageAttachments)
-    .set({ id: linkId })
-    .where(eq(messageAttachments.attachmentId, attachmentId))
-    .run();
+async function setLinkId(attachmentId: string, linkId: string): Promise<void> {
+  await requireMainDb().run(
+    "UPDATE message_attachments SET id = ? WHERE attachment_id = ?",
+    [linkId, attachmentId],
+  );
 }
 
-function setContent(messageId: string, content: string): void {
-  getDb()
-    .update(messages)
-    .set({ content })
-    .where(eq(messages.id, messageId))
-    .run();
+async function setContent(messageId: string, content: string): Promise<void> {
+  await requireMainDb().run("UPDATE messages SET content = ? WHERE id = ?", [
+    content,
+    messageId,
+  ]);
 }
 
 /** The row the transcript classifier sees for a stored content string. */
@@ -135,7 +131,7 @@ async function newVideoAttachment(
   thumbnail: string,
 ): Promise<string> {
   const uploaded = await uploadAttachment(filename, "video/mp4", PNG_BASE64);
-  setAttachmentThumbnail(uploaded.id, thumbnail);
+  await setAttachmentThumbnail(uploaded.id, thumbnail);
   return uploaded.id;
 }
 
@@ -155,29 +151,29 @@ interface Seeded {
  * an unfinalized row that must not surface at all.
  */
 async function seedConversation(): Promise<Seeded> {
-  const conversation = createConversation("Camera thread");
+  const conversation = await createConversation("Camera thread");
 
   const photoA = await newAttachment("a.png");
   const first = await addMessage(conversation.id, "user", "first photo", {
     skipIndexing: true,
   });
-  linkAttachmentToMessage(first.id, photoA, 0);
-  setCreatedAt(first.id, 1000);
+  await linkAttachmentToMessage(first.id, photoA, 0);
+  await setCreatedAt(first.id, 1000);
 
   const photoB = await newAttachment("b.png");
   const second = await addMessage(conversation.id, "user", "second photo", {
     skipIndexing: true,
   });
-  linkAttachmentToMessage(second.id, photoB, 0);
-  setCreatedAt(second.id, 2000);
+  await linkAttachmentToMessage(second.id, photoB, 0);
+  await setCreatedAt(second.id, 2000);
 
   const ambientFrame = await newAttachment("ambient.png");
   const keep = await addMessage(conversation.id, "user", "", {
     metadata: { scripted: true, sightFrameAttachmentIds: [ambientFrame] },
     skipIndexing: true,
   });
-  linkAttachmentToMessage(keep.id, ambientFrame, 0);
-  setCreatedAt(keep.id, 3000);
+  await linkAttachmentToMessage(keep.id, ambientFrame, 0);
+  await setCreatedAt(keep.id, 3000);
 
   const photoC = await newAttachment("c.png");
   const parkedFrame = await newAttachment("parked.png");
@@ -185,17 +181,17 @@ async function seedConversation(): Promise<Seeded> {
     metadata: { sightFrameAttachmentIds: [parkedFrame] },
     skipIndexing: true,
   });
-  linkAttachmentToMessage(spoken.id, photoC, 0);
-  linkAttachmentToMessage(spoken.id, parkedFrame, 1);
-  setCreatedAt(spoken.id, 4000);
+  await linkAttachmentToMessage(spoken.id, photoC, 0);
+  await linkAttachmentToMessage(spoken.id, parkedFrame, 1);
+  await setCreatedAt(spoken.id, 4000);
 
   const hiddenPhoto = await newAttachment("hidden.png");
   const hidden = await addMessage(conversation.id, "user", "scaffolding", {
     metadata: { hidden: true },
     skipIndexing: true,
   });
-  linkAttachmentToMessage(hidden.id, hiddenPhoto, 0);
-  setCreatedAt(hidden.id, 5000);
+  await linkAttachmentToMessage(hidden.id, hiddenPhoto, 0);
+  await setCreatedAt(hidden.id, 5000);
 
   const deletedPhoto = await newAttachment("deleted.png");
   const channelDeleted = await addMessage(
@@ -215,16 +211,16 @@ async function seedConversation(): Promise<Seeded> {
       skipIndexing: true,
     },
   );
-  linkAttachmentToMessage(channelDeleted.id, deletedPhoto, 0);
-  setCreatedAt(channelDeleted.id, 5500);
+  await linkAttachmentToMessage(channelDeleted.id, deletedPhoto, 0);
+  await setCreatedAt(channelDeleted.id, 5500);
 
   const streamingPhoto = await newAttachment("streaming.png");
   const streaming = await addMessage(conversation.id, "user", "mid write", {
     skipIndexing: true,
   });
-  linkAttachmentToMessage(streaming.id, streamingPhoto, 0);
-  setCreatedAt(streaming.id, 6000);
-  setFinalized(streaming.id, 0);
+  await linkAttachmentToMessage(streaming.id, streamingPhoto, 0);
+  await setCreatedAt(streaming.id, 6000);
+  await setFinalized(streaming.id, 0);
 
   return {
     conversationId: conversation.id,
@@ -236,15 +232,17 @@ async function seedConversation(): Promise<Seeded> {
   };
 }
 
-describe("GET /v1/attachments", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("GET /v1/attachments", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
   test("lists a conversation's attachments newest first, metadata only", async () => {
     const seeded = await seedConversation();
 
-    const result = listAttachments({ conversationId: seeded.conversationId });
+    const result = await listAttachments({
+      conversationId: seeded.conversationId,
+    });
 
     expect(result.attachments.map((a) => a.id)).toEqual([
       seeded.photoC,
@@ -264,9 +262,11 @@ describe("GET /v1/attachments", () => {
     const seeded = await seedConversation();
 
     const byId = new Map(
-      listAttachments({
-        conversationId: seeded.conversationId,
-      }).attachments.map((a) => [a.id, a]),
+      (
+        await listAttachments({
+          conversationId: seeded.conversationId,
+        })
+      ).attachments.map((a) => [a.id, a]),
     );
 
     expect(byId.get(seeded.ambientFrame)).toMatchObject({
@@ -286,7 +286,7 @@ describe("GET /v1/attachments", () => {
   test("omits hidden, channel-deleted, and unfinalized rows", async () => {
     const seeded = await seedConversation();
 
-    const listing = listAttachments({
+    const listing = await listAttachments({
       conversationId: seeded.conversationId,
     });
     const filenames = listing.attachments.map((a) => a.filename);
@@ -298,14 +298,14 @@ describe("GET /v1/attachments", () => {
   });
 
   test("omits attachments carried only by a tool-result or system row", async () => {
-    const conversation = createConversation("Machine rows");
+    const conversation = await createConversation("Machine rows");
 
     const systemPhoto = await newAttachment("system.png");
     const systemRow = await addMessage(conversation.id, "system", "boot", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(systemRow.id, systemPhoto, 0);
-    setCreatedAt(systemRow.id, 1000);
+    await linkAttachmentToMessage(systemRow.id, systemPhoto, 0);
+    await setCreatedAt(systemRow.id, 1000);
 
     const toolPhoto = await newAttachment("tool.png");
     const toolRow = await addMessage(
@@ -314,24 +314,24 @@ describe("GET /v1/attachments", () => {
       toolResultContent("toolu_01"),
       { skipIndexing: true },
     );
-    linkAttachmentToMessage(toolRow.id, toolPhoto, 0);
-    setCreatedAt(toolRow.id, 2000);
+    await linkAttachmentToMessage(toolRow.id, toolPhoto, 0);
+    await setCreatedAt(toolRow.id, 2000);
 
     const spokenPhoto = await newAttachment("spoken.png");
     const spoken = await addMessage(conversation.id, "user", "mine", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(spoken.id, spokenPhoto, 0);
-    setCreatedAt(spoken.id, 3000);
+    await linkAttachmentToMessage(spoken.id, spokenPhoto, 0);
+    await setCreatedAt(spoken.id, 3000);
 
-    const result = listAttachments({ conversationId: conversation.id });
+    const result = await listAttachments({ conversationId: conversation.id });
 
     expect(result.attachments.map((a) => a.id)).toEqual([spokenPhoto]);
     expect(result.total).toBe(1);
   });
 
   test("lists a tool image once, on the assistant reply that carries the promoted copy", async () => {
-    const conversation = createConversation("Screenshot turn");
+    const conversation = await createConversation("Screenshot turn");
 
     const toolCopy = await newAttachment("tool-copy.png");
     const toolRow = await addMessage(
@@ -340,30 +340,30 @@ describe("GET /v1/attachments", () => {
       toolResultContent("toolu_screenshot"),
       { skipIndexing: true },
     );
-    linkAttachmentToMessage(toolRow.id, toolCopy, 0);
-    setCreatedAt(toolRow.id, 1000);
+    await linkAttachmentToMessage(toolRow.id, toolCopy, 0);
+    await setCreatedAt(toolRow.id, 1000);
 
     const promotedCopy = await newAttachment("promoted.png");
     const reply = await addMessage(conversation.id, "assistant", "here it is", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(reply.id, promotedCopy, 0);
-    setCreatedAt(reply.id, 2000);
+    await linkAttachmentToMessage(reply.id, promotedCopy, 0);
+    await setCreatedAt(reply.id, 2000);
 
     const photo = await newAttachment("mine.png");
     const spoken = await addMessage(conversation.id, "user", "and mine", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(spoken.id, photo, 0);
-    setCreatedAt(spoken.id, 3000);
+    await linkAttachmentToMessage(spoken.id, photo, 0);
+    await setCreatedAt(spoken.id, 3000);
 
-    const result = listAttachments({ conversationId: conversation.id });
+    const result = await listAttachments({ conversationId: conversation.id });
 
     expect(result.attachments.map((a) => a.id)).toEqual([photo, promotedCopy]);
     expect(result.attachments.map((a) => a.id)).not.toContain(toolCopy);
     expect(result.total).toBe(2);
 
-    const excluded = listAttachments({
+    const excluded = await listAttachments({
       conversationId: conversation.id,
       sightFrames: "exclude",
     });
@@ -375,7 +375,7 @@ describe("GET /v1/attachments", () => {
   });
 
   test("lists a row that mixes a text block with a tool result", async () => {
-    const conversation = createConversation("Mixed blocks");
+    const conversation = await createConversation("Mixed blocks");
 
     const photo = await newAttachment("mixed.png");
     const mixed = await addMessage(
@@ -387,50 +387,50 @@ describe("GET /v1/attachments", () => {
       ]),
       { skipIndexing: true },
     );
-    linkAttachmentToMessage(mixed.id, photo, 0);
-    setCreatedAt(mixed.id, 1000);
+    await linkAttachmentToMessage(mixed.id, photo, 0);
+    await setCreatedAt(mixed.id, 1000);
 
-    const result = listAttachments({ conversationId: conversation.id });
+    const result = await listAttachments({ conversationId: conversation.id });
 
     expect(result.attachments.map((a) => a.id)).toEqual([photo]);
     expect(result.total).toBe(1);
   });
 
   test("lists rows whose stored content is not a JSON array", async () => {
-    const conversation = createConversation("Legacy bodies");
+    const conversation = await createConversation("Legacy bodies");
 
     const plainPhoto = await newAttachment("plain.png");
     const plain = await addMessage(conversation.id, "user", "placeholder", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(plain.id, plainPhoto, 0);
-    setCreatedAt(plain.id, 1000);
-    setContent(plain.id, "first photo");
+    await linkAttachmentToMessage(plain.id, plainPhoto, 0);
+    await setCreatedAt(plain.id, 1000);
+    await setContent(plain.id, "first photo");
 
     const refPhoto = await newAttachment("ref.png");
     const refRow = await addMessage(conversation.id, "user", "placeholder", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(refRow.id, refPhoto, 0);
-    setCreatedAt(refRow.id, 2000);
-    setContent(refRow.id, JSON.stringify({ ref: "x" }));
+    await linkAttachmentToMessage(refRow.id, refPhoto, 0);
+    await setCreatedAt(refRow.id, 2000);
+    await setContent(refRow.id, JSON.stringify({ ref: "x" }));
 
-    const result = listAttachments({ conversationId: conversation.id });
+    const result = await listAttachments({ conversationId: conversation.id });
 
     expect(result.attachments.map((a) => a.id)).toEqual([refPhoto, plainPhoto]);
     expect(result.total).toBe(2);
   });
 
   test("lists rows whose content array holds a bare string element", async () => {
-    const conversation = createConversation("Historical blocks");
+    const conversation = await createConversation("Historical blocks");
 
     const textPhoto = await newAttachment("bare-text.png");
     const textRow = await addMessage(conversation.id, "user", "placeholder", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(textRow.id, textPhoto, 0);
-    setCreatedAt(textRow.id, 1000);
-    setContent(
+    await linkAttachmentToMessage(textRow.id, textPhoto, 0);
+    await setCreatedAt(textRow.id, 1000);
+    await setContent(
       textRow.id,
       JSON.stringify([{ type: "text", text: "hi" }, "bare string"]),
     );
@@ -439,9 +439,9 @@ describe("GET /v1/attachments", () => {
     const toolRow = await addMessage(conversation.id, "user", "placeholder", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(toolRow.id, toolPhoto, 0);
-    setCreatedAt(toolRow.id, 2000);
-    setContent(
+    await linkAttachmentToMessage(toolRow.id, toolPhoto, 0);
+    await setCreatedAt(toolRow.id, 2000);
+    await setContent(
       toolRow.id,
       JSON.stringify([
         { type: "tool_result", tool_use_id: "x", content: "ok" },
@@ -449,22 +449,22 @@ describe("GET /v1/attachments", () => {
       ]),
     );
 
-    const result = listAttachments({ conversationId: conversation.id });
+    const result = await listAttachments({ conversationId: conversation.id });
 
     expect(result.attachments.map((a) => a.id)).toEqual([toolPhoto, textPhoto]);
     expect(result.total).toBe(2);
   });
 
   test("excludes a row holding tool results beside a system notice", async () => {
-    const conversation = createConversation("Noticed turn");
+    const conversation = await createConversation("Noticed turn");
 
     const noticedPhoto = await newAttachment("noticed.png");
     const noticed = await addMessage(conversation.id, "user", "placeholder", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(noticed.id, noticedPhoto, 0);
-    setCreatedAt(noticed.id, 1000);
-    setContent(
+    await linkAttachmentToMessage(noticed.id, noticedPhoto, 0);
+    await setCreatedAt(noticed.id, 1000);
+    await setContent(
       noticed.id,
       JSON.stringify([
         { type: "tool_result", tool_use_id: "x", content: "ok" },
@@ -476,49 +476,52 @@ describe("GET /v1/attachments", () => {
     const spoken = await addMessage(conversation.id, "user", "mine", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(spoken.id, spokenPhoto, 0);
-    setCreatedAt(spoken.id, 2000);
+    await linkAttachmentToMessage(spoken.id, spokenPhoto, 0);
+    await setCreatedAt(spoken.id, 2000);
 
-    const result = listAttachments({ conversationId: conversation.id });
+    const result = await listAttachments({ conversationId: conversation.id });
 
     expect(result.attachments.map((a) => a.id)).toEqual([spokenPhoto]);
     expect(result.total).toBe(1);
   });
 
   test("excludes a row holding only a web search tool result", async () => {
-    const conversation = createConversation("Web search turn");
+    const conversation = await createConversation("Web search turn");
 
     const searchPhoto = await newAttachment("search.png");
     const search = await addMessage(conversation.id, "user", "placeholder", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(search.id, searchPhoto, 0);
-    setCreatedAt(search.id, 1000);
-    setContent(
+    await linkAttachmentToMessage(search.id, searchPhoto, 0);
+    await setCreatedAt(search.id, 1000);
+    await setContent(
       search.id,
       JSON.stringify([
         { type: "web_search_tool_result", tool_use_id: "x", content: [] },
       ]),
     );
 
-    const result = listAttachments({ conversationId: conversation.id });
+    const result = await listAttachments({ conversationId: conversation.id });
 
     expect(result.attachments).toHaveLength(0);
     expect(result.total).toBe(0);
   });
 
   test("lists a row holding only a system notice", async () => {
-    const conversation = createConversation("Notice only");
+    const conversation = await createConversation("Notice only");
 
     const photo = await newAttachment("notice-only.png");
     const row = await addMessage(conversation.id, "user", "placeholder", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(row.id, photo, 0);
-    setCreatedAt(row.id, 1000);
-    setContent(row.id, JSON.stringify([{ type: "text", text: SYSTEM_NOTICE }]));
+    await linkAttachmentToMessage(row.id, photo, 0);
+    await setCreatedAt(row.id, 1000);
+    await setContent(
+      row.id,
+      JSON.stringify([{ type: "text", text: SYSTEM_NOTICE }]),
+    );
 
-    const result = listAttachments({ conversationId: conversation.id });
+    const result = await listAttachments({ conversationId: conversation.id });
 
     expect(result.attachments.map((a) => a.id)).toEqual([photo]);
     expect(result.total).toBe(1);
@@ -542,24 +545,26 @@ describe("GET /v1/attachments", () => {
       '["tool_result"]',
     ];
 
-    const conversation = createConversation("Parity");
+    const conversation = await createConversation("Parity");
     const attachmentIds: string[] = [];
     for (const [index, body] of bodies.entries()) {
       const attachmentId = await newAttachment(`parity-${index}.png`);
       const row = await addMessage(conversation.id, "user", "placeholder", {
         skipIndexing: true,
       });
-      linkAttachmentToMessage(row.id, attachmentId, 0);
-      setCreatedAt(row.id, 1000 + index);
-      setContent(row.id, body);
+      await linkAttachmentToMessage(row.id, attachmentId, 0);
+      await setCreatedAt(row.id, 1000 + index);
+      await setContent(row.id, body);
       attachmentIds.push(attachmentId);
     }
 
     const listed = new Set(
-      listAttachments({
-        conversationId: conversation.id,
-        limit: String(bodies.length),
-      }).attachments.map((a) => a.id),
+      (
+        await listAttachments({
+          conversationId: conversation.id,
+          limit: String(bodies.length),
+        })
+      ).attachments.map((a) => a.id),
     );
 
     const disagreements = bodies.filter((body, index) => {
@@ -575,22 +580,22 @@ describe("GET /v1/attachments", () => {
   });
 
   test("lists an attachment carried twice once, under the newest carrier", async () => {
-    const conversation = createConversation("Resent");
+    const conversation = await createConversation("Resent");
 
     const photo = await newAttachment("shared.png");
     const older = await addMessage(conversation.id, "user", "first send", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(older.id, photo, 0);
-    setCreatedAt(older.id, 1000);
+    await linkAttachmentToMessage(older.id, photo, 0);
+    await setCreatedAt(older.id, 1000);
 
     const newer = await addMessage(conversation.id, "user", "second send", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(newer.id, photo, 0);
-    setCreatedAt(newer.id, 2000);
+    await linkAttachmentToMessage(newer.id, photo, 0);
+    await setCreatedAt(newer.id, 2000);
 
-    const result = listAttachments({ conversationId: conversation.id });
+    const result = await listAttachments({ conversationId: conversation.id });
 
     expect(result.attachments.map((a) => a.id)).toEqual([photo]);
     expect(result.total).toBe(1);
@@ -599,14 +604,14 @@ describe("GET /v1/attachments", () => {
   });
 
   test("falls back to an older visible carrier when the newest one is skipped", async () => {
-    const conversation = createConversation("Requoted");
+    const conversation = await createConversation("Requoted");
 
     const hiddenCarried = await newAttachment("requoted.png");
     const visibleFirst = await addMessage(conversation.id, "user", "shared", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(visibleFirst.id, hiddenCarried, 0);
-    setCreatedAt(visibleFirst.id, 1000);
+    await linkAttachmentToMessage(visibleFirst.id, hiddenCarried, 0);
+    await setCreatedAt(visibleFirst.id, 1000);
 
     const hiddenLater = await addMessage(
       conversation.id,
@@ -614,8 +619,8 @@ describe("GET /v1/attachments", () => {
       "scaffolding",
       { metadata: { hidden: true }, skipIndexing: true },
     );
-    linkAttachmentToMessage(hiddenLater.id, hiddenCarried, 0);
-    setCreatedAt(hiddenLater.id, 2000);
+    await linkAttachmentToMessage(hiddenLater.id, hiddenCarried, 0);
+    await setCreatedAt(hiddenLater.id, 2000);
 
     const deletedCarried = await newAttachment("resent.png");
     const visibleSecond = await addMessage(
@@ -624,8 +629,8 @@ describe("GET /v1/attachments", () => {
       "also shared",
       { skipIndexing: true },
     );
-    linkAttachmentToMessage(visibleSecond.id, deletedCarried, 0);
-    setCreatedAt(visibleSecond.id, 3000);
+    await linkAttachmentToMessage(visibleSecond.id, deletedCarried, 0);
+    await setCreatedAt(visibleSecond.id, 3000);
 
     const deletedLater = await addMessage(
       conversation.id,
@@ -644,10 +649,10 @@ describe("GET /v1/attachments", () => {
         skipIndexing: true,
       },
     );
-    linkAttachmentToMessage(deletedLater.id, deletedCarried, 0);
-    setCreatedAt(deletedLater.id, 4000);
+    await linkAttachmentToMessage(deletedLater.id, deletedCarried, 0);
+    await setCreatedAt(deletedLater.id, 4000);
 
-    const result = listAttachments({ conversationId: conversation.id });
+    const result = await listAttachments({ conversationId: conversation.id });
 
     expect(result.attachments.map((a) => a.id)).toEqual([
       deletedCarried,
@@ -663,7 +668,7 @@ describe("GET /v1/attachments", () => {
   test("splits the set on sightFrames, and total follows the filter", async () => {
     const seeded = await seedConversation();
 
-    const only = listAttachments({
+    const only = await listAttachments({
       conversationId: seeded.conversationId,
       sightFrames: "only",
     });
@@ -673,7 +678,7 @@ describe("GET /v1/attachments", () => {
     ]);
     expect(only.total).toBe(2);
 
-    const excluded = listAttachments({
+    const excluded = await listAttachments({
       conversationId: seeded.conversationId,
       sightFrames: "exclude",
     });
@@ -688,7 +693,7 @@ describe("GET /v1/attachments", () => {
   test("hasMore under a sightFrames filter counts the filtered set", async () => {
     const seeded = await seedConversation();
 
-    const firstFrame = listAttachments({
+    const firstFrame = await listAttachments({
       conversationId: seeded.conversationId,
       sightFrames: "only",
       limit: "1",
@@ -699,7 +704,7 @@ describe("GET /v1/attachments", () => {
     expect(firstFrame.total).toBe(2);
     expect(firstFrame.hasMore).toBe(true);
 
-    const lastFrame = listAttachments({
+    const lastFrame = await listAttachments({
       conversationId: seeded.conversationId,
       sightFrames: "only",
       limit: "1",
@@ -714,7 +719,7 @@ describe("GET /v1/attachments", () => {
   test("pages with limit and offset", async () => {
     const seeded = await seedConversation();
 
-    const page = listAttachments({
+    const page = await listAttachments({
       conversationId: seeded.conversationId,
       limit: "1",
       offset: "1",
@@ -724,7 +729,7 @@ describe("GET /v1/attachments", () => {
     expect(page.total).toBe(5);
     expect(page.hasMore).toBe(true);
 
-    const last = listAttachments({
+    const last = await listAttachments({
       conversationId: seeded.conversationId,
       limit: "1",
       offset: "4",
@@ -734,33 +739,33 @@ describe("GET /v1/attachments", () => {
   });
 
   test("pages deterministically when two carriers share a millisecond", async () => {
-    const conversation = createConversation("Same tick");
+    const conversation = await createConversation("Same tick");
 
     const firstPhoto = await newAttachment("tie-first.png");
     const firstCarrier = await addMessage(conversation.id, "user", "first", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(firstCarrier.id, firstPhoto, 0);
-    setCreatedAt(firstCarrier.id, 7000);
+    await linkAttachmentToMessage(firstCarrier.id, firstPhoto, 0);
+    await setCreatedAt(firstCarrier.id, 7000);
 
     const secondPhoto = await newAttachment("tie-second.png");
     const secondCarrier = await addMessage(conversation.id, "user", "second", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(secondCarrier.id, secondPhoto, 0);
-    setCreatedAt(secondCarrier.id, 7000);
+    await linkAttachmentToMessage(secondCarrier.id, secondPhoto, 0);
+    await setCreatedAt(secondCarrier.id, 7000);
 
-    const fullOrder = listAttachments({
+    const fullOrder = await listAttachments({
       conversationId: conversation.id,
     }).attachments.map((a) => a.id);
     expect([...fullOrder].sort()).toEqual([firstPhoto, secondPhoto].sort());
 
     for (let run = 0; run < 3; run += 1) {
-      const head = listAttachments({
+      const head = await listAttachments({
         conversationId: conversation.id,
         limit: "1",
       });
-      const tail = listAttachments({
+      const tail = await listAttachments({
         conversationId: conversation.id,
         limit: "1",
         offset: "1",
@@ -772,7 +777,7 @@ describe("GET /v1/attachments", () => {
   });
 
   test("pages deterministically when two links on one carrier share a position", async () => {
-    const conversation = createConversation("Same position");
+    const conversation = await createConversation("Same position");
 
     const carrier = await addMessage(conversation.id, "user", "both", {
       skipIndexing: true,
@@ -787,22 +792,22 @@ describe("GET /v1/attachments", () => {
       await newAttachment("pos-beta.png"),
       0,
     );
-    setCreatedAt(carrier.id, 8000);
+    await setCreatedAt(carrier.id, 8000);
     // Link ids that invert insertion order, so only the final key can decide.
-    setLinkId(alpha, "link-b-alpha");
-    setLinkId(beta, "link-a-beta");
+    await setLinkId(alpha, "link-b-alpha");
+    await setLinkId(beta, "link-a-beta");
 
-    const fullOrder = listAttachments({
+    const fullOrder = await listAttachments({
       conversationId: conversation.id,
     }).attachments.map((a) => a.id);
     expect(fullOrder).toEqual([beta, alpha]);
 
     for (let run = 0; run < 3; run += 1) {
-      const head = listAttachments({
+      const head = await listAttachments({
         conversationId: conversation.id,
         limit: "1",
       });
-      const tail = listAttachments({
+      const tail = await listAttachments({
         conversationId: conversation.id,
         limit: "1",
         offset: "1",
@@ -813,41 +818,41 @@ describe("GET /v1/attachments", () => {
     }
   });
 
-  test("rejects a request without a conversation", () => {
-    expect(() => listAttachments({})).toThrow(BadRequestError);
+  test("rejects a request without a conversation", async () => {
+    await expect(listAttachments({})).rejects.toThrow(BadRequestError);
   });
 
   test("rejects a non-numeric limit", async () => {
     const seeded = await seedConversation();
 
-    expect(() =>
+    await expect(
       listAttachments({ conversationId: seeded.conversationId, limit: "abc" }),
-    ).toThrow(BadRequestError);
+    ).rejects.toThrow(BadRequestError);
   });
 
   test("rejects a non-numeric offset", async () => {
     const seeded = await seedConversation();
 
-    expect(() =>
+    await expect(
       listAttachments({ conversationId: seeded.conversationId, offset: "abc" }),
-    ).toThrow(BadRequestError);
+    ).rejects.toThrow(BadRequestError);
   });
 
   test("rejects a fractional limit or offset", async () => {
     const seeded = await seedConversation();
 
-    expect(() =>
+    await expect(
       listAttachments({ conversationId: seeded.conversationId, limit: "1.9" }),
-    ).toThrow(BadRequestError);
-    expect(() =>
+    ).rejects.toThrow(BadRequestError);
+    await expect(
       listAttachments({ conversationId: seeded.conversationId, offset: "2.5" }),
-    ).toThrow(BadRequestError);
+    ).rejects.toThrow(BadRequestError);
   });
 
   test("clamps an out-of-range limit or offset rather than rejecting it", async () => {
     const seeded = await seedConversation();
 
-    const zeroLimit = listAttachments({
+    const zeroLimit = await listAttachments({
       conversationId: seeded.conversationId,
       limit: "0",
     });
@@ -855,14 +860,14 @@ describe("GET /v1/attachments", () => {
     expect(zeroLimit.total).toBe(5);
     expect(zeroLimit.hasMore).toBe(true);
 
-    const overMaxLimit = listAttachments({
+    const overMaxLimit = await listAttachments({
       conversationId: seeded.conversationId,
       limit: "5000",
     });
     expect(overMaxLimit.attachments).toHaveLength(5);
     expect(overMaxLimit.hasMore).toBe(false);
 
-    const negativeOffset = listAttachments({
+    const negativeOffset = await listAttachments({
       conversationId: seeded.conversationId,
       offset: "-1",
     });
@@ -877,23 +882,23 @@ describe("GET /v1/attachments", () => {
   });
 
   test("hydrates the thumbnail for the returned page only", async () => {
-    const conversation = createConversation("Clips");
+    const conversation = await createConversation("Clips");
 
     const olderClip = await newVideoAttachment("older.mp4", "OLDER_THUMB");
     const older = await addMessage(conversation.id, "user", "older clip", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(older.id, olderClip, 0);
-    setCreatedAt(older.id, 1000);
+    await linkAttachmentToMessage(older.id, olderClip, 0);
+    await setCreatedAt(older.id, 1000);
 
     const newerClip = await newVideoAttachment("newer.mp4", "NEWER_THUMB");
     const newer = await addMessage(conversation.id, "user", "newer clip", {
       skipIndexing: true,
     });
-    linkAttachmentToMessage(newer.id, newerClip, 0);
-    setCreatedAt(newer.id, 2000);
+    await linkAttachmentToMessage(newer.id, newerClip, 0);
+    await setCreatedAt(newer.id, 2000);
 
-    const first = listAttachments({
+    const first = await listAttachments({
       conversationId: conversation.id,
       limit: "1",
     });
@@ -903,7 +908,7 @@ describe("GET /v1/attachments", () => {
       "OLDER_THUMB",
     );
 
-    const second = listAttachments({
+    const second = await listAttachments({
       conversationId: conversation.id,
       limit: "1",
       offset: "1",
@@ -915,18 +920,18 @@ describe("GET /v1/attachments", () => {
   test("rejects an unknown sightFrames value", async () => {
     const seeded = await seedConversation();
 
-    expect(() =>
+    await expect(
       listAttachments({
         conversationId: seeded.conversationId,
         sightFrames: "maybe",
       }),
-    ).toThrow(BadRequestError);
+    ).rejects.toThrow(BadRequestError);
   });
 
   test("treats an empty sightFrames value as no filter", async () => {
     const seeded = await seedConversation();
 
-    const result = listAttachments({
+    const result = await listAttachments({
       conversationId: seeded.conversationId,
       sightFrames: "",
     });
@@ -948,7 +953,7 @@ describe("GET /v1/attachments", () => {
       conversationId: seeded.conversationId,
     });
 
-    const result = listAttachments({ conversationId: fork.id });
+    const result = await listAttachments({ conversationId: fork.id });
 
     expect(result.attachments.map((a) => a.id)).toEqual([
       seeded.photoC,

@@ -27,14 +27,16 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 
 import { invalidateConfigCache } from "../../../config/loader.js";
 import { createConversation } from "../../../persistence/conversation-crud.js";
 import { getDb, getMemorySqlite } from "../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import { recordUsageEvent } from "../../../persistence/llm-usage-store.js";
 import { rawRun } from "../../../persistence/raw-query.js";
+import { describePg } from "../../__tests__/pg-test-db.js";
 import { ROUTES } from "../consolidation-routes.js";
 import type { RouteDefinition } from "../types.js";
 
@@ -51,11 +53,11 @@ let workspaceDir: string;
 let origWorkspaceDir: string | undefined;
 let configPath: string;
 
-function resetTables(): void {
+async function resetTables(): Promise<void> {
   const db = getDb();
   db.run(`DELETE FROM llm_usage_events`);
-  db.run(`DELETE FROM messages`);
-  db.run(`DELETE FROM conversations`);
+  await requireMainDb().run(`DELETE FROM messages`);
+  await requireMainDb().run(`DELETE FROM conversations`);
   getMemorySqlite()!.run(`DELETE FROM memory_jobs`);
 }
 
@@ -67,19 +69,20 @@ function findHandler(operationId: string): RouteDefinition["handler"] {
   return route.handler;
 }
 
-function insertMessage(
+async function insertMessage(
   conversationId: string,
   role: string,
   createdAt: number,
-): void {
-  rawRun(
-    "test:insertMessage",
+): Promise<void> {
+  await requireMainDb().run(
     "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
-    `msg-${conversationId}-${role}-${createdAt}`,
-    conversationId,
-    role,
-    "x",
-    createdAt,
+    [
+      `msg-${conversationId}-${role}-${createdAt}`,
+      conversationId,
+      role,
+      "x",
+      createdAt,
+    ],
   );
 }
 
@@ -155,14 +158,14 @@ interface ListRunsResponse {
   runs: RunRecord[];
 }
 
-describe("listConsolidationRuns handler", () => {
-  beforeEach(() => {
+describePg("listConsolidationRuns handler", () => {
+  beforeEach(async () => {
     workspaceDir = mkdtempSync(join(tmpdir(), "vellum-consolidation-routes-"));
     origWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
     process.env.VELLUM_WORKSPACE_DIR = workspaceDir;
     configPath = join(workspaceDir, "config.json");
     invalidateConfigCache();
-    resetTables();
+    await resetTables();
   });
 
   afterEach(() => {
@@ -176,9 +179,12 @@ describe("listConsolidationRuns handler", () => {
   });
 
   test("returns only conversations sourced from memory_v2_consolidation", async () => {
-    createConversation({ title: "c1", source: "memory_v2_consolidation" });
-    createConversation({ title: "h1", source: "heartbeat" });
-    createConversation({ title: "u1", source: "user" });
+    await createConversation({
+      title: "c1",
+      source: "memory_v2_consolidation",
+    });
+    await createConversation({ title: "h1", source: "heartbeat" });
+    await createConversation({ title: "u1", source: "user" });
 
     const handler = findHandler("listConsolidationRuns");
     const result = (await handler({})) as ListRunsResponse;
@@ -187,23 +193,21 @@ describe("listConsolidationRuns handler", () => {
   });
 
   test("synthesizes status='ok' with finishedAt from latest assistant message", async () => {
-    const conv = createConversation({
+    const conv = await createConversation({
       title: "c1",
       source: "memory_v2_consolidation",
     });
-    rawRun(
-      "test:setCreatedAt",
+    await requireMainDb().run(
       "UPDATE conversations SET created_at = ? WHERE id = ?",
-      1000,
-      conv.id,
+      [1000, conv.id],
     );
     // Kickoff user prompt at t=1100 (bumps lastMessageAt — must NOT be
     // mistaken for completion).
-    insertMessage(conv.id, "user", 1100);
+    await insertMessage(conv.id, "user", 1100);
     // Agent's first assistant turn at t=2000.
-    insertMessage(conv.id, "assistant", 2000);
+    await insertMessage(conv.id, "assistant", 2000);
     // Agent's final assistant turn at t=2500.
-    insertMessage(conv.id, "assistant", 2500);
+    await insertMessage(conv.id, "assistant", 2500);
 
     const handler = findHandler("listConsolidationRuns");
     const result = (await handler({})) as ListRunsResponse;
@@ -224,18 +228,15 @@ describe("listConsolidationRuns handler", () => {
   });
 
   test("exposes estimatedCostUsd from the conversation total when available", async () => {
-    const conv = createConversation({
+    const conv = await createConversation({
       title: "c1",
       source: "memory_v2_consolidation",
     });
-    rawRun(
-      "test:setCreatedAtAndCost",
+    await requireMainDb().run(
       "UPDATE conversations SET created_at = ?, total_estimated_cost = ? WHERE id = ?",
-      1000,
-      0.42,
-      conv.id,
+      [1000, 0.42, conv.id],
     );
-    insertMessage(conv.id, "assistant", 2000);
+    await insertMessage(conv.id, "assistant", 2000);
     recordUsageCostAt(conv.id, "consolidation-fallback-cost", 1500, 0.99);
 
     const handler = findHandler("listConsolidationRuns");
@@ -245,17 +246,15 @@ describe("listConsolidationRuns handler", () => {
   });
 
   test("falls back to conversation-window usage cost when the total is empty", async () => {
-    const conv = createConversation({
+    const conv = await createConversation({
       title: "c1",
       source: "memory_v2_consolidation",
     });
-    rawRun(
-      "test:setCreatedAt",
+    await requireMainDb().run(
       "UPDATE conversations SET created_at = ? WHERE id = ?",
-      1000,
-      conv.id,
+      [1000, conv.id],
     );
-    insertMessage(conv.id, "assistant", 2000);
+    await insertMessage(conv.id, "assistant", 2000);
     recordUsageCostAt(conv.id, "consolidation-before", 999, 0.4);
     recordUsageCostAt(conv.id, "consolidation-inside", 1500, 0.07);
     recordUsageCostAt(conv.id, "consolidation-after", 2001, 0.5);
@@ -267,7 +266,10 @@ describe("listConsolidationRuns handler", () => {
   });
 
   test("synthesizes status='running' when conversation has no assistant message", async () => {
-    createConversation({ title: "c1", source: "memory_v2_consolidation" });
+    await createConversation({
+      title: "c1",
+      source: "memory_v2_consolidation",
+    });
 
     const handler = findHandler("listConsolidationRuns");
     const result = (await handler({})) as ListRunsResponse;
@@ -286,18 +288,15 @@ describe("listConsolidationRuns handler", () => {
     // `conversation.lastMessageAt`. A run that timed out / threw before
     // emitting any assistant turn must still report status='running' (or
     // an explicit failure status once one exists) — never 'ok'.
-    const conv = createConversation({
+    const conv = await createConversation({
       title: "c1",
       source: "memory_v2_consolidation",
     });
-    rawRun(
-      "test:setCreatedAtAndLastMsg",
+    await requireMainDb().run(
       "UPDATE conversations SET created_at = ?, last_message_at = ? WHERE id = ?",
-      1000,
-      1100,
-      conv.id,
+      [1000, 1100, conv.id],
     );
-    insertMessage(conv.id, "user", 1100);
+    await insertMessage(conv.id, "user", 1100);
 
     const handler = findHandler("listConsolidationRuns");
     const result = (await handler({})) as ListRunsResponse;
@@ -310,11 +309,11 @@ describe("listConsolidationRuns handler", () => {
   });
 
   test("skipReason and error are always null (not derivable from conversation row)", async () => {
-    const conv = createConversation({
+    const conv = await createConversation({
       title: "c1",
       source: "memory_v2_consolidation",
     });
-    insertMessage(conv.id, "assistant", 2000);
+    await insertMessage(conv.id, "assistant", 2000);
 
     const handler = findHandler("listConsolidationRuns");
     const result = (await handler({})) as ListRunsResponse;
@@ -324,35 +323,29 @@ describe("listConsolidationRuns handler", () => {
   });
 
   test("orders runs by createdAt descending", async () => {
-    const a = createConversation({
+    const a = await createConversation({
       title: "a",
       source: "memory_v2_consolidation",
     });
-    const b = createConversation({
+    const b = await createConversation({
       title: "b",
       source: "memory_v2_consolidation",
     });
-    const c = createConversation({
+    const c = await createConversation({
       title: "c",
       source: "memory_v2_consolidation",
     });
-    rawRun(
-      "test:setCreatedAt",
+    await requireMainDb().run(
       "UPDATE conversations SET created_at = ? WHERE id = ?",
-      1000,
-      a.id,
+      [1000, a.id],
     );
-    rawRun(
-      "test:setCreatedAt",
+    await requireMainDb().run(
       "UPDATE conversations SET created_at = ? WHERE id = ?",
-      3000,
-      b.id,
+      [3000, b.id],
     );
-    rawRun(
-      "test:setCreatedAt",
+    await requireMainDb().run(
       "UPDATE conversations SET created_at = ? WHERE id = ?",
-      2000,
-      c.id,
+      [2000, c.id],
     );
 
     const handler = findHandler("listConsolidationRuns");
@@ -363,7 +356,7 @@ describe("listConsolidationRuns handler", () => {
 
   test("limit defaults to 20, clamps to [1, 100], and falls back on non-numeric input", async () => {
     for (let i = 0; i < 5; i++) {
-      createConversation({
+      await createConversation({
         title: `c${i}`,
         source: "memory_v2_consolidation",
       });
@@ -402,13 +395,13 @@ describe("listConsolidationRuns handler", () => {
 });
 
 describe("consolidation config and run-now handlers", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     workspaceDir = mkdtempSync(join(tmpdir(), "vellum-consolidation-routes-"));
     origWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
     process.env.VELLUM_WORKSPACE_DIR = workspaceDir;
     configPath = join(workspaceDir, "config.json");
     invalidateConfigCache();
-    resetTables();
+    await resetTables();
   });
 
   afterEach(() => {

@@ -9,7 +9,7 @@
  *  - GET  /v1/conversations?conversationType=background|scheduled unchanged
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 // Stub the event hub to avoid spinning up real SSE infrastructure.
 mock.module("../../assistant-event-hub.js", () => ({
@@ -37,13 +37,12 @@ mock.module("../../sync/resource-sync-events.js", () => ({
   },
 }));
 
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import {
   createConversation,
   getConversation,
 } from "../../../persistence/conversation-crud.js";
-import { getDb } from "../../../persistence/db-connection.js";
-import { initializeDb } from "../../../persistence/db-init.js";
-import { conversations } from "../../../persistence/schema/index.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { ROUTES as CONVERSATION_LIST_ROUTES } from "../conversation-list-routes.js";
 import { ROUTES as CONVERSATION_MANAGEMENT_ROUTES } from "../conversation-management-routes.js";
 import { BadRequestError, NotFoundError } from "../errors.js";
@@ -52,8 +51,6 @@ import type { RouteDefinition } from "../types.js";
 // ---------------------------------------------------------------------------
 // DB bootstrap
 // ---------------------------------------------------------------------------
-
-await initializeDb();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -96,19 +93,22 @@ interface ListResponse {
   hasMore: boolean;
 }
 
-function clearConversations(): void {
-  getDb().delete(conversations).run();
+async function clearConversations(): Promise<void> {
+  await requireMainDb().run("DELETE FROM conversations");
 }
 
-function seed(
+async function seed(
   title: string,
   conversationType: "standard" | "background" | "scheduled",
-): string {
-  return createConversation({ title, conversationType, source: "test" }).id;
+): Promise<string> {
+  return (await createConversation({ title, conversationType, source: "test" }))
+    .id;
 }
 
-function listIds(queryParams: Record<string, string> = {}): string[] {
-  const response = listHandler({ queryParams }) as ListResponse;
+async function listIds(
+  queryParams: Record<string, string> = {},
+): Promise<string[]> {
+  const response = (await listHandler({ queryParams })) as ListResponse;
   return response.conversations.map((c) => c.id);
 }
 
@@ -116,202 +116,217 @@ function listIds(queryParams: Record<string, string> = {}): string[] {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("POST /v1/conversations/:id/surface", () => {
-  beforeEach(() => {
-    clearConversations();
+describePg("POST /v1/conversations/:id/surface", () => {
+  beforeEach(async () => {
+    await clearConversations();
     publishedListAndMetadata.length = 0;
   });
 
-  test("surfaces a background conversation and returns the timestamp", () => {
-    const id = seed("Background run", "background");
+  test("surfaces a background conversation and returns the timestamp", async () => {
+    const id = await seed("Background run", "background");
     const before = Date.now();
-    const response = surfaceHandler({
+    const response = (await surfaceHandler({
       pathParams: { id },
       body: { surfaced: true },
-    }) as SurfaceResponse;
+    })) as SurfaceResponse;
     expect(response.ok).toBe(true);
     expect(response.conversationId).toBe(id);
     expect(response.surfacedAt).toBeGreaterThanOrEqual(before);
   });
 
-  test("publishes a shape-changing list invalidation after the write", () => {
-    const id = seed("Background run", "background");
-    surfaceHandler({ pathParams: { id }, body: { surfaced: true } });
+  test("publishes a shape-changing list invalidation after the write", async () => {
+    const id = await seed("Background run", "background");
+    await surfaceHandler({ pathParams: { id }, body: { surfaced: true } });
     expect(publishedListAndMetadata).toEqual([
       { reason: "reordered", conversationIds: id },
     ]);
   });
 
-  test("clearing returns surfacedAt null", () => {
-    const id = seed("Background run", "background");
-    surfaceHandler({ pathParams: { id }, body: { surfaced: true } });
-    const response = surfaceHandler({
+  test("clearing returns surfacedAt null", async () => {
+    const id = await seed("Background run", "background");
+    await surfaceHandler({ pathParams: { id }, body: { surfaced: true } });
+    const response = (await surfaceHandler({
       pathParams: { id },
       body: { surfaced: false },
-    }) as SurfaceResponse;
+    })) as SurfaceResponse;
     expect(response.surfacedAt).toBeNull();
   });
 
-  test("404s for an unknown conversation id", () => {
-    expect(() =>
+  test("404s for an unknown conversation id", async () => {
+    await expect(
       surfaceHandler({
         pathParams: { id: crypto.randomUUID() },
         body: { surfaced: true },
       }),
-    ).toThrow(NotFoundError);
+    ).rejects.toThrow(NotFoundError);
   });
 
-  test("400s when surfaced is missing or not a boolean", () => {
-    const id = seed("Background run", "background");
-    expect(() => surfaceHandler({ pathParams: { id }, body: {} })).toThrow(
-      BadRequestError,
-    );
-    expect(() =>
+  test("400s when surfaced is missing or not a boolean", async () => {
+    const id = await seed("Background run", "background");
+    await expect(
+      surfaceHandler({ pathParams: { id }, body: {} }),
+    ).rejects.toThrow(BadRequestError);
+    await expect(
       surfaceHandler({ pathParams: { id }, body: { surfaced: "yes" } }),
-    ).toThrow(BadRequestError);
+    ).rejects.toThrow(BadRequestError);
   });
 });
 
-describe("GET /v1/conversations — surfaced rows in the default listing", () => {
-  beforeEach(() => {
-    clearConversations();
-    publishedListAndMetadata.length = 0;
-  });
-
-  test("background/scheduled rows stay out of the default listing until surfaced", () => {
-    const standardId = seed("Standard chat", "standard");
-    seed("Background run", "background");
-    seed("Scheduled run", "scheduled");
-    expect(listIds()).toEqual([standardId]);
-  });
-
-  test("surfacing promotes a background conversation into the default listing", () => {
-    const standardId = seed("Standard chat", "standard");
-    const backgroundId = seed("Background run", "background");
-    surfaceHandler({
-      pathParams: { id: backgroundId },
-      body: { surfaced: true },
+describePg(
+  "GET /v1/conversations — surfaced rows in the default listing",
+  () => {
+    beforeEach(async () => {
+      await clearConversations();
+      publishedListAndMetadata.length = 0;
     });
 
-    const response = listHandler({ queryParams: {} }) as ListResponse;
-    expect(response.conversations.map((c) => c.id).sort()).toEqual(
-      [standardId, backgroundId].sort(),
-    );
-    const surfaced = response.conversations.find((c) => c.id === backgroundId)!;
-    expect(surfaced.conversationType).toBe("background");
-    expect(surfaced.surfacedAt).toBeGreaterThan(0);
-    const standard = response.conversations.find((c) => c.id === standardId)!;
-    expect(standard.surfacedAt).toBeUndefined();
-  });
-
-  test("surfacing promotes a scheduled conversation into the default listing", () => {
-    const scheduledId = seed("Scheduled run", "scheduled");
-    surfaceHandler({
-      pathParams: { id: scheduledId },
-      body: { surfaced: true },
-    });
-    expect(listIds()).toEqual([scheduledId]);
-  });
-
-  test("clearing the promotion removes the row from the default listing again", () => {
-    const backgroundId = seed("Background run", "background");
-    surfaceHandler({
-      pathParams: { id: backgroundId },
-      body: { surfaced: true },
-    });
-    expect(listIds()).toEqual([backgroundId]);
-
-    surfaceHandler({
-      pathParams: { id: backgroundId },
-      body: { surfaced: false },
-    });
-    expect(listIds()).toEqual([]);
-  });
-
-  test("filtered background/scheduled listings keep returning surfaced rows", () => {
-    const backgroundId = seed("Background run", "background");
-    const scheduledId = seed("Scheduled run", "scheduled");
-    surfaceHandler({
-      pathParams: { id: backgroundId },
-      body: { surfaced: true },
-    });
-    surfaceHandler({
-      pathParams: { id: scheduledId },
-      body: { surfaced: true },
+    test("background/scheduled rows stay out of the default listing until surfaced", async () => {
+      const standardId = await seed("Standard chat", "standard");
+      await seed("Background run", "background");
+      await seed("Scheduled run", "scheduled");
+      expect(await listIds()).toEqual([standardId]);
     });
 
-    // "background" is the back-compat umbrella (background + scheduled).
-    expect(listIds({ conversationType: "background" }).sort()).toEqual(
-      [backgroundId, scheduledId].sort(),
-    );
-    expect(listIds({ conversationType: "scheduled" })).toEqual([scheduledId]);
-  });
+    test("surfacing promotes a background conversation into the default listing", async () => {
+      const standardId = await seed("Standard chat", "standard");
+      const backgroundId = await seed("Background run", "background");
+      await surfaceHandler({
+        pathParams: { id: backgroundId },
+        body: { surfaced: true },
+      });
 
-  test("moving a surfaced conversation to system:background clears the promotion", () => {
-    const backgroundId = seed("Background run", "background");
-    surfaceHandler({
-      pathParams: { id: backgroundId },
-      body: { surfaced: true },
-    });
-    expect(listIds()).toEqual([backgroundId]);
-
-    // Move-to-Group sends only groupId/isPinned through the reorder
-    // endpoint — the demotion out of Recents must happen in the same
-    // server-side write, with no second API call from the client.
-    reorderHandler({
-      body: {
-        updates: [
-          { conversationId: backgroundId, groupId: "system:background" },
-        ],
-      },
+      const response = (await listHandler({ queryParams: {} })) as ListResponse;
+      expect(response.conversations.map((c) => c.id).sort()).toEqual(
+        [standardId, backgroundId].sort(),
+      );
+      const surfaced = response.conversations.find(
+        (c) => c.id === backgroundId,
+      )!;
+      expect(surfaced.conversationType).toBe("background");
+      expect(surfaced.surfacedAt).toBeGreaterThan(0);
+      const standard = response.conversations.find((c) => c.id === standardId)!;
+      expect(standard.surfacedAt).toBeUndefined();
     });
 
-    expect(getConversation(backgroundId)?.surfacedAt).toBeNull();
-    expect(listIds()).toEqual([]);
-    expect(listIds({ conversationType: "background" })).toEqual([backgroundId]);
-  });
-
-  test("moving a surfaced conversation to system:scheduled clears the promotion", () => {
-    const scheduledId = seed("Scheduled run", "scheduled");
-    surfaceHandler({
-      pathParams: { id: scheduledId },
-      body: { surfaced: true },
-    });
-    expect(listIds()).toEqual([scheduledId]);
-
-    reorderHandler({
-      body: {
-        updates: [{ conversationId: scheduledId, groupId: "system:scheduled" }],
-      },
+    test("surfacing promotes a scheduled conversation into the default listing", async () => {
+      const scheduledId = await seed("Scheduled run", "scheduled");
+      await surfaceHandler({
+        pathParams: { id: scheduledId },
+        body: { surfaced: true },
+      });
+      expect(await listIds()).toEqual([scheduledId]);
     });
 
-    expect(getConversation(scheduledId)?.surfacedAt).toBeNull();
-    expect(listIds()).toEqual([]);
-  });
+    test("clearing the promotion removes the row from the default listing again", async () => {
+      const backgroundId = await seed("Background run", "background");
+      await surfaceHandler({
+        pathParams: { id: backgroundId },
+        body: { surfaced: true },
+      });
+      expect(await listIds()).toEqual([backgroundId]);
 
-  test("moving a surfaced conversation to a non-demoting group keeps the promotion", () => {
-    const backgroundId = seed("Background run", "background");
-    surfaceHandler({
-      pathParams: { id: backgroundId },
-      body: { surfaced: true },
+      await surfaceHandler({
+        pathParams: { id: backgroundId },
+        body: { surfaced: false },
+      });
+      expect(await listIds()).toEqual([]);
     });
 
-    reorderHandler({
-      body: {
-        updates: [{ conversationId: backgroundId, groupId: "system:all" }],
-      },
+    test("filtered background/scheduled listings keep returning surfaced rows", async () => {
+      const backgroundId = await seed("Background run", "background");
+      const scheduledId = await seed("Scheduled run", "scheduled");
+      await surfaceHandler({
+        pathParams: { id: backgroundId },
+        body: { surfaced: true },
+      });
+      await surfaceHandler({
+        pathParams: { id: scheduledId },
+        body: { surfaced: true },
+      });
+
+      // "background" is the back-compat umbrella (background + scheduled).
+      expect(
+        (await listIds({ conversationType: "background" })).sort(),
+      ).toEqual([backgroundId, scheduledId].sort());
+      expect(await listIds({ conversationType: "scheduled" })).toEqual([
+        scheduledId,
+      ]);
     });
 
-    expect(getConversation(backgroundId)?.surfacedAt).toBeGreaterThan(0);
-  });
+    test("moving a surfaced conversation to system:background clears the promotion", async () => {
+      const backgroundId = await seed("Background run", "background");
+      await surfaceHandler({
+        pathParams: { id: backgroundId },
+        body: { surfaced: true },
+      });
+      expect(await listIds()).toEqual([backgroundId]);
 
-  test("archived surfaced rows stay out of the default (active) listing", () => {
-    const backgroundId = seed("Background run", "background");
-    surfaceHandler({
-      pathParams: { id: backgroundId },
-      body: { surfaced: true },
+      // Move-to-Group sends only groupId/isPinned through the reorder
+      // endpoint — the demotion out of Recents must happen in the same
+      // server-side write, with no second API call from the client.
+      await reorderHandler({
+        body: {
+          updates: [
+            { conversationId: backgroundId, groupId: "system:background" },
+          ],
+        },
+      });
+
+      expect((await getConversation(backgroundId))?.surfacedAt).toBeNull();
+      expect(await listIds()).toEqual([]);
+      expect(await listIds({ conversationType: "background" })).toEqual([
+        backgroundId,
+      ]);
     });
-    getDb().update(conversations).set({ archivedAt: Date.now() }).run();
-    expect(listIds()).toEqual([]);
-  });
-});
+
+    test("moving a surfaced conversation to system:scheduled clears the promotion", async () => {
+      const scheduledId = await seed("Scheduled run", "scheduled");
+      await surfaceHandler({
+        pathParams: { id: scheduledId },
+        body: { surfaced: true },
+      });
+      expect(await listIds()).toEqual([scheduledId]);
+
+      await reorderHandler({
+        body: {
+          updates: [
+            { conversationId: scheduledId, groupId: "system:scheduled" },
+          ],
+        },
+      });
+
+      expect((await getConversation(scheduledId))?.surfacedAt).toBeNull();
+      expect(await listIds()).toEqual([]);
+    });
+
+    test("moving a surfaced conversation to a non-demoting group keeps the promotion", async () => {
+      const backgroundId = await seed("Background run", "background");
+      await surfaceHandler({
+        pathParams: { id: backgroundId },
+        body: { surfaced: true },
+      });
+
+      await reorderHandler({
+        body: {
+          updates: [{ conversationId: backgroundId, groupId: "system:all" }],
+        },
+      });
+
+      expect((await getConversation(backgroundId))?.surfacedAt).toBeGreaterThan(
+        0,
+      );
+    });
+
+    test("archived surfaced rows stay out of the default (active) listing", async () => {
+      const backgroundId = await seed("Background run", "background");
+      await surfaceHandler({
+        pathParams: { id: backgroundId },
+        body: { surfaced: true },
+      });
+      await requireMainDb().run("UPDATE conversations SET archived_at = ?", [
+        Date.now(),
+      ]);
+      expect(await listIds()).toEqual([]);
+    });
+  },
+);

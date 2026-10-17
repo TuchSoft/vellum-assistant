@@ -63,7 +63,7 @@ function deps(cache: Map<string, string>) {
 beforeEach(() => {
   rows = [];
   spies.push(
-    spyOn(conversationCrud, "getMessages").mockImplementation(() => rows),
+    spyOn(conversationCrud, "getMessages").mockImplementation(async () => rows),
     spyOn(conversationCrud, "getConversation").mockImplementation(
       () => ({ id: "conv-1", source: "user" }) as never,
     ),

@@ -47,10 +47,10 @@ beforeEach(() => {
   rows = [];
   spies.push(
     spyOn(conversationCrud, "getMessageById").mockImplementation(
-      (id: string) => rows.find((r) => r.id === id) ?? null,
+      async (id: string) => rows.find((r) => r.id === id) ?? null,
     ),
     spyOn(conversationCrud, "getAssistantMessageIdsInTurn").mockImplementation(
-      () => rows.map((r) => r.id),
+      async () => rows.map((r) => r.id),
     ),
   );
 });
@@ -62,7 +62,7 @@ afterEach(() => {
 });
 
 describe("latestAssistantSnippet on a gated turn", () => {
-  test("quotes the delivered message, never the scratchpad", () => {
+  test("quotes the delivered message, never the scratchpad", async () => {
     rows = [
       row(
         "a1",
@@ -71,13 +71,13 @@ describe("latestAssistantSnippet on a gated turn", () => {
       ),
     ];
 
-    const snippet = resolveAssistantSnippet("a1");
+    const snippet = await resolveAssistantSnippet("a1");
 
     expect(snippet).toBe("Two meetings today.");
     expect(snippet).not.toContain(SCRATCHPAD);
   });
 
-  test("walks back when the row it points at delivered nothing", () => {
+  test("walks back when the row it points at delivered nothing", async () => {
     // A gated turn ends on wrap-up notes: the reply is on the earlier row.
     rows = [
       row("a1", [sendCall("Two meetings today.")], PRIVATE),
@@ -88,22 +88,22 @@ describe("latestAssistantSnippet on a gated turn", () => {
       ),
     ];
 
-    const snippet = resolveAssistantSnippet("a2");
+    const snippet = await resolveAssistantSnippet("a2");
 
     expect(snippet).toBe("Two meetings today.");
     expect(snippet).not.toContain("Told them");
   });
 
-  test("returns nothing when a gated turn delivered nothing at all", () => {
+  test("returns nothing when a gated turn delivered nothing at all", async () => {
     rows = [
       row("a1", [{ type: "text", text: "notes" }], PRIVATE),
       row("a2", [{ type: "text", text: "more notes" }], PRIVATE),
     ];
 
-    expect(resolveAssistantSnippet("a2")).toBeNull();
+    expect(await resolveAssistantSnippet("a2")).toBeNull();
   });
 
-  test("an ordinary row is read from itself alone", () => {
+  test("an ordinary row is read from itself alone", async () => {
     // No walk-back for an unmarked row: the latest row is the preview, as
     // before.
     rows = [
@@ -111,12 +111,12 @@ describe("latestAssistantSnippet on a gated turn", () => {
       row("a2", [{ type: "tool_use", id: "t", name: "bash", input: {} }]),
     ];
 
-    expect(resolveAssistantSnippet("a2")).toContain("Tool use (bash)");
+    expect(await resolveAssistantSnippet("a2")).toContain("Tool use (bash)");
   });
 
-  test("an ordinary row with text quotes that text", () => {
+  test("an ordinary row with text quotes that text", async () => {
     rows = [row("a1", [{ type: "text", text: "Here is your answer." }])];
 
-    expect(resolveAssistantSnippet("a1")).toBe("Here is your answer.");
+    expect(await resolveAssistantSnippet("a1")).toBe("Here is your answer.");
   });
 });

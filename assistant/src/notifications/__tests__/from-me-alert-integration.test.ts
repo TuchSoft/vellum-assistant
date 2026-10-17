@@ -37,8 +37,8 @@ beforeAll(async () => {
   await initializeDb();
 });
 
-function persistedShare() {
-  const producer = createConversation({ conversationType: "background" });
+async function persistedShare() {
+  const producer = await createConversation({ conversationType: "background" });
   const signal: NotificationSignal = {
     signalId: crypto.randomUUID(),
     createdAt: Date.now(),
@@ -83,7 +83,7 @@ function persistedShare() {
     decision,
     options: {
       assistantInitiatedThread: {
-        resolution: resolveAssistantInitiatedThread(signal),
+        resolution: await resolveAssistantInitiatedThread(signal),
         platformAdded: true,
       },
     },
@@ -101,8 +101,9 @@ function recordingAdapter(channel: "vellum" | "platform") {
       readableAtSend.push(
         typeof conversationId === "string" &&
           typeof messageId === "string" &&
-          getConversation(conversationId)?.source === "assistant_initiated" &&
-          getMessageById(messageId, conversationId) != null,
+          (await getConversation(conversationId))?.source ===
+            "assistant_initiated" &&
+          (await getMessageById(messageId, conversationId)) != null,
       );
       sent.push(payload);
       return {
@@ -117,7 +118,7 @@ function recordingAdapter(channel: "vellum" | "platform") {
 }
 
 test("new From me alerts address the saved chat and seed before either adapter sends", async () => {
-  const { signal, decision, options } = persistedShare();
+  const { signal, decision, options } = await persistedShare();
   const local = recordingAdapter("vellum");
   const push = recordingAdapter("platform");
   const broadcaster = new NotificationBroadcaster([
@@ -129,11 +130,11 @@ test("new From me alerts address the saved chat and seed before either adapter s
     silent: boolean;
     seedCount: number;
   }> = [];
-  broadcaster.setOnConversationCreated((info) => {
+  broadcaster.setOnConversationCreated(async (info) => {
     created.push({
       source: info.source,
       silent: info.silent,
-      seedCount: getMessages(info.conversationId).length,
+      seedCount: (await getMessages(info.conversationId)).length,
     });
   });
 
@@ -154,12 +155,12 @@ test("new From me alerts address the saved chat and seed before either adapter s
   expect(push.sent[0].deepLinkTarget).toEqual(local.sent[0].deepLinkTarget);
   const conversationId = local.sent[0].deepLinkTarget?.conversationId as string;
   expect(conversationId).not.toBe(signal.sourceContextId);
-  expect(getMessages(conversationId)).toHaveLength(1);
-  expect(getMessages(signal.sourceContextId)).toHaveLength(0);
+  expect(await getMessages(conversationId)).toHaveLength(1);
+  expect(await getMessages(signal.sourceContextId)).toHaveLength(0);
 });
 
 test("a missing platform delivery reuses the saved initial-creation audit without reseeding", async () => {
-  const { signal, decision, options } = persistedShare();
+  const { signal, decision, options } = await persistedShare();
   const local = recordingAdapter("vellum");
   await new NotificationBroadcaster([local.adapter]).broadcastDecision(
     signal,
@@ -188,5 +189,5 @@ test("a missing platform delivery reuses the saved initial-creation audit withou
     conversationId: initial?.conversationId,
     messageId: initial?.messageId,
   });
-  expect(getMessages(initial!.conversationId!)).toHaveLength(1);
+  expect(await getMessages(initial!.conversationId!)).toHaveLength(1);
 });

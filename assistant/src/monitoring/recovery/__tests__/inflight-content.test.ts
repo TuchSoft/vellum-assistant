@@ -5,9 +5,11 @@
  * delta files.
  */
 import { existsSync, utimesSync } from "node:fs";
-import { describe, expect, mock, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 
 import pino from "pino";
+
+import { describePg } from "../../../__tests__/pg-test-db.js";
 
 mock.module("../../../util/logger.js", () => ({
   getLogger: () =>
@@ -27,18 +29,11 @@ import {
   getMessageById,
   reserveMessage,
 } from "../../../persistence/conversation-crud.js";
-import { getDb, getSqliteFrom } from "../../../persistence/db-connection.js";
-import { initializeDb } from "../../../persistence/db-init.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import type { ContentBlock } from "../../../providers/types.js";
 import { recoverInflightContent } from "../inflight-content.js";
 
-await initializeDb();
-
 const rlog = pino({ level: "silent" });
-
-function db() {
-  return getSqliteFrom(getDb());
-}
 
 function textBlock(text: string): ContentBlock {
   return { type: "text", text };
@@ -57,16 +52,20 @@ function backdateDeltaFile(absPath: string): void {
   utimesSync(absPath, past, past);
 }
 
-function rawRow(messageId: string): { content: string; finalized: number } {
-  return db()
-    .query("SELECT content, finalized FROM messages WHERE id = ?")
-    .get(messageId) as { content: string; finalized: number };
+async function rawRow(
+  messageId: string,
+): Promise<{ content: string; finalized: number }> {
+  return (await requireMainDb().get<{ content: string; finalized: number }>(
+    "SELECT content, finalized FROM messages WHERE id = ?",
+    [messageId],
+  ))!;
 }
 
-function setProcessing(conversationId: string): void {
-  db()
-    .query("UPDATE conversations SET processing_started_at = ? WHERE id = ?")
-    .run(Date.now(), conversationId);
+async function setProcessing(conversationId: string): Promise<void> {
+  await requireMainDb().run(
+    "UPDATE conversations SET processing_started_at = ? WHERE id = ?",
+    [Date.now(), conversationId],
+  );
 }
 
 /** Mirror the reserve seam: writer first, row born with its ref. */
@@ -75,8 +74,8 @@ async function reserveInflight(): Promise<{
   messageId: string;
   writer: InflightContentWriter;
 }> {
-  const conv = createConversation("recovery test");
-  const writer = createInflightContentWriter(conv.id);
+  const conv = await createConversation("recovery test");
+  const writer = await createInflightContentWriter(conv.id);
   if (!writer) {
     throw new Error("writer creation failed");
   }
@@ -90,7 +89,7 @@ async function reserveInflight(): Promise<{
   return { conversationId: conv.id, messageId: reserved.id, writer };
 }
 
-describe("recoverInflightContent — folding stranded rows", () => {
+describePg("recoverInflightContent — folding stranded rows", () => {
   test("folds a stranded row inline, sets finalized = 1, deletes its file", async () => {
     const { conversationId, messageId, writer } = await reserveInflight();
     appendInflightSnapshot(writer, [textBlock("streamed")], 1, rlog);
@@ -100,11 +99,11 @@ describe("recoverInflightContent — folding stranded rows", () => {
     const result = recoverInflightContent({ minAgeMs: 0 });
 
     expect(result.finalized).toBeGreaterThanOrEqual(1);
-    const row = rawRow(messageId);
+    const row = await rawRow(messageId);
     expect(row.finalized).toBe(1);
     expect(JSON.parse(row.content)).toEqual([textBlock("streamed")]);
     expect(existsSync(writer.absPath)).toBe(false);
-    expect(getMessageById(messageId, conversationId)?.content).toEqual([
+    expect((await getMessageById(messageId, conversationId))?.content).toEqual([
       textBlock("streamed"),
     ]);
   });
@@ -115,21 +114,23 @@ describe("recoverInflightContent — folding stranded rows", () => {
 
     recoverInflightContent({ minAgeMs: 0 });
 
-    expect(rawRow(messageId).finalized).toBe(1);
-    expect(getMessageById(messageId, conversationId)?.content).toEqual([]);
+    expect((await rawRow(messageId)).finalized).toBe(1);
+    expect((await getMessageById(messageId, conversationId))?.content).toEqual(
+      [],
+    );
   });
 });
 
-describe("recoverInflightContent — ownership guards", () => {
+describePg("recoverInflightContent — ownership guards", () => {
   test("skips a row whose conversation is mid-turn, preserving its file", async () => {
     const { conversationId, messageId, writer } = await reserveInflight();
     appendInflightSnapshot(writer, [textBlock("live")], 1, rlog);
-    setProcessing(conversationId);
+    await setProcessing(conversationId);
 
     const result = recoverInflightContent({ minAgeMs: 0 });
 
     expect(result.skippedProcessing).toBeGreaterThanOrEqual(1);
-    expect(rawRow(messageId).finalized).toBe(0);
+    expect((await rawRow(messageId)).finalized).toBe(0);
     expect(existsSync(writer.absPath)).toBe(true);
   });
 
@@ -148,13 +149,13 @@ describe("recoverInflightContent — ownership guards", () => {
   });
 });
 
-describe("recoverInflightContent — orphan file GC", () => {
+describePg("recoverInflightContent — orphan file GC", () => {
   test("deletes a delta file whose row is already finalized", async () => {
     const { messageId, writer } = await reserveInflight();
     appendInflightSnapshot(writer, [textBlock("orphaned")], 1, rlog);
     // finalize the row without deleting its file (interrupted unlink).
     finalizeMessageContent(messageId, JSON.stringify([textBlock("orphaned")]));
-    expect(rawRow(messageId).finalized).toBe(1);
+    expect((await rawRow(messageId)).finalized).toBe(1);
     expect(existsSync(writer.absPath)).toBe(true);
     backdateDeltaFile(writer.absPath);
 

@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { setConfig } from "../../../../__tests__/helpers/set-config.js";
+import { describePg } from "../../../../__tests__/pg-test-db.js";
 
 // Disable memory so `addMessage` does not index into the real memory
 // pipeline (both flags default true under the real loader).
@@ -16,38 +17,32 @@ import {
   buildBatchDeleteScript,
   deleteConversationRowsInBatches,
 } from "../../../../persistence/conversation-row-batch-delete.js";
-import {
-  getDb,
-  getMemorySqlite,
-  getSqlite,
-} from "../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../persistence/db-init.js";
+import { getMemorySqlite } from "../../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 
-await initializeDb();
-
-function resetTables(): void {
-  const db = getDb();
+async function resetTables(): Promise<void> {
   // memory_segments lives on the dedicated memory connection.
   getMemorySqlite()?.run("DELETE FROM memory_segments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+  const db = requireMainDb();
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
-function countMessages(conversationId: string): number {
-  return getMessages(conversationId).length;
+async function countMessages(conversationId: string): Promise<number> {
+  return (await getMessages(conversationId)).length;
 }
 
-describe("deleteConversationRowsInBatches", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("deleteConversationRowsInBatches", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
   test("deletes every message across batch boundaries", async () => {
-    const conv = createConversation("source");
+    const conv = await createConversation("source");
     for (let i = 0; i < 5; i++) {
       await addMessage(conv.id, "user", `m${i}`, { skipIndexing: true });
     }
-    expect(countMessages(conv.id)).toBe(5);
+    expect(await countMessages(conv.id)).toBe(5);
 
     const result = await deleteConversationRowsInBatches({
       conversationId: conv.id,
@@ -57,11 +52,11 @@ describe("deleteConversationRowsInBatches", () => {
       forceInProcess: true,
     });
     expect(result.ok).toBe(true);
-    expect(countMessages(conv.id)).toBe(0);
+    expect(await countMessages(conv.id)).toBe(0);
   });
 
   test("is a no-op on a conversation with no rows", async () => {
-    const conv = createConversation("empty");
+    const conv = await createConversation("empty");
     const result = await deleteConversationRowsInBatches({
       conversationId: conv.id,
       table: "messages",
@@ -69,12 +64,12 @@ describe("deleteConversationRowsInBatches", () => {
       forceInProcess: true,
     });
     expect(result.ok).toBe(true);
-    expect(countMessages(conv.id)).toBe(0);
+    expect(await countMessages(conv.id)).toBe(0);
   });
 
   test("leaves other conversations' rows untouched", async () => {
-    const target = createConversation("target");
-    const keep = createConversation("keep");
+    const target = await createConversation("target");
+    const keep = await createConversation("keep");
     await addMessage(target.id, "user", "delete me", { skipIndexing: true });
     await addMessage(keep.id, "user", "keep me", { skipIndexing: true });
 
@@ -85,8 +80,8 @@ describe("deleteConversationRowsInBatches", () => {
       forceInProcess: true,
     });
     expect(result.ok).toBe(true);
-    expect(countMessages(target.id)).toBe(0);
-    expect(countMessages(keep.id)).toBe(1);
+    expect(await countMessages(target.id)).toBe(0);
+    expect(await countMessages(keep.id)).toBe(1);
   });
 
   // The low-level batch delete does not cascade to memory_segments: the table
@@ -96,13 +91,13 @@ describe("deleteConversationRowsInBatches", () => {
   // and the deleteConversationGently test below.
 });
 
-describe("deleteConversationGently", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("deleteConversationGently", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
   test("removes the conversation and returns its linked segment ids", async () => {
-    const conv = createConversation("doomed");
+    const conv = await createConversation("doomed");
     const msg = await addMessage(conv.id, "user", "bye", {
       skipIndexing: true,
     });
@@ -120,9 +115,9 @@ describe("deleteConversationGently", () => {
     // is disabled in this memory-off suite. That purge is covered by
     // conversation-memory-purge instead.
     expect(result.segmentIds).toEqual(["seg-gentle"]);
-    expect(countMessages(conv.id)).toBe(0);
+    expect(await countMessages(conv.id)).toBe(0);
     expect(
-      getSqlite().query(`SELECT COUNT(*) AS c FROM conversations`).get(),
+      await requireMainDb().get(`SELECT COUNT(*) AS c FROM conversations`),
     ).toEqual({ c: 0 });
   });
 });

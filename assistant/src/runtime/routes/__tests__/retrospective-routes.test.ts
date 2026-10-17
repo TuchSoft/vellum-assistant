@@ -16,11 +16,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 
 import { invalidateConfigCache } from "../../../config/loader.js";
 import { createConversation } from "../../../persistence/conversation-crud.js";
 import { getDb } from "../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import { recordUsageEvent } from "../../../persistence/llm-usage-store.js";
 import { rawRun } from "../../../persistence/raw-query.js";
@@ -28,6 +29,7 @@ import {
   MEMORY_RETROSPECTIVE_FORK_SOURCE,
   MEMORY_RETROSPECTIVE_SOURCE,
 } from "../../../plugins/defaults/memory/memory-retrospective-constants.js";
+import { describePg } from "../../__tests__/pg-test-db.js";
 import { ROUTES } from "../retrospective-routes.js";
 import type { RouteDefinition } from "../types.js";
 
@@ -37,11 +39,11 @@ let workspaceDir: string;
 let origWorkspaceDir: string | undefined;
 let configPath: string;
 
-function resetTables(): void {
+async function resetTables(): Promise<void> {
   const db = getDb();
   db.run(`DELETE FROM llm_usage_events`);
-  db.run(`DELETE FROM messages`);
-  db.run(`DELETE FROM conversations`);
+  await requireMainDb().run(`DELETE FROM messages`);
+  await requireMainDb().run(`DELETE FROM conversations`);
 }
 
 function findHandler(operationId: string): RouteDefinition["handler"] {
@@ -52,28 +54,30 @@ function findHandler(operationId: string): RouteDefinition["handler"] {
   return route.handler;
 }
 
-function insertMessage(
+async function insertMessage(
   conversationId: string,
   role: string,
   createdAt: number,
-): void {
-  rawRun(
-    "test:insertMessage",
+): Promise<void> {
+  await requireMainDb().run(
     "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
-    `msg-${conversationId}-${role}-${createdAt}`,
-    conversationId,
-    role,
-    "x",
-    createdAt,
+    [
+      `msg-${conversationId}-${role}-${createdAt}`,
+      conversationId,
+      role,
+      "x",
+      createdAt,
+    ],
   );
 }
 
-function setCreatedAt(conversationId: string, createdAt: number): void {
-  rawRun(
-    "test:setCreatedAt",
+async function setCreatedAt(
+  conversationId: string,
+  createdAt: number,
+): Promise<void> {
+  await requireMainDb().run(
     "UPDATE conversations SET created_at = ? WHERE id = ?",
-    createdAt,
-    conversationId,
+    [createdAt, conversationId],
   );
 }
 
@@ -138,13 +142,13 @@ interface ConfigResponse {
   success: boolean;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   workspaceDir = mkdtempSync(join(tmpdir(), "vellum-retrospective-routes-"));
   origWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
   process.env.VELLUM_WORKSPACE_DIR = workspaceDir;
   configPath = join(workspaceDir, "config.json");
   invalidateConfigCache();
-  resetTables();
+  await resetTables();
 });
 
 afterEach(() => {
@@ -157,21 +161,24 @@ afterEach(() => {
   rmSync(workspaceDir, { recursive: true, force: true });
 });
 
-describe("listRetrospectiveRuns handler", () => {
+describePg("listRetrospectiveRuns handler", () => {
   test("merges both retrospective sources with the kind field and excludes others", async () => {
-    const legacy = createConversation({
+    const legacy = await createConversation({
       title: "legacy run",
       source: MEMORY_RETROSPECTIVE_SOURCE,
     });
-    const fork = createConversation({
+    const fork = await createConversation({
       title: "Planning chat (Retrospective)",
       source: MEMORY_RETROSPECTIVE_FORK_SOURCE,
     });
-    createConversation({ title: "h1", source: "heartbeat" });
-    createConversation({ title: "c1", source: "memory_v2_consolidation" });
-    createConversation({ title: "u1", source: "user" });
-    setCreatedAt(legacy.id, 1000);
-    setCreatedAt(fork.id, 2000);
+    await createConversation({ title: "h1", source: "heartbeat" });
+    await createConversation({
+      title: "c1",
+      source: "memory_v2_consolidation",
+    });
+    await createConversation({ title: "u1", source: "user" });
+    await setCreatedAt(legacy.id, 1000);
+    await setCreatedAt(fork.id, 2000);
 
     const handler = findHandler("listRetrospectiveRuns");
     const result = (await handler({})) as ListRunsResponse;
@@ -184,21 +191,21 @@ describe("listRetrospectiveRuns handler", () => {
   });
 
   test("orders merged runs by createdAt descending across sources", async () => {
-    const a = createConversation({
+    const a = await createConversation({
       title: "a",
       source: MEMORY_RETROSPECTIVE_SOURCE,
     });
-    const b = createConversation({
+    const b = await createConversation({
       title: "b",
       source: MEMORY_RETROSPECTIVE_FORK_SOURCE,
     });
-    const c = createConversation({
+    const c = await createConversation({
       title: "c",
       source: MEMORY_RETROSPECTIVE_SOURCE,
     });
-    setCreatedAt(a.id, 1000);
-    setCreatedAt(b.id, 3000);
-    setCreatedAt(c.id, 2000);
+    await setCreatedAt(a.id, 1000);
+    await setCreatedAt(b.id, 3000);
+    await setCreatedAt(c.id, 2000);
 
     const handler = findHandler("listRetrospectiveRuns");
     const result = (await handler({})) as ListRunsResponse;
@@ -207,14 +214,14 @@ describe("listRetrospectiveRuns handler", () => {
   });
 
   test("synthesizes status='ok' with finishedAt from latest assistant message", async () => {
-    const conv = createConversation({
+    const conv = await createConversation({
       title: "r1",
       source: MEMORY_RETROSPECTIVE_SOURCE,
     });
-    setCreatedAt(conv.id, 1000);
-    insertMessage(conv.id, "user", 1100);
-    insertMessage(conv.id, "assistant", 2000);
-    insertMessage(conv.id, "assistant", 2500);
+    await setCreatedAt(conv.id, 1000);
+    await insertMessage(conv.id, "user", 1100);
+    await insertMessage(conv.id, "assistant", 2000);
+    await insertMessage(conv.id, "assistant", 2500);
 
     const handler = findHandler("listRetrospectiveRuns");
     const result = (await handler({})) as ListRunsResponse;
@@ -237,14 +244,14 @@ describe("listRetrospectiveRuns handler", () => {
     // the fork conversation's createdAt. Those must not count as agent
     // output — status stays 'running' until the retrospective agent itself
     // replies (at-or-after the fork's creation).
-    const conv = createConversation({
+    const conv = await createConversation({
       title: "Planning chat (Retrospective)",
       source: MEMORY_RETROSPECTIVE_FORK_SOURCE,
     });
-    setCreatedAt(conv.id, 5000);
+    await setCreatedAt(conv.id, 5000);
     // Copied prefix from the source conversation (pre-fork timestamps).
-    insertMessage(conv.id, "user", 2000);
-    insertMessage(conv.id, "assistant", 3000);
+    await insertMessage(conv.id, "user", 2000);
+    await insertMessage(conv.id, "assistant", 3000);
 
     const handler = findHandler("listRetrospectiveRuns");
     const running = (await handler({})) as ListRunsResponse;
@@ -253,7 +260,7 @@ describe("listRetrospectiveRuns handler", () => {
     expect(running.runs[0]!.durationMs).toBeNull();
 
     // Retrospective agent replies after the fork was created.
-    insertMessage(conv.id, "assistant", 6000);
+    await insertMessage(conv.id, "assistant", 6000);
     const done = (await handler({})) as ListRunsResponse;
     expect(done.runs[0]!.status).toBe("ok");
     expect(done.runs[0]!.finishedAt).toBe(6000);
@@ -261,25 +268,22 @@ describe("listRetrospectiveRuns handler", () => {
   });
 
   test("exposes estimatedCostUsd from the conversation total, falling back to window usage", async () => {
-    const withTotal = createConversation({
+    const withTotal = await createConversation({
       title: "r1",
       source: MEMORY_RETROSPECTIVE_SOURCE,
     });
-    rawRun(
-      "test:setCreatedAtAndCost",
+    await requireMainDb().run(
       "UPDATE conversations SET created_at = ?, total_estimated_cost = ? WHERE id = ?",
-      1000,
-      0.42,
-      withTotal.id,
+      [1000, 0.42, withTotal.id],
     );
-    insertMessage(withTotal.id, "assistant", 2000);
+    await insertMessage(withTotal.id, "assistant", 2000);
 
-    const withWindow = createConversation({
+    const withWindow = await createConversation({
       title: "r2",
       source: MEMORY_RETROSPECTIVE_FORK_SOURCE,
     });
-    setCreatedAt(withWindow.id, 1000);
-    insertMessage(withWindow.id, "assistant", 2000);
+    await setCreatedAt(withWindow.id, 1000);
+    await insertMessage(withWindow.id, "assistant", 2000);
     recordUsageCostAt(withWindow.id, "retro-before", 999, 0.4);
     recordUsageCostAt(withWindow.id, "retro-inside", 1500, 0.07);
     recordUsageCostAt(withWindow.id, "retro-after", 2001, 0.5);
@@ -298,19 +302,19 @@ describe("listRetrospectiveRuns handler", () => {
     // the limit from EACH source before merging.
     const ids: Array<{ id: string; createdAt: number }> = [];
     for (let i = 0; i < 3; i++) {
-      const conv = createConversation({
+      const conv = await createConversation({
         title: `legacy-${i}`,
         source: MEMORY_RETROSPECTIVE_SOURCE,
       });
-      setCreatedAt(conv.id, 10_000 + i);
+      await setCreatedAt(conv.id, 10_000 + i);
       ids.push({ id: conv.id, createdAt: 10_000 + i });
     }
     for (let i = 0; i < 3; i++) {
-      const conv = createConversation({
+      const conv = await createConversation({
         title: `fork-${i}`,
         source: MEMORY_RETROSPECTIVE_FORK_SOURCE,
       });
-      setCreatedAt(conv.id, 5_000 + i);
+      await setCreatedAt(conv.id, 5_000 + i);
       ids.push({ id: conv.id, createdAt: 5_000 + i });
     }
     const expectedTop4 = ids
@@ -359,11 +363,11 @@ describe("getRetrospectiveConfig handler", () => {
         2,
       ) + "\n",
     );
-    const conv = createConversation({
+    const conv = await createConversation({
       title: "r1",
       source: MEMORY_RETROSPECTIVE_FORK_SOURCE,
     });
-    setCreatedAt(conv.id, 123_456);
+    await setCreatedAt(conv.id, 123_456);
 
     const handler = findHandler("getRetrospectiveConfig");
     const result = (await handler({})) as ConfigResponse;
@@ -383,16 +387,16 @@ describe("getRetrospectiveConfig handler", () => {
     const empty = (await handler({})) as ConfigResponse;
     expect(empty.lastRunAt).toBeNull();
 
-    const legacy = createConversation({
+    const legacy = await createConversation({
       title: "legacy",
       source: MEMORY_RETROSPECTIVE_SOURCE,
     });
-    const fork = createConversation({
+    const fork = await createConversation({
       title: "fork",
       source: MEMORY_RETROSPECTIVE_FORK_SOURCE,
     });
-    setCreatedAt(legacy.id, 9000);
-    setCreatedAt(fork.id, 4000);
+    await setCreatedAt(legacy.id, 9000);
+    await setCreatedAt(fork.id, 4000);
 
     const result = (await handler({})) as ConfigResponse;
     expect(result.lastRunAt).toBe(9000);

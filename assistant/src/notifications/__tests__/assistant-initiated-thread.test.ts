@@ -12,17 +12,18 @@ let producing: {
 let placement: { isPinned: boolean; groupId: string | null } | undefined;
 let seedPersisted = true;
 const getMessageByIdMock = mock(
-  (_messageId: string, _conversationId: string) =>
+  async (_messageId: string, _conversationId: string) =>
     seedPersisted ? { id: "msg-seed" } : null,
 );
-const getConversationMock = mock((_id: string) => producing);
+const getConversationMock = mock(async (_id: string) => producing);
 
 mock.module("../../config/assistant-initiated-threads-gate.js", () => ({
   isAssistantInitiatedThreadsEnabled: () => enabled,
 }));
 mock.module("../../persistence/conversation-crud.js", () => ({
   getConversation: getConversationMock,
-  getDisplayMetaForConversations: () => new Map([["conv-created", placement]]),
+  getDisplayMetaForConversations: async () =>
+    new Map([["conv-created", placement]]),
   getMessageById: getMessageByIdMock,
 }));
 
@@ -59,12 +60,12 @@ beforeEach(() => {
 describe("resolveAssistantInitiatedThread", () => {
   test.each(["background", "scheduled"] as const)(
     "promotes a share from a %s conversation without mutating the input",
-    (conversationType) => {
+    async (conversationType) => {
       producing = { conversationType };
       const signal = share();
       const original = structuredClone(signal);
 
-      const resolution = resolveAssistantInitiatedThread(signal);
+      const resolution = await resolveAssistantInitiatedThread(signal);
 
       expect(resolution.isCandidate).toBe(true);
       expect(resolution.vellumSignal).toEqual({
@@ -77,19 +78,19 @@ describe("resolveAssistantInitiatedThread", () => {
     },
   );
 
-  test("a source read failure preserves unrelated delivery eligibility", () => {
+  test("a source read failure preserves unrelated delivery eligibility", async () => {
     const signal = share();
-    getConversationMock.mockImplementationOnce(() => {
+    getConversationMock.mockImplementationOnce(async () => {
       throw new Error("read unavailable");
     });
-    expect(resolveAssistantInitiatedThread(signal)).toEqual({
+    expect(await resolveAssistantInitiatedThread(signal)).toEqual({
       isCandidate: false,
       vellumSignal: signal,
     });
   });
 
-  test("promotes an unresolved source context", () => {
-    const resolution = resolveAssistantInitiatedThread(share());
+  test("promotes an unresolved source context", async () => {
+    const resolution = await resolveAssistantInitiatedThread(share());
 
     expect(resolution.isCandidate).toBe(true);
     expect(resolution.vellumSignal.requiresConversation).toBe(true);
@@ -97,23 +98,23 @@ describe("resolveAssistantInitiatedThread", () => {
 
   test.each([{ conversationType: "standard" }, {}] as const)(
     "leaves a resolved user-facing or untyped source unchanged: %j",
-    (conversation) => {
+    async (conversation) => {
       producing = conversation;
       const signal = share();
 
-      const resolution = resolveAssistantInitiatedThread(signal);
+      const resolution = await resolveAssistantInitiatedThread(signal);
 
       expect(resolution.isCandidate).toBe(false);
       expect(resolution.vellumSignal).toBe(signal);
     },
   );
 
-  test("flag off leaves a background share unchanged without a source lookup", () => {
+  test("flag off leaves a background share unchanged without a source lookup", async () => {
     enabled = false;
     producing = { conversationType: "background" };
     const signal = share();
 
-    const resolution = resolveAssistantInitiatedThread(signal);
+    const resolution = await resolveAssistantInitiatedThread(signal);
 
     expect(resolution.isCandidate).toBe(false);
     expect(resolution.vellumSignal).toBe(signal);
@@ -131,10 +132,10 @@ describe("resolveAssistantInitiatedThread", () => {
     },
   ] satisfies Partial<NotificationSignal>[])(
     "preserves explicit filing and non-share events: %j",
-    (overrides) => {
+    async (overrides) => {
       const signal = share(overrides);
 
-      const resolution = resolveAssistantInitiatedThread(signal);
+      const resolution = await resolveAssistantInitiatedThread(signal);
 
       expect(resolution.isCandidate).toBe(false);
       expect(resolution.vellumSignal).toBe(signal);
@@ -142,7 +143,7 @@ describe("resolveAssistantInitiatedThread", () => {
     },
   );
 
-  test("preserves group and conversation metadata when promoting a passive share", () => {
+  test("preserves group and conversation metadata when promoting a passive share", async () => {
     const signal = share({
       requiresConversation: false,
       conversationMetadata: {
@@ -153,7 +154,7 @@ describe("resolveAssistantInitiatedThread", () => {
     });
     const original = structuredClone(signal);
 
-    const resolution = resolveAssistantInitiatedThread(signal);
+    const resolution = await resolveAssistantInitiatedThread(signal);
 
     expect(resolution.isCandidate).toBe(true);
     expect(resolution.vellumSignal.conversationMetadata).toEqual({
@@ -175,10 +176,10 @@ describe("isPersistedAssistantInitiatedThread", () => {
 
   test.each([null, "system:all"])(
     "accepts persisted ungrouped placement %s",
-    (groupId) => {
+    async (groupId) => {
       placement = { isPinned: false, groupId };
       expect(
-        isPersistedAssistantInitiatedThread("conv-created", "msg-seed"),
+        await isPersistedAssistantInitiatedThread("conv-created", "msg-seed"),
       ).toBe(true);
       expect(getMessageByIdMock).toHaveBeenCalledWith(
         "msg-seed",
@@ -194,10 +195,10 @@ describe("isPersistedAssistantInitiatedThread", () => {
     { isPinned: false, groupId: "system:background" },
     { isPinned: false, groupId: "system:scheduled" },
     undefined,
-  ])("rejects placement outside From me: %j", (value) => {
+  ])("rejects placement outside From me: %j", async (value) => {
     placement = value;
     expect(
-      isPersistedAssistantInitiatedThread("conv-created", "msg-seed"),
+      await isPersistedAssistantInitiatedThread("conv-created", "msg-seed"),
     ).toBe(false);
     expect(getMessageByIdMock).not.toHaveBeenCalled();
   });
@@ -225,30 +226,35 @@ describe("isPersistedAssistantInitiatedThread", () => {
       conversationType: "standard",
       archivedAt: 1,
     },
-  ] as const)("rejects missing or hidden conversations: %j", (conversation) => {
-    producing = conversation;
-    expect(
-      isPersistedAssistantInitiatedThread("conv-created", "msg-seed"),
-    ).toBe(false);
-  });
+  ] as const)(
+    "rejects missing or hidden conversations: %j",
+    async (conversation) => {
+      producing = conversation;
+      expect(
+        await isPersistedAssistantInitiatedThread("conv-created", "msg-seed"),
+      ).toBe(false);
+    },
+  );
 
-  test("requires both IDs and a seed in the paired conversation", () => {
-    expect(isPersistedAssistantInitiatedThread(null, "msg-seed")).toBe(false);
-    expect(isPersistedAssistantInitiatedThread("conv-created", null)).toBe(
+  test("requires both IDs and a seed in the paired conversation", async () => {
+    expect(await isPersistedAssistantInitiatedThread(null, "msg-seed")).toBe(
       false,
     );
+    expect(
+      await isPersistedAssistantInitiatedThread("conv-created", null),
+    ).toBe(false);
     seedPersisted = false;
     expect(
-      isPersistedAssistantInitiatedThread("conv-created", "msg-seed"),
+      await isPersistedAssistantInitiatedThread("conv-created", "msg-seed"),
     ).toBe(false);
   });
 
-  test("a lookup failure conservatively disables the extra alert", () => {
-    getConversationMock.mockImplementationOnce(() => {
+  test("a lookup failure conservatively disables the extra alert", async () => {
+    getConversationMock.mockImplementationOnce(async () => {
       throw new Error("read unavailable");
     });
     expect(
-      isPersistedAssistantInitiatedThread("conv-created", "msg-seed"),
+      await isPersistedAssistantInitiatedThread("conv-created", "msg-seed"),
     ).toBe(false);
   });
 });

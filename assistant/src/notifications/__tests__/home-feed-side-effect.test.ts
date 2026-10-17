@@ -94,7 +94,7 @@ mock.module("../../persistence/conversation-crud.js", () => ({
     messageAppends.push({ conversationId, role, content, options });
     return { id: `msg-${messageAppends.length}` };
   },
-  getMessageById: (messageId: string, conversationId?: string) => {
+  getMessageById: async (messageId: string, conversationId?: string) => {
     if (messageLookupShouldThrow) {
       throw new Error("simulated message lookup failure");
     }
@@ -104,7 +104,7 @@ mock.module("../../persistence/conversation-crud.js", () => ({
     }
     return { id: messageId, conversationId: owner };
   },
-  updateMessageContent: (messageId: string, content: string) => {
+  updateMessageContent: async (messageId: string, content: string) => {
     if (messageRewriteShouldThrow) {
       throw new Error("simulated message rewrite failure");
     }
@@ -1742,10 +1742,10 @@ describe("writeHomeFeedItemForSignal", () => {
       };
     }
 
-    test("rewrites the message the card owns", () => {
+    test("rewrites the message the card owns", async () => {
       messageOwners.set("msg-9", "conv-source-1");
 
-      const rewritten = updateFeedItemConversationMessage(
+      const rewritten = await updateFeedItemConversationMessage(
         makeItem({ notificationConversationMessageId: "msg-9" }),
         "Four things now.",
       );
@@ -1757,10 +1757,10 @@ describe("writeHomeFeedItemForSignal", () => {
       expect(messagesInvalidated).toEqual(["conv-source-1"]);
     });
 
-    test("reports no rewrite when the card owns no message", () => {
+    test("reports no rewrite when the card owns no message", async () => {
       // The vellum-delivered case: the delivery row carries the handle and
       // the adapter rewrites it, so there is nothing to do here.
-      const rewritten = updateFeedItemConversationMessage(
+      const rewritten = await updateFeedItemConversationMessage(
         makeItem({ scheduleId: "sched-7" }),
         "Four things now.",
       );
@@ -1769,11 +1769,11 @@ describe("writeHomeFeedItemForSignal", () => {
       expect(messageRewrites).toHaveLength(0);
     });
 
-    test("refuses a handle addressing a row outside the card's conversation", () => {
+    test("refuses a handle addressing a row outside the card's conversation", async () => {
       // Nothing should be able to point the rewrite at an unrelated message.
       messageOwners.set("msg-9", "conv-somebody-elses");
 
-      const rewritten = updateFeedItemConversationMessage(
+      const rewritten = await updateFeedItemConversationMessage(
         makeItem({ notificationConversationMessageId: "msg-9" }),
         "Four things now.",
       );
@@ -1782,8 +1782,8 @@ describe("writeHomeFeedItemForSignal", () => {
       expect(messageRewrites).toHaveLength(0);
     });
 
-    test("refuses a handle whose row no longer exists", () => {
-      const rewritten = updateFeedItemConversationMessage(
+    test("refuses a handle whose row no longer exists", async () => {
+      const rewritten = await updateFeedItemConversationMessage(
         makeItem({ notificationConversationMessageId: "msg-9" }),
         "Four things now.",
       );
@@ -1792,10 +1792,10 @@ describe("writeHomeFeedItemForSignal", () => {
       expect(messageRewrites).toHaveLength(0);
     });
 
-    test("stands down when the delivery walk already rewrote the row", () => {
+    test("stands down when the delivery walk already rewrote the row", async () => {
       messageOwners.set("msg-9", "conv-source-1");
 
-      const rewritten = updateFeedItemConversationMessage(
+      const rewritten = await updateFeedItemConversationMessage(
         makeItem({ notificationConversationMessageId: "msg-9" }),
         "Four things now.",
         new Set(["msg-9"]),
@@ -1805,10 +1805,10 @@ describe("writeHomeFeedItemForSignal", () => {
       expect(messageRewrites).toHaveLength(0);
     });
 
-    test("rewrites when the walk touched some other row", () => {
+    test("rewrites when the walk touched some other row", async () => {
       messageOwners.set("msg-9", "conv-source-1");
 
-      const rewritten = updateFeedItemConversationMessage(
+      const rewritten = await updateFeedItemConversationMessage(
         makeItem({ notificationConversationMessageId: "msg-9" }),
         "Four things now.",
         new Set(["1700000000.0001"]),
@@ -1818,13 +1818,13 @@ describe("writeHomeFeedItemForSignal", () => {
       expect(messageRewrites).toHaveLength(1);
     });
 
-    test("reports no rewrite when the ownership lookup throws", () => {
+    test("reports no rewrite when the ownership lookup throws", async () => {
       // The edit has already patched the feed and run the channel updates by
       // the time this runs, so a store that cannot answer must not abort it.
       messageOwners.set("msg-9", "conv-source-1");
       messageLookupShouldThrow = true;
 
-      const rewritten = updateFeedItemConversationMessage(
+      const rewritten = await updateFeedItemConversationMessage(
         makeItem({ notificationConversationMessageId: "msg-9" }),
         "Four things now.",
       );
@@ -1833,11 +1833,11 @@ describe("writeHomeFeedItemForSignal", () => {
       expect(messageRewrites).toHaveLength(0);
     });
 
-    test("reports no rewrite when the store write throws", () => {
+    test("reports no rewrite when the store write throws", async () => {
       messageOwners.set("msg-9", "conv-source-1");
       messageRewriteShouldThrow = true;
 
-      const rewritten = updateFeedItemConversationMessage(
+      const rewritten = await updateFeedItemConversationMessage(
         makeItem({ notificationConversationMessageId: "msg-9" }),
         "Four things now.",
       );

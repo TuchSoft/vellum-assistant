@@ -7,9 +7,10 @@
  * must not, or the client ends a turn that is still streaming.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 import { setConfig } from "../../../__tests__/helpers/set-config.js";
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import type { AssistantEvent } from "../../../api/index.js";
 
 // Keep the memory system off so addMessage skips indexing side effects.
@@ -34,12 +35,9 @@ mock.module("../../assistant-event-hub.js", () => ({
 
 const { createConversation } =
   await import("../../../persistence/conversation-crud.js");
-const { initializeDb } = await import("../../../persistence/db-init.js");
 const { persistSystemCard } = await import("../canned-message-complete.js");
 
-await initializeDb();
-
-describe("persistSystemCard turn termination", () => {
+describePg("persistSystemCard turn termination", () => {
   beforeEach(() => {
     broadcastEvents.length = 0;
   });
@@ -51,7 +49,7 @@ describe("persistSystemCard turn termination", () => {
      */
 
     // GIVEN a conversation
-    const conv = createConversation();
+    const conv = await createConversation();
 
     // WHEN a card that ends the turn is persisted
     const card = await persistSystemCard({
@@ -79,7 +77,7 @@ describe("persistSystemCard turn termination", () => {
      */
 
     // GIVEN a conversation
-    const conv = createConversation();
+    const conv = await createConversation();
 
     // WHEN a non-terminal card is persisted
     const card = await persistSystemCard({

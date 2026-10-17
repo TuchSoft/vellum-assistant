@@ -1,4 +1,6 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, expect, mock, test } from "bun:test";
+
+import { describePg } from "../../__tests__/pg-test-db.js";
 
 type MockSlackInfo = {
   id: string;
@@ -37,16 +39,13 @@ import {
   SYNC_TAGS,
 } from "../../../daemon/message-types/sync.js";
 import { createConversation } from "../../../persistence/conversation-crud.js";
-import { getDb } from "../../../persistence/db-connection.js";
-import { initializeDb } from "../../../persistence/db-init.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import {
   getBindingByConversation,
   upsertBinding,
 } from "../../../persistence/external-conversation-store.js";
 import { ROUTES } from "../slack-channel-routes.js";
 import type { RouteDefinition } from "../types.js";
-
-await initializeDb();
 
 interface ResolveResponse {
   channelId: string;
@@ -68,13 +67,13 @@ function resolveHandler(): RouteDefinition["handler"] {
 
 const handler = resolveHandler();
 
-function clearTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM external_conversation_bindings");
-  db.run("DELETE FROM conversations");
+async function clearTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM external_conversation_bindings");
+  await db.run("DELETE FROM conversations");
 }
 
-function createBoundConversation(input: {
+async function createBoundConversation(input: {
   sourceChannel?: string;
   externalChatId: string;
   externalChatName?: string | null;
@@ -82,9 +81,9 @@ function createBoundConversation(input: {
   externalUserId?: string | null;
   displayName?: string | null;
   username?: string | null;
-}): string {
-  const conversation = createConversation("Slack route test");
-  upsertBinding({
+}): Promise<string> {
+  const conversation = await createConversation("Slack route test");
+  await upsertBinding({
     conversationId: conversation.id,
     sourceChannel: input.sourceChannel ?? "slack",
     externalChatId: input.externalChatId,
@@ -130,8 +129,8 @@ function mockSlackFetch(): void {
   }) as unknown as typeof fetch;
 }
 
-beforeEach(() => {
-  clearTables();
+beforeEach(async () => {
+  await clearTables();
   slackInfoCalls.length = 0;
   syncInvalidations.length = 0;
   slackInfoImpl = async () => null;
@@ -144,9 +143,9 @@ afterAll(() => {
   mock.restore();
 });
 
-describe("slack_channel_name_resolve", () => {
+describePg("slack_channel_name_resolve", () => {
   test("returns cached friendly name without calling Slack", async () => {
-    const conversationId = createBoundConversation({
+    const conversationId = await createBoundConversation({
       externalChatId: "CACHED123",
       externalChatName: "team-updates",
     });
@@ -163,7 +162,7 @@ describe("slack_channel_name_resolve", () => {
   });
 
   test("resolves an unresolved channel ID and persists the returned name", async () => {
-    const conversationId = createBoundConversation({
+    const conversationId = await createBoundConversation({
       externalChatId: "CRESOLVE123",
       externalChatName: "CRESOLVE123",
       externalThreadId: "1710000000.000100",
@@ -186,7 +185,7 @@ describe("slack_channel_name_resolve", () => {
       resolved: true,
     });
 
-    const updated = getBindingByConversation(conversationId);
+    const updated = await getBindingByConversation(conversationId);
     expect(updated?.externalChatName).toBe("engineering");
     expect(updated?.externalThreadId).toBe("1710000000.000100");
     expect(updated?.externalUserId).toBe("U123");
@@ -195,7 +194,7 @@ describe("slack_channel_name_resolve", () => {
   });
 
   test("publishes conversation sync tags after persisting a returned name", async () => {
-    const conversationId = createBoundConversation({
+    const conversationId = await createBoundConversation({
       externalChatId: "CSYNC123",
       externalChatName: "CSYNC123",
     });
@@ -219,7 +218,7 @@ describe("slack_channel_name_resolve", () => {
   });
 
   test("does not call Slack for DM bindings", async () => {
-    const conversationId = createBoundConversation({
+    const conversationId = await createBoundConversation({
       externalChatId: "D123",
       externalChatName: null,
     });
@@ -233,13 +232,13 @@ describe("slack_channel_name_resolve", () => {
       reason: "dm",
     });
     expect(slackInfoCalls).toEqual([]);
-    expect(getBindingByConversation(conversationId)?.externalChatName).toBe(
-      null,
-    );
+    expect(
+      (await getBindingByConversation(conversationId))?.externalChatName,
+    ).toBe(null);
   });
 
   test("rejects non-Slack bindings", async () => {
-    const conversationId = createBoundConversation({
+    const conversationId = await createBoundConversation({
       sourceChannel: "telegram",
       externalChatId: "chat-123",
     });
@@ -252,11 +251,11 @@ describe("slack_channel_name_resolve", () => {
   });
 
   test("returns unresolved on Slack API failure without mutating the binding", async () => {
-    const conversationId = createBoundConversation({
+    const conversationId = await createBoundConversation({
       externalChatId: "CFAIL123",
       externalChatName: "CFAIL123",
     });
-    const before = getBindingByConversation(conversationId);
+    const before = await getBindingByConversation(conversationId);
     slackInfoImpl = async () => ({ slackError: "missing_scope" });
 
     const result = await resolve(conversationId);
@@ -269,7 +268,7 @@ describe("slack_channel_name_resolve", () => {
     });
     expect(slackInfoCalls).toEqual(["CFAIL123"]);
 
-    const after = getBindingByConversation(conversationId);
+    const after = await getBindingByConversation(conversationId);
     expect(after?.externalChatName).toBe("CFAIL123");
     expect(after?.updatedAt).toBe(before?.updatedAt);
   });

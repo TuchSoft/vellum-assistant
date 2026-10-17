@@ -83,8 +83,10 @@ function newDeferredManager() {
   return { manager, releases };
 }
 
-function start(manager: WatchSessionManager) {
-  const result = manager.start({ sourceActorPrincipalId: PRINCIPAL_ID });
+async function start(manager: WatchSessionManager) {
+  const result = await manager.start({
+    sourceActorPrincipalId: PRINCIPAL_ID,
+  });
   if (result.status !== "started") {
     throw new Error(`Expected a started session, got ${result.status}`);
   }
@@ -115,13 +117,13 @@ beforeEach(() => {
 });
 
 describe("watch session manager", () => {
-  test("runs in a background conversation so the thread stays out of the sidebar", () => {
+  test("runs in a background conversation so the thread stays out of the sidebar", async () => {
     const { manager } = newManager();
-    const started = start(manager);
+    const started = await start(manager);
 
-    expect(getConversation(started.conversationId)?.conversationType).toBe(
-      "background",
-    );
+    expect(
+      (await getConversation(started.conversationId))?.conversationType,
+    ).toBe("background");
     expect(manager.isActive()).toBe(true);
     expect(manager.isActive(started.conversationId)).toBe(true);
     expect(manager.isActive(randomUUID())).toBe(false);
@@ -129,9 +131,9 @@ describe("watch session manager", () => {
     manager.stop();
   });
 
-  test("refuses a second session while one is running", () => {
+  test("refuses a second session while one is running", async () => {
     const { manager } = newManager();
-    const started = start(manager);
+    const started = await start(manager);
 
     const second = manager.start({ sourceActorPrincipalId: PRINCIPAL_ID });
     expect(second).toEqual({
@@ -147,7 +149,7 @@ describe("watch session manager", () => {
     manager.stop();
   });
 
-  test("fails closed without an actor principal to observe for", () => {
+  test("fails closed without an actor principal to observe for", async () => {
     const { manager, calls } = newManager();
 
     const result = manager.start({
@@ -159,7 +161,7 @@ describe("watch session manager", () => {
     expect(calls).toHaveLength(0);
   });
 
-  test("refuses a conversation id whose row does not exist", () => {
+  test("refuses a conversation id whose row does not exist", async () => {
     const { manager } = newManager();
 
     const result = manager.start({
@@ -173,7 +175,7 @@ describe("watch session manager", () => {
 
   test("collapses a burst of narration finals into one observation", async () => {
     const { manager, calls } = newManager();
-    start(manager);
+    await start(manager);
 
     for (let i = 0; i < 5; i += 1) {
       await manager.handleNarrationFinal(`burst ${i}`);
@@ -192,7 +194,7 @@ describe("watch session manager", () => {
 
   test("observes the screen the session opens on", async () => {
     const { manager, calls } = newManager();
-    const started = start(manager);
+    const started = await start(manager);
 
     // Before a word is spoken. A demonstration starts with the user already
     // somewhere, and where that is decides whether the first narrated step is
@@ -241,10 +243,10 @@ describe("watch session manager", () => {
         return richObservation();
       },
     });
-    const first = start(manager);
+    const first = await start(manager);
     await settle();
     manager.stop();
-    const second = start(manager);
+    const second = await start(manager);
     await settle();
     manager.stop();
 
@@ -265,7 +267,7 @@ describe("watch session manager", () => {
         return richObservation();
       },
     });
-    start(manager);
+    await start(manager);
     await settle();
 
     expect(options).toHaveLength(1);
@@ -276,7 +278,7 @@ describe("watch session manager", () => {
 
   test("observes on speech onset rather than waiting for the sentence to land", async () => {
     const { manager, calls } = newManager();
-    start(manager);
+    await start(manager);
     await settle();
     await elapse(6_000);
 
@@ -289,7 +291,7 @@ describe("watch session manager", () => {
 
   test("files no entry for speech onset, since the final files the narration", async () => {
     const { manager } = newManager();
-    const started = start(manager);
+    const started = await start(manager);
     await settle();
     await elapse(6_000);
 
@@ -305,7 +307,7 @@ describe("watch session manager", () => {
 
   test("holds speech onset to the same floor as a final", async () => {
     const { manager, calls } = newManager();
-    start(manager);
+    await start(manager);
     await settle();
 
     // Onset lands inside the interval the opening observation just spent.
@@ -331,7 +333,7 @@ describe("watch session manager", () => {
 
   test("observes four times across a 60s session of ten narration finals", async () => {
     const { manager, calls } = newManager();
-    const started = start(manager);
+    const started = await start(manager);
 
     // Three clusters of three finals plus a closing one, the shape of someone
     // describing a step, working through it, then describing the next.
@@ -357,7 +359,7 @@ describe("watch session manager", () => {
 
   test("keeps observing through a silent stretch of work", async () => {
     const { manager, calls } = newManager();
-    const started = start(manager);
+    const started = await start(manager);
 
     // The opening observation goes out with the session, before a word is
     // spoken, so the ceiling's own ticks are the ones after it. Settled first
@@ -388,7 +390,7 @@ describe("watch session manager", () => {
           }
         : richObservation(),
     );
-    const started = start(manager);
+    const started = await start(manager);
 
     for (let i = 0; i < 4; i += 1) {
       await manager.handleNarrationFinal(`narration ${i}`);
@@ -404,7 +406,7 @@ describe("watch session manager", () => {
 
   test("stop is idempotent and ends the cadence", async () => {
     const { manager, calls } = newManager();
-    start(manager);
+    await start(manager);
 
     await manager.handleNarrationFinal("something worth watching");
     expect(calls).toHaveLength(1);
@@ -423,7 +425,7 @@ describe("watch session manager", () => {
 
   test("never runs two observations at once, and drops one that lands after the session ended", async () => {
     const { manager, releases } = newDeferredManager();
-    const started = start(manager);
+    const started = await start(manager);
 
     const first = manager.handleNarrationFinal("mid-observation");
     await settle();
@@ -450,7 +452,7 @@ describe("watch session manager", () => {
 
   test("a slow read spends the interval it belongs to rather than extending it", async () => {
     const { manager, releases } = newDeferredManager();
-    start(manager);
+    await start(manager);
 
     // The session's opening read, dispatched with the session itself. Nothing
     // arms the ceiling while it is outstanding, so silence adds no second one.
@@ -475,7 +477,7 @@ describe("watch session manager", () => {
 
   test("a ceiling tick that lands mid-read is deferred, not dropped", async () => {
     const { manager, releases } = newDeferredManager();
-    start(manager);
+    await start(manager);
 
     const narration = manager.handleNarrationFinal("starting the long one");
     await settle();
@@ -604,7 +606,7 @@ describe("watch session manager", () => {
       // A second session, started with no listener of its own. The first
       // session's listener is gone with the first session rather than left
       // reporting captures it has no claim on.
-      start(manager);
+      await start(manager);
       await settle();
       expect(heard).toBe(1);
 
@@ -615,7 +617,7 @@ describe("watch session manager", () => {
   describe("screenshot escalation", () => {
     async function observeOnce(respond: () => HostObservation) {
       const { manager } = newManager(respond);
-      const started = start(manager);
+      const started = await start(manager);
       await manager.handleNarrationFinal("look at this");
       manager.stop();
       return renderWatchTimeline(started.sessionId);

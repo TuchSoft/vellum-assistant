@@ -13,7 +13,9 @@
  * be asserting the resolver's behavior rather than this route's.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
+
+import { describePg } from "../../__tests__/pg-test-db.js";
 
 // Avoid spinning up the real event hub for the pinned/groups branches.
 mock.module("../../assistant-event-hub.js", () => ({
@@ -31,15 +33,10 @@ mock.module("../../../config/assistant-initiated-threads-gate.js", () => ({
 
 import { projectAssistantMessage } from "../../../persistence/conversation-attention-store.js";
 import { createConversation } from "../../../persistence/conversation-crud.js";
-import { getDb } from "../../../persistence/db-connection.js";
-import { initializeDb } from "../../../persistence/db-init.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { createGroup } from "../../../persistence/group-crud.js";
-import { rawRun } from "../../../persistence/raw-query.js";
-import { conversations } from "../../../persistence/schema/index.js";
 import { ROUTES as CONVERSATION_LIST_ROUTES } from "../conversation-list-routes.js";
 import type { RouteDefinition } from "../types.js";
-
-await initializeDb();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -90,8 +87,9 @@ function titlesFrom(response: ListResponse): string[] {
  * standard-type conversation, filed nowhere, stamped
  * `source: 'assistant_initiated'` at creation (ASSISTANT_INITIATED_SOURCE).
  */
-function seedAssistantInitiated(title: string): string {
-  return createConversation({ title, source: "assistant_initiated" }).id;
+async function seedAssistantInitiated(title: string): Promise<string> {
+  return (await createConversation({ title, source: "assistant_initiated" }))
+    .id;
 }
 
 /**
@@ -100,57 +98,60 @@ function seedAssistantInitiated(title: string): string {
  * `notifications/conversation-pairing.ts`). Never a member of the section:
  * these belong to the bell and to Chats.
  */
-function seedNotificationTrail(title: string): string {
-  return createConversation({ title, source: "notification" }).id;
+async function seedNotificationTrail(title: string): Promise<string> {
+  return (await createConversation({ title, source: "notification" })).id;
 }
 
-function seedUnseen(conversationId: string): void {
-  projectAssistantMessage({
+async function seedUnseen(conversationId: string): Promise<void> {
+  await projectAssistantMessage({
     conversationId,
     messageId: `msg-${conversationId}`,
     messageAt: Date.now(),
   });
 }
 
-function stampChannel(conversationId: string, channel: string): void {
-  rawRun(
-    "test:stampChannel",
+async function stampChannel(
+  conversationId: string,
+  channel: string,
+): Promise<void> {
+  await requireMainDb().run("test:stampChannel", [
     "UPDATE conversations SET origin_channel = ? WHERE id = ?",
     channel,
     conversationId,
-  );
+  ]);
 }
 
-function pin(conversationId: string): void {
-  rawRun(
-    "test:pinConversation",
+async function pin(conversationId: string): Promise<void> {
+  await requireMainDb().run("test:pinConversation", [
     "UPDATE conversations SET is_pinned = 1, group_id = 'system:pinned' WHERE id = ?",
     conversationId,
-  );
+  ]);
 }
 
-function fileIntoGroup(conversationId: string, groupId: string): void {
-  rawRun(
-    "test:fileIntoGroup",
+async function fileIntoGroup(
+  conversationId: string,
+  groupId: string,
+): Promise<void> {
+  await requireMainDb().run("test:fileIntoGroup", [
     "UPDATE conversations SET group_id = ? WHERE id = ?",
     groupId,
     conversationId,
-  );
+  ]);
 }
 
 beforeEach(async () => {
   flagEnabled = false;
-  getDb().delete(conversations).run();
+  await requireMainDb().run("DELETE FROM conversations");
 });
 
 // ---------------------------------------------------------------------------
 // Flag off — the shipped behavior, unchanged
 // ---------------------------------------------------------------------------
 
-describe("assistant-initiated threads — flag off", () => {
+describePg("assistant-initiated threads — flag off", () => {
   test("emits no assistant section, and the threads stay counted in Chats", async () => {
-    seedAssistantInitiated("overnight-realization");
-    createConversation({ title: "user-thread" });
+    await seedAssistantInitiated("overnight-realization");
+    await createConversation({ title: "user-thread" });
 
     const sections = await invokeSections();
 
@@ -159,8 +160,8 @@ describe("assistant-initiated threads — flag off", () => {
   });
 
   test("the threads stay listed in the standard list", async () => {
-    seedAssistantInitiated("overnight-realization");
-    createConversation({ title: "user-thread" });
+    await seedAssistantInitiated("overnight-realization");
+    await createConversation({ title: "user-thread" });
 
     expect(titlesFrom(await invokeList())).toEqual([
       "overnight-realization",
@@ -169,8 +170,8 @@ describe("assistant-initiated threads — flag off", () => {
   });
 
   test("their unread still counts toward Chats", async () => {
-    seedUnseen(seedAssistantInitiated("noticed-something"));
-    createConversation({ title: "user-thread" });
+    await seedUnseen(await seedAssistantInitiated("noticed-something"));
+    await createConversation({ title: "user-thread" });
 
     expect(await invokeSections()).toContainEqual({
       kind: "chats",
@@ -184,15 +185,15 @@ describe("assistant-initiated threads — flag off", () => {
 // Flag on — the split
 // ---------------------------------------------------------------------------
 
-describe("assistant-initiated threads — flag on", () => {
+describePg("assistant-initiated threads — flag on", () => {
   beforeEach(async () => {
     flagEnabled = true;
   });
 
   test("the threads move out of Chats into their own section", async () => {
-    seedAssistantInitiated("overnight-realization");
-    seedAssistantInitiated("noticed-something");
-    createConversation({ title: "user-thread" });
+    await seedAssistantInitiated("overnight-realization");
+    await seedAssistantInitiated("noticed-something");
+    await createConversation({ title: "user-thread" });
 
     const sections = await invokeSections();
 
@@ -201,7 +202,7 @@ describe("assistant-initiated threads — flag on", () => {
   });
 
   test("the section renders at zero, the way Chats does", async () => {
-    createConversation({ title: "user-thread" });
+    await createConversation({ title: "user-thread" });
 
     expect(await invokeSections()).toContainEqual({
       kind: "assistant",
@@ -211,9 +212,9 @@ describe("assistant-initiated threads — flag on", () => {
   });
 
   test("unread follows the section, and is not double-counted in Chats", async () => {
-    seedUnseen(seedAssistantInitiated("noticed-something"));
-    seedAssistantInitiated("read-already");
-    seedUnseen(createConversation({ title: "user-thread" }).id);
+    await seedUnseen(await seedAssistantInitiated("noticed-something"));
+    await seedAssistantInitiated("read-already");
+    await seedUnseen((await createConversation({ title: "user-thread" })).id);
 
     const sections = await invokeSections();
 
@@ -222,8 +223,11 @@ describe("assistant-initiated threads — flag on", () => {
   });
 
   test("the split leaves channel sections alone", async () => {
-    seedAssistantInitiated("overnight-realization");
-    stampChannel(createConversation({ title: "slack-thread" }).id, "slack");
+    await seedAssistantInitiated("overnight-realization");
+    await stampChannel(
+      (await createConversation({ title: "slack-thread" })).id,
+      "slack",
+    );
 
     const sections = await invokeSections();
 
@@ -237,9 +241,9 @@ describe("assistant-initiated threads — flag on", () => {
   });
 
   test("groupId=system:assistant lists exactly those threads", async () => {
-    seedAssistantInitiated("overnight-realization");
-    seedAssistantInitiated("noticed-something");
-    createConversation({ title: "user-thread" });
+    await seedAssistantInitiated("overnight-realization");
+    await seedAssistantInitiated("noticed-something");
+    await createConversation({ title: "user-thread" });
 
     expect(
       titlesFrom(await invokeList({ groupId: "system:assistant" })),
@@ -250,9 +254,9 @@ describe("assistant-initiated threads — flag on", () => {
     // The regression this guards: `NOT (source = '...')` is NULL for the
     // NULL-source rows that make up most of the list, so a naive negation
     // would return an empty list rather than one section fewer.
-    seedAssistantInitiated("overnight-realization");
-    createConversation({ title: "user-thread" });
-    createConversation({ title: "another-user-thread" });
+    await seedAssistantInitiated("overnight-realization");
+    await createConversation({ title: "user-thread" });
+    await createConversation({ title: "another-user-thread" });
 
     expect(titlesFrom(await invokeList())).toEqual([
       "another-user-thread",
@@ -264,7 +268,7 @@ describe("assistant-initiated threads — flag on", () => {
     // `groupId=system:assistant` selects on the same column the exclusion
     // negates, so applying both would return an empty page for the one caller
     // that actually wants these rows.
-    seedAssistantInitiated("overnight-realization");
+    await seedAssistantInitiated("overnight-realization");
 
     expect(
       titlesFrom(await invokeList({ groupId: "system:assistant" })),
@@ -275,8 +279,8 @@ describe("assistant-initiated threads — flag on", () => {
     // Section membership is single-valued everywhere else in the sidebar, and
     // this section is carved out of the same ungrouped set Chats is, so
     // pinning has to move a thread rather than duplicate it.
-    pin(seedAssistantInitiated("pinned-realization"));
-    seedAssistantInitiated("ordinary-realization");
+    await pin(await seedAssistantInitiated("pinned-realization"));
+    await seedAssistantInitiated("ordinary-realization");
 
     const sections = await invokeSections();
 
@@ -293,8 +297,8 @@ describe("assistant-initiated threads — flag on", () => {
     // (`source = 'notification'`) into the section: only threads written for
     // the section, from the moment producers start stamping its source, are
     // members.
-    seedNotificationTrail("approve-this-call");
-    seedAssistantInitiated("overnight-realization");
+    await seedNotificationTrail("approve-this-call");
+    await seedAssistantInitiated("overnight-realization");
 
     const sections = await invokeSections();
 
@@ -311,8 +315,8 @@ describe("assistant-initiated threads — flag on", () => {
     // out of the section must not stay excluded from the list of the group it
     // moved into — otherwise filing one makes it unreachable.
     const group = await createGroup("Reading List");
-    const filed = seedAssistantInitiated("filed-realization");
-    fileIntoGroup(filed, group.id);
+    const filed = await seedAssistantInitiated("filed-realization");
+    await fileIntoGroup(filed, group.id);
 
     expect(await invokeSections()).toContainEqual({
       kind: "assistant",
@@ -328,13 +332,12 @@ describe("assistant-initiated threads — flag on", () => {
     // Archive asks archiveStatus=archived with no groupId, and the section
     // only ever lists active rows, so the split's exclusion must not reach
     // archived reads or an archived section thread is visible nowhere.
-    const archived = seedAssistantInitiated("archived-realization");
-    rawRun(
-      "test:archive",
+    const archived = await seedAssistantInitiated("archived-realization");
+    await requireMainDb().run("test:archive", [
       "UPDATE conversations SET archived_at = ? WHERE id = ?",
       Date.now(),
       archived,
-    );
+    ]);
 
     expect(titlesFrom(await invokeList({ archiveStatus: "archived" }))).toEqual(
       ["archived-realization"],
@@ -345,7 +348,7 @@ describe("assistant-initiated threads — flag on", () => {
     // A background row carrying the section's own source is addressed by
     // conversation type, and narrowing that bucket by source would drop rows
     // its callers still page through.
-    const background = createConversation({
+    const background = await createConversation({
       title: "background-realization",
       conversationType: "background",
       source: "assistant_initiated",

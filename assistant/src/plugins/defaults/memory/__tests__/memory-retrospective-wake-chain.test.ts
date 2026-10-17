@@ -30,8 +30,9 @@
  * 4. A run whose checkpoint went live before a later rejection stays
  *    `invoked: true` (its side effects landed and are honored).
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
+import { describePg } from "../../../../__tests__/pg-test-db.js";
 import { AgentLoop } from "../../../../agent/loop.js";
 import type { Conversation } from "../../../../daemon/conversation.js";
 import {
@@ -41,14 +42,7 @@ import {
   getConversation,
   getMessages,
 } from "../../../../persistence/conversation-crud.js";
-import { getDb, getMemoryDb } from "../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../persistence/db-init.js";
-import {
-  conversations,
-  memoryJobs,
-  memoryRetrospectiveState,
-  messages as messagesTable,
-} from "../../../../persistence/schema/index.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import type {
   Message,
   Provider,
@@ -143,8 +137,10 @@ const rememberToolDef: ToolDefinition[] = [
 // scripted provider so provider failures exercise the loop's genuine
 // catch/stopTurn path. Tail persistence, state reads/writes, and fork
 // cleanup all run against the real test DB.
-function makeForkConversationDouble(forkId: string): Conversation {
-  const rows = getMessages(forkId);
+async function makeForkConversationDouble(
+  forkId: string,
+): Promise<Conversation> {
+  const rows = await getMessages(forkId);
   const messages: Message[] = rows.map((row) => {
     let content: unknown = row.content;
     if (typeof content === "string") {
@@ -239,7 +235,7 @@ mock.module("../../../../runtime/agent-wake.js", () => ({
   ): ReturnType<typeof realWake> =>
     realWake(opts, {
       resolveTarget: async (wakeOpts) =>
-        makeForkConversationDouble(wakeOpts.conversationId),
+        await makeForkConversationDouble(wakeOpts.conversationId),
     }),
 }));
 
@@ -267,8 +263,6 @@ mock.module("../../../../daemon/disk-pressure-guard.js", () => ({
     error: null,
   }),
 }));
-
-await initializeDb();
 
 // ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -350,39 +344,41 @@ async function stageChainFixture(): Promise<ChainFixture> {
 }
 
 /** Fork conversations currently rooted at the given source. */
-function listRetroForksOf(sourceId: string): string[] {
-  const db = getDb();
-  return db
-    .select({ id: conversations.id })
-    .from(conversations)
-    .all()
-    .map((row) => row.id)
-    .filter((id) => {
-      const conv = getConversation(id);
-      return (
-        conv?.source === MEMORY_RETROSPECTIVE_FORK_SOURCE &&
-        conv.forkParentConversationId === sourceId
-      );
-    });
+async function listRetroForksOf(sourceId: string): Promise<string[]> {
+  const db = requireMainDb();
+  const rows = await db.orm
+    .select({ id: db.schema.conversations.id })
+    .from(db.schema.conversations);
+  const ids: string[] = [];
+  for (const row of rows) {
+    const conv = await getConversation(row.id);
+    if (
+      conv?.source === MEMORY_RETROSPECTIVE_FORK_SOURCE &&
+      conv.forkParentConversationId === sourceId
+    ) {
+      ids.push(row.id);
+    }
+  }
+  return ids;
 }
 
-function resetTables(): void {
-  const db = getDb();
-  getMemoryDb()!.delete(memoryRetrospectiveState).run();
-  getMemoryDb()!.delete(memoryJobs).run();
-  db.delete(messagesTable).run();
-  db.delete(conversations).run();
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM memory_retrospective_state");
+  await db.run("DELETE FROM memory_jobs");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
-beforeEach(() => {
-  resetTables();
+beforeEach(async () => {
+  await resetTables();
   providerScript = [];
   providerCallCount = 0;
 });
 
 // ── Tests ────────────────────────────────────────────────────────────
 
-describe("memory retrospective wake state chain (real AgentLoop)", () => {
+describePg("memory retrospective wake state chain (real AgentLoop)", () => {
   test("provider rejection: no cursor advance, no log mutation, prior kept, fork cleaned up, window retryable", async () => {
     const fixture = await stageChainFixture();
     const stateBefore = getRetrospectiveState(fixture.sourceId);
@@ -411,9 +407,11 @@ describe("memory retrospective wake state chain (real AgentLoop)", () => {
     expect(stateAfter!.lastRunAt).toBeGreaterThan(stateBefore!.lastRunAt!);
 
     // Prior retrospective (the dedup-baseline fallback) survives.
-    expect(getConversation(fixture.priorRetroId)).not.toBeNull();
+    expect(await getConversation(fixture.priorRetroId)).not.toBeNull();
     // This run's own orphan fork is deleted; the prior is the only fork left.
-    expect(listRetroForksOf(fixture.sourceId)).toEqual([fixture.priorRetroId]);
+    expect(await listRetroForksOf(fixture.sourceId)).toEqual([
+      fixture.priorRetroId,
+    ]);
 
     // (2) The window stays retryable: the same slice succeeds on retry.
     // The finalizer accepts a text-only reply as a completed empty-handed
@@ -462,8 +460,10 @@ describe("memory retrospective wake state chain (real AgentLoop)", () => {
     const state = getRetrospectiveState(fixture.sourceId);
     expect(state?.lastProcessedMessageId).toBe(fixture.seededCursorId);
     expect(state?.rememberedLog).toEqual([PRIOR_FACT]);
-    expect(getConversation(fixture.priorRetroId)).not.toBeNull();
-    expect(listRetroForksOf(fixture.sourceId)).toEqual([fixture.priorRetroId]);
+    expect(await getConversation(fixture.priorRetroId)).not.toBeNull();
+    expect(await listRetroForksOf(fixture.sourceId)).toEqual([
+      fixture.priorRetroId,
+    ]);
 
     // The window stays retryable and a usable reply consumes it.
     providerScript = [{ response: textResponse("Nothing new to save.") }];

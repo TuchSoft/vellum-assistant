@@ -34,8 +34,8 @@ const SCREENSHOT_BYTES = Buffer.from(SCREENSHOT_BASE64, "base64");
  * A fresh session against a real conversation row, so entries from one test are
  * invisible to the next and appends are not refused as orphans.
  */
-function newSession() {
-  const conversation = createConversation(`watch-${randomUUID()}`);
+async function newSession() {
+  const conversation = await createConversation(`watch-${randomUUID()}`);
   return { sessionId: randomUUID(), conversationId: conversation.id };
 }
 
@@ -57,8 +57,8 @@ function captureSql<T>(run: () => T): { result: T; statements: string[] } {
 }
 
 describe("watch timeline", () => {
-  test("reads entries back in timestamp order, not append order", () => {
-    const { sessionId, conversationId } = newSession();
+  test("reads entries back in timestamp order, not append order", async () => {
+    const { sessionId, conversationId } = await newSession();
 
     appendObservation(sessionId, {
       conversationId,
@@ -92,8 +92,8 @@ describe("watch timeline", () => {
     );
   });
 
-  test("renders hours only once the session has any", () => {
-    const { sessionId, conversationId } = newSession();
+  test("renders hours only once the session has any", async () => {
+    const { sessionId, conversationId } = await newSession();
     appendNarration(sessionId, {
       conversationId,
       atMs: 3_723_000,
@@ -103,8 +103,8 @@ describe("watch timeline", () => {
     expect(renderWatchTimeline(sessionId).text).toContain("[t+01:02:03]");
   });
 
-  test("appends nothing for an observation that failed", () => {
-    const { sessionId, conversationId } = newSession();
+  test("appends nothing for an observation that failed", async () => {
+    const { sessionId, conversationId } = await newSession();
 
     const result = appendObservation(sessionId, {
       conversationId,
@@ -121,8 +121,8 @@ describe("watch timeline", () => {
     expect(renderWatchTimeline(sessionId).totalEntries).toBe(0);
   });
 
-  test("appends nothing for a screenshot the caller did not ask to keep", () => {
-    const { sessionId, conversationId } = newSession();
+  test("appends nothing for a screenshot the caller did not ask to keep", async () => {
+    const { sessionId, conversationId } = await newSession();
 
     const result = appendObservation(sessionId, {
       conversationId,
@@ -134,11 +134,11 @@ describe("watch timeline", () => {
     expect(renderWatchTimeline(sessionId).totalEntries).toBe(0);
   });
 
-  test("keeps a screenshot-only observation the host fell back to", () => {
+  test("keeps a screenshot-only observation the host fell back to", async () => {
     // No focused window means no AX tree, and the host answers with a bare
     // screenshot. Discarding that would leave a session spent in an
     // inaccessible app with an entirely empty timeline.
-    const { sessionId, conversationId } = newSession();
+    const { sessionId, conversationId } = await newSession();
 
     const result = appendObservation(sessionId, {
       conversationId,
@@ -161,8 +161,8 @@ describe("watch timeline", () => {
     );
   });
 
-  test("appends nothing for a narration that is only whitespace", () => {
-    const { sessionId, conversationId } = newSession();
+  test("appends nothing for a narration that is only whitespace", async () => {
+    const { sessionId, conversationId } = await newSession();
 
     const result = appendNarration(sessionId, {
       conversationId,
@@ -174,8 +174,8 @@ describe("watch timeline", () => {
     expect(renderWatchTimeline(sessionId).totalEntries).toBe(0);
   });
 
-  test("stores a screenshot only when attachScreenshot asks for it", () => {
-    const { sessionId, conversationId } = newSession();
+  test("stores a screenshot only when attachScreenshot asks for it", async () => {
+    const { sessionId, conversationId } = await newSession();
     const observation = {
       axTree: "window Mail",
       screenshot: SCREENSHOT_BASE64,
@@ -209,8 +209,8 @@ describe("watch timeline", () => {
     );
   });
 
-  test("hands back the exact frame the observation carried", () => {
-    const { sessionId, conversationId } = newSession();
+  test("hands back the exact frame the observation carried", async () => {
+    const { sessionId, conversationId } = await newSession();
     appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
@@ -225,8 +225,8 @@ describe("watch timeline", () => {
     expect(Buffer.from(frame?.bytes as Buffer)).toEqual(SCREENSHOT_BYTES);
   });
 
-  test("has no frame to hand back for an entry that carries none", () => {
-    const { sessionId, conversationId } = newSession();
+  test("has no frame to hand back for an entry that carries none", async () => {
+    const { sessionId, conversationId } = await newSession();
     appendNarration(sessionId, { conversationId, atMs: 1_000, text: "hello" });
 
     const [entry] = renderWatchTimeline(sessionId).entries;
@@ -235,8 +235,8 @@ describe("watch timeline", () => {
     expect(readWatchScreenshot("no-such-entry")).toBeNull();
   });
 
-  test("drops a frame over the per-entry size cap and keeps the rest", () => {
-    const { sessionId, conversationId } = newSession();
+  test("drops a frame over the per-entry size cap and keeps the rest", async () => {
+    const { sessionId, conversationId } = await newSession();
     const oversized = Buffer.alloc(2_000_001, 0x41).toString("base64");
 
     const result = appendObservation(sessionId, {
@@ -253,8 +253,8 @@ describe("watch timeline", () => {
     expect(rendered.text).toContain("<ax-tree>\nwindow Mail\n</ax-tree>");
   });
 
-  test("refuses an observation whose only content is an oversized frame", () => {
-    const { sessionId, conversationId } = newSession();
+  test("refuses an observation whose only content is an oversized frame", async () => {
+    const { sessionId, conversationId } = await newSession();
     const oversized = Buffer.alloc(2_000_001, 0x41).toString("base64");
 
     const result = appendObservation(sessionId, {
@@ -268,8 +268,8 @@ describe("watch timeline", () => {
     expect(renderWatchTimeline(sessionId).totalEntries).toBe(0);
   });
 
-  test("bounds the rendered entries by default and reports the truncation", () => {
-    const { sessionId, conversationId } = newSession();
+  test("bounds the rendered entries by default and reports the truncation", async () => {
+    const { sessionId, conversationId } = await newSession();
     const total = DEFAULT_MAX_ENTRIES + 5;
     for (let i = 0; i < total; i++) {
       appendNarration(sessionId, {
@@ -293,8 +293,8 @@ describe("watch timeline", () => {
     expect(unbounded.truncated).toBe(false);
   });
 
-  test("spells out only the most recent AX trees and collapses the rest", () => {
-    const { sessionId, conversationId } = newSession();
+  test("spells out only the most recent AX trees and collapses the rest", async () => {
+    const { sessionId, conversationId } = await newSession();
     const treeCount = DEFAULT_MAX_AX_TREES + 2;
     for (let i = 0; i < treeCount; i++) {
       appendObservation(sessionId, {
@@ -318,8 +318,8 @@ describe("watch timeline", () => {
     expect(rendered.text).toContain("<ax-tree-omitted />");
   });
 
-  test("escapes a closing ax-tree tag inside captured content", () => {
-    const { sessionId, conversationId } = newSession();
+  test("escapes a closing ax-tree tag inside captured content", async () => {
+    const { sessionId, conversationId } = await newSession();
     appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
@@ -331,8 +331,8 @@ describe("watch timeline", () => {
     expect(text.match(/<\/ax-tree>/g)).toHaveLength(1);
   });
 
-  test("bounds the rendered text by bytes, keeping the newest entries", () => {
-    const { sessionId, conversationId } = newSession();
+  test("bounds the rendered text by bytes, keeping the newest entries", async () => {
+    const { sessionId, conversationId } = await newSession();
     const total = 20;
     for (let i = 0; i < total; i++) {
       appendNarration(sessionId, {
@@ -361,8 +361,8 @@ describe("watch timeline", () => {
     expect(rendered.text).not.toContain("entry-0 ");
   });
 
-  test("a single oversized AX tree cannot blow the budget", () => {
-    const { sessionId, conversationId } = newSession();
+  test("a single oversized AX tree cannot blow the budget", async () => {
+    const { sessionId, conversationId } = await newSession();
 
     appendObservation(sessionId, {
       conversationId,
@@ -384,8 +384,8 @@ describe("watch timeline", () => {
     expect(rendered.text.match(/<\/ax-tree>/g)).toHaveLength(1);
   });
 
-  test("gives up the tree before the offset and the diff", () => {
-    const { sessionId, conversationId } = newSession();
+  test("gives up the tree before the offset and the diff", async () => {
+    const { sessionId, conversationId } = await newSession();
 
     appendObservation(sessionId, {
       conversationId,
@@ -401,8 +401,8 @@ describe("watch timeline", () => {
     expect(rendered.truncated).toBe(true);
   });
 
-  test("reports nothing truncated when everything fits", () => {
-    const { sessionId, conversationId } = newSession();
+  test("reports nothing truncated when everything fits", async () => {
+    const { sessionId, conversationId } = await newSession();
     appendNarration(sessionId, {
       conversationId,
       atMs: 1_000,
@@ -412,8 +412,8 @@ describe("watch timeline", () => {
     expect(renderWatchTimeline(sessionId).truncated).toBe(false);
   });
 
-  test("bounds the read itself, not a slice of the whole session", () => {
-    const { sessionId, conversationId } = newSession();
+  test("bounds the read itself, not a slice of the whole session", async () => {
+    const { sessionId, conversationId } = await newSession();
     const total = 12;
     for (let i = 0; i < total; i++) {
       appendNarration(sessionId, {
@@ -450,8 +450,8 @@ describe("watch timeline", () => {
     expect(selects.some((sql) => sql.includes("count("))).toBe(true);
   });
 
-  test("reports the true total when the count bound admits nothing", () => {
-    const { sessionId, conversationId } = newSession();
+  test("reports the true total when the count bound admits nothing", async () => {
+    const { sessionId, conversationId } = await newSession();
     appendNarration(sessionId, { conversationId, atMs: 1_000, text: "hello" });
 
     const rendered = renderWatchTimeline(sessionId, { maxEntries: 0 });
@@ -461,8 +461,8 @@ describe("watch timeline", () => {
     expect(rendered.truncated).toBe(true);
   });
 
-  test("refuses an append whose conversation is gone", () => {
-    const { sessionId, conversationId } = newSession();
+  test("refuses an append whose conversation is gone", async () => {
+    const { sessionId, conversationId } = await newSession();
     deleteConversation(conversationId);
 
     const result = appendNarration(sessionId, {
@@ -475,9 +475,9 @@ describe("watch timeline", () => {
     expect(renderWatchTimeline(sessionId).totalEntries).toBe(0);
   });
 
-  test("purges a conversation's rows and the frames they carry", () => {
-    const { sessionId, conversationId } = newSession();
-    const other = newSession();
+  test("purges a conversation's rows and the frames they carry", async () => {
+    const { sessionId, conversationId } = await newSession();
+    const other = await newSession();
 
     appendObservation(sessionId, {
       conversationId,
@@ -506,9 +506,9 @@ describe("watch timeline", () => {
     expect(renderWatchTimeline(other.sessionId).totalEntries).toBe(1);
   });
 
-  test("purges every session's rows and frames", () => {
-    const first = newSession();
-    const second = newSession();
+  test("purges every session's rows and frames", async () => {
+    const first = await newSession();
+    const second = await newSession();
 
     for (const session of [first, second]) {
       appendObservation(session.sessionId, {
@@ -555,7 +555,7 @@ describe("watch timeline orphan sweep", () => {
     // residue will ever see.
     await drainOrphanedWatchTimelineEntries();
 
-    const { sessionId, conversationId } = newSession();
+    const { sessionId, conversationId } = await newSession();
     const PAGE = 5_000;
     // More than two pages on purpose: with a single leftover page, a `drain`
     // that never looped would still clear the remainder in its one sweep and
@@ -594,12 +594,12 @@ describe("watch timeline orphan sweep", () => {
     ).toEqual({ n: 0 });
   });
 
-  test("sweeps entries whose conversation is gone, frames included", () => {
+  test("sweeps entries whose conversation is gone, frames included", async () => {
     // Drain anything earlier tests orphaned so the count below is this
     // session's rows and nothing else.
     sweepOrphanedWatchTimelineEntries();
 
-    const { sessionId, conversationId } = newSession();
+    const { sessionId, conversationId } = await newSession();
     appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
@@ -621,11 +621,11 @@ describe("watch timeline orphan sweep", () => {
     expect(readWatchScreenshot(entryId as string)).toBeNull();
   });
 
-  test("leaves entries whose conversation still exists", () => {
+  test("leaves entries whose conversation still exists", async () => {
     sweepOrphanedWatchTimelineEntries();
 
-    const live = newSession();
-    const orphaned = newSession();
+    const live = await newSession();
+    const orphaned = await newSession();
     appendNarration(live.sessionId, {
       conversationId: live.conversationId,
       atMs: 1_000,
@@ -644,13 +644,13 @@ describe("watch timeline orphan sweep", () => {
     expect(renderWatchTimeline(live.sessionId).totalEntries).toBe(1);
   });
 
-  test("reports nothing swept when there is nothing to sweep", () => {
+  test("reports nothing swept when there is nothing to sweep", async () => {
     sweepOrphanedWatchTimelineEntries();
 
     expect(sweepOrphanedWatchTimelineEntries()).toBe(0);
   });
 
-  test("reports nothing swept rather than throwing when the table is gone", () => {
+  test("reports nothing swept rather than throwing when the table is gone", async () => {
     const sqlite = getSqlite();
     sqlite
       .query(

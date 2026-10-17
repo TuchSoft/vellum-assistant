@@ -1,8 +1,8 @@
 import { and, desc, eq, lte } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
-import { type DrizzleDb, getDb } from "./db-connection.js";
-import { conversationCompactionEvents } from "./schema/index.js";
+import type { AsyncDb } from "./db-facade.js";
+import { requireMainDb } from "./db-facade.js";
 
 export interface CompactionEvent {
   /** Wall-clock time the compaction ran (= `conversations.context_compacted_at`). */
@@ -16,21 +16,20 @@ export interface CompactionEvent {
  * Append a compaction event to the ledger. Called alongside the
  * `conversations` cache update on every compaction.
  */
-export function appendCompactionEvent(
+export async function appendCompactionEvent(
   conversationId: string,
   event: CompactionEvent,
-): void {
-  const db = getDb();
-  db.insert(conversationCompactionEvents)
-    .values({
-      id: uuid(),
-      conversationId,
-      compactedAt: event.compactedAt,
-      summary: event.summary,
-      compactedMessageCount: event.compactedMessageCount,
-      createdAt: Date.now(),
-    })
-    .run();
+): Promise<void> {
+  const db = requireMainDb();
+  const conversationCompactionEvents = db.schema.conversationCompactionEvents;
+  await db.orm.insert(conversationCompactionEvents).values({
+    id: uuid(),
+    conversationId,
+    compactedAt: event.compactedAt,
+    summary: event.summary,
+    compactedMessageCount: event.compactedMessageCount,
+    createdAt: Date.now(),
+  });
 }
 
 /**
@@ -39,15 +38,16 @@ export function appendCompactionEvent(
  * inheritance rule: a compaction applies to a fork only if it happened before
  * the message being forked from.
  */
-export function getLatestCompactionEventAtOrBefore(
+export async function getLatestCompactionEventAtOrBefore(
   conversationId: string,
   atOrBefore: number | null,
-): CompactionEvent | null {
+): Promise<CompactionEvent | null> {
   if (atOrBefore == null) {
     return null;
   }
-  const db = getDb();
-  const row = db
+  const db = requireMainDb();
+  const conversationCompactionEvents = db.schema.conversationCompactionEvents;
+  const [row] = await db.orm
     .select({
       compactedAt: conversationCompactionEvents.compactedAt,
       summary: conversationCompactionEvents.summary,
@@ -61,8 +61,7 @@ export function getLatestCompactionEventAtOrBefore(
       ),
     )
     .orderBy(desc(conversationCompactionEvents.compactedAt))
-    .limit(1)
-    .get();
+    .limit(1);
   return row ?? null;
 }
 
@@ -72,16 +71,17 @@ export function getLatestCompactionEventAtOrBefore(
  * own future forks/compactions. Takes the active `db` so the copy joins the
  * caller's transaction. No-op when the boundary is null.
  */
-export function forkCompactionLedger(
-  db: DrizzleDb,
+export async function forkCompactionLedger(
+  db: AsyncDb,
   sourceConversationId: string,
   forkConversationId: string,
   boundaryCreatedAt: number | null,
-): void {
+): Promise<void> {
   if (boundaryCreatedAt == null) {
     return;
   }
-  const events = db
+  const conversationCompactionEvents = db.schema.conversationCompactionEvents;
+  const events = await db.orm
     .select({
       compactedAt: conversationCompactionEvents.compactedAt,
       summary: conversationCompactionEvents.summary,
@@ -93,19 +93,19 @@ export function forkCompactionLedger(
         eq(conversationCompactionEvents.conversationId, sourceConversationId),
         lte(conversationCompactionEvents.compactedAt, boundaryCreatedAt),
       ),
-    )
-    .all();
-  const now = Date.now();
-  for (const event of events) {
-    db.insert(conversationCompactionEvents)
-      .values({
-        id: uuid(),
-        conversationId: forkConversationId,
-        compactedAt: event.compactedAt,
-        summary: event.summary,
-        compactedMessageCount: event.compactedMessageCount,
-        createdAt: now,
-      })
-      .run();
+    );
+  if (events.length === 0) {
+    return;
   }
+  const now = Date.now();
+  await db.orm.insert(conversationCompactionEvents).values(
+    events.map((event) => ({
+      id: uuid(),
+      conversationId: forkConversationId,
+      compactedAt: event.compactedAt,
+      summary: event.summary,
+      compactedMessageCount: event.compactedMessageCount,
+      createdAt: now,
+    })),
+  );
 }

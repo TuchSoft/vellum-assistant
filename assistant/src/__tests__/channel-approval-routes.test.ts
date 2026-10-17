@@ -4,6 +4,7 @@ import {
   describe,
   expect,
   mock,
+  setDefaultTimeout,
   spyOn,
   test,
 } from "bun:test";
@@ -66,6 +67,7 @@ mock.module("../daemon/approval-generators.js", () => ({
 
 import type { Conversation } from "../daemon/conversation.js";
 import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import * as deliveryChannels from "../persistence/delivery-channels.js";
 import { resetTestTables } from "../persistence/raw-query.js";
@@ -82,6 +84,10 @@ import {
 import { createGuardianBinding } from "./helpers/create-guardian-binding.js";
 import { resetGatewayAclStore } from "./helpers/gateway-acl-store.js";
 import { bridgeState } from "./helpers/gateway-guardian-requests-store-bridge.js";
+
+// This suite drives Postgres-backed writes; allow the background pipeline
+// and pool teardown to finish beyond the default per-test budget.
+setDefaultTimeout(30_000);
 
 await initializeDb();
 initAuthSigningKey(Buffer.from("test-signing-key-at-least-32-bytes-long"));
@@ -109,7 +115,7 @@ function ensureConversation(conversationId: string): void {
   }
 }
 
-function resetTables(): void {
+async function resetTables(): Promise<void> {
   bridgeState.reset();
   resetTestTables(
     "scoped_approval_grants",
@@ -120,6 +126,16 @@ function resetTables(): void {
     "conversations",
     "contact_channels",
     "contacts",
+  );
+  await requireMainDb().exec(
+    [
+      "DELETE FROM scoped_approval_grants",
+      "DELETE FROM conversation_keys",
+      "DELETE FROM message_runs",
+      "DELETE FROM channel_inbound_events",
+      "DELETE FROM messages",
+      "DELETE FROM conversations",
+    ].join(";\n"),
   );
   resetGatewayAclStore();
   deliveryChannels.resetAllRunDeliveryClaims();
@@ -222,8 +238,8 @@ async function ensureTestContact(): Promise<void> {
 }
 
 beforeEach(async () => {
-  resetTables();
-  ensureTestContact();
+  await resetTables();
+  await ensureTestContact();
   noopProcessMessage.mockClear();
   _testProcessMessage = undefined;
   _testApprovalCopyGenerator = undefined;

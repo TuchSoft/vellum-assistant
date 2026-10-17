@@ -316,7 +316,7 @@ export function processChannelMessageInBackground(
         if (replyMessageId) {
           storeReplyMessageId(eventId, replyMessageId);
         }
-        markProcessed(eventId);
+        await markProcessed(eventId);
       } catch (err) {
         // Stop any live Slack stream cleanly. Its `ts` is already durably
         // recorded via `onStreamOpen`, so the retry sweep can reconcile
@@ -347,7 +347,7 @@ export function processChannelMessageInBackground(
             { conversationId, eventId },
             "Channel turn lost the processing lock after admission; deferring to the retry sweep",
           );
-          deferRetryUntilIdle(eventId);
+          await deferRetryUntilIdle(eventId);
           return;
         }
         log.error(
@@ -361,7 +361,7 @@ export function processChannelMessageInBackground(
           // best-effort turn is simply lost.
           return;
         }
-        recordProcessingFailure(eventId, err);
+        await recordProcessingFailure(eventId, err);
         return;
       }
 
@@ -387,7 +387,9 @@ export function processChannelMessageInBackground(
       let priorDeduplicatedDeliveryOwned = false;
       let recoveredStreamMessageTs: string | undefined;
       if (deduplicatedIngress && userMessageId !== undefined) {
-        if (isDeduplicatedDeliveryOwnedBySibling(userMessageId, eventId)) {
+        if (
+          await isDeduplicatedDeliveryOwnedBySibling(userMessageId, eventId)
+        ) {
           priorDeduplicatedDeliveryOwned = true;
         } else {
           recoveredStreamMessageTs = getSiblingStreamedReplyTs(
@@ -405,7 +407,7 @@ export function processChannelMessageInBackground(
         // The sibling owns delivery, so settle this row rather than leaving it
         // `pending`, which stranded-delivery recovery reads as delivery still
         // owed and would act on after a restart.
-        markDeliveryDelivered(eventId);
+        await markDeliveryDelivered(eventId);
       } else if (replyCallbackUrl) {
         try {
           await finalizeEventDelivery({

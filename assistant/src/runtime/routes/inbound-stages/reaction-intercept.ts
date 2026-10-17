@@ -305,7 +305,7 @@ export async function handleReactionIntercept(
       : null;
   if (wakeTurn) {
     try {
-      wakeTurn();
+      await wakeTurn();
       return {
         accepted: result.accepted,
         duplicate: false,
@@ -379,7 +379,7 @@ function buildReactionWakeTurn(params: {
   trustCtx: TrustContext;
   chatType: string | undefined;
   persistPassively: () => Promise<void>;
-}): (() => void) | null {
+}): (() => Promise<void>) | null {
   const targetRow = params.targetRow;
   if (!targetRow || targetRow.role !== "assistant") {
     return null;
@@ -422,7 +422,7 @@ function buildReactionWakeTurn(params: {
     targetRow.metadata,
   );
 
-  return () => {
+  return async () => {
     // A delivery-only payload: the fields `channel-retry-sweep`'s delivery
     // lane needs to re-post a generated reply whose first delivery failed
     // transiently. It deliberately carries no `content` or `sourceChannel`,
@@ -434,7 +434,7 @@ function buildReactionWakeTurn(params: {
       externalChatId: params.conversationExternalId,
       assistantId: DAEMON_INTERNAL_ASSISTANT_ID,
     });
-    markProcessed(params.result.eventId);
+    await markProcessed(params.result.eventId);
     processChannelMessageInBackground({
       processMessage,
       conversationId: params.result.conversationId,
@@ -552,7 +552,7 @@ async function persistReactionAsMessage(params: {
     },
   );
   linkMessage(params.eventId, persisted.id);
-  markProcessed(params.eventId);
+  await markProcessed(params.eventId);
 }
 
 /**

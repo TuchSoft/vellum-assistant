@@ -8,14 +8,17 @@
 
 import { and, eq, lte, ne, or } from "drizzle-orm";
 
-import { getDb } from "./db-connection.js";
+import type { SchemaTables } from "./db-facade.js";
+import { requireMainDb } from "./db-facade.js";
 import {
   classifyError,
   RETRY_MAX_ATTEMPTS,
   retryDelayForAttempt,
 } from "./job-utils.js";
-import type { ChannelDeliveryStatus } from "./schema.js";
-import { channelInboundEvents } from "./schema.js";
+
+type ChannelInboundEventRow =
+  SchemaTables["channelInboundEvents"]["$inferSelect"];
+type ChannelDeliveryStatus = ChannelInboundEventRow["deliveryStatus"];
 
 /**
  * Whether a delivery status means the row owes no further delivery.
@@ -46,15 +49,16 @@ const BUSY_DEFER_RETRY_DELAY_MS = 15_000;
 /**
  * Acknowledge delivery of an outbound message for a channel event.
  */
-export function acknowledgeDelivery(
+export async function acknowledgeDelivery(
   sourceChannel: string,
   externalChatId: string,
   externalMessageId: string,
-): boolean {
-  const db = getDb();
+): Promise<boolean> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
   const now = Date.now();
 
-  const existing = db
+  const rows = await db.orm
     .select({ id: channelInboundEvents.id })
     .from(channelInboundEvents)
     .where(
@@ -63,45 +67,47 @@ export function acknowledgeDelivery(
         eq(channelInboundEvents.externalChatId, externalChatId),
         eq(channelInboundEvents.externalMessageId, externalMessageId),
       ),
-    )
-    .get();
+    );
+  const existing = rows[0];
 
   if (!existing) {
     return false;
   }
 
-  db.update(channelInboundEvents)
+  await db.orm
+    .update(channelInboundEvents)
     .set({
       deliveryStatus: "delivered",
       retryAfter: null,
       updatedAt: now,
     })
-    .where(eq(channelInboundEvents.id, existing.id))
-    .run();
+    .where(eq(channelInboundEvents.id, existing.id));
 
   return true;
 }
 
 /** Mark an event as successfully processed. */
-export function markProcessed(eventId: string): void {
-  const db = getDb();
-  db.update(channelInboundEvents)
+export async function markProcessed(eventId: string): Promise<void> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  await db.orm
+    .update(channelInboundEvents)
     .set({ processingStatus: "processed", updatedAt: Date.now() })
-    .where(eq(channelInboundEvents.id, eventId))
-    .run();
+    .where(eq(channelInboundEvents.id, eventId));
 }
 
 /** Mark an event's outbound callback delivery as complete. */
-export function markDeliveryDelivered(eventId: string): void {
-  const db = getDb();
-  db.update(channelInboundEvents)
+export async function markDeliveryDelivered(eventId: string): Promise<void> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  await db.orm
+    .update(channelInboundEvents)
     .set({
       deliveryStatus: "delivered",
       retryAfter: null,
       updatedAt: Date.now(),
     })
-    .where(eq(channelInboundEvents.id, eventId))
-    .run();
+    .where(eq(channelInboundEvents.id, eventId));
 }
 
 function errorMessage(err: unknown): string {
@@ -114,22 +120,27 @@ function errorMessage(err: unknown): string {
  * (status='dead_letter') when the error is fatal or max attempts
  * are exhausted.
  */
-export function recordProcessingFailure(eventId: string, err: unknown): void {
-  const db = getDb();
+export async function recordProcessingFailure(
+  eventId: string,
+  err: unknown,
+): Promise<void> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
   const now = Date.now();
 
-  const row = db
+  const rows = await db.orm
     .select({ attempts: channelInboundEvents.processingAttempts })
     .from(channelInboundEvents)
-    .where(eq(channelInboundEvents.id, eventId))
-    .get();
+    .where(eq(channelInboundEvents.id, eventId));
+  const row = rows[0];
 
   const attempts = (row?.attempts ?? 0) + 1;
   const category = classifyError(err);
   const errorMsg = errorMessage(err);
 
   if (category === "fatal" || attempts >= RETRY_MAX_ATTEMPTS) {
-    db.update(channelInboundEvents)
+    await db.orm
+      .update(channelInboundEvents)
       .set({
         processingStatus: "dead_letter",
         processingAttempts: attempts,
@@ -137,20 +148,19 @@ export function recordProcessingFailure(eventId: string, err: unknown): void {
         retryAfter: null,
         updatedAt: now,
       })
-      .where(eq(channelInboundEvents.id, eventId))
-      .run();
+      .where(eq(channelInboundEvents.id, eventId));
   } else {
     const delay = retryDelayForAttempt(attempts);
-    db.update(channelInboundEvents)
+    await db.orm
+      .update(channelInboundEvents)
       .set({
         processingStatus: "failed",
         processingAttempts: attempts,
         lastProcessingError: errorMsg,
-        retryAfter: now + delay,
+        retryAfter: Math.round(now + delay),
         updatedAt: now,
       })
-      .where(eq(channelInboundEvents.id, eventId))
-      .run();
+      .where(eq(channelInboundEvents.id, eventId));
   }
 }
 
@@ -159,22 +169,27 @@ export function recordProcessingFailure(eventId: string, err: unknown): void {
  * status. Delivery uses its own retry budget so a turn that needed processing
  * retries still gets a full delivery retry window.
  */
-export function recordDeliveryFailure(eventId: string, err: unknown): void {
-  const db = getDb();
+export async function recordDeliveryFailure(
+  eventId: string,
+  err: unknown,
+): Promise<void> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
   const now = Date.now();
 
-  const row = db
+  const rows = await db.orm
     .select({ attempts: channelInboundEvents.deliveryAttempts })
     .from(channelInboundEvents)
-    .where(eq(channelInboundEvents.id, eventId))
-    .get();
+    .where(eq(channelInboundEvents.id, eventId));
+  const row = rows[0];
 
   const attempts = (row?.attempts ?? 0) + 1;
   const category = classifyError(err);
   const errorMsg = errorMessage(err);
 
   if (category === "fatal" || attempts >= RETRY_MAX_ATTEMPTS) {
-    db.update(channelInboundEvents)
+    await db.orm
+      .update(channelInboundEvents)
       .set({
         deliveryStatus: "dead_letter",
         deliveryAttempts: attempts,
@@ -182,20 +197,19 @@ export function recordDeliveryFailure(eventId: string, err: unknown): void {
         retryAfter: null,
         updatedAt: now,
       })
-      .where(eq(channelInboundEvents.id, eventId))
-      .run();
+      .where(eq(channelInboundEvents.id, eventId));
   } else {
     const delay = retryDelayForAttempt(attempts);
-    db.update(channelInboundEvents)
+    await db.orm
+      .update(channelInboundEvents)
       .set({
         deliveryStatus: "failed",
         deliveryAttempts: attempts,
         lastProcessingError: errorMsg,
-        retryAfter: now + delay,
+        retryAfter: Math.round(now + delay),
         updatedAt: now,
       })
-      .where(eq(channelInboundEvents.id, eventId))
-      .run();
+      .where(eq(channelInboundEvents.id, eventId));
   }
 }
 
@@ -204,23 +218,25 @@ export function recordDeliveryFailure(eventId: string, err: unknown): void {
  * classification. Use this when the failure reason is known and the event
  * should remain retryable (up to max attempts).
  */
-export function markRetryableFailure(
+export async function markRetryableFailure(
   eventId: string,
   errorMessage: string,
-): void {
-  const db = getDb();
+): Promise<void> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
   const now = Date.now();
 
-  const row = db
+  const rows = await db.orm
     .select({ attempts: channelInboundEvents.processingAttempts })
     .from(channelInboundEvents)
-    .where(eq(channelInboundEvents.id, eventId))
-    .get();
+    .where(eq(channelInboundEvents.id, eventId));
+  const row = rows[0];
 
   const attempts = (row?.attempts ?? 0) + 1;
 
   if (attempts >= RETRY_MAX_ATTEMPTS) {
-    db.update(channelInboundEvents)
+    await db.orm
+      .update(channelInboundEvents)
       .set({
         processingStatus: "dead_letter",
         processingAttempts: attempts,
@@ -228,20 +244,19 @@ export function markRetryableFailure(
         retryAfter: null,
         updatedAt: now,
       })
-      .where(eq(channelInboundEvents.id, eventId))
-      .run();
+      .where(eq(channelInboundEvents.id, eventId));
   } else {
     const delay = retryDelayForAttempt(attempts);
-    db.update(channelInboundEvents)
+    await db.orm
+      .update(channelInboundEvents)
       .set({
         processingStatus: "failed",
         processingAttempts: attempts,
         lastProcessingError: errorMessage,
-        retryAfter: now + delay,
+        retryAfter: Math.round(now + delay),
         updatedAt: now,
       })
-      .where(eq(channelInboundEvents.id, eventId))
-      .run();
+      .where(eq(channelInboundEvents.id, eventId));
   }
 }
 
@@ -261,29 +276,33 @@ export function markRetryableFailure(
  * rather than dropping the reply — matching the event-driven inbound admission
  * gate, which also waits without a deadline.
  */
-export function deferRetryUntilIdle(eventId: string): void {
-  const db = getDb();
+export async function deferRetryUntilIdle(eventId: string): Promise<void> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
   const now = Date.now();
-  db.update(channelInboundEvents)
+  await db.orm
+    .update(channelInboundEvents)
     .set({
       processingStatus: "failed",
       retryAfter: now + BUSY_DEFER_RETRY_DELAY_MS,
       updatedAt: now,
     })
-    .where(eq(channelInboundEvents.id, eventId))
-    .run();
+    .where(eq(channelInboundEvents.id, eventId));
 }
 
 /** Fetch events eligible for automatic retry (failed + past their backoff). */
-export function getRetryableEvents(limit = 20): Array<{
-  id: string;
-  conversationId: string;
-  processingAttempts: number;
-  rawPayload: string | null;
-}> {
-  const db = getDb();
+export async function getRetryableEvents(limit = 20): Promise<
+  Array<{
+    id: string;
+    conversationId: string;
+    processingAttempts: number;
+    rawPayload: string | null;
+  }>
+> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
   const now = Date.now();
-  return db
+  return await db.orm
     .select({
       id: channelInboundEvents.id,
       conversationId: channelInboundEvents.conversationId,
@@ -297,22 +316,24 @@ export function getRetryableEvents(limit = 20): Array<{
         lte(channelInboundEvents.retryAfter, now),
       ),
     )
-    .limit(limit)
-    .all();
+    .limit(limit);
 }
 
 /** Fetch callback deliveries eligible for retry without rerunning processing. */
-export function getRetryableDeliveryEvents(limit = 20): Array<{
-  id: string;
-  conversationId: string;
-  messageId: string | null;
-  processingAttempts: number;
-  rawPayload: string | null;
-  deliveredSegmentCount: number;
-}> {
-  const db = getDb();
+export async function getRetryableDeliveryEvents(limit = 20): Promise<
+  Array<{
+    id: string;
+    conversationId: string;
+    messageId: string | null;
+    processingAttempts: number;
+    rawPayload: string | null;
+    deliveredSegmentCount: number;
+  }>
+> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
   const now = Date.now();
-  return db
+  return await db.orm
     .select({
       id: channelInboundEvents.id,
       conversationId: channelInboundEvents.conversationId,
@@ -329,8 +350,7 @@ export function getRetryableDeliveryEvents(limit = 20): Array<{
         lte(channelInboundEvents.retryAfter, now),
       ),
     )
-    .limit(limit)
-    .all();
+    .limit(limit);
 }
 
 /**
@@ -343,12 +363,13 @@ export function getRetryableDeliveryEvents(limit = 20): Array<{
  * path reads these statuses to tell an already-owned delivery from the crash
  * window where the reply was persisted but never delivered.
  */
-export function getSiblingEventDeliveryStatuses(
+export async function getSiblingEventDeliveryStatuses(
   messageId: string,
   excludeEventId: string,
-): ChannelDeliveryStatus[] {
-  const db = getDb();
-  return db
+): Promise<ChannelDeliveryStatus[]> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  const rows = await db.orm
     .select({ deliveryStatus: channelInboundEvents.deliveryStatus })
     .from(channelInboundEvents)
     .where(
@@ -356,9 +377,8 @@ export function getSiblingEventDeliveryStatuses(
         eq(channelInboundEvents.messageId, messageId),
         ne(channelInboundEvents.id, excludeEventId),
       ),
-    )
-    .all()
-    .map((row) => row.deliveryStatus);
+    );
+  return rows.map((row) => row.deliveryStatus);
 }
 
 /**
@@ -369,28 +389,33 @@ export function getSiblingEventDeliveryStatuses(
  * owning event already delivered (or is retrying). Shared by the live
  * background dispatch and the retry sweep so both gate delivery identically.
  */
-export function isDeduplicatedDeliveryOwnedBySibling(
+export async function isDeduplicatedDeliveryOwnedBySibling(
   messageId: string,
   excludeEventId: string,
-): boolean {
-  return getSiblingEventDeliveryStatuses(messageId, excludeEventId).some(
-    (status) => DELIVERY_STATUS_IS_TERMINAL[status],
+): Promise<boolean> {
+  const statuses = await getSiblingEventDeliveryStatuses(
+    messageId,
+    excludeEventId,
   );
+  return statuses.some((status) => DELIVERY_STATUS_IS_TERMINAL[status]);
 }
 
 /** Fetch dead-lettered events. */
-export function getDeadLetterEvents(): Array<{
-  id: string;
-  sourceChannel: string;
-  externalChatId: string;
-  externalMessageId: string;
-  conversationId: string;
-  processingAttempts: number;
-  lastProcessingError: string | null;
-  createdAt: number;
-}> {
-  const db = getDb();
-  return db
+export async function getDeadLetterEvents(): Promise<
+  Array<{
+    id: string;
+    sourceChannel: string;
+    externalChatId: string;
+    externalMessageId: string;
+    conversationId: string;
+    processingAttempts: number;
+    lastProcessingError: string | null;
+    createdAt: number;
+  }>
+> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  return await db.orm
     .select({
       id: channelInboundEvents.id,
       sourceChannel: channelInboundEvents.sourceChannel,
@@ -410,20 +435,20 @@ export function getDeadLetterEvents(): Array<{
           eq(channelInboundEvents.deliveryStatus, "dead_letter"),
         ),
       ),
-    )
-    .all();
+    );
 }
 
 /**
  * Reset dead-lettered events back to 'failed' so the sweep can retry
  * them. Resets attempt counter and sets an immediate retry_after.
  */
-export function replayDeadLetters(eventIds: string[]): number {
-  const db = getDb();
+export async function replayDeadLetters(eventIds: string[]): Promise<number> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
   const now = Date.now();
   let count = 0;
   for (const id of eventIds) {
-    const existing = db
+    const rows = await db.orm
       .select({
         id: channelInboundEvents.id,
         processingStatus: channelInboundEvents.processingStatus,
@@ -441,14 +466,15 @@ export function replayDeadLetters(eventIds: string[]): number {
             ),
           ),
         ),
-      )
-      .get();
+      );
+    const existing = rows[0];
     if (!existing) {
       continue;
     }
 
     if (existing.processingStatus === "dead_letter") {
-      db.update(channelInboundEvents)
+      await db.orm
+        .update(channelInboundEvents)
         .set({
           processingStatus: "failed",
           processingAttempts: 0,
@@ -456,10 +482,10 @@ export function replayDeadLetters(eventIds: string[]): number {
           retryAfter: now,
           updatedAt: now,
         })
-        .where(eq(channelInboundEvents.id, id))
-        .run();
+        .where(eq(channelInboundEvents.id, id));
     } else {
-      db.update(channelInboundEvents)
+      await db.orm
+        .update(channelInboundEvents)
         .set({
           deliveryStatus: "failed",
           deliveryAttempts: 0,
@@ -467,8 +493,7 @@ export function replayDeadLetters(eventIds: string[]): number {
           retryAfter: now,
           updatedAt: now,
         })
-        .where(eq(channelInboundEvents.id, id))
-        .run();
+        .where(eq(channelInboundEvents.id, id));
     }
     count++;
   }

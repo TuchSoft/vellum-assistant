@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
 import { eq } from "drizzle-orm";
 
@@ -7,6 +7,7 @@ import {
   setConversationKey,
 } from "../persistence/conversation-key-store.js";
 import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import {
   clearPayload,
@@ -43,14 +44,19 @@ import {
 import { buildConversationDetailResponse } from "../runtime/services/conversation-serializer.js";
 import { handleDeleteConversation } from "./helpers/channel-test-adapter.js";
 import { setConfig } from "./helpers/set-config.js";
+import { describePg } from "./pg-test-db.js";
 
 // The Slack deep-link assertions below need a workspace identity; seed the
 // real config the serializer reads instead of mocking the loader.
 setConfig("slack", { teamId: "T123", teamUrl: "https://example.slack.com/" });
 
+// This suite drives Postgres-backed writes; allow the background pipeline
+// and pool teardown to finish beyond the default per-test budget.
+setDefaultTimeout(30_000);
+
 await initializeDb();
 
-function resetTables() {
+async function resetTables(): Promise<void> {
   const db = getDb();
   db.run("DELETE FROM channel_inbound_events");
   db.run("DELETE FROM channel_outbound_posts");
@@ -58,6 +64,61 @@ function resetTables() {
   db.run("DELETE FROM conversation_keys");
   db.run("DELETE FROM external_conversation_bindings");
   db.run("DELETE FROM conversations");
+
+  const pg = requireMainDb();
+  await pg.run("DELETE FROM channel_inbound_events");
+  await pg.run("DELETE FROM channel_outbound_posts");
+  await pg.run("DELETE FROM messages");
+  await pg.run("DELETE FROM conversation_keys");
+  await pg.run("DELETE FROM external_conversation_bindings");
+  await pg.run("DELETE FROM conversations");
+}
+
+/**
+ * Record an inbound event through the SQLite crud path and mirror the same
+ * conversation and event ids into the Postgres facade. The delivery-status
+ * store reads Postgres, so its fixture needs the row there too.
+ */
+async function recordInboundForPg(
+  ...args: Parameters<typeof recordInbound>
+): Promise<ReturnType<typeof recordInbound>> {
+  const result = recordInbound(...args);
+  const pg = requireMainDb();
+  const now = Date.now();
+  await pg.orm
+    .insert(pg.schema.conversations)
+    .values({ id: result.conversationId, createdAt: now, updatedAt: now })
+    .onConflictDoNothing();
+  const options = args[3];
+  await pg.orm
+    .insert(pg.schema.channelInboundEvents)
+    .values({
+      id: result.eventId,
+      sourceChannel: args[0],
+      externalChatId: args[1],
+      externalMessageId: args[2],
+      sourceMessageId: options?.sourceMessageId ?? null,
+      conversationId: result.conversationId,
+      deliveryStatus: "pending",
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing();
+  return result;
+}
+
+async function selectPgInboundEvent(where: {
+  id?: string;
+  externalMessageId?: string;
+}) {
+  const pg = requireMainDb();
+  const table = pg.schema.channelInboundEvents;
+  const condition =
+    where.id !== undefined
+      ? eq(table.id, where.id)
+      : eq(table.externalMessageId, where.externalMessageId!);
+  const rows = await pg.orm.select().from(table).where(condition);
+  return rows[0];
 }
 
 /** Insert a message row so FK constraints on channel_inbound_events.message_id pass. */
@@ -79,9 +140,9 @@ function insertMessage(
     .run();
 }
 
-describe("channel-delivery-store", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("channel-delivery-store", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
   // ── Recording inbound events ──────────────────────────────────────
@@ -925,56 +986,45 @@ describe("channel-delivery-store", () => {
 
   // ── Delivery status transitions ───────────────────────────────────
 
-  test("acknowledgeDelivery transitions from pending to delivered", () => {
-    recordInbound("telegram", "chat-1", "msg-1");
+  test("acknowledgeDelivery transitions from pending to delivered", async () => {
+    await recordInboundForPg("telegram", "chat-1", "msg-1");
 
-    const ack = acknowledgeDelivery("telegram", "chat-1", "msg-1");
+    const ack = await acknowledgeDelivery("telegram", "chat-1", "msg-1");
     expect(ack).toBe(true);
 
-    const db = getDb();
-    const row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.externalMessageId, "msg-1"))
-      .get();
+    const row = await selectPgInboundEvent({ externalMessageId: "msg-1" });
     expect(row!.deliveryStatus).toBe("delivered");
   });
 
-  test("acknowledgeDelivery accepts late acks after retryable delivery failure", () => {
-    const result = recordInbound("telegram", "chat-1", "msg-1");
-    markProcessed(result.eventId);
-    recordDeliveryFailure(result.eventId, new Error("fetch failed"));
+  test("acknowledgeDelivery accepts late acks after retryable delivery failure", async () => {
+    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    await markProcessed(result.eventId);
+    await recordDeliveryFailure(result.eventId, new Error("fetch failed"));
 
-    const ack = acknowledgeDelivery("telegram", "chat-1", "msg-1");
+    const ack = await acknowledgeDelivery("telegram", "chat-1", "msg-1");
     expect(ack).toBe(true);
 
-    const db = getDb();
-    const row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    const row = await selectPgInboundEvent({ id: result.eventId });
     expect(row!.deliveryStatus).toBe("delivered");
     expect(row!.retryAfter).toBeNull();
   });
 
-  test("acknowledgeDelivery returns false for unknown event", () => {
-    const ack = acknowledgeDelivery("telegram", "chat-1", "nonexistent");
+  test("acknowledgeDelivery returns false for unknown event", async () => {
+    const ack = await acknowledgeDelivery("telegram", "chat-1", "nonexistent");
     expect(ack).toBe(false);
   });
 
-  test("delivery failures are retryable without changing processing status", () => {
-    const result = recordInbound("telegram", "chat-1", "msg-1");
-    markProcessed(result.eventId);
+  test("delivery failures are retryable without changing processing status", async () => {
+    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    await markProcessed(result.eventId);
 
-    recordDeliveryFailure(result.eventId, new Error("fetch failed"));
+    await recordDeliveryFailure(result.eventId, new Error("fetch failed"));
 
-    const db = getDb();
-    let row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    const pg = requireMainDb();
+    const table = pg.schema.channelInboundEvents;
+    let row = (
+      await pg.orm.select().from(table).where(eq(table.id, result.eventId))
+    )[0];
     expect(row!.processingStatus).toBe("processed");
     expect(row!.deliveryStatus).toBe("failed");
     expect(row!.processingAttempts).toBe(0);
@@ -982,48 +1032,44 @@ describe("channel-delivery-store", () => {
     expect(row!.lastProcessingError).toBe("fetch failed");
     expect(row!.retryAfter).toBeGreaterThan(0);
 
-    db.update(channelInboundEvents)
+    await pg.orm
+      .update(table)
       .set({ retryAfter: Date.now() - 10_000, deliveredSegmentCount: 2 })
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .run();
+      .where(eq(table.id, result.eventId));
 
-    const retryable = getRetryableDeliveryEvents();
+    const retryable = await getRetryableDeliveryEvents();
     expect(retryable).toHaveLength(1);
     expect(retryable[0].id).toBe(result.eventId);
     expect(retryable[0].deliveredSegmentCount).toBe(2);
 
-    markDeliveryDelivered(result.eventId);
+    await markDeliveryDelivered(result.eventId);
 
-    row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    row = (
+      await pg.orm.select().from(table).where(eq(table.id, result.eventId))
+    )[0];
     expect(row!.processingStatus).toBe("processed");
     expect(row!.deliveryStatus).toBe("delivered");
     expect(row!.retryAfter).toBeNull();
-    expect(getRetryableDeliveryEvents()).toHaveLength(0);
+    expect(await getRetryableDeliveryEvents()).toHaveLength(0);
   });
 
-  test("delivery dead letters are listed and replayed as delivery retries", () => {
-    const result = recordInbound("telegram", "chat-1", "msg-1");
-    markProcessed(result.eventId);
+  test("delivery dead letters are listed and replayed as delivery retries", async () => {
+    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    await markProcessed(result.eventId);
 
-    recordDeliveryFailure(result.eventId, { status: 400, message: "bad" });
+    await recordDeliveryFailure(result.eventId, {
+      status: 400,
+      message: "bad",
+    });
 
-    const deadLetters = getDeadLetterEvents();
+    const deadLetters = await getDeadLetterEvents();
     expect(deadLetters).toHaveLength(1);
     expect(deadLetters[0].id).toBe(result.eventId);
 
-    const count = replayDeadLetters([result.eventId]);
+    const count = await replayDeadLetters([result.eventId]);
     expect(count).toBe(1);
 
-    const db = getDb();
-    const row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    const row = await selectPgInboundEvent({ id: result.eventId });
     expect(row!.processingStatus).toBe("processed");
     expect(row!.deliveryStatus).toBe("failed");
     expect(row!.deliveryAttempts).toBe(0);
@@ -1033,32 +1079,22 @@ describe("channel-delivery-store", () => {
 
   // ── Processing status transitions ─────────────────────────────────
 
-  test("markProcessed sets processingStatus to processed", () => {
-    const result = recordInbound("telegram", "chat-1", "msg-1");
-    markProcessed(result.eventId);
+  test("markProcessed sets processingStatus to processed", async () => {
+    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    await markProcessed(result.eventId);
 
-    const db = getDb();
-    const row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    const row = await selectPgInboundEvent({ id: result.eventId });
     expect(row!.processingStatus).toBe("processed");
   });
 
-  test("recordProcessingFailure with retryable error sets status to failed", () => {
-    const result = recordInbound("telegram", "chat-1", "msg-1");
+  test("recordProcessingFailure with retryable error sets status to failed", async () => {
+    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
 
     // A timeout error is classified as retryable
     const err = new Error("request timeout");
-    recordProcessingFailure(result.eventId, err);
+    await recordProcessingFailure(result.eventId, err);
 
-    const db = getDb();
-    const row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    const row = await selectPgInboundEvent({ id: result.eventId });
 
     expect(row!.processingStatus).toBe("failed");
     expect(row!.processingAttempts).toBe(1);
@@ -1066,40 +1102,30 @@ describe("channel-delivery-store", () => {
     expect(row!.retryAfter).toBeGreaterThan(0);
   });
 
-  test("recordProcessingFailure with fatal error sets status to dead_letter", () => {
-    const result = recordInbound("telegram", "chat-1", "msg-1");
+  test("recordProcessingFailure with fatal error sets status to dead_letter", async () => {
+    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
 
     // A 400-status error is classified as fatal
     const err = { status: 400, message: "Bad Request" };
-    recordProcessingFailure(result.eventId, err);
+    await recordProcessingFailure(result.eventId, err);
 
-    const db = getDb();
-    const row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    const row = await selectPgInboundEvent({ id: result.eventId });
 
     expect(row!.processingStatus).toBe("dead_letter");
     expect(row!.processingAttempts).toBe(1);
     expect(row!.retryAfter).toBeNull();
   });
 
-  test("recordProcessingFailure dead-letters after max attempts", () => {
-    const result = recordInbound("telegram", "chat-1", "msg-1");
+  test("recordProcessingFailure dead-letters after max attempts", async () => {
+    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
 
     // Exhaust all retry attempts with retryable errors
     const err = new Error("request timeout");
     for (let i = 0; i < RETRY_MAX_ATTEMPTS; i++) {
-      recordProcessingFailure(result.eventId, err);
+      await recordProcessingFailure(result.eventId, err);
     }
 
-    const db = getDb();
-    const row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    const row = await selectPgInboundEvent({ id: result.eventId });
 
     expect(row!.processingStatus).toBe("dead_letter");
     expect(row!.processingAttempts).toBe(RETRY_MAX_ATTEMPTS);
@@ -1133,65 +1159,70 @@ describe("channel-delivery-store", () => {
 
   // ── Retryable events query ────────────────────────────────────────
 
-  test("getRetryableEvents returns failed events past their backoff", () => {
-    const r1 = recordInbound("telegram", "chat-1", "msg-1");
-    const r2 = recordInbound("telegram", "chat-1", "msg-2");
-    const _r3 = recordInbound("telegram", "chat-1", "msg-3");
+  test("getRetryableEvents returns failed events past their backoff", async () => {
+    const r1 = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    const r2 = await recordInboundForPg("telegram", "chat-1", "msg-2");
+    const _r3 = await recordInboundForPg("telegram", "chat-1", "msg-3");
 
     // r1: failed with past retry_after
     const err = new Error("request timeout");
-    recordProcessingFailure(r1.eventId, err);
+    await recordProcessingFailure(r1.eventId, err);
     // Force retry_after to be in the past
-    const db = getDb();
-    db.update(channelInboundEvents)
+    const pg = requireMainDb();
+    const table = pg.schema.channelInboundEvents;
+    await pg.orm
+      .update(table)
       .set({ retryAfter: Date.now() - 10_000 })
-      .where(eq(channelInboundEvents.id, r1.eventId))
-      .run();
+      .where(eq(table.id, r1.eventId));
 
     // r2: failed but retry_after is in the future
-    recordProcessingFailure(r2.eventId, err);
-    db.update(channelInboundEvents)
+    await recordProcessingFailure(r2.eventId, err);
+    await pg.orm
+      .update(table)
       .set({ retryAfter: Date.now() + 60_000 })
-      .where(eq(channelInboundEvents.id, r2.eventId))
-      .run();
+      .where(eq(table.id, r2.eventId));
 
     // r3: still pending (not failed) — should not appear
-    const retryable = getRetryableEvents();
+    const retryable = await getRetryableEvents();
     expect(retryable).toHaveLength(1);
     expect(retryable[0].id).toBe(r1.eventId);
     expect(retryable[0].conversationId).toBe(r1.conversationId);
   });
 
-  test("getRetryableEvents respects limit parameter", () => {
-    const db = getDb();
+  test("getRetryableEvents respects limit parameter", async () => {
+    const pg = requireMainDb();
+    const table = pg.schema.channelInboundEvents;
     const err = new Error("request timeout");
     const ids: string[] = [];
 
     for (let i = 0; i < 5; i++) {
-      const r = recordInbound("telegram", "chat-1", `msg-${i}`);
+      const r = await recordInboundForPg("telegram", "chat-1", `msg-${i}`);
       ids.push(r.eventId);
-      recordProcessingFailure(r.eventId, err);
-      db.update(channelInboundEvents)
+      await recordProcessingFailure(r.eventId, err);
+      await pg.orm
+        .update(table)
         .set({ retryAfter: Date.now() - 10_000 })
-        .where(eq(channelInboundEvents.id, r.eventId))
-        .run();
+        .where(eq(table.id, r.eventId));
     }
 
-    const retryable = getRetryableEvents(2);
+    const retryable = await getRetryableEvents(2);
     expect(retryable).toHaveLength(2);
   });
 
   // ── Dead-letter queue ─────────────────────────────────────────────
 
-  test("getDeadLetterEvents returns dead-lettered events", () => {
-    const r1 = recordInbound("telegram", "chat-1", "msg-1");
-    const _r2 = recordInbound("telegram", "chat-1", "msg-2");
+  test("getDeadLetterEvents returns dead-lettered events", async () => {
+    const r1 = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    const _r2 = await recordInboundForPg("telegram", "chat-1", "msg-2");
 
     // r1: dead-letter via fatal error
-    recordProcessingFailure(r1.eventId, { status: 400, message: "invalid" });
+    await recordProcessingFailure(r1.eventId, {
+      status: 400,
+      message: "invalid",
+    });
 
     // r2: still pending
-    const deadLetters = getDeadLetterEvents();
+    const deadLetters = await getDeadLetterEvents();
     expect(deadLetters).toHaveLength(1);
     expect(deadLetters[0].id).toBe(r1.eventId);
     expect(deadLetters[0].sourceChannel).toBe("telegram");
@@ -1199,28 +1230,25 @@ describe("channel-delivery-store", () => {
     expect(deadLetters[0].externalMessageId).toBe("msg-1");
   });
 
-  test("replayDeadLetters resets dead-lettered events to failed for retry", () => {
-    const r1 = recordInbound("telegram", "chat-1", "msg-1");
-    const r2 = recordInbound("telegram", "chat-1", "msg-2");
+  test("replayDeadLetters resets dead-lettered events to failed for retry", async () => {
+    const r1 = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    const r2 = await recordInboundForPg("telegram", "chat-1", "msg-2");
 
     // Dead-letter both
-    recordProcessingFailure(r1.eventId, { status: 400, message: "bad" });
-    recordProcessingFailure(r2.eventId, { status: 401, message: "auth" });
+    await recordProcessingFailure(r1.eventId, {
+      status: 400,
+      message: "bad",
+    });
+    await recordProcessingFailure(r2.eventId, {
+      status: 401,
+      message: "auth",
+    });
 
-    const count = replayDeadLetters([r1.eventId, r2.eventId]);
+    const count = await replayDeadLetters([r1.eventId, r2.eventId]);
     expect(count).toBe(2);
 
-    const db = getDb();
-    const row1 = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, r1.eventId))
-      .get();
-    const row2 = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, r2.eventId))
-      .get();
+    const row1 = await selectPgInboundEvent({ id: r1.eventId });
+    const row2 = await selectPgInboundEvent({ id: r2.eventId });
 
     expect(row1!.processingStatus).toBe("failed");
     expect(row1!.processingAttempts).toBe(0);
@@ -1231,23 +1259,23 @@ describe("channel-delivery-store", () => {
     expect(row2!.processingAttempts).toBe(0);
   });
 
-  test("replayDeadLetters skips non-dead-lettered events", () => {
-    const r1 = recordInbound("telegram", "chat-1", "msg-1");
+  test("replayDeadLetters skips non-dead-lettered events", async () => {
+    const r1 = await recordInboundForPg("telegram", "chat-1", "msg-1");
 
     // r1 is still pending, not dead-lettered
-    const count = replayDeadLetters([r1.eventId]);
+    const count = await replayDeadLetters([r1.eventId]);
     expect(count).toBe(0);
   });
 
-  test("replayDeadLetters skips nonexistent IDs", () => {
-    const count = replayDeadLetters(["nonexistent-id"]);
+  test("replayDeadLetters skips nonexistent IDs", async () => {
+    const count = await replayDeadLetters(["nonexistent-id"]);
     expect(count).toBe(0);
   });
 
   // ── Full lifecycle ────────────────────────────────────────────────
 
-  test("full lifecycle: inbound -> link -> acknowledge -> processed", () => {
-    const result = recordInbound("telegram", "chat-1", "msg-1", {
+  test("full lifecycle: inbound -> link -> acknowledge -> processed", async () => {
+    const result = await recordInboundForPg("telegram", "chat-1", "msg-1", {
       sourceMessageId: "src-1",
     });
     expect(result.duplicate).toBe(false);
@@ -1255,17 +1283,18 @@ describe("channel-delivery-store", () => {
     const msgId = "internal-msg-1";
     insertMessage(msgId, result.conversationId);
     linkMessage(result.eventId, msgId);
-    acknowledgeDelivery("telegram", "chat-1", "msg-1");
-    markProcessed(result.eventId);
+    await acknowledgeDelivery("telegram", "chat-1", "msg-1");
+    await markProcessed(result.eventId);
 
     const db = getDb();
-    const row = db
+    const linkRow = db
       .select()
       .from(channelInboundEvents)
       .where(eq(channelInboundEvents.id, result.eventId))
       .get();
+    expect(linkRow!.messageId).toBe(msgId);
 
-    expect(row!.messageId).toBe(msgId);
+    const row = await selectPgInboundEvent({ id: result.eventId });
     expect(row!.deliveryStatus).toBe("delivered");
     expect(row!.processingStatus).toBe("processed");
 

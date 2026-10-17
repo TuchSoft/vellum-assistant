@@ -1,4 +1,12 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
 mock.module("../config/env.js", () => ({ isHttpAuthDisabled: () => true }));
 
@@ -24,6 +32,7 @@ mock.module("../daemon/handlers/shared.js", () => ({
 import { eq } from "drizzle-orm";
 
 import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import * as deliveryChannels from "../persistence/delivery-channels.js";
 import { resetTestTables } from "../persistence/raw-query.js";
@@ -38,6 +47,10 @@ import {
   seedContactChannel,
 } from "./helpers/channel-test-adapter.js";
 
+// This suite drives Postgres-backed writes; allow the background pipeline
+// and pool teardown to finish beyond the default per-test budget.
+setDefaultTimeout(30_000);
+
 await initializeDb();
 
 afterAll(() => {
@@ -48,7 +61,7 @@ afterAll(() => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function resetTables(): void {
+async function resetTables(): Promise<void> {
   resetTestTables(
     "conversation_attention_events",
     "conversation_assistant_attention_state",
@@ -59,6 +72,17 @@ function resetTables(): void {
     "conversations",
     "contact_channels",
     "contacts",
+  );
+  await requireMainDb().exec(
+    [
+      "DELETE FROM conversation_attention_events",
+      "DELETE FROM conversation_assistant_attention_state",
+      "DELETE FROM conversation_keys",
+      "DELETE FROM message_runs",
+      "DELETE FROM channel_inbound_events",
+      "DELETE FROM messages",
+      "DELETE FROM conversations",
+    ].join(";\n"),
   );
   deliveryChannels.resetAllRunDeliveryClaims();
   pendingInteractions.clear();
@@ -109,8 +133,8 @@ function getAttentionEvents(conversationId: string) {
 }
 
 beforeEach(async () => {
-  resetTables();
-  ensureTestContact();
+  await resetTables();
+  await ensureTestContact();
   noopProcessMessage.mockClear();
 });
 

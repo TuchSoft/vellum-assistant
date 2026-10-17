@@ -63,7 +63,7 @@ export async function finalizeEventDelivery(params: {
       : priorStreamMessageTs;
 
   try {
-    updateDeliveredSegmentCount(eventId, startFromSegment);
+    await updateDeliveredSegmentCount(eventId, startFromSegment);
     await deliverReplyViaCallback(
       conversationId,
       externalChatId,
@@ -74,13 +74,14 @@ export async function finalizeEventDelivery(params: {
         sinceMessageId: userMessageId,
         startFromSegment,
         ...(streamMessageTs ? { messageTs: streamMessageTs } : {}),
-        onSegmentDelivered: (count) =>
-          updateDeliveredSegmentCount(eventId, count),
+        onSegmentDelivered: async (count) => {
+          await updateDeliveredSegmentCount(eventId, count);
+        },
       },
     );
-    markDeliveryDelivered(eventId);
+    await markDeliveryDelivered(eventId);
   } catch (err) {
-    recordDeliveryFailure(eventId, err);
+    await recordDeliveryFailure(eventId, err);
     throw err;
   }
 }

@@ -20,19 +20,19 @@ export { finalizeEventDelivery } from "../finalize-event-delivery.js";
 // Dead letter management
 // ---------------------------------------------------------------------------
 
-export function handleListDeadLetters() {
-  const events = getDeadLetterEvents();
+export async function handleListDeadLetters() {
+  const events = await getDeadLetterEvents();
   return { events };
 }
 
-export function handleReplayDeadLetters({ body = {} }: RouteHandlerArgs) {
+export async function handleReplayDeadLetters({ body = {} }: RouteHandlerArgs) {
   const { eventIds } = body as { eventIds?: string[] };
 
   if (!Array.isArray(eventIds) || eventIds.length === 0) {
     throw new BadRequestError("eventIds array is required");
   }
 
-  const replayed = replayDeadLetters(eventIds);
+  const replayed = await replayDeadLetters(eventIds);
   return { replayed };
 }
 
@@ -40,7 +40,9 @@ export function handleReplayDeadLetters({ body = {} }: RouteHandlerArgs) {
 // Delivery acknowledgement
 // ---------------------------------------------------------------------------
 
-export function handleChannelDeliveryAck({ body = {} }: RouteHandlerArgs) {
+export async function handleChannelDeliveryAck({
+  body = {},
+}: RouteHandlerArgs) {
   const { sourceChannel, conversationExternalId, externalMessageId } = body as {
     sourceChannel?: string;
     conversationExternalId?: string;
@@ -57,7 +59,7 @@ export function handleChannelDeliveryAck({ body = {} }: RouteHandlerArgs) {
     throw new BadRequestError("externalMessageId is required");
   }
 
-  const acked = acknowledgeDelivery(
+  const acked = await acknowledgeDelivery(
     sourceChannel,
     conversationExternalId,
     externalMessageId,

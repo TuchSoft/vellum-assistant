@@ -5,6 +5,7 @@ import {
   describe,
   expect,
   mock,
+  setDefaultTimeout,
   test,
 } from "bun:test";
 
@@ -33,6 +34,7 @@ import {
 import * as conversationStore from "../persistence/conversation-crud.js";
 import { getOrCreateConversation } from "../persistence/conversation-key-store.js";
 import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import * as deliveryChannels from "../persistence/delivery-channels.js";
 import { resetTestTables } from "../persistence/raw-query.js";
@@ -47,6 +49,10 @@ import { setConfig } from "./helpers/set-config.js";
 
 // Tests call addMessage without skipIndexing — keep memory indexing off so no
 // background memory work runs against the test DB.
+// This suite drives Postgres-backed writes; allow the background pipeline
+// and pool teardown to finish beyond the default per-test budget.
+setDefaultTimeout(30_000);
+
 setConfig("memory", { enabled: false, v2: { enabled: false } });
 
 await initializeDb();
@@ -71,6 +77,16 @@ describe("Runtime attachment metadata", () => {
     db.run("DELETE FROM messages");
     db.run("DELETE FROM conversations");
     db.run("DELETE FROM conversation_keys");
+
+    await requireMainDb().exec(
+      [
+        "DELETE FROM message_attachments",
+        "DELETE FROM attachments",
+        "DELETE FROM messages",
+        "DELETE FROM conversations",
+        "DELETE FROM conversation_keys",
+      ].join(";\n"),
+    );
 
     // Use a random port to avoid conflicts
     port = 17000 + Math.floor(Math.random() * 1000);
@@ -229,7 +245,7 @@ describe("WhatsApp channel ingress attachment resolution", () => {
   let ingressServer: RuntimeHttpServer;
   let ingressPort: number;
 
-  function resetIngressTables(): void {
+  async function resetIngressTables(): Promise<void> {
     resetTestTables(
       "message_attachments",
       "attachments",
@@ -240,6 +256,17 @@ describe("WhatsApp channel ingress attachment resolution", () => {
       "conversation_keys",
       "contact_channels",
       "contacts",
+    );
+    await requireMainDb().exec(
+      [
+        "DELETE FROM message_attachments",
+        "DELETE FROM attachments",
+        "DELETE FROM channel_inbound_events",
+        "DELETE FROM message_runs",
+        "DELETE FROM messages",
+        "DELETE FROM conversations",
+        "DELETE FROM conversation_keys",
+      ].join(";\n"),
     );
     deliveryChannels.resetAllRunDeliveryClaims();
     pendingInteractions.clear();
@@ -291,8 +318,8 @@ describe("WhatsApp channel ingress attachment resolution", () => {
   );
 
   beforeEach(async () => {
-    resetIngressTables();
-    ensureWhatsAppContact();
+    await resetIngressTables();
+    await ensureWhatsAppContact();
     noopProcessMessage.mockClear();
 
     ingressPort = 18000 + Math.floor(Math.random() * 1000);

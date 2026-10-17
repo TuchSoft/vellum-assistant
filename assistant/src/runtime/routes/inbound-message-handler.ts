@@ -1048,7 +1048,7 @@ export async function handleChannelInbound({
     }
 
     if (!result.duplicate) {
-      markProcessed(result.eventId);
+      await markProcessed(result.eventId);
     }
 
     return {
@@ -1075,7 +1075,7 @@ export async function handleChannelInbound({
   if (diskPressureDecision.action === "block") {
     if (!result.duplicate) {
       clearPayload(result.eventId);
-      markProcessed(result.eventId);
+      await markProcessed(result.eventId);
     }
     log.info(
       {
@@ -1369,7 +1369,7 @@ export async function handleChannelInbound({
 
     if (ingressResult.blocked) {
       // Intentional block — mark the event as processed (not failed/dead-lettered).
-      markProcessed(result.eventId);
+      await markProcessed(result.eventId);
       log.info(
         {
           eventId: result.eventId,

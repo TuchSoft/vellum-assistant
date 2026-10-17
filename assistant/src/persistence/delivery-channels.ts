@@ -7,8 +7,7 @@
 
 import { eq } from "drizzle-orm";
 
-import { getDb } from "./db-connection.js";
-import { channelInboundEvents } from "./schema.js";
+import { requireMainDb } from "./db-facade.js";
 
 // ── Per-segment delivery progress ──────────────────────────────────
 //
@@ -20,15 +19,16 @@ import { channelInboundEvents } from "./schema.js";
  * Update the delivered segment count after successful delivery of one
  * or more segments. Called incrementally as segments are sent.
  */
-export function updateDeliveredSegmentCount(
+export async function updateDeliveredSegmentCount(
   eventId: string,
   count: number,
-): void {
-  const db = getDb();
-  db.update(channelInboundEvents)
+): Promise<void> {
+  const db = requireMainDb();
+  const channelInboundEvents = db.schema.channelInboundEvents;
+  await db.orm
+    .update(channelInboundEvents)
     .set({ deliveredSegmentCount: count, updatedAt: Date.now() })
-    .where(eq(channelInboundEvents.id, eventId))
-    .run();
+    .where(eq(channelInboundEvents.id, eventId));
 }
 
 // ── Deliver-once guard for terminal reply idempotency ────────────────

@@ -279,8 +279,8 @@ function buildReplayChannelInbound(params: {
 export async function sweepFailedEvents(
   processMessage: MessageProcessor,
 ): Promise<void> {
-  const events = getRetryableEvents();
-  const deliveryEvents = getRetryableDeliveryEvents();
+  const events = await getRetryableEvents();
+  const deliveryEvents = await getRetryableDeliveryEvents();
   if (events.length === 0 && deliveryEvents.length === 0) {
     return;
   }
@@ -293,7 +293,7 @@ export async function sweepFailedEvents(
   for (const event of events) {
     if (!event.rawPayload) {
       // No payload stored -- can't replay, move to dead letter
-      recordProcessingFailure(
+      await recordProcessingFailure(
         event.id,
         new Error("No raw payload stored for replay"),
       );
@@ -304,7 +304,7 @@ export async function sweepFailedEvents(
     try {
       payload = JSON.parse(event.rawPayload) as Record<string, unknown>;
     } catch {
-      recordProcessingFailure(
+      await recordProcessingFailure(
         event.id,
         new Error("Failed to parse stored raw payload"),
       );
@@ -318,7 +318,7 @@ export async function sweepFailedEvents(
       : undefined;
     const sourceChannel = parseChannelId(payload.sourceChannel);
     if (!sourceChannel) {
-      recordProcessingFailure(
+      await recordProcessingFailure(
         event.id,
         new Error(`Invalid sourceChannel: ${String(payload.sourceChannel)}`),
       );
@@ -346,7 +346,7 @@ export async function sweepFailedEvents(
         { eventId: event.id },
         "Stored trustCtx could not be parsed into canonical form; marking event as failed to prevent privilege escalation",
       );
-      markRetryableFailure(
+      await markRetryableFailure(
         event.id,
         "Unparseable guardian context in stored payload — refusing to process without trust classification",
       );
@@ -376,7 +376,7 @@ export async function sweepFailedEvents(
     );
     if (diskPressureDecision.action === "block") {
       clearPayload(event.id);
-      markProcessed(event.id);
+      await markProcessed(event.id);
       log.info(
         {
           eventId: event.id,
@@ -482,7 +482,7 @@ export async function sweepFailedEvents(
         { eventId: event.id, conversationId: event.conversationId },
         "Channel retry deferred: conversation is mid-turn",
       );
-      deferRetryUntilIdle(event.id);
+      await deferRetryUntilIdle(event.id);
       continue;
     }
 
@@ -600,7 +600,7 @@ export async function sweepFailedEvents(
       deduplicatedIngress = result.deduplicated === true;
       userMessageId = result.messageId;
       linkMessage(event.id, userMessageId);
-      markProcessed(event.id);
+      await markProcessed(event.id);
       replyMessageId ??= result.assistantMessageId;
       if (replyMessageId) {
         storeReplyMessageId(event.id, replyMessageId);
@@ -618,11 +618,11 @@ export async function sweepFailedEvents(
           { eventId: event.id, conversationId: event.conversationId },
           "Channel retry hit the processing lock; deferring to a later sweep",
         );
-        deferRetryUntilIdle(event.id);
+        await deferRetryUntilIdle(event.id);
         continue;
       }
       log.error({ err, eventId: event.id }, "Retry failed for channel event");
-      recordProcessingFailure(event.id, err);
+      await recordProcessingFailure(event.id, err);
       continue;
     }
 
@@ -635,7 +635,7 @@ export async function sweepFailedEvents(
     if (
       deduplicatedIngress &&
       userMessageId &&
-      isDeduplicatedDeliveryOwnedBySibling(userMessageId, event.id)
+      (await isDeduplicatedDeliveryOwnedBySibling(userMessageId, event.id))
     ) {
       log.info(
         { eventId: event.id, conversationId: event.conversationId },
@@ -644,7 +644,7 @@ export async function sweepFailedEvents(
       // The sibling owns delivery, so settle this row rather than leaving it
       // `pending`, which stranded-delivery recovery reads as delivery still
       // owed and would act on after a restart.
-      markDeliveryDelivered(event.id);
+      await markDeliveryDelivered(event.id);
     } else if (replyCallbackUrl && externalChatId) {
       try {
         await finalizeEventDelivery({
@@ -669,7 +669,7 @@ export async function sweepFailedEvents(
 
   for (const event of deliveryEvents) {
     if (!event.rawPayload) {
-      recordDeliveryFailure(
+      await recordDeliveryFailure(
         event.id,
         new Error("No raw payload stored for delivery retry"),
       );
@@ -680,7 +680,7 @@ export async function sweepFailedEvents(
     try {
       payload = JSON.parse(event.rawPayload) as Record<string, unknown>;
     } catch {
-      recordDeliveryFailure(
+      await recordDeliveryFailure(
         event.id,
         new Error("Failed to parse stored raw payload for delivery retry"),
       );
@@ -709,7 +709,7 @@ export async function sweepFailedEvents(
         ? payload.slackStreamMessageTs
         : undefined;
     if (!replyCallbackUrl || !externalChatId) {
-      recordDeliveryFailure(
+      await recordDeliveryFailure(
         event.id,
         new Error("Stored payload is missing delivery callback details"),
       );
@@ -725,7 +725,7 @@ export async function sweepFailedEvents(
       }
     }
     if (!replyMessageId) {
-      recordDeliveryFailure(
+      await recordDeliveryFailure(
         event.id,
         new Error("Stored payload is missing assistant reply message id"),
       );
@@ -746,17 +746,18 @@ export async function sweepFailedEvents(
           ...(event.messageId ? { sinceMessageId: event.messageId } : {}),
           startFromSegment: event.deliveredSegmentCount,
           ...(priorStreamMessageTs ? { messageTs: priorStreamMessageTs } : {}),
-          onSegmentDelivered: (count) =>
-            updateDeliveredSegmentCount(event.id, count),
+          onSegmentDelivered: async (count) => {
+            await updateDeliveredSegmentCount(event.id, count);
+          },
         },
       );
-      markDeliveryDelivered(event.id);
+      await markDeliveryDelivered(event.id);
     } catch (err) {
       log.error(
         { err, eventId: event.id },
         "Retry delivery failed for processed channel event",
       );
-      recordDeliveryFailure(event.id, err);
+      await recordDeliveryFailure(event.id, err);
     }
   }
 }

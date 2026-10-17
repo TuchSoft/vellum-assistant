@@ -207,7 +207,7 @@ export async function handleEditIntercept(
         slackEditedTs,
       });
     }
-    markProcessed(editResult.eventId);
+    await markProcessed(editResult.eventId);
     return {
       accepted: true,
       duplicate: false,
@@ -239,7 +239,7 @@ export async function handleEditIntercept(
         },
         "Slack edit is older than stored revision; skipping",
       );
-      markProcessed(editResult.eventId);
+      await markProcessed(editResult.eventId);
       return {
         accepted: true,
         duplicate: false,
@@ -275,7 +275,7 @@ export async function handleEditIntercept(
   // a revision the sender already replaced. Stale-marking makes that turn's
   // history reload pick up the edit.
   findConversation(original.conversationId)?.markHistoryStale();
-  markProcessed(editResult.eventId);
+  await markProcessed(editResult.eventId);
   log.info(
     { assistantId, sourceMessageId, messageId: original.messageId },
     "Updated message content from edited_message",

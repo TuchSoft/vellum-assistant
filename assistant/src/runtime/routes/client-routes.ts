@@ -197,11 +197,11 @@ export const ROUTES: RouteDefinition[] = [
       sessions: z.array(z.object({}).passthrough()),
       events: z.array(z.object({}).passthrough()),
     }),
-    handler: ({ queryParams, headers }) => {
+    handler: async ({ queryParams, headers }) => {
       const since = parseHistorySince(queryParams?.since);
       const limit = parseHistoryLimit(queryParams?.limit);
       const callerPrincipalId = headers?.["x-vellum-actor-principal-id"];
-      const history = listClientConnectionHistory({
+      const history = await listClientConnectionHistory({
         clientId: queryParams?.clientId?.trim() || undefined,
         interfaceId: queryParams?.interfaceId?.trim() || undefined,
         actorPrincipalId: isHttpAuthDisabled()

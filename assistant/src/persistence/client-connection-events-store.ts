@@ -12,9 +12,8 @@ import { v4 as uuid } from "uuid";
 
 import type { InterfaceId } from "../channels/types.js";
 import { getLogger } from "../util/logger.js";
-import type { DrizzleDb } from "./db-connection.js";
-import * as dbConnection from "./db-connection.js";
-import { clientConnectionEvents } from "./schema/index.js";
+import type { AsyncDb, SchemaTables } from "./db-facade.js";
+import { requireMainDb } from "./db-facade.js";
 
 const log = getLogger("client-connection-events-store");
 
@@ -108,20 +107,12 @@ export interface ClientConnectionHistory {
 const DEFAULT_SESSION_LIMIT = 50;
 const MAX_SESSION_LIMIT = 500;
 
-function resolveDb(database?: DrizzleDb): DrizzleDb | null {
+function resolveDb(database?: AsyncDb): AsyncDb | null {
   if (database) {
     return database;
   }
-  // Namespace import so a test mock of db-connection that omits `isDbOpen`
-  // still loads. Incomplete mocks skip the probe and try `getDb()`.
-  if (
-    typeof dbConnection.isDbOpen === "function" &&
-    !dbConnection.isDbOpen()
-  ) {
-    return null;
-  }
   try {
-    return dbConnection.getDb();
+    return requireMainDb();
   } catch (err) {
     log.debug({ err }, "client connection history skipped: database unready");
     return null;
@@ -129,7 +120,7 @@ function resolveDb(database?: DrizzleDb): DrizzleDb | null {
 }
 
 function rowToEvent(
-  row: typeof clientConnectionEvents.$inferSelect,
+  row: SchemaTables["clientConnectionEvents"]["$inferSelect"],
 ): ClientConnectionEvent {
   return {
     id: row.id,
@@ -145,21 +136,22 @@ function rowToEvent(
   };
 }
 
-function pruneExpired(db: DrizzleDb, now: number): void {
+async function pruneExpired(db: AsyncDb, now: number): Promise<void> {
   const cutoff = now - CLIENT_CONNECTION_EVENT_RETENTION_MS;
-  db.delete(clientConnectionEvents)
-    .where(lt(clientConnectionEvents.occurredAt, cutoff))
-    .run();
+  const clientConnectionEvents = db.schema.clientConnectionEvents;
+  await db.orm
+    .delete(clientConnectionEvents)
+    .where(lt(clientConnectionEvents.occurredAt, cutoff));
 }
 
 /**
  * Append one hub lifecycle event. Returns null when the main database is
  * not open or the write fails. Never throws.
  */
-export function recordClientConnectionEvent(
+export async function recordClientConnectionEvent(
   input: ClientConnectionEventInput,
-  database?: DrizzleDb,
-): ClientConnectionEvent | null {
+  database?: AsyncDb,
+): Promise<ClientConnectionEvent | null> {
   const db = resolveDb(database);
   if (!db) {
     return null;
@@ -178,8 +170,8 @@ export function recordClientConnectionEvent(
     machineName: input.machineName ?? null,
   };
   try {
-    db.insert(clientConnectionEvents).values(row).run();
-    pruneExpired(db, now);
+    await db.orm.insert(db.schema.clientConnectionEvents).values(row);
+    await pruneExpired(db, now);
     return rowToEvent(row);
   } catch (err) {
     log.debug({ err }, "failed to record client connection event");
@@ -296,15 +288,16 @@ export function coalesceClientConnectionSessions(
  * Read raw events and coalesced sessions. Returns empty lists when the
  * database is not open.
  */
-export function listClientConnectionHistory(
+export async function listClientConnectionHistory(
   params: ListClientConnectionHistoryParams = {},
-  database?: DrizzleDb,
-): ClientConnectionHistory {
+  database?: AsyncDb,
+): Promise<ClientConnectionHistory> {
   const db = resolveDb(database);
   if (!db) {
     return { events: [], sessions: [] };
   }
 
+  const clientConnectionEvents = db.schema.clientConnectionEvents;
   const now = params.now ?? Date.now();
   const limit = clampLimit(params.limit);
   const filters: SQL[] = [];
@@ -324,12 +317,12 @@ export function listClientConnectionHistory(
   }
 
   try {
-    const query = db
+    const query = db.orm
       .select()
       .from(clientConnectionEvents)
       .orderBy(asc(clientConnectionEvents.occurredAt));
     const rows =
-      filters.length > 0 ? query.where(and(...filters)).all() : query.all();
+      filters.length > 0 ? await query.where(and(...filters)) : await query;
     const events = rows.map(rowToEvent);
     const sessions = coalesceClientConnectionSessions(events, now)
       .filter((session) => {

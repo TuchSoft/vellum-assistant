@@ -1,8 +1,6 @@
-import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
-
+import { describePg } from "../../__tests__/pg-test-db.js";
 import {
   CLIENT_CONNECTION_EVENT_RETENTION_MS,
   CLIENT_CONNECTION_FLAP_WINDOW_MS,
@@ -11,15 +9,13 @@ import {
   listClientConnectionHistory,
   recordClientConnectionEvent,
 } from "../client-connection-events-store.js";
-import { migrateCreateClientConnectionEvents } from "../migrations/382-create-client-connection-events.js";
-import * as schema from "../schema.js";
+import { requireMainDb } from "../db-facade.js";
+import { initializeDb } from "../db-init.js";
 
-function createTestDb() {
-  const sqlite = new Database(":memory:");
-  sqlite.exec("PRAGMA journal_mode=WAL");
-  const db = drizzle(sqlite, { schema });
-  migrateCreateClientConnectionEvents(db);
-  return db;
+await initializeDb();
+
+async function clearEvents(): Promise<void> {
+  await requireMainDb().run("DELETE FROM client_connection_events");
 }
 
 function event(
@@ -124,53 +120,47 @@ describe("coalesceClientConnectionSessions", () => {
   });
 });
 
-describe("recordClientConnectionEvent / listClientConnectionHistory", () => {
-  test("writes events and returns coalesced sessions", () => {
-    const db = createTestDb();
+describePg("recordClientConnectionEvent / listClientConnectionHistory", () => {
+  beforeEach(async () => {
+    await clearEvents();
+  });
+
+  test("writes events and returns coalesced sessions", async () => {
     const t0 = 1_700_000_000_000;
 
-    recordClientConnectionEvent(
-      {
-        clientId: "client-123",
-        interfaceId: "chrome-extension",
-        connectionId: "conn-1",
-        reason: "sse_open",
-        occurredAt: t0,
-        actorPrincipalId: "user-123",
-        clientVersion: "0.12.1",
-        sseWatchdog: true,
-      },
-      db,
-    );
-    recordClientConnectionEvent(
-      {
-        clientId: "client-123",
-        interfaceId: "chrome-extension",
-        connectionId: "conn-1",
-        reason: "stale_replaced",
-        occurredAt: t0 + 5_000,
-        actorPrincipalId: "user-123",
-      },
-      db,
-    );
-    recordClientConnectionEvent(
-      {
-        clientId: "client-123",
-        interfaceId: "chrome-extension",
-        connectionId: "conn-2",
-        reason: "sse_open",
-        occurredAt: t0 + 6_000,
-        actorPrincipalId: "user-123",
-        clientVersion: "0.12.1",
-        sseWatchdog: true,
-      },
-      db,
-    );
+    await recordClientConnectionEvent({
+      clientId: "client-123",
+      interfaceId: "chrome-extension",
+      connectionId: "conn-1",
+      reason: "sse_open",
+      occurredAt: t0,
+      actorPrincipalId: "user-123",
+      clientVersion: "0.12.1",
+      sseWatchdog: true,
+    });
+    await recordClientConnectionEvent({
+      clientId: "client-123",
+      interfaceId: "chrome-extension",
+      connectionId: "conn-1",
+      reason: "stale_replaced",
+      occurredAt: t0 + 5_000,
+      actorPrincipalId: "user-123",
+    });
+    await recordClientConnectionEvent({
+      clientId: "client-123",
+      interfaceId: "chrome-extension",
+      connectionId: "conn-2",
+      reason: "sse_open",
+      occurredAt: t0 + 6_000,
+      actorPrincipalId: "user-123",
+      clientVersion: "0.12.1",
+      sseWatchdog: true,
+    });
 
-    const history = listClientConnectionHistory(
-      { clientId: "client-123", now: t0 + 10_000 },
-      db,
-    );
+    const history = await listClientConnectionHistory({
+      clientId: "client-123",
+      now: t0 + 10_000,
+    });
 
     expect(history.events).toHaveLength(3);
     expect(history.sessions).toHaveLength(1);
@@ -180,73 +170,60 @@ describe("recordClientConnectionEvent / listClientConnectionHistory", () => {
     expect(history.sessions[0].clientVersion).toBe("0.12.1");
   });
 
-  test("prunes rows older than the retention window", () => {
-    const db = createTestDb();
+  test("prunes rows older than the retention window", async () => {
     const now = 1_700_000_000_000;
 
-    recordClientConnectionEvent(
-      {
-        clientId: "client-123",
-        interfaceId: "chrome-extension",
-        connectionId: "conn-old",
-        reason: "sse_open",
-        occurredAt: now - CLIENT_CONNECTION_EVENT_RETENTION_MS - 1,
-      },
-      db,
-    );
-    recordClientConnectionEvent(
-      {
-        clientId: "client-123",
-        interfaceId: "chrome-extension",
-        connectionId: "conn-new",
-        reason: "sse_open",
-        occurredAt: now,
-      },
-      db,
-    );
+    await recordClientConnectionEvent({
+      clientId: "client-123",
+      interfaceId: "chrome-extension",
+      connectionId: "conn-old",
+      reason: "sse_open",
+      occurredAt: now - CLIENT_CONNECTION_EVENT_RETENTION_MS - 1,
+    });
+    await recordClientConnectionEvent({
+      clientId: "client-123",
+      interfaceId: "chrome-extension",
+      connectionId: "conn-new",
+      reason: "sse_open",
+      occurredAt: now,
+    });
 
-    const history = listClientConnectionHistory({ now }, db);
+    const history = await listClientConnectionHistory({ now });
     expect(history.events).toHaveLength(1);
     expect(history.events[0].connectionId).toBe("conn-new");
   });
 
-  test("does not throw when listing without an injected database", () => {
-    const history = listClientConnectionHistory();
+  test("does not throw when listing without an injected database", async () => {
+    const history = await listClientConnectionHistory();
     expect(Array.isArray(history.events)).toBe(true);
     expect(Array.isArray(history.sessions)).toBe(true);
   });
 
-  test("preserves a session that opened before the since bound", () => {
-    const db = createTestDb();
+  test("preserves a session that opened before the since bound", async () => {
     const t0 = 1_700_000_000_000;
 
-    recordClientConnectionEvent(
-      {
-        clientId: "client-123",
-        interfaceId: "chrome-extension",
-        connectionId: "conn-1",
-        reason: "sse_open",
-        occurredAt: t0,
-        actorPrincipalId: "user-123",
-      },
-      db,
-    );
-    recordClientConnectionEvent(
-      {
-        clientId: "client-123",
-        interfaceId: "chrome-extension",
-        connectionId: "conn-1",
-        reason: "sse_close",
-        occurredAt: t0 + 8_000,
-        actorPrincipalId: "user-123",
-      },
-      db,
-    );
+    await recordClientConnectionEvent({
+      clientId: "client-123",
+      interfaceId: "chrome-extension",
+      connectionId: "conn-1",
+      reason: "sse_open",
+      occurredAt: t0,
+      actorPrincipalId: "user-123",
+    });
+    await recordClientConnectionEvent({
+      clientId: "client-123",
+      interfaceId: "chrome-extension",
+      connectionId: "conn-1",
+      reason: "sse_close",
+      occurredAt: t0 + 8_000,
+      actorPrincipalId: "user-123",
+    });
 
-    const history = listClientConnectionHistory(
-      { clientId: "client-123", since: t0 + 5_000, now: t0 + 10_000 },
-      db,
-    );
+    const history = await listClientConnectionHistory({
+      clientId: "client-123",
+      since: t0 + 5_000,
+      now: t0 + 10_000,
+    });
 
     expect(history.sessions).toHaveLength(1);
     expect(history.sessions[0].startedAt).toBe(t0);
@@ -256,26 +233,23 @@ describe("recordClientConnectionEvent / listClientConnectionHistory", () => {
     expect(history.events[0].reason).toBe("sse_close");
   });
 
-  test("keeps a still-open session whose only event is before since", () => {
-    const db = createTestDb();
+  test("keeps a still-open session whose only event is before since", async () => {
     const t0 = 1_700_000_000_000;
 
-    recordClientConnectionEvent(
-      {
-        clientId: "client-123",
-        interfaceId: "chrome-extension",
-        connectionId: "conn-1",
-        reason: "sse_open",
-        occurredAt: t0,
-        actorPrincipalId: "user-123",
-      },
-      db,
-    );
+    await recordClientConnectionEvent({
+      clientId: "client-123",
+      interfaceId: "chrome-extension",
+      connectionId: "conn-1",
+      reason: "sse_open",
+      occurredAt: t0,
+      actorPrincipalId: "user-123",
+    });
 
-    const history = listClientConnectionHistory(
-      { clientId: "client-123", since: t0 + 5_000, now: t0 + 10_000 },
-      db,
-    );
+    const history = await listClientConnectionHistory({
+      clientId: "client-123",
+      since: t0 + 5_000,
+      now: t0 + 10_000,
+    });
 
     expect(history.sessions).toHaveLength(1);
     expect(history.sessions[0].startedAt).toBe(t0);
@@ -284,37 +258,31 @@ describe("recordClientConnectionEvent / listClientConnectionHistory", () => {
     expect(history.events).toHaveLength(0);
   });
 
-  test("omits a session that ended before the since bound", () => {
-    const db = createTestDb();
+  test("omits a session that ended before the since bound", async () => {
     const t0 = 1_700_000_000_000;
 
-    recordClientConnectionEvent(
-      {
-        clientId: "client-123",
-        interfaceId: "chrome-extension",
-        connectionId: "conn-old",
-        reason: "sse_open",
-        occurredAt: t0,
-        actorPrincipalId: "user-123",
-      },
-      db,
-    );
-    recordClientConnectionEvent(
-      {
-        clientId: "client-123",
-        interfaceId: "chrome-extension",
-        connectionId: "conn-old",
-        reason: "sse_close",
-        occurredAt: t0 + 1_000,
-        actorPrincipalId: "user-123",
-      },
-      db,
-    );
+    await recordClientConnectionEvent({
+      clientId: "client-123",
+      interfaceId: "chrome-extension",
+      connectionId: "conn-old",
+      reason: "sse_open",
+      occurredAt: t0,
+      actorPrincipalId: "user-123",
+    });
+    await recordClientConnectionEvent({
+      clientId: "client-123",
+      interfaceId: "chrome-extension",
+      connectionId: "conn-old",
+      reason: "sse_close",
+      occurredAt: t0 + 1_000,
+      actorPrincipalId: "user-123",
+    });
 
-    const history = listClientConnectionHistory(
-      { clientId: "client-123", since: t0 + 5_000, now: t0 + 10_000 },
-      db,
-    );
+    const history = await listClientConnectionHistory({
+      clientId: "client-123",
+      since: t0 + 5_000,
+      now: t0 + 10_000,
+    });
 
     expect(history.sessions).toHaveLength(0);
     expect(history.events).toHaveLength(0);

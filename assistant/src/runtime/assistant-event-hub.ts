@@ -688,7 +688,7 @@ export class AssistantEventHub {
     if (entry.type !== "client") {
       return;
     }
-    this.recordConnection({
+    void this.recordConnection({
       clientId: entry.clientId,
       interfaceId: entry.interfaceId,
       connectionId: entry.connectionId,

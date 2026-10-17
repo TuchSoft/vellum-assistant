@@ -85,7 +85,7 @@ export interface GuardianWaitControllerDeps {
     payload?: Record<string, unknown>,
   ): void;
   /** Human-readable guardian label for wait copy. */
-  resolveGuardianLabel(): string;
+  resolveGuardianLabel(): Promise<string>;
   onApproved(ctx: GuardianWaitResolutionContext): void | Promise<void>;
   onDenied(ctx: GuardianWaitResolutionContext): void | Promise<void>;
   onTimeout(ctx: GuardianWaitResolutionContext): void | Promise<void>;
@@ -157,10 +157,13 @@ export class GuardianWaitController {
     this.params = params;
     this.state = "awaiting_guardian_decision";
 
-    const guardianLabel = this.deps.resolveGuardianLabel();
-    void this.speak(
-      `Thank you. I've let ${guardianLabel} know. Please hold while I check if I have permission to speak with you.`,
-    );
+    void this.deps
+      .resolveGuardianLabel()
+      .then((guardianLabel) =>
+        this.speak(
+          `Thank you. I've let ${guardianLabel} know. Please hold while I check if I have permission to speak with you.`,
+        ),
+      );
 
     this.deps.updateCallSession(this.callSessionId, {
       status: "waiting_on_user",
@@ -214,7 +217,7 @@ export class GuardianWaitController {
    * Handle a caller utterance during the wait: reassurance, impatience
    * detection, and callback offer/opt-in. No-op unless waiting.
    */
-  handleTranscript(text: string): void {
+  async handleTranscript(text: string): Promise<void> {
     if (this.state !== "awaiting_guardian_decision") {
       return;
     }
@@ -232,7 +235,7 @@ export class GuardianWaitController {
       return;
     }
 
-    const guardianLabel = this.deps.resolveGuardianLabel();
+    const guardianLabel = await this.deps.resolveGuardianLabel();
 
     // Callback decisions are always processed regardless of cooldown —
     // the caller is answering a direct question and dropping their

@@ -115,16 +115,16 @@ export interface CallSetupFlowDeps {
   // via requireDeps, which applies defaults for the pure logic and throws
   // on a missing side-effect dep.
   /** Look up the call session (used for its conversation/routing fields). */
-  getCallSession?(id: string): SetupFlowCallSession | null;
+  getCallSession?(id: string): Promise<SetupFlowCallSession | null>;
   finalizeCall?: typeof finalizeCallFn;
   addMessage?: typeof addMessageFn;
   /** Fire-and-forget pointer write tolerating an evicted conversation. */
   postPointerMessage?: typeof postPointerMessageSafeFn;
   fireCallTranscriptNotifier?: typeof fireCallTranscriptNotifierFn;
   /** Human-readable guardian label for prompts and handoff copy. */
-  resolveGuardianLabel?(): string;
+  resolveGuardianLabel?(): Promise<string>;
   /** Assistant display name, or null when unavailable. */
-  resolveAssistantLabel?(): string | null;
+  resolveAssistantLabel?(): Promise<string | null>;
   /** Defaults to {@link attemptVerificationCodeImpl} (call-verification). */
   attemptVerificationCode?: typeof attemptVerificationCodeImpl;
   /** Gateway-native invite claim. Defaults to call-verification's. */
@@ -484,11 +484,11 @@ export class CallSetupFlow {
         return;
 
       case "invite_redemption":
-        this.startInviteRedemption(outcome, resolved);
+        await this.startInviteRedemption(outcome, resolved);
         return;
 
       case "name_capture":
-        this.startNameCapture(outcome, resolved);
+        await this.startNameCapture(outcome, resolved);
         return;
 
       case "unverified_caller":
@@ -567,7 +567,14 @@ export class CallSetupFlow {
     // During the guardian decision wait, caller speech is classified by the
     // wait controller (reassurance, impatience, callback offer/opt-in).
     if (this.state === "awaiting_guardian_decision") {
-      this.guardianWait?.handleTranscript(text);
+      void this.guardianWait
+        ?.handleTranscript(text)
+        .catch((err) =>
+          log.error(
+            { err, callSessionId: this.callSessionId },
+            "Guardian wait transcript handling failed",
+          ),
+        );
       return;
     }
     if (this.codeMode == null) {
@@ -722,7 +729,7 @@ export class CallSetupFlow {
 
     // Post the verification code to the initiating conversation so the
     // guardian (user) can share it with the callee.
-    const session = vdeps.getCallSession(this.callSessionId);
+    const session = await vdeps.getCallSession(this.callSessionId);
     if (session?.initiatedFromConversationId) {
       const codeMsg = `\u{1F510} Verification code for call to ${session.toNumber}: ${code}`;
       await vdeps.addMessage(
@@ -862,7 +869,7 @@ export class CallSetupFlow {
         lastError: "Guardian voice verification failed — max attempts exceeded",
       });
 
-      const session = vdeps.getCallSession(this.callSessionId);
+      const session = await vdeps.getCallSession(this.callSessionId);
       if (session) {
         this.finalizeOnce(vdeps.finalizeCall, session.conversationId);
 
@@ -935,7 +942,7 @@ export class CallSetupFlow {
         lastError: "Callee verification failed — max attempts exceeded",
       });
 
-      const session = vdeps.getCallSession(this.callSessionId);
+      const session = await vdeps.getCallSession(this.callSessionId);
       if (session) {
         this.finalizeOnce(vdeps.finalizeCall, session.conversationId);
         if (session.initiatedFromConversationId) {
@@ -978,7 +985,7 @@ export class CallSetupFlow {
     assistantId: string,
     fromNumber: string,
   ): Promise<void> {
-    const session = vdeps.getCallSession(this.callSessionId);
+    const session = await vdeps.getCallSession(this.callSessionId);
     if (session?.initiatedFromConversationId) {
       vdeps.postPointerMessage(
         session.initiatedFromConversationId,
@@ -1050,12 +1057,12 @@ export class CallSetupFlow {
       return false;
     }
 
-    const guardianLabel = adeps.resolveGuardianLabel();
+    const guardianLabel = await adeps.resolveGuardianLabel();
     let handoffText: string;
 
     if (params.activationReason === "invite_redeemed") {
       const firstName = firstToken(params.inviteeName);
-      const assistantName = adeps.resolveAssistantLabel();
+      const assistantName = await adeps.resolveAssistantLabel();
       if (firstName) {
         handoffText = assistantName
           ? `Great, I've verified that you are ${firstName}. It's nice to meet you! I'm ${assistantName}, ${guardianLabel}'s assistant. How can I help?`
@@ -1074,7 +1081,7 @@ export class CallSetupFlow {
     this.deps.recordCallEvent(this.callSessionId, "assistant_spoke", {
       text: handoffText,
     });
-    const session = adeps.getCallSession(this.callSessionId);
+    const session = await adeps.getCallSession(this.callSessionId);
     if (session) {
       adeps.fireCallTranscriptNotifier(
         session.conversationId,
@@ -1185,10 +1192,10 @@ export class CallSetupFlow {
    * invite. Prompts the caller to enter their 6-digit invite code via DTMF
    * or speech; the code is validated in a single attempt.
    */
-  private startInviteRedemption(
+  private async startInviteRedemption(
     outcome: Extract<SetupOutcome, { action: "invite_redemption" }>,
     resolved: SetupResolved,
-  ): void {
+  ): Promise<void> {
     const ideps = this.requireInviteDeps();
     this.ideps = ideps;
     this.codeMode = "invite_redemption";
@@ -1212,11 +1219,11 @@ export class CallSetupFlow {
     });
 
     const displayFriend = firstToken(outcome.inviteeName) ?? "there";
-    const displayGuardian = ideps.resolveGuardianLabel();
+    const displayGuardian = await ideps.resolveGuardianLabel();
 
     let promptText: string;
     if (!resolved.isInbound) {
-      const assistantName = ideps.resolveAssistantLabel();
+      const assistantName = await ideps.resolveAssistantLabel();
       promptText = assistantName
         ? `Hi ${displayFriend}, this is ${assistantName}, ${displayGuardian}'s assistant. To get started, please enter the 6-digit code that ${displayGuardian} shared with you.`
         : `Hi ${displayFriend}, this is ${displayGuardian}'s assistant. To get started, please enter the 6-digit code that ${displayGuardian} shared with you.`;
@@ -1246,7 +1253,7 @@ export class CallSetupFlow {
     const result = await ideps.attemptInviteCodeRedemption({
       inviteRedemptionFromNumber: invite.fromNumber,
       enteredCode,
-      guardianLabel: ideps.resolveGuardianLabel(),
+      guardianLabel: await ideps.resolveGuardianLabel(),
     });
 
     // A concurrent path may have already reached a terminal result.
@@ -1297,7 +1304,7 @@ export class CallSetupFlow {
         lastError: "Voice invite redemption failed — invalid or expired code",
       });
 
-      const failSession = ideps.getCallSession(this.callSessionId);
+      const failSession = await ideps.getCallSession(this.callSessionId);
       if (failSession) {
         this.finalizeOnce(ideps.finalizeCall, failSession.conversationId);
       }
@@ -1315,10 +1322,10 @@ export class CallSetupFlow {
    * the intro greeting and arm the capture timeout. The caller's next
    * final transcript is taken as their name.
    */
-  private startNameCapture(
+  private async startNameCapture(
     outcome: Extract<SetupOutcome, { action: "name_capture" }>,
     resolved: SetupResolved,
-  ): void {
+  ): Promise<void> {
     const ndeps = this.requireNameCaptureDeps();
     this.ndeps = ndeps;
     const memberStatus = resolved.actorTrust.memberRecord?.status;
@@ -1346,8 +1353,8 @@ export class CallSetupFlow {
       },
     );
 
-    const guardianLabel = ndeps.resolveGuardianLabel();
-    const assistantName = ndeps.resolveAssistantLabel();
+    const guardianLabel = await ndeps.resolveGuardianLabel();
+    const assistantName = await ndeps.resolveAssistantLabel();
     const greeting = assistantName
       ? `Hi, this is ${assistantName}, ${guardianLabel}'s assistant. Sorry, I don't recognize this number. I'll let ${guardianLabel} know you called and see if I have permission to speak with you. Can I get your name?`
       : `Hi, this is ${guardianLabel}'s assistant. Sorry, I don't recognize this number. I'll let ${guardianLabel} know you called and see if I have permission to speak with you. Can I get your name?`;
@@ -1537,7 +1544,7 @@ export class CallSetupFlow {
     ndeps: NameCaptureDeps,
     requestId: string | null,
   ): Promise<void> {
-    const guardianLabel = ndeps.resolveGuardianLabel();
+    const guardianLabel = await ndeps.resolveGuardianLabel();
 
     this.deps.recordCallEvent(this.callSessionId, "inbound_acl_access_denied", {
       from: this.accessRequest?.fromNumber,
@@ -1575,7 +1582,7 @@ export class CallSetupFlow {
       callbackOptIn: boolean;
     },
   ): Promise<void> {
-    const guardianLabel = ndeps.resolveGuardianLabel();
+    const guardianLabel = await ndeps.resolveGuardianLabel();
 
     this.deps.recordCallEvent(
       this.callSessionId,

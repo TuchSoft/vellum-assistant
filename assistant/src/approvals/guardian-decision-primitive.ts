@@ -85,12 +85,12 @@ function computeGrantExpiresAt(_action: ApprovalAction): number {
  * Fails silently on error — grant minting is best-effort and must never
  * block the approval flow.
  */
-export function mintGuardianRequestGrant(params: {
+export async function mintGuardianRequestGrant(params: {
   request: GuardianRequestWire;
   actorChannel: string;
   guardianExternalUserId?: string;
   effectiveAction: ApprovalAction;
-}): { minted: boolean } {
+}): Promise<{ minted: boolean }> {
   const { request, actorChannel, guardianExternalUserId, effectiveAction } =
     params;
 
@@ -98,7 +98,7 @@ export function mintGuardianRequestGrant(params: {
     return { minted: false };
   }
 
-  const result = mintGrantFromDecision({
+  const result = await mintGrantFromDecision({
     scopeMode: "tool_signature",
     toolName: request.toolName,
     inputDigest: request.inputDigest,
@@ -509,7 +509,7 @@ export async function applyGuardianDecision(
   // (e.g. answerCall) having succeeded.
   let grantMinted = false;
   if (targetStatus === "approved" && !resolverFailed) {
-    const grantResult = mintGuardianRequestGrant({
+    const grantResult = await mintGuardianRequestGrant({
       request: resolved,
       actorChannel: actorContext.channel,
       guardianExternalUserId:

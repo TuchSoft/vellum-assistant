@@ -86,7 +86,7 @@ const parsePendingQuestion = createRowMapper<
 
 // ── Call Sessions ────────────────────────────────────────────────────
 
-export function createCallSession(opts: {
+export async function createCallSession(opts: {
   conversationId: string;
   provider: string;
   fromNumber: string;

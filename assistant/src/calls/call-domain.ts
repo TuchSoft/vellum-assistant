@@ -272,7 +272,7 @@ export async function createInboundVoiceSession(
   } = input;
 
   // Check if a session already exists for this CallSid (replay protection)
-  const existing = getCallSessionByCallSid(callSid);
+  const existing = await getCallSessionByCallSid(callSid);
   if (existing) {
     log.info(
       { callSid, callSessionId: existing.id },
@@ -296,7 +296,7 @@ export async function createInboundVoiceSession(
     externalChatId: callSid,
   });
 
-  const session = createCallSession({
+  const session = await createCallSession({
     conversationId: voiceConversationId,
     provider: "twilio",
     direction: "inbound",
@@ -304,7 +304,7 @@ export async function createInboundVoiceSession(
     toNumber,
   });
 
-  updateCallSession(session.id, { providerCallSid: callSid });
+  await updateCallSession(session.id, { providerCallSid: callSid });
   session.providerCallSid = callSid;
 
   const callerIsGuardian = await isGuardian(assistantId, "phone", fromNumber);
@@ -438,7 +438,7 @@ export async function startCall(
     // behind: no call session, no voice conversation, no lease.
     signal?.throwIfAborted();
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "outbound",
       conversationId,
       provider: "twilio",
@@ -469,7 +469,7 @@ export async function startCall(
 
     // Point the call session at the new voice conversation; the original
     // chat is preserved in initiatedFromConversationId.
-    updateCallSession(session.id, {
+    await updateCallSession(session.id, {
       conversationId: voiceConversationId,
     });
     session.conversationId = voiceConversationId;
@@ -525,7 +525,7 @@ export async function startCall(
     // not still place a real outbound call, so the session is marked cancelled
     // and its lease released before the abort is let out.
     if (signal?.aborted) {
-      updateCallSession(session.id, {
+      await updateCallSession(session.id, {
         status: "cancelled",
         endedAt: Date.now(),
         lastError: "Cancelled before the call was placed",
@@ -545,7 +545,7 @@ export async function startCall(
       statusCallbackUrl,
     });
 
-    updateCallSession(session.id, { providerCallSid: callSid });
+    await updateCallSession(session.id, { providerCallSid: callSid });
 
     log.info(
       { callSessionId: session.id, callSid },
@@ -585,7 +585,7 @@ export async function startCall(
     }
 
     if (sessionId) {
-      updateCallSession(sessionId, {
+      await updateCallSession(sessionId, {
         status: "failed",
         endedAt: Date.now(),
         lastError: msg,
@@ -604,20 +604,21 @@ export async function startCall(
  * Get the status of a call session. If no callSessionId is provided,
  * looks up the active call for the given conversationId.
  */
-export function getCallStatus(
+export async function getCallStatus(
   callSessionId?: string,
   conversationId?: string,
-):
+): Promise<
   | {
       ok: true;
       session: CallSession;
       pendingQuestion?: { id: string; questionText: string };
     }
-  | CallError {
+  | CallError
+> {
   let session: CallSession | null = null;
 
   if (callSessionId) {
-    session = getCallSession(callSessionId);
+    session = await getCallSession(callSessionId);
     if (!session) {
       return {
         ok: false,
@@ -626,7 +627,7 @@ export function getCallStatus(
       };
     }
   } else if (conversationId) {
-    session = getActiveCallSessionForConversation(conversationId);
+    session = await getActiveCallSessionForConversation(conversationId);
     if (!session) {
       return {
         ok: false,
@@ -647,7 +648,7 @@ export function getCallStatus(
     "Checking call status",
   );
 
-  const pendingQuestion = getPendingQuestion(session.id);
+  const pendingQuestion = await getPendingQuestion(session.id);
   return {
     ok: true,
     session,
@@ -665,7 +666,7 @@ export async function cancelCall(
 ): Promise<{ ok: true; session: CallSession } | CallError> {
   const { callSessionId, reason } = input;
 
-  const session = getCallSession(callSessionId);
+  const session = await getCallSession(callSessionId);
   if (!session) {
     return {
       ok: false,
@@ -713,21 +714,21 @@ export async function cancelCall(
   }
 
   // Update session status
-  updateCallSession(callSessionId, {
+  await updateCallSession(callSessionId, {
     status: "cancelled",
     endedAt: Date.now(),
   });
 
   // Expire any pending questions so they don't linger
-  expirePendingQuestions(callSessionId);
+  await expirePendingQuestions(callSessionId);
 
   // Revoke any scoped approval grants bound to this call session.
   // Revoke by both callSessionId and conversationId because the
   // guardian-approval-interception minting path sets callSessionId: null
   // but always sets conversationId.
   try {
-    revokeScopedApprovalGrantsForContext({ callSessionId });
-    revokeScopedApprovalGrantsForContext({
+    await revokeScopedApprovalGrantsForContext({ callSessionId });
+    await revokeScopedApprovalGrantsForContext({
       conversationId: session.conversationId,
     });
   } catch (err) {
@@ -739,7 +740,7 @@ export async function cancelCall(
 
   // Re-check final status: a concurrent transition (e.g. Twilio callback) may have
   // moved the session to a terminal state before our update, causing it to be skipped.
-  const updated = getCallSession(callSessionId);
+  const updated = await getCallSession(callSessionId);
   if (updated && updated.status !== "cancelled") {
     log.warn(
       { callSessionId, finalStatus: updated.status },
@@ -825,7 +826,7 @@ export async function answerCall(
   }
 
   // Look up the pending question in the store for record-keeping
-  const question = getPendingQuestion(callSessionId);
+  const question = await getPendingQuestion(callSessionId);
   if (!question) {
     return { ok: false, error: "No pending question found", status: 404 };
   }
@@ -852,7 +853,7 @@ export async function answerCall(
     };
   }
 
-  answerPendingQuestion(question.id, answer);
+  await answerPendingQuestion(question.id, answer);
 
   return { ok: true, questionId: question.id };
 }
@@ -879,7 +880,7 @@ export async function relayInstruction(
     };
   }
 
-  const session = getCallSession(callSessionId);
+  const session = await getCallSession(callSessionId);
   if (!session) {
     return {
       ok: false,
@@ -977,7 +978,7 @@ export async function startVerificationCall(
       externalChatId: `guardian-verify:${verificationSessionId}`,
     });
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "outbound",
       conversationId,
       provider: "twilio",
@@ -1013,7 +1014,7 @@ export async function startVerificationCall(
       },
     });
 
-    updateCallSession(session.id, { providerCallSid: callSid });
+    await updateCallSession(session.id, { providerCallSid: callSid });
 
     log.info(
       {
@@ -1034,7 +1035,7 @@ export async function startVerificationCall(
     );
 
     if (sessionId) {
-      updateCallSession(sessionId, {
+      await updateCallSession(sessionId, {
         status: "failed",
         endedAt: Date.now(),
         lastError: msg,
@@ -1111,7 +1112,7 @@ export async function startInviteCall(
       externalChatId: `invite-call:${phoneNumber}:${timestamp}`,
     });
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "outbound",
       conversationId,
       provider: "twilio",
@@ -1145,7 +1146,7 @@ export async function startInviteCall(
       statusCallbackUrl,
     });
 
-    updateCallSession(session.id, { providerCallSid: callSid });
+    await updateCallSession(session.id, { providerCallSid: callSid });
 
     log.info(
       {
@@ -1167,7 +1168,7 @@ export async function startInviteCall(
     );
 
     if (sessionId) {
-      updateCallSession(sessionId, {
+      await updateCallSession(sessionId, {
         status: "failed",
         endedAt: Date.now(),
         lastError: msg,

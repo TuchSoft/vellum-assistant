@@ -35,10 +35,10 @@ export type SubagentRefInput = z.infer<typeof subagentRefInputSchema>;
  * Resolve a subagent ID from parsed tool input.
  * Accepts either `subagent_id` (direct UUID) or `label` (case-insensitive lookup).
  */
-export function resolveSubagentId(
+export async function resolveSubagentId(
   input: SubagentRefInput,
   context: ToolContext,
-): string | undefined {
+): Promise<string | undefined> {
   if (input.subagent_id) {
     return input.subagent_id;
   }
@@ -54,7 +54,7 @@ export function resolveSubagentId(
       input.label,
       context.conversationId,
     );
-    const record = getSubagentRecordByLabel(
+    const record = await getSubagentRecordByLabel(
       context.conversationId,
       normalizeSubagentLabel(input.label),
     );
@@ -72,7 +72,9 @@ export function resolveSubagentId(
     // which already broke the tie by insertion order, so the row it picked is
     // the later spawn. A live entry with no row has not persisted yet, which
     // only a spawn still in flight can be, so that one is the later spawn.
-    return getSubagentRecordById(live.config.id) ? record.id : live.config.id;
+    return (await getSubagentRecordById(live.config.id))
+      ? record.id
+      : live.config.id;
   }
   return undefined;
 }
@@ -91,14 +93,14 @@ export function resolveSubagentId(
  * ownership check to it unchanged. Tools that need a live instance
  * (`subagent_message`) must keep using `getState()` directly.
  */
-export function resolveSubagentState(
+export async function resolveSubagentState(
   subagentId: string,
-): SubagentState | undefined {
+): Promise<SubagentState | undefined> {
   const live = getSubagentManager().getState(subagentId);
   if (live) {
     return live;
   }
-  const record = getSubagentRecordById(subagentId);
+  const record = await getSubagentRecordById(subagentId);
   if (!record) {
     return undefined;
   }

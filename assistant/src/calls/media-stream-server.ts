@@ -90,6 +90,7 @@ import {
   type MediaStreamSttSessionConfig,
 } from "./media-stream-stt-session.js";
 import { resolveTelephonySynthesisLanguage } from "./telephony-synthesis-language.js";
+import type { CallSession } from "./types.js";
 import {
   TRUST_UNAVAILABLE_DENY_MESSAGE,
   unresolvedActorTrust,
@@ -305,7 +306,7 @@ export class MediaStreamCallSession {
    * Handle WebSocket close. Finalizes the call session if not already
    * in a terminal state.
    */
-  handleTransportClosed(code?: number, reason?: string): void {
+  async handleTransportClosed(code?: number, reason?: string): Promise<void> {
     if (this.disposed) {
       return;
     }
@@ -316,7 +317,7 @@ export class MediaStreamCallSession {
     this.setupFlow = null;
     setupFlow?.dispose("transport_closed");
 
-    const session = getCallSession(this.callSessionId);
+    const session = await getCallSession(this.callSessionId);
     if (!session) {
       return;
     }
@@ -326,7 +327,7 @@ export class MediaStreamCallSession {
       // completion nulls setupFlow and hasFinalized() covers flow-side
       // finalization, keeping this exactly-once.
       if (setupFlow && !setupFlow.hasFinalized()) {
-        this.runFinalizationAndGrantCleanup(session);
+        await this.runFinalizationAndGrantCleanup(session);
       }
       return;
     }
@@ -347,11 +348,11 @@ export class MediaStreamCallSession {
       "Media stream transport closed — session diagnostics",
     );
     if (isNormalClose) {
-      updateCallSession(this.callSessionId, {
+      await updateCallSession(this.callSessionId, {
         status: "completed",
         endedAt: Date.now(),
       });
-      recordCallEvent(this.callSessionId, "call_ended", {
+      await recordCallEvent(this.callSessionId, "call_ended", {
         reason: reason || "media_stream_closed",
         closeCode: code,
       });
@@ -380,12 +381,12 @@ export class MediaStreamCallSession {
           : code
             ? `media_stream_closed_${code}`
             : "media_stream_closed_abnormal");
-      updateCallSession(this.callSessionId, {
+      await updateCallSession(this.callSessionId, {
         status: "failed",
         endedAt: Date.now(),
         lastError: `Media stream WebSocket closed unexpectedly: ${detail}`,
       });
-      recordCallEvent(this.callSessionId, "call_failed", {
+      await recordCallEvent(this.callSessionId, "call_failed", {
         reason: detail,
         closeCode: code,
       });
@@ -400,7 +401,7 @@ export class MediaStreamCallSession {
       }
     }
 
-    this.revokeScopedGrants(session.conversationId);
+    await this.revokeScopedGrants(session.conversationId);
 
     // A setup flow that reached a flow-terminal path already ran
     // finalizeCall — keep finalization exactly-once.
@@ -458,7 +459,7 @@ export class MediaStreamCallSession {
     this.output.setStreamSid(event.streamSid);
 
     // Update the call session with the provider call SID.
-    const session = getCallSession(this.callSessionId);
+    const session = await getCallSession(this.callSessionId);
     if (session) {
       const updates: Parameters<typeof updateCallSession>[1] = {
         providerCallSid: event.start.callSid,
@@ -473,10 +474,10 @@ export class MediaStreamCallSession {
           updates.startedAt = Date.now();
         }
       }
-      updateCallSession(this.callSessionId, updates);
+      await updateCallSession(this.callSessionId, updates);
     }
 
-    recordCallEvent(this.callSessionId, "call_connected", {
+    await recordCallEvent(this.callSessionId, "call_connected", {
       callSid: event.start.callSid,
       streamSid: event.streamSid,
       encoding: event.start.mediaFormat.encoding,
@@ -597,7 +598,7 @@ export class MediaStreamCallSession {
    * session failed, notify the initiating conversation, end the stream, and
    * finalize.
    */
-  private handleSetupFailure(err: unknown): void {
+  private async handleSetupFailure(err: unknown): Promise<void> {
     log.error(
       { err, callSessionId: this.callSessionId },
       "Media-stream setup routing failed — ending call",
@@ -613,15 +614,15 @@ export class MediaStreamCallSession {
     this.setupFlow = null;
     flow?.dispose("teardown");
 
-    const session = getCallSession(this.callSessionId);
+    const session = await getCallSession(this.callSessionId);
     if (session && !isTerminalState(session.status)) {
       const detail = err instanceof Error ? err.message : String(err);
-      updateCallSession(this.callSessionId, {
+      await updateCallSession(this.callSessionId, {
         status: "failed",
         endedAt: Date.now(),
         lastError: `Call setup failed: ${detail}`,
       });
-      recordCallEvent(this.callSessionId, "call_failed", {
+      await recordCallEvent(this.callSessionId, "call_failed", {
         reason: "setup_routing_failed",
         transport: "media-stream",
       });
@@ -640,7 +641,7 @@ export class MediaStreamCallSession {
     // guarded by the flow's own finalization).
     this.output.endSession("setup-failed");
     if (!flow?.hasFinalized()) {
-      this.runFinalizationAndGrantCleanup(session);
+      await this.runFinalizationAndGrantCleanup(session);
     }
   }
 
@@ -650,9 +651,7 @@ export class MediaStreamCallSession {
    * trust re-resolution, guardian wait construction) use the flow's
    * real-implementation defaults.
    */
-  private buildSetupFlowDeps(
-    session: ReturnType<typeof getCallSession>,
-  ): CallSetupFlowDeps {
+  private buildSetupFlowDeps(session: CallSession | null): CallSetupFlowDeps {
     return {
       speakSystemPrompt: (text) => speakSystemPrompt(this.output, text),
       updateCallSession,
@@ -662,8 +661,8 @@ export class MediaStreamCallSession {
       // Flow-terminal paths set a terminal session status, so the
       // transport-close handler skips its cleanup — revoke scoped grants
       // here alongside finalization.
-      finalizeCall: (callSessionId, conversationId) => {
-        this.revokeScopedGrants(conversationId);
+      finalizeCall: async (callSessionId, conversationId) => {
+        await this.revokeScopedGrants(conversationId);
         finalizeCall(callSessionId, conversationId);
       },
       addMessage,
@@ -671,7 +670,7 @@ export class MediaStreamCallSession {
       fireCallTranscriptNotifier,
       resolveGuardianLabel: () =>
         resolveGuardianName(this.primedGuardianDisplayName),
-      resolveAssistantLabel,
+      resolveAssistantLabel: async () => resolveAssistantLabel(),
     };
   }
 
@@ -682,10 +681,10 @@ export class MediaStreamCallSession {
    * (the flow already spoke its terminal copy, set terminal status,
    * and scheduled its own delayed `endSession`).
    */
-  private handleSetupFlowResult(
+  private async handleSetupFlowResult(
     result: SetupFlowResult,
-    session: ReturnType<typeof getCallSession>,
-  ): void {
+    session: CallSession | null,
+  ): Promise<void> {
     const flow = this.setupFlow;
     this.setupFlow = null;
 
@@ -694,7 +693,7 @@ export class MediaStreamCallSession {
       // when the WebSocket closes, so run cleanup inline — unless a
       // flow-terminal path already finalized (grants revoked there too).
       if (!flow?.hasFinalized()) {
-        this.runFinalizationAndGrantCleanup(session);
+        await this.runFinalizationAndGrantCleanup(session);
       }
       return;
     }
@@ -707,6 +706,7 @@ export class MediaStreamCallSession {
         assistantId: result.assistantId,
         trustContext: result.trustContext,
         resolveSynthesisLanguage: this.resolveSynthesisLanguage,
+        callSession: session,
       },
     );
     this.controller = controller;
@@ -745,13 +745,15 @@ export class MediaStreamCallSession {
    * guardian-approval-interception minting path sets callSessionId: null
    * but always sets conversationId.
    */
-  private revokeScopedGrants(conversationId: string | undefined): void {
+  private async revokeScopedGrants(
+    conversationId: string | undefined,
+  ): Promise<void> {
     try {
-      revokeScopedApprovalGrantsForContext({
+      await revokeScopedApprovalGrantsForContext({
         callSessionId: this.callSessionId,
       });
       if (conversationId) {
-        revokeScopedApprovalGrantsForContext({ conversationId });
+        await revokeScopedApprovalGrantsForContext({ conversationId });
       }
     } catch (err) {
       log.warn(
@@ -769,10 +771,10 @@ export class MediaStreamCallSession {
    * here to avoid leaking grants and skipping `finalizeCall()`
    * side-effects.
    */
-  private runFinalizationAndGrantCleanup(
-    session: ReturnType<typeof getCallSession>,
-  ): void {
-    this.revokeScopedGrants(session?.conversationId);
+  private async runFinalizationAndGrantCleanup(
+    session: CallSession | null,
+  ): Promise<void> {
+    await this.revokeScopedGrants(session?.conversationId);
     if (session?.conversationId) {
       finalizeCall(this.callSessionId, session.conversationId);
     }
@@ -859,7 +861,10 @@ export class MediaStreamCallSession {
     }
   }
 
-  private handleTranscriptFinal(text: string, _durationMs: number): void {
+  private async handleTranscriptFinal(
+    text: string,
+    _durationMs: number,
+  ): Promise<void> {
     if (!text.trim()) {
       return;
     }
@@ -881,7 +886,7 @@ export class MediaStreamCallSession {
     // spoken code entry, guardian-wait utterances). Fire the transcript
     // notifier for UI subscribers, then route into the flow.
     if (this.setupFlow) {
-      const setupSession = getCallSession(this.callSessionId);
+      const setupSession = await getCallSession(this.callSessionId);
       if (setupSession) {
         fireCallTranscriptNotifier(
           setupSession.conversationId,
@@ -902,7 +907,7 @@ export class MediaStreamCallSession {
       return;
     }
 
-    const session = getCallSession(this.callSessionId);
+    const session = await getCallSession(this.callSessionId);
     if (session) {
       fireCallTranscriptNotifier(
         session.conversationId,

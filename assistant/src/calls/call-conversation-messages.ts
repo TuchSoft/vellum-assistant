@@ -21,9 +21,11 @@ function buildCallSummaryLabel(
   return `**${statusLabel}**${durationStr}. ${eventCount} event(s) recorded.`;
 }
 
-export function buildCallCompletionMessage(callSessionId: string): string {
-  const callSession = getCallSession(callSessionId);
-  const events = getCallEvents(callSessionId);
+export async function buildCallCompletionMessage(
+  callSessionId: string,
+): Promise<string> {
+  const callSession = await getCallSession(callSessionId);
+  const events = await getCallEvents(callSessionId);
   const duration =
     callSession?.endedAt && callSession?.startedAt
       ? Math.round((callSession.endedAt - callSession.startedAt) / 1000)
@@ -85,8 +87,8 @@ export async function persistCallCompletionMessage(
   conversationId: string,
   callSessionId: string,
 ): Promise<string> {
-  const callSession = getCallSession(callSessionId);
-  const events = getCallEvents(callSessionId);
+  const callSession = await getCallSession(callSessionId);
+  const events = await getCallEvents(callSessionId);
   const duration =
     callSession?.endedAt && callSession?.startedAt
       ? Math.round((callSession.endedAt - callSession.startedAt) / 1000)

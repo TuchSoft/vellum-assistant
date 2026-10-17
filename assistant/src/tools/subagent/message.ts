@@ -23,7 +23,7 @@ export async function executeSubagentMessage(
     return invalidToolInputResult("subagent_message", parsedInput.error);
   }
   const parsed = parsedInput.data;
-  const subagentId = resolveSubagentId(parsed, context);
+  const subagentId = await resolveSubagentId(parsed, context);
   const content = parsed.content;
 
   if (!subagentId && parsed.label) {

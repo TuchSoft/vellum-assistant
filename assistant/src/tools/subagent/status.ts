@@ -40,9 +40,11 @@ const MAX_LISTED_TERMINAL_RECORDS = 20;
  * an active recorded status reads as `interrupted`. The merged set is re-bounded
  * because the manager's own rehydration cap is far larger than this one.
  */
-function listSubagentsForParent(parentConversationId: string): SubagentState[] {
+async function listSubagentsForParent(
+  parentConversationId: string,
+): Promise<SubagentState[]> {
   const byId = new Map<string, SubagentState>();
-  const records = getSubagentRecordsByParent(parentConversationId, {
+  const records = await getSubagentRecordsByParent(parentConversationId, {
     terminalStatuses: [...TERMINAL_STATUSES],
     maxTerminal: MAX_LISTED_TERMINAL_RECORDS,
   });
@@ -76,7 +78,7 @@ export async function executeSubagentStatus(
     return invalidToolInputResult("subagent_status", parsedInput.error);
   }
   const parsed = parsedInput.data;
-  const subagentId = resolveSubagentId(parsed, context);
+  const subagentId = await resolveSubagentId(parsed, context);
 
   // If a label was provided but didn't resolve, that's an error — don't fall
   // through to the "list all" path.
@@ -88,7 +90,7 @@ export async function executeSubagentStatus(
   }
 
   if (subagentId) {
-    const state = resolveSubagentState(subagentId);
+    const state = await resolveSubagentState(subagentId);
     if (
       !state ||
       state.config.parentConversationId !== context.conversationId
@@ -115,7 +117,7 @@ export async function executeSubagentStatus(
   }
 
   // List all subagents for this parent conversation.
-  const children = listSubagentsForParent(context.conversationId);
+  const children = await listSubagentsForParent(context.conversationId);
   if (children.length === 0) {
     return {
       content: "No subagents found for this conversation.",

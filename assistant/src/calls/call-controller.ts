@@ -83,6 +83,7 @@ import {
   resolveTelephonySynthesisLanguage,
 } from "./telephony-synthesis-language.js";
 import { sanitizeForTts } from "./tts-text-sanitizer.js";
+import type { CallSession } from "./types.js";
 import {
   ASK_GUARDIAN_CAPTURE_REGEX,
   CALL_OPENING_ACK_MARKER,
@@ -350,6 +351,8 @@ export class CallController {
       resolveSynthesisLanguage?: () => string | undefined;
       /** Test seam: an explicit null disables narration for the call. */
       progressNarrator?: VoiceProgressNarrator | null;
+      /** Pre-resolved session, so construction never reads the store. */
+      callSession?: CallSession | null;
       progressConfig?: VoiceProgressConfig;
       frontModelConfig?: VoiceFrontModelConfig;
     },
@@ -373,8 +376,8 @@ export class CallController {
         ? opts.progressNarrator
         : createVoiceProgressNarrator({ config: this.progressConfig });
 
-    // Resolve the conversation ID and skipDisclosure from the call session
-    const session = getCallSession(callSessionId);
+    // The caller resolves the session; construction stays synchronous.
+    const session = opts?.callSession ?? null;
     this.conversationId = session?.conversationId ?? callSessionId;
     this.skipDisclosure = session?.skipDisclosure ?? false;
 
@@ -760,29 +763,31 @@ export class CallController {
     // Revoke by both callSessionId and conversationId because the
     // guardian-approval-interception minting path sets callSessionId: null
     // but always sets conversationId.
-    try {
-      let revoked = revokeScopedApprovalGrantsForContext({
-        callSessionId: this.callSessionId,
-      });
-      revoked += revokeScopedApprovalGrantsForContext({
-        conversationId: this.conversationId,
-      });
-      if (revoked > 0) {
-        log.info(
-          {
-            callSessionId: this.callSessionId,
-            conversationId: this.conversationId,
-            revokedCount: revoked,
-          },
-          "Revoked scoped grants on call end",
+    void (async () => {
+      try {
+        let revoked = await revokeScopedApprovalGrantsForContext({
+          callSessionId: this.callSessionId,
+        });
+        revoked += await revokeScopedApprovalGrantsForContext({
+          conversationId: this.conversationId,
+        });
+        if (revoked > 0) {
+          log.info(
+            {
+              callSessionId: this.callSessionId,
+              conversationId: this.conversationId,
+              revokedCount: revoked,
+            },
+            "Revoked scoped grants on call end",
+          );
+        }
+      } catch (err) {
+        log.warn(
+          { err, callSessionId: this.callSessionId },
+          "Failed to revoke scoped grants on call end",
         );
       }
-    } catch (err) {
-      log.warn(
-        { err, callSessionId: this.callSessionId },
-        "Failed to revoke scoped grants on call end",
-      );
-    }
+    })();
 
     log.info({ callSessionId: this.callSessionId }, "CallController destroyed");
   }
@@ -1930,7 +1935,7 @@ export class CallController {
       stripInternalSpeechMarkers(responseText),
     ).trim();
     if (spokenText.length > 0) {
-      const session = getCallSession(this.callSessionId);
+      const session = await getCallSession(this.callSessionId);
       if (session) {
         fireCallTranscriptNotifier(
           session.conversationId,
@@ -2078,7 +2083,7 @@ export class CallController {
 
             // Expire the previous consultation's storage records so stale
             // guardian answers cannot match the old request.
-            expirePendingQuestions(this.callSessionId);
+            await expirePendingQuestions(this.callSessionId);
             const previousRequest = await getPendingRequestByCallSession(
               this.callSessionId,
             );
@@ -2101,7 +2106,7 @@ export class CallController {
             // The previous request ID is passed through so the dispatch
             // can backfill supersession chain metadata (superseded_by_request_id)
             // once the new request has been created.
-            this.dispatchNewConsultation(
+            await this.dispatchNewConsultation(
               questionText,
               effectiveToolMeta,
               previousRequest?.id ?? null,
@@ -2109,14 +2114,18 @@ export class CallController {
           }
         } else {
           // No prior consultation — dispatch fresh
-          this.dispatchNewConsultation(questionText, effectiveToolMeta, null);
+          await this.dispatchNewConsultation(
+            questionText,
+            effectiveToolMeta,
+            null,
+          );
         }
       }
     }
 
     // Check for END_CALL marker
     if (responseText.includes(END_CALL_MARKER)) {
-      this.scheduleEndCallAfterListenWindow();
+      await this.scheduleEndCallAfterListenWindow();
       return;
     }
 
@@ -2128,8 +2137,8 @@ export class CallController {
     this.flushPendingInstructions();
   }
 
-  private scheduleEndCallAfterListenWindow(): void {
-    const currentSession = getCallSession(this.callSessionId);
+  private async scheduleEndCallAfterListenWindow(): Promise<void> {
+    const currentSession = await getCallSession(this.callSessionId);
     if (currentSession && isTerminalState(currentSession.status)) {
       this.state = "idle";
       this.currentTurnHandle = null;
@@ -2195,7 +2204,7 @@ export class CallController {
       return;
     }
 
-    this.completeCallFromEndMarker();
+    await this.completeCallFromEndMarker();
   }
 
   /**
@@ -2243,7 +2252,7 @@ export class CallController {
     // Expire store-side consultation records so clients don't observe
     // a completed call with a dangling pendingQuestion, and guardian
     // replies are cleanly rejected instead of hitting answerCall failures.
-    expirePendingQuestions(this.callSessionId);
+    await expirePendingQuestions(this.callSessionId);
     // Fire-and-forget: the sync end-call path can't await the gateway
     // expiry; a failure leaves a pending row the TTL sweep reaps.
     void getPendingRequestByCallSession(this.callSessionId)
@@ -2261,7 +2270,7 @@ export class CallController {
     return true;
   }
 
-  private completeCallFromEndMarker(): void {
+  private async completeCallFromEndMarker(): Promise<void> {
     // The teardown has run to completion; drop the token so a later utterance
     // can't read it as a still-pending end-call.
     this.pendingEndCall = null;
@@ -2269,7 +2278,7 @@ export class CallController {
       return;
     }
 
-    const currentSession = getCallSession(this.callSessionId);
+    const currentSession = await getCallSession(this.callSessionId);
     if (currentSession && isTerminalState(currentSession.status)) {
       this.state = "idle";
       return;
@@ -2493,22 +2502,22 @@ export class CallController {
    * If `supersededRequestId` is provided, backfills the supersession
    * chain after the new request is created.
    */
-  private dispatchNewConsultation(
+  private async dispatchNewConsultation(
     questionText: string,
     effectiveToolMeta: { toolName: string; inputDigest: string } | null,
     supersededRequestId: string | null,
-  ): void {
-    const pendingQuestion = createPendingQuestion(
+  ): Promise<void> {
+    const pendingQuestion = await createPendingQuestion(
       this.callSessionId,
       questionText,
     );
-    updateCallSession(this.callSessionId, { status: "waiting_on_user" });
+    await updateCallSession(this.callSessionId, { status: "waiting_on_user" });
     recordCallEvent(this.callSessionId, "user_question_asked", {
       question: questionText,
     });
 
     // Notify the conversation that a question was asked
-    const session = getCallSession(this.callSessionId);
+    const session = await getCallSession(this.callSessionId);
     if (session) {
       fireCallQuestionNotifier(
         session.conversationId,
@@ -2600,7 +2609,7 @@ export class CallController {
       });
 
       // Expire pending questions and update call state
-      expirePendingQuestions(this.callSessionId);
+      await expirePendingQuestions(this.callSessionId);
       this.pendingGuardianInput = null;
       updateCallSession(this.callSessionId, { status: "in_progress" });
       this.guardianUnavailableForCall = true;
@@ -2691,8 +2700,8 @@ export class CallController {
         { systemCopy: true },
       );
       // Give TTS a moment to play, then end
-      this.durationEndTimer = setTimeout(() => {
-        const currentSession = getCallSession(this.callSessionId);
+      this.durationEndTimer = setTimeout(async () => {
+        const currentSession = await getCallSession(this.callSessionId);
         const shouldNotifyCompletion = currentSession
           ? currentSession.status !== "completed" &&
             currentSession.status !== "failed" &&

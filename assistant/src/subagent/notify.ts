@@ -157,11 +157,11 @@ function deliverToParent(
  * terminal summary through a separate path); `true` when the notification was
  * injected into the parent.
  */
-export function notifyParentFromChild(
+export async function notifyParentFromChild(
   childConversationId: string,
   message: string,
   urgency: string,
-): boolean {
+): Promise<boolean> {
   const child = findConversationOrSubagent(childConversationId);
   const parentConversationId = child?.parentConversationId;
   if (parentConversationId === undefined) {
@@ -178,7 +178,7 @@ export function notifyParentFromChild(
 
   // Cosmetic metadata only — a tampered record can at most mislabel a
   // notification to the child's own (routing is fixed to the live parent above).
-  const record = getSubagentRecordByConversationId(childConversationId);
+  const record = await getSubagentRecordByConversationId(childConversationId);
   if (record && TERMINAL_STATUSES.has(record.status as SubagentStatus)) {
     return false;
   }

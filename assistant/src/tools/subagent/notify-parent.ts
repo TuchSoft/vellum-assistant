@@ -59,7 +59,11 @@ export async function executeSubagentNotifyParent(
 
   throwIfCancelled(context);
 
-  const sent = notifyParentFromChild(context.conversationId, message, urgency);
+  const sent = await notifyParentFromChild(
+    context.conversationId,
+    message,
+    urgency,
+  );
 
   if (!sent) {
     return {

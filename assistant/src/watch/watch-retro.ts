@@ -409,7 +409,7 @@ async function dispatchWatchRetro(
     // a frame describes the same moment in a form the model reads directly for
     // a fraction of the bytes, and where that text is thin the entry says a
     // capture exists, which is enough for the retro to name the gap.
-    const render = renderWatchTimeline(summary.sessionId);
+    const render = await renderWatchTimeline(summary.sessionId);
     // A session that recorded nothing gets no retro. The store is the one
     // asked rather than the summary's count, so a session whose entries were
     // purged between the stop and this call reads the same as one that never

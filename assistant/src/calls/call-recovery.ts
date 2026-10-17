@@ -80,7 +80,7 @@ export async function reconcileCallsOnStartup(
   provider: VoiceProvider,
   log: Logger = defaultLog,
 ): Promise<void> {
-  const recoverableCalls = listRecoverableCalls();
+  const recoverableCalls = await listRecoverableCalls();
   reconcileActiveCallLeases(recoverableCalls);
 
   if (recoverableCalls.length === 0) {

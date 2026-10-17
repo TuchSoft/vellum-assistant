@@ -129,7 +129,7 @@ interface ScheduleNextHeartbeatParams {
   callSessionId: string;
   /** Called to get the current sequence number and advance it. */
   consumeSequence: () => number;
-  resolveGuardianLabel: () => string;
+  resolveGuardianLabel: () => Promise<string>;
   sendTextToken: (text: string, last: boolean) => void;
   /** Called after each heartbeat to schedule the next one. */
   scheduleNext: () => void;
@@ -163,13 +163,13 @@ export function scheduleNextHeartbeat(
             ),
         );
 
-  return setTimeout(() => {
+  return setTimeout(async () => {
     if (!params.isWaitActive()) {
       return;
     }
 
     const seq = params.consumeSequence();
-    const guardianLabel = params.resolveGuardianLabel();
+    const guardianLabel = await params.resolveGuardianLabel();
     const message = getHeartbeatMessage(seq, guardianLabel);
     params.sendTextToken(message, true);
 

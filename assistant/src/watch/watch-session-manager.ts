@@ -382,7 +382,7 @@ export class WatchSessionManager {
     const nowMs = this.now();
     this.recordAppend(
       session,
-      appendNarration(session.sessionId, {
+      await appendNarration(session.sessionId, {
         conversationId: session.conversationId,
         text,
         atMs: nowMs - session.startedAtMs,
@@ -494,7 +494,7 @@ export class WatchSessionManager {
         );
         return;
       }
-      const appended = appendObservation(session.sessionId, {
+      const appended = await appendObservation(session.sessionId, {
         conversationId: session.conversationId,
         observation,
         atMs,

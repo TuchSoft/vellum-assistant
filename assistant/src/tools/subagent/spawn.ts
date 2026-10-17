@@ -205,7 +205,7 @@ export async function executeSubagentSpawn(
   // here until `manager.spawn` persists the row the durable in-flight count
   // reads, and is released either way.
   if (parsed.confirm_repeat !== true) {
-    const guardResult = repeatSpawnGuardResult(
+    const guardResult = await repeatSpawnGuardResult(
       context.conversationId,
       objective,
     );
@@ -721,14 +721,14 @@ function reservedInFlight(
  * cost, and can still spawn by passing `confirm_repeat: true`. The spawn
  * history can only advise, so a failed read lets the spawn through.
  */
-function repeatSpawnGuardResult(
+async function repeatSpawnGuardResult(
   parentConversationId: string,
   objective: string,
-): ToolExecutionResult | undefined {
+): Promise<ToolExecutionResult | undefined> {
   const normalizedObjective = normalizeSpawnObjective(objective);
   let recent: RecentSimilarSpawns;
   try {
-    recent = countRecentSimilarSpawns({
+    recent = await countRecentSimilarSpawns({
       parentConversationId,
       normalizedObjective,
       sinceMs: Date.now() - LOOP_GUARD_WINDOW_MS,

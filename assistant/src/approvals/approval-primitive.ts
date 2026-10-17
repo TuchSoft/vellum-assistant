@@ -65,9 +65,9 @@ type MintGrantResult =
  * Returns a discriminated result so callers can inspect failure reasons
  * without catching exceptions.
  */
-export function mintGrantFromDecision(
+export async function mintGrantFromDecision(
   params: MintGrantParams,
-): MintGrantResult {
+): Promise<MintGrantResult> {
   // Scope-mode field validation
   if (params.scopeMode === "request_id" && !params.requestId) {
     log.warn(
@@ -103,7 +103,7 @@ export function mintGrantFromDecision(
   }
 
   try {
-    const grant = createScopedApprovalGrant({
+    const grant = await createScopedApprovalGrant({
       scopeMode: params.scopeMode,
       requestId: params.requestId ?? null,
       toolName: params.toolName ?? null,
@@ -178,7 +178,7 @@ interface ConsumeGrantParams {
 }
 
 /**
- * Single synchronous attempt to consume a scoped approval grant.
+ * Single attempt to consume a scoped approval grant.
  *
  * Tries `request_id` mode first when a requestId is provided, then falls
  * back to `tool_signature` mode.  This mirrors the priority ordering at
@@ -188,11 +188,13 @@ interface ConsumeGrantParams {
  * This is an internal helper — callers should use {@link consumeGrantForInvocation}
  * which adds retry polling to handle the voice pipeline race condition.
  */
-function consumeGrantSync(params: ConsumeGrantParams): ConsumeGrantResult {
+async function consumeGrantSync(
+  params: ConsumeGrantParams,
+): Promise<ConsumeGrantResult> {
   // Try request_id mode first when a requestId is provided
   if (params.requestId) {
     const reqResult: ConsumeByRequestIdResult =
-      consumeScopedApprovalGrantByRequestId(
+      await consumeScopedApprovalGrantByRequestId(
         params.requestId,
         params.consumingRequestId,
         params.now,
@@ -231,7 +233,7 @@ function consumeGrantSync(params: ConsumeGrantParams): ConsumeGrantResult {
 
   // Fall back to tool_signature mode
   const sigResult: ConsumeByToolSignatureResult =
-    consumeScopedApprovalGrantByToolSignature({
+    await consumeScopedApprovalGrantByToolSignature({
       toolName: params.toolName,
       inputDigest: params.inputDigest,
       consumingRequestId: params.consumingRequestId,
@@ -287,7 +289,7 @@ const GRANT_RETRY_MAX_WAIT_MS = 10_000;
 /**
  * Consume a scoped approval grant for a tool invocation.
  *
- * Performs a synchronous lookup first and returns immediately when a
+ * Performs a lookup first and returns immediately when a
  * matching grant exists.  When the first attempt misses, retries with
  * polling to handle the voice pipeline race condition where the grant
  * may still be in-flight: `answerCall()` triggers the voice turn as
@@ -300,9 +302,9 @@ export async function consumeGrantForInvocation(
   params: ConsumeGrantParams,
   options?: { maxWaitMs?: number; intervalMs?: number; signal?: AbortSignal },
 ): Promise<ConsumeGrantResult> {
-  // Fast path: try once synchronously — covers the common case where the
+  // Fast path: try once up front, which covers the common case where the
   // grant already exists.
-  const first = consumeGrantSync(params);
+  const first = await consumeGrantSync(params);
   if (first.ok) {
     return first;
   }
@@ -345,7 +347,7 @@ export async function consumeGrantForInvocation(
       return { ok: false, reason: "aborted" };
     }
 
-    const result = consumeGrantSync(params);
+    const result = await consumeGrantSync(params);
     if (result.ok) {
       log.info(
         {

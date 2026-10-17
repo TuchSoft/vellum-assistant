@@ -1981,8 +1981,11 @@ export class SubagentManager {
    * Best-effort and idempotent: a second restart re-reads `interrupted` rows
    * and leaves them unchanged.
    */
-  rehydrateFromDb(): { rehydrated: number; interrupted: number } {
-    const records = loadRehydratableSubagentRecords({
+  async rehydrateFromDb(): Promise<{
+    rehydrated: number;
+    interrupted: number;
+  }> {
+    const records = await loadRehydratableSubagentRecords({
       terminalStatuses: [...TERMINAL_STATUSES],
       maxTerminal: MAX_REHYDRATED_TERMINAL_RECORDS,
     });

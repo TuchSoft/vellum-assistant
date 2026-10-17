@@ -202,7 +202,7 @@ async function processVoiceWebhook(
   }
 
   // ── Outbound mode: callSessionId is present ─────────────────────
-  const session = getCallSession(callSessionId);
+  const session = await getCallSession(callSessionId);
   if (!session) {
     log.warn({ callSessionId }, "Voice webhook: call session not found");
     throw new NotFoundError("Call session not found");
@@ -218,7 +218,7 @@ async function processVoiceWebhook(
 
   // Capture CallSid immediately so status callbacks can locate this session
   if (callSid && callSid !== session.providerCallSid) {
-    updateCallSession(callSessionId, { providerCallSid: callSid });
+    await updateCallSession(callSessionId, { providerCallSid: callSid });
     log.info({ callSessionId, callSid }, "Stored CallSid from voice webhook");
   }
 
@@ -338,7 +338,9 @@ function buildMediaStreamTwiml(
  * Accepts pre-parsed form params. Returns void (always 200 to Twilio
  * regardless of internal state — errors are logged, not surfaced).
  */
-function processStatusCallback(params: Record<string, string>): void {
+async function processStatusCallback(
+  params: Record<string, string>,
+): Promise<void> {
   const callSid = params.CallSid ?? null;
   const callStatus = params.CallStatus ?? null;
 
@@ -353,7 +355,7 @@ function processStatusCallback(params: Record<string, string>): void {
 
   log.info({ callSid, callStatus }, "Twilio status callback received");
 
-  const session = getCallSessionByCallSid(callSid);
+  const session = await getCallSessionByCallSid(callSid);
   if (!session) {
     log.warn(
       { callSid, callStatus },
@@ -378,7 +380,7 @@ function processStatusCallback(params: Record<string, string>): void {
     sequenceNumber,
   );
 
-  const claimId = claimCallback(dedupeKey, session.id);
+  const claimId = await claimCallback(dedupeKey, session.id);
   if (!claimId) {
     log.info(
       { callSid, callStatus, dedupeKey },
@@ -413,7 +415,7 @@ function processStatusCallback(params: Record<string, string>): void {
         ? "call_connected"
         : "call_started";
 
-    updateCallSession(session.id, updates, {
+    await updateCallSession(session.id, updates, {
       beforeLeaseSync: () => {
         recordCallEvent(session.id, eventType, {
           twilioStatus: callStatus,
@@ -425,7 +427,7 @@ function processStatusCallback(params: Record<string, string>): void {
 
     try {
       if (isTerminal) {
-        expirePendingQuestions(session.id);
+        await expirePendingQuestions(session.id);
 
         if (!wasTerminal) {
           persistCallCompletionMessage(
@@ -451,7 +453,7 @@ function processStatusCallback(params: Record<string, string>): void {
       );
     }
 
-    const finalized = finalizeCallbackClaim(dedupeKey, claimId);
+    const finalized = await finalizeCallbackClaim(dedupeKey, claimId);
     if (!finalized) {
       log.warn(
         { dedupeKey, claimId, callSid, callStatus },
@@ -461,7 +463,7 @@ function processStatusCallback(params: Record<string, string>): void {
   } catch (err) {
     if (eventPersisted) {
       try {
-        finalizeCallbackClaim(dedupeKey, claimId);
+        await finalizeCallbackClaim(dedupeKey, claimId);
         log.warn(
           { dedupeKey, claimId, callSid, callStatus, err },
           "Post-persistence error — claim finalized to prevent duplicate events on retry",
@@ -474,7 +476,7 @@ function processStatusCallback(params: Record<string, string>): void {
       }
     } else {
       try {
-        releaseCallbackClaim(dedupeKey, claimId);
+        await releaseCallbackClaim(dedupeKey, claimId);
       } catch (releaseErr) {
         log.error(
           { dedupeKey, claimId, callSid, callStatus, releaseErr },
@@ -493,7 +495,7 @@ function processStatusCallback(params: Record<string, string>): void {
 export async function handleStatusCallback(req: Request): Promise<Response> {
   const formBody = new URLSearchParams(await req.text());
   const params = Object.fromEntries(formBody.entries());
-  processStatusCallback(params);
+  await processStatusCallback(params);
   return new Response(null, { status: 200 });
 }
 
@@ -529,10 +531,10 @@ export async function handleInternalVoiceWebhook({
  * Internal status-callback handler for gateway→runtime forwarding.
  * Accepts JSON body `{ params }` from the gateway.
  */
-export function handleInternalStatusCallback({
+export async function handleInternalStatusCallback({
   body = {},
-}: RouteHandlerArgs): RouteResponse {
+}: RouteHandlerArgs): Promise<RouteResponse> {
   const { params = {} } = body as { params?: Record<string, string> };
-  processStatusCallback(params);
+  await processStatusCallback(params);
   return new RouteResponse(null, {});
 }

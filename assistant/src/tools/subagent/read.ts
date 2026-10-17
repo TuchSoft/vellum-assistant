@@ -67,7 +67,7 @@ export async function executeSubagentRead(
     return invalidToolInputResult("subagent_read", parsedInput.error);
   }
   const parsed = parsedInput.data;
-  const subagentId = resolveSubagentId(parsed, context);
+  const subagentId = await resolveSubagentId(parsed, context);
   if (!subagentId && parsed.label) {
     return {
       content: `No subagent found with label "${parsed.label}".`,
@@ -81,7 +81,7 @@ export async function executeSubagentRead(
     };
   }
 
-  const state = resolveSubagentState(subagentId);
+  const state = await resolveSubagentState(subagentId);
   if (!state) {
     return {
       content: `No subagent found with ID "${subagentId}".`,

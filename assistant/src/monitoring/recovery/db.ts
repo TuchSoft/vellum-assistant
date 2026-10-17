@@ -1,42 +1,26 @@
 /**
- * Shared SQLite access for the monitor's recovery steps.
+ * Shared database access for the monitor's recovery steps.
  *
  * Recovery runs OUT OF PROCESS from the daemon, so it never uses the daemon's
- * `getDb()` singleton (which assumes the daemon process and its migration
- * lifecycle). Each step opens its own short-lived read/write handle on the
- * daemon's database file, owns it for one run, and closes it before returning.
+ * `requireMainDb()` singleton lifecycle. It resolves the shared Postgres facade
+ * from the same `VELLUM_DATABASE_URL` instead, and every step awaits its
+ * queries.
  */
 
-import { existsSync } from "node:fs";
-import { Database } from "bun:sqlite";
-
+import type { AsyncDb } from "../../persistence/db-facade.js";
+import { getAsyncDb } from "../../persistence/db-facade.js";
 import { getLogger } from "../../util/logger.js";
-import { getDbPath } from "../../util/platform.js";
 import { readDaemonBootTime } from "../daemon-boot-time.js";
 
 const log = getLogger("recovery-db");
 
-/** Max time a recovery write waits on the daemon's writer lock before erroring. */
-export const RECOVERY_BUSY_TIMEOUT_MS = 5_000;
-
 /**
- * Open a read/write handle on the daemon's SQLite database. Returns null when
- * the database file does not exist yet (the daemon has not booted) — never
- * creating it. The caller owns the handle for the lifetime of one run and must
- * close it before returning.
+ * Resolve the facade pointing at the daemon's database. Returns null when no
+ * database URL is configured, so a step keeps its existing "nothing to do"
+ * branch rather than throwing.
  */
-export function openRecoveryDb(): Database | null {
-  if (!existsSync(getDbPath())) {
-    return null; // daemon has not created the database yet
-  }
-  try {
-    const db = new Database(getDbPath(), { readwrite: true, create: false });
-    db.exec(`PRAGMA busy_timeout=${RECOVERY_BUSY_TIMEOUT_MS}`);
-    return db;
-  } catch (err) {
-    log.debug({ err }, "recovery: could not open database");
-    return null;
-  }
+export function openRecoveryDb(): AsyncDb | null {
+  return getAsyncDb();
 }
 
 /**
@@ -45,18 +29,17 @@ export function openRecoveryDb(): Database | null {
  * Every step reconciles rows a dead process left behind, so every step needs
  * the same two guards first: a daemon boot time to fence against (without it
  * a live daemon's in-flight row is indistinguishable from a dead process's
- * orphan) and an openable database. `run` is invoked only when both hold, and
- * the handle is closed however it returns.
+ * orphan) and an available database. `run` is invoked only when both hold.
  *
  * Steps keep their own logger and their own result logging: this owns the
- * preconditions and the handle's lifetime, not what a step does or says.
- * A throw propagates to the orchestrator, which treats it as "schema not
- * ready yet" and retries on the next monitor run.
+ * preconditions, not what a step does or says. A throw propagates to the
+ * orchestrator, which treats it as "schema not ready yet" and retries on the
+ * next monitor run.
  */
-export function withBootFencedRecoveryDb(
+export async function withBootFencedRecoveryDb(
   step: string,
-  run: (db: Database, bootTime: number) => void,
-): void {
+  run: (db: AsyncDb, bootTime: number) => void | Promise<void>,
+): Promise<void> {
   const bootTime = readDaemonBootTime();
   if (bootTime == null) {
     log.warn({ step }, "Skipping recovery step: daemon boot time unavailable");
@@ -66,9 +49,5 @@ export function withBootFencedRecoveryDb(
   if (db == null) {
     return;
   }
-  try {
-    run(db, bootTime);
-  } finally {
-    db.close();
-  }
+  await run(db, bootTime);
 }

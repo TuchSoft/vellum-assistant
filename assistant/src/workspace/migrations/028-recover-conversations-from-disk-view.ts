@@ -16,11 +16,7 @@ import { join } from "node:path";
 
 import { eq } from "drizzle-orm";
 
-import { getDb } from "../../persistence/db-connection.js";
-import {
-  conversations,
-  messages,
-} from "../../persistence/schema/conversations.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { getLogger } from "../../util/logger.js";
 import type { WorkspaceMigration } from "./types.js";
 
@@ -105,13 +101,15 @@ export const recoverConversationsFromDiskViewMigration: WorkspaceMigration = {
   description:
     "Recover conversations from disk-view directories into the database",
 
-  run(workspaceDir: string): void {
+  async run(workspaceDir: string): Promise<void> {
     const conversationsDir = join(workspaceDir, "conversations");
     if (!existsSync(conversationsDir)) {
       return;
     }
 
-    const db = getDb();
+    const db = requireMainDb();
+    const conversations = db.schema.conversations;
+    const messages = db.schema.messages;
 
     let entries: string[];
     try {
@@ -161,13 +159,13 @@ export const recoverConversationsFromDiskViewMigration: WorkspaceMigration = {
       }
 
       // Check if conversation already exists in DB (idempotency)
-      const existing = db
+      const existing = await db.orm
         .select()
         .from(conversations)
         .where(eq(conversations.id, meta.id))
-        .get();
+        .limit(1);
 
-      if (existing) {
+      if (existing.length > 0) {
         skipped++;
         continue;
       }
@@ -203,44 +201,40 @@ export const recoverConversationsFromDiskViewMigration: WorkspaceMigration = {
 
       // Insert conversation + messages in a transaction
       try {
-        db.transaction((tx) => {
-          tx.insert(conversations)
-            .values({
-              id: meta.id,
-              title: meta.title ?? null,
-              createdAt,
-              updatedAt,
-              conversationType: meta.type ?? "standard",
-              originChannel: meta.channel ?? null,
-              source: "user",
-              isAutoTitle: 1,
-              totalInputTokens: 0,
-              totalOutputTokens: 0,
-              totalEstimatedCost: 0,
-              contextSummary: null,
-              contextCompactedMessageCount: 0,
-              contextCompactedAt: null,
-              originInterface: null,
-              forkParentConversationId: null,
-              forkParentMessageId: null,
-              scheduleJobId: null,
-            })
-            .run();
+        await db.transaction(async (tx) => {
+          await tx.orm.insert(conversations).values({
+            id: meta.id,
+            title: meta.title ?? null,
+            createdAt,
+            updatedAt,
+            conversationType: meta.type ?? "standard",
+            originChannel: meta.channel ?? null,
+            source: "user",
+            isAutoTitle: 1,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalEstimatedCost: 0,
+            contextSummary: null,
+            contextCompactedMessageCount: 0,
+            contextCompactedAt: null,
+            originInterface: null,
+            forkParentConversationId: null,
+            forkParentMessageId: null,
+            scheduleJobId: null,
+          });
 
           for (const record of messageRecords) {
             const contentBlocks = buildContentBlocks(record);
             const msgCreatedAt = parseEpochMs(record.ts) ?? createdAt;
 
-            tx.insert(messages)
-              .values({
-                id: randomUUID(),
-                conversationId: meta.id,
-                role: record.role,
-                content: JSON.stringify(contentBlocks),
-                createdAt: msgCreatedAt,
-                metadata: null,
-              })
-              .run();
+            await tx.orm.insert(messages).values({
+              id: randomUUID(),
+              conversationId: meta.id,
+              role: record.role,
+              content: JSON.stringify(contentBlocks),
+              createdAt: msgCreatedAt,
+              metadata: null,
+            });
           }
         });
 

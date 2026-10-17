@@ -16,8 +16,7 @@ import {
   syncMessageToDisk,
   updateMetaFile,
 } from "../../persistence/conversation-disk-view.js";
-import { getDb } from "../../persistence/db-connection.js";
-import { conversations, messages } from "../../persistence/schema/index.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { getLogger } from "../../util/logger.js";
 
 const log = getLogger("workspace-migrations");
@@ -112,14 +111,15 @@ function pruneUnreferencedProjectedAttachments(
  * Conversations are processed by ascending createdAt so replay ordering is
  * stable and deterministic across runs.
  */
-export function rebuildConversationDiskViewFromDb(): void {
-  const db = getDb();
+export async function rebuildConversationDiskViewFromDb(): Promise<void> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const messages = db.schema.messages;
 
-  const allConversations = db
+  const allConversations = await db.orm
     .select()
     .from(conversations)
-    .orderBy(asc(conversations.createdAt))
-    .all();
+    .orderBy(asc(conversations.createdAt));
 
   const total = allConversations.length;
   let processed = 0;
@@ -167,15 +167,14 @@ export function rebuildConversationDiskViewFromDb(): void {
     mkdirSync(attachDir, { recursive: true });
 
     // Query all messages for this conversation and sync each to disk
-    const convMessages = db
+    const convMessages = await db.orm
       .select()
       .from(messages)
       .where(eq(messages.conversationId, conv.id))
-      .orderBy(asc(messages.createdAt))
-      .all();
+      .orderBy(asc(messages.createdAt));
 
     for (const msg of convMessages) {
-      syncMessageToDisk(conv.id, msg.id, conv.createdAt);
+      await syncMessageToDisk(conv.id, msg.id, conv.createdAt);
     }
 
     // Write the real updatedAt only AFTER all messages are synced so the

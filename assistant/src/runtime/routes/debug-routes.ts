@@ -2,40 +2,47 @@
  * Debug introspection endpoint for monitoring and troubleshooting.
  */
 
-import { statSync } from "node:fs";
-
 import { z } from "zod";
 
 import { resolveCallSiteConfig } from "../../config/llm-resolver.js";
 import { getConfig } from "../../config/loader.js";
 import { getDbMigrationReadiness } from "../../daemon/daemon-readiness.js";
 import { countConversations } from "../../persistence/conversation-queries.js";
+import { getAsyncDb, getMemoryAsyncDb } from "../../persistence/db-facade.js";
 import { getMemoryJobCounts } from "../../persistence/jobs-store.js";
-import { rawMemoryAll } from "../../persistence/raw-query.js";
 import {
   getProviderRoutingSource,
   listProviders,
 } from "../../providers/registry.js";
 import { countSchedules } from "../../schedule/schedule-store.js";
-import { getDbPath } from "../../util/platform.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import type { RouteDefinition } from "./types.js";
 
 /** Process start time — used to calculate uptime. */
 const startedAt = Date.now();
 
-function getDatabaseSizeBytes(): number | null {
+async function getDatabaseSizeBytes(): Promise<number | null> {
+  const db = getAsyncDb();
+  if (!db) {
+    return null;
+  }
   try {
-    return statSync(getDbPath()).size;
+    const row = await db.get<{ size: string | number }>(
+      "SELECT pg_database_size(current_database()) AS size",
+    );
+    return row ? Number(row.size) : null;
   } catch {
     return null;
   }
 }
 
-function getMemoryItemCount(): number {
+async function getMemoryItemCount(): Promise<number> {
+  const db = getMemoryAsyncDb();
+  if (!db) {
+    return 0;
+  }
   try {
-    const rows = rawMemoryAll<{ c: number }>(
-      "debug:getMemoryItemCount",
+    const rows = await db.all<{ c: number }>(
       "SELECT COUNT(*) AS c FROM memory_graph_nodes",
     );
     return rows[0]?.c ?? 0;
@@ -55,8 +62,8 @@ async function getDebugInfo() {
     conversationType: "standard",
     archiveStatus: "all",
   });
-  const memoryItemCount = getMemoryItemCount();
-  const dbSizeBytes = getDatabaseSizeBytes();
+  const memoryItemCount = await getMemoryItemCount();
+  const dbSizeBytes = await getDatabaseSizeBytes();
 
   const memoryJobCounts = getMemoryJobCounts();
 
@@ -117,8 +124,8 @@ const databaseDebugSchema = z.object({
 });
 
 /**
- * In-memory migration latch only. Must not call getDb() or any ORM helper:
- * this route is exempt from the migration gate so it can answer while
+ * In-memory migration latch only. Must not call requireMainDb() or any ORM
+ * helper: this route is exempt from the migration gate so it can answer while
  * migrations are running or have failed.
  */
 function getDatabaseDebugInfo() {
@@ -187,7 +194,7 @@ export const ROUTES: RouteDefinition[] = [
     handler: getDatabaseDebugInfo,
     summary: "Database migration diagnostics",
     description:
-      "Return the in-memory DB migration latch, including failed and deferred steps. Does not query SQLite, so it stays answerable while migrations are running or have failed.",
+      "Return the in-memory DB migration latch, including failed and deferred steps. Does not query the database, so it stays answerable while migrations are running or have failed.",
     tags: ["debug"],
     responseBody: databaseDebugSchema,
   },

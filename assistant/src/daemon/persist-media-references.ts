@@ -84,7 +84,7 @@ async function referenceMediaBlock(
       media_type,
       data,
     );
-    linkAttachmentToMessage(messageId, stored.id, position);
+    await linkAttachmentToMessage(messageId, stored.id, position);
   } catch (err) {
     log.warn(
       { err, mediaType: media_type, messageId },

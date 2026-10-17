@@ -7,7 +7,7 @@ import {
   getAttachmentById,
   linkAttachmentToMessage,
 } from "../persistence/attachments-store.js";
-import { rawAll, rawGet, rawRun } from "../persistence/raw-query.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { getLogger } from "../util/logger.js";
 
 const log = getLogger("live-voice-archive");
@@ -237,15 +237,14 @@ function isArtifactMetadata(
   );
 }
 
-function readMessageMetadata(
+async function readMessageMetadata(
   messageId: string,
-): MessageMetadataState | "not_found" | "invalid_metadata" {
+): Promise<MessageMetadataState | "not_found" | "invalid_metadata"> {
   // Any-state read, deliberately: metadata exists from row insert and the id
   // names a row this archive flow already owns; completeness is irrelevant.
-  const row = rawGet<{ metadata: string | null }>(
-    "liveVoice:readMessageMetadata",
+  const row = await requireMainDb().get<{ metadata: string | null }>(
     `SELECT metadata FROM messages WHERE id = ?`,
-    messageId,
+    [messageId],
   );
   if (!row) {
     return "not_found";
@@ -274,42 +273,41 @@ function readMessageMetadata(
   return { metadata: parsed, artifacts };
 }
 
-function messageAttachmentLinkExists(
+async function messageAttachmentLinkExists(
   messageId: string,
   attachmentId: string,
-): boolean {
-  const row = rawGet<{ id: string }>(
-    "liveVoice:attachmentLinkExists",
+): Promise<boolean> {
+  const row = await requireMainDb().get<{ id: string }>(
     `SELECT id
      FROM message_attachments
      WHERE message_id = ? AND attachment_id = ?
      LIMIT 1`,
-    messageId,
-    attachmentId,
+    [messageId, attachmentId],
   );
   return !!row;
 }
 
-function findExistingMetadataArtifact(
+async function findExistingMetadataArtifact(
   messageId: string,
   archiveKey: string,
   artifacts: LiveVoiceAudioArtifactMetadata[],
-): LiveVoiceAudioArtifactMetadata | null {
-  const artifact = artifacts.find((candidate) => {
-    return (
+): Promise<LiveVoiceAudioArtifactMetadata | null> {
+  for (const candidate of artifacts) {
+    if (
       candidate.archiveKey === archiveKey &&
-      messageAttachmentLinkExists(messageId, candidate.attachmentId)
-    );
-  });
-  return artifact ?? null;
+      (await messageAttachmentLinkExists(messageId, candidate.attachmentId))
+    ) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
-function findExistingAttachmentByFilename(
+async function findExistingAttachmentByFilename(
   messageId: string,
   filenameStem: string,
-): AttachmentLookupRow | null {
-  const rows = rawAll<AttachmentLookupRow>(
-    "liveVoice:findAttachmentByFilename",
+): Promise<AttachmentLookupRow | null> {
+  const rows = await requireMainDb().all<AttachmentLookupRow>(
     `SELECT
        a.id AS id,
        a.original_filename AS originalFilename,
@@ -320,7 +318,7 @@ function findExistingAttachmentByFilename(
      JOIN message_attachments ma ON ma.attachment_id = a.id
      WHERE ma.message_id = ?
      ORDER BY ma.position ASC, a.created_at ASC`,
-    messageId,
+    [messageId],
   );
 
   return (
@@ -329,22 +327,21 @@ function findExistingAttachmentByFilename(
   );
 }
 
-function nextAttachmentPosition(messageId: string): number {
-  const row = rawGet<{ nextPosition: number | null }>(
-    "liveVoice:nextAttachmentPosition",
+async function nextAttachmentPosition(messageId: string): Promise<number> {
+  const row = await requireMainDb().get<{ nextPosition: number | null }>(
     `SELECT COALESCE(MAX(position) + 1, 0) AS nextPosition
      FROM message_attachments
      WHERE message_id = ?`,
-    messageId,
+    [messageId],
   );
   return row?.nextPosition ?? 0;
 }
 
-function persistArtifactMetadata(
+async function persistArtifactMetadata(
   messageId: string,
   artifact: LiveVoiceAudioArtifactMetadata,
-): boolean {
-  const state = readMessageMetadata(messageId);
+): Promise<boolean> {
+  const state = await readMessageMetadata(messageId);
   if (state === "not_found" || state === "invalid_metadata") {
     return false;
   }
@@ -356,15 +353,13 @@ function persistArtifactMetadata(
     artifact,
   ];
 
-  rawRun(
-    "liveVoice:persistArtifactMetadata",
-    `UPDATE messages SET metadata = ? WHERE id = ?`,
+  await requireMainDb().run(`UPDATE messages SET metadata = ? WHERE id = ?`, [
     JSON.stringify({
       ...state.metadata,
       [LIVE_VOICE_AUDIO_METADATA_KEY]: nextArtifacts,
     }),
     messageId,
-  );
+  ]);
   return true;
 }
 
@@ -478,7 +473,7 @@ export async function archiveLiveVoiceAudioArtifact(
     return validated;
   }
 
-  const state = readMessageMetadata(input.messageId);
+  const state = await readMessageMetadata(input.messageId);
   if (state === "not_found") {
     return resultWarning(
       "message_not_found",
@@ -492,7 +487,7 @@ export async function archiveLiveVoiceAudioArtifact(
     );
   }
 
-  const existingMetadataArtifact = findExistingMetadataArtifact(
+  const existingMetadataArtifact = await findExistingMetadataArtifact(
     input.messageId,
     validated.archiveKey,
     state.artifacts,
@@ -505,7 +500,7 @@ export async function archiveLiveVoiceAudioArtifact(
     };
   }
 
-  const existingAttachment = findExistingAttachmentByFilename(
+  const existingAttachment = await findExistingAttachmentByFilename(
     input.messageId,
     validated.filenameStem,
   );
@@ -523,12 +518,13 @@ export async function archiveLiveVoiceAudioArtifact(
       filename: existingAttachment.originalFilename,
       archivedAt: existingAttachment.createdAt,
     });
-    persistArtifactMetadata(input.messageId, artifact);
+    await persistArtifactMetadata(input.messageId, artifact);
     return { type: "archived", artifact, idempotent: true };
   }
 
   try {
-    const position = input.position ?? nextAttachmentPosition(input.messageId);
+    const position =
+      input.position ?? (await nextAttachmentPosition(input.messageId));
     const audio = input.audio;
     const stored = await (audio.type === "base64"
       ? attachInlineAttachmentToMessage(
@@ -573,7 +569,7 @@ export async function archiveLiveVoiceAudioArtifact(
       filename: stored.originalFilename,
       archivedAt: stored.createdAt,
     });
-    if (!persistArtifactMetadata(input.messageId, artifact)) {
+    if (!(await persistArtifactMetadata(input.messageId, artifact))) {
       log.warn(
         { messageId: input.messageId, archiveKey: validated.archiveKey },
         "Archived live voice audio but could not persist metadata",
@@ -684,7 +680,7 @@ export async function linkLiveVoiceAudioArtifactToMessage(
     );
   }
 
-  const state = readMessageMetadata(messageId);
+  const state = await readMessageMetadata(messageId);
   if (state === "not_found") {
     return resultUnlinked(
       "message_not_found",
@@ -700,7 +696,7 @@ export async function linkLiveVoiceAudioArtifactToMessage(
     );
   }
 
-  const existingMetadataArtifact = findExistingMetadataArtifact(
+  const existingMetadataArtifact = await findExistingMetadataArtifact(
     messageId,
     artifact.archiveKey,
     state.artifacts,
@@ -713,8 +709,8 @@ export async function linkLiveVoiceAudioArtifactToMessage(
     };
   }
 
-  if (messageAttachmentLinkExists(messageId, artifact.attachmentId)) {
-    persistArtifactMetadata(messageId, artifact);
+  if (await messageAttachmentLinkExists(messageId, artifact.attachmentId)) {
+    await persistArtifactMetadata(messageId, artifact);
     return { type: "archived", artifact, idempotent: true };
   }
 
@@ -730,7 +726,7 @@ export async function linkLiveVoiceAudioArtifactToMessage(
     const linkedAttachmentId = await linkAttachmentToMessage(
       messageId,
       artifact.attachmentId,
-      input.position ?? nextAttachmentPosition(messageId),
+      input.position ?? (await nextAttachmentPosition(messageId)),
     );
     const linkedAttachment = await getAttachmentById(linkedAttachmentId);
     const linkedArtifact = linkedAttachment
@@ -749,7 +745,7 @@ export async function linkLiveVoiceAudioArtifactToMessage(
         })
       : { ...artifact, attachmentId: linkedAttachmentId };
 
-    if (!persistArtifactMetadata(messageId, linkedArtifact)) {
+    if (!(await persistArtifactMetadata(messageId, linkedArtifact))) {
       log.warn(
         { messageId, archiveKey: artifact.archiveKey },
         "Linked live voice audio but could not persist metadata",

@@ -393,7 +393,7 @@ export class AssistantIpcServer {
 
     // Gate ORM-touching methods on DB migration readiness. Migrations run
     // asynchronously during startup, so the IPC server can be answering before
-    // the schema exists; dispatching a handler that calls getDb()/getSqlite()
+    // the schema exists; dispatching a handler that calls requireMainDb()
     // would hit a "no such table" error.
     const migrationGate = this.dbMigrationGateResponse(req.method, req.id);
     if (migrationGate) {
@@ -727,8 +727,7 @@ export function injectLocalActorHeader(
   const args = (params ?? {}) as RouteHandlerArgs;
   const existingHeaders = args.headers;
   const forwardedPrincipal = existingHeaders?.["x-vellum-principal-type"] as
-    | PrincipalType
-    | undefined;
+    PrincipalType | undefined;
   const isGatewayProxied = existingHeaders?.["x-vellum-proxy-server"] === "ipc";
   const headers: Record<string, string> = {
     ...existingHeaders,

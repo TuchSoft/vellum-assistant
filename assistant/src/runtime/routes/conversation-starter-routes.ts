@@ -11,8 +11,7 @@
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { getDb } from "../../persistence/db-connection.js";
-import { conversationStarters } from "../../persistence/schema/index.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { NotFoundError } from "./errors.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
@@ -130,34 +129,25 @@ function handleListConversationStarters(_args: RouteHandlerArgs) {
   return { starters: [], total: 0, status: "empty" };
 }
 
-function handleDeleteConversationStarter({
+async function handleDeleteConversationStarter({
   pathParams = {},
 }: RouteHandlerArgs) {
   const starterId = pathParams.id;
-  const db = getDb();
-  const existing = db
-    .select({ id: conversationStarters.id })
-    .from(conversationStarters)
-    .where(
-      and(
-        eq(conversationStarters.id, starterId),
-        eq(conversationStarters.cardType, "chip"),
-      ),
-    )
-    .get();
+  const db = requireMainDb();
+  const starters = db.schema.conversationStarters;
+  const existing = await db.orm
+    .select({ id: starters.id })
+    .from(starters)
+    .where(and(eq(starters.id, starterId), eq(starters.cardType, "chip")))
+    .limit(1);
 
-  if (!existing) {
+  if (existing.length === 0) {
     throw new NotFoundError(`Conversation starter not found: ${starterId}`);
   }
 
-  db.delete(conversationStarters)
-    .where(
-      and(
-        eq(conversationStarters.id, starterId),
-        eq(conversationStarters.cardType, "chip"),
-      ),
-    )
-    .run();
+  await db.orm
+    .delete(starters)
+    .where(and(eq(starters.id, starterId), eq(starters.cardType, "chip")));
 
   return { deleted: true, id: starterId };
 }

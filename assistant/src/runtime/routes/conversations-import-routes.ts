@@ -11,12 +11,8 @@ import {
   getConversationByKey,
   setConversationKey,
 } from "../../persistence/conversation-key-store.js";
-import { getDb } from "../../persistence/db-connection.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { enqueueLexicalIndexForMessage } from "../../persistence/job-handlers/message-lexical.js";
-import {
-  conversations as conversationsTable,
-  messages as messagesTable,
-} from "../../persistence/schema/index.js";
 import { indexMessageNow } from "../../plugins/defaults/memory/indexer.js";
 import { getLogger } from "../../util/logger.js";
 import { withSqliteRetry } from "../../util/sqlite-retry.js";
@@ -110,7 +106,9 @@ async function handleConversationsImport({ body }: RouteHandlerArgs) {
   }
 
   const payload = body as unknown as ImportPayload;
-  const db = getDb();
+  const db = requireMainDb();
+  const conversationsTable = db.schema.conversations;
+  const messagesTable = db.schema.messages;
   const memoryConfig = getConfig().memory;
 
   let imported = 0;
@@ -161,32 +159,31 @@ async function handleConversationsImport({ body }: RouteHandlerArgs) {
       }
 
       // Override conversation timestamps
-      db.update(conversationsTable)
+      await db.orm
+        .update(conversationsTable)
         .set({
           createdAt: convCreatedAt,
           updatedAt: convUpdatedAt,
           lastMessageAt: messageTimestamps[messageTimestamps.length - 1],
         })
-        .where(eq(conversationsTable.id, conversation.id))
-        .run();
+        .where(eq(conversationsTable.id, conversation.id));
 
       // Override message timestamps
-      const dbMessages = db
+      const dbMessages = await db.orm
         .select({ id: messagesTable.id })
         .from(messagesTable)
         .where(eq(messagesTable.conversationId, conversation.id))
-        .orderBy(messagesTable.createdAt)
-        .all();
+        .orderBy(messagesTable.createdAt);
 
       for (
         let i = 0;
         i < dbMessages.length && i < messageTimestamps.length;
         i++
       ) {
-        db.update(messagesTable)
+        await db.orm
+          .update(messagesTable)
           .set({ createdAt: messageTimestamps[i] })
-          .where(eq(messagesTable.id, dbMessages[i].id))
-          .run();
+          .where(eq(messagesTable.id, dbMessages[i].id));
       }
 
       // Index messages

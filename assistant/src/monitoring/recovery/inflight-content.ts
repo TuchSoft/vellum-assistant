@@ -36,8 +36,8 @@
 
 import { readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { Database } from "bun:sqlite";
 
+import type { AsyncDb } from "../../persistence/db-facade.js";
 import {
   parseContentRef,
   resolveContentRefPath,
@@ -93,84 +93,77 @@ function fileMtimeMs(absPath: string): number | null {
  * Throws only if the schema is not yet migrated; the orchestrator treats that
  * as a failed step and retries on the next monitor start.
  */
-export function recoverInflightContent(
+export async function recoverInflightContent(
   options: {
     minAgeMs?: number;
   } = {},
-): InflightRecoveryResult {
+): Promise<InflightRecoveryResult> {
   const db = openRecoveryDb();
   if (db == null) {
     return { finalized: 0, filesDeleted: 0, skippedProcessing: 0 };
   }
-  try {
-    const minAgeMs = options.minAgeMs ?? DEFAULT_INFLIGHT_MIN_AGE_MS;
-    const now = Date.now();
+  const minAgeMs = options.minAgeMs ?? DEFAULT_INFLIGHT_MIN_AGE_MS;
+  const now = Date.now();
 
-    // Throws here (missing `finalized`/`processing_started_at` column) propagate
-    // to the caller as "schema not ready yet".
-    const rows = db
-      .query(
-        `SELECT m.id AS id,
-                m.conversation_id AS conversationId,
-                m.content AS content,
-                c.processing_started_at AS processingStartedAt
-           FROM messages m
-           LEFT JOIN conversations c ON c.id = m.conversation_id
-          WHERE m.finalized = 0`,
-      )
-      .all() as UnfinalizedRow[];
+  // Throws here (missing `finalized`/`processing_started_at` column) propagate
+  // to the caller as "schema not ready yet".
+  const rows = await db.all<UnfinalizedRow>(
+    `SELECT m.id AS id,
+            m.conversation_id AS conversationId,
+            m.content AS content,
+            c.processing_started_at AS processingStartedAt
+       FROM messages m
+       LEFT JOIN conversations c ON c.id = m.conversation_id
+      WHERE m.finalized = 0`,
+  );
 
-    // `AND finalized = 0` makes the write a no-op if the daemon finalized the
-    // row between our read and this write; `changes` then reports 0 and we
-    // leave its file to the daemon.
-    const finalizeStmt = db.query(
-      `UPDATE messages SET content = ?, finalized = 1
-        WHERE id = ? AND finalized = 0`,
-    );
-
-    let finalized = 0;
-    let skippedProcessing = 0;
-    for (const row of rows) {
-      // Ownership guard: a live turn on this conversation still owns the row.
-      if (row.processingStartedAt != null) {
-        skippedProcessing++;
+  let finalized = 0;
+  let skippedProcessing = 0;
+  for (const row of rows) {
+    // Ownership guard: a live turn on this conversation still owns the row.
+    if (row.processingStartedAt != null) {
+      skippedProcessing++;
+      continue;
+    }
+    const absPath = refAbsPath(row.content);
+    // Age guard: a freshly-written file may be a live writer whose
+    // conversation flag we observed just after it cleared.
+    if (absPath != null) {
+      const mtime = fileMtimeMs(absPath);
+      if (mtime != null && now - mtime < minAgeMs) {
         continue;
       }
-      const absPath = refAbsPath(row.content);
-      // Age guard: a freshly-written file may be a live writer whose
-      // conversation flag we observed just after it cleared.
-      if (absPath != null) {
-        const mtime = fileMtimeMs(absPath);
-        if (mtime != null && now - mtime < minAgeMs) {
-          continue;
+    }
+    try {
+      const blocks = resolveMessageContentBlocks(row.content);
+      // `AND finalized = 0` makes the write a no-op if the daemon finalized
+      // the row between our read and this write; a zero count then means we
+      // leave its file to the daemon.
+      const changed = await db.run(
+        `UPDATE messages SET content = ?, finalized = 1
+          WHERE id = ? AND finalized = 0`,
+        [JSON.stringify(blocks), row.id],
+      );
+      if (changed > 0) {
+        finalized++;
+        if (absPath != null) {
+          rmSync(absPath, { force: true });
         }
       }
-      try {
-        const blocks = resolveMessageContentBlocks(row.content);
-        const info = finalizeStmt.run(JSON.stringify(blocks), row.id);
-        if (info.changes > 0) {
-          finalized++;
-          if (absPath != null) {
-            rmSync(absPath, { force: true });
-          }
-        }
-      } catch (err) {
-        log.warn(
-          { err, messageId: row.id },
-          "in-flight recovery: failed to fold a row — continuing",
-        );
-      }
+    } catch (err) {
+      log.warn(
+        { err, messageId: row.id },
+        "in-flight recovery: failed to fold a row — continuing",
+      );
     }
-
-    const filesDeleted = sweepOrphanDeltaFiles(db, minAgeMs, now);
-    const result = { finalized, filesDeleted, skippedProcessing };
-    if (finalized > 0 || filesDeleted > 0) {
-      log.info(result, "Recovered in-flight message content");
-    }
-    return result;
-  } finally {
-    db.close();
   }
+
+  const filesDeleted = await sweepOrphanDeltaFiles(db, minAgeMs, now);
+  const result = { finalized, filesDeleted, skippedProcessing };
+  if (finalized > 0 || filesDeleted > 0) {
+    log.info(result, "Recovered in-flight message content");
+  }
+  return result;
 }
 
 /**
@@ -179,15 +172,15 @@ export function recoverInflightContent(
  * file) keeps its file, and honours the same age floor so a live writer's file
  * is never unlinked mid-stream.
  */
-function sweepOrphanDeltaFiles(
-  db: Database,
+async function sweepOrphanDeltaFiles(
+  db: AsyncDb,
   minAgeMs: number,
   now: number,
-): number {
+): Promise<number> {
   const referenced = new Set<string>();
-  const rows = db
-    .query(`SELECT content FROM messages WHERE finalized = 0`)
-    .all() as Array<{ content: string }>;
+  const rows = await db.all<{ content: string }>(
+    `SELECT content FROM messages WHERE finalized = 0`,
+  );
   for (const row of rows) {
     const absPath = refAbsPath(row.content);
     if (absPath != null) {

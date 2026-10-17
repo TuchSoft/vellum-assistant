@@ -17,12 +17,7 @@
 import { and, desc, eq, inArray, like, sql } from "drizzle-orm";
 import { z } from "zod";
 
-import { getDb } from "../../persistence/db-connection.js";
-import {
-  assistantContactMetadata,
-  contactChannels,
-  contacts,
-} from "../../persistence/schema/index.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import type { RouteHandlerArgs } from "../../runtime/routes/types.js";
 
 /**
@@ -63,29 +58,27 @@ const ContactsInfoBatchParamsSchema = z.object({
  * Replaces the info-joiner's raw SELECT. Contacts absent from the assistant DB
  * are simply omitted; the caller treats a missing entry as "info unavailable".
  */
-export function handleContactsInfoBatch({ body = {} }: RouteHandlerArgs) {
+export async function handleContactsInfoBatch({ body = {} }: RouteHandlerArgs) {
   const { contactIds } = ContactsInfoBatchParamsSchema.parse(body);
   if (contactIds.length === 0) {
     return { infos: [] };
   }
 
-  const db = getDb();
-  const rows = db
+  const db = requireMainDb();
+  const contactsTable = db.schema.contacts;
+  const metadataTable = db.schema.assistantContactMetadata;
+  const rows = await db.orm
     .select({
-      id: contacts.id,
-      notes: contacts.notes,
-      userFile: contacts.userFile,
-      contactType: contacts.contactType,
-      species: assistantContactMetadata.species,
-      metadata: assistantContactMetadata.metadata,
+      id: contactsTable.id,
+      notes: contactsTable.notes,
+      userFile: contactsTable.userFile,
+      contactType: contactsTable.contactType,
+      species: metadataTable.species,
+      metadata: metadataTable.metadata,
     })
-    .from(contacts)
-    .leftJoin(
-      assistantContactMetadata,
-      eq(assistantContactMetadata.contactId, contacts.id),
-    )
-    .where(inArray(contacts.id, contactIds))
-    .all();
+    .from(contactsTable)
+    .leftJoin(metadataTable, eq(metadataTable.contactId, contactsTable.id))
+    .where(inArray(contactsTable.id, contactIds));
 
   const infos = rows.map((row) => ({
     contactId: row.id,
@@ -115,14 +108,14 @@ const ChannelIdentityLookupParamsSchema = z
     message: "Provide channelId, or both type and address",
   });
 
-const CHANNEL_IDENTITY_PROJECTION = {
-  id: contactChannels.id,
-  contactId: contactChannels.contactId,
-  type: contactChannels.type,
-  address: contactChannels.address,
-  externalChatId: contactChannels.externalChatId,
-  displayName: contacts.displayName,
-};
+const CHANNEL_IDENTITY_PROJECTION = (db: ReturnType<typeof requireMainDb>) => ({
+  id: db.schema.contactChannels.id,
+  contactId: db.schema.contactChannels.contactId,
+  type: db.schema.contactChannels.type,
+  address: db.schema.contactChannels.address,
+  externalChatId: db.schema.contactChannels.externalChatId,
+  displayName: db.schema.contacts.displayName,
+});
 
 /**
  * Resolve a contact-channel identity by `channelId` OR by logical
@@ -132,29 +125,31 @@ const CHANNEL_IDENTITY_PROJECTION = {
  * case-sensitive while this lookup is NOCASE, so case-variant duplicates can
  * match; they resolve to the most-recently-updated row.
  */
-export function handleContactChannelIdentityLookup({
+export async function handleContactChannelIdentityLookup({
   body = {},
 }: RouteHandlerArgs) {
   const params = ChannelIdentityLookupParamsSchema.parse(body);
-  const db = getDb();
+  const db = requireMainDb();
+  const channels = db.schema.contactChannels;
+  const contactsTable = db.schema.contacts;
 
   const where =
     params.channelId != null
-      ? eq(contactChannels.id, params.channelId)
+      ? eq(channels.id, params.channelId)
       : and(
-          eq(contactChannels.type, params.type!),
-          sql`${contactChannels.address} = ${params.address!} COLLATE NOCASE`,
+          eq(channels.type, params.type!),
+          sql`lower(${channels.address}) = lower(${params.address!})`,
         );
 
-  const row = db
-    .select(CHANNEL_IDENTITY_PROJECTION)
-    .from(contactChannels)
-    .innerJoin(contacts, eq(contacts.id, contactChannels.contactId))
+  const rows = await db.orm
+    .select(CHANNEL_IDENTITY_PROJECTION(db))
+    .from(channels)
+    .innerJoin(contactsTable, eq(contactsTable.id, channels.contactId))
     .where(where)
-    .orderBy(desc(contactChannels.updatedAt))
-    .get();
+    .orderBy(desc(channels.updatedAt))
+    .limit(1);
 
-  return { channel: row ?? null };
+  return { channel: rows[0] ?? null };
 }
 
 // ---------------------------------------------------------------------------
@@ -168,33 +163,39 @@ const ContactMirrorProbeParamsSchema = z.object({ contactId: z.string() });
  * exist, the guardian-authored info fields, and whether an assistant-metadata
  * row is present. Feeds the gateway orphan-veto and delete-target decisions.
  */
-export function handleContactMirrorProbe({ body = {} }: RouteHandlerArgs) {
+export async function handleContactMirrorProbe({
+  body = {},
+}: RouteHandlerArgs) {
   const { contactId } = ContactMirrorProbeParamsSchema.parse(body);
-  const db = getDb();
+  const db = requireMainDb();
+  const contactsTable = db.schema.contacts;
+  const channels = db.schema.contactChannels;
+  const metadataTable = db.schema.assistantContactMetadata;
 
-  const contactRow = db
+  const contactRows = await db.orm
     .select({
-      notes: contacts.notes,
-      userFile: contacts.userFile,
-      contactType: contacts.contactType,
+      notes: contactsTable.notes,
+      userFile: contactsTable.userFile,
+      contactType: contactsTable.contactType,
     })
-    .from(contacts)
-    .where(eq(contacts.id, contactId))
-    .get();
+    .from(contactsTable)
+    .where(eq(contactsTable.id, contactId))
+    .limit(1);
+  const contactRow = contactRows[0];
 
-  const channelRow = db
-    .select({ id: contactChannels.id })
-    .from(contactChannels)
-    .where(eq(contactChannels.contactId, contactId))
-    .limit(1)
-    .get();
+  const channelRows = await db.orm
+    .select({ id: channels.id })
+    .from(channels)
+    .where(eq(channels.contactId, contactId))
+    .limit(1);
+  const channelRow = channelRows[0];
 
-  const metadataRow = db
-    .select({ contactId: assistantContactMetadata.contactId })
-    .from(assistantContactMetadata)
-    .where(eq(assistantContactMetadata.contactId, contactId))
-    .limit(1)
-    .get();
+  const metadataRows = await db.orm
+    .select({ contactId: metadataTable.contactId })
+    .from(metadataTable)
+    .where(eq(metadataTable.contactId, contactId))
+    .limit(1);
+  const metadataRow = metadataRows[0];
 
   return {
     exists: contactRow != null,
@@ -216,14 +217,15 @@ const ContactUserFileSlugsParamsSchema = z.object({ prefix: z.string() });
  * List the `user_file` slugs matching `prefix%`. Feeds the gateway's
  * collision-suffixed slug allocation for a new contact.
  */
-export function handleContactUserFileSlugs({ body = {} }: RouteHandlerArgs) {
+export async function handleContactUserFileSlugs({
+  body = {},
+}: RouteHandlerArgs) {
   const { prefix } = ContactUserFileSlugsParamsSchema.parse(body);
-  const db = getDb();
-  const rows = db
-    .select({ userFile: contacts.userFile })
-    .from(contacts)
-    .where(like(contacts.userFile, `${prefix}%`))
-    .all();
+  const db = requireMainDb();
+  const rows = await db.orm
+    .select({ userFile: db.schema.contacts.userFile })
+    .from(db.schema.contacts)
+    .where(like(db.schema.contacts.userFile, `${prefix}%`));
   const userFiles = rows
     .map((r) => r.userFile)
     .filter((f): f is string => f != null);

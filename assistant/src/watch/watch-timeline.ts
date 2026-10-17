@@ -29,11 +29,10 @@
  * caller asks for a specific frame through {@link readWatchScreenshot}.
  *
  * Deletion needs no coordination beyond ordering. An append runs to completion
- * in one synchronous step, so nothing can land between its existence check and
- * its insert; every purge runs after the conversation rows it covers are
- * already gone. An append therefore either finishes before the purge, and is
- * swept by it, or starts after it and is refused by
- * {@link conversationStillExists}.
+ * in one transaction, so nothing can land between its existence check and its
+ * insert; every purge runs after the conversation rows it covers are already
+ * gone. An append therefore either finishes before the purge, and is swept by
+ * it, or starts after it and is refused by the insert's existence check.
  *
  * A purge that never ran is not permanent. Nothing cascades into this table, so
  * a failed purge or a crash between the conversation delete and the purge would
@@ -55,9 +54,8 @@ import {
 } from "drizzle-orm";
 
 import { escapeAxTreeContent } from "../context/outbound-sanitize.js";
-import { getDb } from "../persistence/db-connection.js";
-import { conversations } from "../persistence/schema/conversations.js";
-import { watchTimelineEntries } from "../persistence/schema/watch.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { getLogger } from "../util/logger.js";
 
 const log = getLogger("watch-timeline");
@@ -257,47 +255,40 @@ function normalizeAtMs(atMs: number): number {
   return Number.isFinite(atMs) ? Math.max(0, Math.floor(atMs)) : 0;
 }
 
-/**
- * Whether the conversation an entry is keyed to is still in the store.
- *
- * This is what keeps an append from outliving a delete. Every purge runs after
- * the conversation rows it covers are gone, so an append that starts once a
- * purge could no longer reach it finds nothing to key itself to and is
- * refused. The check is a read rather than a foreign key because a cascade
- * would delete on the store's terms rather than refuse on the append's, and a
- * cascade cannot refuse a row that arrives afterwards at all.
- */
-function conversationStillExists(conversationId: string): boolean {
-  return (
-    getDb()
-      .select({ id: conversations.id })
-      .from(conversations)
-      .where(eq(conversations.id, conversationId))
-      .get() !== undefined
-  );
-}
-
 /** The row an append writes, screenshot included. */
-type WatchTimelineRow = typeof watchTimelineEntries.$inferInsert;
+type WatchTimelineRow = SchemaTables["watchTimelineEntries"]["$inferInsert"];
 
 /**
  * Persist one entry, refusing one a deletion has overtaken.
  *
- * The check and the insert are one synchronous step, so no purge can run
+ * The check and the insert run in one transaction, so no purge can run
  * between them: the entry either predates the purge that covers it or is
- * turned away here.
+ * turned away here. Every purge runs after the conversation rows it covers
+ * are gone, so an append that starts once a purge could no longer reach it
+ * finds nothing to key itself to and is refused. The check is a read rather
+ * than a foreign key because a cascade would delete on the store's terms
+ * rather than refuse on the append's, and a cascade cannot refuse a row that
+ * arrives afterwards at all.
  */
-function insertEntry(row: WatchTimelineRow): WatchAppendResult {
-  if (!conversationStillExists(row.conversationId)) {
-    log.debug(
-      { sessionId: row.sessionId, conversationId: row.conversationId },
-      "Dropping a watch timeline entry for a conversation that is gone",
-    );
-    return { ok: false, reason: "conversation_missing" };
-  }
+async function insertEntry(row: WatchTimelineRow): Promise<WatchAppendResult> {
+  const db = requireMainDb();
   try {
-    getDb().insert(watchTimelineEntries).values(row).run();
-    return { ok: true, entryId: row.id };
+    return await db.transaction<WatchAppendResult>(async (tx) => {
+      const existing = await tx.orm
+        .select({ id: tx.schema.conversations.id })
+        .from(tx.schema.conversations)
+        .where(eq(tx.schema.conversations.id, row.conversationId))
+        .limit(1);
+      if (existing.length === 0) {
+        log.debug(
+          { sessionId: row.sessionId, conversationId: row.conversationId },
+          "Dropping a watch timeline entry for a conversation that is gone",
+        );
+        return { ok: false, reason: "conversation_missing" };
+      }
+      await tx.orm.insert(tx.schema.watchTimelineEntries).values(row);
+      return { ok: true, entryId: row.id };
+    });
   } catch (err) {
     log.warn(
       { err, sessionId: row.sessionId, kind: row.kind },
@@ -336,15 +327,15 @@ function decodeScreenshot(
 }
 
 /** Append what the user said at `atMs` milliseconds into the session. */
-export function appendNarration(
+export async function appendNarration(
   sessionId: string,
   options: { conversationId: string; text: string; atMs: number },
-): WatchAppendResult {
+): Promise<WatchAppendResult> {
   const text = options.text.trim();
   if (text.length === 0) {
     return { ok: false, reason: "empty" };
   }
-  return insertEntry({
+  return await insertEntry({
     id: randomUUID(),
     sessionId,
     conversationId: options.conversationId,
@@ -379,7 +370,7 @@ export function appendNarration(
  * app: requiring a tree or a diff would make watching one produce an empty
  * timeline while the frames the user asked for were being discarded.
  */
-export function appendObservation(
+export async function appendObservation(
   sessionId: string,
   options: {
     conversationId: string;
@@ -388,7 +379,7 @@ export function appendObservation(
     /** Store the observation's screenshot. Defaults to false. */
     attachScreenshot?: boolean;
   },
-): WatchAppendResult {
+): Promise<WatchAppendResult> {
   const { observation } = options;
   if (observation.executionError) {
     log.debug(
@@ -414,7 +405,7 @@ export function appendObservation(
     return { ok: false, reason: "empty" };
   }
 
-  return insertEntry({
+  return await insertEntry({
     id: randomUUID(),
     sessionId,
     conversationId: options.conversationId,
@@ -435,14 +426,16 @@ export function appendObservation(
  * only part of a timeline large enough to matter in memory, and a caller
  * attaching images knows which moments it wants.
  */
-export function readWatchScreenshot(
+export async function readWatchScreenshot(
   entryId: string,
-): { mimeType: string; bytes: Buffer } | null {
-  const row = getDb()
-    .select({ screenshot: watchTimelineEntries.screenshot })
-    .from(watchTimelineEntries)
-    .where(eq(watchTimelineEntries.id, entryId))
-    .get();
+): Promise<{ mimeType: string; bytes: Buffer } | null> {
+  const db = requireMainDb();
+  const rows = await db.orm
+    .select({ screenshot: db.schema.watchTimelineEntries.screenshot })
+    .from(db.schema.watchTimelineEntries)
+    .where(eq(db.schema.watchTimelineEntries.id, entryId))
+    .limit(1);
+  const row = rows[0];
   if (!row?.screenshot) {
     return null;
   }
@@ -450,14 +443,13 @@ export function readWatchScreenshot(
 }
 
 /** How many entries the session has, including any a read leaves out. */
-function countEntries(sessionId: string): number {
-  return (
-    getDb()
-      .select({ total: count() })
-      .from(watchTimelineEntries)
-      .where(eq(watchTimelineEntries.sessionId, sessionId))
-      .get()?.total ?? 0
-  );
+async function countEntries(sessionId: string): Promise<number> {
+  const db = requireMainDb();
+  const rows = await db.orm
+    .select({ total: count() })
+    .from(db.schema.watchTimelineEntries)
+    .where(eq(db.schema.watchTimelineEntries.sessionId, sessionId));
+  return rows[0]?.total ?? 0;
 }
 
 /**
@@ -473,40 +465,38 @@ function countEntries(sessionId: string): number {
  * The screenshot column is measured rather than selected, so the render learns
  * which entries have a frame and how large it is without pulling the pixels.
  */
-function readNewestEntries(
+async function readNewestEntries(
   sessionId: string,
   limit: number,
-): WatchTimelineEntry[] {
+): Promise<WatchTimelineEntry[]> {
   if (limit <= 0) {
     return [];
   }
-  const rows = getDb()
+  const db = requireMainDb();
+  const timeline = db.schema.watchTimelineEntries;
+  const rows = await db.orm
     .select({
-      id: watchTimelineEntries.id,
-      sessionId: watchTimelineEntries.sessionId,
-      conversationId: watchTimelineEntries.conversationId,
-      atMs: watchTimelineEntries.atMs,
-      kind: watchTimelineEntries.kind,
-      text: watchTimelineEntries.text,
-      axTree: watchTimelineEntries.axTree,
-      axDiff: watchTimelineEntries.axDiff,
-      screenshotBytes: sql<
-        number | null
-      >`length(${watchTimelineEntries.screenshot})`,
-      createdAt: watchTimelineEntries.createdAt,
+      id: timeline.id,
+      sessionId: timeline.sessionId,
+      conversationId: timeline.conversationId,
+      atMs: timeline.atMs,
+      kind: timeline.kind,
+      text: timeline.text,
+      axTree: timeline.axTree,
+      axDiff: timeline.axDiff,
+      screenshotBytes: sql<number | null>`length(${timeline.screenshot})`,
+      createdAt: timeline.createdAt,
     })
-    .from(watchTimelineEntries)
-    .where(eq(watchTimelineEntries.sessionId, sessionId))
-    .orderBy(
-      desc(watchTimelineEntries.atMs),
-      desc(watchTimelineEntries.createdAt),
-      desc(watchTimelineEntries.id),
-    )
-    .limit(limit)
-    .all()
-    .map((row) => ({ ...row, kind: row.kind as WatchEntryKind }));
-  rows.reverse();
-  return rows;
+    .from(timeline)
+    .where(eq(timeline.sessionId, sessionId))
+    .orderBy(desc(timeline.atMs), desc(timeline.createdAt), desc(timeline.id))
+    .limit(limit);
+  const mapped = rows.map((row) => ({
+    ...row,
+    kind: row.kind as WatchEntryKind,
+  }));
+  mapped.reverse();
+  return mapped;
 }
 
 function byteLength(value: string): number {
@@ -639,10 +629,10 @@ function renderEntry(
  * and the ids of the rendered entries that have a screenshot, so it can fetch
  * the images it wants and no others.
  */
-export function renderWatchTimeline(
+export async function renderWatchTimeline(
   sessionId: string,
   options?: WatchTimelineRenderOptions,
-): WatchTimelineRender {
+): Promise<WatchTimelineRender> {
   const maxEntries = Math.max(0, options?.maxEntries ?? DEFAULT_MAX_ENTRIES);
   const maxAxTrees = Math.max(0, options?.maxAxTrees ?? DEFAULT_MAX_AX_TREES);
   const maxRenderBytes = Math.max(
@@ -650,8 +640,8 @@ export function renderWatchTimeline(
     options?.maxRenderBytes ?? DEFAULT_MAX_RENDER_BYTES,
   );
 
-  const totalEntries = countEntries(sessionId);
-  const candidates = readNewestEntries(sessionId, maxEntries);
+  const totalEntries = await countEntries(sessionId);
+  const candidates = await readNewestEntries(sessionId, maxEntries);
 
   const treeIndices = candidates
     .map((entry, index) => (entry.axTree ? index : -1))
@@ -700,16 +690,15 @@ export function renderWatchTimeline(
  * Delete the timeline entries matching `where` and return how many went.
  *
  * One statement takes the narration, the screen, and the pixels together, and
- * `RETURNING` counts them without a second pass. It runs in process and
- * synchronously, which is what makes it uninterruptible: no append can slip
- * between the rows this statement matches and the rows it removes.
+ * `RETURNING` counts them without a second pass.
  */
-function purgeEntries(where: SQL | undefined): number {
-  return getDb()
-    .delete(watchTimelineEntries)
+async function purgeEntries(where: SQL | undefined): Promise<number> {
+  const db = requireMainDb();
+  const removed = await db.orm
+    .delete(db.schema.watchTimelineEntries)
     .where(where)
-    .returning({ id: watchTimelineEntries.id })
-    .all().length;
+    .returning({ id: db.schema.watchTimelineEntries.id });
+  return removed.length;
 }
 
 /**
@@ -722,10 +711,13 @@ function purgeEntries(where: SQL | undefined): number {
  * has nothing to key itself to and is refused, so the purge is the last thing
  * that has to reach a timeline row rather than one step among several.
  */
-export function purgeWatchTimelineForConversation(
+export async function purgeWatchTimelineForConversation(
   conversationId: string,
-): number {
-  return purgeEntries(eq(watchTimelineEntries.conversationId, conversationId));
+): Promise<number> {
+  const db = requireMainDb();
+  return await purgeEntries(
+    eq(db.schema.watchTimelineEntries.conversationId, conversationId),
+  );
 }
 
 /**
@@ -736,8 +728,8 @@ export function purgeWatchTimelineForConversation(
  * the wipe either lands before this statement and is swept by it or arrives
  * afterwards and is refused.
  */
-export function purgeAllWatchTimelines(): number {
-  return purgeEntries(undefined);
+export async function purgeAllWatchTimelines(): Promise<number> {
+  return await purgeEntries(undefined);
 }
 
 /**
@@ -772,27 +764,28 @@ const MAX_SWEEP_ENTRIES = 5_000;
  * failing statement logs and reports nothing swept and the next pass tries
  * again; a second run over swept rows finds none.
  */
-export function sweepOrphanedWatchTimelineEntries(): number {
+export async function sweepOrphanedWatchTimelineEntries(): Promise<number> {
   try {
-    const db = getDb();
-    const orphanIds = db
-      .select({ id: watchTimelineEntries.id })
-      .from(watchTimelineEntries)
-      .where(
-        notExists(
-          db
-            .select({ id: conversations.id })
-            .from(conversations)
-            .where(eq(conversations.id, watchTimelineEntries.conversationId)),
-        ),
-      )
-      .limit(MAX_SWEEP_ENTRIES)
-      .all()
-      .map((row) => row.id);
+    const db = requireMainDb();
+    const timeline = db.schema.watchTimelineEntries;
+    const orphanIds = (
+      await db.orm
+        .select({ id: timeline.id })
+        .from(timeline)
+        .where(
+          notExists(
+            db.orm
+              .select({ id: db.schema.conversations.id })
+              .from(db.schema.conversations)
+              .where(eq(db.schema.conversations.id, timeline.conversationId)),
+          ),
+        )
+        .limit(MAX_SWEEP_ENTRIES)
+    ).map((row) => row.id);
     if (orphanIds.length === 0) {
       return 0;
     }
-    return purgeEntries(inArray(watchTimelineEntries.id, orphanIds));
+    return await purgeEntries(inArray(timeline.id, orphanIds));
   } catch (err) {
     log.warn({ err }, "Failed to sweep orphaned watch timeline entries");
     return 0;
@@ -837,7 +830,7 @@ const MAX_SWEEP_PASSES = 100;
 export async function drainOrphanedWatchTimelineEntries(): Promise<number> {
   let total = 0;
   for (let pass = 0; pass < MAX_SWEEP_PASSES; pass += 1) {
-    const swept = sweepOrphanedWatchTimelineEntries();
+    const swept = await sweepOrphanedWatchTimelineEntries();
     total += swept;
     if (swept < MAX_SWEEP_ENTRIES) {
       break;

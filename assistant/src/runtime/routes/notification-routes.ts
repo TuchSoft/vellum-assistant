@@ -19,8 +19,7 @@ import {
   NotificationReceiptClassSchema,
 } from "../../notifications/types.js";
 import { UrgencySchema } from "../../notifications/urgency.js";
-import { getDb } from "../../persistence/db-connection.js";
-import { notificationDeliveries } from "../../persistence/schema/index.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { ACTOR_PRINCIPALS, LOCAL_PRINCIPALS } from "../auth/route-policy.js";
 import { BadRequestError, NotFoundError } from "./errors.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
@@ -37,17 +36,18 @@ const NotificationIntentResultParams = z.object({
   errorCode: z.string().describe("Error code if delivery failed").optional(),
 });
 
-function handleNotificationIntentResult({ body = {} }: RouteHandlerArgs) {
+async function handleNotificationIntentResult({ body = {} }: RouteHandlerArgs) {
   const parsed = NotificationIntentResultParams.safeParse(body);
   if (!parsed.success) {
     throw new BadRequestError("deliveryId is required");
   }
   const validated = parsed.data;
 
-  const db = getDb();
+  const db = requireMainDb();
   const now = Date.now();
 
-  db.update(notificationDeliveries)
+  await db.orm
+    .update(db.schema.notificationDeliveries)
     .set({
       clientDeliveryStatus: validated.success ? "delivered" : "client_failed",
       clientDeliveryAt: now,
@@ -57,8 +57,7 @@ function handleNotificationIntentResult({ body = {} }: RouteHandlerArgs) {
         : {}),
       ...(validated.errorCode ? { errorCode: validated.errorCode } : {}),
     })
-    .where(eq(notificationDeliveries.id, validated.deliveryId))
-    .run();
+    .where(eq(db.schema.notificationDeliveries.id, validated.deliveryId));
 
   return { ok: true };
 }

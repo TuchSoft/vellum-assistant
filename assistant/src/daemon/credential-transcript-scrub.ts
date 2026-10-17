@@ -36,10 +36,9 @@ import { and, eq, gte, or, sql } from "drizzle-orm";
 
 import { updateMessageContent } from "../persistence/conversation-crud.js";
 import { rebuildConversationDiskViewFromDbState } from "../persistence/conversation-disk-view.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { enqueueLexicalIndexForMessage } from "../persistence/job-handlers/message-lexical.js";
 import { resolveInlineBlockArray } from "../persistence/message-content-file.js";
-import { messages } from "../persistence/schema/conversations.js";
 import type { ContentBlock } from "../providers/types.js";
 import { getLogger } from "../util/logger.js";
 import {
@@ -191,7 +190,9 @@ async function sweepDbMessages(targets: readonly string[]): Promise<number> {
     return 0;
   }
   const cutoff = Date.now() - SCRUB_WINDOW_MS;
-  const rows = getDb()
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const rows = await db.orm
     .select({
       id: messages.id,
       conversationId: messages.conversationId,
@@ -209,8 +210,7 @@ async function sweepDbMessages(targets: readonly string[]): Promise<number> {
           ),
         ),
       ),
-    )
-    .all();
+    );
 
   let scrubbed = 0;
   let failures = 0;
@@ -240,7 +240,7 @@ async function sweepDbMessages(targets: readonly string[]): Promise<number> {
   // conversation's disk view from post-scrub DB state instead.
   for (const conversationId of touchedConversationIds) {
     try {
-      rebuildConversationDiskViewFromDbState(conversationId);
+      await rebuildConversationDiskViewFromDbState(conversationId);
     } catch (err) {
       log.warn(
         { err, conversationId },

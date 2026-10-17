@@ -23,13 +23,7 @@ import { and, desc, eq, gte, lte } from "drizzle-orm";
 import { z } from "zod";
 
 import { overlayWorkspaceMcpForConfigRead } from "../../mcp/workspace-mcp-config.js";
-import { getDb, getLogsDb } from "../../persistence/db-connection.js";
-import {
-  llmRequestLogs,
-  llmUsageEvents,
-  messages,
-  toolInvocations,
-} from "../../persistence/schema/index.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { getLogger, LOG_FILE_PATTERN } from "../../util/logger.js";
 import {
   getDaemonStderrLogPath,
@@ -93,9 +87,10 @@ async function handleExport({
   try {
     // --- Audit data ---
     const limit = auditLimit ?? 1000;
-    const db = getDb();
+    const db = requireMainDb();
+    const toolInvocations = db.schema.toolInvocations;
 
-    const auditQuery = db.select().from(toolInvocations);
+    const auditQuery = db.orm.select().from(toolInvocations);
 
     const timeFilters = [
       ...(conversationId
@@ -105,14 +100,13 @@ async function handleExport({
       ...(endTime ? [lte(toolInvocations.createdAt, endTime)] : []),
     ];
 
-    const auditRows = (
+    const auditRows = await (
       timeFilters.length > 0
         ? auditQuery.where(and(...timeFilters))
         : auditQuery
     )
       .orderBy(desc(toolInvocations.createdAt))
-      .limit(limit)
-      .all();
+      .limit(limit);
 
     writeFileSync(
       join(staging, "audit-data.json"),
@@ -140,6 +134,9 @@ async function handleExport({
       return rows.slice(0, limit);
     };
     if (conversationId || full) {
+      const messages = db.schema.messages;
+      const llmRequestLogs = db.schema.llmRequestLogs;
+      const llmUsageEvents = db.schema.llmUsageEvents;
       const conversationFilter = conversationId
         ? [eq(messages.conversationId, conversationId)]
         : [];
@@ -148,7 +145,7 @@ async function handleExport({
       // in-flight row (finalized = 0, content a { ref } into the turn's delta
       // file) is often exactly what a bug report needs to show.
       const messageRows = capRows(
-        db
+        await db.orm
           .select()
           .from(messages)
           .where(
@@ -159,8 +156,7 @@ async function handleExport({
             ),
           )
           .orderBy(desc(messages.createdAt))
-          .limit(MAX_EXPORT_MESSAGE_ROWS + 1)
-          .all(),
+          .limit(MAX_EXPORT_MESSAGE_ROWS + 1),
         MAX_EXPORT_MESSAGE_ROWS,
         "messages",
       );
@@ -175,7 +171,7 @@ async function handleExport({
         : [];
 
       const llmLogRows = capRows(
-        (getLogsDb() ?? db)
+        await db.orm
           .select()
           .from(llmRequestLogs)
           .where(
@@ -186,8 +182,7 @@ async function handleExport({
             ),
           )
           .orderBy(desc(llmRequestLogs.createdAt))
-          .limit(MAX_EXPORT_LLM_REQUEST_LOG_ROWS + 1)
-          .all(),
+          .limit(MAX_EXPORT_LLM_REQUEST_LOG_ROWS + 1),
         MAX_EXPORT_LLM_REQUEST_LOG_ROWS,
         "llm-request-logs",
       );
@@ -202,7 +197,7 @@ async function handleExport({
         : [];
 
       const usageRows = capRows(
-        db
+        await db.orm
           .select()
           .from(llmUsageEvents)
           .where(
@@ -213,8 +208,7 @@ async function handleExport({
             ),
           )
           .orderBy(desc(llmUsageEvents.createdAt))
-          .limit(MAX_EXPORT_LLM_USAGE_EVENT_ROWS + 1)
-          .all(),
+          .limit(MAX_EXPORT_LLM_USAGE_EVENT_ROWS + 1),
         MAX_EXPORT_LLM_USAGE_EVENT_ROWS,
         "llm-usage-events",
       );

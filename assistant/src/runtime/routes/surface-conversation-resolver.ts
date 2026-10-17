@@ -27,7 +27,7 @@ import {
   type StoredSurfaceAction,
 } from "../../daemon/conversation-surface-state.js";
 import { isRowVisibleToUntrustedActor } from "../../daemon/message-provenance.js";
-import { rawAll, rawGet } from "../../persistence/raw-query.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import type { ActivationMomentParam } from "../../telemetry/activation-funnel.js";
 
 /**
@@ -36,7 +36,7 @@ import type { ActivationMomentParam } from "../../telemetry/activation-funnel.js
  * Lookup order:
  * 1. In-memory map keyed by `conversationId` (or by `surfaceId` when no
  *    id is supplied).
- * 2. SQLite `messages` table — find the conversation whose history
+ * 2. The `messages` table — find the conversation whose history
  *    contains a `ui_surface` block with this `surfaceId`. The result is
  *    validated against the caller's `conversationId` (when supplied) so
  *    a mismatched pair returns `undefined` rather than silently
@@ -62,8 +62,7 @@ export async function resolveSurfaceConversation(
   // Escape LIKE wildcards so a `surfaceId` like "%" or "_" can't match
   // unrelated rows.
   const escaped = surfaceId.replace(/[\\%_]/g, "\\$&");
-  const row = rawGet<{ conversation_id: string }>(
-    "surfaceResolver:resolveConversation",
+  const row = await requireMainDb().get<{ conversation_id: string }>(
     // Unfinalized rows cannot match: their content is a { ref } pointer,
     // never inline surface JSON, so the LIKE probes below see finalized
     // content only by shape. No completeness predicate needed.
@@ -71,7 +70,7 @@ export async function resolveSurfaceConversation(
      WHERE content LIKE ? ESCAPE '\\'
      ORDER BY created_at DESC
      LIMIT 1`,
-    `%"surfaceId":"${escaped}"%`,
+    [`%"surfaceId":"${escaped}"%`],
   );
   if (!row) {
     return undefined;
@@ -138,14 +137,14 @@ export interface PersistedSurfaceState {
  * (resolved from the verified actor principal), not of whatever view the
  * cached conversation happens to be loaded under.
  */
-export function findPersistedSurfaceState(
+export async function findPersistedSurfaceState(
   conversationId: string,
   surfaceId: string,
   opts: {
     liveHistoryStartRow: number;
     requesterCanAccessMemory: boolean;
   },
-): PersistedSurfaceState | undefined {
+): Promise<PersistedSurfaceState | undefined> {
   // Escape LIKE wildcards so a `surfaceId` like "%" or "_" can't match
   // unrelated rows.
   const escaped = surfaceId.replace(/[\\%_]/g, "\\$&");
@@ -154,8 +153,10 @@ export function findPersistedSurfaceState(
   // would let enough of them starve out the real block entirely. The
   // second LIKE clause keeps the candidate set to rows that can plausibly
   // hold a ui_surface block at all, so the unbounded scan stays tiny.
-  const rows = rawAll<{ content: string; metadata: string | null }>(
-    "surfaceResolver:findPersistedSurface",
+  const rows = await requireMainDb().all<{
+    content: string;
+    metadata: string | null;
+  }>(
     `SELECT content, metadata FROM (
        SELECT content, metadata,
               ROW_NUMBER() OVER (ORDER BY created_at ASC) AS rn
@@ -166,9 +167,11 @@ export function findPersistedSurfaceState(
        AND content LIKE ? ESCAPE '\\'
        AND content LIKE '%"type":"ui_surface"%'
      ORDER BY rn DESC`,
-    conversationId,
-    Math.max(0, Math.floor(opts.liveHistoryStartRow)),
-    `%"surfaceId":"${escaped}"%`,
+    [
+      conversationId,
+      Math.max(0, Math.floor(opts.liveHistoryStartRow)),
+      `%"surfaceId":"${escaped}"%`,
+    ],
   );
   for (const row of rows) {
     if (

@@ -292,7 +292,7 @@ async function handleShareApp({ rawBody }: RouteHandlerArgs): Promise<{
     throw new BadRequestError("Invalid zip file");
   }
 
-  const { shareToken } = createSharedAppLink(bundleData, manifest);
+  const { shareToken } = await createSharedAppLink(bundleData, manifest);
 
   return {
     shareToken,
@@ -301,21 +301,23 @@ async function handleShareApp({ rawBody }: RouteHandlerArgs): Promise<{
   };
 }
 
-function handleDownloadSharedApp({ pathParams }: RouteHandlerArgs): Uint8Array {
+async function handleDownloadSharedApp({
+  pathParams,
+}: RouteHandlerArgs): Promise<Uint8Array> {
   const shareToken = pathParams?.token as string;
-  const record = getSharedAppLink(shareToken);
+  const record = await getSharedAppLink(shareToken);
   if (!record) {
     throw new NotFoundError("Shared app not found");
   }
 
-  incrementDownloadCount(shareToken);
+  await incrementDownloadCount(shareToken);
 
   return new Uint8Array(record.bundleData);
 }
 
-function handleGetSharedAppMetadata({ pathParams }: RouteHandlerArgs) {
+async function handleGetSharedAppMetadata({ pathParams }: RouteHandlerArgs) {
   const shareToken = pathParams?.token as string;
-  const record = getSharedAppLink(shareToken);
+  const record = await getSharedAppLink(shareToken);
   if (!record) {
     throw new NotFoundError("Shared app not found");
   }
@@ -335,9 +337,9 @@ function handleGetSharedAppMetadata({ pathParams }: RouteHandlerArgs) {
   };
 }
 
-function handleDeleteSharedApp({ pathParams }: RouteHandlerArgs) {
+async function handleDeleteSharedApp({ pathParams }: RouteHandlerArgs) {
   const shareToken = pathParams?.token as string;
-  const deleted = deleteSharedAppLinkByToken(shareToken);
+  const deleted = await deleteSharedAppLinkByToken(shareToken);
   if (!deleted) {
     throw new NotFoundError("Shared app not found");
   }

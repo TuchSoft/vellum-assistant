@@ -8,7 +8,7 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 const publishCalls: unknown[] = [];
 
@@ -19,6 +19,7 @@ mock.module("../../sync/resource-sync-events.js", () => ({
   getOriginClientId: () => undefined,
 }));
 
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import { reconcileAppPins } from "../../../apps/app-pin-reconciler.js";
 import { listAppPins, updateAppPin } from "../../../apps/app-pin-store.js";
 import {
@@ -26,9 +27,8 @@ import {
   deleteApp,
   isPluginAppId,
 } from "../../../apps/app-store.js";
-import { getDb } from "../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
-import { appPins } from "../../../persistence/schema/index.js";
 import { getWorkspacePluginsDir } from "../../../util/platform.js";
 import { ROUTES as APP_ROUTES } from "../app-management-routes.js";
 import { BadRequestError } from "../errors.js";
@@ -118,12 +118,12 @@ async function findListed(appId: string): Promise<ListedApp | undefined> {
   return (await listApps()).find((app) => app.id === appId);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   publishCalls.length = 0;
-  getDb().delete(appPins).run();
+  await requireMainDb().run("DELETE FROM app_pins");
 });
 
-describe("apps_list", () => {
+describePg("apps_list", () => {
   /* Absent rather than null or 0: the client tells a pinned app from an
      unpinned one by whether the field is there at all. */
   test("omits the pin fields on an app that is not pinned", async () => {
@@ -177,7 +177,7 @@ describe("apps_list", () => {
   });
 });
 
-describe("apps_pin", () => {
+describePg("apps_pin", () => {
   test("reports the resulting pin, and nulls once unpinned", async () => {
     const appId = makeApp("Togglable");
 
@@ -201,7 +201,7 @@ describe("apps_pin", () => {
     const result = await pin(pluginAppId, { pinned: true });
 
     expect(result.pinSortPosition).not.toBeNull();
-    expect(listAppPins()[0]?.appId).toBe(pluginAppId);
+    expect((await listAppPins())[0]?.appId).toBe(pluginAppId);
   });
 
   /* The list starts from the apps that exist, so a pin for anything else could
@@ -210,7 +210,7 @@ describe("apps_pin", () => {
     await expect(pin("no-such-app", { pinned: true })).rejects.toThrow(
       /App not found/,
     );
-    expect(listAppPins()).toEqual([]);
+    expect(await listAppPins()).toEqual([]);
   });
 
   /* Exempt from the check above: this is how a client clears a pin left over
@@ -234,7 +234,7 @@ describe("apps_pin", () => {
    * would narrow nothing and a malformed value would land in the database and
    * come back out in the response.
    */
-  describe("malformed bodies", () => {
+  describePg("malformed bodies", () => {
     const cases: [string, unknown][] = [
       ["a non-boolean pinned", { pinned: "yes" }],
       ["a numeric pinned", { pinned: 1 }],
@@ -250,7 +250,7 @@ describe("apps_pin", () => {
         await expect(
           pin(appId, body as { pinned?: boolean; color?: string | null }),
         ).rejects.toBeInstanceOf(BadRequestError);
-        expect(listAppPins()).toEqual([]);
+        expect(await listAppPins()).toEqual([]);
       });
     }
   });
@@ -277,19 +277,19 @@ describe("apps_pin", () => {
  * and the reinstall: an intervening pin write would be a trigger the real
  * sequence does not have, and the case would pass without proving anything.
  */
-describe("orphan pins across a plugin reinstall", () => {
+describePg("orphan pins across a plugin reinstall", () => {
   test("a retired plugin's pin does not return when it is installed again", async () => {
     const pluginAppId = installPluginApp("demo", "widget");
     await pin(pluginAppId, { pinned: true });
 
     uninstallPlugin("demo");
-    reconcileAppPins();
+    await reconcileAppPins();
     installPluginApp("demo", "widget");
 
     const listed = await findListed(pluginAppId);
     expect(listed).toBeDefined();
     expect(listed?.pinSortPosition).toBeUndefined();
-    expect(listAppPins()).toEqual([]);
+    expect(await listAppPins()).toEqual([]);
   });
 
   /* The sensitivity check on the case above: without the reconcile between
@@ -309,31 +309,33 @@ describe("orphan pins across a plugin reinstall", () => {
     const pluginAppId = installPluginApp("demo", "widget");
     await pin(pluginAppId, { pinned: true });
 
-    reconcileAppPins();
+    await reconcileAppPins();
 
-    expect(listAppPins().map((entry) => entry.appId)).toEqual([pluginAppId]);
+    expect((await listAppPins()).map((entry) => entry.appId)).toEqual([
+      pluginAppId,
+    ]);
   });
 
-  test("drops a pin for a workspace app that was deleted outside the route", () => {
+  test("drops a pin for a workspace app that was deleted outside the route", async () => {
     const appId = makeApp("Gone");
-    updateAppPin(appId, { pinned: true });
+    await updateAppPin(appId, { pinned: true });
     deleteApp(appId);
 
-    reconcileAppPins();
+    await reconcileAppPins();
 
-    expect(listAppPins()).toEqual([]);
+    expect(await listAppPins()).toEqual([]);
   });
 
   /* A pass is the one pin write with no request behind it, so nothing else
      tells a connected client. Without this the daemon converges and an open
      sidebar keeps rendering the pin until an unrelated app refetch lands. */
-  test("announces the apps list when a pass removes a pin", () => {
+  test("announces the apps list when a pass removes a pin", async () => {
     const appId = makeApp("Gone");
-    updateAppPin(appId, { pinned: true });
+    await updateAppPin(appId, { pinned: true });
     deleteApp(appId);
     publishCalls.length = 0;
 
-    reconcileAppPins();
+    await reconcileAppPins();
 
     expect(publishCalls).toHaveLength(1);
   });
@@ -341,18 +343,18 @@ describe("orphan pins across a plugin reinstall", () => {
   /* Counted rather than merely observed: a pass that announced unconditionally
      would drain every client's app list on a timer, sixty seconds apart,
      forever. */
-  test("announces nothing when a pass removes no pin", () => {
+  test("announces nothing when a pass removes no pin", async () => {
     const appId = makeApp("Still here");
-    updateAppPin(appId, { pinned: true });
+    await updateAppPin(appId, { pinned: true });
     publishCalls.length = 0;
 
-    reconcileAppPins();
+    await reconcileAppPins();
 
     expect(publishCalls).toEqual([]);
   });
 });
 
-describe("apps_delete", () => {
+describePg("apps_delete", () => {
   test("takes the deleted app's pin with it", async () => {
     const appId = makeApp("Deleted");
     await pin(appId, { pinned: true });
@@ -361,7 +363,7 @@ describe("apps_delete", () => {
       pathParams: { id: appId },
     } as unknown as RouteHandlerArgs);
 
-    expect(listAppPins()).toEqual([]);
+    expect(await listAppPins()).toEqual([]);
   });
 
   test("leaves the other pins alone", async () => {
@@ -369,7 +371,7 @@ describe("apps_delete", () => {
     const second = makeApp("Second");
     await pin(first, { pinned: true });
     await pin(second, { pinned: true });
-    const survivorPosition = listAppPins().find(
+    const survivorPosition = (await listAppPins()).find(
       (entry) => entry.appId === second,
     )?.sortPosition;
 
@@ -377,7 +379,7 @@ describe("apps_delete", () => {
       pathParams: { id: first },
     } as unknown as RouteHandlerArgs);
 
-    expect(listAppPins().map((entry) => entry.appId)).toEqual([second]);
-    expect(listAppPins()[0]?.sortPosition).toBe(survivorPosition!);
+    expect((await listAppPins()).map((entry) => entry.appId)).toEqual([second]);
+    expect((await listAppPins())[0]?.sortPosition).toBe(survivorPosition!);
   });
 });

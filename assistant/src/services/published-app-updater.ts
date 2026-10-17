@@ -26,7 +26,7 @@ export async function updatePublishedAppDeployment(
 ): Promise<void> {
   try {
     // 1. Check if this app has an active published deployment
-    const publishedPage = getActivePublishedPageByAppId(appId);
+    const publishedPage = await getActivePublishedPageByAppId(appId);
     if (!publishedPage) {
       return;
     }
@@ -75,7 +75,7 @@ export async function updatePublishedAppDeployment(
         });
 
         // 6. Update the published page record
-        updatePublishedPage(publishedPage.id, {
+        await updatePublishedPage(publishedPage.id, {
           deploymentId: result.deploymentId,
           publicUrl: result.url,
           htmlHash: newHash,

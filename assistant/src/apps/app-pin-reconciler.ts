@@ -36,7 +36,7 @@ let sweepTimer: ReturnType<typeof setInterval> | null = null;
 let sweepInProgress = false;
 
 /** Drop every pin whose app is not currently installed. Never throws. */
-export function reconcileAppPins(): void {
+export async function reconcileAppPins(): Promise<void> {
   if (!getDbMigrationReadiness().ready) {
     return;
   }
@@ -45,9 +45,9 @@ export function reconcileAppPins(): void {
       ...listApps().map((app) => app.id),
       ...listPluginApps().map((app) => app.id),
     ]);
-    const stale = listAppPins().filter((pin) => !live.has(pin.appId));
+    const stale = (await listAppPins()).filter((pin) => !live.has(pin.appId));
     for (const pin of stale) {
-      removeAppPin(pin.appId);
+      await removeAppPin(pin.appId);
     }
     if (stale.length > 0) {
       log.info(
@@ -74,11 +74,9 @@ export function startAppPinReconcileSweep(): void {
       return;
     }
     sweepInProgress = true;
-    try {
-      reconcileAppPins();
-    } finally {
+    void reconcileAppPins().finally(() => {
       sweepInProgress = false;
-    }
+    });
   }, SWEEP_INTERVAL_MS);
 }
 

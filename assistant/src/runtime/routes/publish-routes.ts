@@ -91,16 +91,16 @@ async function handlePublish({ pathParams }: RouteHandlerArgs) {
         .replace(/^-|-$/g, "");
 
       // Create or update the published page record
-      const existing = getActivePublishedPageByAppId(appId);
+      const existing = await getActivePublishedPageByAppId(appId);
       if (existing) {
-        updatePublishedPage(existing.id, {
+        await updatePublishedPage(existing.id, {
           deploymentId: result.deploymentId,
           publicUrl: result.url,
           htmlHash,
           publishedAt: Date.now(),
         });
       } else {
-        insertPublishedPage({
+        await insertPublishedPage({
           id: uuid(),
           deploymentId: result.deploymentId,
           publicUrl: result.url,
@@ -137,20 +137,20 @@ async function handlePublish({ pathParams }: RouteHandlerArgs) {
   };
 }
 
-function handleUnpublish({ pathParams }: RouteHandlerArgs) {
+async function handleUnpublish({ pathParams }: RouteHandlerArgs) {
   const appId = pathParams?.id as string;
-  const published = getActivePublishedPageByAppId(appId);
+  const published = await getActivePublishedPageByAppId(appId);
   if (!published) {
     return { success: false, error: "No active deployment found" };
   }
 
-  updatePublishedPage(published.id, { status: "inactive" });
+  await updatePublishedPage(published.id, { status: "inactive" });
   return { success: true };
 }
 
-function handlePublishStatus({ pathParams }: RouteHandlerArgs) {
+async function handlePublishStatus({ pathParams }: RouteHandlerArgs) {
   const appId = pathParams?.id as string;
-  const published = getActivePublishedPageByAppId(appId);
+  const published = await getActivePublishedPageByAppId(appId);
   if (!published) {
     return { published: false };
   }

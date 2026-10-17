@@ -693,8 +693,10 @@ async function importBundle(
 // Route handlers
 // ---------------------------------------------------------------------------
 
-function handleListApps({ queryParams }: RouteHandlerArgs) {
-  const pinsById = new Map(listAppPins().map((pin) => [pin.appId, pin]));
+async function handleListApps({ queryParams }: RouteHandlerArgs) {
+  const pinsById = new Map(
+    (await listAppPins()).map((pin) => [pin.appId, pin]),
+  );
   const pinned = (item: AppListItem): AppListItem =>
     withPin(item, pinsById.get(item.id));
 
@@ -974,14 +976,14 @@ function assertNotPluginApp(appId: string, action: string): void {
   }
 }
 
-function handleDeleteApp({ pathParams, headers }: RouteHandlerArgs) {
+async function handleDeleteApp({ pathParams, headers }: RouteHandlerArgs) {
   const appId = pathParams?.id as string;
   assertNotPluginApp(appId, "delete a plugin app");
   deleteApp(appId);
   /* `deleteApp` cannot do this itself: it is filesystem-level and runs where no
      migrated database exists. Deletions that skip this, and plugin apps that
      leave with their plugin, are converged by `apps/app-pin-reconciler.ts`. */
-  removeAppPin(appId);
+  await removeAppPin(appId);
   publishAppsChanged(getOriginClientId(headers));
   return { success: true };
 }
@@ -998,7 +1000,11 @@ function existingAppIds(): string[] {
   ];
 }
 
-function handlePinApp({ pathParams, body = {}, headers }: RouteHandlerArgs) {
+async function handlePinApp({
+  pathParams,
+  body = {},
+  headers,
+}: RouteHandlerArgs) {
   const appId = pathParams?.id as string;
   const { pinned, color } = parseBody(appPinBodySchema, body);
   const existing = existingAppIds();
@@ -1009,7 +1015,7 @@ function handlePinApp({ pathParams, body = {}, headers }: RouteHandlerArgs) {
   if (pinned === true && !existing.includes(appId)) {
     throw new NotFoundError(`App not found: ${appId}`);
   }
-  const pin = updateAppPin(appId, {
+  const pin = await updateAppPin(appId, {
     ...(pinned === undefined ? {} : { pinned }),
     ...(color === undefined ? {} : { color }),
   });
@@ -1055,7 +1061,7 @@ async function handleShareCloud({ pathParams }: RouteHandlerArgs) {
   assertNotPluginApp(appId, "share a plugin app");
   const result = await packageApp(appId);
   const bundleData = readFileSync(result.bundlePath);
-  const { shareToken } = createSharedAppLink(bundleData, result.manifest);
+  const { shareToken } = await createSharedAppLink(bundleData, result.manifest);
   const shareUrl = `/v1/apps/shared/${shareToken}`;
   return { success: true, shareToken, shareUrl };
 }

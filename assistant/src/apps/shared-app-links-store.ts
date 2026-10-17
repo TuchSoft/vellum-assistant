@@ -9,9 +9,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq, isNull, lte, or } from "drizzle-orm";
 
 import type { AppManifest } from "../bundler/manifest.js";
-import { getDb } from "../persistence/db-connection.js";
-import { rawRun } from "../persistence/raw-query.js";
-import { sharedAppLinks } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 
 export interface SharedAppLinkRecord {
   id: string;
@@ -33,60 +31,57 @@ function generateShareToken(): string {
 }
 
 /** Delete all rows whose effective expiry has passed (including legacy NULL rows). */
-function sweepExpiredLinks(): void {
-  const db = getDb();
+async function sweepExpiredLinks(): Promise<void> {
+  const db = requireMainDb();
+  const sharedAppLinks = db.schema.sharedAppLinks;
   const now = Date.now();
-  db.delete(sharedAppLinks)
-    .where(
-      or(
-        lte(sharedAppLinks.expiresAt, now),
-        // Legacy rows created before TTL was added have expiresAt = NULL;
-        // treat them as expired once createdAt + TTL has passed.
-        and(
-          isNull(sharedAppLinks.expiresAt),
-          lte(sharedAppLinks.createdAt, now - SHARE_LINK_TTL_MS),
-        ),
+  await db.orm.delete(sharedAppLinks).where(
+    or(
+      lte(sharedAppLinks.expiresAt, now),
+      // Legacy rows created before TTL was added have expiresAt = NULL;
+      // treat them as expired once createdAt + TTL has passed.
+      and(
+        isNull(sharedAppLinks.expiresAt),
+        lte(sharedAppLinks.createdAt, now - SHARE_LINK_TTL_MS),
       ),
-    )
-    .run();
+    ),
+  );
 }
 
-export function createSharedAppLink(
+export async function createSharedAppLink(
   bundleData: Buffer,
   manifest: AppManifest,
-): { id: string; shareToken: string } {
-  sweepExpiredLinks();
+): Promise<{ id: string; shareToken: string }> {
+  await sweepExpiredLinks();
 
-  const db = getDb();
+  const db = requireMainDb();
   const id = randomUUID();
   const shareToken = generateShareToken();
   const now = Date.now();
 
-  db.insert(sharedAppLinks)
-    .values({
-      id,
-      shareToken,
-      bundleData,
-      bundleSizeBytes: bundleData.length,
-      manifestJson: JSON.stringify(manifest),
-      downloadCount: 0,
-      createdAt: now,
-      expiresAt: now + SHARE_LINK_TTL_MS,
-    })
-    .run();
+  await db.orm.insert(db.schema.sharedAppLinks).values({
+    id,
+    shareToken,
+    bundleData,
+    bundleSizeBytes: bundleData.length,
+    manifestJson: JSON.stringify(manifest),
+    downloadCount: 0,
+    createdAt: now,
+    expiresAt: now + SHARE_LINK_TTL_MS,
+  });
 
   return { id, shareToken };
 }
 
-export function getSharedAppLink(
+export async function getSharedAppLink(
   shareToken: string,
-): SharedAppLinkRecord | null {
-  const db = getDb();
-  const row = db
+): Promise<SharedAppLinkRecord | null> {
+  const db = requireMainDb();
+  const sharedAppLinks = db.schema.sharedAppLinks;
+  const [row] = await db.orm
     .select()
     .from(sharedAppLinks)
-    .where(eq(sharedAppLinks.shareToken, shareToken))
-    .get();
+    .where(eq(sharedAppLinks.shareToken, shareToken));
 
   if (!row) {
     return null;
@@ -109,29 +104,32 @@ export function getSharedAppLink(
   };
 }
 
-export function deleteSharedAppLinkByToken(shareToken: string): boolean {
-  const db = getDb();
-  const existing = db
+export async function deleteSharedAppLinkByToken(
+  shareToken: string,
+): Promise<boolean> {
+  const db = requireMainDb();
+  const sharedAppLinks = db.schema.sharedAppLinks;
+  const [existing] = await db.orm
     .select({ id: sharedAppLinks.id })
     .from(sharedAppLinks)
-    .where(eq(sharedAppLinks.shareToken, shareToken))
-    .get();
+    .where(eq(sharedAppLinks.shareToken, shareToken));
 
   if (!existing) {
     return false;
   }
 
-  db.delete(sharedAppLinks)
-    .where(eq(sharedAppLinks.shareToken, shareToken))
-    .run();
+  await db.orm
+    .delete(sharedAppLinks)
+    .where(eq(sharedAppLinks.shareToken, shareToken));
 
   return true;
 }
 
-export function incrementDownloadCount(shareToken: string): void {
-  rawRun(
-    "appLinks:incrementDownloadCount",
-    `UPDATE shared_app_links SET download_count = download_count + 1 WHERE share_token = ?`,
-    shareToken,
+export async function incrementDownloadCount(
+  shareToken: string,
+): Promise<void> {
+  await requireMainDb().run(
+    "UPDATE shared_app_links SET download_count = download_count + 1 WHERE share_token = ?",
+    [shareToken],
   );
 }

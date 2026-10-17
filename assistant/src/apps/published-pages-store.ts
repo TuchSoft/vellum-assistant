@@ -7,8 +7,7 @@
 
 import { and, eq } from "drizzle-orm";
 
-import { getDb } from "../persistence/db-connection.js";
-import { publishedPages } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 
 export interface PublishedPageRecord {
   id: string;
@@ -22,21 +21,21 @@ export interface PublishedPageRecord {
   projectSlug: string | null;
 }
 
-export function getActivePublishedPageByAppId(
+export async function getActivePublishedPageByAppId(
   appId: string,
-): PublishedPageRecord | null {
-  const db = getDb();
-  const row = db
+): Promise<PublishedPageRecord | null> {
+  const db = requireMainDb();
+  const publishedPages = db.schema.publishedPages;
+  const [row] = await db.orm
     .select()
     .from(publishedPages)
     .where(
       and(eq(publishedPages.appId, appId), eq(publishedPages.status, "active")),
-    )
-    .get();
+    );
   return row ?? null;
 }
 
-export function insertPublishedPage(record: {
+export async function insertPublishedPage(record: {
   id: string;
   deploymentId: string;
   publicUrl: string;
@@ -46,12 +45,12 @@ export function insertPublishedPage(record: {
   status: string;
   appId: string | null;
   projectSlug: string | null;
-}): void {
-  const db = getDb();
-  db.insert(publishedPages).values(record).run();
+}): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.insert(db.schema.publishedPages).values(record);
 }
 
-export function updatePublishedPage(
+export async function updatePublishedPage(
   id: string,
   updates: {
     deploymentId?: string;
@@ -61,7 +60,11 @@ export function updatePublishedPage(
     appId?: string;
     status?: string;
   },
-): void {
-  const db = getDb();
-  db.update(publishedPages).set(updates).where(eq(publishedPages.id, id)).run();
+): Promise<void> {
+  const db = requireMainDb();
+  const publishedPages = db.schema.publishedPages;
+  await db.orm
+    .update(publishedPages)
+    .set(updates)
+    .where(eq(publishedPages.id, id));
 }

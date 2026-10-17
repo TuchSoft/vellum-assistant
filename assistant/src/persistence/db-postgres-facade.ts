@@ -154,8 +154,9 @@ class PostgresAsyncDb implements AsyncDb {
   }
 
   label(): AsyncDb {
-    // Attribution is a SQLite slow-query-log concern; the Postgres path has no
-    // equivalent chokepoint yet, so the label is accepted and ignored.
+    // Attribution exists for the legacy synchronous connection's slow-query
+    // log; the Postgres path has no equivalent chokepoint yet, so the label is
+    // accepted and ignored.
     return this;
   }
 }

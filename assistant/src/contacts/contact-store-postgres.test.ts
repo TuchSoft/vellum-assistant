@@ -4,8 +4,8 @@
  * `contact-store.ts` reads and writes `contacts`, `contact_channels`, and
  * `assistant_contact_metadata`, all on the `main` slot, through the async
  * `AsyncDb` facade. The suite covers the case-insensitive matching that
- * replaced SQLite's `COLLATE NOCASE` and runs against the process's Postgres
- * test schema, bootstrapped by `src/__tests__/pg-test-db.ts`.
+ * replaced the legacy column-collation lookup and runs against the process's
+ * Postgres test schema, bootstrapped by `src/__tests__/pg-test-db.ts`.
  *
  * Gated on `VELLUM_PG_TEST_URL` (throwaway instance); with it unset the suite
  * skips.

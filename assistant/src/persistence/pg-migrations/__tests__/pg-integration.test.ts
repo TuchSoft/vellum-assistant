@@ -1,8 +1,8 @@
 /**
  * Postgres integration tests for the baseline and the migration runner.
  *
- * Gated on `VELLUM_PG_TEST_URL`: with it unset these skip, so the normal
- * (SQLite) suite is unaffected. Point it at a throwaway Postgres, e.g.:
+ * Gated on `VELLUM_PG_TEST_URL`: with it unset these skip, so the rest of the
+ * suite is unaffected. Point it at a throwaway Postgres, e.g.:
  *
  *   docker run -d --rm --name vellum-pg-test -e POSTGRES_PASSWORD=pw \
  *     -e POSTGRES_DB=vellum -p 127.0.0.1:55432:5432 pgvector/pgvector:pg17

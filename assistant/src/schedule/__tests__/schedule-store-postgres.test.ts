@@ -8,7 +8,7 @@
  *
  * Gated on `VELLUM_PG_TEST_URL` (throwaway instance); with it unset the suite
  * skips. Cross-slice reads the store makes (e.g. `getConversation` for wake
- * rows) stay on SQLite: those slices are not ported yet.
+ * rows) stay on the legacy connection: those slices are not ported yet.
  *
  *   docker run -d --rm --name vellum-pg-test -e POSTGRES_PASSWORD=pw \
  *     -e POSTGRES_DB=vellum -p 127.0.0.1:55432:5432 pgvector/pgvector:pg17

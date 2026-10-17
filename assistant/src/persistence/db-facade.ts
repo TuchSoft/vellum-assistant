@@ -5,14 +5,13 @@
  * Every accessor returns an {@link AsyncDb} whose methods are `Promise`-based,
  * so callers are written once for an async backend. The facade has exactly one
  * backend: Postgres. A slot resolves its connection from `VELLUM_DATABASE_URL`;
- * `main`, `memory`, and `telemetry` all point at the same database (the
- * historical per-service SQLite files collapse into one Postgres database).
+ * `main`, `memory`, and `telemetry` all point at the same database.
  *
  * Query building: {@link AsyncDb.orm} exposes the Drizzle instance over
  * `pg-schema`. The raw helpers ({@link AsyncDb.all}/{@link AsyncDb.get}/
  * {@link AsyncDb.run}) take positional `?` placeholders, which the backend
- * rewrites to `$n`. See `assistant/docs/pg-port-translation.md` for the SQLite
- * to Postgres construct map still applied by the legacy code.
+ * rewrites to `$n`. See `assistant/docs/pg-port-translation.md` for the
+ * construct map still applied by the legacy call sites.
  *
  * Schema ownership: the facade does not create tables. The migration runner
  * (`pg-migrations/`) owns the schema; tests bootstrap it through

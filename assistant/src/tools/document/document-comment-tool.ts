@@ -36,21 +36,21 @@ export const commentReplyInputSchema = z.looseObject({
 
 // ── Exported execute functions ─────────────────────────────────────────
 
-export function executeCommentList(
+export async function executeCommentList(
   input: Record<string, unknown>,
   context: ToolContext,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const parsedInput = commentListInputSchema.safeParse(input);
   if (!parsedInput.success) {
     return invalidToolInputResult("comment_list", parsedInput.error);
   }
   const surfaceId = parsedInput.data.surface_id;
 
-  if (!canAccessDocument(surfaceId, context)) {
+  if (!(await canAccessDocument(surfaceId, context))) {
     return documentNotFound(surfaceId);
   }
 
-  const comments = listComments(surfaceId, { status: "open" });
+  const comments = await listComments(surfaceId, { status: "open" });
 
   return {
     content: JSON.stringify({
@@ -73,10 +73,10 @@ export function executeCommentList(
   };
 }
 
-export function executeCommentResolve(
+export async function executeCommentResolve(
   input: Record<string, unknown>,
   context: ToolContext,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const parsedInput = commentResolveInputSchema.safeParse(input);
   if (!parsedInput.success) {
     return invalidToolInputResult("comment_resolve", parsedInput.error);
@@ -84,11 +84,11 @@ export function executeCommentResolve(
   throwIfCancelled(context);
   const { surface_id: surfaceId, comment_id: commentId } = parsedInput.data;
 
-  if (!canAccessDocument(surfaceId, context)) {
+  if (!(await canAccessDocument(surfaceId, context))) {
     return documentNotFound(surfaceId);
   }
 
-  const existing = getComment(commentId);
+  const existing = await getComment(commentId);
   if (!existing || existing.surfaceId !== surfaceId) {
     return {
       content: JSON.stringify({
@@ -100,7 +100,7 @@ export function executeCommentResolve(
     };
   }
 
-  resolveComment(commentId, "assistant");
+  await resolveComment(commentId, "assistant");
 
   if (context.sendToClient) {
     context.sendToClient({
@@ -122,10 +122,10 @@ export function executeCommentResolve(
   };
 }
 
-export function executeCommentReply(
+export async function executeCommentReply(
   input: Record<string, unknown>,
   context: ToolContext,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const parsedInput = commentReplyInputSchema.safeParse(input);
   if (!parsedInput.success) {
     return invalidToolInputResult("comment_reply", parsedInput.error);
@@ -137,11 +137,11 @@ export function executeCommentReply(
     content,
   } = parsedInput.data;
 
-  if (!canAccessDocument(surfaceId, context)) {
+  if (!(await canAccessDocument(surfaceId, context))) {
     return documentNotFound(surfaceId);
   }
 
-  const parent = getComment(commentId);
+  const parent = await getComment(commentId);
   if (!parent || parent.surfaceId !== surfaceId) {
     return {
       content: JSON.stringify({
@@ -153,7 +153,7 @@ export function executeCommentReply(
     };
   }
 
-  const reply = createComment({
+  const reply = await createComment({
     surfaceId,
     conversationId: context.conversationId,
     author: "assistant",

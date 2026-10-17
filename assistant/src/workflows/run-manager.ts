@@ -173,7 +173,7 @@ export class WorkflowRunManager {
    * asynchronously. Returns the `runId` immediately — completion is surfaced via
    * events and a conversation wake.
    */
-  start(opts: StartWorkflowOptions): { runId: string } {
+  async start(opts: StartWorkflowOptions): Promise<{ runId: string }> {
     const config = this.deps.getConfig();
     const limit = config.workflows.maxConcurrentRuns;
     if (this.inflight.size >= limit) {
@@ -204,7 +204,7 @@ export class WorkflowRunManager {
     // also persist the originating TRUST CONTEXT (trust metadata, no secret
     // material) so a crash-orphaned `resume` reconstructs the exact trust class
     // the run started under — NEVER escalating to guardian on resume.
-    this.deps.journal.createRun({
+    await this.deps.journal.createRun({
       id: runId,
       name: meta.name,
       scriptSource,
@@ -259,7 +259,7 @@ export class WorkflowRunManager {
    * never touched (see {@link journalStore.markRunningAsInterrupted}). Returns
    * the number of runs reconciled.
    */
-  reconcileOrphanedRuns(): number {
+  async reconcileOrphanedRuns(): Promise<number> {
     return this.deps.journal.markRunningAsInterrupted();
   }
 
@@ -278,14 +278,14 @@ export class WorkflowRunManager {
    * Throws {@link WorkflowResumeNotPossibleError} when the run is missing, not
    * `interrupted`, or already in flight.
    */
-  resume(runId: string): { runId: string } {
+  async resume(runId: string): Promise<{ runId: string }> {
     const config = this.deps.getConfig();
 
     if (this.inflight.has(runId)) {
       throw new WorkflowResumeNotPossibleError(runId, "in_flight");
     }
 
-    const run = this.deps.journal.getRun(runId);
+    const run = await this.deps.journal.getRun(runId);
     if (!run) {
       throw new WorkflowResumeNotPossibleError(runId, "not_found");
     }
@@ -317,7 +317,7 @@ export class WorkflowRunManager {
 
     // Flip back to `running` before launching so `status`/`list` reflect the
     // in-flight resume; the engine re-opens the same row idempotently.
-    this.deps.journal.updateRun(runId, { status: "running" });
+    await this.deps.journal.updateRun(runId, { status: "running" });
 
     const controller = new AbortController();
     this.inflight.set(runId, controller);
@@ -361,15 +361,15 @@ export class WorkflowRunManager {
   }
 
   /** Read the current run row (live counts + status), or null if unknown. */
-  status(runId: string): WorkflowRun | null {
+  async status(runId: string): Promise<WorkflowRun | null> {
     return this.deps.journal.getRun(runId);
   }
 
   /** List runs newest-first, optionally filtered by status. */
-  list(options?: {
+  async list(options?: {
     limit?: number;
     status?: WorkflowRun["status"];
-  }): WorkflowRun[] {
+  }): Promise<WorkflowRun[]> {
     return this.deps.journal.listRuns({
       limit: options?.limit ?? 50,
       ...(options?.status ? { status: options.status } : {}),
@@ -417,18 +417,24 @@ export class WorkflowRunManager {
         trustContext: ctx.trustContext,
         signal: controller.signal,
         onProgress: (event) => {
-          const run = this.deps.journal.getRun(runId);
-          const agentsSpawned = run?.agentsSpawned ?? 0;
-          this.deps.broadcast({
-            type: "workflow_progress",
-            runId,
-            ...(conversationId ? { conversationId } : {}),
-            label,
-            agentsSpawned,
-            ...(event.type === "phase"
-              ? { phase: event.title }
-              : { message: event.message }),
-          });
+          void this.deps.journal
+            .getRun(runId)
+            .then((run) => {
+              const agentsSpawned = run?.agentsSpawned ?? 0;
+              this.deps.broadcast({
+                type: "workflow_progress",
+                runId,
+                ...(conversationId ? { conversationId } : {}),
+                label,
+                agentsSpawned,
+                ...(event.type === "phase"
+                  ? { phase: event.title }
+                  : { message: event.message }),
+              });
+            })
+            .catch((err) => {
+              log.warn({ err, runId }, "Workflow progress lookup failed");
+            });
         },
         ...(conversationId
           ? {
@@ -471,7 +477,7 @@ export class WorkflowRunManager {
         runId,
         label,
         result,
-        this.deps.journal.getRun(runId),
+        await this.deps.journal.getRun(runId),
       );
 
       this.deps.broadcast({

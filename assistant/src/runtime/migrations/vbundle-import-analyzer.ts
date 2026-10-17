@@ -95,7 +95,7 @@ export interface ImportDryRunReport {
  * dry-run uses the same mapping for consistency.
  */
 export interface PathResolver {
-  resolve(archivePath: string): string | null;
+  resolve(archivePath: string): Promise<string | null>;
 }
 
 export class DefaultPathResolver implements PathResolver {
@@ -112,11 +112,10 @@ export class DefaultPathResolver implements PathResolver {
     private workspaceDir?: string,
     private hooksDir?: string,
     private guardianPersonaPathResolver: () =>
-      | string
-      | null = resolveGuardianPersonaPath,
+      string | null | Promise<string | null> = resolveGuardianPersonaPath,
   ) {}
 
-  resolve(archivePath: string): string | null {
+  async resolve(archivePath: string): Promise<string | null> {
     // Skip credential entries — handled separately by the credential import step
     if (archivePath.startsWith("credentials/")) {
       return null;
@@ -184,7 +183,7 @@ export class DefaultPathResolver implements PathResolver {
       // whatever DB state is live at the time of resolve — typically
       // the pre-import workspace, which is the common upgrade case.
       if (archivePath === LEGACY_USER_MD_ARCHIVE_PATH) {
-        const guardianPath = this.guardianPersonaPathResolver();
+        const guardianPath = await this.guardianPersonaPathResolver();
         if (!guardianPath) {
           log.warn(
             { path: archivePath },
@@ -254,15 +253,15 @@ interface AnalyzeImportOptions {
  * Analyze what importing a .vbundle archive would do without modifying
  * any state. Compares bundle contents against current files on disk.
  */
-export function analyzeImport(
+export async function analyzeImport(
   options: AnalyzeImportOptions,
-): ImportDryRunReport {
+): Promise<ImportDryRunReport> {
   const { manifest, pathResolver } = options;
   const files: ImportFileReport[] = [];
   const conflicts: ImportConflict[] = [];
 
   for (const fileEntry of manifest.contents) {
-    const diskPath = pathResolver.resolve(fileEntry.path);
+    const diskPath = await pathResolver.resolve(fileEntry.path);
 
     // Credential entries are handled separately by the credential import
     // step — skip them without flagging as unknown/conflict.

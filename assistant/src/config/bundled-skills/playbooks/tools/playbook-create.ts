@@ -124,8 +124,8 @@ export async function executePlaybookCreate(
       imageRefs: null,
     };
 
-    const node = createNode(newNode);
-    updateNode(node.id, {
+    const node = await createNode(newNode);
+    await updateNode(node.id, {
       sourceConversations: [`playbook:${node.id}`],
     });
 

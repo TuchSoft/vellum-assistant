@@ -70,8 +70,7 @@ const log = getLogger("workflow-engine");
 
 /** A progress event forwarded from the script's `phase`/`log` host calls. */
 export type WorkflowProgressEvent =
-  | { type: "phase"; title: string }
-  | { type: "log"; message: string };
+  { type: "phase"; title: string } | { type: "log"; message: string };
 
 /**
  * An observe-only lifecycle event for a single leaf — the source of a live leaf
@@ -627,9 +626,9 @@ export async function executeWorkflow(
   const scriptHash = createHash("sha256").update(scriptSource).digest("hex");
 
   // Idempotent run row: createRun on first execution, reuse on resume.
-  const existing = journal.getRun(runId);
+  const existing = await journal.getRun(runId);
   if (!existing) {
-    journal.createRun({
+    await journal.createRun({
       id: runId,
       name: meta.name,
       scriptSource,
@@ -640,7 +639,7 @@ export async function executeWorkflow(
     });
   } else {
     // Re-running: re-open the row as running and reset terminal fields.
-    journal.updateRun(runId, { status: "running" });
+    await journal.updateRun(runId, { status: "running" });
   }
 
   // --- Run-scoped mutable accounting ---------------------------------------
@@ -671,8 +670,12 @@ export async function executeWorkflow(
   let warnedSchemaLeafNoTools = false;
 
   /** Persist live counters so `getRun` reports them mid-flight. */
-  const flushCounters = (): void => {
-    journal.updateRun(runId, { agentsSpawned, inputTokens, outputTokens });
+  const flushCounters = async (): Promise<void> => {
+    await journal.updateRun(runId, {
+      agentsSpawned,
+      inputTokens,
+      outputTokens,
+    });
   };
 
   /**
@@ -695,7 +698,7 @@ export async function executeWorkflow(
 
     // Resume: replay a cached entry whose hash matches. Failures are journaled
     // with status "failed", so they are re-run rather than replayed as a hit.
-    const cached = journal.getJournalEntry(runId, seq);
+    const cached = await journal.getJournalEntry(runId, seq);
     if (cached && cached.callHash === hash && cached.status === "completed") {
       return { output: cached.result, failed: false };
     }
@@ -767,8 +770,8 @@ export async function executeWorkflow(
       });
       inputTokens += result.inputTokens;
       outputTokens += result.outputTokens;
-      flushCounters();
-      journal.appendJournalEntry({
+      await flushCounters();
+      await journal.appendJournalEntry({
         runId,
         seq,
         callHash: hash,
@@ -801,7 +804,7 @@ export async function executeWorkflow(
       }
       // A genuine leaf failure is journaled as failed (so it is NOT replayed as
       // a hit) and surfaced to the caller, which decides to null or rethrow it.
-      journal.appendJournalEntry({
+      await journal.appendJournalEntry({
         runId,
         seq,
         callHash: hash,
@@ -962,7 +965,7 @@ export async function executeWorkflow(
       // leaf, so replay realigns. The child's own leaves draw the seqs AFTER it.
       const seq = nextSeq++;
       const hash = workflowCallHashOf(childName);
-      const cached = journal.getJournalEntry(runId, seq);
+      const cached = await journal.getJournalEntry(runId, seq);
       let source: string;
       if (
         cached &&
@@ -978,7 +981,7 @@ export async function executeWorkflow(
           throw new WorkflowNotFoundError(childName);
         }
         source = saved.source;
-        journal.appendJournalEntry({
+        await journal.appendJournalEntry({
           runId,
           seq,
           callHash: hash,
@@ -1091,8 +1094,8 @@ export async function executeWorkflow(
     }
   }
 
-  flushCounters();
-  journal.finishRun(runId, {
+  await flushCounters();
+  await journal.finishRun(runId, {
     status,
     result: status === "completed" ? result : null,
     error:

@@ -117,11 +117,11 @@ export const ROUTES: RouteDefinition[] = [
         }),
       ),
     }),
-    handler: ({ queryParams }) => {
+    handler: async ({ queryParams }) => {
       const conversationId = queryParams?.conversationId ?? undefined;
       const documents = conversationId
-        ? getDocumentsForConversation(conversationId)
-        : listAllDocuments();
+        ? await getDocumentsForConversation(conversationId)
+        : await listAllDocuments();
       return { documents };
     },
   },
@@ -138,8 +138,8 @@ export const ROUTES: RouteDefinition[] = [
     description: "Return a single document by surface ID.",
     tags: ["documents"],
     responseBody: documentPayloadSchema,
-    handler: ({ pathParams }) => {
-      const doc = getDocumentById(pathParams!.id);
+    handler: async ({ pathParams }) => {
+      const doc = await getDocumentById(pathParams!.id);
       if (!doc) {
         throw new NotFoundError("Document not found");
       }
@@ -184,7 +184,7 @@ export const ROUTES: RouteDefinition[] = [
           "The document's revision after the save. Absent from assistants that predate document revisions.",
         ),
     }),
-    handler: ({ body, headers }) => {
+    handler: async ({ body, headers }) => {
       const {
         surfaceId,
         conversationId,
@@ -225,7 +225,7 @@ export const ROUTES: RouteDefinition[] = [
         );
       }
 
-      const result = saveDocument({
+      const result = await saveDocument({
         surfaceId,
         conversationId,
         title,
@@ -285,11 +285,14 @@ export const ROUTES: RouteDefinition[] = [
         throw new NotFoundError("Conversation not found");
       }
 
-      const result = createDocument({ conversationId, title: title?.trim() });
+      const result = await createDocument({
+        conversationId,
+        title: title?.trim(),
+      });
       if (!result.success) {
         throw new InternalError(result.error);
       }
-      const doc = getDocumentById(result.surfaceId);
+      const doc = await getDocumentById(result.surfaceId);
       if (!doc) {
         throw new InternalError("Created document could not be read back");
       }
@@ -314,16 +317,16 @@ export const ROUTES: RouteDefinition[] = [
       conversationId: z.string().describe("Conversation to link"),
     }),
     responseBody: z.object({ success: z.literal(true) }),
-    handler: ({ pathParams, body }) => {
+    handler: async ({ pathParams, body }) => {
       const { conversationId } = (body ?? {}) as { conversationId?: string };
       if (!conversationId) {
         throw new BadRequestError("conversationId is required");
       }
-      const doc = getDocumentById(pathParams!.id);
+      const doc = await getDocumentById(pathParams!.id);
       if (!doc) {
         throw new NotFoundError("Document not found");
       }
-      addDocumentConversation(pathParams!.id, conversationId);
+      await addDocumentConversation(pathParams!.id, conversationId);
       log.info(
         { surfaceId: pathParams!.id, conversationId },
         "Linked document to conversation",
@@ -351,11 +354,11 @@ export const ROUTES: RouteDefinition[] = [
       "Return the document's history snapshots, newest first, without their content.",
     tags: ["documents"],
     responseBody: z.object({ revisions: z.array(revisionSummarySchema) }),
-    handler: ({ pathParams }) => {
-      if (!getDocumentById(pathParams!.id)) {
+    handler: async ({ pathParams }) => {
+      if (!(await getDocumentById(pathParams!.id))) {
         throw new NotFoundError("Document not found");
       }
-      return { revisions: listDocumentRevisions(pathParams!.id) };
+      return { revisions: await listDocumentRevisions(pathParams!.id) };
     },
   },
 
@@ -371,9 +374,9 @@ export const ROUTES: RouteDefinition[] = [
     description: "Return one history snapshot with its content.",
     tags: ["documents"],
     responseBody: revisionSummarySchema.extend({ content: z.string() }),
-    handler: ({ pathParams }) => {
+    handler: async ({ pathParams }) => {
       const revision = parseRevisionParam(pathParams!.revision);
-      const snapshot = getDocumentRevision(pathParams!.id, revision);
+      const snapshot = await getDocumentRevision(pathParams!.id, revision);
       if (!snapshot) {
         throw new NotFoundError("Revision not found");
       }
@@ -402,10 +405,10 @@ export const ROUTES: RouteDefinition[] = [
       title: z.string(),
       content: z.string(),
     }),
-    handler: ({ pathParams, headers }) => {
+    handler: async ({ pathParams, headers }) => {
       const surfaceId = pathParams!.id;
       const revision = parseRevisionParam(pathParams!.revision);
-      const result = restoreDocumentRevision(surfaceId, revision);
+      const result = await restoreDocumentRevision(surfaceId, revision);
       if (!result.success) {
         throw new NotFoundError(
           result.notFound === "document"
@@ -413,7 +416,7 @@ export const ROUTES: RouteDefinition[] = [
             : "Revision not found",
         );
       }
-      const doc = getDocumentById(surfaceId);
+      const doc = await getDocumentById(surfaceId);
       if (doc) {
         broadcastMessage(
           {
@@ -459,7 +462,7 @@ export const ROUTES: RouteDefinition[] = [
       schema: { type: "string", format: "binary" },
     },
     handler: async ({ pathParams }) => {
-      const doc = getDocumentById(pathParams!.id);
+      const doc = await getDocumentById(pathParams!.id);
       if (!doc) {
         throw new NotFoundError("Document not found");
       }

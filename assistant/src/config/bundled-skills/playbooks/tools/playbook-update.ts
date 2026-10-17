@@ -41,7 +41,7 @@ export async function executePlaybookUpdate(
   throwIfCancelled(context);
 
   try {
-    const existing = getNode(playbookId);
+    const existing = await getNode(playbookId);
     if (
       !existing ||
       !existing.sourceConversations.some((s) => s.startsWith("playbook:")) ||
@@ -129,7 +129,7 @@ export async function executePlaybookUpdate(
       };
     }
 
-    updateNode(existing.id, {
+    await updateNode(existing.id, {
       content,
       lastAccessed: Date.now(),
     });

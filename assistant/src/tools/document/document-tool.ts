@@ -33,13 +33,16 @@ export function documentNotFound(surfaceId: string): ToolExecutionResult {
   };
 }
 
-export function canAccessDocument(
+export async function canAccessDocument(
   surfaceId: string,
   context: ToolContext,
-): boolean {
+): Promise<boolean> {
   return (
     canActOnPrivilegedDocuments(context) ||
-    isDocumentAssociatedWithConversation(surfaceId, context.conversationId)
+    (await isDocumentAssociatedWithConversation(
+      surfaceId,
+      context.conversationId,
+    ))
   );
 }
 
@@ -129,10 +132,10 @@ export const documentReplaceTextInputSchema = z.looseObject({
 
 // ── Exported execute functions ──────────────────────────────────────
 
-export function executeDocumentOpen(
+export async function executeDocumentOpen(
   input: Record<string, unknown>,
   context: ToolContext,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const parsedInput = documentOpenInputSchema.safeParse(input);
   if (!parsedInput.success) {
     return invalidToolInputResult("document_open", parsedInput.error);
@@ -142,11 +145,11 @@ export function executeDocumentOpen(
     return surfaceIdOrError;
   }
   const surfaceId = surfaceIdOrError;
-  if (!canAccessDocument(surfaceId, context)) {
+  if (!(await canAccessDocument(surfaceId, context))) {
     return documentNotFound(surfaceId);
   }
 
-  const doc = getDocumentById(surfaceId);
+  const doc = await getDocumentById(surfaceId);
   if (!doc) {
     return documentNotFound(surfaceId);
   }
@@ -207,15 +210,15 @@ const EMPTY_DOCUMENT_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
  * Only triggers when `initialContent` is non-empty — an empty incoming create
  * likely means the model intends a fresh blank doc.
  */
-function maybeReuseEmptyDocument(
+async function maybeReuseEmptyDocument(
   title: string,
   initialContent: string,
   context: ToolContext,
-): ToolExecutionResult | null {
+): Promise<ToolExecutionResult | null> {
   if (initialContent.length === 0) {
     return null;
   }
-  const existing = findRecentEmptyDocumentByTitle(
+  const existing = await findRecentEmptyDocumentByTitle(
     context.conversationId,
     title,
     EMPTY_DOCUMENT_DEDUPE_WINDOW_MS,
@@ -225,14 +228,18 @@ function maybeReuseEmptyDocument(
   }
 
   const surfaceId = existing.surfaceId;
-  const update = updateDocumentContent(surfaceId, initialContent, "replace");
+  const update = await updateDocumentContent(
+    surfaceId,
+    initialContent,
+    "replace",
+  );
   if (!update.success) {
     return null;
   }
 
   // Defensive idempotent insert (saveDocument from the create-new path already
   // ran addDocumentConversation; INSERT OR IGNORE makes this a safe no-op).
-  addDocumentConversation(surfaceId, context.conversationId);
+  await addDocumentConversation(surfaceId, context.conversationId);
 
   if (context.sendToClient) {
     // Use document_editor_update — not document_editor_show — because the
@@ -275,10 +282,10 @@ function maybeReuseEmptyDocument(
   };
 }
 
-export function executeDocumentCreate(
+export async function executeDocumentCreate(
   input: Record<string, unknown>,
   context: ToolContext,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const parsedInput = documentCreateInputSchema.safeParse(input);
   if (!parsedInput.success) {
     return invalidToolInputResult("document_create", parsedInput.error);
@@ -287,7 +294,7 @@ export function executeDocumentCreate(
   const title = parsedInput.data.title || DEFAULT_DOCUMENT_TITLE;
   const initialContent = parsedInput.data.initial_content || "";
 
-  const reused = maybeReuseEmptyDocument(title, initialContent, context);
+  const reused = await maybeReuseEmptyDocument(title, initialContent, context);
   if (reused) {
     return reused;
   }
@@ -295,7 +302,7 @@ export function executeDocumentCreate(
   // Persist the document so any client (web or macOS) can fetch it via
   // GET /v1/documents/:id. The macOS client may later update the row
   // via document_save; ON CONFLICT DO UPDATE handles that.
-  const created = createDocument({
+  const created = await createDocument({
     conversationId: context.conversationId,
     title,
     content: initialContent,
@@ -365,14 +372,14 @@ export function executeDocumentCreate(
  * every call — a step weak models routinely drop, leaving the document stuck on
  * its first chunk.
  */
-function resolveUpdateSurfaceId(
+async function resolveUpdateSurfaceId(
   input: Record<string, unknown>,
   context: ToolContext,
-): ToolExecutionResult | string {
+): Promise<ToolExecutionResult | string> {
   if (typeof input.surface_id === "string" && input.surface_id.trim() !== "") {
     return input.surface_id;
   }
-  const docs = getDocumentsForConversation(context.conversationId);
+  const docs = await getDocumentsForConversation(context.conversationId);
   if (docs.length === 0) {
     return invalidInput(
       "surface_id is required: no document is open in this conversation. Call document_create first.",
@@ -381,10 +388,10 @@ function resolveUpdateSurfaceId(
   return docs[0].surfaceId;
 }
 
-export function executeDocumentUpdate(
+export async function executeDocumentUpdate(
   input: Record<string, unknown>,
   context: ToolContext,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const parsedInput = documentUpdateInputSchema.safeParse(input);
   if (!parsedInput.success) {
     return invalidToolInputResult("document_update", parsedInput.error);
@@ -393,7 +400,7 @@ export function executeDocumentUpdate(
   if (typeof input.content !== "string") {
     return invalidInput("content is required and must be a string");
   }
-  const surfaceIdOrError = resolveUpdateSurfaceId(input, context);
+  const surfaceIdOrError = await resolveUpdateSurfaceId(input, context);
   if (typeof surfaceIdOrError !== "string") {
     return surfaceIdOrError;
   }
@@ -411,11 +418,11 @@ export function executeDocumentUpdate(
   const content = input.content;
   const mode = (input.mode as "replace" | "append" | undefined) ?? "append";
 
-  if (!canAccessDocument(surfaceId, context)) {
+  if (!(await canAccessDocument(surfaceId, context))) {
     return documentNotFound(surfaceId);
   }
 
-  const result = updateDocumentContent(surfaceId, content, mode);
+  const result = await updateDocumentContent(surfaceId, content, mode);
   if (!result.success) {
     return {
       content: JSON.stringify({
@@ -475,10 +482,10 @@ export function executeDocumentUpdate(
   };
 }
 
-export function executeDocumentRead(
+export async function executeDocumentRead(
   input: Record<string, unknown>,
   context: ToolContext,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const parsedInput = documentReadInputSchema.safeParse(input);
   if (!parsedInput.success) {
     return invalidToolInputResult("document_read", parsedInput.error);
@@ -488,11 +495,11 @@ export function executeDocumentRead(
     return surfaceIdOrError;
   }
   const surfaceId = surfaceIdOrError;
-  if (!canAccessDocument(surfaceId, context)) {
+  if (!(await canAccessDocument(surfaceId, context))) {
     return documentNotFound(surfaceId);
   }
 
-  const doc = getDocumentById(surfaceId);
+  const doc = await getDocumentById(surfaceId);
   if (!doc) {
     return documentNotFound(surfaceId);
   }
@@ -509,23 +516,23 @@ export function executeDocumentRead(
   };
 }
 
-export function executeDocumentList(
+export async function executeDocumentList(
   input: Record<string, unknown>,
   context: ToolContext,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const parsedInput = documentListInputSchema.safeParse(input);
   if (!parsedInput.success) {
     return invalidToolInputResult("document_list", parsedInput.error);
   }
   const query = parsedInput.data.query?.trim() || undefined;
   const docs = query
-    ? searchDocumentsByTitle(
+    ? await searchDocumentsByTitle(
         query,
         canActOnPrivilegedDocuments(context)
           ? {}
           : { conversationId: context.conversationId },
       )
-    : getDocumentsForConversation(context.conversationId);
+    : await getDocumentsForConversation(context.conversationId);
   return {
     content: JSON.stringify({
       success: true,
@@ -541,10 +548,10 @@ export function executeDocumentList(
   };
 }
 
-export function executeDocumentDelete(
+export async function executeDocumentDelete(
   input: Record<string, unknown>,
   context: ToolContext,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const parsedInput = documentDeleteInputSchema.safeParse(input);
   if (!parsedInput.success) {
     return invalidToolInputResult("document_delete", parsedInput.error);
@@ -555,11 +562,11 @@ export function executeDocumentDelete(
     return surfaceIdOrError;
   }
   const surfaceId = surfaceIdOrError;
-  if (!canAccessDocument(surfaceId, context)) {
+  if (!(await canAccessDocument(surfaceId, context))) {
     return documentNotFound(surfaceId);
   }
 
-  const deleted = deleteDocument(surfaceId);
+  const deleted = await deleteDocument(surfaceId);
   if (!deleted) {
     return documentNotFound(surfaceId);
   }
@@ -573,10 +580,10 @@ export function executeDocumentDelete(
   };
 }
 
-export function executeDocumentFind(
+export async function executeDocumentFind(
   input: Record<string, unknown>,
   context: ToolContext,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const parsedInput = documentFindInputSchema.safeParse(input);
   if (!parsedInput.success) {
     return invalidToolInputResult("document_find", parsedInput.error);
@@ -590,7 +597,7 @@ export function executeDocumentFind(
   const regex = parsedInput.data.regex ?? false;
   const caseSensitive = parsedInput.data.case_sensitive ?? false;
 
-  if (!canAccessDocument(surfaceId, context)) {
+  if (!(await canAccessDocument(surfaceId, context))) {
     return documentNotFound(surfaceId);
   }
 
@@ -609,7 +616,10 @@ export function executeDocumentFind(
     }
   }
 
-  const result = findInDocument(surfaceId, query, { regex, caseSensitive });
+  const result = await findInDocument(surfaceId, query, {
+    regex,
+    caseSensitive,
+  });
   if (!result) {
     return documentNotFound(surfaceId);
   }
@@ -632,10 +642,10 @@ export function executeDocumentFind(
   };
 }
 
-export function executeDocumentReplaceText(
+export async function executeDocumentReplaceText(
   input: Record<string, unknown>,
   context: ToolContext,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const parsedInput = documentReplaceTextInputSchema.safeParse(input);
   if (!parsedInput.success) {
     return invalidToolInputResult("document_replace_text", parsedInput.error);
@@ -652,7 +662,7 @@ export function executeDocumentReplaceText(
   const caseSensitive = parsedInput.data.case_sensitive ?? false;
   const maxReplacements = parsedInput.data.max_replacements;
 
-  if (!canAccessDocument(surfaceId, context)) {
+  if (!(await canAccessDocument(surfaceId, context))) {
     return documentNotFound(surfaceId);
   }
 
@@ -670,7 +680,7 @@ export function executeDocumentReplaceText(
     }
   }
 
-  const result = replaceInDocument(surfaceId, find, replace, {
+  const result = await replaceInDocument(surfaceId, find, replace, {
     regex,
     caseSensitive,
     maxReplacements,

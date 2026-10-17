@@ -102,7 +102,7 @@ async function resolveLeafContext(
     return { systemPrompt: LEAF_SYSTEM_PROMPT, messages: userMessages };
   }
 
-  const systemPrompt = buildSystemPrompt({
+  const systemPrompt = await buildSystemPrompt({
     trustContext: opts.trustContext,
     // A persona leaf is not an onboarding turn, and it must not emit the
     // first-run bootstrap block: keep it to the assistant's stable identity.

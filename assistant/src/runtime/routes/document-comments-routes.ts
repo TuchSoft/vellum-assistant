@@ -127,13 +127,13 @@ export const ROUTES: RouteDefinition[] = [
     responseBody: z.object({
       comments: z.array(documentCommentSchema).describe("Comment records"),
     }),
-    handler: ({ pathParams, queryParams }) => {
+    handler: async ({ pathParams, queryParams }) => {
       const parsed = listQuerySchema.safeParse(queryParams ?? {});
       if (!parsed.success) {
         throw new BadRequestError(parsed.error.issues[0].message);
       }
       const { status } = parsed.data;
-      const comments = listComments(pathParams!.id, { status });
+      const comments = await listComments(pathParams!.id, { status });
       return { comments };
     },
   },
@@ -151,7 +151,7 @@ export const ROUTES: RouteDefinition[] = [
     tags: ["documents"],
     requestBody: createBodySchema,
     responseBody: documentCommentSchema,
-    handler: ({ pathParams, body }) => {
+    handler: async ({ pathParams, body }) => {
       const parsed = createBodySchema.safeParse(body ?? {});
       if (!parsed.success) {
         throw new BadRequestError(parsed.error.issues[0].message);
@@ -165,7 +165,7 @@ export const ROUTES: RouteDefinition[] = [
         parentCommentId,
         conversationId,
       } = parsed.data;
-      const comment = createComment({
+      const comment = await createComment({
         surfaceId: pathParams!.id,
         conversationId,
         author,
@@ -217,7 +217,7 @@ export const ROUTES: RouteDefinition[] = [
     tags: ["documents"],
     requestBody: updateBodySchema,
     responseBody: documentCommentSchema,
-    handler: ({ pathParams, body }) => {
+    handler: async ({ pathParams, body }) => {
       const parsed = updateBodySchema.safeParse(body ?? {});
       if (!parsed.success) {
         throw new BadRequestError(parsed.error.issues[0].message);
@@ -225,13 +225,13 @@ export const ROUTES: RouteDefinition[] = [
       const { status, content, resolvedBy } = parsed.data;
       const commentId = pathParams!.commentId;
 
-      const existing = getComment(commentId);
+      const existing = await getComment(commentId);
       if (!existing || existing.surfaceId !== pathParams!.id) {
         throw new NotFoundError("Comment not found");
       }
 
       if (status === "resolved") {
-        resolveComment(commentId, resolvedBy ?? "user");
+        await resolveComment(commentId, resolvedBy ?? "user");
         broadcastMessage(
           {
             type: "document_comment_resolved",
@@ -243,7 +243,7 @@ export const ROUTES: RouteDefinition[] = [
           existing.conversationId,
         );
       } else if (status === "open") {
-        reopenComment(commentId);
+        await reopenComment(commentId);
         broadcastMessage(
           {
             type: "document_comment_reopened",
@@ -256,10 +256,10 @@ export const ROUTES: RouteDefinition[] = [
       }
 
       if (content !== undefined) {
-        updateCommentContent(commentId, content);
+        await updateCommentContent(commentId, content);
       }
 
-      const updated = getComment(commentId);
+      const updated = await getComment(commentId);
       if (!updated) {
         throw new NotFoundError("Comment not found after update");
       }
@@ -286,13 +286,13 @@ export const ROUTES: RouteDefinition[] = [
     responseBody: z.object({
       success: z.literal(true),
     }),
-    handler: ({ pathParams }) => {
+    handler: async ({ pathParams }) => {
       const commentId = pathParams!.commentId;
-      const existing = getComment(commentId);
+      const existing = await getComment(commentId);
       if (!existing || existing.surfaceId !== pathParams!.id) {
         throw new NotFoundError("Comment not found");
       }
-      deleteComment(commentId);
+      await deleteComment(commentId);
       broadcastMessage(
         {
           type: "document_comment_deleted",

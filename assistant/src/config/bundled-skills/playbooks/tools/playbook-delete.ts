@@ -26,7 +26,7 @@ export async function executePlaybookDelete(
   throwIfCancelled(context);
 
   try {
-    const existing = getNode(playbookId);
+    const existing = await getNode(playbookId);
     if (
       !existing ||
       !existing.sourceConversations.some((s) => s.startsWith("playbook:")) ||
@@ -46,7 +46,7 @@ export async function executePlaybookDelete(
     const triggerLabel = playbook?.trigger ?? existing.content.split("\n")[0];
 
     // Soft-delete by setting fidelity to "gone"
-    updateNode(existing.id, { fidelity: "gone" });
+    await updateNode(existing.id, { fidelity: "gone" });
 
     return {
       content: `Playbook deleted (ID: ${existing.id}, trigger: "${triggerLabel}").`,

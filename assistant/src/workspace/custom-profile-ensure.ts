@@ -32,7 +32,9 @@ const log = getLogger("custom-profile-ensure");
 // at least one entry changed. Unknown keys on an entry survive completion.
 // Each materialized profile logs the exact fields it baked so a later
 // resolution report can be attributed to baked data vs. resolver semantics.
-export function ensureCompleteCustomProfiles(workspaceDir: string): void {
+export async function ensureCompleteCustomProfiles(
+  workspaceDir: string,
+): Promise<void> {
   const configPath = join(workspaceDir, "config.json");
   if (!existsSync(configPath)) {
     return;
@@ -68,7 +70,7 @@ export function ensureCompleteCustomProfiles(workspaceDir: string): void {
     if (entry === null) {
       continue;
     }
-    const merged = completedProfileBody(entry, parsedDefault.data);
+    const merged = await completedProfileBody(entry, parsedDefault.data);
     if (merged === null || isDeepStrictEqual(merged, entry)) {
       continue;
     }
@@ -102,17 +104,17 @@ export function ensureCompleteCustomProfiles(workspaceDir: string): void {
  * normalizes bodies through this same function so its unedited-copy
  * comparisons match what this pass wrote to disk on prior boots.
  */
-export function completedProfileBody(
+export async function completedProfileBody(
   entry: Record<string, unknown>,
   dflt: LLMConfigBase,
-): Record<string, unknown> | null {
+): Promise<Record<string, unknown> | null> {
   const parsed = ProfileEntry.safeParse(entry);
   if (!parsed.success) {
     return null;
   }
   return mergePreservingUnknownKeys(
     entry,
-    completeCustomProfile(dflt, parsed.data) as Record<string, unknown>,
+    (await completeCustomProfile(dflt, parsed.data)) as Record<string, unknown>,
   );
 }
 

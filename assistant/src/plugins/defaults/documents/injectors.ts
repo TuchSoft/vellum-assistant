@@ -93,10 +93,12 @@ const documentCommentsInjector: Injector = {
 
     const sections: string[] = [];
     for (const doc of docs) {
-      const comments = listComments(doc.surfaceId, {
-        status: "open",
-        topLevelOnly: true,
-      }).slice(-DOCUMENT_COMMENTS_CAP);
+      const comments = (
+        await listComments(doc.surfaceId, {
+          status: "open",
+          topLevelOnly: true,
+        })
+      ).slice(-DOCUMENT_COMMENTS_CAP);
       if (comments.length === 0) {
         continue;
       }

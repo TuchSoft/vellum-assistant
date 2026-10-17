@@ -2483,14 +2483,18 @@ export async function applyRuntimeInjections(
   // re-injection (including the post-compaction hook) reflects the current
   // boundary without the orchestrator threading a snapshot in.
   const slackChronologicalMessages = channelCapabilities
-    ? loadSlackChronologicalMessages(conversationId, channelCapabilities, {
-        trustClass: liveConversation?.getTrustContext()?.trustClass,
-        contextSummary: liveConversation?.contextSummary,
-        contextCompactedMessageCount:
-          liveConversation?.contextCompactedMessageCount,
-        slackContextCompactionWatermarkTs:
-          liveConversation?.slackContextCompactionWatermarkTs,
-      })
+    ? await loadSlackChronologicalMessages(
+        conversationId,
+        channelCapabilities,
+        {
+          trustClass: liveConversation?.getTrustContext()?.trustClass,
+          contextSummary: liveConversation?.contextSummary,
+          contextCompactedMessageCount:
+            liveConversation?.contextCompactedMessageCount,
+          slackContextCompactionWatermarkTs:
+            liveConversation?.slackContextCompactionWatermarkTs,
+        },
+      )
     : null;
   // Assemble the per-turn TurnContext handed to the injector chain. The
   // turn-identity fields come from `options` when supplied; `requestId` is the

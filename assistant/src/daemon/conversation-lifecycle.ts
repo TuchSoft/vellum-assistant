@@ -455,50 +455,69 @@ export function abortConversation(
 
 // ── dispose ──────────────────────────────────────────────────────────
 
-export function disposeConversation(ctx: DisposeContext): void {
-  // Trigger graph extraction for end-of-conversation sweep.
-  // Only extract from guardian conversations to preserve the memory trust
-  // boundary — untrusted content must not influence future memory retrieval.
-  if (resolveCapabilities(ctx.trustContext?.trustClass).canAccessMemory) {
-    // Recursion guard: skip graph_extract for auto-analysis conversations.
-    // The analysis agent writes memory directly via tools, so extracting
-    // from its reflective musings would double-write into the memory graph.
-    // Mirrors the same guard applied in `indexer.ts` for the per-message
-    // indexing path.
-    // Fail open: if the guard lookup throws (e.g. DB unavailable during
-    // teardown), default to NOT skipping so the rest of disposal still runs.
-    let isAutoAnalysis = false;
-    try {
-      isAutoAnalysis = isAutoAnalysisConversation(ctx.conversationId);
-    } catch {
-      // Best-effort — don't block conversation disposal
-    }
-    if (!isAutoAnalysis) {
-      // Suppress v1 graph extraction when concept-page memory is active —
-      // it reads from buffer.md and concept pages, so the v1 graph would be
-      // stale data nobody consumes. Mirrors the gate applied in `indexer.ts`
-      // for the per-message indexing path. Fail open to v1 if config
-      // can't load, since the worker handler also short-circuits.
-      let conceptPagesActive = false;
-      try {
-        conceptPagesActive = usesConceptPageMemory(getConfig().memory);
-      } catch {
-        // Best-effort — fall through to legacy v1 enqueue
-      }
-      if (!conceptPagesActive && isMemoryEnabled()) {
-        try {
-          enqueueMemoryJob("graph_extract", {
-            conversationId: ctx.conversationId,
-            ...(ctx.activeContextNodeIds?.length
-              ? { activeContextNodeIds: ctx.activeContextNodeIds }
-              : {}),
-          });
-        } catch {
-          // Best-effort — don't block conversation disposal
-        }
-      }
-    }
+/**
+ * Trigger graph extraction for the end-of-conversation sweep. Only guardian
+ * conversations extract, preserving the memory trust boundary so untrusted
+ * content never influences future memory retrieval.
+ *
+ * Fail open: a failed guard lookup (e.g. the database is unavailable during
+ * teardown) or config load defaults to enqueueing, so the rest of disposal is
+ * not blocked.
+ */
+async function enqueueDisposeGraphExtraction(
+  ctx: DisposeContext,
+): Promise<void> {
+  if (!resolveCapabilities(ctx.trustContext?.trustClass).canAccessMemory) {
+    return;
   }
+
+  // Recursion guard: skip graph_extract for auto-analysis conversations. The
+  // analysis agent writes memory directly via tools, so extracting from its
+  // reflective musings would double-write into the memory graph. Mirrors the
+  // same guard applied in `indexer.ts` for the per-message indexing path.
+  let isAutoAnalysis = false;
+  try {
+    isAutoAnalysis = await isAutoAnalysisConversation(ctx.conversationId);
+  } catch {
+    // Best-effort — don't block conversation disposal
+  }
+  if (isAutoAnalysis) {
+    return;
+  }
+
+  // Suppress v1 graph extraction when concept-page memory is active: it reads
+  // from buffer.md and concept pages, so the v1 graph would be stale data
+  // nobody consumes. Mirrors the gate applied in `indexer.ts` for the
+  // per-message indexing path.
+  let conceptPagesActive = false;
+  try {
+    conceptPagesActive = usesConceptPageMemory(getConfig().memory);
+  } catch {
+    // Best-effort — fall through to legacy v1 enqueue
+  }
+  if (conceptPagesActive || !isMemoryEnabled()) {
+    return;
+  }
+
+  try {
+    enqueueMemoryJob("graph_extract", {
+      conversationId: ctx.conversationId,
+      ...(ctx.activeContextNodeIds?.length
+        ? { activeContextNodeIds: ctx.activeContextNodeIds }
+        : {}),
+    });
+  } catch {
+    // Best-effort — don't block conversation disposal
+  }
+}
+
+export function disposeConversation(ctx: DisposeContext): void {
+  void enqueueDisposeGraphExtraction(ctx).catch((err) => {
+    log.warn(
+      { err, conversationId: ctx.conversationId },
+      "Graph extraction enqueue during dispose failed (non-fatal)",
+    );
+  });
 
   abortConversation(
     ctx,

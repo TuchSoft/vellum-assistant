@@ -198,11 +198,7 @@ import { VoiceInputDiagnostics } from "./voice-input-diagnostics.js";
 const log = getLogger("live-voice-session");
 
 type LiveVoiceSessionState =
-  | "initializing"
-  | "active"
-  | "interrupted"
-  | "failed"
-  | "closed";
+  "initializing" | "active" | "interrupted" | "failed" | "closed";
 
 type VadEnergyClassification = "speech" | "silence" | "echo";
 
@@ -1185,8 +1181,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
   // Reads the interrupted turn's teardown promise so the barge-in path can wait
   // for it to settle before forking the continuation.
   private readonly getTurnTeardown:
-    | ((conversationId: string) => Promise<void> | undefined)
-    | null;
+    ((conversationId: string) => Promise<void> | undefined) | null;
   private readonly detachTeardownSettleTimeoutMs: number;
   private readonly continuationAnnounceSilenceMs: number;
   // Abort handles for background continuations started when a barge-in detached
@@ -1726,7 +1721,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
           await this.startSightSession(frame.cameraEpoch, frame.source);
           return;
         case "sight_end":
-          this.endSightSession(frame.cameraEpoch);
+          await this.endSightSession(frame.cameraEpoch);
           return;
         case "sight_frame":
           this.persistSightFrame(frame);
@@ -1870,10 +1865,10 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
       this.lastSpeechStartedAtMs === null
         ? null
         : receivedAtMs - this.lastSpeechStartedAtMs;
-    const settleFrame = (
+    const settleFrame = async (
       result: LiveVoicePhotoResult,
       rejection?: unknown,
-    ): void => {
+    ): Promise<void> => {
       if (rejection !== undefined) {
         log.warn(
           { err: rejection, attachmentId: frame.attachmentId },
@@ -1881,7 +1876,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
         );
       }
       try {
-        this.cameraModeSessions?.finishFrame(
+        await this.cameraModeSessions?.finishFrame(
           cameraToken,
           result.ok && result.messageId
             ? { messageId: result.messageId, at: receivedAtMs }
@@ -1965,7 +1960,10 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
     }
     let handle: ModeSessionSourceHandle | undefined;
     try {
-      handle = this.cameraModeSessions?.start(cameraEpoch, source ?? "live");
+      handle = await this.cameraModeSessions?.start(
+        cameraEpoch,
+        source ?? "live",
+      );
     } catch (err) {
       log.warn({ err, cameraEpoch }, "Could not start camera session");
     }
@@ -1987,9 +1985,9 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
     });
   }
 
-  private endSightSession(cameraEpoch: number): void {
+  private async endSightSession(cameraEpoch: number): Promise<void> {
     try {
-      this.cameraModeSessions?.end(cameraEpoch);
+      await this.cameraModeSessions?.end(cameraEpoch);
     } catch (err) {
       log.warn({ err, cameraEpoch }, "Could not end camera session");
     }
@@ -2124,7 +2122,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
     }
 
     try {
-      this.cameraModeSessions?.close(
+      await this.cameraModeSessions?.close(
         reason === "client_end"
           ? { status: "completed", endReason: "camera_session_ended" }
           : { status: "interrupted", endReason: `camera_${reason}` },
@@ -6110,7 +6108,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
     let modeSessionDeliveryTurnId: string | null = null;
     try {
       modeSessionSource =
-        this.cameraModeSessions?.holdDelivery(modeSessionRequestId);
+        await this.cameraModeSessions?.holdDelivery(modeSessionRequestId);
       if (!modeSessionSource) {
         this.releaseModeSessionTurnId(modeSessionRequestId);
       } else {
@@ -6119,7 +6117,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
           const escalatedRequestId = randomUUID();
           attemptedModeSessionRequestIds.push(escalatedRequestId);
           const escalatedSource =
-            this.cameraModeSessions?.holdDelivery(escalatedRequestId);
+            await this.cameraModeSessions?.holdDelivery(escalatedRequestId);
           if (!sameModeSessionSource(escalatedSource, modeSessionSource)) {
             throw new Error("Camera session changed during voice admission");
           }
@@ -6128,7 +6126,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
         const deliveryTurnId = `live-voice-delivery:${this.context.sessionId}:${++this.modeSessionDeliveryCounter}`;
         attemptedModeSessionRequestIds.push(deliveryTurnId);
         const deliverySource =
-          this.cameraModeSessions?.holdDelivery(deliveryTurnId);
+          await this.cameraModeSessions?.holdDelivery(deliveryTurnId);
         if (!sameModeSessionSource(deliverySource, modeSessionSource)) {
           throw new Error("Camera session changed during voice admission");
         }
@@ -7891,14 +7889,12 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
   }
 
   private releaseModeSessionTurnId(turnId: string): void {
-    try {
-      this.cameraModeSessions?.releaseDelivery(turnId);
-    } catch (err) {
+    void this.cameraModeSessions?.releaseDelivery(turnId).catch((err) => {
       log.warn(
         { err, turnId },
         "Could not release camera session ownership from voice turn",
       );
-    }
+    });
   }
 
   private async archiveBufferedAudio(input: {

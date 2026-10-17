@@ -773,7 +773,7 @@ export async function processMessage(
     return {
       messageId,
       deduplicated: true,
-      turnFailure: readTurnFailure(messageId),
+      turnFailure: await readTurnFailure(messageId),
     };
   }
 
@@ -801,7 +801,7 @@ export async function processMessage(
   // `finally` wrote onto this user-message row. A failed turn (e.g. an LLM
   // call that failed with an invalid provider) ends without throwing, so this
   // is the only signal an awaiting caller gets.
-  const turnFailure = readTurnFailure(messageId);
+  const turnFailure = await readTurnFailure(messageId);
   return { messageId, turnFailure };
 }
 

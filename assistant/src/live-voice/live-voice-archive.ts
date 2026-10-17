@@ -529,26 +529,26 @@ export async function archiveLiveVoiceAudioArtifact(
 
   try {
     const position = input.position ?? nextAttachmentPosition(input.messageId);
-    const stored = await (input.audio.type === "base64"
+    const audio = input.audio;
+    const stored = await (audio.type === "base64"
       ? attachInlineAttachmentToMessage(
           input.messageId,
           position,
           validated.filename,
           validated.mimeType,
-          input.audio.dataBase64,
+          audio.dataBase64,
         )
       : (async () => {
-          if (!existsSync(input.audio.filePath)) {
+          if (!existsSync(audio.filePath)) {
             return null;
           }
-          const sizeBytes =
-            input.audio.sizeBytes ?? statSync(input.audio.filePath).size;
+          const sizeBytes = audio.sizeBytes ?? statSync(audio.filePath).size;
           return await attachFileBackedAttachmentToMessage(
             input.messageId,
             position,
             validated.filename,
             validated.mimeType,
-            input.audio.filePath,
+            audio.filePath,
             sizeBytes,
           );
         })());

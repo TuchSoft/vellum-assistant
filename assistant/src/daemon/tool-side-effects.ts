@@ -113,11 +113,9 @@ registerHook("app_create", (_name, _input, result, { ctx }) => {
   if (!appId) {
     return;
   }
-  try {
-    linkAppToConversationLineage(appId, ctx.conversationId);
-  } catch (err) {
+  void linkAppToConversationLineage(appId, ctx.conversationId).catch((err) => {
     log.warn({ err, appId }, "Failed to track conversation ID on app_create");
-  }
+  });
 
   notifyAppChanged(ctx, appId);
 
@@ -159,11 +157,11 @@ function registerAppSurfaceRefreshHook(toolName: string): void {
     if (!appId) {
       return;
     }
-    try {
-      linkAppToConversationLineage(appId, ctx.conversationId);
-    } catch (err) {
-      log.warn({ err, appId }, `Failed to track conversation ID on ${name}`);
-    }
+    void linkAppToConversationLineage(appId, ctx.conversationId).catch(
+      (err) => {
+        log.warn({ err, appId }, `Failed to track conversation ID on ${name}`);
+      },
+    );
     notifyAppChanged(ctx, appId, { fileChange: true });
   });
 }

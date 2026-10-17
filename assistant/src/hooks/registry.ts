@@ -200,7 +200,7 @@ export async function getHookEntriesFor<TCtx = unknown>(
   if (options?.conversationId) {
     const { resolveConversationPluginScope } =
       await import("../daemon/conversation-plugin-scope.js");
-    effectiveEnabledPlugins = resolveConversationPluginScope(
+    effectiveEnabledPlugins = await resolveConversationPluginScope(
       options.conversationId,
     );
   }

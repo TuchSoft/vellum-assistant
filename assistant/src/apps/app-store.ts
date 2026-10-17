@@ -1355,15 +1355,15 @@ export function addAppConversationId(
  * Best-effort per id: a link failure must never break app creation or opening.
  * Returns the number of associations added.
  */
-export function linkAppToConversationLineage(
+export async function linkAppToConversationLineage(
   appId: string,
   conversationId: string,
-): number {
+): Promise<number> {
   // Lineage resolution reaches the conversation store; an unexpected throw
   // there degrades to the conversation itself rather than breaking the link.
   let lineage: string[];
   try {
-    lineage = resolveConversationLineage(conversationId);
+    lineage = await resolveConversationLineage(conversationId);
   } catch (err) {
     log.warn(
       { err, appId, conversationId },

@@ -31,7 +31,6 @@ import {
   isPrivateAssistantText,
   projectUserFacingContent,
 } from "../../persistence/user-facing-content.js";
-import { resolveMediaSourceData } from "../../providers/media-resolve.js";
 import { isPlaceholderSentinelText } from "../../providers/placeholder-sentinels.js";
 import type { MediaSource } from "../../providers/types.js";
 import { broadcastMessage } from "../../runtime/assistant-event-hub.js";
@@ -826,9 +825,8 @@ export function renderHistoryContent(
               imageAttachmentIds.push(source.attachmentId);
               continue;
             }
-            const resolved = resolveMediaSourceData(source);
-            if (resolved) {
-              imageDataList.push(resolved.data);
+            if (source.type === "base64") {
+              imageDataList.push(source.data);
             }
           }
         }

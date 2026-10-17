@@ -46,10 +46,10 @@ const log = getLogger("wake-conversation-ops");
  * frames. Events that have no client-visible wire shape (usage, error,
  * preview/input-json deltas, etc.) are dropped — they produce no UI.
  */
-function translateAgentEventToServerMessage(
+async function translateAgentEventToServerMessage(
   event: AgentEvent,
   conversationId: string,
-): AssistantEvent | null {
+): Promise<AssistantEvent | null> {
   switch (event.type) {
     case "text_delta":
       return {
@@ -90,9 +90,14 @@ function translateAgentEventToServerMessage(
         (b): b is Extract<typeof b, { type: "image" }> => b.type === "image",
       );
       const imageDataList = imageBlocks?.length
-        ? imageBlocks
-            .map((b) => resolveMediaSourceData(b.source)?.data)
-            .filter((d): d is string => d != null)
+        ? (
+            await Promise.all(
+              imageBlocks.map(async (b) => {
+                const resolved = await resolveMediaSourceData(b.source);
+                return resolved?.data;
+              }),
+            )
+          ).filter((d): d is string => d != null)
         : undefined;
       return {
         type: "tool_result",
@@ -173,14 +178,18 @@ export function emitWakeAgentEvent(
   conversation: Conversation,
   event: AgentEvent,
 ): void {
-  const frame = translateAgentEventToServerMessage(
-    event,
-    conversation.conversationId,
-  );
-  if (!frame) {
-    return;
-  }
-  broadcastMessage(frame);
+  void translateAgentEventToServerMessage(event, conversation.conversationId)
+    .then((frame) => {
+      if (frame) {
+        broadcastMessage(frame);
+      }
+    })
+    .catch((err) => {
+      log.warn(
+        { err, conversationId: conversation.conversationId, event: event.type },
+        "Failed to translate wake agent event (non-fatal)",
+      );
+    });
 }
 
 /**

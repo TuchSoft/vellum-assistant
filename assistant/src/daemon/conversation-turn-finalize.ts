@@ -355,7 +355,7 @@ export async function runDeferredTurnTail(params: {
     // delivery would send, so the push carries the same words.
     const replyMessageId =
       state.lastAssistantTextVisibility === "private"
-        ? resolveTurnReplyMessageId(
+        ? await resolveTurnReplyMessageId(
             conversationId,
             userMessageId,
             state.lastAssistantMessageId,

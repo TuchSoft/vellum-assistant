@@ -49,11 +49,11 @@ export class CameraModeSessionProducer {
     this.#sourceId = `live-voice-camera:${voiceSessionId}`;
   }
 
-  start(
+  async start(
     epoch: number,
     source: LiveVoiceSightSource = "live",
     at = Date.now(),
-  ): ModeSessionSourceHandle | undefined {
+  ): Promise<ModeSessionSourceHandle | undefined> {
     const known = this.#runs.get(epoch);
     if (known) {
       return !known.retired && known.source === source
@@ -65,13 +65,13 @@ export class CameraModeSessionProducer {
     }
 
     if (this.#activeRun) {
-      this.#retire(this.#activeRun, {
+      await this.#retire(this.#activeRun, {
         status: "interrupted",
         endReason: "camera_source_replaced",
       });
     }
 
-    const handle = this.#coordinator.activateSource({
+    const handle = await this.#coordinator.activateSource({
       sourceId: this.#sourceId,
       generation: epoch,
       mode: modeFor(source),
@@ -85,9 +85,9 @@ export class CameraModeSessionProducer {
     const syntheticTurnId = `${this.#sourceId}:${epoch}:${handle.activation}`;
     let owner: ModeSession | undefined;
     try {
-      owner = this.#coordinator.claimTurn(syntheticTurnId, handle, at);
+      owner = await this.#coordinator.claimTurn(syntheticTurnId, handle, at);
     } catch (err) {
-      const rollbackError = this.#rollbackStart(handle, syntheticTurnId);
+      const rollbackError = await this.#rollbackStart(handle, syntheticTurnId);
       if (rollbackError) {
         throw new AggregateError(
           [err, rollbackError],
@@ -97,7 +97,7 @@ export class CameraModeSessionProducer {
       throw err;
     }
     if (!owner || owner.id !== handle.id) {
-      const rollbackError = this.#rollbackStart(handle, syntheticTurnId);
+      const rollbackError = await this.#rollbackStart(handle, syntheticTurnId);
       if (rollbackError) {
         throw rollbackError;
       }
@@ -118,13 +118,13 @@ export class CameraModeSessionProducer {
     return handle;
   }
 
-  #rollbackStart(
+  async #rollbackStart(
     handle: ModeSessionSourceHandle,
     syntheticTurnId: string,
-  ): unknown {
+  ): Promise<unknown> {
     let rollbackError: unknown;
     try {
-      this.#coordinator.retireSource(handle, {
+      await this.#coordinator.retireSource(handle, {
         status: "interrupted",
         endReason: "camera_start_refused",
       });
@@ -132,7 +132,7 @@ export class CameraModeSessionProducer {
       rollbackError = err;
     }
     try {
-      this.#coordinator.releaseTurn(syntheticTurnId);
+      await this.#coordinator.releaseTurn(syntheticTurnId);
     } catch (err) {
       rollbackError ??= err;
     }
@@ -143,20 +143,20 @@ export class CameraModeSessionProducer {
     return this.#activeRun?.handle;
   }
 
-  holdDelivery(
+  async holdDelivery(
     turnId: string,
     at = Date.now(),
-  ): ModeSessionSourceHandle | undefined {
+  ): Promise<ModeSessionSourceHandle | undefined> {
     const handle = this.captureTurn();
     if (!handle) {
       return undefined;
     }
-    const owner = this.#coordinator.claimTurn(turnId, handle, at);
+    const owner = await this.#coordinator.claimTurn(turnId, handle, at);
     return owner?.id === handle.id ? handle : undefined;
   }
 
-  releaseDelivery(turnId: string): void {
-    this.#coordinator.releaseTurn(turnId);
+  async releaseDelivery(turnId: string): Promise<void> {
+    await this.#coordinator.releaseTurn(turnId);
   }
 
   beginFrame(
@@ -182,10 +182,10 @@ export class CameraModeSessionProducer {
     return token;
   }
 
-  finishFrame(
+  async finishFrame(
     token: CameraFrameToken | undefined,
     persisted?: { messageId: string; at: number },
-  ): void {
+  ): Promise<void> {
     if (!token || !this.#pendingFrameTokens.delete(token)) {
       return;
     }
@@ -196,51 +196,57 @@ export class CameraModeSessionProducer {
     try {
       if (
         persisted &&
-        this.#coordinator.recordActivity(run.syntheticTurnId, persisted.at)
+        (await this.#coordinator.recordActivity(
+          run.syntheticTurnId,
+          persisted.at,
+        ))
       ) {
-        this.#coordinator.trackPersistedRow(
+        await this.#coordinator.trackPersistedRow(
           run.syntheticTurnId,
           persisted.messageId,
           persisted.at,
         );
-        this.#coordinator.recordActivity(run.syntheticTurnId, persisted.at);
+        await this.#coordinator.recordActivity(
+          run.syntheticTurnId,
+          persisted.at,
+        );
       }
     } finally {
       run.pendingFrames = Math.max(0, run.pendingFrames - 1);
-      this.#releaseIfSettled(run);
+      await this.#releaseIfSettled(run);
     }
   }
 
-  end(
+  async end(
     epoch: number,
     disposition: ModeSessionTerminalDisposition = {
       status: "completed",
       endReason: "camera_stopped",
     },
-  ): boolean {
+  ): Promise<boolean> {
     const run = this.#runs.get(epoch);
     if (!run || run.retired) {
       return false;
     }
-    return this.#retire(run, disposition);
+    return await this.#retire(run, disposition);
   }
 
-  close(disposition: ModeSessionTerminalDisposition): boolean {
+  async close(disposition: ModeSessionTerminalDisposition): Promise<boolean> {
     const run = this.#activeRun;
-    return run ? this.#retire(run, disposition) : false;
+    return run ? await this.#retire(run, disposition) : false;
   }
 
-  #retire(
+  async #retire(
     run: CameraRun,
     disposition: ModeSessionTerminalDisposition,
-  ): boolean {
+  ): Promise<boolean> {
     if (run.retired) {
       return false;
     }
     let retired = false;
     let retirementError: unknown;
     try {
-      retired = this.#coordinator.retireSource(run.handle, disposition);
+      retired = await this.#coordinator.retireSource(run.handle, disposition);
     } catch (err) {
       retirementError = err;
     }
@@ -250,7 +256,7 @@ export class CameraModeSessionProducer {
     }
     let releaseError: unknown;
     try {
-      this.#releaseIfSettled(run);
+      await this.#releaseIfSettled(run);
     } catch (err) {
       releaseError = err;
     }
@@ -269,9 +275,9 @@ export class CameraModeSessionProducer {
     return retired;
   }
 
-  #releaseIfSettled(run: CameraRun): void {
+  async #releaseIfSettled(run: CameraRun): Promise<void> {
     if (run.retired && run.pendingFrames === 0) {
-      this.#coordinator.releaseTurn(run.syntheticTurnId);
+      await this.#coordinator.releaseTurn(run.syntheticTurnId);
     }
   }
 }

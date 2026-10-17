@@ -2576,9 +2576,14 @@ export async function handleToolResult(
     (b): b is ImageContent => b.type === "image",
   );
   const imageDataList = imageBlocks?.length
-    ? imageBlocks
-        .map((b) => resolveMediaSourceData(b.source)?.data)
-        .filter((d): d is string => d != null)
+    ? (
+        await Promise.all(
+          imageBlocks.map(async (b) => {
+            const resolved = await resolveMediaSourceData(b.source);
+            return resolved?.data;
+          }),
+        )
+      ).filter((d): d is string => d != null)
     : undefined;
 
   // Perform state mutations before deps.onEvent() so that if onEvent throws

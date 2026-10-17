@@ -2231,7 +2231,7 @@ export async function runAgentLoopImpl(
       const attachmentTargetMessageId =
         state.lastAssistantTextVisibility === "private" &&
         state.lastAssistantMessageId
-          ? resolveTurnReplyMessageId(
+          ? await resolveTurnReplyMessageId(
               ctx.conversationId,
               userMessageId,
               state.lastAssistantMessageId,

@@ -85,7 +85,6 @@ import {
   getConversationIfExists,
   isSameIncarnation,
 } from "../daemon/conversation-store.js";
-import { bestEffortModeSessionTracking } from "../daemon/mode-session-tracking.js";
 import type { TrustContext } from "../daemon/trust-context-types.js";
 import {
   deleteOrphanAttachments,
@@ -685,7 +684,7 @@ async function acquireProcessingFlag(conversation: {
  * with nothing between its acceptance and this call omits it, and the read
  * below is that same moment.
  */
-function persistStandaloneImage(
+async function persistStandaloneImage(
   conversationId: string,
   attachmentId: string,
   kind: "photo" | "sight_frame",
@@ -752,7 +751,7 @@ function persistStandaloneImage(
     let owner: ModeSession | undefined;
     let trackingFailed = false;
     try {
-      owner = modeSessionCoordinator?.claimTurn(
+      owner = await modeSessionCoordinator?.claimTurn(
         requestId,
         modeSessionSource,
         Date.now(),
@@ -772,9 +771,12 @@ function persistStandaloneImage(
         { conversationId, attachmentId },
         "Standalone camera image lost its accepted session owner",
       );
-      bestEffortModeSessionTracking("stale camera claim release", () =>
-        modeSessionCoordinator?.releaseTurn(requestId),
-      );
+      void modeSessionCoordinator?.releaseTurn(requestId).catch((err) => {
+        log.warn(
+          { err, conversationId, attachmentId },
+          "Stale camera claim release failed (non-fatal)",
+        );
+      });
       reclaimOrDefer(
         conversationId,
         [attachmentId],
@@ -805,14 +807,12 @@ function persistStandaloneImage(
         modeSession,
       ),
   ).finally(() => {
-    try {
-      modeSessionCoordinator?.releaseTurn(requestId);
-    } catch (err) {
+    void modeSessionCoordinator?.releaseTurn(requestId).catch((err) => {
       log.warn(
         { err, conversationId, attachmentId },
         "Standalone camera image could not release its session owner",
       );
-    }
+    });
   });
 }
 
@@ -894,7 +894,7 @@ async function writeStandaloneImage(
     // behind another image can be a conversation created under this id since.
     // Asked before the idle wait so a replacement is answered now rather than
     // after holding a stranger's lock for the length of a turn.
-    if (!isSameIncarnation(conversationId, incarnation)) {
+    if (!(await isSameIncarnation(conversationId, incarnation))) {
       return dropReplacedImage(conversationId, attachmentId, kind, content);
     }
 
@@ -922,9 +922,11 @@ async function writeStandaloneImage(
       // id restores that foreign key's target, and the row would land in a
       // conversation created after the deletion. Both kinds check: a photo
       // persisted into a stranger that inherited the name is the same wrong.
-      // The same question rides the persist below as its insert precondition,
-      // which is what covers a replacement landing while the write runs.
-      if (!isSameIncarnation(conversationId, incarnation)) {
+      const sameIncarnation = await isSameIncarnation(
+        conversationId,
+        incarnation,
+      );
+      if (!sameIncarnation) {
         return dropReplacedImage(conversationId, attachmentId, kind, content);
       }
 
@@ -933,23 +935,18 @@ async function writeStandaloneImage(
         attachments,
         requestId,
         publishModeSessionChanges: false,
-        // Asked again in the insert's own tick, about both things that can
-        // stop being true across the awaits the persist takes to materialize
-        // the attachment and build its content.
-        //
-        // A delete and recreate under the same id leaves a valid foreign-key
-        // target, so without the first term the frame joins a conversation it
-        // was never taken in. A Stop on this hold force-clears the flag, since
-        // no turn owns it, and the next request acquires, so without the
-        // second the frame writes under a dead claim alongside that turn. The
-        // release afterwards is refused either way, but a refused release
-        // cannot undo a row.
+        // The incarnation answer is carried into the insert together with a
+        // fresh check of the processing claim: the claim can be force-cleared
+        // by a Stop while the persist materializes the attachment and builds
+        // its content, and the row must not land under a dead claim. A delete
+        // and recreate under the same id leaves a valid foreign-key target, so
+        // the incarnation answer is what keeps the frame out of a conversation
+        // it was never taken in.
         //
         // Refusing is also the right reading of the Stop: the user asked the
         // conversation to stop, and this frame is the camera's, not theirs.
         insertPrecondition: () =>
-          isSameIncarnation(conversationId, incarnation) &&
-          conversation.holdsProcessingClaim(owner),
+          sameIncarnation && conversation.holdsProcessingClaim(owner),
         onUndiscardedAttachments: (ids) => {
           strandedClones.push(...ids);
         },

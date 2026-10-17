@@ -168,7 +168,7 @@ export async function withdrawGuardianRequestCards(
       // legacy channel rows carry one; where a row does, withdrawal must
       // settle both projections, or the paired conversation keeps live
       // Approve/Reject buttons after the decision (LUM-3489).
-      const inAppWithdrawn = completeInAppProjection(
+      const inAppWithdrawn = await completeInAppProjection(
         request,
         delivery,
         status,
@@ -255,14 +255,14 @@ export async function withdrawGuardianRequestCards(
  * known (`originConversationId`), only that conversation's broadcast is
  * suppressed; sibling projections still need theirs to converge live.
  */
-function completeInAppProjection(
+async function completeInAppProjection(
   request: WithdrawableGuardianRequest,
   delivery: GuardianRequestDeliveryWire,
   status: GuardianRequestStatus,
   originChannel: string | undefined,
   originConversationId: string | undefined,
   decidedAction: ApprovalAction | undefined,
-): boolean {
+): Promise<boolean> {
   if (!delivery.destinationConversationId) {
     return true;
   }

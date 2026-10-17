@@ -1973,7 +1973,7 @@ async function maybeCompleteSurfaceAfterAction(
     requesterCanAccessMemory: boolean;
     submittedData?: Record<string, unknown>;
   },
-): void {
+): Promise<void> {
   const requestedSummary = getRequestedSurfaceCompletionSummary(actionData);
 
   let surfaceType = opts.liveSurfaceType;
@@ -3931,7 +3931,7 @@ export async function surfaceProxyResolver(
 
     // Track conversation association (best-effort — failures must not break open flow).
     try {
-      linkAppToConversationLineage(appId, ctx.conversationId);
+      await linkAppToConversationLineage(appId, ctx.conversationId);
     } catch (err) {
       log.warn({ err, appId }, "Failed to track conversation ID on app_open");
     }

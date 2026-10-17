@@ -140,12 +140,12 @@ const PLUGIN_TURN_MESSAGE_METADATA = { automated: true } as const;
  * {@link UserMessageAttachment} entries with their media source resolved
  * to inline base64. Other block types are ignored.
  */
-function extractContentAndAttachments(
+async function extractContentAndAttachments(
   blocks: ContentBlock[],
   resolveMedia: (
     source: MediaSource,
-  ) => { data: string; media_type: string } | null,
-): { text: string; attachments: UserMessageAttachment[] } {
+  ) => Promise<{ data: string; media_type: string } | null>,
+): Promise<{ text: string; attachments: UserMessageAttachment[] }> {
   const textParts: string[] = [];
   const attachments: UserMessageAttachment[] = [];
 
@@ -154,7 +154,7 @@ function extractContentAndAttachments(
       textParts.push(block.text);
     } else if (block.type === "image" || block.type === "file") {
       const source = block.source;
-      const resolved = resolveMedia(source);
+      const resolved = await resolveMedia(source);
       if (resolved) {
         attachments.push({
           filename:
@@ -204,13 +204,13 @@ async function resolveChannelConversation(
   // read-only mirror of the resolution below, so the two agree on what
   // "already bound" means, including the Slack flat-key alias.
   const created =
-    findInboundConversationId(
+    (await findInboundConversationId(
       channel.sourceChannel,
       channel.externalChatId,
       channel.externalThreadId,
-    ) === null;
+    )) === null;
 
-  const { conversationId } = resolveInboundConversation(
+  const { conversationId } = await resolveInboundConversation(
     channel.sourceChannel,
     channel.externalChatId,
     channel.externalThreadId,
@@ -229,7 +229,7 @@ async function resolveChannelConversation(
   // through as given: a caller that omits one on a later turn knows only the
   // chat coordinates this time, which `upsertBinding` reads as silence rather
   // than as the sender having no name.
-  upsertBinding({
+  await upsertBinding({
     conversationId,
     sourceChannel: channel.sourceChannel,
     externalChatId: channel.externalChatId,
@@ -343,7 +343,7 @@ export async function runConversationTurn(
 
   // Convert ContentBlock[] input to the text + attachments shape the
   // conversation's processMessage path expects.
-  const { text: rawText, attachments } = extractContentAndAttachments(
+  const { text: rawText, attachments } = await extractContentAndAttachments(
     options.content,
     resolveMediaSourceData,
   );
@@ -466,13 +466,16 @@ export async function runConversationTurn(
   // message after our user message.
   let assistantContent: ContentBlock[] = [];
   if (assistantMessageId) {
-    const assistantRow = getMessageById(assistantMessageId, conversationId);
+    const assistantRow = await getMessageById(
+      assistantMessageId,
+      conversationId,
+    );
     if (assistantRow) {
       assistantContent = assistantRow.content;
     }
   }
   if (assistantContent.length === 0) {
-    const allMessages = getMessages(conversationId);
+    const allMessages = await getMessages(conversationId);
     const userIdx = allMessages.findIndex((m) => m.id === userMessageId);
     if (userIdx >= 0) {
       for (let i = allMessages.length - 1; i > userIdx; i--) {

@@ -32,7 +32,7 @@ function isDuplicateColumnError(err: unknown): boolean {
 }
 
 let sqliteEnsured = false;
-let postgresEnsured = false;
+let asyncEnsured = false;
 
 /** Ensure the columns on the SQLite main database (the unported modules). */
 export function ensureDisplayOrderMigration(): void {
@@ -53,18 +53,12 @@ export function ensureDisplayOrderMigration(): void {
 }
 
 /**
- * Ensure the columns on the active main backend. On SQLite this delegates to
- * {@link ensureDisplayOrderMigration}; on Postgres it runs the same DDL through
- * the async facade (these runtime columns are not part of the generated
- * baseline, which only replays the formal migrations).
+ * Ensure the columns through the async facade. These runtime columns are not
+ * part of the generated baseline, which only replays the formal migrations.
  */
 export async function ensureDisplayOrderMigrationAsync(): Promise<void> {
   const db = requireMainDb();
-  if (db.dialect === "sqlite") {
-    ensureDisplayOrderMigration();
-    return;
-  }
-  if (postgresEnsured) {
+  if (asyncEnsured) {
     return;
   }
   for (const column of DISPLAY_ORDER_COLUMNS) {
@@ -77,7 +71,7 @@ export async function ensureDisplayOrderMigrationAsync(): Promise<void> {
       }
     }
   }
-  postgresEnsured = true;
+  asyncEnsured = true;
 }
 
 /**
@@ -86,5 +80,5 @@ export async function ensureDisplayOrderMigrationAsync(): Promise<void> {
  */
 export function _resetDisplayOrderMigrationForTests(): void {
   sqliteEnsured = false;
-  postgresEnsured = false;
+  asyncEnsured = false;
 }

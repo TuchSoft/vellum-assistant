@@ -48,8 +48,7 @@ describe("AsyncDb facade", () => {
     await telemetry().run("DELETE FROM facade_probe");
   });
 
-  test("dialect and slot are reported", () => {
-    expect(telemetry().dialect).toBe(isPostgres ? "postgres" : "sqlite");
+  test("slot is reported", () => {
     expect(telemetry().slot).toBe("telemetry");
   });
 

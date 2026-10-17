@@ -39,7 +39,6 @@ import {
   type AsyncDb,
   type AsyncDbSlot,
   getAsyncDb,
-  getLogsAsyncDb,
   getMemoryAsyncDb,
   getTelemetryAsyncDb,
 } from "./db-facade.js";
@@ -313,15 +312,6 @@ export async function rawMemoryRunAsync(
   return requireFacade(getMemoryAsyncDb(), "memory")
     .label(label)
     .run(sql, params);
-}
-
-/** {@link rawLogsRun} on the async facade. */
-export async function rawLogsRunAsync(
-  label: string,
-  sql: string,
-  ...params: SqlParam[]
-): Promise<number> {
-  return requireFacade(getLogsAsyncDb(), "logs").label(label).run(sql, params);
 }
 
 /** {@link rawTelemetryRun} on the async facade. */

@@ -1,39 +1,38 @@
 /**
  * Postgres backend for the {@link AsyncDb} facade.
  *
- * Selected per slot by env (see `resolveBackend` in `db-facade.ts`):
- * `VELLUM_DB_BACKEND=postgres` + `VELLUM_DATABASE_URL` for every slot, or the
- * per-slot pair `VELLUM_<SLOT>_DB_BACKEND` / `VELLUM_<SLOT>_DATABASE_URL`.
- * Placeholders are positional `?` at the call site and rewritten to `$n` here.
+ * The only backend: a slot resolves its connection from `VELLUM_DATABASE_URL`
+ * (see `db-facade.ts`). Placeholders are positional `?` at the call site and
+ * rewritten to `$n` here.
  *
  * `postgres.js` returns `int8` as a string by default (to avoid precision loss);
  * the port keeps epoch-ms columns as `bigint` with no application-code change,
  * so the pool registers an `int8` parser that yields a JS number. Epoch-ms
  * values sit well under 2^53, so the conversion is lossless.
  *
- * ORM note: `AsyncDb.orm` is not exposed on this backend yet. The Drizzle
- * instance is dialect-specific and the Postgres `pgTable` schema lands with the
- * baseline work; until then the Postgres path uses the raw helpers, which the
- * facade translates.
+ * Schema ownership: the facade never creates tables. `baseline` is an optional
+ * idempotent DDL set applied once per URL before the first statement; the test
+ * bootstrap passes the generated baseline, production leaves it to the
+ * migration runner.
  */
 
 import { drizzle } from "drizzle-orm/postgres-js";
 import type { Sql } from "postgres";
 import postgres from "postgres";
 
-import type { DrizzleDb } from "./db-connection.js";
-import type {
-  AsyncDb,
-  AsyncDbSlot,
-  SchemaTables,
-  SqlParam,
-} from "./db-facade.js";
+import type { AsyncDb, AsyncDbSlot, SqlParam } from "./db-facade.js";
 import * as pgSchema from "./pg-schema/index.js";
 
 type PgSql = Sql<Record<string, never>>;
 
+/** The Postgres table barrel's shape, re-exported for the facade's types. */
+export type PgSchemaTables = typeof pgSchema;
+
+/** The Drizzle query root type over the Postgres schema. */
+export type PgDrizzleDb = ReturnType<typeof drizzle<typeof pgSchema>>;
+
 const pools = new Map<string, PgSql>();
-const orms = new Map<string, DrizzleDb>();
+const orms = new Map<string, PgDrizzleDb>();
 const baselines = new Map<string, Promise<void>>();
 
 /** One pooled connection set per URL, shared by every facade on that URL. */
@@ -63,9 +62,7 @@ function pool(url: string): PgSql {
  * cached promise keeps concurrent opens from duplicating the work.
  */
 async function applyBaseline(sql: PgSql, statements: string[]): Promise<void> {
-  for (const statement of statements) {
-    await sql.unsafe(statement);
-  }
+  await sql.unsafe(statements.join(";\n"));
 }
 
 /** Rewrite positional `?` placeholders to Postgres `$n`. */
@@ -77,24 +74,20 @@ function toPgPlaceholders(sqlText: string): string {
 /**
  * The Drizzle query root for a URL, cached per URL.
  *
- * Built from the `postgres.js` pool over the Postgres mirror (`pg-schema`) and
- * cast to the SQLite `DrizzleDb` type on purpose: the facade exposes one
- * `orm`/`schema` pair so a dialect-agnostic query path typechecks (see the
- * `AsyncDb.orm` doc). The runtime object is genuinely a Postgres Drizzle
- * instance, and `schema` hands it the matching `pg-schema` tables.
+ * Built from the `postgres.js` pool over the Postgres mirror (`pg-schema`);
+ * {@link AsyncDb.schema} hands callers the matching table barrel.
  */
-function ormFor(url: string): DrizzleDb {
+function ormFor(url: string): PgDrizzleDb {
   let existing = orms.get(url);
   if (!existing) {
-    existing = drizzle(pool(url), { schema: pgSchema }) as unknown as DrizzleDb;
+    existing = drizzle(pool(url), { schema: pgSchema });
     orms.set(url, existing);
   }
   return existing;
 }
 
 class PostgresAsyncDb implements AsyncDb {
-  readonly dialect = "postgres" as const;
-  readonly schema = pgSchema as unknown as SchemaTables;
+  readonly schema = pgSchema;
 
   constructor(
     readonly slot: AsyncDbSlot,
@@ -103,7 +96,7 @@ class PostgresAsyncDb implements AsyncDb {
     private readonly baseline: Promise<void> | null,
   ) {}
 
-  get orm(): DrizzleDb {
+  get orm(): PgDrizzleDb {
     return ormFor(this.url);
   }
 
@@ -169,8 +162,8 @@ class PostgresAsyncDb implements AsyncDb {
 
 /**
  * The Postgres facade for one slot. `baseline` statements are applied once per
- * URL before the first statement runs; a slot with its schema managed
- * elsewhere passes none.
+ * URL before the first statement runs; pass the generated baseline to
+ * bootstrap an empty database.
  */
 export function getPostgresAsyncDb(
   slot: AsyncDbSlot,

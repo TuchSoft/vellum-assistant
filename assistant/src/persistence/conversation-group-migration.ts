@@ -255,8 +255,8 @@ async function runAsyncMigration(db: AsyncDb): Promise<void> {
 }
 
 let sqliteMigrated = false;
-let postgresMigrated = false;
-let postgresMigration: Promise<void> | null = null;
+let asyncMigrated = false;
+let asyncMigration: Promise<void> | null = null;
 
 /**
  * Reset the in-memory guards so the next ensure re-runs the full migration.
@@ -264,8 +264,8 @@ let postgresMigration: Promise<void> | null = null;
  */
 export function _resetGroupMigrationForTests(): void {
   sqliteMigrated = false;
-  postgresMigrated = false;
-  postgresMigration = null;
+  asyncMigrated = false;
+  asyncMigration = null;
 }
 
 /**
@@ -281,27 +281,22 @@ export function ensureGroupMigration(): void {
 }
 
 /**
- * Ensure the schema on the active main backend. On SQLite this delegates to
- * {@link ensureGroupMigration}; on Postgres it runs the same statements through
- * the async facade and shares one in-flight promise across concurrent callers.
+ * Ensure the schema through the async facade, sharing one in-flight promise
+ * across concurrent callers.
  */
 export async function ensureGroupMigrationAsync(): Promise<void> {
   const db = requireMainDb();
-  if (db.dialect === "sqlite") {
-    ensureGroupMigration();
+  if (asyncMigrated) {
     return;
   }
-  if (postgresMigrated) {
-    return;
+  if (asyncMigration) {
+    return asyncMigration;
   }
-  if (postgresMigration) {
-    return postgresMigration;
-  }
-  postgresMigration = runAsyncMigration(db);
+  asyncMigration = runAsyncMigration(db);
   try {
-    await postgresMigration;
-    postgresMigrated = true;
+    await asyncMigration;
+    asyncMigrated = true;
   } finally {
-    postgresMigration = null;
+    asyncMigration = null;
   }
 }

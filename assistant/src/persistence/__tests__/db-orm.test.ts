@@ -51,7 +51,6 @@ async function scheduleRoundTrip(
 describe("AsyncDb.orm (sqlite)", () => {
   test("exposes an orm and a matching schema barrel", async () => {
     const db = getAsyncDb()!;
-    expect(db.dialect).toBe("sqlite");
     expect(db.orm).toBeDefined();
     expect(db.schema.scheduleJobs).toBeDefined();
   });
@@ -86,7 +85,6 @@ pgDescribe("AsyncDb.orm (postgres)", () => {
 
   test("orm + schema are the Postgres pair", () => {
     const db = getPostgresAsyncDb("main", PG_URL!);
-    expect(db.dialect).toBe("postgres");
     expect(db.orm).toBeDefined();
     expect(db.schema.scheduleJobs).toBeDefined();
   });

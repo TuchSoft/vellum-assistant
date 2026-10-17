@@ -234,7 +234,7 @@ export async function executeScheduleUpdate(
     if (parsed.group === null) {
       updates.groupId = null;
     } else {
-      const resolvedGroup = resolveGroupReference(parsed.group);
+      const resolvedGroup = await resolveGroupReference(parsed.group);
       if ("error" in resolvedGroup) {
         return { content: `Error: ${resolvedGroup.error}`, isError: true };
       }

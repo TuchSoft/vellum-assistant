@@ -193,7 +193,7 @@ export async function generateAndPersistConversationTitle(
     return { title: conversation.title!, updated: false };
   }
 
-  const prompt = buildTitlePrompt(
+  const prompt = await buildTitlePrompt(
     context,
     userMessage,
     assistantResponse,
@@ -230,7 +230,7 @@ export async function generateAndPersistConversationTitle(
     updateConversationTitle(conversationId, title, AUTO_TITLE_LLM);
     publishConversationTitleChanged(conversationId, title);
     log.info({ conversationId, title }, "Auto-generated conversation title");
-    maybeAssignConversationGroup(conversationId, groupId, confidence);
+    await maybeAssignConversationGroup(conversationId, groupId, confidence);
     return { title, updated: true };
   }
 
@@ -364,7 +364,7 @@ export async function regenerateConversationTitle(
     return { title: conversation.title ?? UNTITLED_FALLBACK, updated: false };
   }
 
-  const prompt = buildRegenerationPrompt(recentMessages, {
+  const prompt = await buildRegenerationPrompt(recentMessages, {
     currentTitle: conversation.title,
     firstMessage: allMessages[0],
     allowGroupAssignment,
@@ -399,7 +399,7 @@ export async function regenerateConversationTitle(
       { conversationId, title },
       "Re-generated conversation title (second pass)",
     );
-    maybeAssignConversationGroup(conversationId, groupId, confidence);
+    await maybeAssignConversationGroup(conversationId, groupId, confidence);
     return { title, updated: true };
   }
 
@@ -438,9 +438,9 @@ export function queueRegenerateConversationTitle(
  * covers the optional `group_id` tool argument: the model may file the
  * conversation into an existing group, but only when it is certain.
  */
-function buildTitleSystemPrompt(
-  options?: { groupAssignment?: boolean },
-): string {
+function buildTitleSystemPrompt(options?: {
+  groupAssignment?: boolean;
+}): string {
   const lines = [
     "You generate ultra-concise conversation titles. Output ONLY the title text — no explanation, no quotes, no markdown, no preamble.",
     "",
@@ -571,11 +571,11 @@ async function callTitleLabelLLM(
  * is rejected against the group table. Best-effort: failures are logged and
  * leave the conversation ungrouped.
  */
-function maybeAssignConversationGroup(
+async function maybeAssignConversationGroup(
   conversationId: string,
   groupId: string | undefined,
   confidence: number | undefined,
-): void {
+): Promise<void> {
   if (!groupId) {
     return;
   }
@@ -590,7 +590,7 @@ function maybeAssignConversationGroup(
     return;
   }
   try {
-    const group = listGroups().find(
+    const group = (await listGroups()).find(
       (g) => g.id === groupId && !g.isSystemGroup,
     );
     if (!group) {
@@ -625,12 +625,12 @@ function maybeAssignConversationGroup(
   }
 }
 
-function buildTitlePrompt(
+async function buildTitlePrompt(
   context?: TitleContext,
   userMessage?: string,
   assistantResponse?: string,
   allowGroupAssignment?: boolean,
-): string {
+): Promise<string> {
   const parts: string[] = [];
 
   if (context) {
@@ -669,7 +669,7 @@ function buildTitlePrompt(
   }
 
   if (allowGroupAssignment) {
-    const customGroups = listGroups().filter((g) => !g.isSystemGroup);
+    const customGroups = (await listGroups()).filter((g) => !g.isSystemGroup);
     parts.push("", "Existing groups:");
     if (customGroups.length === 0) {
       parts.push("(none)");
@@ -795,14 +795,14 @@ function extractTextForTitle(raw: string | Array<{ type: string }>): string {
   }
 }
 
-function buildRegenerationPrompt(
+async function buildRegenerationPrompt(
   recentMessages: MessageRow[],
   options?: {
     currentTitle?: string | null;
     firstMessage?: MessageRow;
     allowGroupAssignment?: boolean;
   },
-): string {
+): Promise<string> {
   const parts: string[] = [];
 
   // The first user message carries the conversation's real topic; the recent
@@ -844,7 +844,7 @@ function buildRegenerationPrompt(
   }
 
   if (options?.allowGroupAssignment) {
-    const customGroups = listGroups().filter((g) => !g.isSystemGroup);
+    const customGroups = (await listGroups()).filter((g) => !g.isSystemGroup);
     parts.push("", "Existing groups:");
     if (customGroups.length === 0) {
       parts.push("(none)");

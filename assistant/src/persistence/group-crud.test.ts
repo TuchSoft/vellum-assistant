@@ -12,48 +12,50 @@ import {
 await initializeDb();
 
 describe("group-crud icon field", () => {
-  test("createGroup persists an icon and getGroup returns it", () => {
-    const group = createGroup("With icon", "rocket");
+  test("createGroup persists an icon and getGroup returns it", async () => {
+    const group = await createGroup("With icon", "rocket");
     try {
       expect(group.icon).toBe("rocket");
-      expect(getGroup(group.id)?.icon).toBe("rocket");
+      expect((await getGroup(group.id))?.icon).toBe("rocket");
     } finally {
-      deleteGroup(group.id);
+      await deleteGroup(group.id);
     }
   });
 
-  test("createGroup without an icon stores null", () => {
-    const group = createGroup("No icon");
+  test("createGroup without an icon stores null", async () => {
+    const group = await createGroup("No icon");
     try {
       expect(group.icon).toBeNull();
-      expect(getGroup(group.id)?.icon).toBeNull();
+      expect((await getGroup(group.id))?.icon).toBeNull();
     } finally {
-      deleteGroup(group.id);
+      await deleteGroup(group.id);
     }
   });
 
-  test("updateGroup sets, preserves, and clears the icon", () => {
-    const group = createGroup("Mutable");
+  test("updateGroup sets, preserves, and clears the icon", async () => {
+    const group = await createGroup("Mutable");
     try {
-      expect(updateGroup(group.id, { icon: "star" })?.icon).toBe("star");
+      expect((await updateGroup(group.id, { icon: "star" }))?.icon).toBe(
+        "star",
+      );
       // A name-only update leaves the icon untouched.
-      const renamed = updateGroup(group.id, { name: "Renamed" });
+      const renamed = await updateGroup(group.id, { name: "Renamed" });
       expect(renamed?.name).toBe("Renamed");
       expect(renamed?.icon).toBe("star");
       // Explicit null clears it.
-      expect(updateGroup(group.id, { icon: null })?.icon).toBeNull();
+      expect((await updateGroup(group.id, { icon: null }))?.icon).toBeNull();
     } finally {
-      deleteGroup(group.id);
+      await deleteGroup(group.id);
     }
   });
 
-  test("listGroups carries the icon column", () => {
-    const group = createGroup("Listed", "heart");
+  test("listGroups carries the icon column", async () => {
+    const group = await createGroup("Listed", "heart");
     try {
-      const listed = listGroups().find((g) => g.id === group.id);
+      const listed = (await listGroups()).find((g) => g.id === group.id);
       expect(listed?.icon).toBe("heart");
     } finally {
-      deleteGroup(group.id);
+      await deleteGroup(group.id);
     }
   });
 });

@@ -1506,7 +1506,7 @@ async function handleRunScheduleNow(
   if (!conversationId) {
     const conversation = await bootstrapConversation({
       source: "schedule",
-      groupId: resolveScheduleConversationGroupId(schedule),
+      groupId: await resolveScheduleConversationGroupId(schedule),
       origin: "schedule",
       systemHint: `Schedule (manual): ${schedule.name}`,
     });

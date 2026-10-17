@@ -49,12 +49,12 @@ function titlesInGroup(groupId: string): string[] {
   return listConversations({ limit: 100, groupId }).map((c) => c.title ?? "");
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   getDb().delete(conversations).run();
 });
 
 describe("pinning a background conversation", () => {
-  test("shows it in Pinned", () => {
+  test("shows it in Pinned", async () => {
     const conv = seedRoutedBackground("bg-job", "background");
     expect(visibleTitles()).toEqual([]);
 
@@ -63,7 +63,7 @@ describe("pinning a background conversation", () => {
     expect(titlesInGroup("system:pinned")).toEqual(["bg-job"]);
   });
 
-  test("unpinning lands it in Recents rather than hiding it again", () => {
+  test("unpinning lands it in Recents rather than hiding it again", async () => {
     const conv = seedRoutedBackground("bg-job", "background");
     batchSetConversationPlacement([{ id: conv.id, groupId: "system:pinned" }]);
 
@@ -74,8 +74,8 @@ describe("pinning a background conversation", () => {
 });
 
 describe("filing a background conversation into a custom group", () => {
-  test("shows it in that group", () => {
-    const group = createGroup("Car Chat");
+  test("shows it in that group", async () => {
+    const group = await createGroup("Car Chat");
     const conv = seedRoutedBackground("bg-job", "background");
 
     batchSetConversationPlacement([{ id: conv.id, groupId: group.id }]);
@@ -83,8 +83,8 @@ describe("filing a background conversation into a custom group", () => {
     expect(titlesInGroup(group.id)).toEqual(["bg-job"]);
   });
 
-  test("removing it from the group lands it in Recents rather than losing it", () => {
-    const group = createGroup("Car Chat");
+  test("removing it from the group lands it in Recents rather than losing it", async () => {
+    const group = await createGroup("Car Chat");
     const conv = seedRoutedBackground("bg-job", "background");
     batchSetConversationPlacement([{ id: conv.id, groupId: group.id }]);
 
@@ -94,8 +94,8 @@ describe("filing a background conversation into a custom group", () => {
     expect(visibleTitles()).toEqual(["bg-job"]);
   });
 
-  test("applies to scheduled conversations too", () => {
-    const group = createGroup("Morning Briefs");
+  test("applies to scheduled conversations too", async () => {
+    const group = await createGroup("Morning Briefs");
     const conv = seedRoutedBackground("sched-job", "scheduled");
 
     batchSetConversationPlacement([{ id: conv.id, groupId: group.id }]);
@@ -106,7 +106,7 @@ describe("filing a background conversation into a custom group", () => {
 });
 
 describe("what promotion must not do", () => {
-  test("filing into system:background still demotes", () => {
+  test("filing into system:background still demotes", async () => {
     const conv = seedRoutedBackground("bg-job", "background");
     // Promote first, so the demotion has something to undo.
     batchSetConversationPlacement([{ id: conv.id, groupId: "system:pinned" }]);
@@ -119,13 +119,13 @@ describe("what promotion must not do", () => {
     expect(visibleTitles()).toEqual([]);
   });
 
-  test("a background conversation nobody placed anywhere stays hidden", () => {
+  test("a background conversation nobody placed anywhere stays hidden", async () => {
     seedRoutedBackground("untouched", "background");
 
     expect(visibleTitles()).toEqual([]);
   });
 
-  test("moving to system:all does not by itself promote", () => {
+  test("moving to system:all does not by itself promote", async () => {
     // Removal is not a promotion: a row that was never filed into a section
     // the user reads must not become visible just by being moved out of its
     // system bucket.
@@ -136,7 +136,7 @@ describe("what promotion must not do", () => {
     expect(visibleTitles()).toEqual([]);
   });
 
-  test("unpinning through the legacy isPinned path still lands in Recents", () => {
+  test("unpinning through the legacy isPinned path still lands in Recents", async () => {
     // Old clients send `isPinned: false` with no `groupId`, and that branch
     // restores the row's original system bucket to keep its provenance. It
     // deliberately does not clear the promotion: unpinning is not a demotion,
@@ -156,10 +156,10 @@ describe("what promotion must not do", () => {
     expect(titlesInGroup("system:all")).toEqual(["bg-job"]);
   });
 
-  test("standard conversations are not stamped as surfaced", () => {
+  test("standard conversations are not stamped as surfaced", async () => {
     // They are already visible, so stamping them would leave `surfaced_at`
     // meaning nothing.
-    const group = createGroup("Car Chat");
+    const group = await createGroup("Car Chat");
     const conv = createConversation("plain-chat");
 
     batchSetConversationPlacement([{ id: conv.id, groupId: group.id }]);

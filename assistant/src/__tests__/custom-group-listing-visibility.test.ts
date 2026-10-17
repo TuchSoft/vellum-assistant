@@ -25,18 +25,18 @@ function getRawDb(): Database {
 describe("custom-group standard-listing visibility", () => {
   let groupId: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const raw = getRawDb();
     raw.run("DELETE FROM conversations");
     raw.run("DELETE FROM conversation_groups WHERE is_system_group = 0");
-    groupId = createGroup("Briefs").id;
+    groupId = (await createGroup("Briefs")).id;
   });
 
   function listedIds(): string[] {
     return listConversations({ conversationType: "standard" }).map((c) => c.id);
   }
 
-  test("scheduled conversation in a custom group is listed", () => {
+  test("scheduled conversation in a custom group is listed", async () => {
     createConversation({
       id: "conv-sched-custom",
       conversationType: "scheduled",
@@ -47,7 +47,7 @@ describe("custom-group standard-listing visibility", () => {
     expect(listedIds()).toContain("conv-sched-custom");
   });
 
-  test("background conversation in a custom group is listed", () => {
+  test("background conversation in a custom group is listed", async () => {
     createConversation({
       id: "conv-bg-custom",
       conversationType: "background",
@@ -58,7 +58,7 @@ describe("custom-group standard-listing visibility", () => {
     expect(listedIds()).toContain("conv-bg-custom");
   });
 
-  test("scheduled conversation in system:scheduled stays excluded", () => {
+  test("scheduled conversation in system:scheduled stays excluded", async () => {
     createConversation({
       id: "conv-sched-system",
       conversationType: "scheduled",
@@ -69,7 +69,7 @@ describe("custom-group standard-listing visibility", () => {
     expect(listedIds()).not.toContain("conv-sched-system");
   });
 
-  test("subagent conversation stays hidden even in a custom group", () => {
+  test("subagent conversation stays hidden even in a custom group", async () => {
     createConversation({
       id: "conv-subagent-custom",
       conversationType: "background",
@@ -80,7 +80,7 @@ describe("custom-group standard-listing visibility", () => {
     expect(listedIds()).not.toContain("conv-subagent-custom");
   });
 
-  test("private conversation stays hidden even in a custom group", () => {
+  test("private conversation stays hidden even in a custom group", async () => {
     // "private" is not a creatable type (legacy rows only, see the
     // conversationTypeClause docstring), so simulate a legacy row directly.
     createConversation({ id: "conv-private-custom", groupId });

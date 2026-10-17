@@ -250,7 +250,7 @@ function parseEnumQueryParam<const T extends readonly string[]>(
   );
 }
 
-function handleListConversations({
+async function handleListConversations({
   queryParams = {},
   headers,
 }: RouteHandlerArgs) {
@@ -388,7 +388,7 @@ function handleListConversations({
 
   // Include groups array on first page only
   if (offset === 0) {
-    const groups = listGroups();
+    const groups = await listGroups();
     response.groups = groups.map((g) => ({
       id: g.id,
       name: g.name,
@@ -414,10 +414,10 @@ function handleGetUnreadConversationCount() {
  * (the sidebar builds group sections from the groups table), and a
  * dangling id is a transient state around group deletion, not a section.
  */
-function handleGetConversationSections() {
+async function handleGetConversationSections() {
   const splitAssistantInitiated = isAssistantInitiatedThreadsEnabled();
   const counts = countConversationSections({ splitAssistantInitiated });
-  const groupsById = new Map(listGroups().map((g) => [g.id, g]));
+  const groupsById = new Map((await listGroups()).map((g) => [g.id, g]));
   const sections: Array<z.infer<typeof conversationSectionSchema>> = [];
 
   /* Unlike every other section this one renders at zero, the way Chats does:

@@ -818,7 +818,7 @@ export async function runDueSchedulesOnce(
           message: job.message,
           routingIntent: job.routingIntent,
           routingHints: job.routingHints,
-          groupId: resolveScheduleConversationGroupId(job),
+          groupId: await resolveScheduleConversationGroupId(job),
           ...(job.createdFromConversationId
             ? { deepLinkConversationId: job.createdFromConversationId }
             : {}),
@@ -1205,7 +1205,7 @@ export async function runDueSchedulesOnce(
         // timeouts.scheduleTurnTimeoutSec (default 1800s).
         timeoutMs: getConfig().timeouts.scheduleTurnTimeoutSec * 1000,
         origin: "schedule",
-        groupId: resolveScheduleConversationGroupId(job),
+        groupId: await resolveScheduleConversationGroupId(job),
         conversationType: "scheduled",
         scheduleJobId: job.id,
         // The retry policy owns the single user-facing alert for a failing

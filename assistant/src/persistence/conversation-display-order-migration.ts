@@ -6,53 +6,85 @@
  */
 
 import { getLogger } from "../util/logger.js";
+import { requireMainDb } from "./db-facade.js";
 import { rawRun } from "./raw-query.js";
+
 const log = getLogger("conversation-store");
 
+/** The two runtime columns, as portable DDL both dialects accept. */
+const DISPLAY_ORDER_COLUMNS: ReadonlyArray<{ label: string; sql: string }> = [
+  {
+    label: "display_order",
+    sql: "ALTER TABLE conversations ADD COLUMN display_order INTEGER",
+  },
+  {
+    label: "is_pinned",
+    sql: "ALTER TABLE conversations ADD COLUMN is_pinned INTEGER DEFAULT 0",
+  },
+];
+
 function isDuplicateColumnError(err: unknown): boolean {
-  return err instanceof Error && /duplicate column name:/i.test(err.message);
+  return (
+    err instanceof Error &&
+    (/duplicate column name:/i.test(err.message) ||
+      /column .+ already exists/i.test(err.message))
+  );
 }
 
-function ensureDisplayOrderColumns(): void {
-  try {
-    rawRun(
-      "conversation:migrateDisplayOrder",
-      "ALTER TABLE conversations ADD COLUMN display_order INTEGER",
-    );
-  } catch (err) {
-    if (!isDuplicateColumnError(err)) {
-      log.error({ err }, "Failed to add display_order column");
-      throw err;
-    }
-  }
-  try {
-    rawRun(
-      "conversation:migrateIsPinned",
-      "ALTER TABLE conversations ADD COLUMN is_pinned INTEGER DEFAULT 0",
-    );
-  } catch (err) {
-    if (!isDuplicateColumnError(err)) {
-      log.error({ err }, "Failed to add is_pinned column");
-      throw err;
-    }
-  }
-}
+let sqliteEnsured = false;
+let postgresEnsured = false;
 
-let displayOrderColumnsEnsured = false;
-
+/** Ensure the columns on the SQLite main database (the unported modules). */
 export function ensureDisplayOrderMigration(): void {
-  if (!displayOrderColumnsEnsured) {
-    ensureDisplayOrderColumns();
-    displayOrderColumnsEnsured = true;
+  if (sqliteEnsured) {
+    return;
   }
+  for (const column of DISPLAY_ORDER_COLUMNS) {
+    try {
+      rawRun(`conversation:migrate:${column.label}`, column.sql);
+    } catch (err) {
+      if (!isDuplicateColumnError(err)) {
+        log.error({ err, column: column.label }, "Failed to add column");
+        throw err;
+      }
+    }
+  }
+  sqliteEnsured = true;
 }
 
 /**
- * Reset the in-memory `displayOrderColumnsEnsured` guard so the next
- * `ensureDisplayOrderMigration()` call re-runs. Intended ONLY for tests that
- * recreate the SQLite database mid-process (e.g. `removeTestDbFiles()` in
- * `db-conversation-inference-profile-migration.test.ts`).
+ * Ensure the columns on the active main backend. On SQLite this delegates to
+ * {@link ensureDisplayOrderMigration}; on Postgres it runs the same DDL through
+ * the async facade (these runtime columns are not part of the generated
+ * baseline, which only replays the formal migrations).
+ */
+export async function ensureDisplayOrderMigrationAsync(): Promise<void> {
+  const db = requireMainDb();
+  if (db.dialect === "sqlite") {
+    ensureDisplayOrderMigration();
+    return;
+  }
+  if (postgresEnsured) {
+    return;
+  }
+  for (const column of DISPLAY_ORDER_COLUMNS) {
+    try {
+      await db.run(column.sql);
+    } catch (err) {
+      if (!isDuplicateColumnError(err)) {
+        log.error({ err, column: column.label }, "Failed to add column");
+        throw err;
+      }
+    }
+  }
+  postgresEnsured = true;
+}
+
+/**
+ * Reset the in-memory guards so the next ensure re-runs. Intended ONLY for
+ * tests that recreate the database mid-process.
  */
 export function _resetDisplayOrderMigrationForTests(): void {
-  displayOrderColumnsEnsured = false;
+  sqliteEnsured = false;
+  postgresEnsured = false;
 }

@@ -6,317 +6,302 @@
  * group_id is display/organizational metadata, consistent with how
  * display_order and is_pinned are handled via runtime migration rather
  * than the formal migrations/ pipeline.
+ *
+ * The SQL is defined once and executed by two runners: the synchronous one
+ * (raw helpers, SQLite main database) serves the unported conversation
+ * modules, and the async one (the `AsyncDb` facade) serves the ported
+ * group-crud and runs on whichever backend the main slot selects.
  */
 
 import { getLogger } from "../util/logger.js";
-import { ensureDisplayOrderMigration } from "./conversation-display-order-migration.js";
+import {
+  ensureDisplayOrderMigration,
+  ensureDisplayOrderMigrationAsync,
+} from "./conversation-display-order-migration.js";
+import type { AsyncDb, SqlParam } from "./db-facade.js";
+import { requireMainDb } from "./db-facade.js";
 import { rawExec, rawGet, rawRun } from "./raw-query.js";
+
 const log = getLogger("conversation-store");
 
 function isDuplicateColumnError(err: unknown): boolean {
-  return err instanceof Error && /duplicate column name:/i.test(err.message);
+  return (
+    err instanceof Error &&
+    (/duplicate column name:/i.test(err.message) ||
+      /column .+ already exists/i.test(err.message))
+  );
 }
 
-let migrated = false;
+interface Statement {
+  sql: string;
+  params?: readonly SqlParam[];
+  ignoreDuplicateColumn?: boolean;
+}
 
-/**
- * Reset the in-memory `migrated` guard so the next `ensureGroupMigration()`
- * call re-runs the full migration. Intended ONLY for tests that recreate
- * the SQLite database mid-process (e.g. `removeTestDbFiles()` in
- * `db-conversation-inference-profile-migration.test.ts`) — without this,
- * subsequent tests in the same `bun test` run hit
- * `no such column: group_id` because the guard short-circuits the recreate.
- */
-export function _resetGroupMigrationForTests(): void {
-  migrated = false;
+interface MigrationStep {
+  markerId: string;
+  statements: Statement[];
 }
 
 /**
- * Uses raw BEGIN/COMMIT for the one-time backfill. Must NOT be called
- * for the first time inside a Drizzle db.transaction() block — SQLite
- * does not support nested transactions. In practice this is safe because
- * the migration is triggered by early startup queries (listConversations,
- * batchSetConversationPlacement) before any transaction-wrapped paths run, and
- * the `migrated` flag makes subsequent calls no-ops.
+ * The full migration, as data. Portable across SQLite and Postgres:
+ * - `DOUBLE PRECISION` / `BIGINT` / `BOOLEAN` are accepted by both.
+ * - `ON CONFLICT DO NOTHING` replaces SQLite's `INSERT OR IGNORE`.
+ * - `TRUE` / `FALSE` literals replace SQLite's `1` / `0` for booleans.
  */
-export function ensureGroupMigration(): void {
-  if (migrated) {
-    return;
+function buildMigration(now: number): {
+  ddl: Statement[];
+  steps: MigrationStep[];
+} {
+  const markerInsert = (id: string): Statement => ({
+    sql: `INSERT INTO conversation_groups (id, name, sort_position, is_system_group, created_at, updated_at)
+          VALUES (?, ?, -1, TRUE, ?, ?)
+          ON CONFLICT DO NOTHING`,
+    params: [id, id, now, now],
+  });
+
+  return {
+    ddl: [
+      {
+        sql: `CREATE TABLE IF NOT EXISTS conversation_groups (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          icon TEXT,
+          sort_position DOUBLE PRECISION NOT NULL DEFAULT 0,
+          is_system_group BOOLEAN NOT NULL DEFAULT FALSE,
+          created_at BIGINT NOT NULL DEFAULT 0,
+          updated_at BIGINT NOT NULL DEFAULT 0
+        )`,
+      },
+      {
+        sql: "ALTER TABLE conversation_groups ADD COLUMN icon TEXT",
+        ignoreDuplicateColumn: true,
+      },
+      {
+        sql: "ALTER TABLE conversations ADD COLUMN group_id TEXT REFERENCES conversation_groups(id) ON DELETE SET NULL",
+        ignoreDuplicateColumn: true,
+      },
+      {
+        sql: `INSERT INTO conversation_groups (id, name, sort_position, is_system_group, created_at, updated_at)
+              VALUES
+                ('system:pinned', 'Pinned', 0, TRUE, ?, ?),
+                ('system:scheduled', 'Scheduled', 1, TRUE, ?, ?),
+                ('system:background', 'Background', 2, TRUE, ?, ?),
+                ('system:all', 'Recents', 3, TRUE, ?, ?)
+              ON CONFLICT DO NOTHING`,
+        params: [now, now, now, now, now, now, now, now],
+      },
+    ],
+    steps: [
+      {
+        markerId: "_sort_shift_complete",
+        statements: [
+          {
+            sql: "UPDATE conversation_groups SET sort_position = sort_position + 1 WHERE is_system_group = FALSE AND sort_position >= 3",
+          },
+          {
+            sql: "UPDATE conversation_groups SET sort_position = 3 WHERE id = 'system:all' AND sort_position != 3",
+          },
+          markerInsert("_sort_shift_complete"),
+        ],
+      },
+      {
+        markerId: "_backfill_complete",
+        statements: [
+          {
+            sql: "UPDATE conversations SET group_id = 'system:pinned' WHERE is_pinned = 1 AND group_id IS NULL",
+          },
+          {
+            sql: "UPDATE conversations SET group_id = 'system:scheduled' WHERE (source IN ('schedule', 'reminder') OR schedule_job_id IS NOT NULL OR conversation_type = 'scheduled') AND group_id IS NULL",
+          },
+          {
+            sql: "UPDATE conversations SET group_id = 'system:background' WHERE ((conversation_type = 'background' AND COALESCE(source, '') != 'notification') OR source IN ('heartbeat', 'task')) AND COALESCE(source, '') NOT IN ('schedule', 'reminder') AND schedule_job_id IS NULL AND group_id IS NULL",
+          },
+          markerInsert("_backfill_complete"),
+        ],
+      },
+      {
+        markerId: "_backfill_all_complete",
+        statements: [
+          {
+            sql: "UPDATE conversations SET group_id = 'system:all' WHERE group_id IS NULL",
+          },
+          markerInsert("_backfill_all_complete"),
+        ],
+      },
+      {
+        markerId: "_reflections_to_background_complete",
+        statements: [
+          {
+            sql: "UPDATE conversations SET group_id = 'system:background' WHERE group_id = 'system:reflections'",
+          },
+          markerInsert("_reflections_to_background_complete"),
+        ],
+      },
+      {
+        markerId: "_reflections_group_deleted_complete",
+        statements: [
+          {
+            sql: "UPDATE conversations SET group_id = 'system:background' WHERE group_id = 'system:reflections'",
+          },
+          {
+            sql: "DELETE FROM conversation_groups WHERE id = 'system:reflections'",
+          },
+          markerInsert("_reflections_group_deleted_complete"),
+        ],
+      },
+    ],
+  };
+}
+
+/** Run one statement through the synchronous raw helpers. */
+function runSyncStatement(statement: Statement): void {
+  if (statement.params) {
+    rawRun("group:migrate", statement.sql, ...(statement.params as never[]));
+  } else {
+    rawExec(statement.sql);
+  }
+}
+
+/** Run the migration on the SQLite main database. */
+function runSyncMigration(): void {
+  const migration = buildMigration(Math.floor(Date.now() / 1000));
+
+  for (const statement of migration.ddl) {
+    try {
+      runSyncStatement(statement);
+    } catch (err) {
+      if (statement.ignoreDuplicateColumn && isDuplicateColumnError(err)) {
+        continue;
+      }
+      throw err;
+    }
   }
 
-  // 1. Create groups table if not exists
-  rawExec(`
-    CREATE TABLE IF NOT EXISTS conversation_groups (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      icon TEXT,
-      sort_position REAL NOT NULL DEFAULT 0,
-      is_system_group BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-    )
-  `);
-
-  // 1b. Add icon column for tables created before it existed.
-  try {
-    rawRun(
-      "group:migrateAddIcon",
-      "ALTER TABLE conversation_groups ADD COLUMN icon TEXT",
+  for (const step of migration.steps) {
+    const marker = rawGet<{ id: string }>(
+      "group:migrate:marker",
+      "SELECT id FROM conversation_groups WHERE id = ?",
+      step.markerId,
     );
-  } catch (err) {
-    if (!isDuplicateColumnError(err)) {
-      log.error({ err }, "Failed to add icon column");
-      throw err;
+    if (marker) {
+      continue;
     }
-  }
-
-  // 2. Add group_id column if not exists
-  // Match existing error-handling pattern from conversation-display-order-migration.ts:
-  // only swallow duplicate-column errors, log+throw everything else.
-  try {
-    rawRun(
-      "group:migrateAddGroupId",
-      "ALTER TABLE conversations ADD COLUMN group_id TEXT REFERENCES conversation_groups(id) ON DELETE SET NULL",
-    );
-  } catch (err) {
-    if (!isDuplicateColumnError(err)) {
-      log.error({ err }, "Failed to add group_id column");
-      throw err;
+    // The pinned backfill reads `is_pinned`, a runtime column.
+    if (step.markerId === "_backfill_complete") {
+      ensureDisplayOrderMigration();
     }
-  }
-
-  // 3. Seed system groups.
-  const now = Math.floor(Date.now() / 1000);
-  rawExec(`
-    INSERT OR IGNORE INTO conversation_groups (id, name, sort_position, is_system_group, created_at, updated_at)
-    VALUES
-      ('system:pinned', 'Pinned', 0, TRUE, ${now}, ${now}),
-      ('system:scheduled', 'Scheduled', 1, TRUE, ${now}, ${now}),
-      ('system:background', 'Background', 2, TRUE, ${now}, ${now}),
-      ('system:all', 'Recents', 3, TRUE, ${now}, ${now})
-  `);
-
-  // One-time migration: move system:all to sortPosition 3 (from 999999).
-  // Bump custom groups at position 3+ up by 1 to make room. Wrapped in a
-  // transaction so a crash between the shift and the sentinel can't cause
-  // repeated drift on restart.
-  const sortShiftDone = rawGet<{ id: string }>(
-    "group:migrateSortShiftGuard",
-    "SELECT id FROM conversation_groups WHERE id = '_sort_shift_complete'",
-  );
-  if (!sortShiftDone) {
+    rawExec("BEGIN");
     try {
-      rawExec("BEGIN");
-      rawRun(
-        "group:migrateSortShift:shift",
-        "UPDATE conversation_groups SET sort_position = sort_position + 1 WHERE is_system_group = 0 AND sort_position >= 3",
-      );
-      rawRun(
-        "group:migrateSortShift:setAll",
-        "UPDATE conversation_groups SET sort_position = 3 WHERE id = 'system:all' AND sort_position != 3",
-      );
-      rawRun(
-        "group:migrateSortShift:marker",
-        `INSERT OR IGNORE INTO conversation_groups (id, name, sort_position, is_system_group, created_at, updated_at)
-         VALUES ('_sort_shift_complete', '_sort_shift_complete', -1, TRUE, ${now}, ${now})`,
-      );
-      rawExec("COMMIT");
-    } catch (err) {
-      rawExec("ROLLBACK");
-      log.error({ err }, "Sort-position shift transaction failed, rolled back");
-      throw err;
-    }
-  }
-
-  // 4. One-time backfill (guard: persistent marker prevents re-running on restart)
-  //
-  // The backfill sets group_id on existing conversations based on their attributes.
-  // It must only run once — re-running would overwrite user-explicit ungrouping
-  // (e.g., user removes a conversation from a group → group_id = NULL → next restart
-  // would backfill it back into system:background). A persistent marker row in
-  // conversation_groups tracks whether backfill has already completed.
-  const backfillDone = rawGet<{ id: string }>(
-    "group:migrateBackfillGuard",
-    "SELECT id FROM conversation_groups WHERE id = '_backfill_complete'",
-  );
-
-  if (!backfillDone) {
-    ensureDisplayOrderMigration(); // ensure is_pinned column exists first
-
-    // Canonical classification rules (full decision tree with precedence):
-    //
-    //   1. Pinned:     is_pinned = TRUE
-    //                  → system:pinned (always wins, checked first)
-    //
-    //   2. Scheduled:  source IN ('schedule', 'reminder') OR schedule_job_id IS NOT NULL
-    //                  → system:scheduled (checked second)
-    //
-    //   3. Background: (conversation_type = 'background' AND COALESCE(source, '') != 'notification')
-    //                  OR source IN ('heartbeat', 'task')
-    //                  AND COALESCE(source, '') NOT IN ('schedule', 'reminder')  ← safety + NULL handling
-    //                  AND schedule_job_id IS NULL                               ← safety: prevents overlap with step 2
-    //                  → system:background
-    //
-    //   4. Else:       ungrouped (group_id = NULL)
-    //
-    // Each backfill step uses AND group_id IS NULL to avoid reassignment.
-    // The exclusion guards in step 3 are belt-and-suspenders — step 2's
-    // group_id IS NULL guard already prevents overlap, but the explicit
-    // exclusions make the SQL self-documenting and migration-order-independent.
-    // COALESCE handles NULL source values (legacy rows).
-
-    // Wrap all backfill steps in a transaction so a partial failure
-    // (e.g. crash mid-backfill) doesn't leave conversations half-classified
-    // with the marker row missing, which would cause a re-run to skip
-    // already-classified rows (group_id IS NULL guard).
-    try {
-      rawExec("BEGIN");
-
-      // Step A: Pinned -> system:pinned (runs first, always wins)
-      rawExec(`
-        UPDATE conversations SET group_id = 'system:pinned'
-        WHERE is_pinned = 1 AND group_id IS NULL
-      `);
-
-      // Step B: Scheduled -> system:scheduled (schedule/reminder source or has schedule_job_id)
-      rawExec(`
-        UPDATE conversations SET group_id = 'system:scheduled'
-        WHERE (source IN ('schedule', 'reminder') OR schedule_job_id IS NOT NULL OR conversation_type = 'scheduled')
-        AND group_id IS NULL
-      `);
-
-      // Step C: Background -> system:background (background type, heartbeat, or task — excluding notifications)
-      // Explicit exclusion of schedule sources + schedule_job_id as a safety net.
-      // Step B already catches those via group_id IS NULL guard, but the explicit exclusion
-      // makes the SQL self-documenting and protects against future migration ordering changes.
-      // Note: source can be NULL for legacy rows. NULL != 'notification' evaluates to NULL (not TRUE)
-      // in SQL, so use COALESCE to treat NULL source as empty string for the exclusion checks.
-      rawExec(`
-        UPDATE conversations SET group_id = 'system:background'
-        WHERE (
-          (conversation_type = 'background' AND COALESCE(source, '') != 'notification')
-          OR source IN ('heartbeat', 'task')
-        )
-        AND COALESCE(source, '') NOT IN ('schedule', 'reminder')
-        AND schedule_job_id IS NULL
-        AND group_id IS NULL
-      `);
-
-      // Mark backfill as complete so it won't re-run on future process restarts
-      rawExec(`
-        INSERT OR IGNORE INTO conversation_groups (id, name, sort_position, is_system_group)
-        VALUES ('_backfill_complete', '_backfill_complete', -1, TRUE)
-      `);
-
-      rawExec("COMMIT");
-    } catch (err) {
-      rawExec("ROLLBACK");
-      log.error({ err }, "Group backfill transaction failed, rolled back");
-      throw err;
-    }
-  }
-
-  // 5. One-time backfill: assign all ungrouped conversations to system:all
-  //
-  // Separate from the initial backfill above because system:all is added later.
-  // Uses its own sentinel so it runs exactly once, even on existing installations
-  // where the original backfill already completed.
-  const allBackfillDone = rawGet<{ id: string }>(
-    "group:migrateBackfillAllGuard",
-    "SELECT id FROM conversation_groups WHERE id = '_backfill_all_complete'",
-  );
-
-  if (!allBackfillDone) {
-    try {
-      rawExec("BEGIN");
-
-      rawExec(`
-        UPDATE conversations SET group_id = 'system:all' WHERE group_id IS NULL
-      `);
-
-      rawExec(`
-        INSERT OR IGNORE INTO conversation_groups (id, name, sort_position, is_system_group)
-        VALUES ('_backfill_all_complete', '_backfill_all_complete', -1, TRUE)
-      `);
-
-      rawExec("COMMIT");
-    } catch (err) {
-      rawExec("ROLLBACK");
-      log.error({ err }, "system:all backfill transaction failed, rolled back");
-      throw err;
-    }
-  }
-
-  // 6. One-time migration: move auto-analysis conversations from system:reflections to system:background
-  const reflectionsMigrateDone = rawGet<{ id: string }>(
-    "group:migrateReflectionsGuard",
-    "SELECT id FROM conversation_groups WHERE id = '_reflections_to_background_complete'",
-  );
-
-  if (!reflectionsMigrateDone) {
-    try {
-      rawExec("BEGIN");
-
-      rawExec(`
-        UPDATE conversations SET group_id = 'system:background'
-        WHERE group_id = 'system:reflections'
-      `);
-
-      rawExec(`
-        INSERT OR IGNORE INTO conversation_groups (id, name, sort_position, is_system_group)
-        VALUES ('_reflections_to_background_complete', '_reflections_to_background_complete', -1, TRUE)
-      `);
-
+      for (const statement of step.statements) {
+        runSyncStatement(statement);
+      }
       rawExec("COMMIT");
     } catch (err) {
       rawExec("ROLLBACK");
       log.error(
-        { err },
-        "reflections-to-background migration failed, rolled back",
+        { err, step: step.markerId },
+        "Group migration step failed, rolled back",
       );
       throw err;
     }
   }
+}
 
-  // 7. One-time cleanup: delete the orphaned system:reflections group row.
-  //
-  // Reflections render as a sub-group under Background via the client's
-  // sub-group label provider; the standalone system:reflections group is no
-  // longer referenced by any conversation after step 6. Leaving the row in
-  // place causes the macOS sidebar to render an empty duplicate "Reflections"
-  // entry with a fallback folder icon alongside the Background sub-group.
-  const reflectionsGroupDeleted = rawGet<{ id: string }>(
-    "group:migrateReflDeleteGuard",
-    "SELECT id FROM conversation_groups WHERE id = '_reflections_group_deleted_complete'",
-  );
+/** Run one statement through the async facade. */
+async function runAsyncStatement(
+  db: AsyncDb,
+  statement: Statement,
+): Promise<void> {
+  if (statement.params) {
+    await db.run(statement.sql, statement.params);
+  } else {
+    await db.exec(statement.sql);
+  }
+}
 
-  if (!reflectionsGroupDeleted) {
+/** Run the migration on the active main backend (Postgres path). */
+async function runAsyncMigration(db: AsyncDb): Promise<void> {
+  const migration = buildMigration(Math.floor(Date.now() / 1000));
+
+  for (const statement of migration.ddl) {
     try {
-      rawExec("BEGIN");
-
-      // Belt-and-suspenders: re-run the conversation move in case a straggler
-      // crept in between step 6's sentinel being set and this step shipping.
-      rawExec(`
-        UPDATE conversations SET group_id = 'system:background'
-        WHERE group_id = 'system:reflections'
-      `);
-
-      rawExec(
-        `DELETE FROM conversation_groups WHERE id = 'system:reflections'`,
-      );
-
-      rawExec(`
-        INSERT OR IGNORE INTO conversation_groups (id, name, sort_position, is_system_group)
-        VALUES ('_reflections_group_deleted_complete', '_reflections_group_deleted_complete', -1, TRUE)
-      `);
-
-      rawExec("COMMIT");
+      await runAsyncStatement(db, statement);
     } catch (err) {
-      rawExec("ROLLBACK");
-      log.error({ err }, "reflections-group deletion failed, rolled back");
+      if (statement.ignoreDuplicateColumn && isDuplicateColumnError(err)) {
+        continue;
+      }
       throw err;
     }
   }
 
-  migrated = true;
+  // Runtime columns the generated baseline does not carry.
+  await ensureDisplayOrderMigrationAsync();
+
+  for (const step of migration.steps) {
+    const marker = await db.get<{ id: string }>(
+      "SELECT id FROM conversation_groups WHERE id = ?",
+      [step.markerId],
+    );
+    if (marker) {
+      continue;
+    }
+    await db.transaction(async (tx) => {
+      for (const statement of step.statements) {
+        await runAsyncStatement(tx, statement);
+      }
+    });
+  }
+}
+
+let sqliteMigrated = false;
+let postgresMigrated = false;
+let postgresMigration: Promise<void> | null = null;
+
+/**
+ * Reset the in-memory guards so the next ensure re-runs the full migration.
+ * Intended ONLY for tests that recreate the database mid-process.
+ */
+export function _resetGroupMigrationForTests(): void {
+  sqliteMigrated = false;
+  postgresMigrated = false;
+  postgresMigration = null;
+}
+
+/**
+ * Ensure the schema on the SQLite main database. Serves the unported
+ * conversation modules, which still read and write SQLite.
+ */
+export function ensureGroupMigration(): void {
+  if (sqliteMigrated) {
+    return;
+  }
+  runSyncMigration();
+  sqliteMigrated = true;
+}
+
+/**
+ * Ensure the schema on the active main backend. On SQLite this delegates to
+ * {@link ensureGroupMigration}; on Postgres it runs the same statements through
+ * the async facade and shares one in-flight promise across concurrent callers.
+ */
+export async function ensureGroupMigrationAsync(): Promise<void> {
+  const db = requireMainDb();
+  if (db.dialect === "sqlite") {
+    ensureGroupMigration();
+    return;
+  }
+  if (postgresMigrated) {
+    return;
+  }
+  if (postgresMigration) {
+    return postgresMigration;
+  }
+  postgresMigration = runAsyncMigration(db);
+  try {
+    await postgresMigration;
+    postgresMigrated = true;
+  } finally {
+    postgresMigration = null;
+  }
 }

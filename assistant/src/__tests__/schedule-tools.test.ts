@@ -53,7 +53,7 @@ function executeScheduleCreate(
 // ── schedule_create ─────────────────────────────────────────────────
 
 describe("schedule_create tool", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -232,7 +232,7 @@ describe("schedule_create tool", () => {
 // ── schedule_create with fire_at (one-shot) ──────────────────────────
 
 describe("schedule_create with fire_at (one-shot)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -333,7 +333,7 @@ describe("schedule_create with fire_at (one-shot)", () => {
 // ── schedule_create with mode and routing ──────────────────────────
 
 describe("schedule_create with mode and routing", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -410,7 +410,7 @@ describe("schedule_create with mode and routing", () => {
 // ── schedule_create / schedule_update workflow mode ─────────────────
 
 describe("schedule tools — workflow mode", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
     setOverridesForTesting({});
@@ -517,7 +517,7 @@ describe("schedule_create — workflow capability manifest", () => {
     };
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
     setOverridesForTesting({});
@@ -632,7 +632,7 @@ describe("schedule_create — workflow capability manifest", () => {
 // ── script timeout override ─────────────────────────────────────────
 
 describe("schedule_create / schedule_update timeout_ms", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -757,7 +757,7 @@ describe("schedule_create / schedule_update timeout_ms", () => {
 // ── schedule_list ───────────────────────────────────────────────────
 
 describe("schedule_list tool", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -860,7 +860,7 @@ describe("schedule_list tool", () => {
 // ── schedule_list with one-shot schedules ────────────────────────────
 
 describe("schedule_list with one-shot schedules", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -971,7 +971,7 @@ describe("schedule_list with one-shot schedules", () => {
 // ── schedule_update ─────────────────────────────────────────────────
 
 describe("schedule_update tool", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -1166,7 +1166,7 @@ describe("schedule_update tool", () => {
 // ── schedule_update with mode and routing ────────────────────────────
 
 describe("schedule_update with mode and routing", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -1367,7 +1367,7 @@ describe("schedule_update with mode and routing", () => {
 // ── RRULE support in schedule tools ─────────────────────────────────
 
 describe("schedule_create with RRULE", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -1422,7 +1422,7 @@ describe("schedule_create with RRULE", () => {
 });
 
 describe("schedule_update with RRULE", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -1508,7 +1508,7 @@ describe("schedule_update with RRULE", () => {
 });
 
 describe("schedule_list with RRULE", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -1574,7 +1574,7 @@ describe("schedule_list with RRULE", () => {
 // ── RRULE set support in schedule tools ──────────────────────────────
 
 describe("schedule_create with RRULE set (EXDATE)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -1665,7 +1665,7 @@ describe("schedule_create with RRULE set (EXDATE)", () => {
 });
 
 describe("schedule_update with RRULE set", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -1740,7 +1740,7 @@ describe("schedule_update with RRULE set", () => {
 });
 
 describe("schedule_list with RRULE set", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -1789,7 +1789,7 @@ describe("schedule_list with RRULE set", () => {
 // ── EXRULE support in schedule tools ──────────────────────────────────
 
 describe("schedule_create with RRULE + EXRULE", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -1843,7 +1843,7 @@ describe("schedule_create with RRULE + EXRULE", () => {
 // ── schedule_delete ─────────────────────────────────────────────────
 
 describe("schedule_delete tool", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -1892,7 +1892,7 @@ describe("schedule_delete tool", () => {
 // ── plugin-sourced schedules ────────────────────────────────────────
 
 describe("schedule tools on plugin-sourced schedules", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -1994,7 +1994,7 @@ describe("schedule tools on plugin-sourced schedules", () => {
 // ── model-input schema validation (LUM-2853) ────────────────────────
 
 describe("schedule tools — model-input schema validation", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
   });
@@ -2170,7 +2170,7 @@ describe("schedule tools — model-input schema validation", () => {
 // ── schedule_create / schedule_update group ─────────────────────────
 
 describe("schedule_create / schedule_update group", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     ensureGroupMigration();
     getRawDb().run("DELETE FROM cron_runs");
     getRawDb().run("DELETE FROM cron_jobs");
@@ -2184,7 +2184,7 @@ describe("schedule_create / schedule_update group", () => {
   }
 
   test("creates a schedule filed into a custom group by name", async () => {
-    const group = createGroup("Briefs");
+    const group = await createGroup("Briefs");
 
     const result = await executeScheduleCreate(
       {
@@ -2200,7 +2200,7 @@ describe("schedule_create / schedule_update group", () => {
     expect(result.content).toContain("Conversation group: Briefs");
     const job = await getSchedule(extractJobId(result.content));
     expect(job?.groupId).toBe(group.id);
-    expect(resolveScheduleConversationGroupId(job!)).toBe(group.id);
+    expect(await resolveScheduleConversationGroupId(job!)).toBe(group.id);
   });
 
   test("rejects an unknown group with the available list", async () => {
@@ -2219,7 +2219,7 @@ describe("schedule_create / schedule_update group", () => {
   });
 
   test("update sets and clears the group", async () => {
-    const group = createGroup("Reports");
+    const group = await createGroup("Reports");
     const created = await executeScheduleCreate(
       { name: "Weekly report", expression: "0 9 * * 1", message: "msg" },
       ctx,
@@ -2243,7 +2243,7 @@ describe("schedule_create / schedule_update group", () => {
   });
 
   test("run conversations fall back to system:scheduled when the group is deleted", async () => {
-    const group = createGroup("Ephemeral");
+    const group = await createGroup("Ephemeral");
     const created = await executeScheduleCreate(
       {
         name: "Doomed group",
@@ -2256,12 +2256,14 @@ describe("schedule_create / schedule_update group", () => {
     const job = await getSchedule(extractJobId(created.content));
     expect(job?.groupId).toBe(group.id);
 
-    deleteGroup(group.id);
-    expect(resolveScheduleConversationGroupId(job!)).toBe("system:scheduled");
+    await deleteGroup(group.id);
+    expect(await resolveScheduleConversationGroupId(job!)).toBe(
+      "system:scheduled",
+    );
   });
 
-  test("resolveScheduleConversationGroupId defaults to system:scheduled", () => {
-    expect(resolveScheduleConversationGroupId({ groupId: null })).toBe(
+  test("resolveScheduleConversationGroupId defaults to system:scheduled", async () => {
+    expect(await resolveScheduleConversationGroupId({ groupId: null })).toBe(
       "system:scheduled",
     );
   });

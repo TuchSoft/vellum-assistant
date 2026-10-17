@@ -67,16 +67,18 @@ interface SectionRow {
   unread: number;
 }
 
-function invokeSections(): SectionRow[] {
-  return (sectionsHandler({}) as { sections: SectionRow[] }).sections;
+async function invokeSections(): Promise<SectionRow[]> {
+  return ((await sectionsHandler({})) as { sections: SectionRow[] }).sections;
 }
 
 interface ListResponse {
   conversations: Array<{ id: string; title: string }>;
 }
 
-function invokeList(queryParams: Record<string, string> = {}): ListResponse {
-  return listHandler({ queryParams }) as ListResponse;
+async function invokeList(
+  queryParams: Record<string, string> = {},
+): Promise<ListResponse> {
+  return (await listHandler({ queryParams })) as ListResponse;
 }
 
 function titlesFrom(response: ListResponse): string[] {
@@ -136,7 +138,7 @@ function fileIntoGroup(conversationId: string, groupId: string): void {
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   flagEnabled = false;
   getDb().delete(conversations).run();
 });
@@ -146,31 +148,31 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("assistant-initiated threads — flag off", () => {
-  test("emits no assistant section, and the threads stay counted in Chats", () => {
+  test("emits no assistant section, and the threads stay counted in Chats", async () => {
     seedAssistantInitiated("overnight-realization");
     createConversation({ title: "user-thread" });
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections.some((s) => s.kind === "assistant")).toBe(false);
     expect(sections).toContainEqual({ kind: "chats", total: 2, unread: 0 });
   });
 
-  test("the threads stay listed in the standard list", () => {
+  test("the threads stay listed in the standard list", async () => {
     seedAssistantInitiated("overnight-realization");
     createConversation({ title: "user-thread" });
 
-    expect(titlesFrom(invokeList())).toEqual([
+    expect(titlesFrom(await invokeList())).toEqual([
       "overnight-realization",
       "user-thread",
     ]);
   });
 
-  test("their unread still counts toward Chats", () => {
+  test("their unread still counts toward Chats", async () => {
     seedUnseen(seedAssistantInitiated("noticed-something"));
     createConversation({ title: "user-thread" });
 
-    expect(invokeSections()).toContainEqual({
+    expect(await invokeSections()).toContainEqual({
       kind: "chats",
       total: 2,
       unread: 1,
@@ -183,47 +185,47 @@ describe("assistant-initiated threads — flag off", () => {
 // ---------------------------------------------------------------------------
 
 describe("assistant-initiated threads — flag on", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     flagEnabled = true;
   });
 
-  test("the threads move out of Chats into their own section", () => {
+  test("the threads move out of Chats into their own section", async () => {
     seedAssistantInitiated("overnight-realization");
     seedAssistantInitiated("noticed-something");
     createConversation({ title: "user-thread" });
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections).toContainEqual({ kind: "assistant", total: 2, unread: 0 });
     expect(sections).toContainEqual({ kind: "chats", total: 1, unread: 0 });
   });
 
-  test("the section renders at zero, the way Chats does", () => {
+  test("the section renders at zero, the way Chats does", async () => {
     createConversation({ title: "user-thread" });
 
-    expect(invokeSections()).toContainEqual({
+    expect(await invokeSections()).toContainEqual({
       kind: "assistant",
       total: 0,
       unread: 0,
     });
   });
 
-  test("unread follows the section, and is not double-counted in Chats", () => {
+  test("unread follows the section, and is not double-counted in Chats", async () => {
     seedUnseen(seedAssistantInitiated("noticed-something"));
     seedAssistantInitiated("read-already");
     seedUnseen(createConversation({ title: "user-thread" }).id);
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections).toContainEqual({ kind: "assistant", total: 2, unread: 1 });
     expect(sections).toContainEqual({ kind: "chats", total: 1, unread: 1 });
   });
 
-  test("the split leaves channel sections alone", () => {
+  test("the split leaves channel sections alone", async () => {
     seedAssistantInitiated("overnight-realization");
     stampChannel(createConversation({ title: "slack-thread" }).id, "slack");
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections).toContainEqual({ kind: "assistant", total: 1, unread: 0 });
     expect(sections).toContainEqual({
@@ -234,18 +236,17 @@ describe("assistant-initiated threads — flag on", () => {
     });
   });
 
-  test("groupId=system:assistant lists exactly those threads", () => {
+  test("groupId=system:assistant lists exactly those threads", async () => {
     seedAssistantInitiated("overnight-realization");
     seedAssistantInitiated("noticed-something");
     createConversation({ title: "user-thread" });
 
-    expect(titlesFrom(invokeList({ groupId: "system:assistant" }))).toEqual([
-      "noticed-something",
-      "overnight-realization",
-    ]);
+    expect(
+      titlesFrom(await invokeList({ groupId: "system:assistant" })),
+    ).toEqual(["noticed-something", "overnight-realization"]);
   });
 
-  test("the standard list withholds them, and keeps every NULL-source row", () => {
+  test("the standard list withholds them, and keeps every NULL-source row", async () => {
     // The regression this guards: `NOT (source = '...')` is NULL for the
     // NULL-source rows that make up most of the list, so a naive negation
     // would return an empty list rather than one section fewer.
@@ -253,40 +254,40 @@ describe("assistant-initiated threads — flag on", () => {
     createConversation({ title: "user-thread" });
     createConversation({ title: "another-user-thread" });
 
-    expect(titlesFrom(invokeList())).toEqual([
+    expect(titlesFrom(await invokeList())).toEqual([
       "another-user-thread",
       "user-thread",
     ]);
   });
 
-  test("a list already scoped to the section is not narrowed to nothing", () => {
+  test("a list already scoped to the section is not narrowed to nothing", async () => {
     // `groupId=system:assistant` selects on the same column the exclusion
     // negates, so applying both would return an empty page for the one caller
     // that actually wants these rows.
     seedAssistantInitiated("overnight-realization");
 
-    expect(titlesFrom(invokeList({ groupId: "system:assistant" }))).toEqual([
-      "overnight-realization",
-    ]);
+    expect(
+      titlesFrom(await invokeList({ groupId: "system:assistant" })),
+    ).toEqual(["overnight-realization"]);
   });
 
-  test("a pinned thread belongs to Pinned, not to both", () => {
+  test("a pinned thread belongs to Pinned, not to both", async () => {
     // Section membership is single-valued everywhere else in the sidebar, and
     // this section is carved out of the same ungrouped set Chats is, so
     // pinning has to move a thread rather than duplicate it.
     pin(seedAssistantInitiated("pinned-realization"));
     seedAssistantInitiated("ordinary-realization");
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections).toContainEqual({ kind: "assistant", total: 1, unread: 0 });
     expect(sections).toContainEqual({ kind: "pinned", total: 1, unread: 0 });
-    expect(titlesFrom(invokeList({ groupId: "system:assistant" }))).toEqual([
-      "ordinary-realization",
-    ]);
+    expect(
+      titlesFrom(await invokeList({ groupId: "system:assistant" })),
+    ).toEqual(["ordinary-realization"]);
   });
 
-  test("transactional notification trails are not members, and stay in Chats", () => {
+  test("transactional notification trails are not members, and stay in Chats", async () => {
     // The membership source is opt-in precisely so the flag turning on cannot
     // sweep the historical guardian-request and channel-delivery trails
     // (`source = 'notification'`) into the section: only threads written for
@@ -295,35 +296,35 @@ describe("assistant-initiated threads — flag on", () => {
     seedNotificationTrail("approve-this-call");
     seedAssistantInitiated("overnight-realization");
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections).toContainEqual({ kind: "assistant", total: 1, unread: 0 });
     expect(sections).toContainEqual({ kind: "chats", total: 1, unread: 0 });
-    expect(titlesFrom(invokeList())).toEqual(["approve-this-call"]);
-    expect(titlesFrom(invokeList({ groupId: "system:assistant" }))).toEqual([
-      "overnight-realization",
-    ]);
+    expect(titlesFrom(await invokeList())).toEqual(["approve-this-call"]);
+    expect(
+      titlesFrom(await invokeList({ groupId: "system:assistant" })),
+    ).toEqual(["overnight-realization"]);
   });
 
-  test("a thread filed into a custom group leaves the section and stays listable", () => {
+  test("a thread filed into a custom group leaves the section and stays listable", async () => {
     // The exclusion is the complement of the section, so a thread that moved
     // out of the section must not stay excluded from the list of the group it
     // moved into — otherwise filing one makes it unreachable.
-    const group = createGroup("Reading List");
+    const group = await createGroup("Reading List");
     const filed = seedAssistantInitiated("filed-realization");
     fileIntoGroup(filed, group.id);
 
-    expect(invokeSections()).toContainEqual({
+    expect(await invokeSections()).toContainEqual({
       kind: "assistant",
       total: 0,
       unread: 0,
     });
-    expect(titlesFrom(invokeList({ groupId: group.id }))).toEqual([
+    expect(titlesFrom(await invokeList({ groupId: group.id }))).toEqual([
       "filed-realization",
     ]);
   });
 
-  test("the Archive view keeps archived section threads", () => {
+  test("the Archive view keeps archived section threads", async () => {
     // Archive asks archiveStatus=archived with no groupId, and the section
     // only ever lists active rows, so the split's exclusion must not reach
     // archived reads or an archived section thread is visible nowhere.
@@ -335,12 +336,12 @@ describe("assistant-initiated threads — flag on", () => {
       archived,
     );
 
-    expect(titlesFrom(invokeList({ archiveStatus: "archived" }))).toEqual([
-      "archived-realization",
-    ]);
+    expect(titlesFrom(await invokeList({ archiveStatus: "archived" }))).toEqual(
+      ["archived-realization"],
+    );
   });
 
-  test("the background umbrella is left unnarrowed", () => {
+  test("the background umbrella is left unnarrowed", async () => {
     // A background row carrying the section's own source is addressed by
     // conversation type, and narrowing that bucket by source would drop rows
     // its callers still page through.
@@ -351,7 +352,7 @@ describe("assistant-initiated threads — flag on", () => {
     });
 
     expect(
-      invokeList({ conversationType: "background" }).conversations.map(
+      (await invokeList({ conversationType: "background" })).conversations.map(
         (c) => c.id,
       ),
     ).toContain(background.id);

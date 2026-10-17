@@ -99,7 +99,7 @@ void _findConversationSentinel;
 // ---------------------------------------------------------------------------
 
 describe("GET /v1/conversations — archiveStatus", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     clearConversations();
   });
 
@@ -187,7 +187,7 @@ describe("GET /v1/conversations — archiveStatus", () => {
 });
 
 describe("GET /v1/conversations — conversationType", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     clearConversations();
   });
 
@@ -250,11 +250,11 @@ describe("GET /v1/conversations — conversationType", () => {
 describe("GET /v1/conversations/:id", () => {
   const getHandler = findHandler(CONVERSATION_LIST_ROUTES, "getConversation");
 
-  beforeEach(() => {
+  beforeEach(async () => {
     clearConversations();
   });
 
-  test("serves a listed conversation", () => {
+  test("serves a listed conversation", async () => {
     const conv = createConversation({ title: "listed" });
 
     const detail = getHandler({ pathParams: { id: conv.id } }) as {
@@ -265,7 +265,7 @@ describe("GET /v1/conversations/:id", () => {
     expect(detail.conversation.conversationType).toBe("standard");
   });
 
-  test("does not serve a legacy private row the listing hides", () => {
+  test("does not serve a legacy private row the listing hides", async () => {
     // "private" is not a creatable type (legacy rows only); every listing
     // hides it by type and the wire type collapses it to "standard", so a
     // client holding only a stale id must get the same answer the listing
@@ -306,13 +306,13 @@ describe("GET /v1/conversations with groupId", () => {
     return conv.id;
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     clearConversations();
   });
 
   test("system:all returns only conversations in no group", async () => {
     createConversation("ungrouped-1");
-    const group = createGroup("Car Chat");
+    const group = await createGroup("Car Chat");
     seedInGroup("in-custom-group", group.id);
     seedPinned("pinned-1");
 
@@ -351,8 +351,8 @@ describe("GET /v1/conversations with groupId", () => {
   });
 
   test("a custom group id returns only that group's members", async () => {
-    const carChat = createGroup("Car Chat");
-    const recipes = createGroup("Recipes");
+    const carChat = await createGroup("Car Chat");
+    const recipes = await createGroup("Recipes");
     seedInGroup("car-1", carChat.id);
     seedInGroup("car-2", carChat.id);
     seedInGroup("recipe-1", recipes.id);
@@ -400,7 +400,7 @@ describe("GET /v1/conversations with groupId", () => {
   test("a group-scoped page has no pinned rows appended to it", async () => {
     // Injection exists so a client reading Pinned out of the unfiltered list
     // still sees it. A caller that asked for one group gets that group.
-    const group = createGroup("Car Chat");
+    const group = await createGroup("Car Chat");
     seedInGroup("car-1", group.id);
     seedPinned("pinned-1");
 
@@ -472,7 +472,7 @@ describe("GET /v1/conversations with groupId", () => {
   test("system:all and system:pinned partition the sections, never overlapping", async () => {
     createConversation("ungrouped-1");
     seedPinned("pinned-1");
-    const group = createGroup("Car Chat");
+    const group = await createGroup("Car Chat");
     seedInGroup("car-1", group.id);
 
     const ungrouped = (await invoke({ groupId: "system:all" })) as ListResponse;
@@ -519,7 +519,7 @@ describe("GET /v1/conversations with groupId", () => {
   });
 
   test("hasMore reflects the group's own total, not the whole table", async () => {
-    const group = createGroup("Car Chat");
+    const group = await createGroup("Car Chat");
     seedInGroup("car-1", group.id);
     seedInGroup("car-2", group.id);
     for (let i = 0; i < 5; i++) {
@@ -536,7 +536,7 @@ describe("GET /v1/conversations with groupId", () => {
   });
 
   test("omitting groupId is unchanged: every group is spanned and pinned still injects", async () => {
-    const group = createGroup("Car Chat");
+    const group = await createGroup("Car Chat");
     seedInGroup("car-1", group.id);
     createConversation("ungrouped-1");
     seedPinned("pinned-1");
@@ -570,7 +570,7 @@ describe("GET /v1/conversations with needsAttention", () => {
     });
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     getDb().delete(conversationAttentionEvents).run();
     getDb().delete(conversationAssistantAttentionState).run();
     clearConversations();
@@ -655,7 +655,7 @@ describe("GET /v1/conversations with needsAttention", () => {
   });
 
   test("composes with the other filters", async () => {
-    const group = createGroup("Work");
+    const group = await createGroup("Work");
     const inGroupUnseen = createConversation("in-group-unseen");
     seedUnseen(inGroupUnseen.id);
     rawRun(
@@ -674,7 +674,7 @@ describe("GET /v1/conversations with needsAttention", () => {
     ]);
   });
 
-  test('any value other than "true" is rejected with a 400', () => {
+  test('any value other than "true" is rejected with a 400', async () => {
     /* Same posture as conversationType: silently reading a typo or a newer
        client's value as "no filter" would hand back the full list where a
        subset was asked for, and that skew is invisible to the client. */
@@ -703,7 +703,7 @@ describe("GET /v1/conversations with foregroundOnly", () => {
     );
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     clearConversations();
   });
 
@@ -713,7 +713,7 @@ describe("GET /v1/conversations with foregroundOnly", () => {
        one; the filter is what lets that caller ask for chats alone. A
        surfaced run is a chat for this purpose, exactly as the unread count
        treats it. */
-    const group = createGroup("Work");
+    const group = await createGroup("Work");
     createConversation("plain-chat");
     const bgInGroup = createConversation({
       title: "bg-in-group",
@@ -744,7 +744,7 @@ describe("GET /v1/conversations with foregroundOnly", () => {
     /* The reason for the filter is a limit=1 read whose first row is the
        answer; that read is only right if the page and its total come from
        the same predicate. */
-    const group = createGroup("Work");
+    const group = await createGroup("Work");
     for (let i = 0; i < 3; i++) {
       const bg = createConversation({
         title: `bg-${i}`,
@@ -792,7 +792,7 @@ describe("GET /v1/conversations with foregroundOnly", () => {
   });
 
   test("composes with the other filters", async () => {
-    const group = createGroup("Work");
+    const group = await createGroup("Work");
     const chatInGroup = createConversation("chat-in-group");
     fileIntoGroup(chatInGroup.id, group.id);
     const bgInGroup = createConversation({
@@ -810,7 +810,7 @@ describe("GET /v1/conversations with foregroundOnly", () => {
     expect(result.conversations.map((c) => c.title)).toEqual(["chat-in-group"]);
   });
 
-  test('any value other than "true" is rejected with a 400', () => {
+  test('any value other than "true" is rejected with a 400', async () => {
     for (const bad of ["false", "1", "yes", "TRUE"]) {
       expect(() => invoke({ foregroundOnly: bad })).toThrow(BadRequestError);
     }
@@ -845,13 +845,13 @@ describe("GET /v1/conversations/unread-count", () => {
     });
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     getDb().delete(conversationAttentionEvents).run();
     getDb().delete(conversationAssistantAttentionState).run();
     clearConversations();
   });
 
-  test("counts only foreground conversations with an unseen latest assistant message", () => {
+  test("counts only foreground conversations with an unseen latest assistant message", async () => {
     const unseen = createConversation("unseen-1");
     seedUnseen(unseen.id);
 
@@ -865,7 +865,7 @@ describe("GET /v1/conversations/unread-count", () => {
     expect(invokeUnreadCount()).toEqual({ count: 1 });
   });
 
-  test("marking seen removes the conversation from the count", () => {
+  test("marking seen removes the conversation from the count", async () => {
     const conv = createConversation("unseen-then-seen");
     seedUnseen(conv.id);
     expect(invokeUnreadCount()).toEqual({ count: 1 });
@@ -874,7 +874,7 @@ describe("GET /v1/conversations/unread-count", () => {
     expect(invokeUnreadCount()).toEqual({ count: 0 });
   });
 
-  test("archived conversations are excluded", () => {
+  test("archived conversations are excluded", async () => {
     const conv = createConversation("unseen-archived");
     seedUnseen(conv.id);
     rawRun(
@@ -887,7 +887,7 @@ describe("GET /v1/conversations/unread-count", () => {
     expect(invokeUnreadCount()).toEqual({ count: 0 });
   });
 
-  test("background and scheduled conversations count only when surfaced", () => {
+  test("background and scheduled conversations count only when surfaced", async () => {
     const bg = createConversation({
       title: "bg-1",
       conversationType: "background",
@@ -1027,8 +1027,8 @@ describe("GET /v1/conversations/unread-count", () => {
     ];
 
     for (const scenario of scenarios) {
-      test(`${scenario.name} ${scenario.counts ? "counts" : "does not count"}`, () => {
-        const group = createGroup("unread-contract-group");
+      test(`${scenario.name} ${scenario.counts ? "counts" : "does not count"}`, async () => {
+        const group = await createGroup("unread-contract-group");
         const conversationId = scenario.seed(group.id);
         // The "seen" scenario seeds and clears its own attention row.
         if (scenario.name !== "seen foreground row") {
@@ -1041,8 +1041,8 @@ describe("GET /v1/conversations/unread-count", () => {
       });
     }
 
-    test("the matrix totals across every scenario at once", () => {
-      const group = createGroup("unread-contract-group");
+    test("the matrix totals across every scenario at once", async () => {
+      const group = await createGroup("unread-contract-group");
       for (const scenario of scenarios) {
         const conversationId = scenario.seed(group.id);
         if (scenario.name !== "seen foreground row") {
@@ -1055,11 +1055,11 @@ describe("GET /v1/conversations/unread-count", () => {
     });
   });
 
-  test("background rows filed in a custom group stay excluded until surfaced", () => {
+  test("background rows filed in a custom group stay excluded until surfaced", async () => {
     // Custom-group rows are visible in the standard listing regardless of
     // type, but a non-surfaced background row must not count as unread
     // (the client's unread predicate excludes it).
-    const group = createGroup("unread-count-test-group");
+    const group = await createGroup("unread-count-test-group");
 
     const bgInGroup = createConversation({
       title: "bg-in-group",
@@ -1103,8 +1103,8 @@ describe("GET /v1/conversations/sections", () => {
     unread: number;
   }
 
-  function invokeSections(): SectionRow[] {
-    return (sectionsHandler({}) as { sections: SectionRow[] }).sections;
+  async function invokeSections(): Promise<SectionRow[]> {
+    return ((await sectionsHandler({})) as { sections: SectionRow[] }).sections;
   }
 
   function fileIntoGroup(conversationId: string, groupId: string): void {
@@ -1141,27 +1141,29 @@ describe("GET /v1/conversations/sections", () => {
     });
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     clearConversations();
   });
 
-  test("an empty conversation table yields Chats alone, at zero", () => {
+  test("an empty conversation table yields Chats alone, at zero", async () => {
     // Chats is the leftover bucket and renders regardless, so its counts
     // are part of the contract even when nothing exists.
-    expect(invokeSections()).toEqual([{ kind: "chats", total: 0, unread: 0 }]);
+    expect(await invokeSections()).toEqual([
+      { kind: "chats", total: 0, unread: 0 },
+    ]);
   });
 
-  test("every section kind appears with its own totals", () => {
+  test("every section kind appears with its own totals", async () => {
     const pinned = createConversation({ title: "pinned-1" });
     pin(pinned.id);
-    const group = createGroup("Sections Spread Group");
+    const group = await createGroup("Sections Spread Group");
     fileIntoGroup(createConversation({ title: "g-1" }).id, group.id);
     fileIntoGroup(createConversation({ title: "g-2" }).id, group.id);
     stampChannel(createConversation({ title: "slack-1" }).id, "slack");
     createConversation({ title: "native-unstamped" });
     stampChannel(createConversation({ title: "native-stamped" }).id, "vellum");
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections).toContainEqual({ kind: "pinned", total: 1, unread: 0 });
     expect(sections).toContainEqual({
@@ -1184,7 +1186,7 @@ describe("GET /v1/conversations/sections", () => {
     expect(sections).toContainEqual({ kind: "chats", total: 2, unread: 0 });
   });
 
-  test("unread counts follow the seen state per section", () => {
+  test("unread counts follow the seen state per section", async () => {
     const pinned = createConversation({ title: "pinned-seen" });
     pin(pinned.id);
     seedUnseen(pinned.id);
@@ -1196,7 +1198,7 @@ describe("GET /v1/conversations/sections", () => {
       source: "test",
     });
 
-    const group = createGroup("Sections Unread Group");
+    const group = await createGroup("Sections Unread Group");
     const unreadInGroup = createConversation({ title: "g-unread" });
     fileIntoGroup(unreadInGroup.id, group.id);
     seedUnseen(unreadInGroup.id);
@@ -1206,7 +1208,7 @@ describe("GET /v1/conversations/sections", () => {
     const chatsUnread = createConversation({ title: "chat-unread" });
     seedUnseen(chatsUnread.id);
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections).toContainEqual({ kind: "pinned", total: 1, unread: 0 });
     expect(sections).toContainEqual({
@@ -1221,11 +1223,11 @@ describe("GET /v1/conversations/sections", () => {
     expect(sections).toContainEqual({ kind: "chats", total: 1, unread: 1 });
   });
 
-  test("a background row filed into a group counts toward total but never unread", () => {
+  test("a background row filed into a group counts toward total but never unread", async () => {
     // Mirrors the unread-count contract: the custom-group visibility arm
     // admits the row into the section, and the not-background unread rule
     // keeps it out of the badge.
-    const group = createGroup("Sections Background Group");
+    const group = await createGroup("Sections Background Group");
     const bg = createConversation({
       title: "bg-in-group",
       conversationType: "background",
@@ -1233,7 +1235,7 @@ describe("GET /v1/conversations/sections", () => {
     fileIntoGroup(bg.id, group.id);
     seedUnseen(bg.id);
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections).toContainEqual({
       kind: "group",
@@ -1246,24 +1248,24 @@ describe("GET /v1/conversations/sections", () => {
     });
   });
 
-  test("an empty custom group gets no section", () => {
-    const group = createGroup("Sections Empty Group");
+  test("an empty custom group gets no section", async () => {
+    const group = await createGroup("Sections Empty Group");
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections.some((s) => s.groupId === group.id)).toBe(false);
   });
 
-  test("archived rows count toward no section", () => {
-    const group = createGroup("Sections Archived Group");
+  test("archived rows count toward no section", async () => {
+    const group = await createGroup("Sections Archived Group");
     fileIntoGroup(seedArchived("archived-in-group"), group.id);
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections.some((s) => s.groupId === group.id)).toBe(false);
   });
 
-  test("a dangling group id is skipped, not surfaced", () => {
+  test("a dangling group id is skipped, not surfaced", async () => {
     /* Live write paths cannot create this state: group_id carries a foreign
        key, and the placement write sanitizes unknown groups precisely to
        avoid violating it. A restored snapshot can, though: in-place restore
@@ -1280,14 +1282,14 @@ describe("GET /v1/conversations/sections", () => {
       rawExec("PRAGMA foreign_keys = ON");
     }
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections.some((s) => s.kind === "group")).toBe(false);
     // Grouped, so it does not leak into the ungrouped Chats bucket either.
     expect(sections).toContainEqual({ kind: "chats", total: 0, unread: 0 });
   });
 
-  test("an unsurfaced background row pinned by raw column writes stays invisible", () => {
+  test("an unsurfaced background row pinned by raw column writes stays invisible", async () => {
     // Standard-listing visibility admits a pinned background row only when
     // it is surfaced (the pinned group fails the custom-group arm on its
     // system: prefix), so it appears in neither the Pinned list nor the
@@ -1298,14 +1300,14 @@ describe("GET /v1/conversations/sections", () => {
     });
     pin(bg.id);
 
-    const sections = invokeSections();
+    const sections = await invokeSections();
 
     expect(sections.some((s) => s.kind === "pinned")).toBe(false);
   });
 });
 
 describe("GET /v1/conversations, conversationType=all", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     clearConversations();
   });
 

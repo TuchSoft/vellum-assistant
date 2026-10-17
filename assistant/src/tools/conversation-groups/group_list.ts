@@ -6,7 +6,7 @@ export async function executeConversationGroupList(
   _input: Record<string, unknown>,
   _context: ToolContext,
 ): Promise<ToolExecutionResult> {
-  const groups = listGroups();
+  const groups = await listGroups();
   return {
     content:
       "Conversation groups (sidebar order):\n" +

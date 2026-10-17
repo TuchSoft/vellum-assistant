@@ -31,7 +31,7 @@ function getRawDb(): Database {
  * consults it fails here rather than passing by coincidence.
  */
 describe("conversation list ordering ignores display_order", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     const raw = getRawDb();
     raw.run("DELETE FROM conversations");
     raw.run("DELETE FROM conversation_groups WHERE is_system_group = 0");
@@ -45,8 +45,8 @@ describe("conversation list ordering ignores display_order", () => {
     );
   }
 
-  test("a custom group orders by recency, ignoring display_order", () => {
-    const groupId = createGroup("Briefs").id;
+  test("a custom group orders by recency, ignoring display_order", async () => {
+    const groupId = (await createGroup("Briefs")).id;
     createConversation({ id: "conv-old", source: "user", groupId });
     createConversation({ id: "conv-new", source: "user", groupId });
     // `display_order` says old-then-new; recency says the opposite.
@@ -59,7 +59,7 @@ describe("conversation list ordering ignores display_order", () => {
     ]);
   });
 
-  test("the pinned group orders by recency, ignoring display_order", () => {
+  test("the pinned group orders by recency, ignoring display_order", async () => {
     createConversation({
       id: "pin-old",
       source: "user",
@@ -81,7 +81,7 @@ describe("conversation list ordering ignores display_order", () => {
   /* The page-one pinned injection reads through its own query, so it needs
      the same guarantee: one section must not have two orderings depending on
      which read served it. */
-  test("listPinnedConversations orders by recency too", () => {
+  test("listPinnedConversations orders by recency too", async () => {
     createConversation({
       id: "pin-old",
       source: "user",

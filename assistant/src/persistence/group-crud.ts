@@ -1,14 +1,15 @@
 /**
  * CRUD operations for conversation groups.
  *
- * All functions call ensureGroupMigration() before any DB access
- * to guarantee the conversation_groups table exists.
+ * All functions ensure the group schema before accessing the database, on the
+ * active main backend. The schema ensure is idempotent and shared.
  */
 
 import { v4 as uuid } from "uuid";
 
-import { ensureGroupMigration } from "./conversation-group-migration.js";
-import { rawAll, rawExec, rawGet, rawRun } from "./raw-query.js";
+import { ensureGroupMigrationAsync } from "./conversation-group-migration.js";
+import { requireMainDb } from "./db-facade.js";
+
 export interface ConversationGroupRow {
   id: string;
   name: string;
@@ -20,71 +21,67 @@ export interface ConversationGroupRow {
   updatedAt?: number;
 }
 
+interface GroupDbRow {
+  id: string;
+  name: string;
+  icon: string | null;
+  sort_position: number;
+  is_system_group: boolean | number;
+  created_at: number;
+  updated_at: number;
+}
+
+/**
+ * `is_system_group` is boolean on Postgres (the mirror declares it boolean)
+ * and 0/1 on SQLite, so normalize both shapes to a JS boolean.
+ */
+function toGroupRow(row: GroupDbRow): ConversationGroupRow {
+  return {
+    id: row.id,
+    name: row.name,
+    icon: row.icon,
+    sortPosition: Number(row.sort_position),
+    isSystemGroup: Boolean(row.is_system_group),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // List
 // ---------------------------------------------------------------------------
 
-export function listGroups(): ConversationGroupRow[] {
-  ensureGroupMigration();
+export async function listGroups(): Promise<ConversationGroupRow[]> {
+  await ensureGroupMigrationAsync();
   // Migration markers are stored as rows in conversation_groups with a leading
   // underscore (e.g. `_backfill_complete`). System groups use the `system:`
   // prefix and custom groups use UUIDs, so no legitimate group id starts with
-  // `_`. GLOB treats `_` as literal (unlike LIKE), so `_*` matches any id
-  // whose first character is an underscore.
-  const rows = rawAll<{
-    id: string;
-    name: string;
-    icon: string | null;
-    sort_position: number;
-    is_system_group: number;
-    created_at: number;
-    updated_at: number;
-  }>(
-    "group:listGroups",
-    "SELECT id, name, icon, sort_position, is_system_group, created_at, updated_at FROM conversation_groups WHERE id NOT GLOB '_*' ORDER BY sort_position ASC",
+  // `_`. `substr(...)` gives the same first-character test on SQLite and
+  // Postgres (SQLite `GLOB` has no Postgres equivalent).
+  const db = requireMainDb();
+  const rows = await db.all<GroupDbRow>(
+    "SELECT id, name, icon, sort_position, is_system_group, created_at, updated_at FROM conversation_groups WHERE substr(id, 1, 1) <> '_' ORDER BY sort_position ASC",
   );
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    icon: r.icon,
-    sortPosition: r.sort_position,
-    isSystemGroup: r.is_system_group === 1,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-  }));
+  return rows.map(toGroupRow);
 }
 
 // ---------------------------------------------------------------------------
 // Get
 // ---------------------------------------------------------------------------
 
-export function getGroup(groupId: string): ConversationGroupRow | null {
-  ensureGroupMigration();
-  const row = rawGet<{
-    id: string;
-    name: string;
-    icon: string | null;
-    sort_position: number;
-    is_system_group: number;
-    created_at: number;
-    updated_at: number;
-  }>(
-    "group:getGroup",
+export async function getGroup(
+  groupId: string,
+): Promise<ConversationGroupRow | null> {
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
+  const row = await db.get<GroupDbRow>(
     "SELECT id, name, icon, sort_position, is_system_group, created_at, updated_at FROM conversation_groups WHERE id = ?",
-    groupId,
+    [groupId],
   );
   if (!row) {
     return null;
   }
-  return {
-    id: row.id,
-    name: row.name,
-    icon: row.icon,
-    sortPosition: row.sort_position,
-    isSystemGroup: row.is_system_group === 1,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+  return toGroupRow(row);
 }
 
 // ---------------------------------------------------------------------------
@@ -93,32 +90,25 @@ export function getGroup(groupId: string): ConversationGroupRow | null {
 
 /**
  * Create a custom group. Server assigns sort_position as max(custom) + 1.
- * System groups occupy positions 0–3 (pinned, scheduled, background, all).
+ * System groups occupy positions 0-3 (pinned, scheduled, background, all).
  * First custom group gets position 4. Fallback ?? 3 ensures 3 + 1 = 4 when
  * no custom groups exist.
  */
-export function createGroup(
+export async function createGroup(
   name: string,
   icon?: string | null,
-): ConversationGroupRow {
-  ensureGroupMigration();
-  const maxPos =
-    rawGet<{ max: number | null }>(
-      "group:createGroup:maxPos",
-      "SELECT MAX(sort_position) as max FROM conversation_groups WHERE is_system_group = 0",
-    )?.max ?? 3;
-  const sortPosition = maxPos + 1;
+): Promise<ConversationGroupRow> {
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
+  const maxRow = await db.get<{ max: number | null }>(
+    "SELECT MAX(sort_position) as max FROM conversation_groups WHERE is_system_group = FALSE",
+  );
+  const sortPosition = Number(maxRow?.max ?? 3) + 1;
   const id = uuid();
   const now = Math.floor(Date.now() / 1000);
-  rawRun(
-    "group:createGroup:insert",
-    "INSERT INTO conversation_groups (id, name, icon, sort_position, is_system_group, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
-    id,
-    name,
-    icon ?? null,
-    sortPosition,
-    now,
-    now,
+  await db.run(
+    "INSERT INTO conversation_groups (id, name, icon, sort_position, is_system_group, created_at, updated_at) VALUES (?, ?, ?, ?, FALSE, ?, ?)",
+    [id, name, icon ?? null, sortPosition, now, now],
   );
   return {
     id,
@@ -135,12 +125,12 @@ export function createGroup(
 // Update
 // ---------------------------------------------------------------------------
 
-export function updateGroup(
+export async function updateGroup(
   groupId: string,
   updates: { name?: string; icon?: string | null; sortPosition?: number },
-): ConversationGroupRow | null {
-  ensureGroupMigration();
-  const existing = getGroup(groupId);
+): Promise<ConversationGroupRow | null> {
+  await ensureGroupMigrationAsync();
+  const existing = await getGroup(groupId);
   if (!existing) {
     return null;
   }
@@ -170,10 +160,10 @@ export function updateGroup(
   values.push(now);
   values.push(groupId);
 
-  rawRun(
-    "group:updateGroup",
+  const db = requireMainDb();
+  await db.run(
     `UPDATE conversation_groups SET ${fields.join(", ")} WHERE id = ?`,
-    ...values,
+    values,
   );
 
   return getGroup(groupId);
@@ -187,18 +177,14 @@ export function updateGroup(
 // don't end up with NULL group_id (which would violate the system:all
 // invariant). The FK ON DELETE SET NULL would otherwise leave NULLs that
 // the one-time backfill won't re-fix.
-export function deleteGroup(groupId: string): boolean {
-  ensureGroupMigration();
-  rawRun(
-    "group:deleteGroup:reassign",
+export async function deleteGroup(groupId: string): Promise<boolean> {
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
+  await db.run(
     "UPDATE conversations SET group_id = 'system:all' WHERE group_id = ?",
-    groupId,
+    [groupId],
   );
-  rawRun(
-    "group:deleteGroup:delete",
-    "DELETE FROM conversation_groups WHERE id = ?",
-    groupId,
-  );
+  await db.run("DELETE FROM conversation_groups WHERE id = ?", [groupId]);
   return true;
 }
 
@@ -206,24 +192,25 @@ export function deleteGroup(groupId: string): boolean {
 // Reorder
 // ---------------------------------------------------------------------------
 
-export function reorderGroups(
+export async function reorderGroups(
   updates: Array<{ groupId: string; sortPosition: number }>,
-): void {
-  ensureGroupMigration();
+): Promise<void> {
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
   const now = Math.floor(Date.now() / 1000);
-  rawExec("BEGIN");
-  try {
+  await db.transaction(async (tx) => {
     for (const update of updates) {
-      // Look up the group first — skip unknown/stale IDs and system groups
-      const group = rawGet<{ id: string; is_system_group: number }>(
-        "group:reorderGroups:select",
-        "SELECT id, is_system_group FROM conversation_groups WHERE id = ?",
+      // Look up the group first — skip unknown/stale IDs and system groups.
+      const group = await tx.get<{
+        id: string;
+        is_system_group: boolean | number;
+      }>("SELECT id, is_system_group FROM conversation_groups WHERE id = ?", [
         update.groupId,
-      );
+      ]);
       if (!group) {
         continue;
       }
-      if (group.is_system_group === 1) {
+      if (Boolean(group.is_system_group)) {
         continue;
       }
 
@@ -232,17 +219,10 @@ export function reorderGroups(
           `Custom group sort_position must be >= 4 (got ${update.sortPosition} for ${update.groupId})`,
         );
       }
-      rawRun(
-        "group:reorderGroups:update",
+      await tx.run(
         "UPDATE conversation_groups SET sort_position = ?, updated_at = ? WHERE id = ?",
-        update.sortPosition,
-        now,
-        update.groupId,
+        [update.sortPosition, now, update.groupId],
       );
     }
-    rawExec("COMMIT");
-  } catch (err) {
-    rawExec("ROLLBACK");
-    throw err;
-  }
+  });
 }

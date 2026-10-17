@@ -11,6 +11,7 @@
 import { z } from "zod";
 
 import {
+  type ConversationGroupRow,
   createGroup,
   deleteGroup,
   getGroup,
@@ -55,7 +56,7 @@ function parseIconField(value: unknown): string | null | undefined {
   return value;
 }
 
-function serializeGroup(group: ReturnType<typeof getGroup>) {
+function serializeGroup(group: ConversationGroupRow | null) {
   if (!group) {
     return null;
   }
@@ -72,19 +73,19 @@ function serializeGroup(group: ReturnType<typeof getGroup>) {
 // Handlers
 // ---------------------------------------------------------------------------
 
-function handleListGroups() {
-  const groups = listGroups();
+async function handleListGroups() {
+  const groups = await listGroups();
   return { groups: groups.map(serializeGroup) };
 }
 
-function handleCreateGroup({ body = {}, headers }: RouteHandlerArgs) {
+async function handleCreateGroup({ body = {}, headers }: RouteHandlerArgs) {
   const name = body.name;
   if (!name || typeof name !== "string") {
     throw new BadRequestError("Missing or invalid name");
   }
   const icon = parseIconField(body.icon);
   try {
-    const group = createGroup(name, icon);
+    const group = await createGroup(name, icon);
     publishConversationListChanged(
       "created",
       headers?.["x-vellum-client-id"]?.trim() || undefined,
@@ -103,13 +104,13 @@ function handleCreateGroup({ body = {}, headers }: RouteHandlerArgs) {
   }
 }
 
-function handleUpdateGroup({
+async function handleUpdateGroup({
   pathParams = {},
   body = {},
   headers,
 }: RouteHandlerArgs) {
   const groupId = pathParams.groupId;
-  const existing = getGroup(groupId);
+  const existing = await getGroup(groupId);
   if (!existing) {
     throw new NotFoundError("Group not found");
   }
@@ -133,7 +134,7 @@ function handleUpdateGroup({
   ) {
     throw new BadRequestError("Custom group sort_position must be >= 4");
   }
-  const updated = updateGroup(groupId, { name, icon, sortPosition });
+  const updated = await updateGroup(groupId, { name, icon, sortPosition });
   if (!updated) {
     throw new NotFoundError("Group not found");
   }
@@ -144,23 +145,26 @@ function handleUpdateGroup({
   return serializeGroup(updated);
 }
 
-function handleDeleteGroup({ pathParams = {}, headers }: RouteHandlerArgs) {
+async function handleDeleteGroup({
+  pathParams = {},
+  headers,
+}: RouteHandlerArgs) {
   const groupId = pathParams.groupId;
-  const existing = getGroup(groupId);
+  const existing = await getGroup(groupId);
   if (!existing) {
     throw new NotFoundError("Group not found");
   }
   if (existing.isSystemGroup) {
     throw new ForbiddenError("System groups cannot be deleted");
   }
-  deleteGroup(groupId);
+  await deleteGroup(groupId);
   publishConversationListChanged(
     "reordered",
     headers?.["x-vellum-client-id"]?.trim() || undefined,
   );
 }
 
-function handleReorderGroups({ body = {}, headers }: RouteHandlerArgs) {
+async function handleReorderGroups({ body = {}, headers }: RouteHandlerArgs) {
   const updates = body.updates as
     | Array<{ groupId: string; sortPosition: number }>
     | undefined;
@@ -168,7 +172,7 @@ function handleReorderGroups({ body = {}, headers }: RouteHandlerArgs) {
     throw new BadRequestError("Missing updates array");
   }
   for (const update of updates) {
-    const group = getGroup(update.groupId);
+    const group = await getGroup(update.groupId);
     if (!group) {
       continue;
     }
@@ -187,7 +191,7 @@ function handleReorderGroups({ body = {}, headers }: RouteHandlerArgs) {
       );
     }
   }
-  reorderGroups(updates);
+  await reorderGroups(updates);
   publishConversationListChanged(
     "reordered",
     headers?.["x-vellum-client-id"]?.trim() || undefined,

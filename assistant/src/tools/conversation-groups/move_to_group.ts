@@ -45,7 +45,7 @@ export async function executeConversationMoveToGroup(
   }
   throwIfCancelled(context);
 
-  const resolved = resolveGroupReference(groupRef);
+  const resolved = await resolveGroupReference(groupRef);
   if ("error" in resolved) {
     return { content: `Error: ${resolved.error}`, isError: true };
   }

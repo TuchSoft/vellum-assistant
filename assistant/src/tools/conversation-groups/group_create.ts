@@ -40,7 +40,7 @@ export async function executeConversationGroupCreate(
   }
   throwIfCancelled(context);
 
-  const existing = listGroups().find(
+  const existing = (await listGroups()).find(
     (g) => g.name.trim().toLowerCase() === name.toLowerCase(),
   );
   if (existing?.isSystemGroup) {
@@ -56,7 +56,7 @@ export async function executeConversationGroupCreate(
     };
   }
 
-  const group = createGroup(name);
+  const group = await createGroup(name);
   publishConversationListChanged("created");
   return {
     content: `Created group "${group.name}" (id: ${group.id}). It now appears in the sidebar; use conversation_move_to_group to file conversations into it.`,

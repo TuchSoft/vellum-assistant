@@ -474,10 +474,10 @@ export async function createOwnerDeferredWake(params: {
  * its custom group, and creating a conversation with a dangling group id
  * would violate the conversations->conversation_groups FK.
  */
-export function resolveScheduleConversationGroupId(
+export async function resolveScheduleConversationGroupId(
   job: Pick<ScheduleJob, "groupId">,
-): string {
-  if (job.groupId && getGroup(job.groupId)) {
+): Promise<string> {
+  if (job.groupId && (await getGroup(job.groupId))) {
     return job.groupId;
   }
   return "system:scheduled";

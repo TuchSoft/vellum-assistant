@@ -9,10 +9,10 @@ import {
  * match always wins. Returns an error string (for the tool result) when the
  * reference is missing or ambiguous.
  */
-export function resolveGroupReference(
+export async function resolveGroupReference(
   reference: string,
-): { group: ConversationGroupRow } | { error: string } {
-  const groups = listGroups();
+): Promise<{ group: ConversationGroupRow } | { error: string }> {
+  const groups = await listGroups();
   const trimmed = reference.trim();
 
   const byId = groups.find((g) => g.id === trimmed);

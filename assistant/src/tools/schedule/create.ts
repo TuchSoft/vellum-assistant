@@ -139,7 +139,7 @@ export async function executeScheduleCreate(
   let groupId: string | null = null;
   let groupName: string | null = null;
   if (parsed.group !== undefined) {
-    const resolvedGroup = resolveGroupReference(parsed.group);
+    const resolvedGroup = await resolveGroupReference(parsed.group);
     if ("error" in resolvedGroup) {
       return { content: `Error: ${resolvedGroup.error}`, isError: true };
     }

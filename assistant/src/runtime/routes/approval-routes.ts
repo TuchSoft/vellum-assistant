@@ -229,7 +229,9 @@ function handleSecret({ body }: RouteHandlerArgs) {
  * missing entirely is talking to an assistant that predates it, which is how
  * `pendingQuestion` consumers detect support without a version check.
  */
-function handleListPendingInteractions({ queryParams }: RouteHandlerArgs) {
+async function handleListPendingInteractions({
+  queryParams,
+}: RouteHandlerArgs) {
   const conversationKey = queryParams?.conversationKey;
   const conversationId = queryParams?.conversationId;
 
@@ -251,7 +253,7 @@ function handleListPendingInteractions({ queryParams }: RouteHandlerArgs) {
   if (conversationId) {
     resolvedConversationId = conversationId;
   } else if (conversationKey) {
-    const mapping = getConversationByKey(conversationKey);
+    const mapping = await getConversationByKey(conversationKey);
     resolvedConversationId = mapping?.conversationId;
   }
 

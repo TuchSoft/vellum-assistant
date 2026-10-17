@@ -73,7 +73,7 @@ export const ROUTES: RouteDefinition[] = [
         externalContent,
       } = WakeConversationBody.parse(body);
 
-      const conversation = getConversation(conversationId);
+      const conversation = await getConversation(conversationId);
       if (!conversation) {
         throw new NotFoundError(`Conversation not found: ${conversationId}`);
       }

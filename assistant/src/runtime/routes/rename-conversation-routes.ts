@@ -41,7 +41,7 @@ export const ROUTES: RouteDefinition[] = [
     tags: ["conversations"],
     requestBody: RenameConversationBody,
     responseBody: RenameConversationResponse,
-    handler: ({ body, headers }) => {
+    handler: async ({ body, headers }) => {
       const parsed = RenameConversationBody.safeParse(body);
       if (!parsed.success) {
         throw new BadRequestError("conversationId and title are required");
@@ -49,12 +49,12 @@ export const ROUTES: RouteDefinition[] = [
 
       const { conversationId, title } = parsed.data;
 
-      const conversation = getConversation(conversationId);
+      const conversation = await getConversation(conversationId);
       if (!conversation) {
         throw new NotFoundError(`Conversation ${conversationId} not found`);
       }
 
-      updateConversationTitle(conversationId, title, 0);
+      await updateConversationTitle(conversationId, title, 0);
 
       publishConversationTitleChanged(
         conversationId,

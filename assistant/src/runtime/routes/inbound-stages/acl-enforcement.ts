@@ -238,11 +238,11 @@ export async function enforceIngressAcl(
   // inbound must never mint a conversation; a sender with no prior
   // conversation falls through to the decision engine's start_new guard.
   const destinationConversationId =
-    findInboundConversationId(
+    (await findInboundConversationId(
       sourceChannel,
       conversationExternalId,
       sourceMetadata?.threadId,
-    ) ?? undefined;
+    )) ?? undefined;
 
   // The shared usability predicate is the fail-closed gate: an unusable
   // verdict soft-denies with NO stranger-lane side effects (no access-request

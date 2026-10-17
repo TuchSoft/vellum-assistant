@@ -32,9 +32,7 @@ import type { TrustContext } from "../daemon/trust-context-types.js";
 
 /** The disposition returned by the approval conversation engine. */
 export type ApprovalConversationDisposition =
-  | "keep_pending"
-  | "approve_once"
-  | "reject";
+  "keep_pending" | "approve_once" | "reject";
 
 /** Structured result from a single turn of the approval conversation. */
 export interface ApprovalConversationResult {
@@ -144,13 +142,15 @@ export interface SendMessageDeps {
     options?: ConversationCreateOptions,
   ) => Promise<Conversation>;
   assistantEventHub: AssistantEventHub;
-  resolveAttachments: (attachmentIds: string[]) => Array<{
-    id: string;
-    filename: string;
-    mimeType: string;
-    data: string;
-    filePath?: string;
-  }>;
+  resolveAttachments: (attachmentIds: string[]) => Promise<
+    Array<{
+      id: string;
+      filename: string;
+      mimeType: string;
+      data: string;
+      filePath?: string;
+    }>
+  >;
 }
 
 export interface RuntimeHttpServerOptions {

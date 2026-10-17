@@ -47,11 +47,11 @@ async function handleCloseInferenceProfileSession({
   );
 }
 
-function handleListInferenceProfileSessions({
+async function handleListInferenceProfileSessions({
   queryParams = {},
 }: RouteHandlerArgs) {
   return {
-    sessions: listInferenceProfileSessionsWithRemaining(
+    sessions: await listInferenceProfileSessionsWithRemaining(
       queryParams.conversationId,
     ),
   };

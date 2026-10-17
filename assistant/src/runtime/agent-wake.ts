@@ -553,7 +553,7 @@ async function defaultResolveTarget(
   const { getOrCreateConversation } =
     await import("../daemon/conversation-store.js");
   try {
-    const existing = getConversation(conversationId);
+    const existing = await getConversation(conversationId);
     if (!existing) {
       return null;
     }
@@ -901,7 +901,7 @@ export async function wakeAgentForOpportunity(
     const forceOverrideProfile = opts.forceOverrideProfile !== undefined;
     const overrideProfile =
       opts.forceOverrideProfile ??
-      getConversationOverrideProfile(conversationId);
+      (await getConversationOverrideProfile(conversationId));
     const callSite = resolveTurnCallSite(opts.callSite, conversation);
     const config = getConfig();
     const effectiveContextWindow = resolveEffectiveContextWindow({

@@ -162,7 +162,7 @@ export async function sendChannelText(
   const actsForSelf =
     !params.assistantId || params.assistantId === DAEMON_INTERNAL_ASSISTANT_ID;
   if (transport.bindsChatOnProactiveSend && actsForSelf) {
-    bindChatForNextInbound(channel, address);
+    await bindChatForNextInbound(channel, address);
   }
 
   const recordedIn = await recordProactivePost({
@@ -192,12 +192,12 @@ export async function sendChannelText(
  * binding it asks for is owed. Best effort: a binding failure must not fail
  * the send.
  */
-function bindChatForNextInbound(
+async function bindChatForNextInbound(
   channel: ChannelId,
   address: ProactiveAddress,
-): void {
+): Promise<void> {
   try {
-    const { conversationId, created } = getOrCreateConversation(
+    const { conversationId, created } = await getOrCreateConversation(
       buildScopedConversationKey(channel, address.chatId, address.threadId),
     );
     // Published before the binding, not after: the conversation exists as
@@ -207,7 +207,7 @@ function bindChatForNextInbound(
     if (created) {
       publishConversationListChanged("created");
     }
-    upsertOutboundBinding({
+    await upsertOutboundBinding({
       conversationId,
       sourceChannel: channel,
       externalChatId: address.chatId,
@@ -274,9 +274,9 @@ async function recordProactivePost(params: {
       ...(restIds.length > 0 ? { additionalProviderMessageIds: restIds } : {}),
       ...(sender ? { crossPostedFrom: sender.conversationId } : {}),
     });
-    const homeConversation = getConversation(home.conversationId);
+    const homeConversation = await getConversation(home.conversationId);
     if (homeConversation) {
-      syncMessageToDisk(
+      await syncMessageToDisk(
         home.conversationId,
         recorded.messageId,
         homeConversation.createdAt,

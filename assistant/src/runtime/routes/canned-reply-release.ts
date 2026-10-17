@@ -40,14 +40,14 @@ export function scheduleCannedReplyRelease(params: {
   /** Names the release site in drain logs (e.g. `"canned_greeting"`). */
   origin: string;
   /** The deferred client event burst. Runs before the release. */
-  emit: () => void;
+  emit: () => void | Promise<void>;
   /** Optional work that only makes sense once the lock is free. */
   afterRelease?: () => void;
 }): void {
   const { conversation, owner, origin, emit, afterRelease } = params;
-  setTimeout(() => {
+  setTimeout(async () => {
     try {
-      emit();
+      await emit();
     } catch (err) {
       // Swallowed rather than rethrown: this runs from a timer with no caller
       // left to handle it, so an escaping error is an uncaught exception in

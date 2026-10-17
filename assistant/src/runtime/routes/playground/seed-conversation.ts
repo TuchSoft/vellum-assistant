@@ -73,7 +73,7 @@ export const ROUTES: RouteDefinition[] = [
       const effectiveTitle = PLAYGROUND_TITLE_PREFIX + withoutPrefix;
 
       const { id: conversationId } =
-        createPlaygroundConversation(effectiveTitle);
+        await createPlaygroundConversation(effectiveTitle);
 
       const charsPerMessage = avgTokensPerTurn * 4;
 

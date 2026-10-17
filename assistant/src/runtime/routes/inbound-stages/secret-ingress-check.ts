@@ -51,9 +51,9 @@ export interface SecretIngressCheckResult {
  * known-format secrets — the caller should skip background dispatch and mark
  * the event as processed (not failed/dead-lettered).
  */
-export function runSecretIngressCheck(
+export async function runSecretIngressCheck(
   params: SecretIngressCheckParams,
-): SecretIngressCheckResult {
+): Promise<SecretIngressCheckResult> {
   const {
     eventId,
     sourceChannel,
@@ -72,7 +72,7 @@ export function runSecretIngressCheck(
   } = params;
 
   // Persist the raw payload so dead-lettered events can always be replayed.
-  storePayload(eventId, {
+  await storePayload(eventId, {
     sourceChannel,
     externalChatId: conversationExternalId,
     externalMessageId,
@@ -93,7 +93,7 @@ export function runSecretIngressCheck(
   const ingressResult = checkIngressForSecrets(trimmedContent);
   if (ingressResult.blocked) {
     // Clear stored payload to prevent secret-bearing content on disk.
-    clearPayload(eventId);
+    await clearPayload(eventId);
     log.warn(
       { eventId, detectedTypes: ingressResult.detectedTypes },
       "Channel message blocked at ingress: secret detected",
@@ -112,7 +112,7 @@ export function runSecretIngressCheck(
         trimmedContent.length > 0
           ? `User sent message: '${msgPreview}'`
           : "User sent media attachment";
-      recordConversationSeenSignal({
+      await recordConversationSeenSignal({
         conversationId,
         signalType: "telegram_inbound_message",
         confidence: "inferred",

@@ -79,11 +79,11 @@ interface ForkLineage {
   historyOrphaned?: true;
 }
 
-function buildForkLineage(
+async function buildForkLineage(
   conversation: ConversationRow,
   parentCache: Map<string, ConversationRow | null>,
   locale?: SupportedLocale,
-): ForkLineage {
+): Promise<ForkLineage> {
   const parentConversationId = conversation.forkParentConversationId;
   const parentMessageId = conversation.forkParentMessageId;
   if (!parentConversationId || !parentMessageId) {
@@ -93,7 +93,7 @@ function buildForkLineage(
   let parentConversation: ConversationRow | null | undefined =
     parentCache.get(parentConversationId);
   if (parentConversation === undefined) {
-    parentConversation = getConversation(parentConversationId);
+    parentConversation = await getConversation(parentConversationId);
     parentCache.set(parentConversationId, parentConversation);
   }
   if (!parentConversation) {
@@ -164,7 +164,7 @@ function buildChannelBinding(binding: ExternalConversationBinding) {
   };
 }
 
-export function serializeConversationSummary(params: {
+export async function serializeConversationSummary(params: {
   conversation: ConversationRow;
   binding?: ExternalConversationBinding | null;
   attentionState?: AttentionState;
@@ -200,7 +200,7 @@ export function serializeConversationSummary(params: {
   } = params;
   const originChannel = parseChannelId(conversation.originChannel);
   const assistantAttention = buildAssistantAttention(attentionState);
-  const forkLineage = buildForkLineage(conversation, parentCache, locale);
+  const forkLineage = await buildForkLineage(conversation, parentCache, locale);
 
   return {
     id: conversation.id,
@@ -262,22 +262,26 @@ export function serializeConversationSummary(params: {
  * a client that only holds a stale id (a persisted last-viewed conversation)
  * resurrect a row it can never see listed.
  */
-export function buildConversationDetailResponse(
+export async function buildConversationDetailResponse(
   conversationId: string,
   locale?: SupportedLocale,
-): { conversation: ReturnType<typeof serializeConversationSummary> } | null {
-  const conversation = getConversation(conversationId);
+): Promise<{
+  conversation: Awaited<ReturnType<typeof serializeConversationSummary>>;
+} | null> {
+  const conversation = await getConversation(conversationId);
   if (!conversation || conversation.conversationType === "private") {
     return null;
   }
 
-  const bindings = getBindingsForConversations([conversation.id]);
-  const attentionStates = getAttentionStateByConversationIds([conversation.id]);
-  const displayMeta = getDisplayMetaForConversations([conversation.id]);
+  const bindings = await getBindingsForConversations([conversation.id]);
+  const attentionStates = await getAttentionStateByConversationIds([
+    conversation.id,
+  ]);
+  const displayMeta = await getDisplayMetaForConversations([conversation.id]);
   const parentCache = new Map<string, ConversationRow | null>();
 
   return {
-    conversation: serializeConversationSummary({
+    conversation: await serializeConversationSummary({
       conversation,
       binding: bindings.get(conversation.id),
       attentionState: attentionStates.get(conversation.id),
@@ -285,7 +289,7 @@ export function buildConversationDetailResponse(
       parentCache,
       // Checks in-memory flag first (hot path), falls back to the
       // persisted `processing_started_at` column for cold conversations.
-      isProcessing: isConversationProcessing(conversation.id),
+      isProcessing: await isConversationProcessing(conversation.id),
       locale,
     }),
   };

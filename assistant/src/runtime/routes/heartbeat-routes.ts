@@ -89,32 +89,34 @@ async function handleListRuns(queryParams: Record<string, string>) {
   const now = Date.now();
   return {
     nextCursor,
-    runs: rows.map((r) => {
-      const conversation = r.conversationId
-        ? getConversation(r.conversationId)
-        : null;
-      return {
-        id: r.id,
-        scheduledFor: r.scheduledFor,
-        startedAt: r.startedAt,
-        finishedAt: r.finishedAt,
-        durationMs: r.durationMs,
-        status: r.status,
-        skipReason: r.skipReason,
-        error: r.error,
-        conversationId: r.conversationId,
-        conversationExists: conversation != null,
-        conversationArchivedAt: conversation?.archivedAt ?? null,
-        estimatedCostUsd: r.conversationId
-          ? getUsageCostForConversationWindow({
-              conversationId: r.conversationId,
-              from: r.startedAt ?? r.scheduledFor,
-              to: r.finishedAt ?? now,
-            })
-          : 0,
-        createdAt: r.createdAt,
-      };
-    }),
+    runs: await Promise.all(
+      rows.map(async (r) => {
+        const conversation = r.conversationId
+          ? await getConversation(r.conversationId)
+          : null;
+        return {
+          id: r.id,
+          scheduledFor: r.scheduledFor,
+          startedAt: r.startedAt,
+          finishedAt: r.finishedAt,
+          durationMs: r.durationMs,
+          status: r.status,
+          skipReason: r.skipReason,
+          error: r.error,
+          conversationId: r.conversationId,
+          conversationExists: conversation != null,
+          conversationArchivedAt: conversation?.archivedAt ?? null,
+          estimatedCostUsd: r.conversationId
+            ? getUsageCostForConversationWindow({
+                conversationId: r.conversationId,
+                from: r.startedAt ?? r.scheduledFor,
+                to: r.finishedAt ?? now,
+              })
+            : 0,
+          createdAt: r.createdAt,
+        };
+      }),
+    ),
   };
 }
 

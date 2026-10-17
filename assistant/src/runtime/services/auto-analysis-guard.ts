@@ -8,6 +8,8 @@ import { getConversationSource } from "../../persistence/conversation-crud.js";
  * them — the analysis agent wrote memory directly via tools, so extracting
  * from its reflective musings would double-count.
  */
-export function isAutoAnalysisConversation(conversationId: string): boolean {
-  return getConversationSource(conversationId) === AUTO_ANALYSIS_SOURCE;
+export async function isAutoAnalysisConversation(
+  conversationId: string,
+): Promise<boolean> {
+  return (await getConversationSource(conversationId)) === AUTO_ANALYSIS_SOURCE;
 }

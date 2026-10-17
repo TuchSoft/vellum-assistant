@@ -71,8 +71,9 @@ async function handleStartActivationTask({
     ActivationTaskStartRequestSchema,
     body,
   );
-  const conversationExists = () => getConversation(conversationId) !== null;
-  if (!conversationExists()) {
+  const conversationExists = async () =>
+    (await getConversation(conversationId)) !== null;
+  if (!(await conversationExists())) {
     throw new NotFoundError(`Conversation ${conversationId} not found`);
   }
   const originClientId = getOriginClientId(headers);

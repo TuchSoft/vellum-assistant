@@ -264,7 +264,7 @@ const defaultSseShedReporter: SseShedReporter = (reason, inst) => {
  *   shedReporter      -- override the callback invoked when a subscriber is shed
  *                        under backpressure (defaults to a log line).
  */
-export function handleSubscribeAssistantEvents(
+export async function handleSubscribeAssistantEvents(
   args: RouteHandlerArgs,
   options?: {
     hub?: AssistantEventHub;
@@ -336,14 +336,14 @@ export function handleSubscribeAssistantEvents(
   const filter: AssistantEventFilter = {};
   let scopeConversationKey: string | null = null;
   if (rawConversationId) {
-    const existing = getConversation(rawConversationId);
+    const existing = await getConversation(rawConversationId);
     if (!existing) {
       throw new NotFoundError(`Conversation ${rawConversationId} not found`);
     }
     filter.conversationId = existing.id;
     scopeConversationKey = existing.id;
   } else if (rawConversationKey) {
-    const mapping = getOrCreateConversation(rawConversationKey);
+    const mapping = await getOrCreateConversation(rawConversationKey);
     filter.conversationId = mapping.conversationId;
     scopeConversationKey = rawConversationKey;
   }

@@ -59,15 +59,21 @@ const SOURCE_KINDS: ReadonlyArray<{
  * runs are distributed across kinds. The same `before` cursor applies to
  * each source query, so paging never skips rows from either kind.
  */
-function listRetrospectiveConversations(
+async function listRetrospectiveConversations(
   limit: number,
   before?: number,
-): Array<{ row: ConversationRow; kind: RetrospectiveKind }> {
-  const merged = SOURCE_KINDS.flatMap(({ source, kind }) =>
-    listConversationsBySource(source, limit, {
-      beforeCreatedAt: before,
-    }).map((row) => ({ row, kind })),
-  );
+): Promise<Array<{ row: ConversationRow; kind: RetrospectiveKind }>> {
+  const merged = (
+    await Promise.all(
+      SOURCE_KINDS.map(async ({ source, kind }) =>
+        (
+          await listConversationsBySource(source, limit, {
+            beforeCreatedAt: before,
+          })
+        ).map((row) => ({ row, kind })),
+      ),
+    )
+  ).flat();
   merged.sort((a, b) => b.row.createdAt - a.row.createdAt);
   return merged.slice(0, limit);
 }
@@ -188,11 +194,11 @@ export const ROUTES: RouteDefinition[] = [
       const limit = parseRunsLimit(params, 20);
       const before = parseRunsBeforeCursor(params);
       const { rows, nextCursor } = paginateRuns(
-        listRetrospectiveConversations(limit + 1, before),
+        await listRetrospectiveConversations(limit + 1, before),
         limit,
         (r) => r.row.createdAt,
       );
-      const assistantStats = getMessageRoleStatsByConversation(
+      const assistantStats = await getMessageRoleStatsByConversation(
         rows.map((r) => r.row.id),
         "assistant",
       );

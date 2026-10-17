@@ -147,9 +147,9 @@ export interface BackgroundProcessingParams {
  * Fire-and-forget: process the message and deliver the reply in the background.
  * The HTTP response returns immediately so the gateway webhook is not blocked.
  */
-export function processChannelMessageInBackground(
+export async function processChannelMessageInBackground(
   params: BackgroundProcessingParams,
-): void {
+): Promise<void> {
   const {
     processMessage,
     conversationId,
@@ -187,10 +187,10 @@ export function processChannelMessageInBackground(
   // carries full slackMeta; for every other channel it carries the same
   // `providerMeta` onto the replayed row.
   if (slackInbound) {
-    storeInboundSlackMetadata(eventId, slackInbound);
+    await storeInboundSlackMetadata(eventId, slackInbound);
   }
   if (channelInbound) {
-    storeInboundChannelMetadata(eventId, channelInbound);
+    await storeInboundChannelMetadata(eventId, channelInbound);
   }
 
   // Defer the whole turn + delivery until the conversation's processing lock is
@@ -305,7 +305,7 @@ export function processChannelMessageInBackground(
         });
         userMessageId = result.messageId;
         deduplicatedIngress = result.deduplicated === true;
-        linkMessage(eventId, userMessageId);
+        await linkMessage(eventId, userMessageId);
         // Record the reply row BEFORE marking the event processed. Stranded
         // delivery recovery treats `processed` as the point an event becomes
         // eligible and reads the reply id from the stored payload, so an
@@ -314,7 +314,7 @@ export function processChannelMessageInBackground(
         // `pending` instead, which the orphan step already recovers.
         replyMessageId ??= result.assistantMessageId;
         if (replyMessageId) {
-          storeReplyMessageId(eventId, replyMessageId);
+          await storeReplyMessageId(eventId, replyMessageId);
         }
         await markProcessed(eventId);
       } catch (err) {
@@ -392,7 +392,7 @@ export function processChannelMessageInBackground(
         ) {
           priorDeduplicatedDeliveryOwned = true;
         } else {
-          recoveredStreamMessageTs = getSiblingStreamedReplyTs(
+          recoveredStreamMessageTs = await getSiblingStreamedReplyTs(
             userMessageId,
             eventId,
           );

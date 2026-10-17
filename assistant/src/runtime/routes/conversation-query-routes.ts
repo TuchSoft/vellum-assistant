@@ -1633,8 +1633,7 @@ export async function commitConfigWrite(
  */
 function scrubRemovedServiceModes(raw: Record<string, unknown>): void {
   const services = raw.services as
-    | Record<string, Record<string, unknown> | undefined>
-    | undefined;
+    Record<string, Record<string, unknown> | undefined> | undefined;
   if (!services) {
     return;
   }
@@ -2200,12 +2199,14 @@ async function handleGetLlmContext({
   const view = resolveLlmContextView(queryParams.view);
   const source = await getLlmRequestLogSource();
   const logs = await source.getRequestLogsByMessageId(messageId);
-  const turnMessageIds = getAssistantMessageIdsInTurn(messageId);
-  const memoryRecallLog = getMemoryRecallLogByMessageIds(turnMessageIds);
+  const turnMessageIds = await getAssistantMessageIdsInTurn(messageId);
+  const memoryRecallLog = await getMemoryRecallLogByMessageIds(turnMessageIds);
   const memoryV2Activation =
-    getMemoryV2ActivationLogByMessageIds(turnMessageIds);
-  const message = getMessageById(messageId);
-  const conversation = message ? getConversation(message.conversationId) : null;
+    await getMemoryV2ActivationLogByMessageIds(turnMessageIds);
+  const message = await getMessageById(messageId);
+  const conversation = message
+    ? await getConversation(message.conversationId)
+    : null;
   const conversationKind: ConversationKind = conversation
     ? resolveConversationKind(
         conversation.source,
@@ -2243,7 +2244,7 @@ async function handleGetConversationLlmContext({
 
   let conversationId: string | undefined = requestedConversationId;
   if (!conversationId && conversationKey) {
-    const mapping = getConversationByKey(conversationKey);
+    const mapping = await getConversationByKey(conversationKey);
     conversationId = mapping?.conversationId;
   }
 
@@ -2265,7 +2266,7 @@ async function handleGetConversationLlmContext({
     );
   }
 
-  const conversation = getConversation(conversationId);
+  const conversation = await getConversation(conversationId);
   if (!conversation) {
     if (conversationKey) {
       return {

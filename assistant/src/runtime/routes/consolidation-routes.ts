@@ -204,9 +204,11 @@ export const ROUTES: RouteDefinition[] = [
       const limit = parseRunsLimit(params, 20);
       const before = parseRunsBeforeCursor(params);
       const { rows, nextCursor } = paginateRuns(
-        listConversationsBySource(MEMORY_V2_CONSOLIDATION_SOURCE, limit + 1, {
-          beforeCreatedAt: before,
-        }),
+        await listConversationsBySource(
+          MEMORY_V2_CONSOLIDATION_SOURCE,
+          limit + 1,
+          { beforeCreatedAt: before },
+        ),
         limit,
         (c) => c.createdAt,
       );
@@ -216,7 +218,7 @@ export const ROUTES: RouteDefinition[] = [
       // user prompt is persisted via `addMessage` before the agent run,
       // which bumps `conversations.lastMessageAt` — so that field cannot
       // be used to infer completion.
-      const assistantStats = getMessageRoleStatsByConversation(
+      const assistantStats = await getMessageRoleStatsByConversation(
         rows.map((r) => r.id),
         "assistant",
       );

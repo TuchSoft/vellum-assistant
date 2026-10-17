@@ -34,9 +34,9 @@ let reaperInProgress = false;
  * and emits a `conversation_inference_profile_updated` event for each one.
  * Exported for direct use in tests.
  */
-export function tickInferenceProfileReaper(): void {
+export async function tickInferenceProfileReaper(): Promise<void> {
   const now = Date.now();
-  const cleared = clearExpiredInferenceProfiles(now);
+  const cleared = await clearExpiredInferenceProfiles(now);
   for (const { conversationId } of cleared) {
     findConversation(conversationId)?.applyInferenceProfileState({
       profile: null,
@@ -66,13 +66,13 @@ export function startInferenceProfileSessionReaper(): void {
   if (reaperTimer) {
     return;
   }
-  reaperTimer = setInterval(() => {
+  reaperTimer = setInterval(async () => {
     if (reaperInProgress) {
       return;
     }
     reaperInProgress = true;
     try {
-      tickInferenceProfileReaper();
+      await tickInferenceProfileReaper();
     } catch (err) {
       log.error({ err }, "Inference profile session reaper failed");
     } finally {

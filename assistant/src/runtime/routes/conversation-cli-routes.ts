@@ -37,7 +37,7 @@ const log = getLogger("conversation-cli-routes");
 // list (CLI)
 // ---------------------------------------------------------------------------
 
-function handleListCli({ body = {} }: RouteHandlerArgs) {
+async function handleListCli({ body = {} }: RouteHandlerArgs) {
   const limit =
     body.limit != null ? Number(body.limit) : Number.MAX_SAFE_INTEGER;
   // CLI flag historically named `includeArchived`. Map onto the new
@@ -45,20 +45,22 @@ function handleListCli({ body = {} }: RouteHandlerArgs) {
   // user sees archived rows alongside live ones in the picker.
   const includeArchived = (body.includeArchived as boolean) ?? false;
 
-  const rows = listConversations({
+  const rows = await listConversations({
     limit,
     conversationType: "standard",
     archiveStatus: includeArchived ? "all" : "active",
   });
   return {
-    conversations: rows.map((c) => ({
-      id: c.id,
-      title: c.title,
-      updatedAt: c.updatedAt,
-      // Checks in-memory flag first (hot path), falls back to the
-      // persisted `processing_started_at` column for cold conversations.
-      isProcessing: isConversationProcessing(c.id),
-    })),
+    conversations: await Promise.all(
+      rows.map(async (c) => ({
+        id: c.id,
+        title: c.title,
+        updatedAt: c.updatedAt,
+        // Checks in-memory flag first (hot path), falls back to the
+        // persisted `processing_started_at` column for cold conversations.
+        isProcessing: await isConversationProcessing(c.id),
+      })),
+    ),
   };
 }
 
@@ -108,7 +110,7 @@ async function handleCreateCli({ body = {} }: RouteHandlerArgs) {
     { op: "createConversationCli" },
   );
   const conversationKey = uuid();
-  setConversationKey(conversationKey, conversation.id);
+  await setConversationKey(conversationKey, conversation.id);
 
   for (const message of messages) {
     await addMessage(
@@ -131,7 +133,7 @@ async function handleCreateCli({ body = {} }: RouteHandlerArgs) {
 // export (CLI)
 // ---------------------------------------------------------------------------
 
-function handleExportCli({ body = {} }: RouteHandlerArgs) {
+async function handleExportCli({ body = {} }: RouteHandlerArgs) {
   const format = (body.format as string) ?? "md";
   if (format !== "md" && format !== "json") {
     throw new BadRequestError('format must be "md" or "json"');
@@ -140,7 +142,7 @@ function handleExportCli({ body = {} }: RouteHandlerArgs) {
   let conversationId = body.conversationId as string | undefined;
 
   if (!conversationId) {
-    const all = listConversations({ limit: 1 });
+    const all = await listConversations({ limit: 1 });
     if (all.length === 0) {
       throw new NotFoundError("No conversations found");
     }
@@ -149,9 +151,9 @@ function handleExportCli({ body = {} }: RouteHandlerArgs) {
 
   // Support prefix matching. `archiveStatus: "all"` preserves the pre-default
   // behavior of letting `vellum export <prefix>` resolve an archived row.
-  let conversation = getConversation(conversationId);
+  let conversation = await getConversation(conversationId);
   if (!conversation) {
-    const all = listConversations({
+    const all = await listConversations({
       limit: Number.MAX_SAFE_INTEGER,
       conversationType: "standard",
       archiveStatus: "all",
@@ -164,7 +166,7 @@ function handleExportCli({ body = {} }: RouteHandlerArgs) {
     }
   }
 
-  const msgs = getMessages(conversation.id);
+  const msgs = await getMessages(conversation.id);
   const exportData = {
     ...conversation,
     messages: msgs.map((m) => ({
@@ -270,7 +272,7 @@ async function handleSlackDetachCli({ body = {} }: RouteHandlerArgs) {
       );
     }
 
-    const binding = getBindingByConversation(parsed.conversationId);
+    const binding = await getBindingByConversation(parsed.conversationId);
     if (!binding) {
       throw new NotFoundError(
         `No channel binding found for conversation ${parsed.conversationId}`,

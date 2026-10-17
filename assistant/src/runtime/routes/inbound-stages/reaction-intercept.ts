@@ -178,7 +178,7 @@ export async function handleReactionIntercept(
   // A redelivery is answered before the reacted message is resolved, so a
   // repeat delivery costs no lookup. `recordInbound` below is the durable
   // dedup; this is the early out in front of it.
-  const alreadyRecorded = findInboundEvent(
+  const alreadyRecorded = await findInboundEvent(
     sourceChannel,
     conversationExternalId,
     externalMessageId,
@@ -202,16 +202,16 @@ export async function handleReactionIntercept(
   // one is resolved through the envelope those rows carry (`slackMeta` on
   // Slack, the neutral `providerMeta` everywhere else).
   const target = reactedMessageTs
-    ? (findMessageBySourceId(
+    ? ((await findMessageBySourceId(
         sourceChannel,
         conversationExternalId,
         reactedMessageTs,
-      ) ??
-      findMessageByProviderMessageId(
+      )) ??
+      (await findMessageByProviderMessageId(
         sourceChannel,
         conversationExternalId,
         reactedMessageTs,
-      ))
+      )))
     : null;
   if (!target || !reactedMessageTs) {
     log.debug(
@@ -229,7 +229,10 @@ export async function handleReactionIntercept(
   // read as a signal addressed to the assistant and wake a turn. Channel
   // deliveries persist no row today, but ones paired before the
   // projection-only policy are still stored.
-  const targetRow = getMessageById(target.messageId, target.conversationId);
+  const targetRow = await getMessageById(
+    target.messageId,
+    target.conversationId,
+  );
   if (isGuardianCardRow(targetRow?.content)) {
     log.debug(
       { sourceChannel, conversationExternalId, reactedMessageTs },
@@ -238,7 +241,7 @@ export async function handleReactionIntercept(
     return { accepted: true, reaction: "dropped_guardian_card" };
   }
 
-  const result = recordInbound(
+  const result = await recordInbound(
     sourceChannel,
     conversationExternalId,
     externalMessageId,
@@ -366,7 +369,7 @@ export async function handleReactionIntercept(
  */
 function buildReactionWakeTurn(params: {
   target: { messageId: string; conversationId: string };
-  targetRow: ReturnType<typeof getMessageById>;
+  targetRow: Awaited<ReturnType<typeof getMessageById>>;
   result: { eventId: string; conversationId: string };
   reaction: InboundReactionPayload;
   sourceChannel: ChannelId;
@@ -429,7 +432,7 @@ function buildReactionWakeTurn(params: {
     // so it can never be replayed as a message turn even if this event
     // somehow reached the processing lane; that replay is what the
     // at-most-once design exists to prevent.
-    storePayload(params.result.eventId, {
+    await storePayload(params.result.eventId, {
       replyCallbackUrl,
       externalChatId: params.conversationExternalId,
       assistantId: DAEMON_INTERNAL_ASSISTANT_ID,
@@ -453,6 +456,11 @@ function buildReactionWakeTurn(params: {
       clientMessageId: `reaction:${params.result.eventId}`,
       skipUserMessageIndexing: true,
       onTurnLostToBusy: params.persistPassively,
+    }).catch((err) => {
+      log.error(
+        { err, eventId: params.result.eventId },
+        "Reaction background dispatch failed",
+      );
     });
   };
 }
@@ -551,7 +559,7 @@ async function persistReactionAsMessage(params: {
       skipIndexing: true,
     },
   );
-  linkMessage(params.eventId, persisted.id);
+  await linkMessage(params.eventId, persisted.id);
   await markProcessed(params.eventId);
 }
 

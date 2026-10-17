@@ -418,7 +418,7 @@ async function handleJsonUpload(
       throw new BadRequestError("filePath does not exist on disk");
     }
     const sizeBytes = statSync(resolvedPath).size;
-    attachment = uploadFileBackedAttachment(
+    attachment = await uploadFileBackedAttachment(
       storedFilename,
       storedMimeType,
       resolvedPath,
@@ -477,14 +477,14 @@ async function handleUploadAttachmentRoute(args: RouteHandlerArgs) {
   return handleJsonUpload(body ?? {}, rawBody, gatewayTrustedSource);
 }
 
-function handleDeleteAttachmentRoute({ body }: RouteHandlerArgs) {
+async function handleDeleteAttachmentRoute({ body }: RouteHandlerArgs) {
   const attachmentId = body?.attachmentId as string | undefined;
 
   if (!attachmentId || typeof attachmentId !== "string") {
     throw new BadRequestError("attachmentId is required");
   }
 
-  const result = deleteAttachment(attachmentId);
+  const result = await deleteAttachment(attachmentId);
 
   if (result === "not_found") {
     throw new NotFoundError("Attachment not found");
@@ -499,16 +499,16 @@ function handleDeleteAttachmentRoute({ body }: RouteHandlerArgs) {
   return null;
 }
 
-function handleGetAttachmentRoute({ pathParams }: RouteHandlerArgs) {
+async function handleGetAttachmentRoute({ pathParams }: RouteHandlerArgs) {
   const attachmentId = pathParams!.id;
   // Use the file_path column to detect file-backed attachments, not string
   // truthiness of dataBase64 (which would also match valid zero-byte uploads).
-  const isFileBacked = !!getFilePathForAttachment(attachmentId);
+  const isFileBacked = !!(await getFilePathForAttachment(attachmentId));
 
   // Skip hydrating file data for file-backed attachments — clients should
   // fetch content via GET /attachments/:id/content (which validates the path
   // against the directory allowlist).
-  const attachment = getAttachmentById(attachmentId, {
+  const attachment = await getAttachmentById(attachmentId, {
     hydrateFileData: !isFileBacked,
   });
   if (!attachment) {
@@ -534,15 +534,15 @@ function handleGetAttachmentRoute({ pathParams }: RouteHandlerArgs) {
  * streams from disk; for inline attachments it decodes the base64 data.
  * Supports Range headers for video seeking.
  */
-function handleGetAttachmentContentRoute({
+async function handleGetAttachmentContentRoute({
   pathParams,
   headers = {},
-}: RouteHandlerArgs): RouteResponse {
+}: RouteHandlerArgs): Promise<RouteResponse> {
   const attachmentId = pathParams!.id;
-  const filePath = getFilePathForAttachment(attachmentId);
+  const filePath = await getFilePathForAttachment(attachmentId);
   const isFileBacked = !!filePath;
 
-  const attachment = getAttachmentById(attachmentId, {
+  const attachment = await getAttachmentById(attachmentId, {
     hydrateFileData: !isFileBacked,
   });
   if (!attachment) {
@@ -669,7 +669,7 @@ function assertWithinWorkspace(filePath: string): string {
   );
 }
 
-function handleAttachmentRegister({ body = {} }: RouteHandlerArgs) {
+async function handleAttachmentRegister({ body = {} }: RouteHandlerArgs) {
   const { path, mimeType, filename } = body as {
     path?: string;
     mimeType?: string;
@@ -709,7 +709,7 @@ function handleAttachmentRegister({ body = {} }: RouteHandlerArgs) {
     throw new BadRequestError(validation.error);
   }
 
-  return uploadFileBackedAttachment(
+  return await uploadFileBackedAttachment(
     resolvedFilename,
     mimeType,
     resolvedPath,
@@ -717,7 +717,7 @@ function handleAttachmentRegister({ body = {} }: RouteHandlerArgs) {
   );
 }
 
-function handleAttachmentLookup({ body = {} }: RouteHandlerArgs) {
+async function handleAttachmentLookup({ body = {} }: RouteHandlerArgs) {
   const { sourcePath, conversationId } = body as {
     sourcePath?: string;
     conversationId?: string;
@@ -732,7 +732,7 @@ function handleAttachmentLookup({ body = {} }: RouteHandlerArgs) {
 
   assertWithinWorkspace(sourcePath);
 
-  const result = getFilePathBySourcePath(sourcePath, conversationId);
+  const result = await getFilePathBySourcePath(sourcePath, conversationId);
   if (result === null) {
     throw new NotFoundError(
       `No attachment found for source path: ${sourcePath} in conversation ${conversationId}. Run 'assistant attachment register' to register a file first.`,
@@ -761,7 +761,7 @@ function parsePagingParam(
   return parsed;
 }
 
-function handleListAttachmentsRoute({ queryParams }: RouteHandlerArgs) {
+async function handleListAttachmentsRoute({ queryParams }: RouteHandlerArgs) {
   const conversationId = queryParams?.conversationId;
   if (!conversationId) {
     throw new BadRequestError("conversationId is required");
@@ -784,7 +784,7 @@ function handleListAttachmentsRoute({ queryParams }: RouteHandlerArgs) {
   const offsetRaw = parsePagingParam(queryParams?.offset, "offset");
   const offset = offsetRaw === undefined ? 0 : Math.max(offsetRaw, 0);
 
-  const { attachments: rows, total } = listConversationAttachments(
+  const { attachments: rows, total } = await listConversationAttachments(
     conversationId,
     { ...(sightFrames ? { sightFrames } : {}), limit, offset },
   );

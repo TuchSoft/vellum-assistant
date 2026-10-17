@@ -289,10 +289,10 @@ interface CreatedFromConversationState {
   archivedAt: number | null;
 }
 
-function getCreatedFromConversationState(
+async function getCreatedFromConversationState(
   conversationId: string | null,
   cache: Map<string, CreatedFromConversationState>,
-): CreatedFromConversationState {
+): Promise<CreatedFromConversationState> {
   if (!conversationId) {
     return { exists: false, archivedAt: null };
   }
@@ -302,7 +302,7 @@ function getCreatedFromConversationState(
     return cached;
   }
 
-  const conversation = getConversation(conversationId);
+  const conversation = await getConversation(conversationId);
   const state = {
     exists: conversation !== null,
     archivedAt: conversation?.archivedAt ?? null,
@@ -347,11 +347,11 @@ function isOneShotForDisplay(
   return job.syntax === "rrule" && isSingleFireRRule(job.cronExpression);
 }
 
-function serializeSchedule(
+async function serializeSchedule(
   j: ScheduleJob,
   sourceConversationCache: Map<string, CreatedFromConversationState>,
 ) {
-  const sourceConversation = getCreatedFromConversationState(
+  const sourceConversation = await getCreatedFromConversationState(
     j.createdFromConversationId,
     sourceConversationCache,
   );
@@ -408,8 +408,8 @@ async function handleListSchedules(queryParams: Record<string, string>) {
     CreatedFromConversationState
   >();
   return {
-    schedules: filtered.map((j) =>
-      serializeSchedule(j, sourceConversationCache),
+    schedules: await Promise.all(
+      filtered.map((j) => serializeSchedule(j, sourceConversationCache)),
     ),
   };
 }
@@ -419,7 +419,7 @@ async function handleGetSchedule(id: string) {
   if (!job) {
     throw new NotFoundError("Schedule not found");
   }
-  return { schedule: serializeSchedule(job, new Map()) };
+  return { schedule: await serializeSchedule(job, new Map()) };
 }
 
 /**
@@ -592,7 +592,7 @@ async function handleCreateSchedule(body: Record<string, unknown>) {
         { id: job.id, name: job.name, workflowName },
         "Workflow schedule created",
       );
-      return { schedule: serializeSchedule(job, new Map()) };
+      return { schedule: await serializeSchedule(job, new Map()) };
     } catch (err) {
       if (err instanceof Error) {
         throw new BadRequestError(err.message);
@@ -628,7 +628,7 @@ async function handleCreateSchedule(body: Record<string, unknown>) {
         inferenceProfile,
       });
       log.info({ id: job.id, name: job.name }, "Script schedule created");
-      return { schedule: serializeSchedule(job, new Map()) };
+      return { schedule: await serializeSchedule(job, new Map()) };
     } catch (err) {
       if (err instanceof Error) {
         throw new BadRequestError(err.message);
@@ -650,7 +650,7 @@ async function handleCreateSchedule(body: Record<string, unknown>) {
       inferenceProfile,
     });
     log.info({ id: job.id, name: job.name }, "Schedule created");
-    return { schedule: serializeSchedule(job, new Map()) };
+    return { schedule: await serializeSchedule(job, new Map()) };
   } catch (err) {
     if (err instanceof Error) {
       throw new BadRequestError(err.message);
@@ -915,51 +915,57 @@ async function handleListScheduleRuns(
   const now = Date.now();
   return {
     nextCursor,
-    runs: rows.map((r) => {
-      const conversation = r.conversationId
-        ? getConversation(r.conversationId)
-        : null;
-      // The usage ledger supplies every conversation stamped with this run's
-      // cron_run_id. The legacy single pointer is added on top, which covers
-      // runs whose usage predates cron_run_id stamping. The synthetic
-      // "script:<jobId>" sentinel never resolves to a conversation, so it
-      // drops out here on its own.
-      const runConversationIds = new Set(listRunConversationIds(r.id));
-      if (r.conversationId && conversation) {
-        runConversationIds.add(r.conversationId);
-      }
-      const conversations = [...runConversationIds].map((cid) => {
-        const c =
-          cid === r.conversationId ? conversation : getConversation(cid);
+    runs: await Promise.all(
+      rows.map(async (r) => {
+        const conversation = r.conversationId
+          ? await getConversation(r.conversationId)
+          : null;
+        // The usage ledger supplies every conversation stamped with this run's
+        // cron_run_id. The legacy single pointer is added on top, which covers
+        // runs whose usage predates cron_run_id stamping. The synthetic
+        // "script:<jobId>" sentinel never resolves to a conversation, so it
+        // drops out here on its own.
+        const runConversationIds = new Set(listRunConversationIds(r.id));
+        if (r.conversationId && conversation) {
+          runConversationIds.add(r.conversationId);
+        }
+        const conversations = await Promise.all(
+          [...runConversationIds].map(async (cid) => {
+            const c =
+              cid === r.conversationId
+                ? conversation
+                : await getConversation(cid);
+            return {
+              id: cid,
+              title: c?.title ?? null,
+              exists: c != null,
+              archivedAt: c?.archivedAt ?? null,
+            };
+          }),
+        );
         return {
-          id: cid,
-          title: c?.title ?? null,
-          exists: c != null,
-          archivedAt: c?.archivedAt ?? null,
+          id: r.id,
+          jobId: r.jobId,
+          status: r.status,
+          startedAt: r.startedAt,
+          finishedAt: r.finishedAt,
+          durationMs: r.durationMs,
+          output: r.output,
+          error: r.error,
+          conversationId: r.conversationId,
+          conversationExists: conversation != null,
+          conversationArchivedAt: conversation?.archivedAt ?? null,
+          conversations,
+          estimatedCostUsd: getUsageCostForRun({
+            cronRunId: r.id,
+            conversationId: r.conversationId ?? undefined,
+            from: r.startedAt,
+            to: r.finishedAt ?? now,
+          }),
+          createdAt: r.createdAt,
         };
-      });
-      return {
-        id: r.id,
-        jobId: r.jobId,
-        status: r.status,
-        startedAt: r.startedAt,
-        finishedAt: r.finishedAt,
-        durationMs: r.durationMs,
-        output: r.output,
-        error: r.error,
-        conversationId: r.conversationId,
-        conversationExists: conversation != null,
-        conversationArchivedAt: conversation?.archivedAt ?? null,
-        conversations,
-        estimatedCostUsd: getUsageCostForRun({
-          cronRunId: r.id,
-          conversationId: r.conversationId ?? undefined,
-          from: r.startedAt,
-          to: r.finishedAt ?? now,
-        }),
-        createdAt: r.createdAt,
-      };
-    }),
+      }),
+    ),
   };
 }
 
@@ -1499,7 +1505,7 @@ async function handleRunScheduleNow(
   let conversationId: string | null = null;
   if (schedule.reuseConversation && isRecurring) {
     const lastId = await getLastScheduleConversationId(schedule.id);
-    if (lastId && getConversation(lastId)) {
+    if (lastId && (await getConversation(lastId))) {
       conversationId = lastId;
     }
   }

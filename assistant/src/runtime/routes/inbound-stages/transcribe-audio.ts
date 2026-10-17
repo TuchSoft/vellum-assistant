@@ -43,7 +43,7 @@ export async function tryTranscribeAudioAttachments(
   let providerId: SttProviderId | undefined;
   try {
     // Look up attachments and filter to audio MIME types
-    const resolved = getAttachmentsByIds(attachmentIds);
+    const resolved = await getAttachmentsByIds(attachmentIds);
     const audioAttachments = resolved.filter((a) =>
       a.mimeType.startsWith("audio/"),
     );
@@ -75,7 +75,7 @@ export async function tryTranscribeAudioAttachments(
 
       for (const attachment of audioAttachments) {
         // Hydrate the base64 data for the attachment
-        const hydrated = getAttachmentById(attachment.id, {
+        const hydrated = await getAttachmentById(attachment.id, {
           hydrateFileData: true,
         });
         if (!hydrated || !hydrated.dataBase64) {

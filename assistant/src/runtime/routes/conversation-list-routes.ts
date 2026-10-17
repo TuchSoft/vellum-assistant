@@ -214,8 +214,8 @@ const conversationSectionsResponseSchema = z.object({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function resolveOrThrow(rawId: string): string {
-  const id = resolveConversationId(rawId);
+async function resolveOrThrow(rawId: string): Promise<string> {
+  const id = await resolveConversationId(rawId);
   if (!id) {
     throw new NotFoundError(`Unknown conversation: ${rawId}`);
   }
@@ -324,8 +324,8 @@ async function handleListConversations({
     foregroundOnly,
     excludeAssistantInitiated,
   };
-  let rows = listConversations({ ...filter, limit, offset });
-  const totalCount = countConversations(filter);
+  let rows = await listConversations({ ...filter, limit, offset });
+  const totalCount = await countConversations(filter);
 
   // On the first page, ensure all pinned conversations are included
   // even if they fall outside the paginated window. Pinned injection is
@@ -352,7 +352,7 @@ async function handleListConversations({
     needsAttention === undefined &&
     foregroundOnly === undefined
   ) {
-    const pinned = listPinnedConversations(archiveStatus);
+    const pinned = await listPinnedConversations(archiveStatus);
     const seen = new Set(rows.map((c) => c.id));
     const missing = pinned.filter((c) => !seen.has(c.id));
     if (missing.length > 0) {
@@ -361,25 +361,28 @@ async function handleListConversations({
   }
 
   const conversationIds = rows.map((c) => c.id);
-  const displayMeta = getDisplayMetaForConversations(conversationIds);
-  const bindings = getBindingsForConversations(conversationIds);
-  const attentionStates = getAttentionStateByConversationIds(conversationIds);
+  const displayMeta = await getDisplayMetaForConversations(conversationIds);
+  const bindings = await getBindingsForConversations(conversationIds);
+  const attentionStates =
+    await getAttentionStateByConversationIds(conversationIds);
   const parentCache = new Map<string, ConversationRow | null>();
   const nextOffset = offset + limit;
 
   const response: Record<string, unknown> = {
-    conversations: rows.map((conversation) =>
-      serializeConversationSummary({
-        conversation,
-        binding: bindings.get(conversation.id),
-        attentionState: attentionStates.get(conversation.id),
-        displayMeta: displayMeta.get(conversation.id),
-        parentCache,
-        // Checks in-memory flag first (hot path), falls back to the
-        // persisted `processing_started_at` column for cold conversations.
-        isProcessing: isConversationProcessing(conversation.id),
-        locale: localeFromAcceptLanguage(headers?.["accept-language"]),
-      }),
+    conversations: await Promise.all(
+      rows.map(async (conversation) =>
+        serializeConversationSummary({
+          conversation,
+          binding: bindings.get(conversation.id),
+          attentionState: attentionStates.get(conversation.id),
+          displayMeta: displayMeta.get(conversation.id),
+          parentCache,
+          // Checks in-memory flag first (hot path), falls back to the
+          // persisted `processing_started_at` column for cold conversations.
+          isProcessing: await isConversationProcessing(conversation.id),
+          locale: localeFromAcceptLanguage(headers?.["accept-language"]),
+        }),
+      ),
     ),
     nextOffset,
     hasMore: nextOffset < totalCount,
@@ -400,8 +403,8 @@ async function handleListConversations({
   return response;
 }
 
-function handleGetUnreadConversationCount() {
-  return { count: countUnreadConversations() };
+async function handleGetUnreadConversationCount() {
+  return { count: await countUnreadConversations() };
 }
 
 /**
@@ -416,7 +419,7 @@ function handleGetUnreadConversationCount() {
  */
 async function handleGetConversationSections() {
   const splitAssistantInitiated = isAssistantInitiatedThreadsEnabled();
-  const counts = countConversationSections({ splitAssistantInitiated });
+  const counts = await countConversationSections({ splitAssistantInitiated });
   const groupsById = new Map((await listGroups()).map((g) => [g.id, g]));
   const sections: Array<z.infer<typeof conversationSectionSchema>> = [];
 
@@ -474,17 +477,17 @@ async function handleGetConversationSections() {
   return { sections };
 }
 
-function handleRecordSeen({ body = {}, headers }: RouteHandlerArgs) {
+async function handleRecordSeen({ body = {}, headers }: RouteHandlerArgs) {
   const rawConversationId = body.conversationId as string | undefined;
   if (!rawConversationId) {
     throw new BadRequestError("Missing conversationId");
   }
-  const conversationId = resolveOrThrow(rawConversationId);
+  const conversationId = await resolveOrThrow(rawConversationId);
 
   try {
-    const priorState = getAttentionStateByConversationIds([conversationId]).get(
-      conversationId,
-    );
+    const priorState = (
+      await getAttentionStateByConversationIds([conversationId])
+    ).get(conversationId);
     const wasUnseen =
       priorState != null &&
       priorState.latestAssistantMessageAt != null &&
@@ -492,7 +495,7 @@ function handleRecordSeen({ body = {}, headers }: RouteHandlerArgs) {
         priorState.lastSeenAssistantMessageAt <
           priorState.latestAssistantMessageAt);
 
-    recordConversationSeenSignal({
+    await recordConversationSeenSignal({
       conversationId,
       sourceChannel: (body.sourceChannel as string) ?? "vellum",
       signalType: ((body.signalType as string) ??
@@ -519,7 +522,7 @@ function handleRecordSeen({ body = {}, headers }: RouteHandlerArgs) {
   }
 }
 
-function handleRecordSeenBulk({ body = {}, headers }: RouteHandlerArgs) {
+async function handleRecordSeenBulk({ body = {}, headers }: RouteHandlerArgs) {
   const rawIds = body.conversationIds as string[] | undefined;
   if (!Array.isArray(rawIds) || rawIds.length === 0) {
     throw new BadRequestError("conversationIds must be a non-empty array");
@@ -530,10 +533,10 @@ function handleRecordSeenBulk({ body = {}, headers }: RouteHandlerArgs) {
 
   for (const rawId of rawIds) {
     try {
-      const conversationId = resolveOrThrow(rawId);
-      const priorState = getAttentionStateByConversationIds([
-        conversationId,
-      ]).get(conversationId);
+      const conversationId = await resolveOrThrow(rawId);
+      const priorState = (
+        await getAttentionStateByConversationIds([conversationId])
+      ).get(conversationId);
       const wasUnseen =
         priorState != null &&
         priorState.latestAssistantMessageAt != null &&
@@ -541,7 +544,7 @@ function handleRecordSeenBulk({ body = {}, headers }: RouteHandlerArgs) {
           priorState.lastSeenAssistantMessageAt <
             priorState.latestAssistantMessageAt);
 
-      recordConversationSeenSignal({
+      await recordConversationSeenSignal({
         conversationId,
         sourceChannel: "vellum",
         signalType: "web_bulk_mark_read",
@@ -568,15 +571,15 @@ function handleRecordSeenBulk({ body = {}, headers }: RouteHandlerArgs) {
   return { ok: true, updated: changedIds.length };
 }
 
-function handleMarkUnread({ body = {}, headers }: RouteHandlerArgs) {
+async function handleMarkUnread({ body = {}, headers }: RouteHandlerArgs) {
   const rawConversationId = body.conversationId as string | undefined;
   if (!rawConversationId) {
     throw new BadRequestError("Missing conversationId");
   }
-  const conversationId = resolveOrThrow(rawConversationId);
+  const conversationId = await resolveOrThrow(rawConversationId);
 
   try {
-    const changed = markConversationUnread(conversationId);
+    const changed = await markConversationUnread(conversationId);
     if (changed) {
       publishConversationListAndMetadataChanged(
         "seen_changed",
@@ -594,8 +597,11 @@ function handleMarkUnread({ body = {}, headers }: RouteHandlerArgs) {
   }
 }
 
-function handleGetConversation({ pathParams = {}, headers }: RouteHandlerArgs) {
-  const detail = buildConversationDetailResponse(
+async function handleGetConversation({
+  pathParams = {},
+  headers,
+}: RouteHandlerArgs) {
+  const detail = await buildConversationDetailResponse(
     pathParams.id!,
     localeFromAcceptLanguage(headers?.["accept-language"]),
   );

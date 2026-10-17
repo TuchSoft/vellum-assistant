@@ -329,8 +329,7 @@ export async function sweepFailedEvents(
       parseInterfaceId(payload.sourceChannel) ??
       "web";
     const sourceMetadata = payload.sourceMetadata as
-      | import("@vellumai/gateway-client").SourceMetadata
-      | undefined;
+      import("@vellumai/gateway-client").SourceMetadata | undefined;
     const assistantId =
       typeof payload.assistantId === "string" ? payload.assistantId : undefined;
     const rawTrustCtx = payload.trustCtx;
@@ -375,7 +374,7 @@ export async function sweepFailedEvents(
       },
     );
     if (diskPressureDecision.action === "block") {
-      clearPayload(event.id);
+      await clearPayload(event.id);
       await markProcessed(event.id);
       log.info(
         {
@@ -582,10 +581,10 @@ export async function sweepFailedEvents(
       // resume-in-place path that avoids that is tracked as a follow-up.)
       if (
         result.deduplicated &&
-        !findAssistantReplyMessageIdForTurn(
+        !(await findAssistantReplyMessageIdForTurn(
           event.conversationId,
           result.messageId,
-        )
+        ))
       ) {
         log.info(
           { eventId: event.id, conversationId: event.conversationId },
@@ -599,11 +598,11 @@ export async function sweepFailedEvents(
       }
       deduplicatedIngress = result.deduplicated === true;
       userMessageId = result.messageId;
-      linkMessage(event.id, userMessageId);
+      await linkMessage(event.id, userMessageId);
       await markProcessed(event.id);
       replyMessageId ??= result.assistantMessageId;
       if (replyMessageId) {
-        storeReplyMessageId(event.id, replyMessageId);
+        await storeReplyMessageId(event.id, replyMessageId);
       }
       log.info(
         { eventId: event.id },
@@ -716,12 +715,12 @@ export async function sweepFailedEvents(
       continue;
     }
     if (!replyMessageId && event.messageId) {
-      replyMessageId = findAssistantReplyMessageIdForTurn(
+      replyMessageId = await findAssistantReplyMessageIdForTurn(
         event.conversationId,
         event.messageId,
       );
       if (replyMessageId) {
-        storeReplyMessageId(event.id, replyMessageId);
+        await storeReplyMessageId(event.id, replyMessageId);
       }
     }
     if (!replyMessageId) {

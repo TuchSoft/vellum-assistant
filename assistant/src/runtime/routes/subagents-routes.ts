@@ -201,11 +201,11 @@ function reportableUsage(usage: {
   };
 }
 
-function getSubagentDetail(
+async function getSubagentDetail(
   subagentId: string,
   conversationId: string,
-): SubagentDetailResult {
-  const messages = getMessages(conversationId);
+): Promise<SubagentDetailResult> {
+  const messages = await getMessages(conversationId);
   log.debug(
     { subagentId, conversationId, messageCount: messages.length },
     "getSubagentDetail: raw messages from DB",
@@ -400,7 +400,7 @@ export const ROUTES: RouteDefinition[] = [
       },
     ],
     responseBody: SubagentDetailResponseSchema,
-    handler: ({ pathParams, queryParams }) => {
+    handler: async ({ pathParams, queryParams }) => {
       const manager = getSubagentManager();
       const state = manager.getState(pathParams!.id);
       // Durable rows outlive manager state: the TTL sweep evicts in-memory
@@ -424,7 +424,7 @@ export const ROUTES: RouteDefinition[] = [
       }
 
       return {
-        ...getSubagentDetail(pathParams!.id, conversationId),
+        ...(await getSubagentDetail(pathParams!.id, conversationId)),
         conversationId,
         status:
           state?.status ?? (record ? settledRecordStatus(record) : undefined),

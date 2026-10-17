@@ -45,7 +45,7 @@ function handleListBookmarks(): { bookmarks: BookmarkSummary[] } {
   return { bookmarks: listBookmarks(getDb()) };
 }
 
-function handleCreateBookmark({
+async function handleCreateBookmark({
   body = {},
 }: RouteHandlerArgs): BookmarkSummary {
   const messageId = body.messageId as string | undefined;
@@ -62,7 +62,7 @@ function handleCreateBookmark({
   // constraints would also reject a bad insert, but explicit validation
   // keeps the idempotent path from returning a previously-bookmarked row
   // that happens to live under a different conversation id.
-  if (!getMessageById(messageId, conversationId)) {
+  if (!(await getMessageById(messageId, conversationId))) {
     throw new NotFoundError(
       `Message ${messageId} not found in conversation ${conversationId}`,
     );

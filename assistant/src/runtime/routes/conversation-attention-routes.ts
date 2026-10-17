@@ -40,10 +40,12 @@ const SNIPPET_CHARS = 200;
  * walk stops at the first row that is not private: an ordinary turn is read
  * from its latest row alone, exactly as before.
  */
-export function resolveAssistantSnippet(messageId: string): string | null {
+export async function resolveAssistantSnippet(
+  messageId: string,
+): Promise<string | null> {
   let ids: string[];
   try {
-    ids = getAssistantMessageIdsInTurn(messageId);
+    ids = await getAssistantMessageIdsInTurn(messageId);
   } catch {
     ids = [messageId];
   }
@@ -52,7 +54,7 @@ export function resolveAssistantSnippet(messageId: string): string | null {
   const ordered =
     anchorIndex === -1 ? [messageId] : ids.slice(0, anchorIndex + 1);
   for (let i = ordered.length - 1; i >= 0; i--) {
-    const row = getMessageById(ordered[i]);
+    const row = await getMessageById(ordered[i]);
     if (!row?.content) {
       continue;
     }
@@ -67,7 +69,7 @@ export function resolveAssistantSnippet(messageId: string): string | null {
   return null;
 }
 
-function handleListConversationAttention({
+async function handleListConversationAttention({
   queryParams = {},
 }: RouteHandlerArgs) {
   const stateParam = queryParams.state ?? "all";
@@ -89,7 +91,7 @@ function handleListConversationAttention({
     );
   }
 
-  const attentionStates = listConversationAttention({
+  const attentionStates = await listConversationAttention({
     state: stateParam as AttentionFilterState,
     sourceChannel: channel,
     source: sourceParam !== "all" ? sourceParam : undefined,
@@ -107,7 +109,7 @@ function handleListConversationAttention({
     { title: string | null; source: string }
   >();
   for (const id of pageStates.map((s) => s.conversationId)) {
-    const conv = getConversation(id);
+    const conv = await getConversation(id);
     if (conv) {
       conversationMap.set(id, {
         title: conv.title,
@@ -119,7 +121,9 @@ function handleListConversationAttention({
   const snippetMap = new Map<string, string>();
   for (const attn of pageStates) {
     if (attn.latestAssistantMessageId) {
-      const snippet = resolveAssistantSnippet(attn.latestAssistantMessageId);
+      const snippet = await resolveAssistantSnippet(
+        attn.latestAssistantMessageId,
+      );
       if (snippet !== null) {
         snippetMap.set(attn.latestAssistantMessageId, snippet);
       }

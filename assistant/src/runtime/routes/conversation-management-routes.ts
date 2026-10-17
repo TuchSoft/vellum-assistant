@@ -108,8 +108,8 @@ const createConversationTypeSchema = z.enum([
 ] as const satisfies readonly NonScheduledConversationType[]);
 
 /** The conversation an id or key names, or a 404 naming what the caller asked for. */
-export function resolveOrThrow(rawId: string): string {
-  const id = resolveConversationId(rawId);
+export async function resolveOrThrow(rawId: string): Promise<string> {
+  const id = await resolveConversationId(rawId);
   if (!id) {
     throw new NotFoundError(`Conversation ${rawId} not found`);
   }
@@ -117,10 +117,10 @@ export function resolveOrThrow(rawId: string): string {
 }
 
 async function cancelScheduleIfLast(conversationId: string): Promise<void> {
-  const conv = getConversation(conversationId);
+  const conv = await getConversation(conversationId);
   if (
     !conv?.scheduleJobId ||
-    countConversationsByScheduleJobId(conv.scheduleJobId) > 1
+    (await countConversationsByScheduleJobId(conv.scheduleJobId)) > 1
   ) {
     return;
   }
@@ -136,7 +136,10 @@ async function cancelScheduleIfLast(conversationId: string): Promise<void> {
 // Handlers
 // ---------------------------------------------------------------------------
 
-function handleCreateConversation({ body = {}, headers }: RouteHandlerArgs) {
+async function handleCreateConversation({
+  body = {},
+  headers,
+}: RouteHandlerArgs) {
   const conversationKey =
     (body.conversationKey as string | undefined) ?? crypto.randomUUID();
   // The shared route adapter does not runtime-validate the body against the
@@ -158,7 +161,7 @@ function handleCreateConversation({ body = {}, headers }: RouteHandlerArgs) {
   }
   const customTitle = body.title?.trim() || undefined;
   const conversationType = requestedType.data ?? "standard";
-  const result = getOrCreateConversation(conversationKey, {
+  const result = await getOrCreateConversation(conversationKey, {
     conversationType,
   });
   if (result.created) {
@@ -167,9 +170,9 @@ function handleCreateConversation({ body = {}, headers }: RouteHandlerArgs) {
     // one, fall back to the neutral "New Conversation" placeholder, which stays
     // replaceable by the auto-titler once messages arrive.
     if (customTitle) {
-      updateConversationTitle(result.conversationId, customTitle, 0);
+      await updateConversationTitle(result.conversationId, customTitle, 0);
     } else {
-      updateConversationTitle(result.conversationId, "New Conversation");
+      await updateConversationTitle(result.conversationId, "New Conversation");
     }
     publishConversationListAndMetadataChanged(
       "created",
@@ -213,14 +216,14 @@ async function handleForkConversation({
   }
 
   const resolvedConversationId =
-    resolveConversationId(conversationId) ?? conversationId;
+    (await resolveConversationId(conversationId)) ?? conversationId;
 
   try {
-    const forkedConversation = forkConversationInStore({
+    const forkedConversation = await forkConversationInStore({
       conversationId: resolvedConversationId,
       throughMessageId: body.throughMessageId as string | undefined,
     });
-    const detail = buildConversationDetailResponse(forkedConversation.id);
+    const detail = await buildConversationDetailResponse(forkedConversation.id);
     if (!detail) {
       throw new InternalError(
         `Forked conversation ${forkedConversation.id} could not be loaded`,
@@ -251,10 +254,10 @@ async function handleSummarizeConversation({ body = {} }: RouteHandlerArgs) {
   }
 
   const conversationId =
-    resolveConversationId(rawConversationId) ?? rawConversationId;
+    (await resolveConversationId(rawConversationId)) ?? rawConversationId;
   // Gate on DB existence first: `getOrCreateConversationInstance` would
   // otherwise create a fresh conversation and mask the not-found case.
-  if (!getConversation(conversationId)) {
+  if (!(await getConversation(conversationId))) {
     throw new NotFoundError(`Conversation ${rawConversationId} not found`);
   }
   const conversation = await getOrCreateConversationInstance(conversationId);
@@ -301,9 +304,8 @@ async function handleSummarizeConversation({ body = {} }: RouteHandlerArgs) {
     // but the hard-error path persists no card, so the idle emit in
     // `finally` is what guarantees the indicator always clears.
     let terminalReason:
-      | "message_complete"
-      | "error_terminal"
-      | "generation_cancelled" = "message_complete";
+      "message_complete" | "error_terminal" | "generation_cancelled" =
+      "message_complete";
     try {
       conversation.emitActivityState("thinking", "context_compacting", {
         statusText: "Summarizing conversation",
@@ -389,7 +391,7 @@ async function handleSwitchConversation({ body = {} }: RouteHandlerArgs) {
     throw new NotFoundError(`Conversation ${conversationId} not found`);
   }
   if (body.conversationKey && typeof body.conversationKey === "string") {
-    setConversationKeyIfAbsent(body.conversationKey, conversationId);
+    await setConversationKeyIfAbsent(body.conversationKey, conversationId);
   }
   return {
     conversationId: result.conversationId,
@@ -445,8 +447,9 @@ async function handleUpdateConversationEnabledPlugins({
     );
   }
 
-  const resolvedId = resolveConversationId(pathParams.id!) ?? pathParams.id!;
-  const conversation = getConversation(resolvedId);
+  const resolvedId =
+    (await resolveConversationId(pathParams.id!)) ?? pathParams.id!;
+  const conversation = await getConversation(resolvedId);
   if (!conversation) {
     throw new NotFoundError(`Conversation ${pathParams.id} not found`);
   }
@@ -454,7 +457,7 @@ async function handleUpdateConversationEnabledPlugins({
   // `null` clears the per-chat scope back to the default (all enabled
   // plugins); a `string[]` scopes the chat to those plugin ids.
   const nextEnabledPlugins = enabledPlugins;
-  setConversationEnabledPlugins(resolvedId, nextEnabledPlugins);
+  await setConversationEnabledPlugins(resolvedId, nextEnabledPlugins);
   findConversation(resolvedId)?.setEnabledPlugins(nextEnabledPlugins);
 
   publishConversationEnabledPluginsChanged(
@@ -465,7 +468,7 @@ async function handleUpdateConversationEnabledPlugins({
   return { conversationId: resolvedId, enabledPlugins: nextEnabledPlugins };
 }
 
-function handleRenameConversation({
+async function handleRenameConversation({
   pathParams = {},
   body = {},
   headers,
@@ -474,11 +477,11 @@ function handleRenameConversation({
   if (!name || typeof name !== "string") {
     throw new BadRequestError("Missing name");
   }
-  const conversation = getConversation(pathParams.id!);
+  const conversation = await getConversation(pathParams.id!);
   if (!conversation) {
     throw new NotFoundError(`Conversation ${pathParams.id} not found`);
   }
-  updateConversationTitle(pathParams.id!, name, 0);
+  await updateConversationTitle(pathParams.id!, name, 0);
 
   publishConversationTitleChanged(
     pathParams.id!,
@@ -509,14 +512,14 @@ async function handleDeleteConversation({
   pathParams = {},
   headers,
 }: RouteHandlerArgs) {
-  const resolvedId = resolveOrThrow(pathParams.id!);
+  const resolvedId = await resolveOrThrow(pathParams.id!);
 
   await cancelScheduleIfLast(resolvedId);
 
   // In-memory teardown only: `deleteConversation` drops the durable subagent
   // rows inside its own transaction.
   destroyActiveConversation(resolvedId, { keepSubagentRecords: true });
-  const deleted = deleteConversation(resolvedId);
+  const deleted = await deleteConversation(resolvedId);
   for (const segId of deleted.segmentIds) {
     enqueueMemoryJob("delete_qdrant_vectors", {
       targetType: "segment",
@@ -545,12 +548,12 @@ async function handleDeleteConversation({
   return undefined;
 }
 
-function handleArchiveConversation({
+async function handleArchiveConversation({
   pathParams = {},
   headers,
 }: RouteHandlerArgs) {
-  const resolvedId = resolveOrThrow(pathParams.id!);
-  const archived = archiveConversation(resolvedId);
+  const resolvedId = await resolveOrThrow(pathParams.id!);
+  const archived = await archiveConversation(resolvedId);
   if (!archived) {
     throw new NotFoundError(`Conversation ${pathParams.id} not found`);
   }
@@ -562,12 +565,12 @@ function handleArchiveConversation({
   return { ok: true, conversationId: resolvedId };
 }
 
-function handleUnarchiveConversation({
+async function handleUnarchiveConversation({
   pathParams = {},
   headers,
 }: RouteHandlerArgs) {
-  const resolvedId = resolveOrThrow(pathParams.id!);
-  const unarchived = unarchiveConversation(resolvedId);
+  const resolvedId = await resolveOrThrow(pathParams.id!);
+  const unarchived = await unarchiveConversation(resolvedId);
   if (!unarchived) {
     throw new NotFoundError(`Conversation ${pathParams.id} not found`);
   }
@@ -579,7 +582,7 @@ function handleUnarchiveConversation({
   return { ok: true, conversationId: resolvedId };
 }
 
-function handleArchiveConversationsBulk({
+async function handleArchiveConversationsBulk({
   body = {},
   headers,
 }: RouteHandlerArgs) {
@@ -593,8 +596,8 @@ function handleArchiveConversationsBulk({
 
   for (const rawId of rawIds) {
     try {
-      const conversationId = resolveOrThrow(rawId);
-      const archived = archiveConversation(conversationId);
+      const conversationId = await resolveOrThrow(rawId);
+      const archived = await archiveConversation(conversationId);
       if (archived) {
         archivedIds.push(conversationId);
       }
@@ -623,7 +626,7 @@ function handleArchiveConversationsBulk({
  * call this when a background conversation deserves foreground visibility
  * (e.g. the user sent a follow-up message in it).
  */
-function handleSurfaceConversation({
+async function handleSurfaceConversation({
   pathParams = {},
   body = {},
   headers,
@@ -631,8 +634,8 @@ function handleSurfaceConversation({
   if (typeof body.surfaced !== "boolean") {
     throw new BadRequestError("Missing surfaced boolean");
   }
-  const resolvedId = resolveOrThrow(pathParams.id!);
-  const result = setConversationSurfaced(resolvedId, body.surfaced);
+  const resolvedId = await resolveOrThrow(pathParams.id!);
+  const result = await setConversationSurfaced(resolvedId, body.surfaced);
   if (!result) {
     throw new NotFoundError(`Conversation ${pathParams.id} not found`);
   }
@@ -651,8 +654,9 @@ function handleSurfaceConversation({
   };
 }
 
-function handleCancelGeneration({ pathParams = {} }: RouteHandlerArgs) {
-  const resolvedId = resolveConversationId(pathParams.id!) ?? pathParams.id!;
+async function handleCancelGeneration({ pathParams = {} }: RouteHandlerArgs) {
+  const resolvedId =
+    (await resolveConversationId(pathParams.id!)) ?? pathParams.id!;
   const cancelled = cancelGeneration(resolvedId);
   return { ok: true, cancelled, conversationId: resolvedId };
 }
@@ -681,10 +685,10 @@ async function handleRetryLastAssistantTurn({
   headers,
 }: RouteHandlerArgs) {
   const rawId = pathParams.id!;
-  const conversationId = resolveConversationId(rawId) ?? rawId;
+  const conversationId = (await resolveConversationId(rawId)) ?? rawId;
   // Gate on DB existence first: `getOrCreateConversationInstance` would
   // otherwise create a fresh conversation and mask the not-found case.
-  if (!getConversation(conversationId)) {
+  if (!(await getConversation(conversationId))) {
     throw new NotFoundError(`Conversation ${rawId} not found`);
   }
   const conversation = await getOrCreateConversationInstance(conversationId);
@@ -721,12 +725,12 @@ async function handleRetryLastAssistantTurn({
 
   const requestId = uuidv7();
   const abortController = new AbortController();
-  let discarded: ReturnType<typeof discardLastAssistantDisplayTurn>;
+  let discarded: Awaited<ReturnType<typeof discardLastAssistantDisplayTurn>>;
   try {
     conversation.currentRequestId = requestId;
     // runAgentLoop requires a live controller; it is also what Stop signals.
     conversation.abortController = abortController;
-    discarded = discardLastAssistantDisplayTurn(conversationId);
+    discarded = await discardLastAssistantDisplayTurn(conversationId);
     if (!discarded) {
       throw new UnprocessableEntityError("No user message to retry from");
     }
@@ -848,7 +852,10 @@ async function handleResolveMetaSlashCommand({
   return result;
 }
 
-function handleReorderConversations({ body = {}, headers }: RouteHandlerArgs) {
+async function handleReorderConversations({
+  body = {},
+  headers,
+}: RouteHandlerArgs) {
   const updates = body.updates as
     | Array<{
         conversationId: string;
@@ -859,7 +866,7 @@ function handleReorderConversations({ body = {}, headers }: RouteHandlerArgs) {
   if (!Array.isArray(updates)) {
     throw new BadRequestError("Missing updates array");
   }
-  batchSetConversationPlacement(
+  await batchSetConversationPlacement(
     updates.map((u) => ({
       id: u.conversationId,
       isPinned: u.isPinned,

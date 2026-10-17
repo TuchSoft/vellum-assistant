@@ -88,8 +88,9 @@ export async function setInferenceProfileSession({
   sessionId?: string;
   originClientId?: string;
 }): Promise<InferenceProfileSessionResult> {
-  const resolvedId = resolveConversationId(conversationId) ?? conversationId;
-  const conversation = getConversation(resolvedId);
+  const resolvedId =
+    (await resolveConversationId(conversationId)) ?? conversationId;
+  const conversation = await getConversation(resolvedId);
   if (!conversation) {
     throw new NotFoundError(`Conversation ${conversationId} not found`);
   }
@@ -130,7 +131,7 @@ export async function setInferenceProfileSession({
         replaced: null,
       };
     }
-    setConversationInferenceProfileSession(resolvedId, null, null, null);
+    await setConversationInferenceProfileSession(resolvedId, null, null, null);
     findConversation(resolvedId)?.applyInferenceProfileState({
       profile: null,
       sessionId: null,
@@ -227,7 +228,7 @@ export async function setInferenceProfileSession({
     };
   }
 
-  setConversationInferenceProfileSession(
+  await setConversationInferenceProfileSession(
     resolvedId,
     profile,
     newSessionId ?? null,
@@ -282,8 +283,9 @@ export async function closeInferenceProfileSession(
   closed: { profile: string | null; sessionId: string | null } | null;
   noop: boolean;
 }> {
-  const resolvedId = resolveConversationId(conversationId) ?? conversationId;
-  const conversation = getConversation(resolvedId);
+  const resolvedId =
+    (await resolveConversationId(conversationId)) ?? conversationId;
+  const conversation = await getConversation(resolvedId);
   if (!conversation) {
     throw new NotFoundError(`Conversation ${conversationId} not found`);
   }
@@ -325,21 +327,25 @@ export async function closeInferenceProfileSession(
  *
  * Pass `conversationId` to narrow to a single conversation.
  */
-export function listInferenceProfileSessionsWithRemaining(
+export async function listInferenceProfileSessionsWithRemaining(
   conversationId?: string,
-): Array<{
-  conversationId: string;
-  conversationTitle: string | null;
-  profile: string;
-  sessionId: string;
-  expiresAt: number;
-  remainingSeconds: number;
-}> {
-  return listActiveInferenceProfileSessions(conversationId).map((row) => ({
-    ...row,
-    remainingSeconds: Math.max(
-      0,
-      Math.floor((row.expiresAt - Date.now()) / 1000),
-    ),
-  }));
+): Promise<
+  Array<{
+    conversationId: string;
+    conversationTitle: string | null;
+    profile: string;
+    sessionId: string;
+    expiresAt: number;
+    remainingSeconds: number;
+  }>
+> {
+  return (await listActiveInferenceProfileSessions(conversationId)).map(
+    (row) => ({
+      ...row,
+      remainingSeconds: Math.max(
+        0,
+        Math.floor((row.expiresAt - Date.now()) / 1000),
+      ),
+    }),
+  );
 }

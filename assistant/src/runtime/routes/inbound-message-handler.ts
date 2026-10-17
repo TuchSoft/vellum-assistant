@@ -587,16 +587,16 @@ export async function handleChannelInbound({
       // outrun, so the envelope lane retries within the same bounded
       // window rather than giving up on the first miss.
       original =
-        findMessageBySourceId(
+        (await findMessageBySourceId(
           sourceChannel,
           conversationExternalId,
           deletedMessageTs,
-        ) ??
-        findMessageByProviderMessageId(
+        )) ??
+        (await findMessageByProviderMessageId(
           sourceChannel,
           conversationExternalId,
           deletedMessageTs,
-        );
+        ));
       if (original) {
         break;
       }
@@ -608,14 +608,17 @@ export async function handleChannelInbound({
       // a busy room never holds the serialized lane through the window.
       const raceStillPossible =
         attempt < deleteOutboundReconcileRetries &&
-        hasUnreconciledOutboundRow(sourceChannel, conversationExternalId);
+        (await hasUnreconciledOutboundRow(
+          sourceChannel,
+          conversationExternalId,
+        ));
       if (
         !raceStillPossible &&
-        !hasInboundEventForSource(
+        !(await hasInboundEventForSource(
           sourceChannel,
           conversationExternalId,
           deletedMessageTs,
-        )
+        ))
       ) {
         break;
       }
@@ -639,7 +642,7 @@ export async function handleChannelInbound({
     // deletion can target one arbitrarily far back, so the last resort is a
     // single deep scan. Once, after the retries: age and race are exclusive
     // (a post old enough to be past the recent window reconciled long ago).
-    original ??= findMessageByProviderMessageId(
+    original ??= await findMessageByProviderMessageId(
       sourceChannel,
       conversationExternalId,
       deletedMessageTs,
@@ -660,7 +663,7 @@ export async function handleChannelInbound({
     // shape instead: readProviderMetadata serves either to every
     // channel-agnostic reader, so no delete goes unmarked over a metadata
     // accident.
-    const row = getMessageById(original.messageId);
+    const row = await getMessageById(original.messageId);
     const parentMetadata: Record<string, unknown> =
       row?.metadata != null ? safeParseRecord(row.metadata) : {};
 
@@ -708,7 +711,7 @@ export async function handleChannelInbound({
           { deletedAt: Date.now() },
         );
       }
-      updateMessageMetadata(original.messageId, { providerMeta });
+      await updateMessageMetadata(original.messageId, { providerMeta });
       // The stamp lands in the store only: stale-marking makes a resident
       // conversation's next turn reload and see the row as deleted, and the
       // invalidation makes a client showing the conversation refetch it.
@@ -733,7 +736,9 @@ export async function handleChannelInbound({
     // metadata, replacing only `slackMeta` and leaving sibling keys
     // (channel, interface, provenance, etc.) untouched. Content column
     // is intentionally not updated.
-    updateMessageMetadata(original.messageId, { slackMeta: updatedSlackMeta });
+    await updateMessageMetadata(original.messageId, {
+      slackMeta: updatedSlackMeta,
+    });
     findConversation(original.conversationId)?.markHistoryStale();
     publishConversationMessagesChanged(original.conversationId);
 
@@ -754,7 +759,7 @@ export async function handleChannelInbound({
   }
 
   if (hasAttachments) {
-    const resolved = getAttachmentsByIds(attachmentIds);
+    const resolved = await getAttachmentsByIds(attachmentIds);
     if (resolved.length !== attachmentIds.length) {
       const resolvedIds = new Set(resolved.map((a) => a.id));
       const missing = attachmentIds.filter((id) => !resolvedIds.has(id));
@@ -826,7 +831,7 @@ export async function handleChannelInbound({
   }
 
   // ── New message path ──
-  const result = recordInbound(
+  const result = await recordInbound(
     sourceChannel,
     conversationExternalId,
     externalMessageId,
@@ -840,7 +845,7 @@ export async function handleChannelInbound({
 
   // `external_conversation_bindings` is assistant-agnostic: one row per chat,
   // whichever caller writes it.
-  upsertBinding({
+  await upsertBinding({
     conversationId: result.conversationId,
     sourceChannel,
     externalChatId: conversationExternalId,
@@ -1008,7 +1013,7 @@ export async function handleChannelInbound({
     if (!isCallbackInteraction) {
       const requesterLabel =
         body.actorDisplayName ?? body.actorUsername ?? floorSenderId;
-      applyDeterministicTitleIfReplaceable(
+      await applyDeterministicTitleIfReplaceable(
         result.conversationId,
         requesterLabel
           ? `Access request — ${requesterLabel}`
@@ -1074,7 +1079,7 @@ export async function handleChannelInbound({
   );
   if (diskPressureDecision.action === "block") {
     if (!result.duplicate) {
-      clearPayload(result.eventId);
+      await clearPayload(result.eventId);
       await markProcessed(result.eventId);
     }
     log.info(
@@ -1247,7 +1252,7 @@ export async function handleChannelInbound({
               body.callbackData!.length > 80
                 ? body.callbackData!.slice(0, 80) + "..."
                 : body.callbackData!;
-            recordConversationSeenSignal({
+            await recordConversationSeenSignal({
               conversationId: result.conversationId,
               signalType: `${sourceChannel}_callback` as SignalType,
               confidence: "inferred",
@@ -1260,7 +1265,7 @@ export async function handleChannelInbound({
               trimmedContent.length > 80
                 ? trimmedContent.slice(0, 80) + "..."
                 : trimmedContent;
-            recordConversationSeenSignal({
+            await recordConversationSeenSignal({
               conversationId: result.conversationId,
               signalType: `${sourceChannel}_inbound_message` as SignalType,
               confidence: "inferred",
@@ -1304,7 +1309,7 @@ export async function handleChannelInbound({
             body.callbackData!.length > 80
               ? body.callbackData!.slice(0, 80) + "..."
               : body.callbackData!;
-          recordConversationSeenSignal({
+          await recordConversationSeenSignal({
             conversationId: result.conversationId,
             signalType: `${sourceChannel}_callback` as SignalType,
             confidence: "inferred",
@@ -1350,7 +1355,7 @@ export async function handleChannelInbound({
   // For new (non-duplicate) messages, run the secret ingress check
   // synchronously, then fire off the agent loop in the background.
   if (!result.duplicate) {
-    const ingressResult = runSecretIngressCheck({
+    const ingressResult = await runSecretIngressCheck({
       eventId: result.eventId,
       sourceChannel,
       conversationExternalId,
@@ -1635,6 +1640,11 @@ export async function handleChannelInbound({
         botMentioned,
         slackInbound,
         channelInbound,
+      }).catch((err) => {
+        log.error(
+          { err, eventId: result.eventId },
+          "Channel message background dispatch failed",
+        );
       });
     }
   }
@@ -1687,13 +1697,13 @@ const SLACK_DM_CANDIDATE_MAX_SCAN = SLACK_DM_BACKFILL_WARM_THRESHOLD * 20;
  * a cluster of malformed rows at the head of the scan cannot starve the
  * count and misclassify a warm conversation as cold.
  */
-function countSlackMetaMessages(conversationId: string): number {
+async function countSlackMetaMessages(conversationId: string): Promise<number> {
   let count = 0;
   let offset = 0;
   while (offset < SLACK_DM_CANDIDATE_MAX_SCAN) {
     const remaining = SLACK_DM_CANDIDATE_MAX_SCAN - offset;
     const batchLimit = Math.min(SLACK_DM_CANDIDATE_BATCH_SIZE, remaining);
-    const candidates = selectProviderMetaCandidateMetadata(
+    const candidates = await selectProviderMetaCandidateMetadata(
       conversationId,
       batchLimit,
       offset,
@@ -1723,9 +1733,11 @@ function countSlackMetaMessages(conversationId: string): number {
  * backfill to dedupe rows so a partial prior backfill (or a single message
  * that was already persisted via the live ingress path) does not double-write.
  */
-function readStoredSlackChannelTs(conversationId: string): Set<string> {
+async function readStoredSlackChannelTs(
+  conversationId: string,
+): Promise<Set<string>> {
   const seen = new Set<string>();
-  for (const row of getMessages(conversationId)) {
+  for (const row of await getMessages(conversationId)) {
     const meta = readSlackMetadataFromMessageMetadata(row.metadata);
     // Only message rows represent stored Slack messages. Reaction rows carry
     // `channelTs` equal to the target message's ts, so including them would
@@ -1789,14 +1801,14 @@ interface StoredSlackThreadState {
   latestStoredThreadTs: string | undefined;
 }
 
-function readStoredSlackThreadState(
+async function readStoredSlackThreadState(
   conversationId: string,
   threadTs: string,
-): StoredSlackThreadState {
+): Promise<StoredSlackThreadState> {
   const storedChannelTs = new Set<string>();
   let latestStoredThreadTs: string | undefined;
 
-  for (const row of getMessages(conversationId)) {
+  for (const row of await getMessages(conversationId)) {
     const meta = readSlackMetadataFromMessageMetadata(row.metadata);
     if (!meta || meta.eventKind !== "message") {
       continue;
@@ -2052,7 +2064,7 @@ async function persistBackfilledSlackMessage(params: {
   }
 
   if (hydratedAttachments.length > 0) {
-    updateMessageContent(
+    await updateMessageContent(
       persisted.id,
       JSON.stringify(
         await buildBackfilledSlackContentBlocks(rawText, hydratedAttachments),
@@ -2234,7 +2246,7 @@ async function runBackfillSlackDmIfCold(params: {
   latestTs?: string;
 }): Promise<void> {
   try {
-    const storedCount = countSlackMetaMessages(params.conversationId);
+    const storedCount = await countSlackMetaMessages(params.conversationId);
     if (storedCount >= SLACK_DM_BACKFILL_WARM_THRESHOLD) {
       return;
     }
@@ -2270,7 +2282,7 @@ async function runBackfillSlackDmIfCold(params: {
         .filter((ts): ts is string => typeof ts === "string" && ts.length > 0),
     );
 
-    const seen = readStoredSlackChannelTs(params.conversationId);
+    const seen = await readStoredSlackChannelTs(params.conversationId);
     let written = 0;
     // Slack's conversation.history returns most-recent first. Reverse so
     // rows insert in chronological order, giving stable createdAt ordering
@@ -2809,7 +2821,10 @@ export async function triggerSlackThreadBackfillIfNeeded(params: {
     const upperBoundTs = parseSlackTimestamp(excludeChannelTs)
       ? excludeChannelTs
       : undefined;
-    const threadState = readStoredSlackThreadState(conversationId, threadTs);
+    const threadState = await readStoredSlackThreadState(
+      conversationId,
+      threadTs,
+    );
     const lowerBoundTs = threadState.latestStoredThreadTs;
 
     // Pre-seed only after computing lowerBoundTs. The current inbound row

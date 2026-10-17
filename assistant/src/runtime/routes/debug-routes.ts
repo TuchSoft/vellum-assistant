@@ -51,7 +51,7 @@ async function getDebugInfo() {
   // Debug view counts every standard conversation, archived or not, so the
   // diagnostics report doesn't undercount after the route-level default
   // moved to "active".
-  const conversationCount = countConversations({
+  const conversationCount = await countConversations({
     conversationType: "standard",
     archiveStatus: "all",
   });

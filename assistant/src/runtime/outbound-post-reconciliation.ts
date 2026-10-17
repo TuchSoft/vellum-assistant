@@ -57,7 +57,7 @@ export function makeSentMessageIdReconciler(
       return;
     }
     try {
-      const row = getMessageById(messageId);
+      const row = await getMessageById(messageId);
       if (row === null || row.metadata === null) {
         return;
       }
@@ -107,8 +107,11 @@ export function makeSentMessageIdReconciler(
  * which every known post was gone is cleared. Synchronous by design; see
  * the caller.
  */
-function stampSentMessageId(messageId: string, ts: string): void {
-  const row = getMessageById(messageId);
+async function stampSentMessageId(
+  messageId: string,
+  ts: string,
+): Promise<void> {
+  const row = await getMessageById(messageId);
   if (row === null || row.metadata === null) {
     return;
   }
@@ -127,7 +130,7 @@ function stampSentMessageId(messageId: string, ts: string): void {
     ts,
   ];
   const { deletedAt, ...rest } = providerMeta;
-  updateMessageMetadata(messageId, {
+  await updateMessageMetadata(messageId, {
     providerMeta: JSON.stringify({
       ...rest,
       ...patch,

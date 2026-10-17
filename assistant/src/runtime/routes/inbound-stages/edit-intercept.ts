@@ -87,7 +87,7 @@ export async function handleEditIntercept(
   // Dedup the edit event itself (retried edited_message webhooks) before the
   // lookup below, so a redelivery answers immediately instead of waiting out
   // the retry window a second time.
-  const alreadyRecorded = findInboundEvent(
+  const alreadyRecorded = await findInboundEvent(
     sourceChannel,
     conversationExternalId,
     externalMessageId,
@@ -108,7 +108,7 @@ export async function handleEditIntercept(
 
   let original: { messageId: string; conversationId: string } | null = null;
   for (let attempt = 0; attempt <= EDIT_LOOKUP_RETRIES; attempt++) {
-    original = findMessageBySourceId(
+    original = await findMessageBySourceId(
       sourceChannel,
       conversationExternalId,
       sourceMessageId,
@@ -158,7 +158,7 @@ export async function handleEditIntercept(
   // The edit belongs to the conversation of the message it changes. Resolving
   // one from the edit's own address would key it on the edited message's
   // timestamp and create a conversation there.
-  const editResult = recordInbound(
+  const editResult = await recordInbound(
     sourceChannel,
     conversationExternalId,
     externalMessageId,
@@ -178,7 +178,7 @@ export async function handleEditIntercept(
   // also drops trivially-redundant edit webhooks. We only have the
   // authoritative previous text once the original row is located, so
   // this check lives after the lookup.
-  const existingRow = getMessageById(original.messageId);
+  const existingRow = await getMessageById(original.messageId);
   if (
     existingRow &&
     stringifyMessageContent(existingRow.content) === newContent
@@ -198,7 +198,7 @@ export async function handleEditIntercept(
     // guard and overwrite the latest content — the watermark must always
     // reflect the highest observed edited.ts, not just writes that changed text.
     if (sourceChannel === "slack" && slackEditedTs !== undefined) {
-      advanceSlackEditedAtWatermark({
+      await advanceSlackEditedAtWatermark({
         messageId: original.messageId,
         existingRow,
         conversationExternalId,
@@ -220,7 +220,7 @@ export async function handleEditIntercept(
     // transcript renderer can surface the edited marker. The merge
     // tolerates rows that lack slackMeta enrichment by synthesizing
     // the minimum-required fields from the lookup data.
-    const applied = applySlackEditMetadata({
+    const applied = await applySlackEditMetadata({
       messageId: original.messageId,
       existingRow,
       conversationExternalId,
@@ -261,7 +261,7 @@ export async function handleEditIntercept(
       },
       { editedAt: Date.now() },
     );
-    updateMessageContentAndMetadata(original.messageId, newContent, {
+    await updateMessageContentAndMetadata(original.messageId, newContent, {
       providerMeta,
     });
   }
@@ -301,7 +301,7 @@ export async function handleEditIntercept(
  *
  * Only updates metadata — never touches message content or triggers reindexing.
  */
-function advanceSlackEditedAtWatermark(params: {
+async function advanceSlackEditedAtWatermark(params: {
   messageId: string;
   existingRow: MessageRow | null;
   conversationExternalId: string;
@@ -348,7 +348,7 @@ function advanceSlackEditedAtWatermark(params: {
     editedAt: incomingEditedAt,
   });
 
-  updateMessageContentAndMetadata(
+  await updateMessageContentAndMetadata(
     messageId,
     row != null ? stringifyMessageContent(row.content) : "",
     { slackMeta: mergedSlackMeta },
@@ -370,7 +370,7 @@ function advanceSlackEditedAtWatermark(params: {
  * brought us here so the resulting metadata is still readable by
  * `readSlackMetadata`.
  */
-function applySlackEditMetadata(params: {
+async function applySlackEditMetadata(params: {
   messageId: string;
   /** The stored row, already read by the caller's no-op guard. */
   existingRow: MessageRow | null;
@@ -429,7 +429,7 @@ function applySlackEditMetadata(params: {
     editedAt,
   });
 
-  updateMessageContentAndMetadata(messageId, newContent, {
+  await updateMessageContentAndMetadata(messageId, newContent, {
     slackMeta: mergedSlackMeta,
   });
   return true;

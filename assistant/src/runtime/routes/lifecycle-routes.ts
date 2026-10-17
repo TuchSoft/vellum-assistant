@@ -162,7 +162,7 @@ export const ROUTES: RouteDefinition[] = [
       // absence, or the client stops the assistant over unobservable
       // in-flight work. Only the quiesce GATES are fail-open — this snapshot
       // fails closed.
-      const activeConversations = listProcessingConversations();
+      const activeConversations = await listProcessingConversations();
       const memoryJobs = listRunningMemoryJobs();
       const scheduleRuns = await listRunningScheduleRuns();
       // Workflows launched by a schedule outlive their schedule run — the

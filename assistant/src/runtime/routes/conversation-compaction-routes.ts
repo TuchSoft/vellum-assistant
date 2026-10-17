@@ -274,7 +274,7 @@ async function handleGetCompactionTrail({
   // Verify the conversation exists before we touch the log source —
   // a missing conversation should 404, not return an empty trail with
   // no signal that the caller had the wrong id.
-  const conversation = getConversation(conversationId);
+  const conversation = await getConversation(conversationId);
   if (!conversation) {
     throw new NotFoundError(`Conversation ${conversationId} not found`);
   }

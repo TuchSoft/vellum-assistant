@@ -25,7 +25,9 @@ import {
 import { BadRequestError } from "./errors.js";
 import type { RouteHandlerArgs } from "./types.js";
 
-export function handleDeleteConversation({ body = {} }: RouteHandlerArgs) {
+export async function handleDeleteConversation({
+  body = {},
+}: RouteHandlerArgs) {
   const { sourceChannel, conversationExternalId, sourceThreadId } = body as {
     sourceChannel?: string;
     conversationExternalId?: string;
@@ -46,20 +48,23 @@ export function handleDeleteConversation({ body = {} }: RouteHandlerArgs) {
     conversationExternalId,
     normalizedThreadId,
   );
-  deleteConversationKey(scopedKey);
+  await deleteConversationKey(scopedKey);
   const legacyKey = `${sourceChannel}:${conversationExternalId}`;
   if (!normalizedThreadId) {
-    deleteConversationKey(legacyKey);
-    deleteBindingByChannelChatNullThread(sourceChannel, conversationExternalId);
+    await deleteConversationKey(legacyKey);
+    await deleteBindingByChannelChatNullThread(
+      sourceChannel,
+      conversationExternalId,
+    );
   } else {
     // Slack adapter: eagerly re-mint a fresh conversation for the threaded
     // key so mid-thread turns racing the reset land in the new conversation.
     // Telegram deliberately skips this — a reset topic simply creates its
     // fresh conversation on the next inbound message.
     if (sourceChannel === "slack") {
-      getOrCreateConversation(scopedKey);
+      await getOrCreateConversation(scopedKey);
     }
-    deleteBindingByChannelChatThread(
+    await deleteBindingByChannelChatThread(
       sourceChannel,
       conversationExternalId,
       normalizedThreadId,

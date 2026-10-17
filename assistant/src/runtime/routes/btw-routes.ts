@@ -125,7 +125,7 @@ async function handleBtw({
   // side-chain runs against an ephemeral in-memory conversation with no
   // persisted row — keeping the "no messages are persisted" contract and off
   // the sidebar. A mapped key targets a real conversation and reuses its row.
-  const mapping = getConversationByKey(conversationKey);
+  const mapping = await getConversationByKey(conversationKey);
   const conversationId = mapping?.conversationId ?? conversationKey;
 
   let conversation;

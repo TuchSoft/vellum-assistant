@@ -130,7 +130,7 @@ async function handleConversationsImport({ body }: RouteHandlerArgs) {
     try {
       // Dedup via sourceKey
       if (conv.sourceKey) {
-        const existing = getConversationByKey(conv.sourceKey);
+        const existing = await getConversationByKey(conv.sourceKey);
         if (existing) {
           skipped++;
           continue;
@@ -222,7 +222,7 @@ async function handleConversationsImport({ body }: RouteHandlerArgs) {
       }
 
       if (conv.sourceKey) {
-        setConversationKey(conv.sourceKey, conversation.id);
+        await setConversationKey(conv.sourceKey, conversation.id);
       }
 
       imported++;

@@ -270,7 +270,7 @@ export const ROUTES: RouteDefinition[] = [
         .describe(`Document title. Defaults to "${DEFAULT_DOCUMENT_TITLE}".`),
     }),
     responseBody: documentPayloadSchema,
-    handler: ({ body, headers }) => {
+    handler: async ({ body, headers }) => {
       const { conversationId, title } = (body ?? {}) as {
         conversationId?: string;
         title?: string;
@@ -281,7 +281,7 @@ export const ROUTES: RouteDefinition[] = [
       if (title !== undefined && typeof title !== "string") {
         throw new BadRequestError("title must be a string");
       }
-      if (!getConversation(conversationId)) {
+      if (!(await getConversation(conversationId))) {
         throw new NotFoundError("Conversation not found");
       }
 

@@ -22,9 +22,9 @@ export const ROUTES: RouteDefinition[] = [
     policy: null,
     summary: "List conversations created by the seed-conversation endpoint",
     tags: ["playground"],
-    handler: () => {
+    handler: async () => {
       assertPlaygroundEnabled();
-      const conversations = listConversationsByTitlePrefix(
+      const conversations = await listConversationsByTitlePrefix(
         PLAYGROUND_TITLE_PREFIX,
       );
       return { conversations };
@@ -38,18 +38,18 @@ export const ROUTES: RouteDefinition[] = [
     summary: "Delete a single seeded conversation (prefix-gated)",
     tags: ["playground"],
     pathParams: [{ name: "id", type: "uuid" }],
-    handler: ({ pathParams }) => {
+    handler: async ({ pathParams }) => {
       assertPlaygroundEnabled();
 
       const id = pathParams!.id;
-      const seeded = listConversationsByTitlePrefix(
-        PLAYGROUND_TITLE_PREFIX,
+      const seeded = (
+        await listConversationsByTitlePrefix(PLAYGROUND_TITLE_PREFIX)
       ).find((c) => c.id === id);
       if (!seeded) {
         throw new ForbiddenError("Not a playground conversation");
       }
 
-      const deleted = deleteConversationById(id);
+      const deleted = await deleteConversationById(id);
       return { deletedCount: deleted ? 1 : 0 };
     },
   },
@@ -60,14 +60,14 @@ export const ROUTES: RouteDefinition[] = [
     policy: null,
     summary: "Delete every seeded playground conversation (prefix-gated)",
     tags: ["playground"],
-    handler: () => {
+    handler: async () => {
       assertPlaygroundEnabled();
-      const candidates = listConversationsByTitlePrefix(
+      const candidates = await listConversationsByTitlePrefix(
         PLAYGROUND_TITLE_PREFIX,
       );
       let deletedCount = 0;
       for (const c of candidates) {
-        if (deleteConversationById(c.id)) {
+        if (await deleteConversationById(c.id)) {
           deletedCount++;
         }
       }

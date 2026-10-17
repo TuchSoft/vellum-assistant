@@ -34,7 +34,7 @@ import { enqueueMemoryJob } from "../../../persistence/jobs-store.js";
 export async function getConversationById(
   id: string,
 ): Promise<Conversation | undefined> {
-  if (!getConversationRow(id)) {
+  if (!(await getConversationRow(id))) {
     return undefined;
   }
   // Hydrate via getOrCreateConversation when available (production path).
@@ -50,22 +50,22 @@ export async function getConversationById(
 /**
  * List non-archived conversations whose title starts with `prefix`.
  */
-export function listConversationsByTitlePrefix(prefix: string) {
-  return listByPrefix(prefix);
+export async function listConversationsByTitlePrefix(prefix: string) {
+  return await listByPrefix(prefix);
 }
 
 /**
  * Delete a conversation by ID, tearing down any in-memory state and
  * enqueuing vector cleanup. Returns `true` when a row was deleted.
  */
-export function deleteConversationById(id: string): boolean {
-  if (!getConversationRow(id)) {
+export async function deleteConversationById(id: string): Promise<boolean> {
+  if (!(await getConversationRow(id))) {
     return false;
   }
   // In-memory teardown only: `deleteConversationCrud` drops the durable
   // subagent rows inside its own transaction.
   destroyActiveConversation(id, { keepSubagentRecords: true });
-  const deleted = deleteConversationCrud(id);
+  const deleted = await deleteConversationCrud(id);
   for (const segId of deleted.segmentIds) {
     enqueueMemoryJob("delete_qdrant_vectors", {
       targetType: "segment",
@@ -84,8 +84,10 @@ export function deleteConversationById(id: string): boolean {
 /**
  * Create a conversation with the given title.
  */
-export function createPlaygroundConversation(title: string): { id: string } {
-  const row = createConversationCrud({ title });
+export async function createPlaygroundConversation(
+  title: string,
+): Promise<{ id: string }> {
+  const row = await createConversationCrud({ title });
   return { id: row.id };
 }
 

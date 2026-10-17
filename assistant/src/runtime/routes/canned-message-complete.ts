@@ -90,7 +90,7 @@ export async function persistSystemCard(opts: {
       persistedAssistant.id,
     );
   }
-  recordConversationPersistedSeq(conversationId, getCurrentSeq());
+  await recordConversationPersistedSeq(conversationId, getCurrentSeq());
   publishConversationMessagesChanged(conversationId);
   return { id: persistedAssistant.id, message: assistantMsg };
 }

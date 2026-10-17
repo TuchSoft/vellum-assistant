@@ -708,7 +708,7 @@ async function tryConsumeGuardianReply(params: {
       // content), so advance the snapshot↔stream anchor past the events just
       // emitted. Otherwise `/messages` returns these rows while advertising
       // the previous anchor, under-claiming what the snapshot reflects.
-      recordConversationPersistedSeq(conversationId, getCurrentSeq());
+      await recordConversationPersistedSeq(conversationId, getCurrentSeq());
     }
     publishConversationMessagesChanged(conversationId, originClientId);
   } catch (err) {
@@ -750,8 +750,7 @@ function extractNotificationDiscriminators(
   }
 
   const subagent = meta.subagentNotification as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   if (
     subagent &&
     typeof subagent.subagentId === "string" &&
@@ -867,9 +866,11 @@ function buildQueuedMessagePayloads(
  * rows only, and only unhidden ones outside a memory-retrospective fork
  * (whose hidden instruction row is part of what makes the run readable).
  */
-function displayRowFilter(conversationId: string): (m: MessageRow) => boolean {
+async function displayRowFilter(
+  conversationId: string,
+): Promise<(m: MessageRow) => boolean> {
   const isRetrospectiveFork =
-    getConversation(conversationId)?.source ===
+    (await getConversation(conversationId))?.source ===
     MEMORY_RETROSPECTIVE_FORK_SOURCE;
   return (m: MessageRow) =>
     (isRetrospectiveFork || !isHiddenMessage(m.metadata)) &&
@@ -937,10 +938,10 @@ export async function handleListMessages({
     // background/scheduled conversations bootstrapped without a
     // `conversation_keys` row (web clients use the conversation list's
     // `id` as `conversationKey` for those).
-    const mapping = getConversationByKey(conversationKey);
+    const mapping = await getConversationByKey(conversationKey);
     if (mapping) {
       resolvedConversationId = mapping.conversationId;
-    } else if (getConversation(conversationKey)) {
+    } else if (await getConversation(conversationKey)) {
       resolvedConversationId = conversationKey;
     }
   } else {
@@ -1031,10 +1032,10 @@ export async function handleListMessages({
   // permitted `MessageRole`, e.g. skill-authored context) are agent-context
   // scaffolding, never a displayed turn, so they are dropped here at the
   // source rather than narrowed away per-client.
-  const visibleFilter = displayRowFilter(resolvedConversationId);
+  const visibleFilter = await displayRowFilter(resolvedConversationId);
 
   if (isPaginated) {
-    const result = getMessagesPaginated(
+    const result = await getMessagesPaginated(
       resolvedConversationId,
       limit,
       beforeTimestamp,
@@ -1044,7 +1045,9 @@ export async function handleListMessages({
     hasMore = result.hasMore;
     scanResumeCursor = result.nextCursor;
   } else {
-    rawMessages = getMessages(resolvedConversationId).filter(visibleFilter);
+    rawMessages = (await getMessages(resolvedConversationId)).filter(
+      visibleFilter,
+    );
   }
 
   // During streaming, tool_use (assistant) and tool_result (user) events are
@@ -1062,9 +1065,10 @@ export async function handleListMessages({
     const owner = readModeSessionMetadata(message.metadata);
     return owner ? [owner.id] : [];
   });
-  const summaries = listConversationModeSessionsByIds(resolvedConversationId, [
-    ...new Set([...pageModeSessionIds, ...requestedModeSessionIds]),
-  ]);
+  const summaries = await listConversationModeSessionsByIds(
+    resolvedConversationId,
+    [...new Set([...pageModeSessionIds, ...requestedModeSessionIds])],
+  );
   const validOwners = new Map(
     summaries.map((summary) => [summary.id, summary.mode]),
   );
@@ -1265,7 +1269,7 @@ export async function handleListMessages({
       let msgAttachments: RuntimeAttachmentMetadata[] = [];
       if (m.id) {
         const idsToQuery = [m.id, ...mergedMessageIds];
-        const linkedRows = getAttachmentMetadataForMessages(idsToQuery);
+        const linkedRows = await getAttachmentMetadataForMessages(idsToQuery);
         const computerUseScreenshotIds = new Set(
           linkedRows.flatMap((row) =>
             computerUseScreenshotAttachmentIdsFromMetadata(
@@ -1295,7 +1299,7 @@ export async function handleListMessages({
                 !isImage && isHeicFilename(a.originalFilename);
               const full =
                 isImage || isLegacyHeic
-                  ? getAttachmentById(a.id, { hydrateFileData: true })
+                  ? await getAttachmentById(a.id, { hydrateFileData: true })
                   : null;
               const display = full?.dataBase64
                 ? await normalizeImageBase64(a.mimeType, full.dataBase64)
@@ -1487,14 +1491,16 @@ export async function handleListMessages({
   // response so a client can apply only stream events with a higher `seq`.
   // Null when nothing has been persisted (the conversation was created before
   // any stream activity, or predates the column) -- the client cold-starts.
-  const persistedSeq = getConversationPersistedSeq(resolvedConversationId);
+  const persistedSeq = await getConversationPersistedSeq(
+    resolvedConversationId,
+  );
 
   // Authoritative "is the agent mid-turn?" signal, sourced from the
   // `processing_started_at` column (persisted, survives daemon restarts).
   // Clients use this to distinguish a live turn still in flight from a
   // turn that silently died — without it, a dropped SSE stream leaves the
   // UI spinning forever with no way to learn the server is actually idle.
-  const processing = isConversationProcessing(resolvedConversationId);
+  const processing = await isConversationProcessing(resolvedConversationId);
 
   // Append the in-memory queue's pending user messages to the newest page so a
   // cold reload restores them alongside persisted history. They are the newest
@@ -1868,7 +1874,7 @@ export async function handleSendMessage(
 
   // Validate that all attachment IDs resolve
   if (hasAttachments) {
-    const resolved = getAttachmentsByIds(attachmentIds);
+    const resolved = await getAttachmentsByIds(attachmentIds);
     if (resolved.length !== attachmentIds.length) {
       const resolvedIds = new Set(resolved.map((a) => a.id));
       const missing = attachmentIds.filter((id) => !resolvedIds.has(id));
@@ -1939,7 +1945,7 @@ export async function handleSendMessage(
   const deferBootstrapCleanup =
     mintConversation && requestedRiskThreshold !== undefined;
   if (inboundConversationId !== undefined) {
-    const existing = getConversation(inboundConversationId);
+    const existing = await getConversation(inboundConversationId);
     if (!existing) {
       throw new NotFoundError(
         `Conversation ${inboundConversationId} not found`,
@@ -1961,7 +1967,7 @@ export async function handleSendMessage(
     // mints behind the scenes (e.g. the research pass) so it isn't left with an
     // auto-generated title. Applied only when this call creates the row.
     const onboardingTitle = body.onboarding?.title?.trim() || undefined;
-    mapping = getOrCreateConversation(resolvedConversationKey, {
+    mapping = await getOrCreateConversation(resolvedConversationKey, {
       conversationType: "standard",
       title: onboardingTitle,
       // This route already resolved the channel the message arrived on, and
@@ -1994,10 +2000,10 @@ export async function handleSendMessage(
       // unannounced, server-minted chat with no messages.
       if (mintConversation && mapping.created) {
         try {
-          if (hasMessages(mapping.conversationId)) {
+          if (await hasMessages(mapping.conversationId)) {
             recordStandardConversationCreated();
           } else {
-            deleteConversation(mapping.conversationId);
+            await deleteConversation(mapping.conversationId);
           }
         } catch (cleanupError) {
           log.error(
@@ -2025,7 +2031,7 @@ export async function handleSendMessage(
   // though, from the user's perspective, this is a brand-new conversation
   // that other clients don't yet know about.
   if (mapping.conversationType === "standard") {
-    if (!hasMessages(mapping.conversationId)) {
+    if (!(await hasMessages(mapping.conversationId))) {
       publishConversationListAndMetadataChanged(
         "created",
         mapping.conversationId,
@@ -2064,7 +2070,7 @@ export async function handleSendMessage(
   );
 
   if (requestedInferenceProfile !== undefined) {
-    setConversationInferenceProfile(
+    await setConversationInferenceProfile(
       mapping.conversationId,
       requestedInferenceProfile,
     );
@@ -2229,7 +2235,7 @@ export async function handleSendMessage(
     try {
       const rawContent = content ?? "";
       const attachments = hasAttachments
-        ? smDeps.resolveAttachments(attachmentIds)
+        ? await smDeps.resolveAttachments(attachmentIds)
         : [];
       const greetingMeta = {
         userMessageChannel: sourceChannel,
@@ -2288,7 +2294,7 @@ export async function handleSendMessage(
         conversation,
         owner: greetingOwner,
         origin: "canned_greeting",
-        emit: () => {
+        emit: async () => {
           broadcastMessage({
             type: "user_message_echo",
             text: rawContent,
@@ -2309,7 +2315,7 @@ export async function handleSendMessage(
           // Rows persisted before this deferred burst; advance the
           // snapshot↔stream anchor past the events just emitted so `/messages`
           // never returns these rows behind a stale anchor.
-          recordConversationPersistedSeq(conversationId, getCurrentSeq());
+          await recordConversationPersistedSeq(conversationId, getCurrentSeq());
           publishConversationMessagesChanged(conversationId, originClientId);
         },
         afterRelease: () => {
@@ -2382,7 +2388,7 @@ export async function handleSendMessage(
   const contentAfterScan = effectiveContent ?? content ?? "";
 
   const attachments = hasAttachments
-    ? smDeps.resolveAttachments(attachmentIds)
+    ? await smDeps.resolveAttachments(attachmentIds)
     : [];
 
   // Resolve the verified actor's external user ID and principal for inline
@@ -2887,7 +2893,7 @@ export async function handleSendMessage(
             conversation,
             owner: slashOwner,
             origin: "slash_command",
-            emit: () => {
+            emit: async () => {
               broadcastMessage({
                 type: "user_message_echo",
                 text: rawContent,
@@ -2909,7 +2915,10 @@ export async function handleSendMessage(
                 persistedAssistant.id,
               );
               // Same anchor advance as the canned-greeting path above.
-              recordConversationPersistedSeq(conversationId, getCurrentSeq());
+              await recordConversationPersistedSeq(
+                conversationId,
+                getCurrentSeq(),
+              );
               publishConversationMessagesChanged(
                 conversationId,
                 originClientId,
@@ -3183,7 +3192,10 @@ export async function handleSendMessage(
         // conversation's events through the advertised seq. Safe to claim here:
         // the agent loop for this turn hasn't started, so no streamed-but-
         // unflushed content exists for this conversation.
-        recordConversationPersistedSeq(mapping.conversationId, getCurrentSeq());
+        await recordConversationPersistedSeq(
+          mapping.conversationId,
+          getCurrentSeq(),
+        );
       }
       publishConversationMessagesChanged(
         mapping.conversationId,
@@ -3297,7 +3309,10 @@ export async function handleSendMessage(
     // the ordinary race; this read only keeps a known duplicate away from the
     // abort.
     const duplicateMessageId = clientMessageId
-      ? findMessageIdByClientMessageId(mapping.conversationId, clientMessageId)
+      ? await findMessageIdByClientMessageId(
+          mapping.conversationId,
+          clientMessageId,
+        )
       : undefined;
     if (duplicateMessageId) {
       log.info(
@@ -3566,10 +3581,10 @@ export async function handleGetSuggestion(
   if (conversationId) {
     resolvedConversationId = conversationId;
   } else if (conversationKey) {
-    const mapping = getConversationByKey(conversationKey);
+    const mapping = await getConversationByKey(conversationKey);
     if (mapping) {
       resolvedConversationId = mapping.conversationId;
-    } else if (getConversation(conversationKey)) {
+    } else if (await getConversation(conversationKey)) {
       resolvedConversationId = conversationKey;
     }
   }
@@ -3583,8 +3598,8 @@ export async function handleGetSuggestion(
   // multi-row turn stale: on a gated `send_user_message` turn, which is always
   // at least the call row plus the post-tool wrap-up, that is every reply.
   const rawMessages = consolidateDisplayTurns(
-    getMessages(resolvedConversationId).filter(
-      displayRowFilter(resolvedConversationId),
+    (await getMessages(resolvedConversationId)).filter(
+      await displayRowFilter(resolvedConversationId),
     ),
   ).messages;
   if (rawMessages.length === 0) {

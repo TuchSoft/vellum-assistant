@@ -73,7 +73,7 @@ async function handleDeferCreate({ body = {} }: RouteHandlerArgs) {
     body,
   );
 
-  const conversation = getConversation(conversationId);
+  const conversation = await getConversation(conversationId);
   if (!conversation) {
     throw new NotFoundError(`Conversation not found: ${conversationId}`);
   }

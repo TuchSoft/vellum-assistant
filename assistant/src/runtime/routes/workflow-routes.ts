@@ -300,9 +300,9 @@ function handleAbortRun(id: string) {
  * with no snapshot) yield no query: the cascade then resolves conversation
  * override → global, and the full-access gate is the sole consent check.
  */
-function buildResumeCellQuery(
+async function buildResumeCellQuery(
   run: WorkflowRun,
-): ReturnType<typeof buildChannelPermissionCellQuery> {
+): Promise<ReturnType<typeof buildChannelPermissionCellQuery>> {
   if (!run.trust || typeof run.trust !== "object") {
     return undefined;
   }
@@ -316,7 +316,8 @@ function buildResumeCellQuery(
     // same lookup conversation-tool-setup uses for live tool calls.
     channelExternalId:
       snapshot.sourceChannel && run.conversationId
-        ? deps.getBindingByConversation(run.conversationId)?.externalChatId
+        ? (await deps.getBindingByConversation(run.conversationId))
+            ?.externalChatId
         : undefined,
   });
 }
@@ -347,7 +348,7 @@ async function handleResumeRun(id: string) {
     const threshold = await deps.getAutoApproveThreshold(
       run.conversationId ?? undefined,
       "conversation",
-      buildResumeCellQuery(run),
+      await buildResumeCellQuery(run),
     );
     if (!isFullAccessThreshold(threshold)) {
       throw new ForbiddenError(

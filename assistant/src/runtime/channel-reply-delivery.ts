@@ -292,7 +292,7 @@ export type DeliverReplyOptions = {
   onMessageTs?: (ts: string) => void | Promise<void>;
 };
 
-type PersistedMessage = ReturnType<typeof getMessages>[number];
+type PersistedMessage = Awaited<ReturnType<typeof getMessages>>[number];
 
 /**
  * A row read that contributes nothing to deliver. Spelled out rather than
@@ -328,10 +328,10 @@ const NO_REPLY_CONTENT: RenderedHistoryContent = {
  * returns. The history renderers project these rows as a structured reaction
  * fact for the same reason; delivery owes the channel nothing for them.
  */
-function readPersistedAssistantReply(msg: PersistedMessage): {
+async function readPersistedAssistantReply(msg: PersistedMessage): Promise<{
   rendered: RenderedHistoryContent;
   replyAttachments: RuntimeAttachmentMetadata[];
-} {
+}> {
   if (isReactionMessageMetadata(parseMessageMetadata(msg.metadata))) {
     return { rendered: NO_REPLY_CONTENT, replyAttachments: [] };
   }
@@ -348,7 +348,7 @@ function readPersistedAssistantReply(msg: PersistedMessage): {
     DEFAULT_LOCALE,
   );
 
-  const linked = getAttachmentMetadataForMessage(msg.id);
+  const linked = await getAttachmentMetadataForMessage(msg.id);
   const replyAttachments: RuntimeAttachmentMetadata[] = linked.map((a) => ({
     id: a.id,
     filename: a.originalFilename,
@@ -392,18 +392,20 @@ function isToolResultUserMessage(msg: PersistedMessage): boolean {
  * attachment link on the row the user is actually shown, and falls back to the
  * caller's row when the turn has no separately resolvable reply.
  */
-export function resolveTurnReplyMessageId(
+export async function resolveTurnReplyMessageId(
   conversationId: string,
   userMessageId: string | undefined,
   fallbackMessageId: string,
-): string {
+): Promise<string> {
   if (!userMessageId) {
     return fallbackMessageId;
   }
   try {
     return (
-      findAssistantReplyMessageIdForTurn(conversationId, userMessageId) ??
-      fallbackMessageId
+      (await findAssistantReplyMessageIdForTurn(
+        conversationId,
+        userMessageId,
+      )) ?? fallbackMessageId
     );
   } catch {
     // Resolution is a refinement, never a reason to lose the reply.
@@ -411,11 +413,11 @@ export function resolveTurnReplyMessageId(
   }
 }
 
-export function findAssistantReplyMessageIdForTurn(
+export async function findAssistantReplyMessageIdForTurn(
   conversationId: string,
   userMessageId: string,
-): string | undefined {
-  const msgs = getMessages(conversationId);
+): Promise<string | undefined> {
+  const msgs = await getMessages(conversationId);
   const userIndex = msgs.findIndex((msg) => msg.id === userMessageId);
   if (userIndex === -1) {
     return undefined;
@@ -434,7 +436,8 @@ export function findAssistantReplyMessageIdForTurn(
   for (let i = turnEndIndex - 1; i > userIndex; i--) {
     const msg = msgs[i];
     if (msg.role === "assistant") {
-      const { rendered, replyAttachments } = readPersistedAssistantReply(msg);
+      const { rendered, replyAttachments } =
+        await readPersistedAssistantReply(msg);
       if (hasRealDeliverableReply(rendered, replyAttachments)) {
         return msg.id;
       }
@@ -468,14 +471,14 @@ export function findAssistantReplyMessageIdForTurn(
  * visibility marker: an ordinary turn has no private rows, so this is empty
  * and its delivery is unchanged.
  */
-function earlierGatedSegmentsForTurn(
+async function earlierGatedSegmentsForTurn(
   conversationId: string,
   userMessageId: string,
   replyMessageId: string,
-): string[] {
+): Promise<string[]> {
   let msgs: PersistedMessage[];
   try {
-    msgs = getMessages(conversationId);
+    msgs = await getMessages(conversationId);
   } catch {
     // Combining is a refinement, never a reason to lose the reply.
     return [];
@@ -496,7 +499,7 @@ function earlierGatedSegmentsForTurn(
     if (msg.role !== "assistant" || !isPrivateAssistantText(msg.metadata)) {
       continue;
     }
-    const { rendered } = readPersistedAssistantReply(msg);
+    const { rendered } = await readPersistedAssistantReply(msg);
     segments.push(...rendered.textSegments);
   }
   return segments;
@@ -509,10 +512,10 @@ async function deliverPersistedAssistantMessageViaCallback(
   callbackUrl: string,
   assistantId: string | undefined,
   options: DeliverReplyOptions | undefined,
-  preRead?: ReturnType<typeof readPersistedAssistantReply>,
+  preRead?: Awaited<ReturnType<typeof readPersistedAssistantReply>>,
 ): Promise<boolean> {
   const { rendered, replyAttachments } =
-    preRead ?? readPersistedAssistantReply(msg);
+    preRead ?? (await readPersistedAssistantReply(msg));
   if (!hasDeliverableReply(rendered, replyAttachments)) {
     return false;
   }
@@ -521,7 +524,7 @@ async function deliverPersistedAssistantMessageViaCallback(
   // live stream receives every message the model sent rather than only the
   // last one. Empty on every non-gated turn.
   const earlier = options?.sinceMessageId
-    ? earlierGatedSegmentsForTurn(
+    ? await earlierGatedSegmentsForTurn(
         conversationId,
         options.sinceMessageId,
         msg.id,
@@ -572,7 +575,7 @@ export async function deliverReplyViaCallback(
   options?: DeliverReplyOptions,
 ): Promise<void> {
   if (options?.messageId) {
-    const msg = getMessageById(options.messageId, conversationId);
+    const msg = await getMessageById(options.messageId, conversationId);
     if (!msg || msg.role !== "assistant") {
       throw new Error(
         `Target assistant reply message not found: ${options.messageId}`,
@@ -584,7 +587,7 @@ export async function deliverReplyViaCallback(
     // the same turn. When the turn boundary is known, defer to the turn scan
     // below; it returns this same sentinel row (deliberate silence) only when
     // no row in the turn carries real content.
-    const preRead = readPersistedAssistantReply(msg);
+    const preRead = await readPersistedAssistantReply(msg);
     if (
       hasRealDeliverableReply(preRead.rendered, preRead.replyAttachments) ||
       !options.sinceMessageId
@@ -603,12 +606,12 @@ export async function deliverReplyViaCallback(
   }
 
   if (options?.sinceMessageId) {
-    const replyMessageId = findAssistantReplyMessageIdForTurn(
+    const replyMessageId = await findAssistantReplyMessageIdForTurn(
       conversationId,
       options.sinceMessageId,
     );
     if (replyMessageId) {
-      const msg = getMessageById(replyMessageId, conversationId);
+      const msg = await getMessageById(replyMessageId, conversationId);
       if (msg && msg.role === "assistant") {
         await deliverPersistedAssistantMessageViaCallback(
           conversationId,
@@ -623,7 +626,7 @@ export async function deliverReplyViaCallback(
     return;
   }
 
-  const msgs = getMessages(conversationId);
+  const msgs = await getMessages(conversationId);
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (msgs[i].role !== "assistant") {
       continue;

@@ -103,7 +103,7 @@ async function handleSlackChannelNameResolve({
     throw new NotFoundError("Conversation not found");
   }
 
-  const binding = getBindingByConversation(conversationId);
+  const binding = await getBindingByConversation(conversationId);
 
   if (!binding || binding.sourceChannel !== "slack") {
     throw new NotFoundError("Conversation not found");
@@ -155,7 +155,7 @@ async function handleSlackChannelNameResolve({
     };
   }
 
-  updateExternalChatName(conversationId, channelName);
+  await updateExternalChatName(conversationId, channelName);
   await publishSyncInvalidation(
     [SYNC_TAGS.conversationsList, conversationMetadataSyncTag(conversationId)],
     headers?.["x-vellum-client-id"]?.trim() || undefined,

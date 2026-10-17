@@ -115,7 +115,7 @@ export function createChannelReplySession(params: {
    * id would point recovery at a message that never existed: the retry would
    * try to edit it and the reply would be lost rather than posted.
    */
-  onStreamOpen?: (streamTs: string) => void;
+  onStreamOpen?: (streamTs: string) => void | Promise<void>;
 }): ChannelReplySession | undefined {
   if (
     !params.replyCallbackUrl ||
@@ -230,7 +230,7 @@ export function createChannelReplySession(params: {
           // strictly better than a guaranteed duplicate post.
           try {
             if (streamIsTheReply) {
-              params.onStreamOpen?.(result.ts);
+              await params.onStreamOpen?.(result.ts);
             }
           } catch (err) {
             log.warn(

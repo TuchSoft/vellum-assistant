@@ -13,13 +13,16 @@
  * rewrites to `$n`. See `assistant/docs/pg-port-translation.md` for the
  * construct map still applied by the legacy call sites.
  *
- * Schema ownership: the facade does not create tables. The migration runner
- * (`pg-migrations/`) owns the schema; tests bootstrap it through
+ * Schema ownership: the facade does not own migrations, but it bootstraps the
+ * generated baseline once per URL so a fresh database has every table the
+ * ported slices need. The migration runner (`pg-migrations/`) owns later
+ * changes; tests bootstrap their isolated schema through
  * `src/__tests__/pg-test-db.ts`.
  */
 
 import type { PgDrizzleDb, PgSchemaTables } from "./db-postgres-facade.js";
 import { getPostgresAsyncDb } from "./db-postgres-facade.js";
+import { BASELINE_STATEMENTS } from "./pg-migrations/baseline.generated.js";
 
 /** A value bindable as a positional query parameter. */
 export type SqlParam =
@@ -126,7 +129,7 @@ function facadeFor(slot: AsyncDbSlot): AsyncDb | null {
     }
     return null;
   }
-  return getPostgresAsyncDb(slot, url);
+  return getPostgresAsyncDb(slot, url, BASELINE_STATEMENTS);
 }
 
 /** The async facade for the main database, or `null` when it is unavailable. */

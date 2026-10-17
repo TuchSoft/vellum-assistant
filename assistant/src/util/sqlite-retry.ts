@@ -1,21 +1,24 @@
 /**
- * Retry helper for transient SQLite write contention.
+ * Retry helper for transient write contention.
  *
  * SQLite serializes writers at the database level: only one connection holds
  * the write lock at a time. `PRAGMA busy_timeout` makes a contending writer
  * *wait* for the lock, but it cannot rescue a statement that still loses the
  * race (the wait elapses) or a transaction that begins as a reader and then
  * fails to upgrade to a writer — both surface as `SQLITE_BUSY`. Transient disk
- * errors surface as `SQLITE_IOERR`. The only correct recovery for either is to
- * re-run the whole operation, so write paths that several processes contend on
- * (the conversation loop, the scheduler, the memory worker) wrap their writes
- * in {@link withSqliteRetry}.
+ * errors surface as `SQLITE_IOERR`. Postgres surfaces the same class of
+ * transient conflict as a serialization failure (`40001`) or a deadlock
+ * (`40P01`); both are safe to re-run. The only correct recovery for any of
+ * them is to re-run the whole operation, so write paths that several processes
+ * contend on (the conversation loop, the scheduler, the memory worker) wrap
+ * their writes in {@link withSqliteRetry}.
  *
- * It retries on `SQLITE_BUSY*` / `SQLITE_IOERR*` with jittered backoff; the
- * jitter decorrelates retries across the now-separate worker processes so they
- * don't collide in lockstep. The wrapped function may be sync (a `bun:sqlite`
- * statement) or async — it is always awaited, so the single async signature is
- * the one boundary to port if the storage layer ever moves to an async driver.
+ * It retries on `SQLITE_BUSY*` / `SQLITE_IOERR*` and on the Postgres
+ * serialization/deadlock codes with jittered backoff; the jitter decorrelates
+ * retries across the now-separate worker processes so they don't collide in
+ * lockstep. The wrapped function may be sync (a `bun:sqlite` statement) or
+ * async — it is always awaited, so the single async signature is the one
+ * boundary to port if the storage layer ever moves to an async driver.
  *
  * The wrapped function must be safe to re-run: either a single statement, or a
  * sequence guarded so re-execution is idempotent (e.g. an optimistic-lock
@@ -65,13 +68,19 @@ function sqliteErrorCode(err: unknown): string {
 }
 
 /**
- * Whether an error is a transient SQLite contention/IO error worth retrying.
- * Matches the `SQLITE_BUSY` and `SQLITE_IOERR` families (including their
- * extended-result-code suffixes like `SQLITE_BUSY_SNAPSHOT`).
+ * Whether an error is a transient contention/IO error worth retrying. Matches
+ * the `SQLITE_BUSY` and `SQLITE_IOERR` families (including their
+ * extended-result-code suffixes like `SQLITE_BUSY_SNAPSHOT`) and the Postgres
+ * serialization-failure / deadlock-detected SQLSTATEs.
  */
 export function isRetryableSqliteError(err: unknown): boolean {
   const code = sqliteErrorCode(err);
-  return code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_IOERR");
+  return (
+    code.startsWith("SQLITE_BUSY") ||
+    code.startsWith("SQLITE_IOERR") ||
+    code === "40001" ||
+    code === "40P01"
+  );
 }
 
 /**

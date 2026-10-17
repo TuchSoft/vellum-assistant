@@ -53,7 +53,6 @@ import { publishConversationListAndMetadataChanged } from "../runtime/sync/resou
 import { publishSyncInvalidation } from "../runtime/sync/sync-publisher.js";
 import { UserError } from "../util/errors.js";
 import { getLogger } from "../util/logger.js";
-import { getLogsDbPath } from "../util/logs-db-path.js";
 import { getConversationsDir } from "../util/platform.js";
 import { createRowMapper, parseJsonNullable } from "../util/row-mapper.js";
 import {
@@ -83,8 +82,8 @@ import {
   syncMessageToDisk,
   updateMetaFile,
 } from "./conversation-disk-view.js";
-import { ensureDisplayOrderMigration } from "./conversation-display-order-migration.js";
-import { ensureGroupMigration } from "./conversation-group-migration.js";
+import { ensureDisplayOrderMigrationAsync } from "./conversation-display-order-migration.js";
+import { ensureGroupMigrationAsync } from "./conversation-group-migration.js";
 import {
   isReferentialFork,
   type LineageConversationRow,
@@ -95,7 +94,6 @@ import {
   resolveConversationLineage,
 } from "./conversation-lineage.js";
 import { repairConversationModeSessionBoundaries } from "./conversation-mode-sessions.js";
-import { deleteConversationRowsInBatches } from "./conversation-row-batch-delete.js";
 import {
   BACKGROUND_CONVERSATION_TYPES,
   COMPUTER_USE_SCREENSHOT_ATTACHMENT_IDS_KEY,
@@ -113,15 +111,7 @@ import {
   sightFrameAttachmentIdsFromMetadata,
   UNGROUPED_GROUP_ID,
 } from "./conversation-types.js";
-import { runAsyncSqlite } from "./db-async-query.js";
-import {
-  type DrizzleDb,
-  getDb,
-  getLogsDb,
-  getMemoryDb,
-  getSqliteFrom,
-  getTelemetryDb,
-} from "./db-connection.js";
+import { type AsyncDb, requireMainDb, type SchemaTables } from "./db-facade.js";
 import {
   clearMessagesLexicalIndex,
   enqueueDeleteMessageLexical,
@@ -136,86 +126,26 @@ import {
   resolveMessagesAfterBound,
 } from "./message-cursor.js";
 import { mergeMessageMetadata } from "./message-metadata.js";
-import {
-  rawAll,
-  rawExec,
-  rawGet,
-  rawLogsRun,
-  rawMemoryRun,
-  rawRun,
-  rawTelemetryRun,
-} from "./raw-query.js";
-import {
-  attachments,
-  channelInboundEvents,
-  conversations,
-  llmRequestLogs,
-  memoryEmbeddings,
-  memorySegments,
-  messageAttachments,
-  messages,
-  telemetryEvents,
-  toolInvocations,
-} from "./schema/index.js";
-import { timeSyncSection } from "./slow-sync-log.js";
+import { traceAsyncSection } from "./slow-sync-log.js";
 import { deleteSubagentRecordsByParent } from "./subagent-store.js";
 
 const log = getLogger("conversation-store");
 
 /**
- * The logs connection (`assistant-logs.db`), where `llm_request_logs` lives.
- * Throws if the file cannot be opened — the few call sites here that touch
- * request logs (conversation deletes, turn-window anchoring) have no fallback.
- */
-function logsDb(): DrizzleDb {
-  const db = getLogsDb();
-  if (!db) {
-    throw new Error("logs database unavailable");
-  }
-  return db;
-}
-
-// ---------------------------------------------------------------------------
-// Dedicated-DB cleanup for conversation deletes.
-// ---------------------------------------------------------------------------
-//
-// `llm_request_logs` (logs DB) and pending `telemetry_events` (telemetry DB)
-// live in their own files. Both conversation-delete variants — the synchronous
-// `deleteConversation` and the off-loop `deleteConversationGently` — must clear
-// them, and both must tolerate the target table not existing yet. The memory
-// worker's startup orphan sweep runs as a separate process that can race ahead
-// of the daemon's async migrations, and a dedicated file accrues its tables
-// over several migrations — so the file can be absent, an empty create-on-open
-// shell, or present-with-other-tables (e.g. the telemetry file exists for an
-// earlier table before `telemetry_events` is created). In every one of those
-// states there are no rows to delete, so the helpers below skip when the table
-// is not yet present rather than fabricate/hit a table-less file and throw
-// `no such table` on every orphan the sweep processes.
-
-/**
- * Whether `table` exists on the given dedicated connection. Cheap
- * `sqlite_master` lookup that distinguishes "file present but this migration
- * has not created the table yet" from "table ready" — checking file existence
- * alone is not enough because the dedicated logs/telemetry files hold tables
- * created across several migrations.
- */
-function dedicatedTableExists(db: DrizzleDb, table: string): boolean {
-  return (
-    getSqliteFrom(db)
-      .query<
-        { name: string },
-        [string]
-      >(`SELECT name FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1`)
-      .get(table) != null
-  );
-}
-
-/**
- * Delete a conversation's pending `telemetry_events` rows from the dedicated
- * telemetry DB, or skip when that table does not exist yet. Telemetry redaction
+ * Remove a conversation's pending `telemetry_events` rows. Telemetry redaction
  * keys on `conversation_id` regardless of event name, so this covers every
  * conversation-scoped pending event.
  */
+async function deletePendingTelemetryEventsForConversation(
+  id: string,
+): Promise<void> {
+  const db = requireMainDb();
+  const telemetryEvents = db.schema.telemetryEvents;
+  await db.orm
+    .delete(telemetryEvents)
+    .where(eq(telemetryEvents.conversationId, id));
+}
+
 /**
  * Remove a conversation's watch-session timeline: the narration, the screens,
  * and the frames of them the entries carry.
@@ -269,33 +199,18 @@ function forgetActivationLinkForDeletedConversation(id: string): void {
   });
 }
 
-function deletePendingTelemetryEventsForConversation(id: string): void {
-  const telemetry = getTelemetryDb({ createIfMissing: false });
-  if (!telemetry || !dedicatedTableExists(telemetry, "telemetry_events")) {
-    return;
-  }
-  telemetry
-    .delete(telemetryEvents)
-    .where(eq(telemetryEvents.conversationId, id))
-    .run();
-}
-
 /**
- * Delete a conversation's `llm_request_logs` rows in-process from the dedicated
- * logs DB, or skip when that table does not exist yet. Used by the synchronous
- * delete path; {@link deleteConversationGently} drains the same table off the
- * event loop in batches (guarded by the same table-existence check) because its
- * rows can be bulky.
+ * Delete a conversation's `llm_request_logs` rows. {@link
+ * deleteConversationGently} reaches the same table through the same primitive;
+ * both delete paths clear it before any destructive work so a failure leaves
+ * the conversation intact for a retried delete.
  */
-function deleteRequestLogsForConversation(id: string): void {
-  const logs = getLogsDb({ createIfMissing: false });
-  if (!logs || !dedicatedTableExists(logs, "llm_request_logs")) {
-    return;
-  }
-  logs
+async function deleteRequestLogsForConversation(id: string): Promise<void> {
+  const db = requireMainDb();
+  const llmRequestLogs = db.schema.llmRequestLogs;
+  await db.orm
     .delete(llmRequestLogs)
-    .where(eq(llmRequestLogs.conversationId, id))
-    .run();
+    .where(eq(llmRequestLogs.conversationId, id));
 }
 
 // ── Message metadata Zod schema ──────────────────────────────────────
@@ -805,7 +720,7 @@ export interface ConversationRow {
 }
 
 export const parseConversation = createRowMapper<
-  typeof conversations.$inferSelect,
+  SchemaTables["conversations"]["$inferSelect"],
   ConversationRow
 >({
   id: "id",
@@ -868,7 +783,10 @@ export interface MessageRow {
   finalized: number;
 }
 
-const parseMessage = createRowMapper<typeof messages.$inferSelect, MessageRow>({
+const parseMessage = createRowMapper<
+  SchemaTables["messages"]["$inferSelect"],
+  MessageRow
+>({
   id: "id",
   conversationId: "conversationId",
   role: "role",
@@ -918,7 +836,7 @@ interface InsertedMessage {
  *
  * No row was written, so a caller holding resources for the message it asked
  * for (an uploaded attachment, a pending client receipt) is free to give them
- * up on this error. Carries no SQLite code, which is what keeps
+ * up on this error. Carries no retryable error code, which is what keeps
  * {@link withSqliteRetry} from mistaking it for contention and retrying an
  * abort that will only abort again.
  */
@@ -963,17 +881,15 @@ interface InsertMessageCoreParams {
  * conditionally sets the conversation's `originChannel` when the first
  * channel-originated message arrives.
  *
- * When a `clientMessageId` is provided the insert runs inside a
- * SAVEPOINT. If the partial unique index on
- * `(conversation_id, client_message_id)` raises
- * `SQLITE_CONSTRAINT_UNIQUE`, the SAVEPOINT is rolled back, the
- * existing row is fetched, and returned with `deduplicated: true`.
- * This makes the operation idempotent for client-generated
- * correlation nonces.
+ * When a `clientMessageId` is provided the insert uses `ON CONFLICT DO
+ * NOTHING`. If the partial unique index on `(conversation_id,
+ * client_message_id)` swallows the row, the existing row is fetched and
+ * returned with `deduplicated: true`. This makes the operation idempotent
+ * for client-generated correlation nonces.
  *
- * Retries up to 3 times on `SQLITE_BUSY*` / `SQLITE_IOERR*` to handle
- * WAL contention. The timestamp is recomputed each attempt so a late
- * retry doesn't persist a stale `updatedAt`.
+ * Retries up to 3 times on a serialization failure or deadlock. The
+ * timestamp is recomputed each attempt so a late retry doesn't persist a
+ * stale `updatedAt`.
  */
 /**
  * Guard: a message whose blocks are ALL `ui_surface` cards is invisible to
@@ -1043,9 +959,9 @@ async function insertMessageCore(
     skipResurface,
   } = params;
   warnOnModelInvisibleContent(content, conversationId);
-  const db = getDb();
+  const db = requireMainDb();
   // Time-ordered UUIDv7 so server-generated message ids append to the tail of
-  // the WITHOUT ROWID `messages` primary key instead of scattering (v4).
+  // the `messages` primary key instead of scattering (v4).
   const messageId = id ?? uuidv7();
 
   if (metadata) {
@@ -1067,7 +983,7 @@ async function insertMessageCore(
   // The timestamp is recomputed each attempt so a late retry doesn't persist a
   // stale `updatedAt`.
   const inserted = await withSqliteRetry(
-    (): InsertedMessage => {
+    async (): Promise<InsertedMessage> => {
       // Asked at the top of EVERY attempt, and synchronously, because that is
       // the scope the answer holds for. Contention retries this function after
       // an awaited backoff, so an answer given once for the call would be
@@ -1077,9 +993,9 @@ async function insertMessageCore(
       if (insertPrecondition && !insertPrecondition()) {
         throw new MessageInsertPreconditionError(conversationId);
       }
-      return timeSyncSection(
+      return traceAsyncSection(
         "messages:insert",
-        (): InsertedMessage => {
+        async (): Promise<InsertedMessage> => {
           const now = monotonicNow();
           const values = {
             id: messageId,
@@ -1095,43 +1011,29 @@ async function insertMessageCore(
           if (clientMessageId) {
             // Idempotent insert: skip silently if this clientMessageId was
             // already persisted for the conversation.
-            const raw = getSqliteFrom(db);
-            raw.exec("SAVEPOINT insert_msg");
-            try {
-              db.insert(messages).values(values).run();
-              if (originChannelCandidate) {
-                db.update(conversations)
-                  .set({ originChannel: originChannelCandidate })
-                  .where(
-                    and(
-                      eq(conversations.id, conversationId),
-                      isNull(conversations.originChannel),
-                    ),
-                  )
-                  .run();
-              }
-              db.update(conversations)
-                .set({ updatedAt: now, lastMessageAt: now })
-                .where(eq(conversations.id, conversationId))
-                .run();
-              raw.exec("RELEASE insert_msg");
-            } catch (insertErr) {
-              raw.exec("ROLLBACK TO insert_msg");
-              raw.exec("RELEASE insert_msg");
-              const code = (insertErr as { code?: string }).code ?? "";
-              if (code === "SQLITE_CONSTRAINT_UNIQUE") {
-                // Duplicate clientMessageId — return the existing row.
-                const existing = db
-                  .select()
-                  .from(messages)
-                  .where(
-                    and(
-                      eq(messages.conversationId, conversationId),
-                      eq(messages.clientMessageId, clientMessageId),
-                    ),
-                  )
-                  .get();
-                if (existing) {
+            return await db.transaction(
+              async (tx): Promise<InsertedMessage> => {
+                const written = await tx.orm
+                  .insert(tx.schema.messages)
+                  .values(values)
+                  .onConflictDoNothing()
+                  .returning({ id: tx.schema.messages.id });
+                if (written.length === 0) {
+                  // Duplicate clientMessageId — return the existing row.
+                  const [existing] = await tx.orm
+                    .select()
+                    .from(tx.schema.messages)
+                    .where(
+                      and(
+                        eq(tx.schema.messages.conversationId, conversationId),
+                        eq(tx.schema.messages.clientMessageId, clientMessageId),
+                      ),
+                    );
+                  if (!existing) {
+                    throw new Error(
+                      `Message insert conflicted without a dedupe row for conversation ${conversationId}`,
+                    );
+                  }
                   return {
                     id: existing.id,
                     conversationId: existing.conversationId,
@@ -1145,30 +1047,54 @@ async function insertMessageCore(
                     deduplicated: true,
                   };
                 }
-              }
-              throw insertErr;
-            }
-          } else {
-            // No clientMessageId — standard insert inside a transaction.
-            db.transaction((tx) => {
-              tx.insert(messages).values(values).run();
-              if (originChannelCandidate) {
-                tx.update(conversations)
-                  .set({ originChannel: originChannelCandidate })
-                  .where(
-                    and(
-                      eq(conversations.id, conversationId),
-                      isNull(conversations.originChannel),
-                    ),
-                  )
-                  .run();
-              }
-              tx.update(conversations)
-                .set({ updatedAt: now, lastMessageAt: now })
-                .where(eq(conversations.id, conversationId))
-                .run();
-            });
+                if (originChannelCandidate) {
+                  await tx.orm
+                    .update(tx.schema.conversations)
+                    .set({ originChannel: originChannelCandidate })
+                    .where(
+                      and(
+                        eq(tx.schema.conversations.id, conversationId),
+                        isNull(tx.schema.conversations.originChannel),
+                      ),
+                    );
+                }
+                await tx.orm
+                  .update(tx.schema.conversations)
+                  .set({ updatedAt: now, lastMessageAt: now })
+                  .where(eq(tx.schema.conversations.id, conversationId));
+                return {
+                  id: messageId,
+                  conversationId,
+                  role,
+                  content,
+                  createdAt: now,
+                  ...(metadataStr ? { metadata: metadataStr } : {}),
+                  ...(clientMessageId ? { clientMessageId } : {}),
+                  deduplicated: false,
+                };
+              },
+            );
           }
+
+          // No clientMessageId — standard insert inside a transaction.
+          await db.transaction(async (tx) => {
+            await tx.orm.insert(tx.schema.messages).values(values);
+            if (originChannelCandidate) {
+              await tx.orm
+                .update(tx.schema.conversations)
+                .set({ originChannel: originChannelCandidate })
+                .where(
+                  and(
+                    eq(tx.schema.conversations.id, conversationId),
+                    isNull(tx.schema.conversations.originChannel),
+                  ),
+                );
+            }
+            await tx.orm
+              .update(tx.schema.conversations)
+              .set({ updatedAt: now, lastMessageAt: now })
+              .where(eq(tx.schema.conversations.id, conversationId));
+          });
 
           return {
             id: messageId,
@@ -1181,12 +1107,6 @@ async function insertMessageCore(
             deduplicated: false,
           };
         },
-        () => ({
-          conversationId,
-          role,
-          contentBytes:
-            typeof content === "string" ? content.length : undefined,
-        }),
       );
     },
     { op: "insertMessageCore", context: { conversationId } },
@@ -1207,7 +1127,7 @@ async function insertMessageCore(
     !isEchoSuppressedUserMessage(metadata)
   ) {
     try {
-      resurfaceArchivedConversation(conversationId, inserted.createdAt);
+      await resurfaceArchivedConversation(conversationId, inserted.createdAt);
     } catch (err) {
       log.warn(
         { err, conversationId, messageId: inserted.id },
@@ -1230,11 +1150,13 @@ async function insertMessageCore(
  * the abort first would kill the very turn its original request started and
  * then dedupe without starting a replacement.
  */
-export function findMessageIdByClientMessageId(
+export async function findMessageIdByClientMessageId(
   conversationId: string,
   clientMessageId: string,
-): string | undefined {
-  const existing = getDb()
+): Promise<string | undefined> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const [existing] = await db.orm
     .select({ id: messages.id })
     .from(messages)
     .where(
@@ -1242,12 +1164,11 @@ export function findMessageIdByClientMessageId(
         eq(messages.conversationId, conversationId),
         eq(messages.clientMessageId, clientMessageId),
       ),
-    )
-    .get();
+    );
   return existing?.id;
 }
 
-export function createConversation(
+export async function createConversation(
   titleOrOpts?:
     | string
     | {
@@ -1297,8 +1218,13 @@ export function createConversation(
         subagentRole?: string;
         subagentSpawnMode?: string;
       },
+  /**
+   * Transaction to run in. The fork paths create a conversation inside their
+   * own transaction so the row commits or rolls back with the fork.
+   */
+  tx?: AsyncDb,
 ) {
-  const db = getDb();
+  const db = requireMainDb();
   // Monotonic, because `created_at` is a conversation's incarnation identity:
   // callers holding work for an id compare against the stamp they were
   // accepted for, so a row deleted and written back under that id has to carry
@@ -1315,14 +1241,14 @@ export function createConversation(
     requestedConversationType ?? "standard";
   const source = opts.source ?? "user";
   const groupId = opts.groupId;
-  const originChannel = resolveConversationOrigin(opts.origin);
+  const originChannel = await resolveConversationOrigin(opts.origin);
   // Time-ordered UUIDv7 for server-minted conversation ids (see message id).
   const id = opts.id ?? uuidv7();
 
   // Ensure group_id column exists for deterministic schema readiness,
   // even when this conversation has no groupId (a subsequent query or
   // reorder may reference the column).
-  ensureGroupMigration();
+  await ensureGroupMigrationAsync();
 
   const conversation = {
     id,
@@ -1355,31 +1281,24 @@ export function createConversation(
   };
 
   // Insert the row and set its group_id (raw-SQL-only, not in the Drizzle
-  // schema, so it's a second statement) atomically. A SAVEPOINT — not
-  // `db.transaction()` — because createConversation also runs INSIDE the fork
-  // paths' transactions, where a nested `BEGIN` would error; a savepoint nests
-  // cleanly and is still atomic at the top level. createConversation is a
-  // synchronous primitive and does not retry on contention: callers on
+  // schema, so it's a second statement) atomically. When the caller supplies a
+  // transaction the two statements join it; otherwise they run in one of their
+  // own. createConversation does not retry on contention: callers on
   // write-contended paths wrap the call in `withSqliteRetry`, and because the
   // insert+update are atomic here, such a retry re-runs the whole thing cleanly
   // (a failed attempt rolls back, so no half-written row is ever left behind).
   const effectiveGroupId = groupId ?? UNGROUPED_GROUP_ID;
-  const raw = getSqliteFrom(db);
-  raw.exec("SAVEPOINT create_conv");
-  try {
-    db.insert(conversations).values(conversation).run();
-    rawRun(
-      "conversation:create:setGroup",
+  const writeRow = async (conn: AsyncDb): Promise<void> => {
+    await conn.orm.insert(conn.schema.conversations).values(conversation);
+    await conn.run(
       "UPDATE conversations SET group_id = ?, is_pinned = ? WHERE id = ?",
-      effectiveGroupId,
-      effectiveGroupId === PINNED_GROUP_ID ? 1 : 0,
-      id,
+      [effectiveGroupId, effectiveGroupId === PINNED_GROUP_ID ? 1 : 0, id],
     );
-    raw.exec("RELEASE create_conv");
-  } catch (err) {
-    raw.exec("ROLLBACK TO create_conv");
-    raw.exec("RELEASE create_conv");
-    throw err;
+  };
+  if (tx) {
+    await writeRow(tx);
+  } else {
+    await db.transaction(writeRow);
   }
 
   // The disk view records the same origin the row holds.
@@ -1412,16 +1331,16 @@ export function createConversation(
  *
  * `undefined` maps to NULL, leaving the row for first-message attribution.
  */
-function resolveConversationOrigin(
+async function resolveConversationOrigin(
   origin: ConversationOrigin | undefined,
-): string | null {
+): Promise<string | null> {
   if (origin === undefined) {
     return null;
   }
   if (typeof origin === "string") {
     return origin;
   }
-  const parent = getConversation(origin.inheritFrom);
+  const parent = await getConversation(origin.inheritFrom);
   if (!parent) {
     throw new Error(
       `Cannot inherit conversation origin from ${origin.inheritFrom}: ` +
@@ -1460,11 +1379,11 @@ export const ADOPTABLE_CONVERSATION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
  * is validated first — a value like `../../tmp/x` would otherwise write
  * `meta.json` outside the conversations directory.
  */
-export function ensureConversationExists(
+export async function ensureConversationExists(
   id: string,
   origin: ConversationOrigin | undefined,
-): boolean {
-  if (getConversation(id)) {
+): Promise<boolean> {
+  if (await getConversation(id)) {
     return false;
   }
   if (!ADOPTABLE_CONVERSATION_ID_RE.test(id)) {
@@ -1473,26 +1392,28 @@ export function ensureConversationExists(
     );
   }
   try {
-    createConversation({ id, origin });
+    await createConversation({ id, origin });
     return true;
   } catch (err) {
     // A concurrent caller may have created the row between the check and the
     // insert (UNIQUE(id) violation). That's the desired end state, so only
     // rethrow if the row still isn't there.
-    if (!getConversation(id)) {
+    if (!(await getConversation(id))) {
       throw err;
     }
     return false;
   }
 }
 
-export function getConversation(id: string): ConversationRow | null {
-  const db = getDb();
-  const row = db
+export async function getConversation(
+  id: string,
+): Promise<ConversationRow | null> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const [row] = await db.orm
     .select()
     .from(conversations)
-    .where(eq(conversations.id, id))
-    .get();
+    .where(eq(conversations.id, id));
   return row ? parseConversation(row) : null;
 }
 
@@ -1501,29 +1422,30 @@ export function getConversation(id: string): ConversationRow | null {
  * Useful for determining whether a schedule can be safely deleted
  * (i.e. no other conversations still reference it).
  */
-export function countConversationsByScheduleJobId(
+export async function countConversationsByScheduleJobId(
   scheduleJobId: string,
-): number {
-  return (
-    rawGet<{ c: number }>(
-      "conversation:countByScheduleJobId",
-      "SELECT COUNT(*) AS c FROM conversations WHERE schedule_job_id = ?",
-      scheduleJobId,
-    )?.c ?? 0
+): Promise<number> {
+  const db = requireMainDb();
+  const row = await db.get<{ c: number }>(
+    "SELECT COUNT(*) AS c FROM conversations WHERE schedule_job_id = ?",
+    [scheduleJobId],
   );
+  return row?.c ?? 0;
 }
 
 /**
  * Returns the `source` column for the given conversation, or null if
  * not found. Tiny convenience used by the auto-analysis legacy-row guard.
  */
-export function getConversationSource(conversationId: string): string | null {
-  const db = getDb();
-  const row = db
+export async function getConversationSource(
+  conversationId: string,
+): Promise<string | null> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const [row] = await db.orm
     .select({ source: conversations.source })
     .from(conversations)
-    .where(eq(conversations.id, conversationId))
-    .get();
+    .where(eq(conversations.id, conversationId));
   return row?.source ?? null;
 }
 
@@ -1532,17 +1454,19 @@ export function getConversationSource(conversationId: string): string | null {
  * Drizzle schema (raw-query-only pattern), so ConversationRow doesn't
  * include it. This helper is used by forkConversation to inherit group_id.
  */
-function getConversationGroupId(conversationId: string): string | null {
-  ensureGroupMigration();
-  const row = rawGet<{ group_id: string | null }>(
-    "conversation:getGroupId",
+async function getConversationGroupId(
+  conversationId: string,
+): Promise<string | null> {
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
+  const row = await db.get<{ group_id: string | null }>(
     "SELECT group_id FROM conversations WHERE id = ?",
-    conversationId,
+    [conversationId],
   );
   return row?.group_id ?? null;
 }
 
-export function forkConversation(params: {
+export async function forkConversation(params: {
   conversationId: string;
   throughMessageId?: string;
   /**
@@ -1571,15 +1495,15 @@ export function forkConversation(params: {
    * group.
    */
   groupId?: string;
-}): ConversationRow {
+}): Promise<ConversationRow> {
   const { conversationId, throughMessageId } = params;
-  const db = getDb();
-  const sourceConversation = getConversation(conversationId);
+  const db = requireMainDb();
+  const sourceConversation = await getConversation(conversationId);
 
   if (!sourceConversation) {
     throw new UserError(`Conversation ${conversationId} not found`);
   }
-  const sourceMessages = getMessages(conversationId);
+  const sourceMessages = await getMessages(conversationId);
   if (throughMessageId != null) {
     // `getMessages` orders by `createdAt` only; when rows share an identical
     // millisecond timestamp the tie order is unspecified. Callers that pin the
@@ -1645,7 +1569,7 @@ export function forkConversation(params: {
   // compaction whose event time is at-or-before the forked-from message. A
   // compaction that ran after the boundary message did not exist at that point
   // in the conversation, so the fork branches from full uncompacted history.
-  const inheritedCompaction = getLatestCompactionEventAtOrBefore(
+  const inheritedCompaction = await getLatestCompactionEventAtOrBefore(
     sourceConversation.id,
     boundaryMessageCreatedAt,
   );
@@ -1669,22 +1593,25 @@ export function forkConversation(params: {
   }> = [];
 
   // Wrap all DB mutations in a single transaction so a mid-flight failure
-  // rolls back cleanly instead of leaving a partial fork. Helper functions
-  // (linkAttachmentToMessage, relinkAttachments, seedForkedConversationAttention)
-  // use the same underlying bun:sqlite connection, so their writes participate
-  // in this transaction automatically.
+  // rolls back cleanly instead of leaving a partial fork. Helpers that take
+  // the transaction handle share it; helpers on their own connection do not
+  // participate.
   // Inherit group_id from parent via raw SQL helper (group_id is not in Drizzle schema)
-  const parentGroupId = getConversationGroupId(conversationId);
+  const parentGroupId = await getConversationGroupId(conversationId);
 
-  const forkedConversation = db.transaction(() => {
-    const fc = createConversation({
-      title: forkTitle,
-      conversationType: params.conversationType ?? "standard",
-      groupId: params.groupId ?? parentGroupId ?? "system:all",
-      ...(params.source != null ? { source: params.source } : {}),
-    });
+  const forkedConversation = await db.transaction(async (tx) => {
+    const fc = await createConversation(
+      {
+        title: forkTitle,
+        conversationType: params.conversationType ?? "standard",
+        groupId: params.groupId ?? parentGroupId ?? "system:all",
+        ...(params.source != null ? { source: params.source } : {}),
+      },
+      tx,
+    );
 
-    db.update(conversations)
+    await tx.orm
+      .update(tx.schema.conversations)
       .set({
         forkParentConversationId: sourceConversation.id,
         forkParentMessageId,
@@ -1704,8 +1631,7 @@ export function forkConversation(params: {
         inferenceProfile: sourceConversation.inferenceProfile,
         enabledPlugins: encodeEnabledPlugins(sourceConversation.enabledPlugins),
       })
-      .where(eq(conversations.id, fc.id))
-      .run();
+      .where(eq(tx.schema.conversations.id, fc.id));
 
     const forkedMessageIds = new Map<string, string>();
     let latestForkedAssistant: {
@@ -1734,8 +1660,8 @@ export function forkConversation(params: {
       };
     });
 
-    // Insert in chunks of one multi-row statement each so a large fork takes
-    // the SQLite write lock O(messages / chunk) times instead of once per row.
+    // Insert in chunks of one multi-row statement each so a large fork keeps a
+    // bounded statement size.
     const FORK_INSERT_CHUNK_SIZE = 200;
     for (
       let i = 0;
@@ -1743,10 +1669,10 @@ export function forkConversation(params: {
       i += FORK_INSERT_CHUNK_SIZE
     ) {
       const chunk = forkedMessageValues.slice(i, i + FORK_INSERT_CHUNK_SIZE);
-      db.insert(messages).values(chunk).run();
+      await tx.orm.insert(tx.schema.messages).values(chunk);
     }
 
-    populateForkContentsInProcess({
+    await populateForkContentsInProcess(tx, {
       fork: fc,
       sourceConversationId: sourceConversation.id,
       messagesToCopy,
@@ -1773,7 +1699,7 @@ export function forkConversation(params: {
     syncMessageToDisk(entry.conversationId, entry.messageId, entry.createdAt);
   }
 
-  const persistedFork = getConversation(forkedConversation.id);
+  const persistedFork = await getConversation(forkedConversation.id);
   if (!persistedFork) {
     throw new Error(
       `Failed to load forked conversation ${forkedConversation.id} after creation`,
@@ -1828,13 +1754,15 @@ interface PopulateForkContentsArgs {
  * attachments (scoped per-conversation), set `lastMessageAt`, seed attention,
  * and carry the parent's per-conversation memory state.
  *
- * Assumes the fork's message ROWS already exist — copied either in-process
- * (synchronous fork) or via the off-event-loop subprocess (retrospective
- * fork). Single source of truth shared by `forkConversation` and
+ * Assumes the fork's message ROWS already exist — copied in-process by
+ * `forkConversation` or seeded by `forkConversationForRetrospective`. Single source of truth shared by `forkConversation` and
  * `forkConversationForRetrospective`; must run inside a transaction on the
  * main connection.
  */
-function populateForkContentsInProcess(args: PopulateForkContentsArgs): void {
+async function populateForkContentsInProcess(
+  db: AsyncDb,
+  args: PopulateForkContentsArgs,
+): Promise<void> {
   const {
     fork,
     sourceConversationId,
@@ -1846,7 +1774,6 @@ function populateForkContentsInProcess(args: PopulateForkContentsArgs): void {
     skipCompactionLedgerCopy,
     diskSyncQueue,
   } = args;
-  const db = getDb();
 
   const attachmentIdMap = new Map<string, string>();
   for (const message of messagesToCopy) {
@@ -1855,15 +1782,14 @@ function populateForkContentsInProcess(args: PopulateForkContentsArgs): void {
       continue;
     }
 
-    const attachmentLinks = db
+    const attachmentLinks = await db.orm
       .select({
-        attachmentId: messageAttachments.attachmentId,
-        position: messageAttachments.position,
+        attachmentId: db.schema.messageAttachments.attachmentId,
+        position: db.schema.messageAttachments.position,
       })
-      .from(messageAttachments)
-      .where(eq(messageAttachments.messageId, message.id))
-      .orderBy(messageAttachments.position)
-      .all();
+      .from(db.schema.messageAttachments)
+      .where(eq(db.schema.messageAttachments.messageId, message.id))
+      .orderBy(db.schema.messageAttachments.position);
     const uncachedAttachmentLinks = attachmentLinks.filter(
       (link) => !attachmentIdMap.has(link.attachmentId),
     );
@@ -1871,34 +1797,30 @@ function populateForkContentsInProcess(args: PopulateForkContentsArgs): void {
       uncachedAttachmentLinks.length > 0 ? uuidv7() : null;
 
     if (stagingMessageId) {
-      db.insert(messages)
-        .values({
-          id: stagingMessageId,
-          conversationId: fork.id,
-          role: message.role,
-          content: "",
-          createdAt: message.createdAt,
-          metadata: null,
-        })
-        .run();
+      await db.orm.insert(db.schema.messages).values({
+        id: stagingMessageId,
+        conversationId: fork.id,
+        role: message.role,
+        content: "",
+        createdAt: message.createdAt,
+        metadata: null,
+      });
     }
 
     for (const link of attachmentLinks) {
       const cachedAttachmentId = attachmentIdMap.get(link.attachmentId);
       if (cachedAttachmentId) {
-        db.insert(messageAttachments)
-          .values({
-            id: uuid(),
-            messageId: forkedMessageId,
-            attachmentId: cachedAttachmentId,
-            position: link.position,
-            createdAt: Date.now(),
-          })
-          .run();
+        await db.orm.insert(db.schema.messageAttachments).values({
+          id: uuid(),
+          messageId: forkedMessageId,
+          attachmentId: cachedAttachmentId,
+          position: link.position,
+          createdAt: Date.now(),
+        });
         continue;
       }
 
-      const scopedAttachmentId = linkAttachmentToMessage(
+      const scopedAttachmentId = await linkAttachmentToMessage(
         stagingMessageId ?? forkedMessageId,
         link.attachmentId,
         link.position,
@@ -1907,8 +1829,10 @@ function populateForkContentsInProcess(args: PopulateForkContentsArgs): void {
     }
 
     if (stagingMessageId) {
-      relinkAttachments([stagingMessageId], forkedMessageId);
-      db.delete(messages).where(eq(messages.id, stagingMessageId)).run();
+      await relinkAttachments([stagingMessageId], forkedMessageId);
+      await db.orm
+        .delete(db.schema.messages)
+        .where(eq(db.schema.messages.id, stagingMessageId));
     }
 
     diskSyncQueue?.push({
@@ -1918,19 +1842,22 @@ function populateForkContentsInProcess(args: PopulateForkContentsArgs): void {
     });
   }
 
-  remapForkWorkspaceAttachmentRefs(
+  await remapForkWorkspaceAttachmentRefs(
+    db,
     messagesToCopy,
     forkedMessageIds,
     attachmentIdMap,
   );
-  widenForkAttachmentIdTags(
+  await widenForkAttachmentIdTags(
+    db,
     messagesToCopy,
     forkedMessageIds,
     attachmentIdMap,
     SIGHT_FRAME_ATTACHMENT_IDS_KEY,
     sightFrameAttachmentIdsFromMetadata,
   );
-  widenForkAttachmentIdTags(
+  await widenForkAttachmentIdTags(
+    db,
     messagesToCopy,
     forkedMessageIds,
     attachmentIdMap,
@@ -1942,13 +1869,13 @@ function populateForkContentsInProcess(args: PopulateForkContentsArgs): void {
   // forked conversation sorts correctly by message recency.
   const lastCopiedMessage = messagesToCopy.at(-1);
   if (lastCopiedMessage) {
-    db.update(conversations)
+    await db.orm
+      .update(db.schema.conversations)
       .set({ lastMessageAt: lastCopiedMessage.createdAt })
-      .where(eq(conversations.id, fork.id))
-      .run();
+      .where(eq(db.schema.conversations.id, fork.id));
   }
 
-  seedForkedConversationAttention({
+  await seedForkedConversationAttention({
     conversationId: fork.id,
     latestAssistantMessageId: latestForkedAssistant?.messageId ?? null,
     latestAssistantMessageAt: latestForkedAssistant?.messageAt ?? null,
@@ -1957,7 +1884,7 @@ function populateForkContentsInProcess(args: PopulateForkContentsArgs): void {
   // Carry the parent's per-conversation memory state into the child (activation
   // and injection logs, graph state, retrospective state). Runs synchronously
   // inside the fork transaction; a no-op when memory is absent or disabled.
-  forkConversationMemory({
+  await forkConversationMemory({
     db,
     sourceConversationId,
     forkId: fork.id,
@@ -1972,7 +1899,7 @@ function populateForkContentsInProcess(args: PopulateForkContentsArgs): void {
   // tail-only retrospective fork opts out and seeds a single count-adjusted
   // event of its own instead.
   if (!skipCompactionLedgerCopy) {
-    forkCompactionLedger(
+    await forkCompactionLedger(
       db,
       sourceConversationId,
       fork.id,
@@ -1989,16 +1916,16 @@ function populateForkContentsInProcess(args: PopulateForkContentsArgs): void {
  * shared map keeps every copied reference and message link on one cloned row,
  * while references to attachments outside the copied window stay unchanged.
  */
-function remapForkWorkspaceAttachmentRefs(
+async function remapForkWorkspaceAttachmentRefs(
+  db: AsyncDb,
   messagesToCopy: MessageRow[],
   forkedMessageIds: Map<string, string>,
   attachmentIdMap: Map<string, string>,
-): void {
+): Promise<void> {
   if (attachmentIdMap.size === 0) {
     return;
   }
 
-  const db = getDb();
   for (const message of messagesToCopy) {
     const forkedMessageId = forkedMessageIds.get(message.id);
     if (!forkedMessageId) {
@@ -2013,10 +1940,10 @@ function remapForkWorkspaceAttachmentRefs(
       continue;
     }
 
-    db.update(messages)
+    await db.orm
+      .update(db.schema.messages)
       .set({ content: JSON.stringify(remappedContent) })
-      .where(eq(messages.id, forkedMessageId))
-      .run();
+      .where(eq(db.schema.messages.id, forkedMessageId));
   }
 }
 
@@ -2069,17 +1996,17 @@ function remapWorkspaceAttachmentRefs(
  * Only rows that actually carry a tag are rewritten, so an ordinary fork does
  * no extra writes.
  */
-function widenForkAttachmentIdTags(
+async function widenForkAttachmentIdTags(
+  db: AsyncDb,
   messagesToCopy: MessageRow[],
   forkedMessageIds: Map<string, string>,
   attachmentIdMap: Map<string, string>,
   metadataKey: string,
   readIds: (metadata: Record<string, unknown> | null | undefined) => string[],
-): void {
+): Promise<void> {
   if (attachmentIdMap.size === 0) {
     return;
   }
-  const db = getDb();
   for (const message of messagesToCopy) {
     const forkedMessageId = forkedMessageIds.get(message.id);
     if (!forkedMessageId) {
@@ -2100,21 +2027,20 @@ function widenForkAttachmentIdTags(
     if (widened.size === sourceIds.length) {
       continue;
     }
-    const forkedRow = db
-      .select({ metadata: messages.metadata })
-      .from(messages)
-      .where(eq(messages.id, forkedMessageId))
-      .get();
+    const [forkedRow] = await db.orm
+      .select({ metadata: db.schema.messages.metadata })
+      .from(db.schema.messages)
+      .where(eq(db.schema.messages.id, forkedMessageId));
     const forkedMetadata = parseMessageMetadata(forkedRow?.metadata ?? null);
-    db.update(messages)
+    await db.orm
+      .update(db.schema.messages)
       .set({
         metadata: JSON.stringify({
           ...(forkedMetadata ?? {}),
           [metadataKey]: [...widened],
         }),
       })
-      .where(eq(messages.id, forkedMessageId))
-      .run();
+      .where(eq(db.schema.messages.id, forkedMessageId));
   }
 }
 
@@ -2190,13 +2116,13 @@ export async function forkConversationForRetrospective(params: {
   groupId?: string;
 }): Promise<ConversationRow> {
   const { conversationId, throughMessageId } = params;
-  const db = getDb();
-  const sourceConversation = getConversation(conversationId);
+  const db = requireMainDb();
+  const sourceConversation = await getConversation(conversationId);
   if (!sourceConversation) {
     throw new UserError(`Conversation ${conversationId} not found`);
   }
 
-  const sourceMessages = getMessages(conversationId);
+  const sourceMessages = await getMessages(conversationId);
   // The render path hides the first `contextCompactedMessageCount` rows in
   // THIS load order (`getMessages`, `createdAt` only) — capture it before the
   // cutoff re-sort below so the tail-only drop-set matches what the source
@@ -2243,7 +2169,7 @@ export async function forkConversationForRetrospective(params: {
     boundaryMessageCreatedAt >= sourceHistoryStrippedAt;
   // Inherit the most recent compaction whose event time is at-or-before the
   // forked-from message (see `forkConversation`).
-  const inheritedCompaction = getLatestCompactionEventAtOrBefore(
+  const inheritedCompaction = await getLatestCompactionEventAtOrBefore(
     sourceConversation.id,
     boundaryMessageCreatedAt,
   );
@@ -2279,7 +2205,7 @@ export async function forkConversationForRetrospective(params: {
   const forkParentMessageId = messagesToCopy.at(-1)?.id ?? null;
   const forkTitle =
     params.title ?? `${sourceConversation.title ?? "Untitled"} (Fork)`;
-  const parentGroupId = getConversationGroupId(conversationId);
+  const parentGroupId = await getConversationGroupId(conversationId);
   const forkedMessageIds = new Map<string, string>();
 
   // Phase 1: create the fork conversation row + lineage. The whole
@@ -2287,14 +2213,18 @@ export async function forkConversationForRetrospective(params: {
   // re-running it (with a fresh conversation id) is safe.
   const fork = await withSqliteRetry(
     () =>
-      db.transaction(() => {
-        const fc = createConversation({
-          title: forkTitle,
-          conversationType: params.conversationType ?? "standard",
-          groupId: params.groupId ?? parentGroupId ?? "system:all",
-          ...(params.source != null ? { source: params.source } : {}),
-        });
-        db.update(conversations)
+      db.transaction(async (tx) => {
+        const fc = await createConversation(
+          {
+            title: forkTitle,
+            conversationType: params.conversationType ?? "standard",
+            groupId: params.groupId ?? parentGroupId ?? "system:all",
+            ...(params.source != null ? { source: params.source } : {}),
+          },
+          tx,
+        );
+        await tx.orm
+          .update(tx.schema.conversations)
           .set({
             forkParentConversationId: sourceConversation.id,
             forkParentMessageId,
@@ -2322,8 +2252,7 @@ export async function forkConversationForRetrospective(params: {
               sourceConversation.enabledPlugins,
             ),
           })
-          .where(eq(conversations.id, fc.id))
-          .run();
+          .where(eq(tx.schema.conversations.id, fc.id));
         return fc;
       }),
     { op: "forkConversationForRetrospective.create" },
@@ -2339,48 +2268,45 @@ export async function forkConversationForRetrospective(params: {
     // transaction rolls back atomically, so re-running it is safe.
     await withSqliteRetry(
       () =>
-        db.transaction(
-          () => {
-            populateForkContentsInProcess({
-              fork,
-              sourceConversationId: sourceConversation.id,
-              messagesToCopy: visibleSourceMessages,
-              forkedMessageIds,
-              latestForkedAssistant: null,
-              // Both conditions, for the same reason as `forkConversation`:
-              // a tip boundary no longer implies an equal window once the
-              // unfinalized filter dropped rows from the slice.
-              isFullHistoryFork:
-                copyBoundaryIndex === sourceMessages.length - 1 &&
-                messagesToCopy.length === copyBoundaryIndex + 1,
-              // The seeding range already starts at the visible window.
-              inheritedCompactedMessageCount: 0,
-              skipCompactionLedgerCopy: inheritedCompaction != null,
+        db.transaction(async (tx) => {
+          await populateForkContentsInProcess(tx, {
+            fork,
+            sourceConversationId: sourceConversation.id,
+            messagesToCopy: visibleSourceMessages,
+            forkedMessageIds,
+            latestForkedAssistant: null,
+            // Both conditions, for the same reason as `forkConversation`:
+            // a tip boundary no longer implies an equal window once the
+            // unfinalized filter dropped rows from the slice.
+            isFullHistoryFork:
+              copyBoundaryIndex === sourceMessages.length - 1 &&
+              messagesToCopy.length === copyBoundaryIndex + 1,
+            // The seeding range already starts at the visible window.
+            inheritedCompactedMessageCount: 0,
+            skipCompactionLedgerCopy: inheritedCompaction != null,
+          });
+          // The fork owns none of the source's ledger events — their
+          // counts index source-space row positions. Seed a single event
+          // mirroring the fork row's compaction fields whenever a
+          // compaction is inherited (even when the hidden prefix fell
+          // outside the cutoff and nothing was dropped), so the ledger
+          // and the row cache agree and a fork of this fork inherits the
+          // summary with the fork-local count. With no inherited
+          // compaction the default ledger copy is a natural no-op (no
+          // source event is at-or-before the boundary). Rolls back with
+          // the transaction, so the retry unit stays atomic.
+          if (inheritedCompaction) {
+            await appendCompactionEvent(fork.id, {
+              compactedAt: inheritedCompaction.compactedAt,
+              summary: inheritedCompaction.summary,
+              compactedMessageCount: forkCompactedMessageCount,
             });
-            // The fork owns none of the source's ledger events — their
-            // counts index source-space row positions. Seed a single event
-            // mirroring the fork row's compaction fields whenever a
-            // compaction is inherited (even when the hidden prefix fell
-            // outside the cutoff and nothing was dropped), so the ledger
-            // and the row cache agree and a fork of this fork inherits the
-            // summary with the fork-local count. With no inherited
-            // compaction the default ledger copy is a natural no-op (no
-            // source event is at-or-before the boundary). Rolls back with
-            // the transaction, so the retry unit stays atomic.
-            if (inheritedCompaction) {
-              appendCompactionEvent(fork.id, {
-                compactedAt: inheritedCompaction.compactedAt,
-                summary: inheritedCompaction.summary,
-                compactedMessageCount: forkCompactedMessageCount,
-              });
-            }
-          },
-          { behavior: "immediate" },
-        ),
+          }
+        }),
       { op: "forkConversationForRetrospective.populate" },
     );
 
-    const persistedFork = getConversation(fork.id);
+    const persistedFork = await getConversation(fork.id);
     if (!persistedFork) {
       throw new Error(
         `Failed to load forked conversation ${fork.id} after creation`,
@@ -2389,7 +2315,7 @@ export async function forkConversationForRetrospective(params: {
     return persistedFork;
   } catch (err) {
     try {
-      deleteConversation(fork.id);
+      await deleteConversation(fork.id);
     } catch {
       // Best-effort cleanup; the worker's startup orphan sweep is the backstop.
     }
@@ -2418,19 +2344,23 @@ export async function forkConversationForRetrospective(params: {
  * conversation that mysteriously starts mid-thought. Costs nothing on ordinary
  * conversations, which fail `isReferentialFork` before any query runs.
  */
-export function isReferentialHistoryOrphaned(row: {
+export async function isReferentialHistoryOrphaned(row: {
   forkStrategy: string | null;
   forkParentConversationId: string | null;
   forkParentMessageId: string | null;
-}): boolean {
+}): Promise<boolean> {
   if (!isReferentialFork(row)) {
     return false;
   }
-  return getConversation(row.forkParentConversationId as string) === null;
+  return (
+    (await getConversation(row.forkParentConversationId as string)) === null
+  );
 }
 
-export function deleteConversation(id: string): DeletedMemoryIds {
-  const db = getDb();
+export async function deleteConversation(
+  id: string,
+): Promise<DeletedMemoryIds> {
+  const db = requireMainDb();
   const result: DeletedMemoryIds = {
     segmentIds: [],
     deletedSummaryIds: [],
@@ -2438,57 +2368,56 @@ export function deleteConversation(id: string): DeletedMemoryIds {
 
   // Capture createdAt before the transaction deletes the row — needed to
   // resolve the conversation's disk-view directory path after deletion.
-  const convBeforeDelete = getConversation(id);
+  const convBeforeDelete = await getConversation(id);
   const createdAtForDiskCleanup = convBeforeDelete?.createdAt;
 
-  // llm_request_logs and pending telemetry_events rows live in the dedicated
-  // logs and telemetry connections, so they are deleted there — separately
-  // from (and before) the main-DB transaction below, so a failure leaves the
-  // conversation intact for a retried delete. Both helpers skip when their
-  // dedicated file does not exist yet (see the block comment on those helpers).
-  deleteRequestLogsForConversation(id);
-  deletePendingTelemetryEventsForConversation(id);
+  // llm_request_logs and pending telemetry_events rows are cleared before the
+  // main-DB transaction below, so a failure leaves the conversation intact for
+  // a retried delete.
+  await deleteRequestLogsForConversation(id);
+  await deletePendingTelemetryEventsForConversation(id);
 
-  // Collect the conversation's segment ids from the memory connection BEFORE the
-  // delete: the startup orphan sweep purges memory_segments whose conversation_id
-  // does not exist, so reading after the conversation row is gone could race
-  // it and return nothing (losing the Qdrant purge). Best-effort: a missing or
-  // locked memory database yields no ids and must not abort the delete.
-  const memoryDb = getMemoryDb();
-  if (memoryDb) {
-    try {
-      result.segmentIds = memoryDb
-        .select({ id: memorySegments.id })
-        .from(memorySegments)
-        .where(eq(memorySegments.conversationId, id))
-        .all()
-        .map((r) => r.id);
-    } catch (err) {
-      log.warn(
-        { err, conversationId: id },
-        "Failed to read memory segments for deleted conversation; continuing",
-      );
-    }
+  // Collect the conversation's segment ids BEFORE the delete: the startup
+  // orphan sweep purges memory_segments whose conversation_id does not exist,
+  // so reading after the conversation row is gone could race it and return
+  // nothing (losing the Qdrant purge). Best-effort: a read failure yields no
+  // ids and must not abort the delete.
+  try {
+    const memorySegments = db.schema.memorySegments;
+    const rows = await db.orm
+      .select({ id: memorySegments.id })
+      .from(memorySegments)
+      .where(eq(memorySegments.conversationId, id));
+    result.segmentIds = rows.map((r) => r.id);
+  } catch (err) {
+    log.warn(
+      { err, conversationId: id },
+      "Failed to read memory segments for deleted conversation; continuing",
+    );
   }
 
-  db.transaction((tx) => {
-    // memory_segments does not cascade from messages/conversations; it lives on
-    // the memory connection and is purged directly below. The main-DB cascade
-    // still removes message_attachments.
-    tx.delete(toolInvocations)
-      .where(eq(toolInvocations.conversationId, id))
-      .run();
-    tx.delete(messages).where(eq(messages.conversationId, id)).run();
-    // Raw SQL on the same bun:sqlite handle Drizzle wraps, so the subagent rows
-    // commit or roll back with the conversation row they describe.
-    deleteSubagentRecordsByParent(id);
-    tx.delete(conversations).where(eq(conversations.id, id)).run();
+  await db.transaction(async (tx) => {
+    // memory_segments does not cascade from messages/conversations; it is
+    // purged directly below. The main-DB cascade still removes
+    // message_attachments.
+    await tx.orm
+      .delete(tx.schema.toolInvocations)
+      .where(eq(tx.schema.toolInvocations.conversationId, id));
+    await tx.orm
+      .delete(tx.schema.messages)
+      .where(eq(tx.schema.messages.conversationId, id));
+    // Subagent rows share the conversation's lifetime, so they commit or roll
+    // back with the conversation row they describe.
+    await deleteSubagentRecordsByParent(id);
+    await tx.orm
+      .delete(tx.schema.conversations)
+      .where(eq(tx.schema.conversations.id, id));
   });
 
-  // Purge the conversation's segments and their embeddings on the memory
-  // connection after the main delete, unioning the pre-delete snapshot so the
-  // returned Qdrant cleanup list is complete.
-  result.segmentIds = purgeConversationSegments(id, result.segmentIds);
+  // Purge the conversation's segments and their embeddings after the main
+  // delete, unioning the pre-delete snapshot so the returned Qdrant cleanup
+  // list is complete.
+  result.segmentIds = await purgeConversationSegments(id, result.segmentIds);
 
   // Remove the conversation's disk-view directory after the DB transaction
   if (createdAtForDiskCleanup != null) {
@@ -2500,8 +2429,8 @@ export function deleteConversation(id: string): DeletedMemoryIds {
 
   // Notify `conversation-deleted` hooks (e.g. the memory plugin failing its
   // still-pending jobs for this conversation). Fire-and-forget from this
-  // synchronous primitive — the pipeline contains per-hook failures, and
-  // hooks carry no ordering guarantee relative to the cleanup below.
+  // primitive — the pipeline contains per-hook failures, and hooks carry no
+  // ordering guarantee relative to the cleanup below.
   void runHook(HOOKS.CONVERSATION_DELETED, {
     conversationId: id,
   } satisfies ConversationDeletedInputContext);
@@ -2519,31 +2448,18 @@ export function deleteConversation(id: string): DeletedMemoryIds {
 }
 
 /**
- * Delete a conversation like {@link deleteConversation}, but move the bulk
- * row deletes off the event loop in lock-friendly batches (see
- * {@link deleteConversationRowsInBatches}). The synchronous variant runs each
- * `DELETE` as one implicit transaction that holds the SQLite write lock for its
- * full duration — fine for an interactive conversation, but a conversation that
- * carries a full copy of a source's message history (e.g. a memory-retrospective
- * GC target) has huge `messages` and `llm_request_logs` tables, so on a large
- * database those single deletes peg the event loop and starve live user turns.
- * This variant sends the two heavy tables (`messages` on the main DB,
- * `llm_request_logs` on the logs DB) in chunks that each release the lock,
- * while the cheap bookkeeping (non-cascading tables, segment embeddings, the
- * conversation row) stays in-process.
- *
- * The `messages` batch enables `PRAGMA foreign_keys=ON` so the cascade
- * (memory_segments, message_attachments, …) fires just as it does on the daemon
- * connection. Segment ids are captured up front (before the cascade removes
- * them) so the caller can still clean up the corresponding Qdrant vectors. A
- * subprocess failure throws — any rows already deleted are gone, the
+ * Delete a conversation like {@link deleteConversation}, keeping the heavy
+ * `messages` and `llm_request_logs` deletes separate from the smaller
+ * bookkeeping transaction. Segment ids are captured up front (before the
+ * cascade removes them) so the caller can still clean up the corresponding
+ * Qdrant vectors. A failure throws — any rows already deleted are gone, the
  * conversation row remains, and the worker's orphan sweep is the backstop, so
  * callers should treat this as best-effort like the synchronous variant.
  */
 export async function deleteConversationGently(
   id: string,
 ): Promise<DeletedMemoryIds> {
-  const db = getDb();
+  const db = requireMainDb();
   const result: DeletedMemoryIds = {
     segmentIds: [],
     deletedSummaryIds: [],
@@ -2551,97 +2467,63 @@ export async function deleteConversationGently(
 
   // Capture createdAt before deletion — needed to resolve the conversation's
   // disk-view directory path afterwards.
-  const convBeforeDelete = getConversation(id);
+  const convBeforeDelete = await getConversation(id);
   const createdAtForDiskCleanup = convBeforeDelete?.createdAt;
 
-  // Collect the conversation's memory segment ids from the memory connection
-  // (memory_segments is on the memory connection) so the caller can clean up the
-  // matching Qdrant vectors. The segment rows are purged by the
+  // Collect the conversation's memory segment ids so the caller can clean up
+  // the matching Qdrant vectors. The segment rows are purged by the
   // conversation-deleted hook; their embeddings are deleted after the main
-  // delete below. Best-effort: a missing memory database yields no ids.
-  const memoryDb = getMemoryDb();
-  if (memoryDb) {
-    try {
-      result.segmentIds = memoryDb
-        .select({ id: memorySegments.id })
-        .from(memorySegments)
-        .where(eq(memorySegments.conversationId, id))
-        .all()
-        .map((r) => r.id);
-    } catch (err) {
-      log.warn(
-        { err, conversationId: id },
-        "Failed to read memory segments for deleted conversation; continuing",
-      );
-    }
-  }
-
-  // Pending telemetry_events rows live in the dedicated telemetry connection;
-  // delete them (by conversation_id, regardless of event name) before ANY
-  // destructive work so a telemetry failure leaves the conversation fully
-  // intact for a retried delete — a throw after the bulk drains below would
-  // strand unredacted rows that could still flush. Skips when the telemetry
-  // file does not exist yet.
-  deletePendingTelemetryEventsForConversation(id);
-
-  // llm_request_logs lives in the dedicated logs connection, and each row is
-  // bulky, so drain it off the event loop in batches against the logs DB file.
-  // Skip entirely when the table does not exist yet: the batch runs a sqlite3
-  // subprocess (or in-process fallback) against getLogsDbPath(), which would
-  // otherwise hit (or create) a table-less file and fail with `no such table`
-  // on every orphan the worker's startup sweep processes before migration 297
-  // lands. The in-process connection sees the same committed schema as the
-  // subprocess, so it is the authority on whether the table is ready. No table,
-  // nothing to drain.
-  const logsDbForBatch = getLogsDb({ createIfMissing: false });
-  if (
-    logsDbForBatch &&
-    dedicatedTableExists(logsDbForBatch, "llm_request_logs")
-  ) {
-    const logsDel = await deleteConversationRowsInBatches({
-      conversationId: id,
-      table: "llm_request_logs",
-      dbPath: getLogsDbPath(),
-    });
-    if (!logsDel.ok) {
-      throw new Error(
-        `gentle conversation delete failed (llm_request_logs, ${logsDel.backend}): ${logsDel.error ?? "unknown"}`,
-      );
-    }
-  }
-
-  // Bulk message delete off the event loop, in lock-friendly batches. Cascades
-  // to message_attachments, bookmarks, channel_inbound_events (memory_segments
-  // is on the memory connection and is purged directly below).
-  const del = await deleteConversationRowsInBatches({
-    conversationId: id,
-    table: "messages",
-    enableForeignKeys: true,
-  });
-  if (!del.ok) {
-    throw new Error(
-      `gentle conversation delete failed (messages, ${del.backend}): ${del.error ?? "unknown"}`,
+  // delete below. Best-effort: a read failure yields no ids.
+  try {
+    const memorySegments = db.schema.memorySegments;
+    const rows = await db.orm
+      .select({ id: memorySegments.id })
+      .from(memorySegments)
+      .where(eq(memorySegments.conversationId, id));
+    result.segmentIds = rows.map((r) => r.id);
+  } catch (err) {
+    log.warn(
+      { err, conversationId: id },
+      "Failed to read memory segments for deleted conversation; continuing",
     );
   }
 
+  // Pending telemetry_events rows are deleted (by conversation_id, regardless
+  // of event name) before ANY destructive work so a telemetry failure leaves
+  // the conversation fully intact for a retried delete — a throw after the
+  // bulk deletes below would strand unredacted rows that could still flush.
+  await deletePendingTelemetryEventsForConversation(id);
+
+  // llm_request_logs rows are bulky, so clear them before the message delete;
+  // a failure here leaves the conversation intact.
+  await deleteRequestLogsForConversation(id);
+
+  // Bulk message delete. Cascades to message_attachments, bookmarks,
+  // channel_inbound_events (memory_segments is purged directly below).
+  await db.orm
+    .delete(db.schema.messages)
+    .where(eq(db.schema.messages.conversationId, id));
+
   // Remaining cleanup is cheap (bounded, non-message tables) so it stays a
-  // single in-process transaction.
-  db.transaction((tx) => {
-    tx.delete(toolInvocations)
-      .where(eq(toolInvocations.conversationId, id))
-      .run();
-    // Raw SQL on the same bun:sqlite handle Drizzle wraps, so the subagent rows
-    // commit or roll back with the conversation row they describe.
-    deleteSubagentRecordsByParent(id);
+  // single transaction.
+  await db.transaction(async (tx) => {
+    await tx.orm
+      .delete(tx.schema.toolInvocations)
+      .where(eq(tx.schema.toolInvocations.conversationId, id));
+    // Subagent rows share the conversation's lifetime, so they commit or roll
+    // back with the conversation row they describe.
+    await deleteSubagentRecordsByParent(id);
     // Conversation row deletion cascades to remaining dependent tables.
-    tx.delete(conversations).where(eq(conversations.id, id)).run();
+    await tx.orm
+      .delete(tx.schema.conversations)
+      .where(eq(tx.schema.conversations.id, id));
   });
 
-  // Purge the conversation's segments and their embeddings on the memory
-  // connection after the batched delete, re-reading and unioning the pre-delete
-  // snapshot so a segment written during the awaited drain is still cleaned up
-  // and returned for Qdrant cleanup.
-  result.segmentIds = purgeConversationSegments(id, result.segmentIds);
+  // Purge the conversation's segments and their embeddings after the batched
+  // delete, re-reading and unioning the pre-delete snapshot so a segment
+  // written during the awaited drain is still cleaned up and returned for
+  // Qdrant cleanup.
+  result.segmentIds = await purgeConversationSegments(id, result.segmentIds);
 
   // Remove the conversation's disk-view directory after the DB transaction.
   if (createdAtForDiskCleanup != null) {
@@ -2781,7 +2663,7 @@ export async function addMessage(
 
   if (role === "assistant") {
     try {
-      const attentionStateChanged = projectAssistantMessage({
+      const attentionStateChanged = await projectAssistantMessage({
         conversationId,
         messageId: message.id,
         messageAt: message.createdAt,
@@ -2807,8 +2689,12 @@ export async function addMessage(
  * lookup per message read is the cost of referential forks; selecting four
  * columns instead of the full row keeps it to an index hit.
  */
-function loadLineageRow(id: string): LineageConversationRow | null {
-  const row = getDb()
+async function loadLineageRow(
+  id: string,
+): Promise<LineageConversationRow | null> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const [row] = await db.orm
     .select({
       id: conversations.id,
       forkStrategy: conversations.forkStrategy,
@@ -2816,8 +2702,7 @@ function loadLineageRow(id: string): LineageConversationRow | null {
       forkParentMessageId: conversations.forkParentMessageId,
     })
     .from(conversations)
-    .where(eq(conversations.id, id))
-    .get();
+    .where(eq(conversations.id, id));
   return row ?? null;
 }
 
@@ -2826,44 +2711,44 @@ function loadLineageRow(id: string): LineageConversationRow | null {
  * copied forks resolve to a single unbounded segment after one row lookup, so
  * the referential path costs them nothing beyond that lookup.
  */
-function resolveLineage(conversationId: string): LineageSegment[] {
-  return resolveConversationLineage(conversationId, {
+async function resolveLineage(
+  conversationId: string,
+): Promise<LineageSegment[]> {
+  return await resolveConversationLineage(conversationId, {
     loadConversation: loadLineageRow,
     loadMessageBound,
   });
 }
 
 /** `messages` predicate covering every row a conversation logically owns. */
-function lineageFilter(conversationId: string): SQL {
-  return lineageMessageFilter(resolveLineage(conversationId));
+async function lineageFilter(conversationId: string): Promise<SQL> {
+  return lineageMessageFilter(await resolveLineage(conversationId));
 }
 
-export function getMessages(conversationId: string): MessageRow[] {
-  const db = getDb();
-  // Synchronous read of every row for the conversation — the dominant
-  // per-turn main-thread cost on large conversations. Timed so a freeze the
+export async function getMessages(
+  conversationId: string,
+): Promise<MessageRow[]> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  // Bulk read of every row for the conversation, timed so a freeze the
   // event-loop watchdog detects can be attributed here (see slow-sync-log).
   //
-  // Ordered by `createdAt` ALONE. Rows sharing a millisecond fall back to
-  // SQLite's rowid order, which is insertion order, and callers depend on
-  // that: the compaction render slices a row count off the front of this
-  // exact order, and a fork's copied prefix must match the order the source
-  // renders. Adding an `id` tiebreak here reorders same-millisecond rows and
-  // silently shifts that boundary. A lineage read inherits the same rule, and
-  // an ancestor's rows sort ahead of the fork's own on a tie because they were
-  // inserted first.
-  return timeSyncSection(
-    "conversation-crud:get-messages",
-    () =>
-      db
-        .select()
-        .from(messages)
-        .where(lineageFilter(conversationId))
-        .orderBy(asc(messages.createdAt))
-        .all()
-        .map(parseMessage),
-    (rows) => ({ conversationId, rowCount: rows.length }),
-  );
+  // Ordered by `createdAt` ALONE. Callers depend on the tie order matching
+  // insertion order: the compaction render slices a row count off the front
+  // of this exact order, and a fork's copied prefix must match the order the
+  // source renders. Adding an `id` tiebreak here reorders same-millisecond
+  // rows and silently shifts that boundary. A lineage read inherits the same
+  // rule, and an ancestor's rows sort ahead of the fork's own on a tie because
+  // they were inserted first.
+  const filter = await lineageFilter(conversationId);
+  return await traceAsyncSection("conversation-crud:get-messages", async () => {
+    const rows = await db.orm
+      .select()
+      .from(messages)
+      .where(filter)
+      .orderBy(asc(messages.createdAt));
+    return rows.map(parseMessage);
+  });
 }
 
 /**
@@ -2879,19 +2764,20 @@ export function getMessages(conversationId: string): MessageRow[] {
  * offsets until the target is reached (capped at a reasonable maximum to bound
  * scan cost).
  */
-export function selectProviderMetaCandidateMetadata(
+export async function selectProviderMetaCandidateMetadata(
   conversationId: string,
   limit: number,
   offset = 0,
   opts?: { includeFlatLegacy?: boolean },
-): string[] {
-  const db = getDb();
-  const rows = db
+): Promise<string[]> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const rows = await db.orm
     .select({ metadata: messages.metadata })
     .from(messages)
     .where(
       and(
-        lineageFilter(conversationId),
+        await lineageFilter(conversationId),
         opts?.includeFlatLegacy
           ? or(
               like(messages.metadata, '%"providerMeta"%'),
@@ -2906,8 +2792,7 @@ export function selectProviderMetaCandidateMetadata(
     )
     .orderBy(asc(messages.createdAt))
     .limit(limit)
-    .offset(offset)
-    .all();
+    .offset(offset);
   const out: string[] = [];
   for (const r of rows) {
     if (typeof r.metadata === "string" && r.metadata.length > 0) {
@@ -2927,21 +2812,21 @@ export function selectProviderMetaCandidateMetadata(
  * because the tag is written with the insert, and the lineage filter is what
  * lets a fork see the frames it inherited.
  */
-export function selectSightFrameCaptureTimes(
+export async function selectSightFrameCaptureTimes(
   conversationId: string,
-): Map<string, number> {
-  const db = getDb();
-  const rows = db
+): Promise<Map<string, number>> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const rows = await db.orm
     .select({ metadata: messages.metadata, createdAt: messages.createdAt })
     .from(messages)
     .where(
       and(
-        lineageFilter(conversationId),
+        await lineageFilter(conversationId),
         like(messages.metadata, `%"${SIGHT_FRAME_ATTACHMENT_IDS_KEY}"%`),
       ),
     )
-    .orderBy(asc(messages.createdAt))
-    .all();
+    .orderBy(asc(messages.createdAt));
   const captureTimes = new Map<string, number>();
   for (const row of rows) {
     const metadata = parseMessageMetadata(row.metadata);
@@ -2987,11 +2872,15 @@ export interface ConversationAttachmentListing {
  * filters and the dedupe, so that whole-lineage scan is the cost the exact
  * count carries.
  */
-export function listConversationAttachments(
+export async function listConversationAttachments(
   conversationId: string,
   options: { sightFrames?: "only" | "exclude"; limit: number; offset: number },
-): { attachments: ConversationAttachmentListing[]; total: number } {
-  const rows = getDb()
+): Promise<{ attachments: ConversationAttachmentListing[]; total: number }> {
+  const db = requireMainDb();
+  const attachments = db.schema.attachments;
+  const messages = db.schema.messages;
+  const messageAttachments = db.schema.messageAttachments;
+  const rows = await db.orm
     .select({
       id: attachments.id,
       originalFilename: attachments.originalFilename,
@@ -3012,7 +2901,7 @@ export function listConversationAttachments(
     .innerJoin(attachments, eq(attachments.id, messageAttachments.attachmentId))
     .where(
       and(
-        lineageFilter(conversationId),
+        await lineageFilter(conversationId),
         eq(messages.finalized, 1),
         excludesToolResultRows(),
       ),
@@ -3025,8 +2914,7 @@ export function listConversationAttachments(
       desc(messages.id),
       asc(messageAttachments.position),
       asc(messageAttachments.id),
-    )
-    .all();
+    );
 
   const seen = new Set<string>();
   const listings: ConversationAttachmentListing[] = [];
@@ -3076,7 +2964,7 @@ export function listConversationAttachments(
   // Separate read so the lineage-wide select never pulls a thumbnail blob for
   // a row outside the page being returned.
   if (page.length > 0) {
-    const thumbnailRows = getDb()
+    const thumbnailRows = await db.orm
       .select({
         id: attachments.id,
         thumbnailBase64: attachments.thumbnailBase64,
@@ -3087,8 +2975,7 @@ export function listConversationAttachments(
           attachments.id,
           page.map((listing) => listing.id),
         ),
-      )
-      .all();
+      );
     const thumbnailById = new Map(
       thumbnailRows.map((row) => [row.id, row.thumbnailBase64 ?? null]),
     );
@@ -3113,22 +3000,22 @@ export function listConversationAttachments(
  * call. Same narrowing and the same validation, so the two agree on what a
  * frame is. A row carrying several frames answers with the last attached.
  */
-export function selectNewestSightFrameCapture(
+export async function selectNewestSightFrameCapture(
   conversationId: string,
-): { attachmentId: string; createdAt: number } | null {
-  const db = getDb();
-  const row = db
+): Promise<{ attachmentId: string; createdAt: number } | null> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const [row] = await db.orm
     .select({ metadata: messages.metadata, createdAt: messages.createdAt })
     .from(messages)
     .where(
       and(
-        lineageFilter(conversationId),
+        await lineageFilter(conversationId),
         like(messages.metadata, `%"${SIGHT_FRAME_ATTACHMENT_IDS_KEY}"%`),
       ),
     )
     .orderBy(desc(messages.createdAt))
-    .limit(1)
-    .get();
+    .limit(1);
   if (!row) {
     return null;
   }
@@ -3153,25 +3040,25 @@ export function selectNewestSightFrameCapture(
  * Used by the memory-retrospective trigger check to decide whether to fire
  * the message-count trigger without loading message bodies.
  */
-export function countMessagesAfter(
+export async function countMessagesAfter(
   conversationId: string,
   after: MessagesAfterRef,
-): number {
-  const db = getDb();
-  const segments = resolveLineage(conversationId);
-  const start = resolveMessagesAfterBound(after);
+): Promise<number> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const segments = await resolveLineage(conversationId);
+  const start = await resolveMessagesAfterBound(after);
   if (start.kind === "vanished") {
     return 0;
   }
-  const row = db
+  const [row] = await db.orm
     .select({ c: count() })
     .from(messages)
     .where(
       start.kind === "all"
         ? lineageMessageFilter(segments)
         : lineageMessagesAfterFilter(segments, start.bound),
-    )
-    .get();
+    );
   return row?.c ?? 0;
 }
 
@@ -3182,20 +3069,21 @@ export function countMessagesAfter(
  * Used by the memory-retrospective job handler to load the message slice it
  * processes.
  */
-export function getMessagesAfter(
+export async function getMessagesAfter(
   conversationId: string,
   after: MessagesAfterRef,
-): MessageRow[] {
-  const db = getDb();
-  const segments = resolveLineage(conversationId);
-  const start = resolveMessagesAfterBound(after);
+): Promise<MessageRow[]> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const segments = await resolveLineage(conversationId);
+  const start = await resolveMessagesAfterBound(after);
   if (start.kind === "vanished") {
     return [];
   }
   // Secondary `asc(messages.id)` mirrors the bound's tie-breaker, so callers
   // tracking `cutoffMessageId` across runs see a consistent ordering when
   // multiple rows share a millisecond timestamp.
-  return db
+  const rows = await db.orm
     .select()
     .from(messages)
     .where(
@@ -3203,18 +3091,19 @@ export function getMessagesAfter(
         ? lineageMessageFilter(segments)
         : lineageMessagesAfterFilter(segments, start.bound),
     )
-    .orderBy(asc(messages.createdAt), asc(messages.id))
-    .all()
-    .map(parseMessage);
+    .orderBy(asc(messages.createdAt), asc(messages.id));
+  return rows.map(parseMessage);
 }
 
 /** Read a bounded conversation window in insertion order, including timestamp ties. */
-export function getRecentConversationMessages(
+export async function getRecentConversationMessages(
   conversationId: string,
   limit: number,
   beforeMessageId?: string,
-): MessageRow[] {
-  return getDb()
+): Promise<MessageRow[]> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const rows = await db.orm
     .select()
     .from(messages)
     .where(
@@ -3222,14 +3111,12 @@ export function getRecentConversationMessages(
         eq(messages.conversationId, conversationId),
         beforeMessageId === undefined
           ? undefined
-          : sql`rowid < (SELECT rowid FROM messages WHERE id = ${beforeMessageId} AND conversation_id = ${conversationId})`,
+          : sql`(${messages.createdAt}, ${messages.id}) < (SELECT created_at, id FROM messages WHERE id = ${beforeMessageId} AND conversation_id = ${conversationId})`,
       ),
     )
-    .orderBy(sql`rowid DESC`)
-    .limit(limit)
-    .all()
-    .reverse()
-    .map(parseMessage);
+    .orderBy(sql`${messages.createdAt} DESC, ${messages.id} DESC`)
+    .limit(limit);
+  return rows.reverse().map(parseMessage);
 }
 
 /**
@@ -3237,15 +3124,15 @@ export function getRecentConversationMessages(
  * one message row. Uses `LIMIT 1` + `select({ 1 })` to avoid loading and
  * parsing any message content.
  */
-export function hasMessages(conversationId: string): boolean {
-  const db = getDb();
-  const row = db
+export async function hasMessages(conversationId: string): Promise<boolean> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const rows = await db.orm
     .select({ one: sql`1` })
     .from(messages)
-    .where(lineageFilter(conversationId))
-    .limit(1)
-    .get();
-  return row !== undefined;
+    .where(await lineageFilter(conversationId))
+    .limit(1);
+  return rows.length > 0;
 }
 
 interface PaginatedMessagesResult {
@@ -3275,30 +3162,30 @@ export function _setPaginationScanCapForTesting(cap: number | undefined): void {
   paginationScanCapOverride = cap;
 }
 
-export function getMessagesPaginated(
+export async function getMessagesPaginated(
   conversationId: string,
   limit: number | undefined,
   beforeTimestamp?: number,
   filter?: (row: MessageRow) => boolean,
-): PaginatedMessagesResult {
-  const db = getDb();
+): Promise<PaginatedMessagesResult> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
 
-  const segments = resolveLineage(conversationId);
+  const segments = await resolveLineage(conversationId);
 
   if (limit === undefined) {
     const conditions = [lineageMessageFilter(segments)];
     if (beforeTimestamp !== undefined) {
       conditions.push(lt(messages.createdAt, beforeTimestamp));
     }
-    const rows = db
+    const rows = await db.orm
       .select()
       .from(messages)
       .where(and(...conditions))
-      .orderBy(asc(messages.createdAt))
-      .all()
-      .map(parseMessage);
+      .orderBy(asc(messages.createdAt));
+    const parsed = rows.map(parseMessage);
     return {
-      messages: filter ? rows.filter(filter) : rows,
+      messages: filter ? parsed.filter(filter) : parsed,
       hasMore: false,
     };
   }
@@ -3343,14 +3230,14 @@ export function getMessagesPaginated(
               ),
             );
 
-    const chunk = db
-      .select()
-      .from(messages)
-      .where(and(lineageMessageFilter(segments), cursorPredicate))
-      .orderBy(desc(messages.createdAt), desc(messages.id))
-      .limit(chunkSize)
-      .all()
-      .map(parseMessage);
+    const chunk = (
+      await db.orm
+        .select()
+        .from(messages)
+        .where(and(lineageMessageFilter(segments), cursorPredicate))
+        .orderBy(desc(messages.createdAt), desc(messages.id))
+        .limit(chunkSize)
+    ).map(parseMessage);
 
     if (chunk.length === 0) {
       break;
@@ -3393,12 +3280,13 @@ export function getMessagesPaginated(
   return { messages: visible, hasMore, nextCursor };
 }
 
-export function getLastUserTimestampBefore(
+export async function getLastUserTimestampBefore(
   conversationId: string,
   beforeTimestamp: number,
-): number {
-  const db = getDb();
-  const row = db
+): Promise<number> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const [row] = await db.orm
     .select({ createdAt: messages.createdAt })
     .from(messages)
     .where(
@@ -3409,8 +3297,7 @@ export function getLastUserTimestampBefore(
       ),
     )
     .orderBy(desc(messages.createdAt))
-    .limit(1)
-    .get();
+    .limit(1);
   return row?.createdAt ?? 0;
 }
 
@@ -3436,9 +3323,11 @@ export function getLastUserTimestampBefore(
  * permanently "active" for consumers gating on human quiet (the
  * db-maintenance quiet period).
  */
-export function getLastInteractiveUserMessageTimestamp(): number {
-  const db = getDb();
-  const row = db
+export async function getLastInteractiveUserMessageTimestamp(): Promise<number> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const conversations = db.schema.conversations;
+  const [row] = await db.orm
     .select({ createdAt: messages.createdAt })
     .from(messages)
     .innerJoin(conversations, eq(messages.conversationId, conversations.id))
@@ -3451,87 +3340,90 @@ export function getLastInteractiveUserMessageTimestamp(): number {
       ),
     )
     .orderBy(desc(messages.createdAt))
-    .limit(1)
-    .get();
+    .limit(1);
   return row?.createdAt ?? 0;
 }
 
 /** Fetch a single message by ID, optionally scoped to a specific conversation. */
-export function getMessageById(
+export async function getMessageById(
   messageId: string,
   conversationId?: string,
-): MessageRow | null {
-  const db = getDb();
+): Promise<MessageRow | null> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
   const conditions = [eq(messages.id, messageId)];
   if (conversationId) {
     conditions.push(eq(messages.conversationId, conversationId));
   }
-  const row = db
+  const [row] = await db.orm
     .select()
     .from(messages)
-    .where(and(...conditions))
-    .get();
+    .where(and(...conditions));
   return row ? parseMessage(row) : null;
 }
 
-export function updateConversationTitle(
+export async function updateConversationTitle(
   id: string,
   title: string,
   isAutoTitle?: number,
-): void {
-  const db = getDb();
-  const set: Record<string, unknown> = { title, updatedAt: Date.now() };
+): Promise<void> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const set: Partial<typeof conversations.$inferInsert> = {
+    title,
+    updatedAt: Date.now(),
+  };
   if (isAutoTitle !== undefined) {
     set.isAutoTitle = isAutoTitle;
   }
-  db.update(conversations).set(set).where(eq(conversations.id, id)).run();
+  await db.orm.update(conversations).set(set).where(eq(conversations.id, id));
 
   // Update disk view meta.json with the new title
-  const conv = getConversation(id);
+  const conv = await getConversation(id);
   if (conv) {
     updateMetaFile(conv);
   }
 }
 
-export function updateConversationUsage(
+export async function updateConversationUsage(
   id: string,
   totalInputTokens: number,
   totalOutputTokens: number,
   totalEstimatedCost: number,
-): void {
-  const db = getDb();
-  db.update(conversations)
+): Promise<void> {
+  const db = requireMainDb();
+  await db.orm
+    .update(db.schema.conversations)
     .set({
       totalInputTokens,
       totalOutputTokens,
       totalEstimatedCost,
       updatedAt: Date.now(),
     })
-    .where(eq(conversations.id, id))
-    .run();
+    .where(eq(db.schema.conversations.id, id));
 }
 
-export function updateConversationContextWindow(
+export async function updateConversationContextWindow(
   id: string,
   contextSummary: string,
   contextCompactedMessageCount: number,
-): void {
-  const db = getDb();
+): Promise<void> {
+  const db = requireMainDb();
   const now = Date.now();
   // Update the hot-path cache columns and append the event to the ledger in a
   // single transaction so the latest ledger event always matches the cache.
-  db.transaction(() => {
-    db.update(conversations)
+  await db.transaction(async (tx) => {
+    await tx.orm
+      .update(tx.schema.conversations)
       .set({
         contextSummary,
         contextCompactedMessageCount,
         contextCompactedAt: now,
         updatedAt: now,
       })
-      .where(eq(conversations.id, id))
-      .run();
+      .where(eq(tx.schema.conversations.id, id));
     if (contextCompactedMessageCount > 0) {
-      appendCompactionEvent(id, {
+      await appendCompactionEvent(id, {
         compactedAt: now,
         summary: contextSummary,
         compactedMessageCount: contextCompactedMessageCount,
@@ -3540,64 +3432,60 @@ export function updateConversationContextWindow(
   });
 }
 
-export function setConversationHistoryStrippedAt(
+export async function setConversationHistoryStrippedAt(
   id: string,
   historyStrippedAt: number | null,
-): void {
-  const db = getDb();
-  db.update(conversations)
+): Promise<void> {
+  const db = requireMainDb();
+  await db.orm
+    .update(db.schema.conversations)
     .set({
       historyStrippedAt,
       updatedAt: Date.now(),
     })
-    .where(eq(conversations.id, id))
-    .run();
+    .where(eq(db.schema.conversations.id, id));
 }
 
-export function updateConversationSlackContextWatermark(
+export async function updateConversationSlackContextWatermark(
   id: string,
   watermarkTs: string,
   compactedAt: number = Date.now(),
-): void {
-  const db = getDb();
-  db.update(conversations)
+): Promise<void> {
+  const db = requireMainDb();
+  await db.orm
+    .update(db.schema.conversations)
     .set({
       slackContextCompactionWatermarkTs: watermarkTs,
       slackContextCompactionWatermarkAt: compactedAt,
       updatedAt: Date.now(),
     })
-    .where(eq(conversations.id, id))
-    .run();
+    .where(eq(db.schema.conversations.id, id));
 }
 
-export function archiveConversation(id: string): boolean {
-  const conv = getConversation(id);
+export async function archiveConversation(id: string): Promise<boolean> {
+  const conv = await getConversation(id);
   if (!conv) {
     return false;
   }
   const now = Date.now();
-  rawRun(
-    "conversation:archive",
+  const db = requireMainDb();
+  await db.run(
     "UPDATE conversations SET archived_at = ?, updated_at = ? WHERE id = ?",
-    now,
-    now,
-    id,
+    [now, now, id],
   );
   return true;
 }
 
-export function unarchiveConversation(id: string): boolean {
-  const conv = getConversation(id);
+export async function unarchiveConversation(id: string): Promise<boolean> {
+  const conv = await getConversation(id);
   if (!conv) {
     return false;
   }
   const now = Date.now();
-  rawRun(
-    "conversation:unarchive",
+  const db = requireMainDb();
+  await db.run(
     "UPDATE conversations SET last_reopened_at = CASE WHEN archived_at IS NOT NULL THEN ? ELSE last_reopened_at END, archived_at = NULL, updated_at = ? WHERE id = ?",
-    now,
-    now,
-    id,
+    [now, now, id],
   );
   return true;
 }
@@ -3632,20 +3520,18 @@ export function unarchiveConversation(id: string): boolean {
  * No-ops when the gate is off, which is the shipped behavior: nothing but the
  * unarchive route clears `archived_at`.
  */
-export function resurfaceArchivedConversation(
+export async function resurfaceArchivedConversation(
   conversationId: string,
   activityAt: number,
-): boolean {
+): Promise<boolean> {
   if (!isSidebarDoneEnabled(getConfig())) {
     return false;
   }
   const now = Date.now();
-  const changed = rawRun(
-    "conversation:resurface",
+  const db = requireMainDb();
+  const changed = await db.run(
     "UPDATE conversations SET archived_at = NULL, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL AND archived_at <= ?",
-    now,
-    conversationId,
-    activityAt,
+    [now, conversationId, activityAt],
   );
   if (changed === 0) {
     return false;
@@ -3665,23 +3551,21 @@ export function resurfaceArchivedConversation(
  * to clear (turn ended); a clean turn end also closes any interruption
  * streak, so the startup auto-resume budget refills.
  */
-export function setConversationProcessingStartedAt(
+export async function setConversationProcessingStartedAt(
   id: string,
   startedAt: number | null,
-): void {
+): Promise<void> {
+  const db = requireMainDb();
   if (startedAt == null) {
-    rawRun(
-      "conversation:setProcessingStartedAt",
+    await db.run(
       "UPDATE conversations SET processing_started_at = NULL, processing_resume_attempts = 0 WHERE id = ?",
-      id,
+      [id],
     );
     return;
   }
-  rawRun(
-    "conversation:setProcessingStartedAt",
+  await db.run(
     "UPDATE conversations SET processing_started_at = ? WHERE id = ?",
-    startedAt,
-    id,
+    [startedAt, id],
   );
 }
 
@@ -3697,11 +3581,17 @@ export interface InterruptedConversationRow {
  * mid-turn when the previous process exited (the monitor's recovery pass
  * clears the flags themselves out of process).
  */
-export function listInterruptedConversations(): InterruptedConversationRow[] {
-  return rawAll<{ id: string; processing_resume_attempts: number }>(
-    "conversation:listInterrupted",
+export async function listInterruptedConversations(): Promise<
+  InterruptedConversationRow[]
+> {
+  const db = requireMainDb();
+  const rows = await db.all<{
+    id: string;
+    processing_resume_attempts: number;
+  }>(
     "SELECT id, processing_resume_attempts FROM conversations WHERE processing_started_at IS NOT NULL",
-  ).map((row) => ({
+  );
+  return rows.map((row) => ({
     id: row.id,
     resumeAttempts: row.processing_resume_attempts,
   }));
@@ -3713,11 +3603,13 @@ export function listInterruptedConversations(): InterruptedConversationRow[] {
  * so the resume cap holds across boots. Reset to 0 by the clean turn-end write
  * in {@link setConversationProcessingStartedAt}.
  */
-export function incrementProcessingResumeAttempts(id: string): void {
-  rawRun(
-    "conversation:incrementResumeAttempts",
+export async function incrementProcessingResumeAttempts(
+  id: string,
+): Promise<void> {
+  const db = requireMainDb();
+  await db.run(
     "UPDATE conversations SET processing_resume_attempts = processing_resume_attempts + 1 WHERE id = ?",
-    id,
+    [id],
   );
 }
 
@@ -3729,15 +3621,15 @@ export function incrementProcessingResumeAttempts(id: string): void {
  * processing state — callers don't need to layer `findConversation` themselves.
  * Returns `false` when the conversation row doesn't exist.
  */
-export function isConversationProcessing(id: string): boolean {
+export async function isConversationProcessing(id: string): Promise<boolean> {
   const inMemory = findConversation(id)?.isProcessing();
   if (inMemory != null) {
     return inMemory;
   }
-  const row = rawGet<{ processing_started_at: number | null }>(
-    "conversation:isProcessing",
+  const db = requireMainDb();
+  const row = await db.get<{ processing_started_at: number | null }>(
     "SELECT processing_started_at FROM conversations WHERE id = ?",
-    id,
+    [id],
   );
   return row?.processing_started_at != null;
 }
@@ -3748,11 +3640,13 @@ export function isConversationProcessing(id: string): boolean {
  * it to age a flag {@link isConversationProcessing} already reported set, and
  * the column is the only signal that carries a start time.
  */
-export function getConversationProcessingStartedAt(id: string): number | null {
-  const row = rawGet<{ processing_started_at: number | null }>(
-    "conversation:getProcessingStartedAt",
+export async function getConversationProcessingStartedAt(
+  id: string,
+): Promise<number | null> {
+  const db = requireMainDb();
+  const row = await db.get<{ processing_started_at: number | null }>(
     "SELECT processing_started_at FROM conversations WHERE id = ?",
-    id,
+    [id],
   );
   return row?.processing_started_at ?? null;
 }
@@ -3762,27 +3656,29 @@ export function getConversationProcessingStartedAt(id: string): number | null {
  * failure — drain callers must distinguish "nothing processing" from "could
  * not read", so this does not degrade to an empty list.
  */
-export function listProcessingConversations(limit = 20): Array<{
-  conversationId: string;
-  title: string | null;
-  originChannel: string | null;
-  originInterface: string | null;
-  processingStartedAt: number;
-}> {
-  const rows = rawAll<{
+export async function listProcessingConversations(limit = 20): Promise<
+  Array<{
+    conversationId: string;
+    title: string | null;
+    originChannel: string | null;
+    originInterface: string | null;
+    processingStartedAt: number;
+  }>
+> {
+  const db = requireMainDb();
+  const rows = await db.all<{
     id: string;
     title: string | null;
     origin_channel: string | null;
     origin_interface: string | null;
     processing_started_at: number;
   }>(
-    "conversation:listProcessing",
     `SELECT id, title, origin_channel, origin_interface, processing_started_at
      FROM conversations
      WHERE processing_started_at IS NOT NULL
      ORDER BY processing_started_at ASC
      LIMIT ?`,
-    limit,
+    [limit],
   );
   return rows.map((row) => ({
     conversationId: row.id,
@@ -3804,11 +3700,13 @@ export function listProcessingConversations(limit = 20): Array<{
  * Seeded at creation with the global high-water seq and advanced on each
  * persistence flush by {@link recordConversationPersistedSeq}.
  */
-export function getConversationPersistedSeq(id: string): number | null {
-  const row = rawGet<{ seq: number | null }>(
-    "conversation:getPersistedSeq",
+export async function getConversationPersistedSeq(
+  id: string,
+): Promise<number | null> {
+  const db = requireMainDb();
+  const row = await db.get<{ seq: number | null }>(
     "SELECT seq FROM conversations WHERE id = ?",
-    id,
+    [id],
   );
   return row?.seq ?? null;
 }
@@ -3823,32 +3721,31 @@ export function getConversationPersistedSeq(id: string): number | null {
  * the high-water mark only, so out-of-order async commits never regress it.
  * Non-positive or non-finite `seq` values are ignored.
  *
- * Transient SQLite write contention (`SQLITE_BUSY`/`SQLITE_IOERR`) is swallowed
- * rather than thrown. This is a single, idempotent, monotonic UPDATE of a
- * snapshot↔stream anchor that every subsequent flush re-records with an
+ * Transient write contention (serialization failure or deadlock detected) is
+ * swallowed rather than thrown. This is a single, idempotent, monotonic UPDATE
+ * of a snapshot↔stream anchor that every subsequent flush re-records with an
  * equal-or-higher seq, so a dropped write self-heals on the next flush — the
  * same self-healing property that lets the paired content write
- * (`persistLoopMessageContent`) swallow its final failure. `busy_timeout`
- * already made the statement wait for the lock before surfacing `SQLITE_BUSY`,
- * so this synchronous path cannot usefully back off and retry; it just must not
- * throw. Several callers are fire-and-forget bookkeeping in the agent loop
- * (`flushAccumulatedContent`, `handleMessageComplete`, tool events) where a
- * raw throw is fatal: the debounced partial flush becomes an unhandled
- * rejection, and `message_complete` is on `dispatchAgentEvent`'s re-throw
- * allowlist — either one takes down the daemon on lock contention. A
- * non-contention error (a genuine bug: bad SQL, missing column) still throws.
+ * (`persistLoopMessageContent`) swallow its final failure. Several callers are
+ * fire-and-forget bookkeeping in the agent loop (`flushAccumulatedContent`,
+ * `handleMessageComplete`, tool events) where a raw throw is fatal: the
+ * debounced partial flush becomes an unhandled rejection, and
+ * `message_complete` is on `dispatchAgentEvent`'s re-throw allowlist — either
+ * one takes down the daemon on lock contention. A non-contention error (a
+ * genuine bug: bad SQL, missing column) still throws.
  */
-export function recordConversationPersistedSeq(id: string, seq: number): void {
+export async function recordConversationPersistedSeq(
+  id: string,
+  seq: number,
+): Promise<void> {
   if (!Number.isFinite(seq) || seq <= 0) {
     return;
   }
   try {
-    rawRun(
-      "conversation:recordPersistedSeq",
+    const db = requireMainDb();
+    await db.run(
       "UPDATE conversations SET seq = ? WHERE id = ? AND (seq IS NULL OR seq < ?)",
-      seq,
-      id,
-      seq,
+      [seq, id, seq],
     );
   } catch (err) {
     if (!isRetryableSqliteError(err)) {
@@ -3856,7 +3753,7 @@ export function recordConversationPersistedSeq(id: string, seq: number): void {
     }
     log.warn(
       { err, conversationId: id, seq },
-      "recordConversationPersistedSeq: transient SQLite contention; dropping this anchor advance (self-heals on the next flush)",
+      "recordConversationPersistedSeq: transient contention; dropping this anchor advance (self-heals on the next flush)",
     );
   }
 }
@@ -3869,10 +3766,10 @@ export function recordConversationPersistedSeq(id: string, seq: number): void {
  * `runtime/assistant-stream-state`) — resuming below it would re-issue
  * seqs that clients already treat as applied.
  */
-export function getMaxPersistedConversationSeq(): number {
-  const row = rawGet<{ maxSeq: number | null }>(
-    "conversation:maxPersistedSeq",
-    "SELECT MAX(seq) AS maxSeq FROM conversations",
+export async function getMaxPersistedConversationSeq(): Promise<number> {
+  const db = requireMainDb();
+  const row = await db.get<{ maxSeq: number | null }>(
+    'SELECT MAX(seq) AS "maxSeq" FROM conversations',
   );
   return row?.maxSeq ?? 0;
 }
@@ -3890,22 +3787,20 @@ export function getMaxPersistedConversationSeq(): number {
  * Returns `null` when the conversation does not exist; otherwise the new
  * `surfacedAt` value (`number` when surfacing, `null` when clearing).
  */
-export function setConversationSurfaced(
+export async function setConversationSurfaced(
   id: string,
   surfaced: boolean,
-): { surfacedAt: number | null } | null {
-  const conv = getConversation(id);
+): Promise<{ surfacedAt: number | null } | null> {
+  const conv = await getConversation(id);
   if (!conv) {
     return null;
   }
   const now = Date.now();
   const surfacedAt = surfaced ? now : null;
-  rawRun(
-    "conversation:setSurfaced",
+  const db = requireMainDb();
+  await db.run(
     "UPDATE conversations SET surfaced_at = ?, updated_at = ? WHERE id = ?",
-    surfacedAt,
-    now,
-    id,
+    [surfacedAt, now, id],
   );
   return { surfacedAt };
 }
@@ -3919,20 +3814,20 @@ export function setConversationSurfaced(
  * `inferenceProfileExpiresAt`) so that the reaper and lazy expiry check
  * cannot later clobber the newly-set profile.
  */
-export function setConversationInferenceProfile(
+export async function setConversationInferenceProfile(
   conversationId: string,
   profile: string | null,
-): void {
-  const db = getDb();
-  db.update(conversations)
+): Promise<void> {
+  const db = requireMainDb();
+  await db.orm
+    .update(db.schema.conversations)
     .set({
       inferenceProfile: profile,
       inferenceProfileSessionId: null,
       inferenceProfileExpiresAt: null,
       updatedAt: Date.now(),
     })
-    .where(eq(conversations.id, conversationId))
-    .run();
+    .where(eq(db.schema.conversations.id, conversationId));
 }
 
 /**
@@ -3949,15 +3844,15 @@ function encodeEnabledPlugins(plugins: string[] | null): string | null {
  * plugin ids, or `null` when the column is unset/empty (= no per-chat
  * restriction). Defensively returns `null` on a JSON parse failure.
  */
-export function getConversationEnabledPlugins(
+export async function getConversationEnabledPlugins(
   conversationId: string,
-): string[] | null {
-  const db = getDb();
-  const row = db
+): Promise<string[] | null> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const [row] = await db.orm
     .select({ enabledPlugins: conversations.enabledPlugins })
     .from(conversations)
-    .where(eq(conversations.id, conversationId))
-    .get();
+    .where(eq(conversations.id, conversationId));
   return parseJsonNullable<string[]>()(row?.enabledPlugins);
 }
 
@@ -3966,18 +3861,18 @@ export function getConversationEnabledPlugins(
  * the chat to those plugin ids, or `null` to clear the restriction and fall
  * back to all globally-enabled plugins.
  */
-export function setConversationEnabledPlugins(
+export async function setConversationEnabledPlugins(
   conversationId: string,
   plugins: string[] | null,
-): void {
-  const db = getDb();
-  db.update(conversations)
+): Promise<void> {
+  const db = requireMainDb();
+  await db.orm
+    .update(db.schema.conversations)
     .set({
       enabledPlugins: encodeEnabledPlugins(plugins),
       updatedAt: Date.now(),
     })
-    .where(eq(conversations.id, conversationId))
-    .run();
+    .where(eq(db.schema.conversations.id, conversationId));
 }
 
 /**
@@ -3985,22 +3880,22 @@ export function setConversationEnabledPlugins(
  * a conversation. Pass `null` for all three to clear the session-backed
  * override and fall back to the workspace `llm.activeProfile` resolution.
  */
-export function setConversationInferenceProfileSession(
+export async function setConversationInferenceProfileSession(
   conversationId: string,
   profile: string | null,
   sessionId: string | null,
   expiresAt: number | null,
-): void {
-  const db = getDb();
-  db.update(conversations)
+): Promise<void> {
+  const db = requireMainDb();
+  await db.orm
+    .update(db.schema.conversations)
     .set({
       inferenceProfile: profile,
       inferenceProfileSessionId: sessionId,
       inferenceProfileExpiresAt: expiresAt,
       updatedAt: Date.now(),
     })
-    .where(eq(conversations.id, conversationId))
-    .run();
+    .where(eq(db.schema.conversations.id, conversationId));
 }
 
 /**
@@ -4008,22 +3903,24 @@ export function setConversationInferenceProfileSession(
  * Returns an array of `{ conversationId, sessionId }` for each cleared row so
  * callers can emit the appropriate update events.
  */
-export function clearExpiredInferenceProfiles(
+export async function clearExpiredInferenceProfiles(
   now: number,
-): Array<{ conversationId: string; sessionId: string | null }> {
-  const raw = getSqliteFrom(getDb());
+): Promise<Array<{ conversationId: string; sessionId: string | null }>> {
+  const db = requireMainDb();
   // Two-step approach: SELECT to get pre-clear sessionIds, then UPDATE.
   // The UPDATE re-applies the WHERE condition for CAS safety.
   // RETURNING the id lets us know which rows were actually cleared.
-  const expired = raw
-    .prepare(
-      `
-    SELECT id AS conversationId, inference_profile_session_id AS sessionId
+  const expired = await db.all<{
+    conversationId: string;
+    sessionId: string | null;
+  }>(
+    `
+    SELECT id AS "conversationId", inference_profile_session_id AS "sessionId"
     FROM conversations
     WHERE inference_profile_expires_at IS NOT NULL AND inference_profile_expires_at <= ?
   `,
-    )
-    .all(now) as Array<{ conversationId: string; sessionId: string | null }>;
+    [now],
+  );
 
   if (expired.length === 0) {
     return [];
@@ -4032,16 +3929,15 @@ export function clearExpiredInferenceProfiles(
   const ids = expired.map((r) => r.conversationId);
   const placeholders = ids.map(() => "?").join(", ");
 
-  const actuallyCleared = raw
-    .prepare(
-      `
+  const actuallyCleared = await db.all<{ conversationId: string }>(
+    `
     UPDATE conversations
     SET inference_profile = NULL, inference_profile_session_id = NULL, inference_profile_expires_at = NULL
     WHERE id IN (${placeholders}) AND inference_profile_expires_at IS NOT NULL AND inference_profile_expires_at <= ?
-    RETURNING id AS conversationId
+    RETURNING id AS "conversationId"
   `,
-    )
-    .all(...ids, now) as Array<{ conversationId: string }>;
+    [...ids, now],
+  );
 
   const clearedSet = new Set(actuallyCleared.map((r) => r.conversationId));
   return expired.filter((r) => clearedSet.has(r.conversationId));
@@ -4051,16 +3947,19 @@ export function clearExpiredInferenceProfiles(
  * List conversations with an active (non-expired) session-backed inference
  * profile. Pass a `conversationId` to narrow to a single conversation.
  */
-export function listActiveInferenceProfileSessions(
+export async function listActiveInferenceProfileSessions(
   conversationId?: string,
-): Array<{
-  conversationId: string;
-  conversationTitle: string | null;
-  profile: string;
-  sessionId: string;
-  expiresAt: number;
-}> {
-  const db = getDb();
+): Promise<
+  Array<{
+    conversationId: string;
+    conversationTitle: string | null;
+    profile: string;
+    sessionId: string;
+    expiresAt: number;
+  }>
+> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
   const now = Date.now();
   const baseConditions = [
     isNotNull(conversations.inferenceProfile),
@@ -4071,7 +3970,7 @@ export function listActiveInferenceProfileSessions(
   if (conversationId) {
     baseConditions.push(eq(conversations.id, conversationId));
   }
-  return db
+  const rows = await db.orm
     .select({
       conversationId: conversations.id,
       conversationTitle: conversations.title,
@@ -4080,14 +3979,32 @@ export function listActiveInferenceProfileSessions(
       expiresAt: conversations.inferenceProfileExpiresAt,
     })
     .from(conversations)
-    .where(and(...baseConditions))
-    .all() as Array<{
+    .where(and(...baseConditions));
+
+  const active: Array<{
     conversationId: string;
     conversationTitle: string | null;
     profile: string;
     sessionId: string;
     expiresAt: number;
-  }>;
+  }> = [];
+  for (const row of rows) {
+    if (
+      row.profile === null ||
+      row.sessionId === null ||
+      row.expiresAt === null
+    ) {
+      continue;
+    }
+    active.push({
+      conversationId: row.conversationId,
+      conversationTitle: row.conversationTitle,
+      profile: row.profile,
+      sessionId: row.sessionId,
+      expiresAt: row.expiresAt,
+    });
+  }
+  return active;
 }
 
 /**
@@ -4141,10 +4058,10 @@ export function resolveOverrideProfile(
  * Convenience wrapper for standalone callers (e.g. subagent spawn,
  * opportunity-wake) that don't already have the conversation in hand.
  */
-export function getConversationOverrideProfile(
+export async function getConversationOverrideProfile(
   conversationId: string,
-): string | undefined {
-  return resolveOverrideProfile(getConversation(conversationId));
+): Promise<string | undefined> {
+  return resolveOverrideProfile(await getConversation(conversationId));
 }
 
 /**
@@ -4185,21 +4102,20 @@ export function resolveDurableProfile(
  * wrapper over {@link resolveDurableProfile} for callers that don't already
  * hold the row.
  */
-export function getConversationDurableProfile(
+export async function getConversationDurableProfile(
   conversationId: string,
-): string | undefined {
-  return resolveDurableProfile(getConversation(conversationId));
+): Promise<string | undefined> {
+  return resolveDurableProfile(await getConversation(conversationId));
 }
 
-export function setLastNotifiedInferenceProfile(
+export async function setLastNotifiedInferenceProfile(
   conversationId: string,
   profileKey: string | null,
-): void {
-  rawRun(
-    "conversation:setLastNotifiedProfile",
+): Promise<void> {
+  const db = requireMainDb();
+  await db.run(
     "UPDATE conversations SET last_notified_inference_profile = ? WHERE id = ?",
-    profileKey,
-    conversationId,
+    [profileKey, conversationId],
   );
 }
 
@@ -4207,98 +4123,52 @@ export function setLastNotifiedInferenceProfile(
  * Delete all conversations, messages, and related data (tool invocations,
  * memory segments, etc.) from the daemon database.
  * Returns { conversations, messages } counts.
- *
- * Each bulk DELETE is dispatched through {@link runAsyncSqlite}: when
- * the host has a `sqlite3` CLI it executes in a subprocess and the
- * daemon's main event loop stays responsive while large tables
- * (`llm_request_logs`, `tool_invocations`, etc.) are wiped. On hosts
- * without the CLI the abstraction falls back to in-process blocking
- * execution — the same behaviour the daemon had before.
  */
 export async function clearAll(): Promise<{
   conversations: number;
   messages: number;
 }> {
+  const db = requireMainDb();
   const msgCount =
-    rawGet<{ c: number }>(
-      "conversation:clearAll:countMessages",
-      "SELECT COUNT(*) AS c FROM messages",
-    )?.c ?? 0;
+    (await db.get<{ c: number }>("SELECT COUNT(*) AS c FROM messages"))?.c ?? 0;
   const convCount =
-    rawGet<{ c: number }>(
-      "conversation:clearAll:countConvs",
-      "SELECT COUNT(*) AS c FROM conversations",
-    )?.c ?? 0;
+    (await db.get<{ c: number }>("SELECT COUNT(*) AS c FROM conversations"))
+      ?.c ?? 0;
 
-  // Each DELETE goes through `runAsyncSqlite`. The original code threw
-  // on rawExec failure; mirror that here by throwing when the async
-  // result reports `ok: false`, so the route handler still returns 500.
-  const runOrThrow = async (
-    sql: string,
-    options?: { dbPath?: string },
-  ): Promise<void> => {
-    const result = await runAsyncSqlite(sql, `clearAll: ${sql}`, options);
-    if (!result.ok) {
-      throw new Error(
-        `clearAll: \`${sql}\` failed (${result.backend}): ${result.error ?? "unknown"}`,
-      );
-    }
-  };
+  // Pending skill_loaded rows live in the telemetry_events outbox. Redact them
+  // FIRST, before any destructive delete: unshipped skill events reference
+  // conversations this wipe must redact, so a telemetry failure must abort the
+  // clear-all while the workspace is still fully intact — never after memory
+  // state is already gone.
+  await db.run("DELETE FROM telemetry_events WHERE name = 'skill_loaded'");
 
-  // Pending skill_loaded rows live in the telemetry_events outbox on the
-  // dedicated telemetry connection. Redact them FIRST, before any destructive
-  // delete: unshipped skill events reference conversations this wipe must
-  // redact, so a telemetry failure must abort the clear-all while the
-  // workspace is still fully intact — never after memory state is already
-  // gone.
-  rawTelemetryRun(
-    "conversation:clearAll:skillLoadedEvents",
-    "DELETE FROM telemetry_events WHERE name = 'skill_loaded'",
-  );
-
-  // Delete in dependency order. The cascade handles tool_invocations. memory_jobs,
-  // memory_segments, memory_embeddings, and memory_summaries each live on a
-  // dedicated connection; clear them there rather than through a main-DB sqlite3
-  // subprocess. Clear all four directly rather than routing memory_segments
-  // through the CONVERSATIONS_CLEARED hook below: that hook is a no-op when the
-  // memory plugin is disabled, which would keep memory_segments' deleted message
-  // text searchable until the next startup sweep. memory_embeddings and
-  // memory_summaries are not conversation-keyed, so the hook never covered them.
-  rawMemoryRun("conversation:clearAll:memoryJobs", "DELETE FROM memory_jobs");
-  rawMemoryRun(
-    "conversation:clearAll:memorySegments",
-    "DELETE FROM memory_segments",
-  );
-  rawMemoryRun(
-    "conversation:clearAll:memoryEmbeddings",
-    "DELETE FROM memory_embeddings",
-  );
-  rawMemoryRun(
-    "conversation:clearAll:memorySummaries",
-    "DELETE FROM memory_summaries",
-  );
-  await runOrThrow("DELETE FROM memory_checkpoints");
-  rawLogsRun(
-    "conversation:clearAll:requestLogs",
-    "DELETE FROM llm_request_logs",
-  );
-  await runOrThrow("DELETE FROM llm_usage_events");
-  await runOrThrow("DELETE FROM message_attachments");
-  await runOrThrow("DELETE FROM attachments");
-  await runOrThrow("DELETE FROM tool_invocations");
-  await runOrThrow("DELETE FROM messages");
-  await runOrThrow("DELETE FROM conversations");
+  // Delete in dependency order. Clear the memory tables directly rather than
+  // routing memory_segments through the CONVERSATIONS_CLEARED hook below: that
+  // hook is a no-op when the memory plugin is disabled, which would keep
+  // memory_segments' deleted message text searchable until the next startup
+  // sweep. memory_embeddings and memory_summaries are not conversation-keyed,
+  // so the hook never covered them.
+  await db.run("DELETE FROM memory_jobs");
+  await db.run("DELETE FROM memory_segments");
+  await db.run("DELETE FROM memory_embeddings");
+  await db.run("DELETE FROM memory_summaries");
+  await db.run("DELETE FROM memory_checkpoints");
+  await db.run("DELETE FROM llm_request_logs");
+  await db.run("DELETE FROM llm_usage_events");
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM tool_invocations");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
   // Subagent lifecycle records reference conversations by id without an FK
   // cascade; wipe them explicitly so labels/objectives don't survive (or
   // rehydrate after) a clear-all.
-  await runOrThrow("DELETE FROM subagents");
+  await db.run("DELETE FROM subagents");
   // Watch-session timelines are conversation-keyed rows the cascade does not
   // reach. They come after `conversations` so this statement is the last thing
   // that needs to reach one: an append arriving from here on finds no
   // conversation to key itself to and is refused, and an append that already
-  // ran is a row this deletes. The bulk deletes above run in a sqlite3
-  // subprocess, so the event loop is free while they work; this one is a
-  // synchronous in-process statement, which nothing can interleave with.
+  // ran is a row this deletes.
   purgeAllWatchTimelines();
 
   // The memory feature's relocated conversation-keyed tables lost their main-DB
@@ -4317,18 +4187,19 @@ export async function clearAll(): Promise<{
   try {
     const auditEventId = uuid();
     const auditEventAt = Date.now();
-    rawTelemetryRun(
-      "conversation:clearAll:auditEvent",
+    await db.run(
       `INSERT INTO telemetry_events (id, name, created_at, conversation_id, payload) VALUES (?, 'lifecycle', ?, NULL, ?)`,
-      auditEventId,
-      auditEventAt,
-      JSON.stringify(
-        buildLifecycleTelemetryEvent(
-          auditEventId,
-          "conversations_clear_all",
-          auditEventAt,
+      [
+        auditEventId,
+        auditEventAt,
+        JSON.stringify(
+          buildLifecycleTelemetryEvent(
+            auditEventId,
+            "conversations_clear_all",
+            auditEventAt,
+          ),
         ),
-      ),
+      ],
     );
   } catch (err) {
     log.warn({ err }, "clearAll: failed to record audit event");
@@ -4370,27 +4241,31 @@ export async function clearAll(): Promise<{
 
 /**
  * Delete every memory_segment, and its segment embeddings, for the given
- * message ids on the memory connection, returning the deleted segment ids.
+ * message ids, returning the deleted segment ids.
  * memory_segments has no cross-file FK to messages, so a message delete never
  * cascades to it, and the conversation-keyed purge does not apply while the
  * conversation survives. Callers run this before removing the message rows and
  * again after; the second pass catches segments a concurrent backfill writes in
- * the gap between the two. Best-effort: a missing or locked memory database is
- * logged and treated as a no-op so it never aborts the delete.
+ * the gap between the two. Best-effort: a read or write failure is logged and
+ * treated as a no-op so it never aborts the delete.
  */
-function purgeMessageSegments(messageIds: string[], context: string): string[] {
-  const memoryDb = getMemoryDb();
-  if (!memoryDb || messageIds.length === 0) {
+async function purgeMessageSegments(
+  messageIds: string[],
+  context: string,
+): Promise<string[]> {
+  if (messageIds.length === 0) {
     return [];
   }
+  const db = requireMainDb();
+  const memorySegments = db.schema.memorySegments;
+  const memoryEmbeddings = db.schema.memoryEmbeddings;
   let ids: string[] = [];
   try {
-    ids = memoryDb
+    const rows = await db.orm
       .select({ id: memorySegments.id })
       .from(memorySegments)
-      .where(inArray(memorySegments.messageId, messageIds))
-      .all()
-      .map((r) => r.id);
+      .where(inArray(memorySegments.messageId, messageIds));
+    ids = rows.map((r) => r.id);
   } catch (err) {
     log.warn(
       { err, context },
@@ -4399,15 +4274,14 @@ function purgeMessageSegments(messageIds: string[], context: string): string[] {
   }
   if (ids.length > 0) {
     try {
-      memoryDb
+      await db.orm
         .delete(memoryEmbeddings)
         .where(
           and(
             eq(memoryEmbeddings.targetType, "segment"),
             inArray(memoryEmbeddings.targetId, ids),
           ),
-        )
-        .run();
+        );
     } catch (err) {
       log.warn(
         { err, context },
@@ -4418,10 +4292,9 @@ function purgeMessageSegments(messageIds: string[], context: string): string[] {
   // Independent of the embedding delete above: a missing or partially migrated
   // embedding cache must not leave the plaintext segment rows behind.
   try {
-    memoryDb
+    await db.orm
       .delete(memorySegments)
-      .where(inArray(memorySegments.messageId, messageIds))
-      .run();
+      .where(inArray(memorySegments.messageId, messageIds));
   } catch (err) {
     log.warn(
       { err, context },
@@ -4432,8 +4305,8 @@ function purgeMessageSegments(messageIds: string[], context: string): string[] {
 }
 
 /**
- * Delete a conversation's memory_segments and their segment embeddings on the
- * memory connection, returning the deleted segment ids for Qdrant cleanup.
+ * Delete a conversation's memory_segments and their segment embeddings,
+ * returning the deleted segment ids for Qdrant cleanup.
  * memory_segments has no cross-file FK to conversations, so a conversation
  * delete does not cascade to it and the conversation-deleted hook is a no-op
  * when the memory plugin is disabled; this purge runs regardless. It re-reads
@@ -4444,21 +4317,20 @@ function purgeMessageSegments(messageIds: string[], context: string): string[] {
  * embedding cache (such as a partial migration) cannot block deletion of the
  * plaintext segment rows. Best-effort throughout.
  */
-export function purgeConversationSegments(
+export async function purgeConversationSegments(
   conversationId: string,
   knownSegmentIds: string[] = [],
-): string[] {
-  const memoryDb = getMemoryDb();
-  if (!memoryDb) {
-    return knownSegmentIds;
-  }
+): Promise<string[]> {
+  const db = requireMainDb();
+  const memorySegments = db.schema.memorySegments;
+  const memoryEmbeddings = db.schema.memoryEmbeddings;
   const ids = new Set(knownSegmentIds);
   try {
-    for (const row of memoryDb
+    const rows = await db.orm
       .select({ id: memorySegments.id })
       .from(memorySegments)
-      .where(eq(memorySegments.conversationId, conversationId))
-      .all()) {
+      .where(eq(memorySegments.conversationId, conversationId));
+    for (const row of rows) {
       ids.add(row.id);
     }
   } catch (err) {
@@ -4470,15 +4342,14 @@ export function purgeConversationSegments(
   const segmentIds = [...ids];
   if (segmentIds.length > 0) {
     try {
-      memoryDb
+      await db.orm
         .delete(memoryEmbeddings)
         .where(
           and(
             eq(memoryEmbeddings.targetType, "segment"),
             inArray(memoryEmbeddings.targetId, segmentIds),
           ),
-        )
-        .run();
+        );
     } catch (err) {
       log.warn(
         { err, conversationId },
@@ -4487,10 +4358,9 @@ export function purgeConversationSegments(
     }
   }
   try {
-    memoryDb
+    await db.orm
       .delete(memorySegments)
-      .where(eq(memorySegments.conversationId, conversationId))
-      .run();
+      .where(eq(memorySegments.conversationId, conversationId));
   } catch (err) {
     log.warn(
       { err, conversationId },
@@ -4501,11 +4371,13 @@ export function purgeConversationSegments(
 }
 
 /** Repair derived mode-session boundaries without changing delete success. */
-function repairModeSessionBoundariesAfterDelete(conversationId: string): void {
+async function repairModeSessionBoundariesAfterDelete(
+  conversationId: string,
+): Promise<void> {
   const maxAttempts = 2;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      repairConversationModeSessionBoundaries(conversationId);
+      await repairConversationModeSessionBoundaries(conversationId);
       return;
     } catch (err) {
       if (attempt === maxAttempts) {
@@ -4518,11 +4390,14 @@ function repairModeSessionBoundariesAfterDelete(conversationId: string): void {
   }
 }
 
-export function deleteLastExchange(conversationId: string): number {
-  const db = getDb();
+export async function deleteLastExchange(
+  conversationId: string,
+): Promise<number> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
 
   // Find the last user message's id
-  const lastUserMsg = db
+  const [lastUserMsg] = await db.orm
     .select({ id: messages.id })
     .from(messages)
     .where(
@@ -4531,76 +4406,77 @@ export function deleteLastExchange(conversationId: string): number {
         eq(messages.role, "user"),
       ),
     )
-    .orderBy(sql`rowid DESC`)
-    .limit(1)
-    .get();
+    .orderBy(desc(messages.createdAt), desc(messages.id))
+    .limit(1);
 
   if (!lastUserMsg) {
     return 0;
   }
 
-  // Use rowid to identify the last user message and everything after it.
-  // rowid is monotonically increasing for inserts, so this is safe even if
-  // multiple messages share the same millisecond timestamp.
-  const rowidSubquery = sql`(SELECT rowid FROM messages WHERE id = ${lastUserMsg.id})`;
+  // Identify the last user message and everything after it by its
+  // `(createdAt, id)` position, so a shared millisecond timestamp still yields
+  // a deterministic tail.
+  const boundSubquery = sql`(SELECT created_at, id FROM messages WHERE id = ${lastUserMsg.id})`;
   const condition = and(
     eq(messages.conversationId, conversationId),
-    sql`rowid >= ${rowidSubquery}`,
+    sql`(${messages.createdAt}, ${messages.id}) >= ${boundSubquery}`,
   );
 
-  const [{ deleted }] = db
+  const [countRow] = await db.orm
     .select({ deleted: count() })
     .from(messages)
-    .where(condition)
-    .all();
+    .where(condition);
+  const deleted = countRow?.deleted ?? 0;
   if (deleted === 0) {
     return 0;
   }
 
   // Collect attachment IDs linked to the messages being deleted so we can
   // scope orphan cleanup to only those candidates (not freshly uploaded ones).
-  const deletedRows = db
+  const messageAttachments = db.schema.messageAttachments;
+  const deletedRows = await db.orm
     .select({ id: messages.id, createdAt: messages.createdAt })
     .from(messages)
-    .where(condition)
-    .all();
+    .where(condition);
   const messageIds = deletedRows.map((r) => r.id);
   const candidateAttachmentIds =
     messageIds.length > 0
-      ? db
-          .select({ attachmentId: messageAttachments.attachmentId })
-          .from(messageAttachments)
-          .where(inArray(messageAttachments.messageId, messageIds))
-          .all()
+      ? (
+          await db.orm
+            .select({ attachmentId: messageAttachments.attachmentId })
+            .from(messageAttachments)
+            .where(inArray(messageAttachments.messageId, messageIds))
+        )
           .map((r) => r.attachmentId)
           .filter((id): id is string => id != null)
       : [];
 
   // Purge the undone messages' segments before removing their rows so a crash
   // between the two re-indexes live messages rather than orphaning segments.
-  purgeMessageSegments(messageIds, "deleteLastExchange");
+  await purgeMessageSegments(messageIds, "deleteLastExchange");
 
-  db.transaction((tx) => {
-    tx.delete(messages).where(condition).run();
-    const maxResult = tx
-      .select({ maxCreatedAt: sql<number | null>`MAX(${messages.createdAt})` })
-      .from(messages)
-      .where(eq(messages.conversationId, conversationId))
-      .get();
-    tx.update(conversations)
+  await db.transaction(async (tx) => {
+    await tx.orm.delete(tx.schema.messages).where(condition);
+    const [maxResult] = await tx.orm
+      .select({
+        maxCreatedAt: sql<number | null>`MAX(${tx.schema.messages.createdAt})`,
+      })
+      .from(tx.schema.messages)
+      .where(eq(tx.schema.messages.conversationId, conversationId));
+    await tx.orm
+      .update(tx.schema.conversations)
       .set({
         updatedAt: Date.now(),
         lastMessageAt: maxResult?.maxCreatedAt ?? null,
       })
-      .where(eq(conversations.id, conversationId))
-      .run();
+      .where(eq(tx.schema.conversations.id, conversationId));
   });
 
   // Second purge now the message rows are gone, catching any segments a backfill
   // wrote in the gap between the purge above and the delete.
-  purgeMessageSegments(messageIds, "deleteLastExchange:post-delete");
+  await purgeMessageSegments(messageIds, "deleteLastExchange:post-delete");
 
-  deleteOrphanAttachments(candidateAttachmentIds);
+  await deleteOrphanAttachments(candidateAttachmentIds);
 
   // Remove the undone messages' points from the lexical index. This bulk
   // delete bypasses `deleteMessageById`, so enqueue the collected ids here —
@@ -4623,7 +4499,7 @@ export function deleteLastExchange(conversationId: string): number {
   }
 
   if (deleted > 0) {
-    repairModeSessionBoundariesAfterDelete(conversationId);
+    await repairModeSessionBoundariesAfterDelete(conversationId);
   }
 
   return deleted;
@@ -4632,7 +4508,7 @@ export function deleteLastExchange(conversationId: string): number {
 /**
  * IDs collected during message deletion for Qdrant vector cleanup.
  * Callers must delete these from the Qdrant collection after the
- * SQLite transaction commits.
+ * database transaction commits.
  */
 interface DeletedMemoryIds {
   segmentIds: string[];
@@ -4685,23 +4561,27 @@ export async function reserveMessage(
  * consolidation) enqueue the reindex themselves via
  * `enqueueLexicalIndexForMessage`.
  */
-export function updateMessageContent(
+export async function updateMessageContent(
   messageId: string,
   newContent: string,
   metadataUpdates?: Record<string, unknown>,
-): void {
+): Promise<void> {
   // When metadata updates ride along (e.g. the served model stamped at
   // assistant-row finalize), delegate to the transactional content+metadata
   // writer so both land atomically.
   if (metadataUpdates) {
-    updateMessageContentAndMetadata(messageId, newContent, metadataUpdates);
+    await updateMessageContentAndMetadata(
+      messageId,
+      newContent,
+      metadataUpdates,
+    );
     return;
   }
-  const db = getDb();
-  db.update(messages)
+  const db = requireMainDb();
+  await db.orm
+    .update(db.schema.messages)
     .set({ content: newContent })
-    .where(eq(messages.id, messageId))
-    .run();
+    .where(eq(db.schema.messages.id, messageId));
 }
 
 /**
@@ -4710,36 +4590,35 @@ export function updateMessageContent(
  * the same transaction). After this, the row is immutable streaming-wise and
  * eligible for batch readers (search, memory indexing).
  */
-export function finalizeMessageContent(
+export async function finalizeMessageContent(
   messageId: string,
   contentJson: string,
   metadataUpdates?: Record<string, unknown>,
-): void {
-  const db = getDb();
+): Promise<void> {
+  const db = requireMainDb();
   if (!metadataUpdates) {
-    db.update(messages)
+    await db.orm
+      .update(db.schema.messages)
       .set({ content: contentJson, finalized: 1 })
-      .where(eq(messages.id, messageId))
-      .run();
+      .where(eq(db.schema.messages.id, messageId));
     return;
   }
-  db.transaction((tx) => {
-    const row = tx
-      .select({ metadata: messages.metadata })
-      .from(messages)
-      .where(eq(messages.id, messageId))
-      .get();
+  await db.transaction(async (tx) => {
+    const [row] = await tx.orm
+      .select({ metadata: tx.schema.messages.metadata })
+      .from(tx.schema.messages)
+      .where(eq(tx.schema.messages.id, messageId));
     const existing = row?.metadata
       ? (JSON.parse(row.metadata) as Record<string, unknown>)
       : {};
-    tx.update(messages)
+    await tx.orm
+      .update(tx.schema.messages)
       .set({
         content: contentJson,
         finalized: 1,
         metadata: JSON.stringify({ ...existing, ...metadataUpdates }),
       })
-      .where(eq(messages.id, messageId))
-      .run();
+      .where(eq(tx.schema.messages.id, messageId));
   });
 }
 
@@ -4748,20 +4627,19 @@ export function finalizeMessageContent(
  * ({@link mergeMessageMetadata}). Reads the current metadata, shallow-merges
  * the new fields, and writes back.
  */
-export function updateMessageMetadata(
+export async function updateMessageMetadata(
   messageId: string,
   updates: Record<string, unknown>,
-): void {
-  const db = getDb();
-  const row = db
-    .select({ metadata: messages.metadata })
-    .from(messages)
-    .where(eq(messages.id, messageId))
-    .get();
-  db.update(messages)
+): Promise<void> {
+  const db = requireMainDb();
+  const [row] = await db.orm
+    .select({ metadata: db.schema.messages.metadata })
+    .from(db.schema.messages)
+    .where(eq(db.schema.messages.id, messageId));
+  await db.orm
+    .update(db.schema.messages)
     .set({ metadata: mergeMessageMetadata(row?.metadata, updates) })
-    .where(eq(messages.id, messageId))
-    .run();
+    .where(eq(db.schema.messages.id, messageId));
 }
 
 /**
@@ -4774,25 +4652,24 @@ export function updateMessageMetadata(
  * object. To merge into a nested sub-key (e.g. `slackMeta`), the caller
  * must compute the merged sub-value first and pass `{ slackMeta: merged }`.
  */
-export function updateMessageContentAndMetadata(
+export async function updateMessageContentAndMetadata(
   messageId: string,
   newContent: string,
   metadataUpdates: Record<string, unknown>,
-): void {
-  const db = getDb();
-  db.transaction((tx) => {
-    const row = tx
-      .select({ metadata: messages.metadata })
-      .from(messages)
-      .where(eq(messages.id, messageId))
-      .get();
-    tx.update(messages)
+): Promise<void> {
+  const db = requireMainDb();
+  await db.transaction(async (tx) => {
+    const [row] = await tx.orm
+      .select({ metadata: tx.schema.messages.metadata })
+      .from(tx.schema.messages)
+      .where(eq(tx.schema.messages.id, messageId));
+    await tx.orm
+      .update(tx.schema.messages)
       .set({
         content: newContent,
         metadata: mergeMessageMetadata(row?.metadata, metadataUpdates),
       })
-      .where(eq(messages.id, messageId))
-      .run();
+      .where(eq(tx.schema.messages.id, messageId));
   });
 }
 
@@ -4801,30 +4678,31 @@ export function updateMessageContentAndMetadata(
  * Used during message consolidation so that attachments linked to deleted
  * messages survive the ON DELETE CASCADE on message_attachments.
  */
-export function relinkAttachments(
+export async function relinkAttachments(
   fromMessageIds: string[],
   toMessageId: string,
-): number {
+): Promise<number> {
   if (fromMessageIds.length === 0) {
     return 0;
   }
-  const db = getDb();
+  const db = requireMainDb();
+  const messageAttachments = db.schema.messageAttachments;
 
   // Count how many links will be moved before updating.
-  const [{ total }] = db
+  const [countRow] = await db.orm
     .select({ total: count() })
     .from(messageAttachments)
-    .where(inArray(messageAttachments.messageId, fromMessageIds))
-    .all();
+    .where(inArray(messageAttachments.messageId, fromMessageIds));
+  const total = countRow?.total ?? 0;
 
   if (total === 0) {
     return 0;
   }
 
-  db.update(messageAttachments)
+  await db.orm
+    .update(messageAttachments)
     .set({ messageId: toMessageId })
-    .where(inArray(messageAttachments.messageId, fromMessageIds))
-    .run();
+    .where(inArray(messageAttachments.messageId, fromMessageIds));
 
   return total;
 }
@@ -4845,11 +4723,13 @@ export function relinkAttachments(
  * send), not a leak. Callers deleting a message for good pass nothing and the
  * attachments it alone referenced are collected.
  */
-export function deleteMessageById(
+export async function deleteMessageById(
   messageId: string,
   options?: { retainAttachmentIds?: readonly string[] },
-): DeletedMemoryIds {
-  const db = getDb();
+): Promise<DeletedMemoryIds> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const messageAttachments = db.schema.messageAttachments;
   const result: DeletedMemoryIds = {
     segmentIds: [],
     deletedSummaryIds: [],
@@ -4857,53 +4737,59 @@ export function deleteMessageById(
 
   // Collect attachment IDs linked to this message before cascade-delete
   // so we can scope orphan cleanup to only those candidates.
-  const candidateAttachmentIds = db
-    .select({ attachmentId: messageAttachments.attachmentId })
-    .from(messageAttachments)
-    .where(eq(messageAttachments.messageId, messageId))
-    .all()
+  const candidateAttachmentIds = (
+    await db.orm
+      .select({ attachmentId: messageAttachments.attachmentId })
+      .from(messageAttachments)
+      .where(eq(messageAttachments.messageId, messageId))
+  )
     .map((r) => r.attachmentId)
     .filter((id): id is string => id !== undefined);
 
   // Look up the conversation before the transaction so we can recalculate
   // lastMessageAt, and the row's createdAt for the `message-deleted` hook.
-  const msgRow = db
+  const [msgRow] = await db.orm
     .select({
       conversationId: messages.conversationId,
       createdAt: messages.createdAt,
     })
     .from(messages)
-    .where(eq(messages.id, messageId))
-    .get();
+    .where(eq(messages.id, messageId));
 
   // Purge the message's segments before removing its row so a crash between the
   // two re-indexes a live message rather than orphaning segments for a gone one.
-  result.segmentIds = purgeMessageSegments([messageId], "deleteMessageById");
+  result.segmentIds = await purgeMessageSegments(
+    [messageId],
+    "deleteMessageById",
+  );
 
-  db.transaction((tx) => {
+  await db.transaction(async (tx) => {
     // Detach nullable FK references so the cascade doesn't destroy them.
-    tx.update(channelInboundEvents)
+    await tx.orm
+      .update(tx.schema.channelInboundEvents)
       .set({ messageId: null })
-      .where(eq(channelInboundEvents.messageId, messageId))
-      .run();
+      .where(eq(tx.schema.channelInboundEvents.messageId, messageId));
 
-    // NOT NULL cascades remove message_attachments. memory_segments is on the
-    // memory connection and was purged above.
-    tx.delete(messages).where(eq(messages.id, messageId)).run();
+    // NOT NULL cascades remove message_attachments. memory_segments was purged
+    // above.
+    await tx.orm
+      .delete(tx.schema.messages)
+      .where(eq(tx.schema.messages.id, messageId));
 
     // Recalculate lastMessageAt after deletion.
     if (msgRow) {
-      const maxResult = tx
+      const [maxResult] = await tx.orm
         .select({
-          maxCreatedAt: sql<number | null>`MAX(${messages.createdAt})`,
+          maxCreatedAt: sql<
+            number | null
+          >`MAX(${tx.schema.messages.createdAt})`,
         })
-        .from(messages)
-        .where(eq(messages.conversationId, msgRow.conversationId))
-        .get();
-      tx.update(conversations)
+        .from(tx.schema.messages)
+        .where(eq(tx.schema.messages.conversationId, msgRow.conversationId));
+      await tx.orm
+        .update(tx.schema.conversations)
         .set({ lastMessageAt: maxResult?.maxCreatedAt ?? null })
-        .where(eq(conversations.id, msgRow.conversationId))
-        .run();
+        .where(eq(tx.schema.conversations.id, msgRow.conversationId));
     }
   });
 
@@ -4911,11 +4797,14 @@ export function deleteMessageById(
   // write segments after the purge above while its own existence check still
   // sees the message present, so re-run the cleanup to remove any it added.
   result.segmentIds.push(
-    ...purgeMessageSegments([messageId], "deleteMessageById:post-delete"),
+    ...(await purgeMessageSegments(
+      [messageId],
+      "deleteMessageById:post-delete",
+    )),
   );
 
   const retainAttachmentIds = options?.retainAttachmentIds;
-  deleteOrphanAttachments(
+  await deleteOrphanAttachments(
     retainAttachmentIds && retainAttachmentIds.length > 0
       ? candidateAttachmentIds.filter((id) => !retainAttachmentIds.includes(id))
       : candidateAttachmentIds,
@@ -4929,73 +4818,73 @@ export function deleteMessageById(
     enqueueDeleteMessageLexical(messageId);
 
     // Notify `message-deleted` hooks (e.g. the memory plugin stamping a
-    // retrospective cursor that sat on this row). Fire-and-forget from this
-    // synchronous primitive, like `conversation-deleted`; the context carries
-    // the row's position because the row itself is gone.
+    // retrospective cursor that sat on this row). Fire-and-forget, like
+    // `conversation-deleted`; the context carries the row's position because
+    // the row itself is gone.
     void runHook(HOOKS.MESSAGE_DELETED, {
       conversationId: msgRow.conversationId,
       messageId,
       createdAt: msgRow.createdAt,
     } satisfies MessageDeletedInputContext);
-    repairModeSessionBoundariesAfterDelete(msgRow.conversationId);
+    await repairModeSessionBoundariesAfterDelete(msgRow.conversationId);
   }
 
   return result;
 }
 
-export function setConversationOriginChannelIfUnset(
+export async function setConversationOriginChannelIfUnset(
   conversationId: string,
   channel: ChannelId,
-): void {
-  const db = getDb();
-  db.update(conversations)
+): Promise<void> {
+  const db = requireMainDb();
+  await db.orm
+    .update(db.schema.conversations)
     .set({ originChannel: channel })
     .where(
       and(
-        eq(conversations.id, conversationId),
-        isNull(conversations.originChannel),
+        eq(db.schema.conversations.id, conversationId),
+        isNull(db.schema.conversations.originChannel),
       ),
-    )
-    .run();
+    );
 }
 
-export function getConversationOriginChannel(
+export async function getConversationOriginChannel(
   conversationId: string,
-): ChannelId | null {
-  const db = getDb();
-  const row = db
+): Promise<ChannelId | null> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const [row] = await db.orm
     .select({ originChannel: conversations.originChannel })
     .from(conversations)
-    .where(eq(conversations.id, conversationId))
-    .get();
+    .where(eq(conversations.id, conversationId));
   return parseChannelId(row?.originChannel) ?? null;
 }
 
-export function setConversationOriginInterfaceIfUnset(
+export async function setConversationOriginInterfaceIfUnset(
   conversationId: string,
   interfaceId: InterfaceId,
-): void {
-  const db = getDb();
-  db.update(conversations)
+): Promise<void> {
+  const db = requireMainDb();
+  await db.orm
+    .update(db.schema.conversations)
     .set({ originInterface: interfaceId })
     .where(
       and(
-        eq(conversations.id, conversationId),
-        isNull(conversations.originInterface),
+        eq(db.schema.conversations.id, conversationId),
+        isNull(db.schema.conversations.originInterface),
       ),
-    )
-    .run();
+    );
 }
 
-export function getConversationOriginInterface(
+export async function getConversationOriginInterface(
   conversationId: string,
-): InterfaceId | null {
-  const db = getDb();
-  const row = db
+): Promise<InterfaceId | null> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const [row] = await db.orm
     .select({ originInterface: conversations.originInterface })
     .from(conversations)
-    .where(eq(conversations.id, conversationId))
-    .get();
+    .where(eq(conversations.id, conversationId));
   return parseInterfaceId(row?.originInterface) ?? null;
 }
 
@@ -5007,20 +4896,17 @@ export function getConversationOriginInterface(
  * whose audience is a guardian, trusted_contact, or unverified_contact
  * outside desktop-origin conversations.
  */
-export function getConversationRecentProvenanceTrustClass(
+export async function getConversationRecentProvenanceTrustClass(
   conversationId: string,
-):
-  | "guardian"
-  | "trusted_contact"
-  | "unverified_contact"
-  | "unknown"
-  | undefined {
-  const row = rawGet<{ metadata: string | null }>(
-    "conversation:getProvenanceTrustClass",
+): Promise<
+  "guardian" | "trusted_contact" | "unverified_contact" | "unknown" | undefined
+> {
+  const db = requireMainDb();
+  const row = await db.get<{ metadata: string | null }>(
     `SELECT metadata FROM messages
      WHERE conversation_id = ? AND role = 'user' AND metadata IS NOT NULL
      ORDER BY created_at DESC LIMIT 1`,
-    conversationId,
+    [conversationId],
   );
   return parseMessageMetadata(row?.metadata ?? null)?.provenanceTrustClass;
 }
@@ -5036,17 +4922,17 @@ export function getConversationRecentProvenanceTrustClass(
  * Writes no ordering. Every list is ordered by recency, so a conversation's
  * placement is which section holds it, not where it sits inside one.
  */
-export function batchSetConversationPlacement(
+export async function batchSetConversationPlacement(
   updates: Array<{
     id: string;
     isPinned?: boolean;
     groupId?: string | null;
   }>,
-): void {
-  ensureDisplayOrderMigration();
-  ensureGroupMigration();
-  rawExec("BEGIN");
-  try {
+): Promise<void> {
+  await ensureDisplayOrderMigrationAsync();
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
+  await db.transaction(async (tx) => {
     for (const update of updates) {
       if (update.groupId !== undefined) {
         // New client: groupId is authoritative.
@@ -5058,11 +4944,10 @@ export function batchSetConversationPlacement(
         if (safeGroupId === null) {
           safeGroupId = UNGROUPED_GROUP_ID;
         } else if (
-          !rawGet<{ id: string }>(
-            "conversation:batchSetConversationPlacement:groupCheck",
+          !(await tx.get<{ id: string }>(
             "SELECT id FROM conversation_groups WHERE id = ?",
-            safeGroupId,
-          )
+            [safeGroupId],
+          ))
         ) {
           safeGroupId = UNGROUPED_GROUP_ID;
         }
@@ -5108,22 +4993,19 @@ export function batchSetConversationPlacement(
           params.push(Date.now());
         }
         params.push(update.id);
-        rawRun(
-          "conversation:batchSetConversationPlacement:group",
+        await tx.run(
           `UPDATE conversations SET ${setClauses.join(", ")} WHERE id = ?`,
-          ...params,
+          params,
         );
       } else if (update.isPinned === true) {
-        rawRun(
-          "conversation:batchSetConversationPlacement:pin",
+        await tx.run(
           "UPDATE conversations SET is_pinned = 1, group_id = 'system:pinned' WHERE id = ?",
-          update.id,
+          [update.id],
         );
       } else if (update.isPinned === false) {
         // Restore system group from source/conversationType when unpinning,
         // instead of clearing to NULL (which would lose provenance).
-        rawRun(
-          "conversation:batchSetConversationPlacement:unpin",
+        await tx.run(
           `UPDATE conversations SET is_pinned = 0,
            group_id = CASE WHEN group_id = 'system:pinned' THEN
              CASE
@@ -5134,25 +5016,24 @@ export function batchSetConversationPlacement(
              END
            ELSE group_id END
            WHERE id = ?`,
-          update.id,
+          [update.id],
         );
       }
     }
-    rawExec("COMMIT");
-  } catch (err) {
-    rawExec("ROLLBACK");
-    throw err;
-  }
+  });
 }
 
-export function getDisplayMetaForConversations(
+export async function getDisplayMetaForConversations(
   conversationIds: string[],
-): Map<
-  string,
-  { displayOrder: number | null; isPinned: boolean; groupId: string | null }
+): Promise<
+  Map<
+    string,
+    { displayOrder: number | null; isPinned: boolean; groupId: string | null }
+  >
 > {
-  ensureDisplayOrderMigration();
-  ensureGroupMigration();
+  await ensureDisplayOrderMigrationAsync();
+  await ensureGroupMigrationAsync();
+  const db = requireMainDb();
   const result = new Map<
     string,
     { displayOrder: number | null; isPinned: boolean; groupId: string | null }
@@ -5161,14 +5042,13 @@ export function getDisplayMetaForConversations(
     return result;
   }
   for (const id of conversationIds) {
-    const row = rawGet<{
+    const row = await db.get<{
       display_order: number | null;
       is_pinned: number | null;
       group_id: string | null;
     }>(
-      "conversation:getDisplayMeta",
       "SELECT display_order, is_pinned, group_id FROM conversations WHERE id = ?",
-      id,
+      [id],
     );
     result.set(id, {
       displayOrder: row?.display_order ?? null,
@@ -5216,43 +5096,46 @@ function isToolResultMessage(role: string, content: string): boolean {
  * blocks, and any other element, a non-object one included, makes the row an
  * ordinary one.
  *
- * The classification runs inside SQLite so no message body is read into memory
- * to decide it. Every `CASE` pins an evaluation order the planner could
+ * The classification runs inside Postgres so no message body is read into
+ * memory to decide it. Every `CASE` pins an evaluation order the planner could
  * otherwise reorder an `AND` chain out of: a plain-text body never reaches a
- * JSON function, and an element's type is checked before `json_extract` for
- * the same reason, since `json_each` exposes a bare string element unquoted.
- * `COALESCE` keeps a missing `$.type` or `$.text` a definite mismatch, since a
- * NULL inside the `NOT EXISTS` would drop the element from the scan instead.
+ * JSON function, and an element's type is checked before `->>` for the same
+ * reason. `COALESCE` keeps a missing `type` or `text` a definite mismatch,
+ * since a NULL inside the `NOT EXISTS` would drop the element from the scan
+ * instead.
  */
 function excludesToolResultRows(): SQL {
-  const blockType = sql`COALESCE(json_extract(block.value, '$.type'), '')`;
-  const blockText = sql`COALESCE(json_extract(block.value, '$.text'), '')`;
+  const messages = requireMainDb().schema.messages;
+  const blockType = sql`COALESCE(block.value ->> 'type', '')`;
+  const blockText = sql`COALESCE(block.value ->> 'text', '')`;
   const isToolBlock = sql`${blockType} IN ('tool_result', 'web_search_tool_result')`;
-  const isNoticeBlock = sql`substr(${blockText}, 1, 15) = '<system_notice>' AND substr(${blockText}, -16) = '</system_notice>'`;
+  const isNoticeBlock = sql`left(${blockText}, 15) = '<system_notice>' AND right(${blockText}, 16) = '</system_notice>'`;
   return sql`NOT (CASE
-    WHEN ${messages.role} = 'user' AND json_valid(${messages.content})
+    WHEN ${messages.role} = 'user'
+      AND ${messages.content} ~ '^[[:space:]]*\\['
+      AND pg_input_is_valid(${messages.content}, 'jsonb')
       THEN CASE
-        WHEN json_type(${messages.content}) = 'array'
+        WHEN jsonb_typeof(${messages.content}::jsonb) = 'array'
           THEN EXISTS (
-              SELECT 1 FROM json_each(${messages.content}) AS block
-              WHERE CASE WHEN block.type = 'object' THEN ${isToolBlock} ELSE 0 END
+              SELECT 1 FROM jsonb_array_elements(${messages.content}::jsonb) AS block(value)
+              WHERE CASE WHEN jsonb_typeof(block.value) = 'object' THEN ${isToolBlock} ELSE FALSE END
             )
             AND NOT EXISTS (
-              SELECT 1 FROM json_each(${messages.content}) AS block
+              SELECT 1 FROM jsonb_array_elements(${messages.content}::jsonb) AS block(value)
               WHERE CASE
-                WHEN block.type = 'object'
+                WHEN jsonb_typeof(block.value) = 'object'
                   THEN CASE
-                    WHEN ${isToolBlock} THEN 0
+                    WHEN ${isToolBlock} THEN FALSE
                     WHEN ${blockType} = 'text'
-                      THEN CASE WHEN ${isNoticeBlock} THEN 0 ELSE 1 END
-                    ELSE 1
+                      THEN CASE WHEN ${isNoticeBlock} THEN FALSE ELSE TRUE END
+                    ELSE TRUE
                   END
-                ELSE 1
+                ELSE TRUE
               END
             )
-        ELSE 0
+        ELSE FALSE
       END
-    ELSE 0
+    ELSE FALSE
   END)`;
 }
 
@@ -5267,21 +5150,23 @@ function excludesToolResultRows(): SQL {
  *
  * Returns null if the message is the only one in the conversation.
  */
-export function getTurnTimeBounds(
+export async function getTurnTimeBounds(
   conversationId: string,
   messageCreatedAt: number,
-): { startTime: number; endTime: number } | null {
-  const db = getDb();
+): Promise<{ startTime: number; endTime: number } | null> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const llmRequestLogs = db.schema.llmRequestLogs;
 
-  // Walk backward (by rowid, not just createdAt) to find the real user
-  // message that starts this turn.
-  const rowidSubquery = sql`(
-    SELECT rowid FROM messages
+  // Walk backward from the target's `(createdAt, id)` position to find the
+  // real user message that starts this turn.
+  const backwardAnchor = sql`(
+    SELECT created_at, id FROM messages
     WHERE conversation_id = ${conversationId}
       AND created_at <= ${messageCreatedAt}
-    ORDER BY rowid DESC LIMIT 1
+    ORDER BY created_at DESC, id DESC LIMIT 1
   )`;
-  const backwardRows = db
+  const backwardRows = await db.orm
     .select({
       role: messages.role,
       content: messages.content,
@@ -5291,12 +5176,11 @@ export function getTurnTimeBounds(
     .where(
       and(
         eq(messages.conversationId, conversationId),
-        sql`rowid <= ${rowidSubquery}`,
+        sql`(${messages.createdAt}, ${messages.id}) <= ${backwardAnchor}`,
       ),
     )
-    .orderBy(sql`rowid DESC`)
-    .limit(50)
-    .all();
+    .orderBy(desc(messages.createdAt), desc(messages.id))
+    .limit(50);
 
   let startTime = messageCreatedAt;
   for (const row of backwardRows) {
@@ -5306,14 +5190,14 @@ export function getTurnTimeBounds(
     }
   }
 
-  // Walk forward (by rowid) to find the next real user message.
-  const forwardRowidSubquery = sql`(
-    SELECT rowid FROM messages
+  // Walk forward to find the next real user message.
+  const forwardAnchor = sql`(
+    SELECT created_at, id FROM messages
     WHERE conversation_id = ${conversationId}
       AND created_at >= ${messageCreatedAt}
-    ORDER BY rowid DESC LIMIT 1
+    ORDER BY created_at DESC, id DESC LIMIT 1
   )`;
-  const forwardRows = db
+  const forwardRows = await db.orm
     .select({
       role: messages.role,
       content: messages.content,
@@ -5323,12 +5207,11 @@ export function getTurnTimeBounds(
     .where(
       and(
         eq(messages.conversationId, conversationId),
-        sql`rowid > ${forwardRowidSubquery}`,
+        sql`(${messages.createdAt}, ${messages.id}) > ${forwardAnchor}`,
       ),
     )
-    .orderBy(sql`rowid ASC`)
-    .limit(50)
-    .all();
+    .orderBy(asc(messages.createdAt), asc(messages.id))
+    .limit(50);
 
   let endTime = messageCreatedAt;
   let nextTurnStart: number | null = null;
@@ -5358,8 +5241,7 @@ export function getTurnTimeBounds(
       : startTime + MAX_TURN_DURATION_MS;
 
   if (hardCeiling > endTime) {
-    // llm_request_logs lives in the dedicated logs connection.
-    const latestLog = logsDb()
+    const [latestLog] = await db.orm
       .select({ createdAt: llmRequestLogs.createdAt })
       .from(llmRequestLogs)
       .where(
@@ -5370,8 +5252,7 @@ export function getTurnTimeBounds(
         ),
       )
       .orderBy(desc(llmRequestLogs.createdAt))
-      .limit(1)
-      .get();
+      .limit(1);
 
     if (latestLog && latestLog.createdAt > endTime) {
       endTime = latestLog.createdAt;
@@ -5397,11 +5278,14 @@ export function getTurnTimeBounds(
  * Returns `[messageId]` as a fallback if the message is not found,
  * preserving backward compatibility for callers.
  */
-export function getAssistantMessageIdsInTurn(messageId: string): string[] {
-  const db = getDb();
+export async function getAssistantMessageIdsInTurn(
+  messageId: string,
+): Promise<string[]> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
 
   // Look up the target message to get its conversationId and createdAt.
-  const target = getMessageById(messageId);
+  const target = await getMessageById(messageId);
   if (!target) {
     return [messageId];
   }
@@ -5415,7 +5299,7 @@ export function getAssistantMessageIdsInTurn(messageId: string): string[] {
 
   // Walk backward from the target message to find the turn boundary.
   // Limit to 50 rows — sufficient for even aggressive tool-use loops.
-  const backwardRows = db
+  const backwardRows = await db.orm
     .select({
       id: messages.id,
       role: messages.role,
@@ -5431,8 +5315,7 @@ export function getAssistantMessageIdsInTurn(messageId: string): string[] {
       ),
     )
     .orderBy(desc(messages.createdAt))
-    .limit(50)
-    .all();
+    .limit(50);
 
   const assistantIds: string[] = [];
   let boundaryCreatedAt: number | null = null;
@@ -5460,7 +5343,7 @@ export function getAssistantMessageIdsInTurn(messageId: string): string[] {
   // Walk forward from the target to collect any later assistant messages
   // still within the same turn (e.g. when querying an intermediate
   // message like A1 in a multi-step turn A1 → tool_result → A2).
-  const forwardRows = db
+  const forwardRows = await db.orm
     .select({
       id: messages.id,
       role: messages.role,
@@ -5476,8 +5359,7 @@ export function getAssistantMessageIdsInTurn(messageId: string): string[] {
       ),
     )
     .orderBy(asc(messages.createdAt))
-    .limit(50)
-    .all();
+    .limit(50);
 
   for (const row of forwardRows) {
     if (row.role === "assistant") {
@@ -5507,7 +5389,7 @@ export function getAssistantMessageIdsInTurn(messageId: string): string[] {
   // assistant messages between the boundary and the target that may have
   // been missed (e.g. due to the 50-row limit in the backward walk).
   if (boundaryCreatedAt != null) {
-    const gapRows = db
+    const gapRows = await db.orm
       .select({
         id: messages.id,
         role: messages.role,
@@ -5522,8 +5404,7 @@ export function getAssistantMessageIdsInTurn(messageId: string): string[] {
           lte(messages.createdAt, target.createdAt),
         ),
       )
-      .orderBy(asc(messages.createdAt))
-      .all();
+      .orderBy(asc(messages.createdAt));
 
     for (const row of gapRows) {
       if (
@@ -5543,7 +5424,7 @@ export function getAssistantMessageIdsInTurn(messageId: string): string[] {
   }
 
   const idSet = new Set(assistantIds);
-  const sorted = db
+  const sorted = await db.orm
     .select({ id: messages.id, createdAt: messages.createdAt })
     .from(messages)
     .where(
@@ -5552,8 +5433,7 @@ export function getAssistantMessageIdsInTurn(messageId: string): string[] {
         inArray(messages.id, [...idSet]),
       ),
     )
-    .orderBy(asc(messages.createdAt))
-    .all();
+    .orderBy(asc(messages.createdAt));
 
   return sorted.map((r) => r.id);
 }

@@ -1,24 +1,18 @@
 /**
- * The `checkpoints` slice on Postgres.
+ * Conformance suite for the `checkpoints` slice on Postgres.
  *
  * `checkpoints.ts` reads and writes only `memory_checkpoints`, which lives on
- * the `main` slot, so the async `AsyncDb` facade is what lets the same code run
- * on SQLite and Postgres. This suite runs one scenario body against both
- * backends, mirroring `schedule-store-postgres.test.ts`.
+ * the `main` slot, so the async `AsyncDb` facade is what lets the store run
+ * unchanged. The suite runs against the process's Postgres test schema,
+ * bootstrapped with the generated baseline by `src/__tests__/pg-test-db.ts`.
  *
- * The Postgres leg is gated on `VELLUM_PG_TEST_URL` (throwaway instance); with
- * it unset only the SQLite leg runs.
+ * Gated on `VELLUM_PG_TEST_URL` (throwaway instance); with it unset the suite
+ * skips.
  */
 
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  test,
-} from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import {
   clearLexicalBackfillComplete,
   deleteMemoryCheckpoint,
@@ -32,20 +26,14 @@ import {
 } from "../checkpoints.js";
 import { requireMainDb } from "../db-facade.js";
 import { initializeDb } from "../db-init.js";
-import { getPostgresAsyncDb } from "../db-postgres-facade.js";
-import { PG_STEPS } from "../pg-migrations/pg-steps.js";
-import { runPgMigrations } from "../pg-migrations/run-pg-migrations.js";
 
 await initializeDb();
-
-const PG_URL = process.env.VELLUM_PG_TEST_URL;
 
 async function clearCheckpoints(): Promise<void> {
   await requireMainDb().run("DELETE FROM memory_checkpoints");
 }
 
-/** One scenario body, run verbatim against each backend. */
-function defineStoreScenarios(): void {
+describePg("checkpoints (postgres)", () => {
   beforeEach(async () => {
     await clearCheckpoints();
   });
@@ -100,54 +88,4 @@ function defineStoreScenarios(): void {
     await clearLexicalBackfillComplete();
     expect(await isLexicalBackfillComplete()).toBe(false);
   });
-}
-
-describe("checkpoints (sqlite)", () => {
-  beforeAll(() => {
-    delete process.env.VELLUM_MAIN_DB_BACKEND;
-    delete process.env.VELLUM_MAIN_DATABASE_URL;
-  });
-
-  defineStoreScenarios();
-});
-
-const pgDescribe = PG_URL ? describe : describe.skip;
-
-pgDescribe("checkpoints (postgres)", () => {
-  let savedBackend: string | undefined;
-  let savedUrl: string | undefined;
-
-  beforeAll(async () => {
-    savedBackend = process.env.VELLUM_MAIN_DB_BACKEND;
-    savedUrl = process.env.VELLUM_MAIN_DATABASE_URL;
-    process.env.VELLUM_MAIN_DB_BACKEND = "postgres";
-    process.env.VELLUM_MAIN_DATABASE_URL = PG_URL!;
-
-    const pg = getPostgresAsyncDb("main", PG_URL!);
-    await pg.exec("DROP SCHEMA IF EXISTS public CASCADE");
-    await pg.exec("CREATE SCHEMA public");
-    await runPgMigrations(pg, PG_STEPS);
-  });
-
-  afterAll(async () => {
-    if (savedBackend === undefined) {
-      delete process.env.VELLUM_MAIN_DB_BACKEND;
-    } else {
-      process.env.VELLUM_MAIN_DB_BACKEND = savedBackend;
-    }
-    if (savedUrl === undefined) {
-      delete process.env.VELLUM_MAIN_DATABASE_URL;
-    } else {
-      process.env.VELLUM_MAIN_DATABASE_URL = savedUrl;
-    }
-    if (PG_URL) {
-      await getPostgresAsyncDb("main", PG_URL)
-        .exec("DROP SCHEMA IF EXISTS public CASCADE")
-        .catch(() => {
-          /* best-effort */
-        });
-    }
-  });
-
-  defineStoreScenarios();
 });

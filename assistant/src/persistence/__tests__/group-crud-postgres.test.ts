@@ -1,29 +1,22 @@
 /**
- * The `group-crud` slice on Postgres.
+ * Conformance suite for the `group-crud` slice on Postgres.
  *
- * `group-crud.ts` and its lazy schema migration now go through the async
- * `AsyncDb` facade, so the same code runs on SQLite and Postgres. This suite
- * runs one scenario body against both backends, including the dialect
- * translations (`substr(...)` instead of `GLOB`, boolean `is_system_group`) and
- * the runtime columns the generated baseline does not carry.
+ * `group-crud.ts` and its lazy schema migration go through the async `AsyncDb`
+ * facade. The suite covers the dialect translations the port required
+ * (`substr(...)` instead of `GLOB`, boolean `is_system_group`) and the runtime
+ * columns the generated baseline does not carry. It runs against the process's
+ * Postgres test schema, bootstrapped by `src/__tests__/pg-test-db.ts`.
  *
- * The Postgres leg is gated on `VELLUM_PG_TEST_URL` (throwaway instance); with
- * it unset only the SQLite leg runs.
+ * Gated on `VELLUM_PG_TEST_URL` (throwaway instance); with it unset the suite
+ * skips.
  */
 
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  test,
-} from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import { ensureGroupMigrationAsync } from "../conversation-group-migration.js";
 import { requireMainDb } from "../db-facade.js";
 import { initializeDb } from "../db-init.js";
-import { getPostgresAsyncDb } from "../db-postgres-facade.js";
 import {
   createGroup,
   deleteGroup,
@@ -32,12 +25,8 @@ import {
   reorderGroups,
   updateGroup,
 } from "../group-crud.js";
-import { PG_STEPS } from "../pg-migrations/pg-steps.js";
-import { runPgMigrations } from "../pg-migrations/run-pg-migrations.js";
 
 await initializeDb();
-
-const PG_URL = process.env.VELLUM_PG_TEST_URL;
 
 /** Remove custom groups; system groups and migration markers stay. */
 async function clearCustomGroups(): Promise<void> {
@@ -47,8 +36,7 @@ async function clearCustomGroups(): Promise<void> {
   );
 }
 
-/** One scenario body, run verbatim against each backend. */
-function defineStoreScenarios(): void {
+describePg("group-crud (postgres)", () => {
   beforeEach(async () => {
     await clearCustomGroups();
   });
@@ -97,54 +85,4 @@ function defineStoreScenarios(): void {
     // The failed batch rolled back: the position is unchanged.
     expect((await getGroup(group.id))?.sortPosition).toBe(10);
   });
-}
-
-describe("group-crud (sqlite)", () => {
-  beforeAll(() => {
-    delete process.env.VELLUM_MAIN_DB_BACKEND;
-    delete process.env.VELLUM_MAIN_DATABASE_URL;
-  });
-
-  defineStoreScenarios();
-});
-
-const pgDescribe = PG_URL ? describe : describe.skip;
-
-pgDescribe("group-crud (postgres)", () => {
-  let savedBackend: string | undefined;
-  let savedUrl: string | undefined;
-
-  beforeAll(async () => {
-    savedBackend = process.env.VELLUM_MAIN_DB_BACKEND;
-    savedUrl = process.env.VELLUM_MAIN_DATABASE_URL;
-    process.env.VELLUM_MAIN_DB_BACKEND = "postgres";
-    process.env.VELLUM_MAIN_DATABASE_URL = PG_URL!;
-
-    const pg = getPostgresAsyncDb("main", PG_URL!);
-    await pg.exec("DROP SCHEMA IF EXISTS public CASCADE");
-    await pg.exec("CREATE SCHEMA public");
-    await runPgMigrations(pg, PG_STEPS);
-  });
-
-  afterAll(async () => {
-    if (savedBackend === undefined) {
-      delete process.env.VELLUM_MAIN_DB_BACKEND;
-    } else {
-      process.env.VELLUM_MAIN_DB_BACKEND = savedBackend;
-    }
-    if (savedUrl === undefined) {
-      delete process.env.VELLUM_MAIN_DATABASE_URL;
-    } else {
-      process.env.VELLUM_MAIN_DATABASE_URL = savedUrl;
-    }
-    if (PG_URL) {
-      await getPostgresAsyncDb("main", PG_URL)
-        .exec("DROP SCHEMA IF EXISTS public CASCADE")
-        .catch(() => {
-          /* best-effort */
-        });
-    }
-  });
-
-  defineStoreScenarios();
 });

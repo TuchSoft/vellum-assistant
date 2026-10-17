@@ -1,32 +1,22 @@
 /**
- * The `schedule` slice on Postgres.
+ * Conformance suite for the `schedule` slice on Postgres.
  *
  * `schedule-store.ts` reads and writes only `cron_jobs` / `cron_runs`, which
- * live on the `main` slot, so wrapping it in the async `AsyncDb` facade is what
- * lets the same store code run on SQLite and Postgres. This suite runs one
- * scenario body against both backends and asserts identical behavior, mirroring
- * `pg-integration.test.ts` for the store's own data boundary.
+ * live on the `main` slot, so the async `AsyncDb` facade is what lets the store
+ * run unchanged. The suite runs against the process's Postgres test schema,
+ * bootstrapped with the generated baseline by `src/__tests__/pg-test-db.ts`.
  *
- * The Postgres leg is gated on `VELLUM_PG_TEST_URL` (throwaway instance); with
- * it unset only the SQLite leg runs. Cross-slice reads the store makes (e.g.
- * `getConversation` for wake rows) stay on SQLite: the main slot is flipped
- * whole for this test, but those other slices are not ported yet.
+ * Gated on `VELLUM_PG_TEST_URL` (throwaway instance); with it unset the suite
+ * skips. Cross-slice reads the store makes (e.g. `getConversation` for wake
+ * rows) stay on SQLite: those slices are not ported yet.
  *
  *   docker run -d --rm --name vellum-pg-test -e POSTGRES_PASSWORD=pw \
  *     -e POSTGRES_DB=vellum -p 127.0.0.1:55432:5432 pgvector/pgvector:pg17
- *   VELLUM_PG_TEST_URL="postgresql://postgres@127.0.0.1:55432/vellum" \
+ *   VELLUM_PG_TEST_URL="postgresql://postgres:pw@127.0.0.1:55432/vellum" \
  *     bun test src/schedule/__tests__/schedule-store-postgres.test.ts
  */
 
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  mock,
-  test,
-} from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 // Keep the suite hermetic: `notifySchedulesChanged()` fires a debounced
 // background-wake refresh on every mutation. Mocking it here is what
@@ -35,12 +25,9 @@ mock.module("../../background-wake/publisher.js", () => ({
   refreshBackgroundWakeIntent: () => {},
 }));
 
-import type { AsyncDb } from "../../persistence/db-facade.js";
-import { getAsyncDb } from "../../persistence/db-facade.js";
+import { describePg } from "../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { initializeDb } from "../../persistence/db-init.js";
-import { getPostgresAsyncDb } from "../../persistence/db-postgres-facade.js";
-import { PG_STEPS } from "../../persistence/pg-migrations/pg-steps.js";
-import { runPgMigrations } from "../../persistence/pg-migrations/run-pg-migrations.js";
 import {
   claimDueSchedules,
   completeScheduleRun,
@@ -60,24 +47,14 @@ import {
 
 await initializeDb();
 
-const PG_URL = process.env.VELLUM_PG_TEST_URL;
-
-/** Delete the slice's rows through the active backend's facade. */
+/** Delete the slice's rows through the facade. */
 async function clearCronTables(): Promise<void> {
-  const db = getAsyncDb();
-  if (!db) {
-    throw new Error("main DB unavailable in test");
-  }
+  const db = requireMainDb();
   await db.run("DELETE FROM cron_runs");
   await db.run("DELETE FROM cron_jobs");
 }
 
-/**
- * One scenario body, run verbatim against each backend. The store resolves its
- * connection from env, so the same calls exercise SQLite in the first describe
- * and Postgres in the second.
- */
-function defineStoreScenarios(): void {
+describePg("schedule store (postgres)", () => {
   beforeEach(async () => {
     await clearCronTables();
   });
@@ -203,56 +180,4 @@ function defineStoreScenarios(): void {
     expect(await disarmDeclaredSchedule(created.id)).toBe(true);
     expect((await getSchedule(created.id))?.enabled).toBe(false);
   });
-}
-
-describe("schedule store (sqlite)", () => {
-  beforeAll(() => {
-    delete process.env.VELLUM_MAIN_DB_BACKEND;
-    delete process.env.VELLUM_MAIN_DATABASE_URL;
-  });
-
-  defineStoreScenarios();
-});
-
-const pgDescribe = PG_URL ? describe : describe.skip;
-
-pgDescribe("schedule store (postgres)", () => {
-  let savedBackend: string | undefined;
-  let savedUrl: string | undefined;
-
-  beforeAll(async () => {
-    savedBackend = process.env.VELLUM_MAIN_DB_BACKEND;
-    savedUrl = process.env.VELLUM_MAIN_DATABASE_URL;
-    // Flip the main slot to Postgres for this suite. The store resolves its
-    // backend from env on every call, so the scenario bodies now run on PG.
-    process.env.VELLUM_MAIN_DB_BACKEND = "postgres";
-    process.env.VELLUM_MAIN_DATABASE_URL = PG_URL!;
-
-    const pg: AsyncDb = getPostgresAsyncDb("main", PG_URL!);
-    await pg.exec("DROP SCHEMA IF EXISTS public CASCADE");
-    await pg.exec("CREATE SCHEMA public");
-    await runPgMigrations(pg, PG_STEPS);
-  });
-
-  afterAll(async () => {
-    if (savedBackend === undefined) {
-      delete process.env.VELLUM_MAIN_DB_BACKEND;
-    } else {
-      process.env.VELLUM_MAIN_DB_BACKEND = savedBackend;
-    }
-    if (savedUrl === undefined) {
-      delete process.env.VELLUM_MAIN_DATABASE_URL;
-    } else {
-      process.env.VELLUM_MAIN_DATABASE_URL = savedUrl;
-    }
-    if (PG_URL) {
-      await getPostgresAsyncDb("main", PG_URL)
-        .exec("DROP SCHEMA IF EXISTS public CASCADE")
-        .catch(() => {
-          /* best-effort */
-        });
-    }
-  });
-
-  defineStoreScenarios();
 });

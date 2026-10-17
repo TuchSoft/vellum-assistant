@@ -1,30 +1,21 @@
 /**
- * The `contacts` slice on Postgres.
+ * Conformance suite for the `contacts` slice on Postgres.
  *
  * `contact-store.ts` reads and writes `contacts`, `contact_channels`, and
  * `assistant_contact_metadata`, all on the `main` slot, through the async
- * `AsyncDb` facade. This suite runs one scenario body against both backends,
- * including the case-insensitive matching that replaced SQLite's `COLLATE
- * NOCASE`.
+ * `AsyncDb` facade. The suite covers the case-insensitive matching that
+ * replaced SQLite's `COLLATE NOCASE` and runs against the process's Postgres
+ * test schema, bootstrapped by `src/__tests__/pg-test-db.ts`.
  *
- * The Postgres leg is gated on `VELLUM_PG_TEST_URL` (throwaway instance); with
- * it unset only the SQLite leg runs.
+ * Gated on `VELLUM_PG_TEST_URL` (throwaway instance); with it unset the suite
+ * skips.
  */
 
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  test,
-} from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../__tests__/pg-test-db.js";
 import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
-import { getPostgresAsyncDb } from "../persistence/db-postgres-facade.js";
-import { PG_STEPS } from "../persistence/pg-migrations/pg-steps.js";
-import { runPgMigrations } from "../persistence/pg-migrations/run-pg-migrations.js";
 import {
   deleteContact,
   findContactChannel,
@@ -38,8 +29,6 @@ import {
 
 await initializeDb();
 
-const PG_URL = process.env.VELLUM_PG_TEST_URL;
-
 async function clearContacts(): Promise<void> {
   const db = requireMainDb();
   await db.run("DELETE FROM contact_channels");
@@ -47,8 +36,7 @@ async function clearContacts(): Promise<void> {
   await db.run("DELETE FROM assistant_contact_metadata");
 }
 
-/** One scenario body, run verbatim against each backend. */
-function defineStoreScenarios(): void {
+describePg("contact store (postgres)", () => {
   beforeEach(async () => {
     await clearContacts();
   });
@@ -143,54 +131,4 @@ function defineStoreScenarios(): void {
     await deleteContact("assistant-1");
     expect(await getContact("assistant-1")).toBeNull();
   });
-}
-
-describe("contact store (sqlite)", () => {
-  beforeAll(() => {
-    delete process.env.VELLUM_MAIN_DB_BACKEND;
-    delete process.env.VELLUM_MAIN_DATABASE_URL;
-  });
-
-  defineStoreScenarios();
-});
-
-const pgDescribe = PG_URL ? describe : describe.skip;
-
-pgDescribe("contact store (postgres)", () => {
-  let savedBackend: string | undefined;
-  let savedUrl: string | undefined;
-
-  beforeAll(async () => {
-    savedBackend = process.env.VELLUM_MAIN_DB_BACKEND;
-    savedUrl = process.env.VELLUM_MAIN_DATABASE_URL;
-    process.env.VELLUM_MAIN_DB_BACKEND = "postgres";
-    process.env.VELLUM_MAIN_DATABASE_URL = PG_URL!;
-
-    const pg = getPostgresAsyncDb("main", PG_URL!);
-    await pg.exec("DROP SCHEMA IF EXISTS public CASCADE");
-    await pg.exec("CREATE SCHEMA public");
-    await runPgMigrations(pg, PG_STEPS);
-  });
-
-  afterAll(async () => {
-    if (savedBackend === undefined) {
-      delete process.env.VELLUM_MAIN_DB_BACKEND;
-    } else {
-      process.env.VELLUM_MAIN_DB_BACKEND = savedBackend;
-    }
-    if (savedUrl === undefined) {
-      delete process.env.VELLUM_MAIN_DATABASE_URL;
-    } else {
-      process.env.VELLUM_MAIN_DATABASE_URL = savedUrl;
-    }
-    if (PG_URL) {
-      await getPostgresAsyncDb("main", PG_URL)
-        .exec("DROP SCHEMA IF EXISTS public CASCADE")
-        .catch(() => {
-          /* best-effort */
-        });
-    }
-  });
-
-  defineStoreScenarios();
 });

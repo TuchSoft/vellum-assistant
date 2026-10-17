@@ -1,33 +1,27 @@
 /**
- * Tests for the async DB facade (`db-facade.ts`) — the driver-agnostic seam
- * that the DB port colors the codebase against. The backend under test must
- * behave like the synchronous helpers it wraps: same rows, same changed-row
- * counts, same transaction semantics; only the calling convention is async.
+ * Tests for the async DB facade (`db-facade.ts`) - the single seam between the
+ * data layer and Postgres.
  *
- * Runs against whichever backend the telemetry slot is configured for (SQLite
- * by default, Postgres with `VELLUM_TELEMETRY_DB_BACKEND=postgres`), so the
- * probe uses dialect-neutral DDL and a per-dialect existence probe.
+ * The backend under test must behave like the synchronous helpers it supersedes:
+ * same rows, same changed-row counts, same transaction semantics; only the
+ * calling convention is async. The suite runs against the process's Postgres
+ * test schema, bootstrapped by `src/__tests__/pg-test-db.ts`.
+ *
+ * Gated on `VELLUM_PG_TEST_URL` (throwaway instance); with it unset the suite
+ * skips.
  */
 
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { beforeAll, beforeEach, expect, test } from "bun:test";
 
-import { getAsyncDb, getTelemetryAsyncDb } from "../db-facade.js";
+import { describePg } from "../../__tests__/pg-test-db.js";
+import {
+  getAsyncDb,
+  getMemoryAsyncDb,
+  getTelemetryAsyncDb,
+} from "../db-facade.js";
 import { initializeDb } from "../db-init.js";
 
 await initializeDb();
-
-const isPostgres =
-  (process.env.VELLUM_TELEMETRY_DB_BACKEND ?? process.env.VELLUM_DB_BACKEND) ===
-  "postgres";
-const INT_TYPE = isPostgres ? "BIGINT" : "INTEGER";
-
-/** Dialect-appropriate existence probe for a table by name. */
-function tableExistsSql(): string {
-  return isPostgres
-    ? `SELECT table_name AS name FROM information_schema.tables
-       WHERE table_schema = 'public' AND table_name = ?`
-    : `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`;
-}
 
 function telemetry() {
   const db = getTelemetryAsyncDb();
@@ -37,19 +31,39 @@ function telemetry() {
   return db;
 }
 
+/** Existence probe for a table in the active schema. */
+const TABLE_EXISTS_SQL = `SELECT table_name AS name FROM information_schema.tables
+  WHERE table_schema = current_schema() AND table_name = ?`;
+
 beforeAll(async () => {
   await telemetry().exec(
-    `CREATE TABLE IF NOT EXISTS facade_probe (id TEXT PRIMARY KEY, value ${INT_TYPE} NOT NULL)`,
+    "CREATE TABLE IF NOT EXISTS facade_probe (id TEXT PRIMARY KEY, value BIGINT NOT NULL)",
   );
 });
 
-describe("AsyncDb facade", () => {
+describePg("AsyncDb facade (postgres)", () => {
   beforeEach(async () => {
     await telemetry().run("DELETE FROM facade_probe");
   });
 
   test("slot is reported", () => {
     expect(telemetry().slot).toBe("telemetry");
+  });
+
+  test("main, memory, and telemetry resolve the same database", async () => {
+    await telemetry().run(
+      "INSERT INTO facade_probe (id, value) VALUES (?, ?)",
+      ["shared", 1],
+    );
+
+    for (const db of [getAsyncDb(), getMemoryAsyncDb()]) {
+      expect(db).not.toBeNull();
+      const row = await db!.get<{ value: number }>(
+        "SELECT value FROM facade_probe WHERE id = ?",
+        ["shared"],
+      );
+      expect(row).toEqual({ value: 1 });
+    }
   });
 
   test("run returns the changed-row count", async () => {
@@ -107,7 +121,7 @@ describe("AsyncDb facade", () => {
     await telemetry().exec(
       "CREATE TABLE IF NOT EXISTS facade_probe_ddl (id TEXT PRIMARY KEY)",
     );
-    const row = await telemetry().get<{ name: string }>(tableExistsSql(), [
+    const row = await telemetry().get<{ name: string }>(TABLE_EXISTS_SQL, [
       "facade_probe_ddl",
     ]);
     expect(row).toEqual({ name: "facade_probe_ddl" });
@@ -159,5 +173,21 @@ describe("AsyncDb facade", () => {
     expect(db).not.toBeNull();
     const row = await db!.get<{ one: number }>("SELECT 1 AS one");
     expect(row).toEqual({ one: 1 });
+  });
+
+  test("accessors return null when no connection URL is configured", () => {
+    const saved = process.env.VELLUM_DATABASE_URL;
+    process.env.VELLUM_DATABASE_URL = "";
+    try {
+      expect(getAsyncDb()).toBeNull();
+      expect(getMemoryAsyncDb()).toBeNull();
+      expect(getTelemetryAsyncDb()).toBeNull();
+    } finally {
+      if (saved === undefined) {
+        delete process.env.VELLUM_DATABASE_URL;
+      } else {
+        process.env.VELLUM_DATABASE_URL = saved;
+      }
+    }
   });
 });

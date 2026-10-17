@@ -72,6 +72,17 @@ delete process.env.CES_CREDENTIAL_URL;
 // responses use `mockGatewayIpc()` / `resetMockGatewayIpc()`.
 installGatewayIpcMock();
 
+// --- Phase 3: Postgres test database (opt-in) ---
+//
+// Facade-backed suites need a Postgres database. When VELLUM_PG_TEST_URL names
+// a throwaway instance, provision a per-process schema, apply the baseline and
+// export VELLUM_DATABASE_URL. The import is dynamic and env-gated so the
+// no-Postgres path keeps this file's stdlib-only load-time contract.
+if (process.env.VELLUM_PG_TEST_URL) {
+  const { preparePgTestDatabase } = await import("./pg-test-db.js");
+  await preparePgTestDatabase();
+}
+
 afterAll(() => {
   process.exitCode = 0;
   delete process.env.VELLUM_WORKSPACE_DIR;

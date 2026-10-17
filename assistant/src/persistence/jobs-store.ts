@@ -901,10 +901,10 @@ export interface LaneBudgets {
  * uses this to drain exclusively the message-lexical types while memory is
  * disabled.
  */
-export function claimMemoryJobs(
+export async function claimMemoryJobs(
   limits: LaneBudgets,
   restrictToTypes?: readonly MemoryJobType[],
-): MemoryJob[] {
+): Promise<MemoryJob[]> {
   if (limits.slowLlm <= 0 && limits.fast <= 0 && limits.embed <= 0) {
     return [];
   }
@@ -912,7 +912,7 @@ export function claimMemoryJobs(
   // Drain gate: while a quiesce lease is active, claim nothing so in-flight
   // jobs finish and the queue drains to a stop. Enqueues are unaffected;
   // claims resume when the lease expires. Fail-open via the lease read.
-  if (isLifecycleQuiesced()) {
+  if (await isLifecycleQuiesced()) {
     return [];
   }
 

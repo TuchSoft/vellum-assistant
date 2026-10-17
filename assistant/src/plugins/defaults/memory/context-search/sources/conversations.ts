@@ -131,7 +131,7 @@ export async function searchConversationSource(
   // miss older content (an empty candidate set, not a throw), so the source
   // yields no evidence instead of serving misleading partial results. The
   // completion checkpoint is shared with the persistence read site.
-  if (!isLexicalBackfillComplete()) {
+  if (!(await isLexicalBackfillComplete())) {
     return { evidence: [] };
   }
 

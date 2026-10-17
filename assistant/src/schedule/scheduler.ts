@@ -724,7 +724,7 @@ export async function runDueSchedulesOnce(
     // and this job's start returns the job to the queue untouched instead of
     // starting work the drain snapshot cannot see — notify mode especially,
     // which emits before any run row exists.
-    if (isLifecycleQuiesced()) {
+    if (await isLifecycleQuiesced()) {
       try {
         await deferClaimedSchedule(job.id, Date.now() + QUIESCE_DEFER_MS);
       } catch (err) {

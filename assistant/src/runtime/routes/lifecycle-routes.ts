@@ -110,7 +110,7 @@ export const ROUTES: RouteDefinition[] = [
         .describe("Lease TTL in ms (clamped to a sane range)."),
     }),
     responseBody: quiesceResponseSchema,
-    handler: (args: RouteHandlerArgs) => {
+    handler: async (args: RouteHandlerArgs) => {
       const raw = args.body?.ttlMs;
       let ttlMs = DEFAULT_QUIESCE_TTL_MS;
       if (raw !== undefined) {
@@ -119,7 +119,7 @@ export const ROUTES: RouteDefinition[] = [
         }
         ttlMs = raw;
       }
-      const quiescedUntil = setLifecycleQuiesce(ttlMs);
+      const quiescedUntil = await setLifecycleQuiesce(ttlMs);
       log.info({ quiescedUntil }, "Lifecycle quiesce lease armed");
       return { quiescedUntil };
     },
@@ -137,8 +137,8 @@ export const ROUTES: RouteDefinition[] = [
       "Resumes background work immediately instead of waiting for the lease TTL to expire (e.g. when a drain is cancelled).",
     tags: ["system"],
     responseBody: z.object({ released: z.boolean() }),
-    handler: () => {
-      clearLifecycleQuiesce();
+    handler: async () => {
+      await clearLifecycleQuiesce();
       log.info("Lifecycle quiesce lease released");
       return { released: true };
     },
@@ -181,7 +181,7 @@ export const ROUTES: RouteDefinition[] = [
       // processing conversation yet.
       const heartbeatRuns = listRunningHeartbeatRuns(HEARTBEAT_RUN_MAX_AGE_MS);
       return {
-        quiescedUntil: getLifecycleQuiesceUntil(),
+        quiescedUntil: await getLifecycleQuiesceUntil(),
         idle:
           activeConversations.length === 0 &&
           memoryJobs.length === 0 &&

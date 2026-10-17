@@ -49,7 +49,9 @@ let warnedInventoryDbUnavailable = false;
  */
 export async function recordWatcherInventoryIfDue(now: number): Promise<void> {
   try {
-    const last = Number(getMemoryCheckpoint(INVENTORY_CHECKPOINT_KEY) ?? "0");
+    const last = Number(
+      (await getMemoryCheckpoint(INVENTORY_CHECKPOINT_KEY)) ?? "0",
+    );
     if (now - last < WATCHER_INVENTORY_INTERVAL_MS) {
       return;
     }
@@ -68,7 +70,7 @@ export async function recordWatcherInventoryIfDue(now: number): Promise<void> {
       }
     }
     warnedInventoryDbUnavailable = false;
-    setMemoryCheckpoint(INVENTORY_CHECKPOINT_KEY, String(now));
+    await setMemoryCheckpoint(INVENTORY_CHECKPOINT_KEY, String(now));
   } catch (err) {
     log.warn({ err }, "Failed to record watcher inventory telemetry");
   }

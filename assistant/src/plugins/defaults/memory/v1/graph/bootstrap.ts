@@ -127,7 +127,7 @@ export async function bootstrapFromHistory(
   );
 
   // Resume from checkpoint
-  const lastProcessedId = getMemoryCheckpoint(CHECKPOINT_KEY);
+  const lastProcessedId = await getMemoryCheckpoint(CHECKPOINT_KEY);
   let foundCheckpoint = !lastProcessedId; // If no checkpoint, start from beginning
 
   for (const conv of allConversations) {
@@ -171,7 +171,7 @@ export async function bootstrapFromHistory(
       result.conversationsProcessed++;
 
       // Update checkpoint after each successful extraction
-      setMemoryCheckpoint(CHECKPOINT_KEY, conv.id);
+      await setMemoryCheckpoint(CHECKPOINT_KEY, conv.id);
 
       // Progress logging
       if (result.conversationsProcessed % progressInterval === 0) {
@@ -195,7 +195,7 @@ export async function bootstrapFromHistory(
       result.errors.push({ conversationId: conv.id, error: errMsg });
 
       // Still checkpoint — don't re-process failed conversations
-      setMemoryCheckpoint(CHECKPOINT_KEY, conv.id);
+      await setMemoryCheckpoint(CHECKPOINT_KEY, conv.id);
     }
   }
 
@@ -317,8 +317,8 @@ function parseJournalDate(filename: string): number {
 /**
  * Reset the bootstrap checkpoint so it can be re-run from scratch.
  */
-export function resetBootstrapCheckpoint(): void {
-  setMemoryCheckpoint(CHECKPOINT_KEY, "");
+export async function resetBootstrapCheckpoint(): Promise<void> {
+  await setMemoryCheckpoint(CHECKPOINT_KEY, "");
 }
 
 /**
@@ -331,7 +331,7 @@ export function resetBootstrapCheckpoint(): void {
  * Idempotent: does nothing if graph nodes already exist or a bootstrap job is
  * already pending/running.
  */
-export function maybeEnqueueGraphBootstrap(): void {
+export async function maybeEnqueueGraphBootstrap(): Promise<void> {
   // The bootstrap LLM-extracts history into the legacy v1 graph, which only
   // the v1 tier reads — so enqueue only when v1 is the active memory tier.
   if (!isMemoryV1Active(getConfig())) {
@@ -428,8 +428,8 @@ const KIND_TO_PREFIX: Record<string, string> = {
  * `image_refs` from migration 205) since they default to NULL and
  * including them would couple this migration to those later schema changes.
  */
-export function migrateToolCreatedItems(): void {
-  if (getMemoryCheckpoint(MIGRATE_ITEMS_CHECKPOINT)) {
+export async function migrateToolCreatedItems(): Promise<void> {
+  if (await getMemoryCheckpoint(MIGRATE_ITEMS_CHECKPOINT)) {
     return;
   }
   if (!isMemoryEnabled()) {
@@ -451,14 +451,14 @@ export function migrateToolCreatedItems(): void {
   } catch (err) {
     // Table may not exist (fresh install) — nothing to migrate
     if (err instanceof Error && err.message.includes("no such table")) {
-      setMemoryCheckpoint(MIGRATE_ITEMS_CHECKPOINT, "done");
+      await setMemoryCheckpoint(MIGRATE_ITEMS_CHECKPOINT, "done");
       return;
     }
     throw err;
   }
 
   if (rows.length === 0) {
-    setMemoryCheckpoint(MIGRATE_ITEMS_CHECKPOINT, "done");
+    await setMemoryCheckpoint(MIGRATE_ITEMS_CHECKPOINT, "done");
     return;
   }
 
@@ -528,7 +528,7 @@ export function migrateToolCreatedItems(): void {
     migrated++;
   }
 
-  setMemoryCheckpoint(MIGRATE_ITEMS_CHECKPOINT, "done");
+  await setMemoryCheckpoint(MIGRATE_ITEMS_CHECKPOINT, "done");
 
   if (migrated > 0) {
     log.info(
@@ -552,7 +552,7 @@ const CLEANUP_ITEM_VECTORS_CHECKPOINT = "graph_bootstrap:cleaned_item_vectors";
  * Checkpoint-gated: runs exactly once per workspace.
  */
 export async function cleanupStaleItemVectors(): Promise<void> {
-  if (getMemoryCheckpoint(CLEANUP_ITEM_VECTORS_CHECKPOINT)) {
+  if (await getMemoryCheckpoint(CLEANUP_ITEM_VECTORS_CHECKPOINT)) {
     return;
   }
 
@@ -568,7 +568,7 @@ export async function cleanupStaleItemVectors(): Promise<void> {
 
   try {
     await qdrant.deleteByTargetType("item");
-    setMemoryCheckpoint(CLEANUP_ITEM_VECTORS_CHECKPOINT, "done");
+    await setMemoryCheckpoint(CLEANUP_ITEM_VECTORS_CHECKPOINT, "done");
     log.info("Cleaned up stale Qdrant vectors with target_type 'item'");
   } catch (err) {
     log.warn(

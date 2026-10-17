@@ -114,12 +114,12 @@ let testSqlite: Database;
 // the dedicated memory connection, resolved via `getMemorySqlite`, stubbed to
 // a second in-memory DB carrying the store's schema.
 let memorySqlite: Database;
-let testDb = makeDb();
-function makeDb() {
+let testDb = await makeDb();
+async function makeDb() {
   testSqlite = new Database(":memory:");
   const db = drizzle(testSqlite, { schema });
   memorySqlite = new Database(":memory:");
-  ensureMemoryV3InjectedSectionsSchema(memorySqlite);
+  await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
   // The prune valve strips only sections locatable in persisted
   // `memoryV3InjectedBlock` rows (`collectPersistedV3Sections`), minimal
   // `messages` shape it reads.
@@ -415,7 +415,7 @@ beforeEach(async () => {
   turnResults = new Map();
   observeTurnSpy.mockClear();
   logCalls.length = 0;
-  testDb = makeDb();
+  testDb = await makeDb();
   processingConversations = new Set();
   resetMemoryV3InjectorStateForTests();
   resetConversationNoticesForTests();

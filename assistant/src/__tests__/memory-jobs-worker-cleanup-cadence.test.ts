@@ -106,64 +106,64 @@ describe("maybeEnqueueScheduledCleanupJobs retention-derived cadence", () => {
     resetCleanupScheduleThrottle();
   });
 
-  test("LLM-log prune fires once per retention window", () => {
+  test("LLM-log prune fires once per retention window", async () => {
     const config = makeConfig({ llmRequestLogRetentionMs: HOUR });
 
     // First tick fires immediately (throttle starts at 0).
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(true);
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(true);
     expect(llmCalls).toEqual([HOUR]);
 
     // Half a window later: not due, nothing enqueued.
     expect(
-      maybeEnqueueScheduledCleanupJobs(config, BASE + 30 * 60 * 1000),
+      await maybeEnqueueScheduledCleanupJobs(config, BASE + 30 * 60 * 1000),
     ).toBe(false);
     expect(llmCalls).toEqual([HOUR]);
 
     // Just past the full window: due again.
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE + HOUR + 1)).toBe(
-      true,
-    );
+    expect(
+      await maybeEnqueueScheduledCleanupJobs(config, BASE + HOUR + 1),
+    ).toBe(true);
     expect(llmCalls).toEqual([HOUR, HOUR]);
   });
 
-  test("each prune throttles independently on its own retention", () => {
+  test("each prune throttles independently on its own retention", async () => {
     const config = makeConfig({
       conversationRetentionDays: 1, // 1 day
       llmRequestLogRetentionMs: HOUR, // 1 hour
     });
 
     // t=0: both due.
-    maybeEnqueueScheduledCleanupJobs(config, BASE);
+    await maybeEnqueueScheduledCleanupJobs(config, BASE);
     expect(convCalls).toEqual([1]);
     expect(llmCalls).toEqual([HOUR]);
 
     // t=2h: LLM window (1h) elapsed, conversation window (1d) has not.
-    maybeEnqueueScheduledCleanupJobs(config, BASE + 2 * HOUR);
+    await maybeEnqueueScheduledCleanupJobs(config, BASE + 2 * HOUR);
     expect(convCalls).toEqual([1]);
     expect(llmCalls).toEqual([HOUR, HOUR]);
 
     // t=25h: conversation window now elapsed too.
-    maybeEnqueueScheduledCleanupJobs(config, BASE + 25 * HOUR);
+    await maybeEnqueueScheduledCleanupJobs(config, BASE + 25 * HOUR);
     expect(convCalls).toEqual([1, 1]);
     expect(llmCalls.length).toBe(3);
   });
 
-  test("tool_invocations prune follows auditLog.retentionDays", () => {
+  test("tool_invocations prune follows auditLog.retentionDays", async () => {
     const config = makeConfig({ auditLogRetentionDays: 1 }); // 1 day
 
-    maybeEnqueueScheduledCleanupJobs(config, BASE);
+    await maybeEnqueueScheduledCleanupJobs(config, BASE);
     expect(toolCalls).toEqual([1]);
 
     // 12h later: within the 1-day window.
-    maybeEnqueueScheduledCleanupJobs(config, BASE + 12 * HOUR);
+    await maybeEnqueueScheduledCleanupJobs(config, BASE + 12 * HOUR);
     expect(toolCalls).toEqual([1]);
 
     // 25h later: past the window.
-    maybeEnqueueScheduledCleanupJobs(config, BASE + 25 * HOUR);
+    await maybeEnqueueScheduledCleanupJobs(config, BASE + 25 * HOUR);
     expect(toolCalls).toEqual([1, 1]);
   });
 
-  test("disabled cleanup enqueues nothing", () => {
+  test("disabled cleanup enqueues nothing", async () => {
     const config = makeConfig({
       enabled: false,
       conversationRetentionDays: 1,
@@ -171,67 +171,79 @@ describe("maybeEnqueueScheduledCleanupJobs retention-derived cadence", () => {
       auditLogRetentionDays: 1,
     });
 
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(false);
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(false);
     expect(convCalls).toEqual([]);
     expect(llmCalls).toEqual([]);
     expect(toolCalls).toEqual([]);
   });
 
-  test("null LLM-log retention keeps logs forever (no prune enqueued)", () => {
+  test("null LLM-log retention keeps logs forever (no prune enqueued)", async () => {
     const config = makeConfig({ llmRequestLogRetentionMs: null });
 
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(false);
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(false);
     expect(llmCalls).toEqual([]);
   });
 
-  test("zero LLM-log retention disables pruning and never busy-loops", () => {
+  test("zero LLM-log retention disables pruning and never busy-loops", async () => {
     // A retention of 0 makes the cadence interval 0, so `isDue` would be true
     // on every tick. Guard against the resulting runaway enqueue loop: 0 must
     // enqueue nothing, on the first tick and on every subsequent one.
     const config = makeConfig({ llmRequestLogRetentionMs: 0 });
 
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(false);
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE + 1)).toBe(false);
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE + 60_000)).toBe(false);
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(false);
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE + 1)).toBe(
+      false,
+    );
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE + 60_000)).toBe(
+      false,
+    );
     expect(llmCalls).toEqual([]);
   });
 
-  test("zero conversation retention disables pruning and never busy-loops", () => {
+  test("zero conversation retention disables pruning and never busy-loops", async () => {
     // Same 0-window cadence trap as LLM logs: interval 0 → `isDue` always
     // true. The `> 0` guard must hold across ticks so nothing is enqueued.
     const config = makeConfig({ conversationRetentionDays: 0 });
 
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(false);
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE + 1)).toBe(false);
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE + 60_000)).toBe(false);
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(false);
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE + 1)).toBe(
+      false,
+    );
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE + 60_000)).toBe(
+      false,
+    );
     expect(convCalls).toEqual([]);
   });
 
-  test("zero audit-log retention disables pruning and never busy-loops", () => {
+  test("zero audit-log retention disables pruning and never busy-loops", async () => {
     // Same 0-window cadence trap for tool_invocations (auditLog.retentionDays).
     const config = makeConfig({ auditLogRetentionDays: 0 });
 
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(false);
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE + 1)).toBe(false);
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE + 60_000)).toBe(false);
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(false);
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE + 1)).toBe(
+      false,
+    );
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE + 60_000)).toBe(
+      false,
+    );
     expect(toolCalls).toEqual([]);
   });
 
-  test("resetCleanupScheduleThrottle makes every job due on the next tick", () => {
+  test("resetCleanupScheduleThrottle makes every job due on the next tick", async () => {
     const config = makeConfig({
       conversationRetentionDays: 30,
       llmRequestLogRetentionMs: HOUR,
       auditLogRetentionDays: 30,
     });
 
-    maybeEnqueueScheduledCleanupJobs(config, BASE);
+    await maybeEnqueueScheduledCleanupJobs(config, BASE);
     expect(convCalls.length).toBe(1);
     expect(llmCalls.length).toBe(1);
     expect(toolCalls.length).toBe(1);
 
     // Without a reset, a tick a minute later re-enqueues nothing (all windows
     // are far from elapsed).
-    maybeEnqueueScheduledCleanupJobs(config, BASE + 60_000);
+    await maybeEnqueueScheduledCleanupJobs(config, BASE + 60_000);
     expect(convCalls.length).toBe(1);
     expect(llmCalls.length).toBe(1);
     expect(toolCalls.length).toBe(1);
@@ -239,7 +251,7 @@ describe("maybeEnqueueScheduledCleanupJobs retention-derived cadence", () => {
     // A retention-settings change resets the throttle; the very next tick
     // re-enqueues every job regardless of its window.
     resetCleanupScheduleThrottle();
-    maybeEnqueueScheduledCleanupJobs(config, BASE + 120_000);
+    await maybeEnqueueScheduledCleanupJobs(config, BASE + 120_000);
     expect(convCalls.length).toBe(2);
     expect(llmCalls.length).toBe(2);
     expect(toolCalls.length).toBe(2);
@@ -255,27 +267,27 @@ describe("cleanup schedule persistence across restarts", () => {
     resetCleanupScheduleThrottle();
   });
 
-  test("each enqueue persists its timestamp to a per-job checkpoint", () => {
+  test("each enqueue persists its timestamp to a per-job checkpoint", async () => {
     const config = makeConfig({
       conversationRetentionDays: 1,
       llmRequestLogRetentionMs: HOUR,
       auditLogRetentionDays: 1,
     });
 
-    maybeEnqueueScheduledCleanupJobs(config, BASE);
+    await maybeEnqueueScheduledCleanupJobs(config, BASE);
 
     expect(checkpointStore.get(CONV_CHECKPOINT_KEY)).toBe(String(BASE));
     expect(checkpointStore.get(LLM_CHECKPOINT_KEY)).toBe(String(BASE));
     expect(checkpointStore.get(TOOL_CHECKPOINT_KEY)).toBe(String(BASE));
   });
 
-  test("seeding from checkpoints resumes the cadence instead of re-firing", () => {
+  test("seeding from checkpoints resumes the cadence instead of re-firing", async () => {
     // Simulate a prior run at BASE that persisted its checkpoint, then a
     // restart: reset the in-memory throttle (as a fresh process would start)
     // and seed from the persisted checkpoint.
     checkpointStore.set(LLM_CHECKPOINT_KEY, String(BASE));
     resetCleanupScheduleThrottle();
-    seedCleanupScheduleFromCheckpoints();
+    await seedCleanupScheduleFromCheckpoints();
 
     const config = makeConfig({ llmRequestLogRetentionMs: HOUR });
 
@@ -283,33 +295,33 @@ describe("cleanup schedule persistence across restarts", () => {
     // tick does NOT re-fire (the pre-persistence behavior would have fired
     // because the throttle started at 0).
     expect(
-      maybeEnqueueScheduledCleanupJobs(config, BASE + 30 * 60 * 1000),
+      await maybeEnqueueScheduledCleanupJobs(config, BASE + 30 * 60 * 1000),
     ).toBe(false);
     expect(llmCalls).toEqual([]);
 
     // Past the window: due again.
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE + HOUR + 1)).toBe(
-      true,
-    );
+    expect(
+      await maybeEnqueueScheduledCleanupJobs(config, BASE + HOUR + 1),
+    ).toBe(true);
     expect(llmCalls).toEqual([HOUR]);
   });
 
-  test("a job with no checkpoint fires on the first tick (never run yet)", () => {
+  test("a job with no checkpoint fires on the first tick (never run yet)", async () => {
     // No checkpoints present — seeding is a no-op and the throttle stays 0.
-    seedCleanupScheduleFromCheckpoints();
+    await seedCleanupScheduleFromCheckpoints();
 
     const config = makeConfig({ conversationRetentionDays: 30 });
 
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(true);
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(true);
     expect(convCalls).toEqual([30]);
     expect(checkpointStore.get(CONV_CHECKPOINT_KEY)).toBe(String(BASE));
   });
 
-  test("seeding ignores malformed or non-positive checkpoint values", () => {
+  test("seeding ignores malformed or non-positive checkpoint values", async () => {
     checkpointStore.set(LLM_CHECKPOINT_KEY, "not-a-number");
     checkpointStore.set(CONV_CHECKPOINT_KEY, "0");
     resetCleanupScheduleThrottle();
-    seedCleanupScheduleFromCheckpoints();
+    await seedCleanupScheduleFromCheckpoints();
 
     const config = makeConfig({
       conversationRetentionDays: 30,
@@ -317,7 +329,7 @@ describe("cleanup schedule persistence across restarts", () => {
     });
 
     // Both seeds were rejected, so the throttle is still 0 and both fire.
-    expect(maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(true);
+    expect(await maybeEnqueueScheduledCleanupJobs(config, BASE)).toBe(true);
     expect(convCalls).toEqual([30]);
     expect(llmCalls).toEqual([HOUR]);
   });

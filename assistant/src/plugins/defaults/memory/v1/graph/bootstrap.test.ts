@@ -100,19 +100,19 @@ describe("maybeEnqueueGraphBootstrap", () => {
       .all().length;
   }
 
-  test("does not enqueue while concept-page memory is active", () => {
+  test("does not enqueue while concept-page memory is active", async () => {
     // `memory.v2.enabled` defaults true, so the substrate is active.
     setConfig("memory", {});
 
-    maybeEnqueueGraphBootstrap();
+    await maybeEnqueueGraphBootstrap();
 
     expect(countBootstrapJobs()).toBe(0);
   });
 
-  test("enqueues on a v1 config when historical data exists", () => {
+  test("enqueues on a v1 config when historical data exists", async () => {
     setConfig("memory", { v2: { enabled: false } });
 
-    maybeEnqueueGraphBootstrap();
+    await maybeEnqueueGraphBootstrap();
 
     expect(countBootstrapJobs()).toBe(1);
   });
@@ -123,7 +123,7 @@ describe("maybeEnqueueGraphBootstrap", () => {
 // ---------------------------------------------------------------------------
 
 describe("migrateToolCreatedItems", () => {
-  test("migrates legacy memory_items to graph nodes", () => {
+  test("migrates legacy memory_items to graph nodes", async () => {
     // The memory_items table has been dropped by migration 203, so we need to
     // recreate it for this test. We create a minimal version with just the
     // columns the migration reads.
@@ -168,7 +168,7 @@ describe("migrateToolCreatedItems", () => {
       );
 
       // Run migration
-      migrateToolCreatedItems();
+      await migrateToolCreatedItems();
 
       // Assert a corresponding graph node was created
       const node = rawGet<{

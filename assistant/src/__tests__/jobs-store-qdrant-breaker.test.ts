@@ -39,12 +39,12 @@ describe("claimMemoryJobs with Qdrant circuit breaker", () => {
     _resetQdrantBreaker();
   });
 
-  test("claims embed jobs when circuit breaker is closed (healthy)", () => {
+  test("claims embed jobs when circuit breaker is closed (healthy)", async () => {
     enqueueMemoryJob("embed_segment", { segmentId: "seg-1" });
     enqueueMemoryJob("embed_graph_node", { nodeId: "node-1" });
     enqueueMemoryJob("graph_extract", { conversationId: "conv-1" });
 
-    const claimed = claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
+    const claimed = await claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
     const types = claimed.map((j) => j.type);
 
     expect(types).toContain("embed_segment");
@@ -73,7 +73,7 @@ describe("claimMemoryJobs with Qdrant circuit breaker", () => {
       conversationId: "conv-1",
     });
 
-    const claimed = claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
+    const claimed = await claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
     const types = claimed.map((j) => j.type);
 
     // Only non-embed jobs should be claimed
@@ -101,7 +101,7 @@ describe("claimMemoryJobs with Qdrant circuit breaker", () => {
     enqueueMemoryJob("embed_segment", { segmentId: "seg-1" });
     enqueueMemoryJob("graph_extract", { conversationId: "conv-1" });
 
-    const claimedWhileOpen = claimMemoryJobs({
+    const claimedWhileOpen = await claimMemoryJobs({
       slowLlm: 10,
       fast: 10,
       embed: 10,
@@ -114,7 +114,7 @@ describe("claimMemoryJobs with Qdrant circuit breaker", () => {
     // Re-enqueue an embed job (the previous one is now "running")
     enqueueMemoryJob("embed_graph_node", { nodeId: "node-2" });
 
-    const claimedAfterClose = claimMemoryJobs({
+    const claimedAfterClose = await claimMemoryJobs({
       slowLlm: 10,
       fast: 10,
       embed: 10,
@@ -124,7 +124,7 @@ describe("claimMemoryJobs with Qdrant circuit breaker", () => {
     expect(types).toContain("embed_graph_node");
   });
 
-  test("lane budgets are honored when called with explicit budgets", () => {
+  test("lane budgets are honored when called with explicit budgets", async () => {
     // 5 slow-lane jobs
     for (let i = 0; i < 5; i++) {
       enqueueMemoryJob("graph_extract", { conversationId: `slow-${i}` });
@@ -138,7 +138,7 @@ describe("claimMemoryJobs with Qdrant circuit breaker", () => {
       enqueueMemoryJob("embed_segment", { segmentId: `embed-${i}` });
     }
 
-    const claimed = claimMemoryJobs({ slowLlm: 1, fast: 2, embed: 2 });
+    const claimed = await claimMemoryJobs({ slowLlm: 1, fast: 2, embed: 2 });
     const slowClaimed = claimed.filter((j) => j.type === "graph_extract");
     const fastClaimed = claimed.filter((j) => j.type === "rebuild_index");
     const embedClaimed = claimed.filter((j) => j.type === "embed_segment");
@@ -181,7 +181,7 @@ describe("claimMemoryJobs with Qdrant circuit breaker", () => {
       }
     }
 
-    const claimed = claimMemoryJobs({ slowLlm: 1, fast: 2, embed: 2 });
+    const claimed = await claimMemoryJobs({ slowLlm: 1, fast: 2, embed: 2 });
     const slowClaimed = claimed.filter((j) => j.type === "graph_extract");
     const fastClaimed = claimed.filter((j) => j.type === "rebuild_index");
     const embedClaimed = claimed.filter((j) => j.type === "embed_segment");
@@ -192,13 +192,13 @@ describe("claimMemoryJobs with Qdrant circuit breaker", () => {
     expect(embedClaimed).toHaveLength(0);
   });
 
-  test("FIFO order within a lane is preserved by runAfter ascending", () => {
+  test("FIFO order within a lane is preserved by runAfter ascending", async () => {
     const t0 = Date.now() - 30_000;
     enqueueMemoryJob("graph_extract", { conversationId: "third" }, t0 + 200);
     enqueueMemoryJob("graph_extract", { conversationId: "first" }, t0);
     enqueueMemoryJob("graph_extract", { conversationId: "second" }, t0 + 100);
 
-    const claimed = claimMemoryJobs({ slowLlm: 3, fast: 0, embed: 0 });
+    const claimed = await claimMemoryJobs({ slowLlm: 3, fast: 0, embed: 0 });
     const order = claimed.map((j) => j.payload.conversationId);
     expect(order).toEqual(["first", "second", "third"]);
   });
@@ -231,7 +231,7 @@ describe("claimMemoryJobs with Qdrant circuit breaker", () => {
     // Also enqueue a non-embed job
     enqueueMemoryJob("graph_consolidate", { conversationId: "conv-1" });
 
-    const claimed = claimMemoryJobs({ slowLlm: 20, fast: 20, embed: 20 });
+    const claimed = await claimMemoryJobs({ slowLlm: 20, fast: 20, embed: 20 });
     const types = claimed.map((j) => j.type);
 
     // Only the non-embed job should be claimed

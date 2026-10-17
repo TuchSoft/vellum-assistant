@@ -58,8 +58,8 @@ let testSqlite: Database;
 // `getMemorySqlite` — stubbed to a second in-memory DB carrying the relocated
 // table's schema. The fork-source fallback still reads `messages` from main.
 let memorySqlite: Database;
-let testDb = makeDb();
-function makeDb() {
+let testDb = await makeDb();
+async function makeDb() {
   testSqlite = new Database(":memory:");
   testSqlite.exec("PRAGMA journal_mode=WAL");
   const db = drizzle(testSqlite, { schema });
@@ -69,7 +69,7 @@ function makeDb() {
   memorySqlite = new Database(":memory:");
   ensureMemoryV3SelectionsSchema(memorySqlite);
   // The plugin's own column on the relocated table, so `seed` can write keys.
-  ensureMemoryV3SelectionsSectionKeyOnce(memorySqlite);
+  await ensureMemoryV3SelectionsSectionKeyOnce(memorySqlite);
   ensureMemoryV3PoolsSchema(memorySqlite);
   return db;
 }
@@ -213,7 +213,7 @@ const {
 // pool rows through it and read them back through the inspector store.
 const { writePool } = await import("../pool-log-store.js");
 
-beforeEach(() => {
+beforeEach(async () => {
   storeMockActive = true;
   liveEnabled = false;
   memoryDbAvailable = true;
@@ -221,7 +221,7 @@ beforeEach(() => {
   // which reads `memory.v3.live` — seed it for real.
   setConfig("memory", { v3: { live: false } });
   pageBodies.clear();
-  testDb = makeDb();
+  testDb = await makeDb();
 });
 
 afterAll(() => {

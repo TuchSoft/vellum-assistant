@@ -257,6 +257,20 @@ export function getAsyncDb(): AsyncDb | null {
   }
 }
 
+/**
+ * The main-slot facade, or a throw when it is unavailable. A slice whose every
+ * operation needs the main connection calls this instead of repeating the null
+ * check; throwing matches the synchronous `getDb()` it supersedes (which threw
+ * on open failure) so a mutation never silently degrades to a no-op.
+ */
+export function requireMainDb(): AsyncDb {
+  const db = getAsyncDb();
+  if (!db) {
+    throw new Error("main database unavailable");
+  }
+  return db;
+}
+
 /** Async facade for the dedicated logs database (`assistant-logs.db`). */
 export function getLogsAsyncDb(): AsyncDb | null {
   const resolution = resolveBackend("logs");

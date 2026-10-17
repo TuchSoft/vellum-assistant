@@ -1241,7 +1241,7 @@ export async function disconnectOAuthProvider(
 
   // Best-effort cache invalidation so Home suggestions track the disconnect;
   // the call swallows its own failures and never blocks disconnect.
-  invalidateAssistantSuggestedPromptsCache();
+  void invalidateAssistantSuggestedPromptsCache();
 
   return "disconnected";
 }

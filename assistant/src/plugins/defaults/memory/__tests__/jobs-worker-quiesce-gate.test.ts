@@ -43,37 +43,37 @@ function jobStatus(id: string): string | undefined {
     .get()?.status;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   getMemoryDb()!.run("DELETE FROM memory_jobs");
   resetTestTables("memory_checkpoints");
-  clearLifecycleQuiesce();
+  await clearLifecycleQuiesce();
 });
 
 describe("memory job claim quiesce gate", () => {
-  test("active lease: claimMemoryJobs claims nothing", () => {
+  test("active lease: claimMemoryJobs claims nothing", async () => {
     const jobId = enqueueMemoryJob("index_message_lexical", {});
-    setLifecycleQuiesce(60_000);
+    await setLifecycleQuiesce(60_000);
 
-    const claimed = claimMemoryJobs(ALL_LANES);
+    const claimed = await claimMemoryJobs(ALL_LANES);
 
     expect(claimed).toHaveLength(0);
     expect(jobStatus(jobId)).toBe("pending");
   });
 
-  test("no lease: claiming is fully open (fail-open default)", () => {
+  test("no lease: claiming is fully open (fail-open default)", async () => {
     const jobId = enqueueMemoryJob("index_message_lexical", {});
 
-    const claimed = claimMemoryJobs(ALL_LANES);
+    const claimed = await claimMemoryJobs(ALL_LANES);
 
     expect(claimed).toHaveLength(1);
     expect(jobStatus(jobId)).toBe("running");
   });
 
-  test("expired lease: claiming is open again (TTL fail-open)", () => {
-    setMemoryCheckpoint(QUIESCE_KEY, String(Date.now() - 1));
+  test("expired lease: claiming is open again (TTL fail-open)", async () => {
+    await setMemoryCheckpoint(QUIESCE_KEY, String(Date.now() - 1));
     const jobId = enqueueMemoryJob("index_message_lexical", {});
 
-    const claimed = claimMemoryJobs(ALL_LANES);
+    const claimed = await claimMemoryJobs(ALL_LANES);
 
     expect(claimed).toHaveLength(1);
     expect(jobStatus(jobId)).toBe("running");
@@ -81,7 +81,7 @@ describe("memory job claim quiesce gate", () => {
 
   test("worker tick under an active lease leaves the queue untouched", async () => {
     const jobId = enqueueMemoryJob("index_message_lexical", {});
-    setLifecycleQuiesce(60_000);
+    await setLifecycleQuiesce(60_000);
 
     const processed = await runMemoryJobsOnce();
 

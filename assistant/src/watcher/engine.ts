@@ -232,7 +232,7 @@ export async function runWatchersOnce(
   recordWatcherInventoryIfDue(now);
 
   // ── Phase 1: Poll providers for new events ──────────────────────
-  const claimed = claimDueWatchers(now);
+  const claimed = await claimDueWatchers(now);
   for (const watcher of claimed) {
     const provider = getWatcherProvider(watcher.providerId);
     if (!provider) {
@@ -442,7 +442,7 @@ export async function runWatchersOnce(
 
     const postamble = [
       "Process the events above according to the watcher's action prompt.",
-      "Notify only when the action prompt's match criteria are met, using `assistant notifications send`. Unmatched events stay quiet: write a silent disposition block and do not send a notification, including a \"nothing new\" ping. Watcher ticks are not scheduled runs.",
+      'Notify only when the action prompt\'s match criteria are met, using `assistant notifications send`. Unmatched events stay quiet: write a silent disposition block and do not send a notification, including a "nothing new" ping. Watcher ticks are not scheduled runs.',
       "For each event, include a disposition block:",
       "<watcher-disposition>",
       '{"event_id": "...", "disposition": "silent|notify|escalate", "action": "what you did", "title": "notification title", "body": "notification body"}',

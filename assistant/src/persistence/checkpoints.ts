@@ -1,64 +1,71 @@
 import { eq } from "drizzle-orm";
 
-import { getDb } from "./db-connection.js";
-import { memoryCheckpoints } from "./schema/index.js";
+import { requireMainDb } from "./db-facade.js";
 
 export interface MessageCursorCheckpoint {
   createdAt: number;
   messageId: string;
 }
 
-export function getMemoryCheckpoint(key: string): string | null {
-  const db = getDb();
-  const row = db
-    .select({ value: memoryCheckpoints.value })
-    .from(memoryCheckpoints)
-    .where(eq(memoryCheckpoints.key, key))
-    .get();
+export async function getMemoryCheckpoint(key: string): Promise<string | null> {
+  const db = requireMainDb();
+  const checkpoints = db.schema.memoryCheckpoints;
+  const [row] = await db.orm
+    .select({ value: checkpoints.value })
+    .from(checkpoints)
+    .where(eq(checkpoints.key, key));
   return row?.value ?? null;
 }
 
-export function setMemoryCheckpoint(key: string, value: string): void {
-  const db = getDb();
+export async function setMemoryCheckpoint(
+  key: string,
+  value: string,
+): Promise<void> {
+  const db = requireMainDb();
+  const checkpoints = db.schema.memoryCheckpoints;
   const now = Date.now();
-  db.insert(memoryCheckpoints)
+  await db.orm
+    .insert(checkpoints)
     .values({ key, value, updatedAt: now })
     .onConflictDoUpdate({
-      target: memoryCheckpoints.key,
+      target: checkpoints.key,
       set: { value, updatedAt: now },
-    })
-    .run();
+    });
 }
 
-export function deleteMemoryCheckpoint(key: string): void {
-  const db = getDb();
-  db.delete(memoryCheckpoints).where(eq(memoryCheckpoints.key, key)).run();
+export async function deleteMemoryCheckpoint(key: string): Promise<void> {
+  const db = requireMainDb();
+  const checkpoints = db.schema.memoryCheckpoints;
+  await db.orm.delete(checkpoints).where(eq(checkpoints.key, key));
 }
 
-export function readMessageCursorCheckpoint(
+export async function readMessageCursorCheckpoint(
   createdAtKey: string,
   messageIdKey: string,
-): MessageCursorCheckpoint {
-  const createdAt =
-    Number.parseInt(getMemoryCheckpoint(createdAtKey) ?? "0", 10) || 0;
-  const messageId = getMemoryCheckpoint(messageIdKey) ?? "";
+): Promise<MessageCursorCheckpoint> {
+  const [createdAtRaw, messageIdRaw] = await Promise.all([
+    getMemoryCheckpoint(createdAtKey),
+    getMemoryCheckpoint(messageIdKey),
+  ]);
+  const createdAt = Number.parseInt(createdAtRaw ?? "0", 10) || 0;
+  const messageId = messageIdRaw ?? "";
   return { createdAt, messageId };
 }
 
-export function writeMessageCursorCheckpoint(
+export async function writeMessageCursorCheckpoint(
   createdAtKey: string,
   messageIdKey: string,
   checkpoint: MessageCursorCheckpoint,
-): void {
-  setMemoryCheckpoint(createdAtKey, String(checkpoint.createdAt));
-  setMemoryCheckpoint(messageIdKey, checkpoint.messageId);
+): Promise<void> {
+  await setMemoryCheckpoint(createdAtKey, String(checkpoint.createdAt));
+  await setMemoryCheckpoint(messageIdKey, checkpoint.messageId);
 }
 
-export function resetMessageCursorCheckpoint(
+export async function resetMessageCursorCheckpoint(
   createdAtKey: string,
   messageIdKey: string,
-): void {
-  writeMessageCursorCheckpoint(createdAtKey, messageIdKey, {
+): Promise<void> {
+  await writeMessageCursorCheckpoint(createdAtKey, messageIdKey, {
     createdAt: 0,
     messageId: "",
   });
@@ -90,8 +97,8 @@ export const LEXICAL_BACKFILL_COMPLETE_KEY =
  * path never fires and content search would silently return nothing. Switch
  * reads to Qdrant only once this marker confirms the index is fully populated.
  */
-export function isLexicalBackfillComplete(): boolean {
-  return getMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY) === "1";
+export async function isLexicalBackfillComplete(): Promise<boolean> {
+  return (await getMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY)) === "1";
 }
 
 /**
@@ -105,6 +112,6 @@ export function isLexicalBackfillComplete(): boolean {
  * Co-located with the key and its reader here so callers clear it without
  * re-declaring the key string.
  */
-export function clearLexicalBackfillComplete(): void {
-  deleteMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY);
+export async function clearLexicalBackfillComplete(): Promise<void> {
+  await deleteMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY);
 }

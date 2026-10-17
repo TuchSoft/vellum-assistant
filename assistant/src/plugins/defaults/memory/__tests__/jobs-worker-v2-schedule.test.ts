@@ -167,19 +167,19 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("maybeEnqueueGraphMaintenanceJobs — memory v2 consolidation", () => {
-  test("does not enqueue consolidate when config.memory.v2.enabled is off", () => {
+  test("does not enqueue consolidate when config.memory.v2.enabled is off", async () => {
     const config = buildConfig({ v2Enabled: false, intervalHours: 1 });
 
-    maybeEnqueueGraphMaintenanceJobs(config, Date.now());
+    await maybeEnqueueGraphMaintenanceJobs(config, Date.now());
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
   });
 
-  test("enqueues consolidate when v2 is on and no checkpoint exists", () => {
+  test("enqueues consolidate when v2 is on and no checkpoint exists", async () => {
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
     writeBuffer(15);
 
-    maybeEnqueueGraphMaintenanceJobs(config, Date.now());
+    await maybeEnqueueGraphMaintenanceJobs(config, Date.now());
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
     expect(consolidationJobPayloads()).toEqual([{ trigger: "automatic" }]);
@@ -190,7 +190,7 @@ describe("maybeEnqueueGraphMaintenanceJobs — memory v2 consolidation", () => {
     expect(countPendingJobs("graph_narrative_refine")).toBe(0);
   });
 
-  test("does not enqueue consolidate when global memory is disabled", () => {
+  test("does not enqueue consolidate when global memory is disabled", async () => {
     const config = buildConfig({
       memoryEnabled: false,
       v2Enabled: true,
@@ -198,66 +198,66 @@ describe("maybeEnqueueGraphMaintenanceJobs — memory v2 consolidation", () => {
     });
     writeBuffer(15);
 
-    maybeEnqueueGraphMaintenanceJobs(config, Date.now());
+    await maybeEnqueueGraphMaintenanceJobs(config, Date.now());
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
     expect(countPendingJobs("graph_consolidate")).toBe(0);
   });
 
-  test("does not enqueue consolidate before the interval has elapsed", () => {
+  test("does not enqueue consolidate before the interval has elapsed", async () => {
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
 
     const now = Date.now();
     // Stamp checkpoint to "1 minute ago"; interval is 1h, so elapsed << interval.
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
+    await setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
   });
 
-  test("enqueues consolidate again once the interval elapses", () => {
+  test("enqueues consolidate again once the interval elapses", async () => {
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
     writeBuffer(15);
 
     const now = Date.now();
     // Stamp checkpoint to >1h ago.
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 2 * 60 * 60 * 1000),
     );
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
     expect(consolidationJobPayloads()).toEqual([{ trigger: "automatic" }]);
   });
 
-  test("respects a custom consolidation_interval_hours value", () => {
+  test("respects a custom consolidation_interval_hours value", async () => {
     const config = buildConfig({ v2Enabled: true, intervalHours: 6 });
     writeBuffer(15);
 
     const now = Date.now();
     // 4h elapsed — under the configured 6h interval.
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 4 * 60 * 60 * 1000),
     );
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
 
     // 7h elapsed — over the configured 6h interval.
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 7 * 60 * 60 * 1000),
     );
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("memory.substrate.consolidation_interval_hours overrides the memory.v2 value", () => {
+  test("memory.substrate.consolidation_interval_hours overrides the memory.v2 value", async () => {
     // v2 says every hour; substrate says every 6 hours. The substrate key
     // wins, so a 4h-old checkpoint (over the v2 interval, under the
     // substrate one) must not enqueue.
@@ -269,36 +269,36 @@ describe("maybeEnqueueGraphMaintenanceJobs — memory v2 consolidation", () => {
     writeBuffer(15);
 
     const now = Date.now();
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 4 * 60 * 60 * 1000),
     );
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
 
     // 7h elapsed — over the substrate's 6h interval.
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 7 * 60 * 60 * 1000),
     );
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("v1 maintenance entries are suppressed when v2 is active", () => {
+  test("v1 maintenance entries are suppressed when v2 is active", async () => {
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
     writeBuffer(15);
 
     // No checkpoints set — every entry would be due if it were scheduled.
-    deleteMemoryCheckpoint("graph_maintenance:decay:last_run");
-    deleteMemoryCheckpoint("graph_maintenance:consolidate:last_run");
-    deleteMemoryCheckpoint("graph_maintenance:pattern_scan:last_run");
-    deleteMemoryCheckpoint("graph_maintenance:narrative:last_run");
-    deleteMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY);
+    await deleteMemoryCheckpoint("graph_maintenance:decay:last_run");
+    await deleteMemoryCheckpoint("graph_maintenance:consolidate:last_run");
+    await deleteMemoryCheckpoint("graph_maintenance:pattern_scan:last_run");
+    await deleteMemoryCheckpoint("graph_maintenance:narrative:last_run");
+    await deleteMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY);
 
-    maybeEnqueueGraphMaintenanceJobs(config, Date.now());
+    await maybeEnqueueGraphMaintenanceJobs(config, Date.now());
 
     expect(countPendingJobs("graph_decay")).toBe(0);
     expect(countPendingJobs("graph_consolidate")).toBe(0);
@@ -307,16 +307,16 @@ describe("maybeEnqueueGraphMaintenanceJobs — memory v2 consolidation", () => {
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("v2-off path fires v1 entries and does not enqueue v2", () => {
+  test("v2-off path fires v1 entries and does not enqueue v2", async () => {
     const config = buildConfig({ v2Enabled: false, intervalHours: 1 });
 
-    deleteMemoryCheckpoint("graph_maintenance:decay:last_run");
-    deleteMemoryCheckpoint("graph_maintenance:consolidate:last_run");
-    deleteMemoryCheckpoint("graph_maintenance:pattern_scan:last_run");
-    deleteMemoryCheckpoint("graph_maintenance:narrative:last_run");
-    deleteMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY);
+    await deleteMemoryCheckpoint("graph_maintenance:decay:last_run");
+    await deleteMemoryCheckpoint("graph_maintenance:consolidate:last_run");
+    await deleteMemoryCheckpoint("graph_maintenance:pattern_scan:last_run");
+    await deleteMemoryCheckpoint("graph_maintenance:narrative:last_run");
+    await deleteMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY);
 
-    maybeEnqueueGraphMaintenanceJobs(config, Date.now());
+    await maybeEnqueueGraphMaintenanceJobs(config, Date.now());
 
     expect(countPendingJobs("graph_decay")).toBe(1);
     expect(countPendingJobs("graph_consolidate")).toBe(1);
@@ -327,20 +327,20 @@ describe("maybeEnqueueGraphMaintenanceJobs — memory v2 consolidation", () => {
 });
 
 describe("maybeEnqueueGraphMaintenanceJobs — buffer-size trigger", () => {
-  test("default threshold (100 lines) fires once the buffer reaches it", () => {
+  test("default threshold (100 lines) fires once the buffer reaches it", async () => {
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
 
     const now = Date.now();
     // Recent checkpoint so the time-based trigger does not fire.
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
+    await setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
     writeBuffer(100);
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("explicit null disables the size trigger", () => {
+  test("explicit null disables the size trigger", async () => {
     const config = buildConfig({
       v2Enabled: true,
       intervalHours: 1,
@@ -348,15 +348,15 @@ describe("maybeEnqueueGraphMaintenanceJobs — buffer-size trigger", () => {
     });
 
     const now = Date.now();
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
+    await setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
     writeBuffer(500);
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
   });
 
-  test("enqueues when buffer reaches the threshold even if interval not elapsed", () => {
+  test("enqueues when buffer reaches the threshold even if interval not elapsed", async () => {
     const config = buildConfig({
       v2Enabled: true,
       intervalHours: 1,
@@ -364,17 +364,19 @@ describe("maybeEnqueueGraphMaintenanceJobs — buffer-size trigger", () => {
     });
 
     const now = Date.now();
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
+    await setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
     writeBuffer(10);
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
     // Checkpoint refreshed so the time-based branch doesn't re-fire.
-    expect(getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(
+      String(now),
+    );
   });
 
-  test("does not re-fire on every tick while buffer stays over threshold", () => {
+  test("does not re-fire on every tick while buffer stays over threshold", async () => {
     const config = buildConfig({
       v2Enabled: true,
       intervalHours: 1,
@@ -384,20 +386,20 @@ describe("maybeEnqueueGraphMaintenanceJobs — buffer-size trigger", () => {
     const now = Date.now();
     // Recent checkpoint so the time-based branch never fires across ticks —
     // the only thing that could re-enqueue is the size branch.
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
+    await setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
     writeBuffer(10);
 
     // Simulate several worker ticks with the buffer still over threshold and
     // the first-tick job still pending (nothing has drained it yet).
-    maybeEnqueueGraphMaintenanceJobs(config, now);
-    maybeEnqueueGraphMaintenanceJobs(config, now + 1_000);
-    maybeEnqueueGraphMaintenanceJobs(config, now + 2_000);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now + 1_000);
+    await maybeEnqueueGraphMaintenanceJobs(config, now + 2_000);
 
     // A pending consolidate job dedupes the later ticks — only one enqueue.
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("does not enqueue when buffer is under the threshold", () => {
+  test("does not enqueue when buffer is under the threshold", async () => {
     const config = buildConfig({
       v2Enabled: true,
       intervalHours: 1,
@@ -405,15 +407,15 @@ describe("maybeEnqueueGraphMaintenanceJobs — buffer-size trigger", () => {
     });
 
     const now = Date.now();
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
+    await setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
     writeBuffer(3);
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
   });
 
-  test("treats missing buffer file as zero lines", () => {
+  test("treats missing buffer file as zero lines", async () => {
     const config = buildConfig({
       v2Enabled: true,
       intervalHours: 1,
@@ -421,15 +423,15 @@ describe("maybeEnqueueGraphMaintenanceJobs — buffer-size trigger", () => {
     });
 
     const now = Date.now();
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
+    await setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 60_000));
     removeBuffer();
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
   });
 
-  test("does not double-enqueue when both triggers would fire", () => {
+  test("does not double-enqueue when both triggers would fire", async () => {
     const config = buildConfig({
       v2Enabled: true,
       intervalHours: 1,
@@ -438,18 +440,18 @@ describe("maybeEnqueueGraphMaintenanceJobs — buffer-size trigger", () => {
 
     const now = Date.now();
     // Stale checkpoint so time-based fires, AND buffer over threshold.
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 2 * 60 * 60 * 1000),
     );
     writeBuffer(10);
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("size trigger inert when v2 is disabled", () => {
+  test("size trigger inert when v2 is disabled", async () => {
     const config = buildConfig({
       v2Enabled: false,
       intervalHours: 1,
@@ -458,12 +460,12 @@ describe("maybeEnqueueGraphMaintenanceJobs — buffer-size trigger", () => {
 
     writeBuffer(100);
 
-    maybeEnqueueGraphMaintenanceJobs(config, Date.now());
+    await maybeEnqueueGraphMaintenanceJobs(config, Date.now());
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
   });
 
-  test("size trigger inert when global memory is disabled", () => {
+  test("size trigger inert when global memory is disabled", async () => {
     const config = buildConfig({
       memoryEnabled: false,
       v2Enabled: true,
@@ -473,7 +475,7 @@ describe("maybeEnqueueGraphMaintenanceJobs — buffer-size trigger", () => {
 
     writeBuffer(100);
 
-    maybeEnqueueGraphMaintenanceJobs(config, Date.now());
+    await maybeEnqueueGraphMaintenanceJobs(config, Date.now());
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
   });
@@ -483,35 +485,35 @@ describe("maybeEnqueueGraphMaintenanceJobs — consolidation failure backoff", (
   const MINUTE_MS = 60 * 1000;
   const HOUR_MS = 60 * MINUTE_MS;
 
-  function seedFailureState(
+  async function seedFailureState(
     consecutiveFailures: number,
     lastFailureAt: number,
     kind: "billing" | "transient" = "transient",
-  ): void {
-    setMemoryCheckpoint(
+  ): Promise<void> {
+    await setMemoryCheckpoint(
       CONSOLIDATION_FAILURE_CHECKPOINT_KEY,
       JSON.stringify({ consecutiveFailures, lastFailureAt, kind }),
     );
   }
 
-  test("interval trigger is skipped inside the backoff window and the checkpoint does not advance", () => {
+  test("interval trigger is skipped inside the backoff window and the checkpoint does not advance", async () => {
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
     const now = Date.now();
     const staleCheckpoint = String(now - 2 * HOUR_MS);
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, staleCheckpoint);
+    await setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, staleCheckpoint);
     writeBuffer(15);
     // One failure a minute ago → 5min backoff, 4min remaining.
     seedFailureState(1, now - MINUTE_MS);
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
-    expect(getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(
+    expect(await getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(
       staleCheckpoint,
     );
   });
 
-  test("size trigger is skipped inside the backoff window and the checkpoint does not advance", () => {
+  test("size trigger is skipped inside the backoff window and the checkpoint does not advance", async () => {
     const config = buildConfig({
       v2Enabled: true,
       intervalHours: 1,
@@ -519,121 +521,139 @@ describe("maybeEnqueueGraphMaintenanceJobs — consolidation failure backoff", (
     });
     const now = Date.now();
     const recentCheckpoint = String(now - MINUTE_MS);
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, recentCheckpoint);
+    await setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, recentCheckpoint);
     writeBuffer(10);
     seedFailureState(1, now - MINUTE_MS);
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
-    expect(getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(
+    expect(await getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(
       recentCheckpoint,
     );
   });
 
-  test("enqueue resumes on the first tick after the backoff elapses", () => {
+  test("enqueue resumes on the first tick after the backoff elapses", async () => {
     const config = buildConfig({
       v2Enabled: true,
       intervalHours: 1,
       maxBufferLines: 5,
     });
     const now = Date.now();
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - MINUTE_MS));
+    await setMemoryCheckpoint(
+      CONSOLIDATE_CHECKPOINT_KEY,
+      String(now - MINUTE_MS),
+    );
     writeBuffer(10);
     seedFailureState(1, now - MINUTE_MS);
 
     // Inside the 5min window: skipped.
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
 
     // Past the window: the size trigger fires.
-    maybeEnqueueGraphMaintenanceJobs(config, now + 6 * MINUTE_MS);
+    await maybeEnqueueGraphMaintenanceJobs(config, now + 6 * MINUTE_MS);
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("interval trigger resumes after the backoff elapses without waiting a full interval", () => {
+  test("interval trigger resumes after the backoff elapses without waiting a full interval", async () => {
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
     const now = Date.now();
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 2 * HOUR_MS));
+    await setMemoryCheckpoint(
+      CONSOLIDATE_CHECKPOINT_KEY,
+      String(now - 2 * HOUR_MS),
+    );
     writeBuffer(15);
     // 5min backoff already elapsed.
     seedFailureState(1, now - 6 * MINUTE_MS);
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("transient backoff grows with the failure count", () => {
+  test("transient backoff grows with the failure count", async () => {
     const config = buildConfig({
       v2Enabled: true,
       intervalHours: 1,
       maxBufferLines: 5,
     });
     const now = Date.now();
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - MINUTE_MS));
+    await setMemoryCheckpoint(
+      CONSOLIDATE_CHECKPOINT_KEY,
+      String(now - MINUTE_MS),
+    );
     writeBuffer(10);
     // Three transient failures → 20min backoff; 6min elapsed (past the
     // single-failure 5min window) must still skip.
     seedFailureState(3, now - 6 * MINUTE_MS);
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
 
     // 21min elapsed → the 20min window is over.
     seedFailureState(3, now - 21 * MINUTE_MS);
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("transient backoff never delays more than 30 minutes", () => {
+  test("transient backoff never delays more than 30 minutes", async () => {
     const config = buildConfig({
       v2Enabled: true,
       intervalHours: 1,
       maxBufferLines: 5,
     });
     const now = Date.now();
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - MINUTE_MS));
+    await setMemoryCheckpoint(
+      CONSOLIDATE_CHECKPOINT_KEY,
+      String(now - MINUTE_MS),
+    );
     writeBuffer(10);
     // Ten transient failures — uncapped doubling would be days, the 30min
     // cap keeps 31min elapsed enough to resume.
     seedFailureState(10, now - 31 * MINUTE_MS);
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("a single billing failure already waits the 1-hour base", () => {
+  test("a single billing failure already waits the 1-hour base", async () => {
     const config = buildConfig({
       v2Enabled: true,
       intervalHours: 1,
       maxBufferLines: 5,
     });
     const now = Date.now();
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - MINUTE_MS));
+    await setMemoryCheckpoint(
+      CONSOLIDATE_CHECKPOINT_KEY,
+      String(now - MINUTE_MS),
+    );
     writeBuffer(10);
     // 30min elapsed — a transient failure would have resumed at 5min, but a
     // billing failure holds for the full hour.
     seedFailureState(1, now - 30 * MINUTE_MS, "billing");
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
 
     // 61min elapsed → the 1h window is over.
     seedFailureState(1, now - 61 * MINUTE_MS, "billing");
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("a corrupt failure-state payload does not gate enqueues", () => {
+  test("a corrupt failure-state payload does not gate enqueues", async () => {
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
     const now = Date.now();
-    setMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY, String(now - 2 * HOUR_MS));
+    await setMemoryCheckpoint(
+      CONSOLIDATE_CHECKPOINT_KEY,
+      String(now - 2 * HOUR_MS),
+    );
     writeBuffer(15);
-    setMemoryCheckpoint(CONSOLIDATION_FAILURE_CHECKPOINT_KEY, "not-json");
+    await setMemoryCheckpoint(CONSOLIDATION_FAILURE_CHECKPOINT_KEY, "not-json");
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
@@ -643,59 +663,61 @@ describe("consolidationFailureBackoffMs", () => {
   const MINUTE_MS = 60 * 1000;
   const HOUR_MS = 60 * MINUTE_MS;
 
-  test("transient: doubles from a 5-minute base per consecutive failure", () => {
-    expect(consolidationFailureBackoffMs("transient", 1, HOUR_MS)).toBe(
+  test("transient: doubles from a 5-minute base per consecutive failure", async () => {
+    expect(await consolidationFailureBackoffMs("transient", 1, HOUR_MS)).toBe(
       5 * MINUTE_MS,
     );
-    expect(consolidationFailureBackoffMs("transient", 2, HOUR_MS)).toBe(
+    expect(await consolidationFailureBackoffMs("transient", 2, HOUR_MS)).toBe(
       10 * MINUTE_MS,
     );
-    expect(consolidationFailureBackoffMs("transient", 3, HOUR_MS)).toBe(
+    expect(await consolidationFailureBackoffMs("transient", 3, HOUR_MS)).toBe(
       20 * MINUTE_MS,
     );
   });
 
-  test("transient: caps at 30 minutes regardless of the configured interval", () => {
-    expect(consolidationFailureBackoffMs("transient", 4, HOUR_MS)).toBe(
+  test("transient: caps at 30 minutes regardless of the configured interval", async () => {
+    expect(await consolidationFailureBackoffMs("transient", 4, HOUR_MS)).toBe(
       30 * MINUTE_MS,
     );
-    expect(consolidationFailureBackoffMs("transient", 1000, 12 * HOUR_MS)).toBe(
-      30 * MINUTE_MS,
-    );
+    expect(
+      await consolidationFailureBackoffMs("transient", 1000, 12 * HOUR_MS),
+    ).toBe(30 * MINUTE_MS);
   });
 
-  test("billing: doubles from a 1-hour base per consecutive failure", () => {
-    expect(consolidationFailureBackoffMs("billing", 1, HOUR_MS)).toBe(HOUR_MS);
-    expect(consolidationFailureBackoffMs("billing", 2, HOUR_MS)).toBe(
+  test("billing: doubles from a 1-hour base per consecutive failure", async () => {
+    expect(await consolidationFailureBackoffMs("billing", 1, HOUR_MS)).toBe(
+      HOUR_MS,
+    );
+    expect(await consolidationFailureBackoffMs("billing", 2, HOUR_MS)).toBe(
       2 * HOUR_MS,
     );
-    expect(consolidationFailureBackoffMs("billing", 3, HOUR_MS)).toBe(
+    expect(await consolidationFailureBackoffMs("billing", 3, HOUR_MS)).toBe(
       4 * HOUR_MS,
     );
   });
 
-  test("billing: caps at 6 hours for a shorter configured interval", () => {
-    expect(consolidationFailureBackoffMs("billing", 4, HOUR_MS)).toBe(
+  test("billing: caps at 6 hours for a shorter configured interval", async () => {
+    expect(await consolidationFailureBackoffMs("billing", 4, HOUR_MS)).toBe(
       6 * HOUR_MS,
     );
-    expect(consolidationFailureBackoffMs("billing", 1000, HOUR_MS)).toBe(
+    expect(await consolidationFailureBackoffMs("billing", 1000, HOUR_MS)).toBe(
       6 * HOUR_MS,
     );
   });
 
-  test("billing: cap rises to the configured interval when it exceeds 6 hours", () => {
-    expect(consolidationFailureBackoffMs("billing", 10, 12 * HOUR_MS)).toBe(
-      12 * HOUR_MS,
-    );
+  test("billing: cap rises to the configured interval when it exceeds 6 hours", async () => {
+    expect(
+      await consolidationFailureBackoffMs("billing", 10, 12 * HOUR_MS),
+    ).toBe(12 * HOUR_MS);
   });
 });
 
 describe("maybeEnqueueGraphMaintenanceJobs — min buffer lines noop", () => {
-  test("skips scheduled consolidation when buffer is under 10 lines", () => {
+  test("skips scheduled consolidation when buffer is under 10 lines", async () => {
     // GIVEN v2 consolidation is enabled and the interval has elapsed
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
     const now = Date.now();
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 2 * 60 * 60 * 1000),
     );
@@ -703,19 +725,21 @@ describe("maybeEnqueueGraphMaintenanceJobs — min buffer lines noop", () => {
     writeBuffer(5);
 
     // WHEN the schedule runs
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     // THEN no consolidation job is enqueued
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
     // AND the checkpoint advances so the skip doesn't re-fire next tick
-    expect(getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(
+      String(now),
+    );
   });
 
-  test("allows scheduled consolidation when buffer has exactly 10 lines", () => {
+  test("allows scheduled consolidation when buffer has exactly 10 lines", async () => {
     // GIVEN v2 consolidation is enabled and the interval has elapsed
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
     const now = Date.now();
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 2 * 60 * 60 * 1000),
     );
@@ -723,17 +747,17 @@ describe("maybeEnqueueGraphMaintenanceJobs — min buffer lines noop", () => {
     writeBuffer(10);
 
     // WHEN the schedule runs
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     // THEN consolidation is enqueued
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("skips scheduled consolidation when buffer file is missing", () => {
+  test("skips scheduled consolidation when buffer file is missing", async () => {
     // GIVEN v2 consolidation is enabled and the interval has elapsed
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
     const now = Date.now();
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 2 * 60 * 60 * 1000),
     );
@@ -741,15 +765,17 @@ describe("maybeEnqueueGraphMaintenanceJobs — min buffer lines noop", () => {
     removeBuffer();
 
     // WHEN the schedule runs
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     // THEN no consolidation job is enqueued
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
     // AND the checkpoint advances
-    expect(getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(
+      String(now),
+    );
   });
 
-  test("size-based trigger is independent of the min-lines noop", () => {
+  test("size-based trigger is independent of the min-lines noop", async () => {
     // GIVEN the time-based interval has elapsed but the buffer has fewer
     // than 10 lines, while exceeding the configured maxBufferLines threshold
     const config = buildConfig({
@@ -758,25 +784,25 @@ describe("maybeEnqueueGraphMaintenanceJobs — min buffer lines noop", () => {
       maxBufferLines: 5,
     });
     const now = Date.now();
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 2 * 60 * 60 * 1000),
     );
     writeBuffer(8);
 
     // WHEN the schedule runs
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     // THEN consolidation is enqueued via the size trigger despite the
     // time-based schedule being nooped (8 < 10 min lines, but 8 >= 5 max)
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("staleness override: a small buffer unwritten for a full interval drains anyway", () => {
+  test("staleness override: a small buffer unwritten for a full interval drains anyway", async () => {
     // GIVEN v2 consolidation is enabled and the interval has elapsed
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
     const now = Date.now();
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 2 * 60 * 60 * 1000),
     );
@@ -786,36 +812,38 @@ describe("maybeEnqueueGraphMaintenanceJobs — min buffer lines noop", () => {
     backdateBuffer(now - 2 * 60 * 60 * 1000);
 
     // WHEN the schedule runs
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     // THEN consolidation is enqueued despite the min-lines threshold —
     // without the override these 3 facts would re-skip every interval forever
     expect(countPendingJobs("memory_v2_consolidate")).toBe(1);
   });
 
-  test("staleness override does not fire while the buffer is still being written", () => {
+  test("staleness override does not fire while the buffer is still being written", async () => {
     // GIVEN the interval has elapsed and a small buffer written just now
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
     const now = Date.now();
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 2 * 60 * 60 * 1000),
     );
     writeBuffer(3);
 
     // WHEN the schedule runs
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     // THEN the min-lines noop still applies (fresh mtime = entries arriving)
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
-    expect(getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(
+      String(now),
+    );
   });
 
-  test("staleness override never drains an empty buffer", () => {
+  test("staleness override never drains an empty buffer", async () => {
     // GIVEN the interval has elapsed and an empty-but-present, stale buffer
     const config = buildConfig({ v2Enabled: true, intervalHours: 1 });
     const now = Date.now();
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATE_CHECKPOINT_KEY,
       String(now - 2 * 60 * 60 * 1000),
     );
@@ -823,10 +851,12 @@ describe("maybeEnqueueGraphMaintenanceJobs — min buffer lines noop", () => {
     backdateBuffer(now - 2 * 60 * 60 * 1000);
 
     // WHEN the schedule runs
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     // THEN nothing is enqueued (no work) and the checkpoint advances
     expect(countPendingJobs("memory_v2_consolidate")).toBe(0);
-    expect(getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(CONSOLIDATE_CHECKPOINT_KEY)).toBe(
+      String(now),
+    );
   });
 });

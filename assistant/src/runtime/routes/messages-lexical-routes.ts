@@ -43,12 +43,12 @@ async function handleBackfillLexicalIndex({
 }: RouteHandlerArgs): Promise<MessagesLexicalBackfillResult> {
   const { force } = MessagesLexicalBackfillParams.parse(body);
   if (force === true) {
-    // Clear the completion sentinel at enqueue time so `isLexicalBackfillComplete()`
+    // Clear the completion sentinel at enqueue time so `await isLexicalBackfillComplete()`
     // flips false immediately — the read paths fall back to SQLite FTS in the window
     // between enqueue and the worker claiming the job, instead of serving from the
     // stale/emptying `messages_lexical` collection the forced rebuild is about to
     // reset. The handler clears it again when it runs (idempotent).
-    clearLexicalBackfillComplete();
+    await clearLexicalBackfillComplete();
   }
   const payload: Record<string, unknown> =
     force === true ? { force: true } : {};

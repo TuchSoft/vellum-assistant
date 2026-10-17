@@ -110,8 +110,12 @@ function enqueuedJobTypes(): string[] {
 }
 
 /** The v1 arm's per-conversation `graph_extract` debounce counter. */
-function graphExtractPendingCount(conversationId: string): string | null {
-  return getMemoryCheckpoint(`graph_extract:${conversationId}:pending_count`);
+async function graphExtractPendingCount(
+  conversationId: string,
+): Promise<string | null> {
+  return await getMemoryCheckpoint(
+    `graph_extract:${conversationId}:pending_count`,
+  );
 }
 
 describe("indexMessageNow tier dispatch", () => {
@@ -132,7 +136,7 @@ describe("indexMessageNow tier dispatch", () => {
     expect(enqueuedJobTypes()).not.toContain("memory_v2_sweep");
     // Not even the debounce counter: a switch back to v1 must not inherit a
     // batch's worth of counts accumulated while memory was off.
-    expect(graphExtractPendingCount(conversationId)).toBeNull();
+    expect(await graphExtractPendingCount(conversationId)).toBeNull();
   });
 
   test("v1 live enqueues the v1 extraction and summary triggers", async () => {
@@ -142,7 +146,7 @@ describe("indexMessageNow tier dispatch", () => {
     await indexOneMessage(conversationId, slice);
 
     expect(enqueuedJobTypes()).toContain("build_conversation_summary");
-    expect(graphExtractPendingCount(conversationId)).toBe("1");
+    expect(await graphExtractPendingCount(conversationId)).toBe("1");
   });
 
   test("a concept-page consumer enqueues the substrate sweep trigger", async () => {
@@ -157,7 +161,7 @@ describe("indexMessageNow tier dispatch", () => {
 
     expect(enqueuedJobTypes()).toContain("memory_v2_sweep");
     expect(enqueuedJobTypes()).not.toContain("build_conversation_summary");
-    expect(graphExtractPendingCount(conversationId)).toBeNull();
+    expect(await graphExtractPendingCount(conversationId)).toBeNull();
   });
 
   test("skips a message with no source row instead of resurrecting it", async () => {

@@ -141,7 +141,7 @@ mock.module("../../../../../persistence/embeddings/qdrant-client.js", () => ({
 let tmpWorkspace: string;
 let previousWorkspaceEnv: string | undefined;
 
-beforeAll(() => {
+beforeAll(async () => {
   tmpWorkspace = mkdtempSync(join(tmpdir(), "conv-graph-v2-routing-test-"));
   previousWorkspaceEnv = process.env.VELLUM_WORKSPACE_DIR;
   process.env.VELLUM_WORKSPACE_DIR = tmpWorkspace;
@@ -228,7 +228,7 @@ mock.module("../../../../../persistence/db-connection.js", () => ({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function createTestDb(): DrizzleDb {
+async function createTestDb(): Promise<DrizzleDb> {
   const sqlite = new Database(":memory:");
   sqlite.exec("PRAGMA journal_mode=WAL");
   sqlite.exec("PRAGMA foreign_keys = ON");
@@ -248,7 +248,7 @@ function createTestDb(): DrizzleDb {
   memorySqliteHandle = new Database(":memory:");
   ensureActivationStateSchema(memorySqliteHandle);
   ensureConversationGraphMemoryStateSchema(memorySqliteHandle);
-  ensureMemoryV3InjectedSectionsSchema(memorySqliteHandle);
+  await ensureMemoryV3InjectedSectionsSchema(memorySqliteHandle);
   return db;
 }
 
@@ -336,8 +336,8 @@ function stageTurn(
 
 const noopEvent = () => {};
 
-beforeEach(() => {
-  testDbHandle = createTestDb();
+beforeEach(async () => {
+  testDbHandle = await createTestDb();
   // The v2 activation store resolves `activation_state` through the memory
   // connection; point that slot at the same handle the `getDb()` mock serves.
   setStoredDb("memory", testDbHandle, () => {});

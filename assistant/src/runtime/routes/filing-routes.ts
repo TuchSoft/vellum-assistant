@@ -69,7 +69,8 @@ export const ROUTES: RouteDefinition[] = [
       // first time the scheduler sees the job, then advanced on each
       // enqueue (or deliberate skip). Absent only before that first tick.
       const lastRun = parseInt(
-        getMemoryCheckpoint(GRAPH_MAINTENANCE_CHECKPOINTS.pkbFiling) ?? "0",
+        (await getMemoryCheckpoint(GRAPH_MAINTENANCE_CHECKPOINTS.pkbFiling)) ??
+          "0",
         10,
       );
       const scheduled = isFilingAvailable() && config.enabled;

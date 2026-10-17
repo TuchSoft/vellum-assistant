@@ -57,8 +57,8 @@ function throwingDeps(): ReconcileDeps {
     ensureCollections: mock(async () => {}),
     enqueueReembed: mock(() => {}),
     customEmbeddingSpaceIdentity: mock(() => null),
-    readCustomEmbeddingSpace: mock(() => null),
-    writeCustomEmbeddingSpace: mock(() => {}),
+    readCustomEmbeddingSpace: mock(async () => null),
+    writeCustomEmbeddingSpace: mock(async () => {}),
   };
 }
 

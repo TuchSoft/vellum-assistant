@@ -526,7 +526,7 @@ export class HeartbeatService {
     // Drain guard: while a quiesce lease is active (a client is waiting for
     // background work to finish before stopping the assistant), do not start
     // new beats. Recorded as a skipped run so run history explains the gap.
-    if (!force && isLifecycleQuiesced()) {
+    if (!force && (await isLifecycleQuiesced())) {
       log.info("Heartbeat skipped — quiesce lease active");
       if (runId) {
         skipHeartbeatRun(runId, "quiesced");

@@ -55,11 +55,11 @@ function computeIdentityContentHash(): string {
 // Public API
 // ---------------------------------------------------------------------------
 
-export function getCachedHomeGreeting(): string | null {
+export async function getCachedHomeGreeting(): Promise<string | null> {
   try {
-    const text = getMemoryCheckpoint(CHECKPOINT_KEY_TEXT);
-    const hash = getMemoryCheckpoint(CHECKPOINT_KEY_HASH);
-    const timestampStr = getMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
+    const text = await getMemoryCheckpoint(CHECKPOINT_KEY_TEXT);
+    const hash = await getMemoryCheckpoint(CHECKPOINT_KEY_HASH);
+    const timestampStr = await getMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
 
     if (!text || !hash || !timestampStr) {
       return null;
@@ -86,13 +86,13 @@ export function getCachedHomeGreeting(): string | null {
  * write landed; `false` on failure so callers don't report fresh content
  * that the next read cannot serve.
  */
-export function setCachedHomeGreeting(text: string): boolean {
+export async function setCachedHomeGreeting(text: string): Promise<boolean> {
   try {
     const hash = computeIdentityContentHash();
     const now = String(Date.now());
-    setMemoryCheckpoint(CHECKPOINT_KEY_TEXT, text);
-    setMemoryCheckpoint(CHECKPOINT_KEY_HASH, hash);
-    setMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP, now);
+    await setMemoryCheckpoint(CHECKPOINT_KEY_TEXT, text);
+    await setMemoryCheckpoint(CHECKPOINT_KEY_HASH, hash);
+    await setMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP, now);
     return true;
   } catch {
     // Cache write failure is non-fatal — next request will regenerate.

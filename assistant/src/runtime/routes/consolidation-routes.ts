@@ -55,8 +55,8 @@ function consolidationIntervalMs(): number {
   );
 }
 
-function readLastRunAt(): number | null {
-  const raw = getMemoryCheckpoint(
+async function readLastRunAt(): Promise<number | null> {
+  const raw = await getMemoryCheckpoint(
     GRAPH_MAINTENANCE_CHECKPOINTS.memoryV2Consolidate,
   );
   if (!raw) {
@@ -66,11 +66,11 @@ function readLastRunAt(): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function readConsolidationConfigResponse() {
+async function readConsolidationConfigResponse() {
   const available = isConsolidationAvailable();
   const enabled = available;
   const intervalMs = consolidationIntervalMs();
-  const lastRunAt = readLastRunAt();
+  const lastRunAt = await readLastRunAt();
   const nextRunAt =
     enabled && lastRunAt != null ? lastRunAt + intervalMs : null;
   return {

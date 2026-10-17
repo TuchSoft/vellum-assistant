@@ -32,15 +32,15 @@ export const DEFAULT_QUIESCE_TTL_MS = 60_000;
  * Throws when the lease cannot be persisted — callers that promise a drain
  * must surface the failure rather than pretend background work is paused.
  */
-export function setLifecycleQuiesce(
+export async function setLifecycleQuiesce(
   ttlMs: number = DEFAULT_QUIESCE_TTL_MS,
-): number {
+): Promise<number> {
   const clamped = Math.min(
     Math.max(Math.floor(ttlMs), MIN_QUIESCE_TTL_MS),
     MAX_QUIESCE_TTL_MS,
   );
   const quiescedUntil = Date.now() + clamped;
-  setMemoryCheckpoint(QUIESCE_UNTIL_KEY, String(quiescedUntil));
+  await setMemoryCheckpoint(QUIESCE_UNTIL_KEY, String(quiescedUntil));
   return quiescedUntil;
 }
 
@@ -48,10 +48,10 @@ export function setLifecycleQuiesce(
  * The active lease deadline, or null when no unexpired lease exists.
  * Fail-open: any read or parse failure reads as "no lease".
  */
-export function getLifecycleQuiesceUntil(): number | null {
+export async function getLifecycleQuiesceUntil(): Promise<number | null> {
   let raw: string | null;
   try {
-    raw = getMemoryCheckpoint(QUIESCE_UNTIL_KEY);
+    raw = await getMemoryCheckpoint(QUIESCE_UNTIL_KEY);
   } catch {
     return null;
   }
@@ -66,14 +66,14 @@ export function getLifecycleQuiesceUntil(): number | null {
 }
 
 /** True while an unexpired quiesce lease is active. Fail-open. */
-export function isLifecycleQuiesced(): boolean {
-  return getLifecycleQuiesceUntil() != null;
+export async function isLifecycleQuiesced(): Promise<boolean> {
+  return (await getLifecycleQuiesceUntil()) != null;
 }
 
 /** Drop the lease. Best-effort — a failure leaves the TTL to expire it. */
-export function clearLifecycleQuiesce(): void {
+export async function clearLifecycleQuiesce(): Promise<void> {
   try {
-    deleteMemoryCheckpoint(QUIESCE_UNTIL_KEY);
+    await deleteMemoryCheckpoint(QUIESCE_UNTIL_KEY);
   } catch {
     // Fail-soft: the lease self-expires.
   }

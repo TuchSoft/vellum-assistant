@@ -383,8 +383,8 @@ export function computeChangedPages(
 }
 
 /** Read the persisted high-water mark, treating missing/garbage as first-run. */
-function readEmbedHighWater(): number | null {
-  const raw = getMemoryCheckpoint(MAINTAIN_EMBED_HIGH_WATER_KEY);
+async function readEmbedHighWater(): Promise<number | null> {
+  const raw = await getMemoryCheckpoint(MAINTAIN_EMBED_HIGH_WATER_KEY);
   if (raw === null) {
     return null;
   }
@@ -397,7 +397,7 @@ async function selectChangedPagesFromWorkspace(
   workspaceDir: string,
 ): Promise<Slug[]> {
   const index = await getPageIndex(workspaceDir);
-  return computeChangedPages(index.entries, readEmbedHighWater());
+  return computeChangedPages(index.entries, await readEmbedHighWater());
 }
 
 /** Read a page's frontmatter-stripped body; missing/failed reads degrade to "". */

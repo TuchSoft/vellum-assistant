@@ -98,8 +98,8 @@ function makeDeps(opts: {
     ensureCollections: mock(async () => {}),
     enqueueReembed: mock(() => {}),
     customEmbeddingSpaceIdentity: mock(() => null),
-    readCustomEmbeddingSpace: mock(() => null),
-    writeCustomEmbeddingSpace: mock(() => {}),
+    readCustomEmbeddingSpace: mock(async () => null),
+    writeCustomEmbeddingSpace: mock(async () => {}),
   };
 }
 
@@ -325,7 +325,8 @@ describe("reconcileEmbeddingIdentity", () => {
       () => "custom\0text-embedding-3-small\0url=http://127.0.0.1:4001/v1",
     );
     deps.readCustomEmbeddingSpace = mock(
-      () => "custom\0text-embedding-3-small\0url=http://127.0.0.1:4000/v1",
+      async () =>
+        "custom\0text-embedding-3-small\0url=http://127.0.0.1:4000/v1",
     );
 
     const outcome = await reconcileEmbeddingIdentity(
@@ -351,7 +352,7 @@ describe("reconcileEmbeddingIdentity", () => {
       probeDim: 1536,
     });
     deps.customEmbeddingSpaceIdentity = mock(() => identity);
-    deps.readCustomEmbeddingSpace = mock(() => identity);
+    deps.readCustomEmbeddingSpace = mock(async () => identity);
 
     const outcome = await reconcileEmbeddingIdentity(
       fakeConfig("custom"),
@@ -484,8 +485,8 @@ function driveBranch(
     readConceptPageCollectionDim: mock(async () => committedDim),
     decideEmbeddingReconcile: mock(() => decision),
     customEmbeddingSpaceIdentity: mock(() => null),
-    readCustomEmbeddingSpace: mock(() => null),
-    writeCustomEmbeddingSpace: mock(() => {}),
+    readCustomEmbeddingSpace: mock(async () => null),
+    writeCustomEmbeddingSpace: mock(async () => {}),
   };
 }
 

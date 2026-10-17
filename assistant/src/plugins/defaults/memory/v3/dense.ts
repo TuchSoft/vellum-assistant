@@ -77,7 +77,7 @@ export async function denseLaneScored(
   if (k <= 0) {
     return [];
   }
-  if (sectionDenseReadsHeld() && (await settleSectionDenseReadHold())) {
+  if ((await sectionDenseReadsHeld()) && (await settleSectionDenseReadHold())) {
     return [];
   }
 

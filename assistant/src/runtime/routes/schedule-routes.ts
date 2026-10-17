@@ -1331,7 +1331,7 @@ async function handleRunScheduleNow(
     throw new NotFoundError("Schedule not found");
   }
 
-  if (isLifecycleQuiesced()) {
+  if (await isLifecycleQuiesced()) {
     throw new ConflictError(
       "The assistant is shutting down and is not starting new schedule runs.",
     );

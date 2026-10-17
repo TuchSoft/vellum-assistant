@@ -25,13 +25,13 @@ export async function backfillJob(
   const db = getDb();
   const force = job.payload.force === true;
   if (force) {
-    resetMessageCursorCheckpoint(
+    await resetMessageCursorCheckpoint(
       BACKFILL_CHECKPOINT_KEY,
       BACKFILL_CHECKPOINT_ID_KEY,
     );
   }
 
-  const cursor = readMessageCursorCheckpoint(
+  const cursor = await readMessageCursorCheckpoint(
     BACKFILL_CHECKPOINT_KEY,
     BACKFILL_CHECKPOINT_ID_KEY,
   );
@@ -71,7 +71,7 @@ export async function backfillJob(
       );
     }
     const lastMessage = batch[batch.length - 1];
-    writeMessageCursorCheckpoint(
+    await writeMessageCursorCheckpoint(
       BACKFILL_CHECKPOINT_KEY,
       BACKFILL_CHECKPOINT_ID_KEY,
       {

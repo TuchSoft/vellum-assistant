@@ -34,9 +34,9 @@ function cacheTtlMs(): number {
  * Returns `null` when caching is disabled (TTL <= 0), the cache is empty,
  * or the entry has expired.
  */
-export function getCachedEmptyStateGreeting(
+export async function getCachedEmptyStateGreeting(
   scope?: string | null,
-): string | null {
+): Promise<string | null> {
   const ttl = cacheTtlMs();
   if (ttl <= 0) {
     // Caching disabled — always regenerate.
@@ -44,10 +44,10 @@ export function getCachedEmptyStateGreeting(
   }
 
   try {
-    const text = getMemoryCheckpoint(
+    const text = await getMemoryCheckpoint(
       scopedCheckpointKey(CHECKPOINT_KEY_TEXT, scope),
     );
-    const timestampStr = getMemoryCheckpoint(
+    const timestampStr = await getMemoryCheckpoint(
       scopedCheckpointKey(CHECKPOINT_KEY_TIMESTAMP, scope),
     );
     if (!text || !timestampStr) {
@@ -70,18 +70,21 @@ export function getCachedEmptyStateGreeting(
  * No-ops when caching is disabled (TTL <= 0) so a zero-TTL workspace never
  * writes a stale entry.
  */
-export function setCachedEmptyStateGreeting(
+export async function setCachedEmptyStateGreeting(
   text: string,
   scope?: string | null,
-): void {
+): Promise<void> {
   if (cacheTtlMs() <= 0) {
     // Caching disabled — skip write.
     return;
   }
 
   try {
-    setMemoryCheckpoint(scopedCheckpointKey(CHECKPOINT_KEY_TEXT, scope), text);
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
+      scopedCheckpointKey(CHECKPOINT_KEY_TEXT, scope),
+      text,
+    );
+    await setMemoryCheckpoint(
       scopedCheckpointKey(CHECKPOINT_KEY_TIMESTAMP, scope),
       String(Date.now()),
     );

@@ -85,9 +85,9 @@ export interface ReconcileDeps {
   /** Identity of the configured custom embeddings endpoint, or null. */
   customEmbeddingSpaceIdentity: (config: AssistantConfig) => string | null;
   /** Last custom embedding space recorded for the populated collections. */
-  readCustomEmbeddingSpace: () => string | null;
+  readCustomEmbeddingSpace: () => Promise<string | null>;
   /** Persist (or clear) the custom embedding space identity. */
-  writeCustomEmbeddingSpace: (identity: string | null) => void;
+  writeCustomEmbeddingSpace: (identity: string | null) => Promise<void>;
 }
 
 /**
@@ -220,32 +220,32 @@ export function defaultDeps(config: AssistantConfig): ReconcileDeps {
     customEmbeddingSpaceIdentity,
     readCustomEmbeddingSpace: () =>
       getMemoryCheckpoint(CUSTOM_EMBEDDING_SPACE_CHECKPOINT),
-    writeCustomEmbeddingSpace: (identity) => {
+    writeCustomEmbeddingSpace: async (identity) => {
       if (identity == null) {
-        deleteMemoryCheckpoint(CUSTOM_EMBEDDING_SPACE_CHECKPOINT);
+        await deleteMemoryCheckpoint(CUSTOM_EMBEDDING_SPACE_CHECKPOINT);
       } else {
-        setMemoryCheckpoint(CUSTOM_EMBEDDING_SPACE_CHECKPOINT, identity);
+        await setMemoryCheckpoint(CUSTOM_EMBEDDING_SPACE_CHECKPOINT, identity);
       }
     },
   };
 }
 
-function syncCustomEmbeddingSpace(
+async function syncCustomEmbeddingSpace(
   config: AssistantConfig,
   deps: ReconcileDeps,
   opts: { reembedOnChange: boolean },
-): "unchanged" | "recorded" | "reembed" {
+): Promise<"unchanged" | "recorded" | "reembed"> {
   const current = deps.customEmbeddingSpaceIdentity(config);
-  const stored = deps.readCustomEmbeddingSpace();
+  const stored = await deps.readCustomEmbeddingSpace();
   if (current === stored) {
     return "unchanged";
   }
   if (opts.reembedOnChange && current != null && stored != null) {
     deps.enqueueReembed();
-    deps.writeCustomEmbeddingSpace(current);
+    await deps.writeCustomEmbeddingSpace(current);
     return "reembed";
   }
-  deps.writeCustomEmbeddingSpace(current);
+  await deps.writeCustomEmbeddingSpace(current);
   return "recorded";
 }
 
@@ -336,7 +336,7 @@ export async function reconcileEmbeddingIdentity(
 
   switch (action.kind) {
     case "noop": {
-      const spaceOutcome = syncCustomEmbeddingSpace(config, deps, {
+      const spaceOutcome = await syncCustomEmbeddingSpace(config, deps, {
         reembedOnChange: true,
       });
       if (spaceOutcome === "reembed" && committedDim != null) {
@@ -353,7 +353,7 @@ export async function reconcileEmbeddingIdentity(
       deps.persistVectorSize(action.dim);
       await deps.ensureCollections(action.dim);
       deps.enqueueReembed();
-      syncCustomEmbeddingSpace(config, deps, { reembedOnChange: false });
+      await syncCustomEmbeddingSpace(config, deps, { reembedOnChange: false });
       log.info(
         { dim: action.dim },
         "Committed fresh embedding dimension and ensured collections",
@@ -386,7 +386,7 @@ export async function reconcileEmbeddingIdentity(
         throw err;
       }
       deps.enqueueReembed();
-      syncCustomEmbeddingSpace(config, deps, { reembedOnChange: false });
+      await syncCustomEmbeddingSpace(config, deps, { reembedOnChange: false });
       log.warn(
         { fromDim: action.fromDim, toDim: action.toDim },
         "Migrated embedding dimension: recreated collections and enqueued reembed",

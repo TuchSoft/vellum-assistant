@@ -34,9 +34,9 @@ const MAINTENANCE_CHECKPOINT_KEY = "db_maintenance:last_run";
 const PASSIVE_CHECKPOINT_KEY = "db_maintenance:last_passive_checkpoint";
 const QUIET_PERIOD_MS = 3 * 60 * 60 * 1000;
 
-beforeEach(() => {
-  deleteMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY);
-  deleteMemoryCheckpoint(PASSIVE_CHECKPOINT_KEY);
+beforeEach(async () => {
+  await deleteMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY);
+  await deleteMemoryCheckpoint(PASSIVE_CHECKPOINT_KEY);
   const sqlite = getSqlite();
   sqlite.exec("DELETE FROM messages");
   sqlite.exec("DELETE FROM conversations");
@@ -103,11 +103,11 @@ describe("maybeRunDbMaintenance", () => {
     const recent = now - 60_000;
     const { setMemoryCheckpoint } =
       await import("../../../../persistence/checkpoints.js");
-    setMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY, String(recent));
+    await setMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY, String(recent));
 
     await maybeRunDbMaintenance(now);
 
-    expect(getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(
+    expect(await getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(
       String(recent),
     );
   });
@@ -116,7 +116,9 @@ describe("maybeRunDbMaintenance", () => {
     const now = Date.now();
     await maybeRunDbMaintenance(now);
 
-    expect(getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(
+      String(now),
+    );
   });
 
   test("truncates a bloated WAL", async () => {
@@ -153,7 +155,7 @@ describe("maybeRunDbMaintenance", () => {
 
     // THEN it is deferred — the checkpoint is never stamped, so a later idle
     // tick will retry
-    expect(getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBeNull();
+    expect(await getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBeNull();
   });
 
   test("runs maintenance once the quiet period has elapsed since the last user message", async () => {
@@ -167,7 +169,9 @@ describe("maybeRunDbMaintenance", () => {
     await maybeRunDbMaintenance(now);
 
     // THEN it runs and stamps the checkpoint
-    expect(getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(
+      String(now),
+    );
   });
 
   test("ignores quiet period when no user message exists", async () => {
@@ -180,7 +184,9 @@ describe("maybeRunDbMaintenance", () => {
     await maybeRunDbMaintenance(now);
 
     // THEN it runs and stamps the checkpoint
-    expect(getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(
+      String(now),
+    );
   });
 
   test("a recent assistant message does not keep maintenance deferred", async () => {
@@ -196,7 +202,9 @@ describe("maybeRunDbMaintenance", () => {
     await maybeRunDbMaintenance(now);
 
     // THEN it still runs, since only user activity gates it
-    expect(getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(
+      String(now),
+    );
   });
 
   test("a recent user-role message in a background conversation does not keep maintenance deferred", async () => {
@@ -216,7 +224,9 @@ describe("maybeRunDbMaintenance", () => {
     await maybeRunDbMaintenance(now);
 
     // THEN it still runs — only interactive-conversation activity gates it
-    expect(getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBe(
+      String(now),
+    );
   });
 });
 
@@ -233,9 +243,9 @@ describe("maybeRunPassiveWalCheckpoint", () => {
     await maybeRunPassiveWalCheckpoint(now);
 
     // THEN it runs and stamps its own checkpoint key
-    expect(getMemoryCheckpoint(PASSIVE_CHECKPOINT_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(PASSIVE_CHECKPOINT_KEY)).toBe(String(now));
     // AND the truncating-maintenance key is untouched
-    expect(getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBeNull();
+    expect(await getMemoryCheckpoint(MAINTENANCE_CHECKPOINT_KEY)).toBeNull();
   });
 
   test("respects its own interval and skips when the last pass was recent", async () => {
@@ -243,16 +253,18 @@ describe("maybeRunPassiveWalCheckpoint", () => {
     const recent = now - 60_000;
     const { setMemoryCheckpoint } =
       await import("../../../../persistence/checkpoints.js");
-    setMemoryCheckpoint(PASSIVE_CHECKPOINT_KEY, String(recent));
+    await setMemoryCheckpoint(PASSIVE_CHECKPOINT_KEY, String(recent));
 
     await maybeRunPassiveWalCheckpoint(now);
 
-    expect(getMemoryCheckpoint(PASSIVE_CHECKPOINT_KEY)).toBe(String(recent));
+    expect(await getMemoryCheckpoint(PASSIVE_CHECKPOINT_KEY)).toBe(
+      String(recent),
+    );
   });
 });
 
 describe("applyConnectionPragmas", () => {
-  test("sets journal_size_limit so WAL resets shrink the file", () => {
+  test("sets journal_size_limit so WAL resets shrink the file", async () => {
     /** Checkpointing alone never shrinks the WAL file; the size limit is what
      *  truncates it back after a burst. Pin that every connection carries it. */
     const sqlite = getSqlite();
@@ -264,7 +276,7 @@ describe("applyConnectionPragmas", () => {
 });
 
 describe("getLastInteractiveUserMessageTimestamp", () => {
-  test("returns 0 when no user message exists", () => {
+  test("returns 0 when no user message exists", async () => {
     /** With only non-user rows present, there is no user activity to report. */
     // GIVEN only an assistant message exists
     insertMessage("assistant", Date.now());
@@ -276,7 +288,7 @@ describe("getLastInteractiveUserMessageTimestamp", () => {
     expect(result).toBe(0);
   });
 
-  test("returns the most recent user message by timestamp, ignoring assistant rows", () => {
+  test("returns the most recent user message by timestamp, ignoring assistant rows", async () => {
     /** The lookup reports the newest user-message timestamp and must skip
      *  non-user rows even when they are more recent. */
     // GIVEN two user messages and a newer assistant message
@@ -292,7 +304,7 @@ describe("getLastInteractiveUserMessageTimestamp", () => {
     expect(result).toBe(base - 5_000);
   });
 
-  test("reports the newest user timestamp even when an older turn was inserted later", () => {
+  test("reports the newest user timestamp even when an older turn was inserted later", async () => {
     /** `forkConversation` copies a parent's user turns into the fork with
      *  their original (older) `created_at` but fresh row ids, so insertion
      *  order can place an old turn last. The lookup must key off `created_at`
@@ -311,7 +323,7 @@ describe("getLastInteractiveUserMessageTimestamp", () => {
     expect(result).toBe(base - 5_000);
   });
 
-  test("ignores user-role rows in background and scheduled conversations", () => {
+  test("ignores user-role rows in background and scheduled conversations", async () => {
     /** The memory-retrospective instruction message is persisted as
      *  `role: "user"` inside a `background` fork, and scheduled/heartbeat
      *  wake hints land in `scheduled`/`background` conversations — machine

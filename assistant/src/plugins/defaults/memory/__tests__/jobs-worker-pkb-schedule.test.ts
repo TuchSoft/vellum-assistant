@@ -144,68 +144,70 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("maybeEnqueueGraphMaintenanceJobs — PKB filing/compaction", () => {
-  test("first tick with no checkpoints: seeds both without enqueuing", () => {
+  test("first tick with no checkpoints: seeds both without enqueuing", async () => {
     const config = buildConfig({ v2Enabled: false });
     writePkbBuffer("- a filable fact\n");
 
     const now = Date.now();
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     // Nothing runs at boot — the first run lands a full interval after the
     // schedule's first sighting of the job.
     expect(countPendingJobs("pkb_filing")).toBe(0);
     expect(countPendingJobs("pkb_compaction")).toBe(0);
-    expect(getMemoryCheckpoint(FILING_KEY)).toBe(String(now));
-    expect(getMemoryCheckpoint(COMPACTION_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(FILING_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(COMPACTION_KEY)).toBe(String(now));
   });
 
-  test("enqueues filing and compaction on stale checkpoints when v1 is active", () => {
+  test("enqueues filing and compaction on stale checkpoints when v1 is active", async () => {
     const config = buildConfig({ v2Enabled: false });
     writePkbBuffer("- a filable fact\n");
 
     const now = Date.now();
-    setMemoryCheckpoint(FILING_KEY, staleCheckpoint(now));
-    setMemoryCheckpoint(COMPACTION_KEY, staleCheckpoint(now));
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await setMemoryCheckpoint(FILING_KEY, staleCheckpoint(now));
+    await setMemoryCheckpoint(COMPACTION_KEY, staleCheckpoint(now));
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("pkb_filing")).toBe(1);
     // Compaction is skipped this tick — filing was just enqueued and both
     // jobs rewrite the PKB tree, so the exclusion gate defers it. Its
     // checkpoint is untouched, so the next tick picks it up.
     expect(countPendingJobs("pkb_compaction")).toBe(0);
-    expect(getMemoryCheckpoint(FILING_KEY)).toBe(String(now));
-    expect(getMemoryCheckpoint(COMPACTION_KEY)).toBe(staleCheckpoint(now));
+    expect(await getMemoryCheckpoint(FILING_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(COMPACTION_KEY)).toBe(
+      staleCheckpoint(now),
+    );
   });
 
-  test("does not enqueue PKB jobs when memory v2 is active", () => {
+  test("does not enqueue PKB jobs when memory v2 is active", async () => {
     const config = buildConfig({ v2Enabled: true });
     writePkbBuffer("- a filable fact\n");
 
     const now = Date.now();
-    setMemoryCheckpoint(FILING_KEY, staleCheckpoint(now));
-    setMemoryCheckpoint(COMPACTION_KEY, staleCheckpoint(now));
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await setMemoryCheckpoint(FILING_KEY, staleCheckpoint(now));
+    await setMemoryCheckpoint(COMPACTION_KEY, staleCheckpoint(now));
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("pkb_filing")).toBe(0);
     expect(countPendingJobs("pkb_compaction")).toBe(0);
   });
 
-  test("does not enqueue before the interval has elapsed", () => {
+  test("does not enqueue before the interval has elapsed", async () => {
     const config = buildConfig({ v2Enabled: false });
     writePkbBuffer("- a filable fact\n");
 
     const now = Date.now();
     // Default filing interval is 4h; stamp the checkpoint one minute ago.
-    setMemoryCheckpoint(FILING_KEY, String(now - 60_000));
-    setMemoryCheckpoint(COMPACTION_KEY, String(now - 60_000));
+    await setMemoryCheckpoint(FILING_KEY, String(now - 60_000));
+    await setMemoryCheckpoint(COMPACTION_KEY, String(now - 60_000));
 
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("pkb_filing")).toBe(0);
     expect(countPendingJobs("pkb_compaction")).toBe(0);
   });
 
-  test("respects the enabled flags independently", () => {
+  test("respects the enabled flags independently", async () => {
     const config = buildConfig({
       v2Enabled: false,
       filingEnabled: false,
@@ -214,16 +216,16 @@ describe("maybeEnqueueGraphMaintenanceJobs — PKB filing/compaction", () => {
     writePkbBuffer("- a filable fact\n");
 
     const now = Date.now();
-    setMemoryCheckpoint(FILING_KEY, staleCheckpoint(now));
-    setMemoryCheckpoint(COMPACTION_KEY, staleCheckpoint(now));
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await setMemoryCheckpoint(FILING_KEY, staleCheckpoint(now));
+    await setMemoryCheckpoint(COMPACTION_KEY, staleCheckpoint(now));
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("pkb_filing")).toBe(0);
     expect(countPendingJobs("pkb_compaction")).toBe(1);
-    expect(getMemoryCheckpoint(COMPACTION_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(COMPACTION_KEY)).toBe(String(now));
   });
 
-  test("outside active hours: skips but advances the checkpoint", () => {
+  test("outside active hours: skips but advances the checkpoint", async () => {
     const now = Date.now();
     const hour = new Date(now).getHours();
     const config = buildConfig({
@@ -234,47 +236,49 @@ describe("maybeEnqueueGraphMaintenanceJobs — PKB filing/compaction", () => {
     });
     writePkbBuffer("- a filable fact\n");
 
-    setMemoryCheckpoint(FILING_KEY, staleCheckpoint(now));
-    setMemoryCheckpoint(COMPACTION_KEY, staleCheckpoint(now));
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await setMemoryCheckpoint(FILING_KEY, staleCheckpoint(now));
+    await setMemoryCheckpoint(COMPACTION_KEY, staleCheckpoint(now));
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("pkb_filing")).toBe(0);
     expect(countPendingJobs("pkb_compaction")).toBe(0);
     // Checkpoints advance so the next attempt lands a full interval later —
     // the interval cadence, not a busy-retry against a closed window.
-    expect(getMemoryCheckpoint(FILING_KEY)).toBe(String(now));
-    expect(getMemoryCheckpoint(COMPACTION_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(FILING_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(COMPACTION_KEY)).toBe(String(now));
   });
 
-  test("filing with an empty buffer: skips but advances the checkpoint", () => {
+  test("filing with an empty buffer: skips but advances the checkpoint", async () => {
     const config = buildConfig({ v2Enabled: false, compactionEnabled: false });
     // Comment-only buffer counts as empty (`_`-prefixed lines are the
     // comment convention stripCommentLines removes).
     writePkbBuffer("_ nothing filable here\n\n");
 
     const now = Date.now();
-    setMemoryCheckpoint(FILING_KEY, staleCheckpoint(now));
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await setMemoryCheckpoint(FILING_KEY, staleCheckpoint(now));
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     expect(countPendingJobs("pkb_filing")).toBe(0);
-    expect(getMemoryCheckpoint(FILING_KEY)).toBe(String(now));
+    expect(await getMemoryCheckpoint(FILING_KEY)).toBe(String(now));
   });
 
-  test("an active PKB job defers both types without advancing checkpoints", () => {
+  test("an active PKB job defers both types without advancing checkpoints", async () => {
     const config = buildConfig({ v2Enabled: false });
     writePkbBuffer("- a filable fact\n");
     enqueueMemoryJob("pkb_compaction", {});
 
     const now = Date.now();
-    setMemoryCheckpoint(FILING_KEY, staleCheckpoint(now));
-    setMemoryCheckpoint(COMPACTION_KEY, staleCheckpoint(now));
-    maybeEnqueueGraphMaintenanceJobs(config, now);
+    await setMemoryCheckpoint(FILING_KEY, staleCheckpoint(now));
+    await setMemoryCheckpoint(COMPACTION_KEY, staleCheckpoint(now));
+    await maybeEnqueueGraphMaintenanceJobs(config, now);
 
     // Nothing new enqueued while the pending compaction holds the PKB tree.
     expect(countPendingJobs("pkb_filing")).toBe(0);
     expect(countPendingJobs("pkb_compaction")).toBe(1);
     // Checkpoints untouched — the next worker tick retries.
-    expect(getMemoryCheckpoint(FILING_KEY)).toBe(staleCheckpoint(now));
-    expect(getMemoryCheckpoint(COMPACTION_KEY)).toBe(staleCheckpoint(now));
+    expect(await getMemoryCheckpoint(FILING_KEY)).toBe(staleCheckpoint(now));
+    expect(await getMemoryCheckpoint(COMPACTION_KEY)).toBe(
+      staleCheckpoint(now),
+    );
   });
 });

@@ -97,13 +97,13 @@ let testSqlite: Database;
 // connection, resolved via `getMemorySqlite` — stubbed to a second in-memory DB
 // carrying the relocated tables' schema.
 let memorySqlite: Database;
-let testDb = makeDb();
-function makeDb() {
+let testDb = await makeDb();
+async function makeDb() {
   testSqlite = new Database(":memory:");
   const db = drizzle(testSqlite, { schema });
   memorySqlite = new Database(":memory:");
   ensureMemoryV3SelectionsSchema(memorySqlite);
-  ensureMemoryV3InjectedSectionsSchema(memorySqlite);
+  await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
   return db;
 }
 mock.module("../../../../../persistence/db-connection.js", () => ({
@@ -303,10 +303,10 @@ async function runTurn(
   return { block: inner.length === 0 ? "" : wrapMemoryBlock(inner), netNew };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   denseMockActive = true;
   providerStub = null;
-  testDb = makeDb();
+  testDb = await makeDb();
 });
 
 afterAll(() => {

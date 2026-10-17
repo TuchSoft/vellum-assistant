@@ -248,15 +248,15 @@ let memorySqlite: Database;
 // When false, the stubbed `getMemorySqlite` resolves to null — the contract
 // the plugin sees when the dedicated memory database cannot be opened.
 let memoryDbAvailable = true;
-let testDb = makeDb();
-function makeDb() {
+let testDb = await makeDb();
+async function makeDb() {
   testSqlite = new Database(":memory:");
   testSqlite.exec("PRAGMA journal_mode=WAL");
   const db = drizzle(testSqlite, { schema });
   memorySqlite = new Database(":memory:");
   ensureMemoryV3SelectionsSchema(memorySqlite);
   // The live injector's net-new dedup reads/writes the everInjected store.
-  ensureMemoryV3InjectedSectionsSchema(memorySqlite);
+  await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
   // `observeTurn` records each turn's candidate pool next to its selections.
   ensureMemoryV3PoolsSchema(memorySqlite);
   ensureMemoryV3PoolInputsSchema(memorySqlite);
@@ -699,7 +699,7 @@ function poolOf(kept: string[]): OrchestrateResult {
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   shadowMockActive = true;
   liveEnabled = false;
   memoryEnabled = true;
@@ -730,7 +730,7 @@ beforeEach(() => {
   coreSetSlugs = [];
   hotSetResult = [];
   hotSetOpts = null;
-  testDb = makeDb();
+  testDb = await makeDb();
   mockLanesVersion = null;
   lanesVersionReadThrows = false;
   bumpCounter = 0;

@@ -56,10 +56,10 @@ let memorySqlite: Database;
 /** The main connection, carrying the checkpoint ledger the sections ensure
  *  records its one-shot legacy copy in. */
 let mainSqlite: Database;
-makeDb();
-function makeDb() {
+await makeDb();
+async function makeDb() {
   memorySqlite = new Database(":memory:");
-  ensureMemoryV3InjectedSectionsSchema(memorySqlite);
+  await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
   mainSqlite = new Database(":memory:");
   mainSqlite.exec(/*sql*/ `
     CREATE TABLE memory_checkpoints (
@@ -104,10 +104,10 @@ const {
   touchSelected,
 } = await import("./ever-injected-store.js");
 
-beforeEach(() => {
+beforeEach(async () => {
   storeMockActive = true;
   memoryDbAvailable = true;
-  makeDb();
+  await makeDb();
 });
 
 afterAll(() => {
@@ -146,13 +146,13 @@ function legacyCopyRecorded(): boolean {
 }
 
 describe("metadata key constant", () => {
-  test("exports the v3 injected-block metadata key", () => {
+  test("exports the v3 injected-block metadata key", async () => {
     expect(MEMORY_V3_INJECTED_BLOCK_METADATA_KEY).toBe("memoryV3InjectedBlock");
   });
 });
 
 describe("recordInjected / getInjected / getActiveSections", () => {
-  test("round-trips the recorded entries at (slug, key) grain", () => {
+  test("round-trips the recorded entries at (slug, key) grain", async () => {
     recordInjected(
       "conv-1",
       [
@@ -187,7 +187,7 @@ describe("recordInjected / getInjected / getActiveSections", () => {
     expect(getActiveSections("conv-other").size).toBe(0);
   });
 
-  test("re-recording a pruned section clears pruned_at and refreshes bytes, injected_at, and last_selected_at", () => {
+  test("re-recording a pruned section clears pruned_at and refreshes bytes, injected_at, and last_selected_at", async () => {
     recordInjected(
       "conv-1",
       [{ slug: "topics/page-a", key: "Notes", bytes: 100 }],
@@ -219,14 +219,14 @@ describe("recordInjected / getInjected / getActiveSections", () => {
     );
   });
 
-  test("empty entries are a no-op", () => {
+  test("empty entries are a no-op", async () => {
     recordInjected("conv-1", []);
     expect(getInjected("conv-1")).toEqual([]);
   });
 });
 
 describe("markPruned / residentBytes / getPrunedSections", () => {
-  test("pruned rows leave the active set and resident bytes but stay on record; siblings stay resident", () => {
+  test("pruned rows leave the active set and resident bytes but stay on record; siblings stay resident", async () => {
     recordInjected(
       "conv-1",
       [
@@ -270,7 +270,7 @@ describe("markPruned / residentBytes / getPrunedSections", () => {
     expect(getInjected("conv-1")).toHaveLength(3);
   });
 
-  test("tombstones a plan far larger than one batch (and SQLite's expression depth) in one call", () => {
+  test("tombstones a plan far larger than one batch (and SQLite's expression depth) in one call", async () => {
     const refs = Array.from({ length: 1_100 }, (_, i) => ({
       slug: `topics/page-${i}`,
       key: i % 2 === 0 ? "" : "Notes",
@@ -295,7 +295,7 @@ describe("markPruned / residentBytes / getPrunedSections", () => {
     ).toHaveLength(1_100);
   });
 
-  test("empty ref list is a no-op and residentBytes is 0 for unknown conversations", () => {
+  test("empty ref list is a no-op and residentBytes is 0 for unknown conversations", async () => {
     recordInjected(
       "conv-1",
       [{ slug: "topics/page-a", key: "", bytes: 100 }],
@@ -317,7 +317,7 @@ describe("touchSelected", () => {
     ]);
   }
 
-  test("stamps exactly the named rows, leaving injected_at and other conversations alone; an unknown ref is a no-op", () => {
+  test("stamps exactly the named rows, leaving injected_at and other conversations alone; an unknown ref is a no-op", async () => {
     recordInjected(
       "conv-1",
       [
@@ -354,7 +354,7 @@ describe("touchSelected", () => {
     );
   });
 
-  test("stamps a ref list far larger than one batch (and SQLite's expression depth) in one call", () => {
+  test("stamps a ref list far larger than one batch (and SQLite's expression depth) in one call", async () => {
     const refs = Array.from({ length: 1_100 }, (_, i) => ({
       slug: `topics/page-${i}`,
       key: i % 2 === 0 ? "" : "Notes",
@@ -372,7 +372,7 @@ describe("touchSelected", () => {
     ).toHaveLength(1_100);
   });
 
-  test("empty ref list is a no-op", () => {
+  test("empty ref list is a no-op", async () => {
     recordInjected(
       "conv-1",
       [{ slug: "topics/page-a", key: "", bytes: 100 }],
@@ -384,7 +384,7 @@ describe("touchSelected", () => {
 });
 
 describe("clearConversation", () => {
-  test("deletes all rows for the conversation only", () => {
+  test("deletes all rows for the conversation only", async () => {
     recordInjected(
       "conv-1",
       [{ slug: "topics/page-a", key: "", bytes: 100 }],
@@ -402,7 +402,7 @@ describe("clearConversation", () => {
     expect(getInjected("conv-2")).toHaveLength(1);
   });
 
-  test("deletes the conversation's legacy card rows too, so a copy that runs after the reset re-imports nothing for it", () => {
+  test("deletes the conversation's legacy card rows too, so a copy that runs after the reset re-imports nothing for it", async () => {
     ensureMemoryV3EverInjectedSchema(memorySqlite);
     memorySqlite.exec(/*sql*/ `
       INSERT INTO memory_v3_ever_injected
@@ -413,6 +413,10 @@ describe("clearConversation", () => {
         ('conv-2', 'topics/page-a', 3000, 100, NULL)
     `);
     // The store's first use of this connection copies the legacy rows in.
+    // The copy is async behind the main checkpoint ledger; flush it before
+    // asserting the result.
+    summary("conv-1");
+    await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
     expect(summary("conv-1")).toEqual([
       { slug: "topics/page-a", key: "", bytes: 0, prunedAt: null },
       { slug: "topics/page-b", key: "", bytes: 0, prunedAt: null },
@@ -429,7 +433,7 @@ describe("clearConversation", () => {
     // A copy that runs again, its record lost, as a fresh connection's
     // ensure would: nothing of conv-1 is left to bring back.
     mainSqlite.exec(`DELETE FROM memory_checkpoints`);
-    ensureMemoryV3InjectedSectionsSchema(memorySqlite);
+    await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
 
     expect(getInjected("conv-1")).toEqual([]);
     expect(summary("conv-2")).toEqual([
@@ -440,7 +444,7 @@ describe("clearConversation", () => {
 });
 
 describe("forkEverInjected", () => {
-  test("copies the parent's full record, pruned state and selection stamps included", () => {
+  test("copies the parent's full record, pruned state and selection stamps included", async () => {
     recordInjected(
       "conv-parent",
       [
@@ -477,7 +481,7 @@ describe("forkEverInjected", () => {
     expect(getInjected("conv-parent")).toHaveLength(2);
   });
 
-  test("is a no-op when the parent has no rows", () => {
+  test("is a no-op when the parent has no rows", async () => {
     forkEverInjected("conv-empty", "conv-child");
     expect(getInjected("conv-child")).toEqual([]);
   });
@@ -496,7 +500,7 @@ describe("seedEverInjectedFromBlocks", () => {
   const blockA = `${leadA}\n\n${notesA}`;
   const designB = `${injectedSectionHeader("topics/page-b", "Design#1")}\nDesign B`;
 
-  test("seeds a row per inherited section, stamped at the given time with no selection stamp, with the bytes of its inherited span", () => {
+  test("seeds a row per inherited section, stamped at the given time with no selection stamp, with the bytes of its inherited span", async () => {
     seedEverInjectedFromBlocks(
       "conv-parent",
       "conv-child",
@@ -536,7 +540,7 @@ describe("seedEverInjectedFromBlocks", () => {
     );
   });
 
-  test("a section inherited from several blocks takes its latest span; an escaped forged header seeds no phantom row", () => {
+  test("a section inherited from several blocks takes its latest span; an escaped forged header seeds no phantom row", async () => {
     const notesAgain = `${injectedSectionHeader("topics/page-a", "Notes")}\nNotes A, re-injected after a prune\n\\# memory/concepts/phantom.md`;
     seedEverInjectedFromBlocks(
       "conv-parent",
@@ -561,7 +565,7 @@ describe("seedEverInjectedFromBlocks", () => {
     ]);
   });
 
-  test("seeds inherited capability chunks at zero bytes under the empty key, as the injector records them", () => {
+  test("seeds inherited capability chunks at zero bytes under the empty key, as the injector records them", async () => {
     const block = [
       leadA,
       "",
@@ -601,7 +605,7 @@ describe("seedEverInjectedFromBlocks", () => {
     expect(residentBytes("conv-child")).toBe(renderedBytes(leadA));
   });
 
-  test("a legacy block (a pre-stamp row's) seeds nothing; the current blocks beside it seed as usual", () => {
+  test("a legacy block (a pre-stamp row's) seeds nothing; the current blocks beside it seed as usual", async () => {
     const card = [
       injectedSectionHeader("topics/page-a", ""),
       "# Page A",
@@ -638,7 +642,7 @@ describe("seedEverInjectedFromBlocks", () => {
     expect(getInjected("conv-child-legacy-only")).toEqual([]);
   });
 
-  test("carries the parent's pruned_at tombstones for inherited sections", () => {
+  test("carries the parent's pruned_at tombstones for inherited sections", async () => {
     // Parent injected both sections of page-a, then pruned Notes: the
     // metadata block the child inherits still contains the Notes section,
     // so the scan seeds both, but Notes must arrive tombstoned, not active,
@@ -692,7 +696,7 @@ describe("seedEverInjectedFromBlocks", () => {
     );
   });
 
-  test("is a no-op for blocks with no headers and never overwrites existing rows", () => {
+  test("is a no-op for blocks with no headers and never overwrites existing rows", async () => {
     seedEverInjectedFromBlocks(
       "conv-parent",
       "conv-child",
@@ -725,7 +729,7 @@ describe("seedEverInjectedFromBlocks", () => {
 });
 
 describe("memory-side schema", () => {
-  test("a store call on a fresh memory connection creates the table itself (the lazy per-connection ensure)", () => {
+  test("a store call on a fresh memory connection creates the table itself (the lazy per-connection ensure)", async () => {
     memorySqlite = new Database(":memory:");
 
     recordInjected(
@@ -739,7 +743,7 @@ describe("memory-side schema", () => {
     );
   });
 
-  test("the plugin-init ensure creates the table and no-ops when the memory database is unavailable", () => {
+  test("the plugin-init ensure creates the table and no-ops when the memory database is unavailable", async () => {
     memorySqlite = new Database(":memory:");
     ensureMemoryV3PluginSchema();
     expect(
@@ -754,9 +758,9 @@ describe("memory-side schema", () => {
     expect(() => ensureMemoryV3PluginSchema()).not.toThrow();
   });
 
-  test("ensure is idempotent — running twice leaves a usable table", () => {
+  test("ensure is idempotent — running twice leaves a usable table", async () => {
     // makeDb() already ensured the schema once; run it again.
-    ensureMemoryV3InjectedSectionsSchema(memorySqlite);
+    await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
 
     recordInjected(
       "conv-1",
@@ -768,7 +772,7 @@ describe("memory-side schema", () => {
     );
   });
 
-  test("the lazy per-connection ensure copies the legacy card rows once, recording the copy in the checkpoint ledger, and a later ensure skips it", () => {
+  test("the lazy per-connection ensure copies the legacy card rows once, recording the copy in the checkpoint ledger, and a later ensure skips it", async () => {
     ensureMemoryV3EverInjectedSchema(memorySqlite);
     memorySqlite.exec(/*sql*/ `
       INSERT INTO memory_v3_ever_injected
@@ -777,6 +781,8 @@ describe("memory-side schema", () => {
     `);
     expect(legacyCopyRecorded()).toBe(false);
 
+    summary("conv-1");
+    await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
     expect(summary("conv-1")).toEqual([
       { slug: "topics/page-a", key: "", bytes: 0, prunedAt: null },
     ]);
@@ -789,13 +795,13 @@ describe("memory-side schema", () => {
       2_000,
     );
     memorySqlite.query("DELETE FROM memory_v3_injected_sections").run();
-    ensureMemoryV3InjectedSectionsSchema(memorySqlite);
+    await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
     expect(getInjected("conv-1")).toEqual([]);
   });
 });
 
 describe("fail-soft without a memory database", () => {
-  test("reads return empty and writes no-op when the memory DB is unavailable", () => {
+  test("reads return empty and writes no-op when the memory DB is unavailable", async () => {
     memoryDbAvailable = false;
     expect(() =>
       recordInjected(
@@ -820,7 +826,7 @@ describe("fail-soft when the underlying statement fails", () => {
   // corrupt/dropped table, SQLITE_FULL, I/O error, or SQLITE_BUSY after
   // timeout). Every write must degrade like the null-connection case — log a
   // warning and no-op — rather than throwing out of the turn.
-  test("read paths return empty when the target table is missing (memory stays on, dedup off)", () => {
+  test("read paths return empty when the target table is missing (memory stays on, dedup off)", async () => {
     memorySqlite.query("DROP TABLE memory_v3_injected_sections").run();
 
     expect(getActiveSections("conv-1").size).toBe(0);
@@ -830,7 +836,7 @@ describe("fail-soft when the underlying statement fails", () => {
     expect(residentBytes("conv-1")).toBe(0);
   });
 
-  test("write paths no-op when the target table is missing", () => {
+  test("write paths no-op when the target table is missing", async () => {
     memorySqlite.query("DROP TABLE memory_v3_injected_sections").run();
 
     expect(() =>

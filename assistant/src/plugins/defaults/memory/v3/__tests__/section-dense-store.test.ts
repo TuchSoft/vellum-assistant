@@ -376,7 +376,7 @@ describe("memory v3 section-dense-store — collection lifecycle", () => {
   beforeEach(resetState);
   afterEach(resetState);
 
-  test("uses the documented collection name", () => {
+  test("uses the documented collection name", async () => {
     expect(SECTION_COLLECTION).toBe("memory_v3_sections");
   });
 
@@ -983,7 +983,7 @@ describe("memory v3 section-dense-store: chunker version guard", () => {
     expect(checkpointState.values.get(MAINTAIN_EMBED_HIGH_WATER_KEY)).toBe(
       "1700000001000",
     );
-    commitSectionEmbedHighWater(1700000002000);
+    await commitSectionEmbedHighWater(1700000002000);
     expect(await ensureSectionChunkerVersion()).toBe(false);
   });
 
@@ -1000,7 +1000,7 @@ describe("memory v3 section-dense-store: chunker version guard", () => {
     // Pending until the rebuild pass commits; a second check forces nothing new.
     expect(await ensureSectionChunkerVersion()).toBe(true);
     expect(checkpointState.deletes).toEqual([MAINTAIN_EMBED_HIGH_WATER_KEY]);
-    commitSectionEmbedHighWater(1700000002000);
+    await commitSectionEmbedHighWater(1700000002000);
     expect(await ensureSectionChunkerVersion()).toBe(false);
   });
 
@@ -1032,7 +1032,7 @@ describe("memory v3 section-dense-store: chunker version guard", () => {
     expect(await ensureSectionChunkerVersion()).toBe(true);
     expect(checkpointState.values.get(SECTION_REBUILD_PENDING_KEY)).toBe("1");
 
-    commitSectionEmbedHighWater(1700000002000);
+    await commitSectionEmbedHighWater(1700000002000);
     expect(checkpointState.values.get(MAINTAIN_EMBED_HIGH_WATER_KEY)).toBe(
       "1700000002000",
     );
@@ -1053,7 +1053,7 @@ describe("memory v3 section-dense-store: chunker version guard", () => {
     // The fresh process holds reads and forces the rebuild: the high-water is
     // gone, the marker stays, the version is now on record.
     expect(await holdSectionDenseReadsUntilRebuilt()).toBe(true);
-    expect(sectionDenseReadsHeld()).toBe(true);
+    expect(await sectionDenseReadsHeld()).toBe(true);
     expect(checkpointState.values.has(MAINTAIN_EMBED_HIGH_WATER_KEY)).toBe(
       false,
     );
@@ -1084,15 +1084,15 @@ describe("memory v3 section-dense-store: chunker version guard", () => {
     state.scrollPages = [{ points: [STORED_POINT], next_page_offset: null }];
 
     expect(await holdSectionDenseReadsUntilRebuilt()).toBe(true);
-    expect(sectionDenseReadsHeld()).toBe(true);
+    expect(await sectionDenseReadsHeld()).toBe(true);
     expect(state.scrollCalls).toEqual(PROBE);
     expect(checkpointState.values.get(SECTION_REBUILD_PENDING_KEY)).toBe("1");
     expect(checkpointState.values.get(SECTION_CHUNKER_VERSION_KEY)).toBe(
       String(SECTION_CHUNKER_VERSION),
     );
     // The rebuild pass's commit releases the hold as usual.
-    commitSectionEmbedHighWater(1700000002000);
-    expect(sectionDenseReadsHeld()).toBe(false);
+    await commitSectionEmbedHighWater(1700000002000);
+    expect(await sectionDenseReadsHeld()).toBe(false);
     expect(await ensureSectionChunkerVersion()).toBe(false);
   });
 
@@ -1108,7 +1108,7 @@ describe("memory v3 section-dense-store: chunker version guard", () => {
     expect(
       await holdSectionDenseReadsUntilRebuilt(() => kicks.push(kicks.length)),
     ).toBe(true);
-    expect(sectionDenseReadsHeld()).toBe(true);
+    expect(await sectionDenseReadsHeld()).toBe(true);
     expect(checkpointState.ops).toEqual([]);
     expect(kicks).toEqual([]);
     // Already held: a later lane init in this process starts nothing new.
@@ -1135,9 +1135,9 @@ describe("memory v3 section-dense-store: chunker version guard", () => {
     expect(kicks).toEqual([0]);
 
     // Held for the rebuild now, so the marker governs the release.
-    expect(sectionDenseReadsHeld()).toBe(true);
-    commitSectionEmbedHighWater(1700000002000);
-    expect(sectionDenseReadsHeld()).toBe(false);
+    expect(await sectionDenseReadsHeld()).toBe(true);
+    await commitSectionEmbedHighWater(1700000002000);
+    expect(await sectionDenseReadsHeld()).toBe(false);
     expect(await settleSectionDenseReadHold()).toBe(false);
   });
 
@@ -1158,7 +1158,7 @@ describe("memory v3 section-dense-store: chunker version guard", () => {
     // One retry for both reads, and it failed: still held, nothing written,
     // and the next minute is waited out before another probe.
     expect(state.scrollCalls).toEqual([...PROBE, ...PROBE]);
-    expect(sectionDenseReadsHeld()).toBe(true);
+    expect(await sectionDenseReadsHeld()).toBe(true);
     expect(await settleSectionDenseReadHold()).toBe(true);
     expect(state.scrollCalls).toHaveLength(2);
     expect(checkpointState.ops).toEqual([]);
@@ -1173,14 +1173,14 @@ describe("memory v3 section-dense-store: chunker version guard", () => {
     expect(
       await holdSectionDenseReadsUntilRebuilt(() => kicks.push(kicks.length)),
     ).toBe(true);
-    expect(sectionDenseReadsHeld()).toBe(true);
+    expect(await sectionDenseReadsHeld()).toBe(true);
 
     // The probe finds the collection empty once it can run: a fresh install,
     // recorded as such, with nothing to rebuild and nothing to kick.
     state.scrollThrows = null;
     setSystemTime(new Date("2026-01-01T00:01:00Z"));
     expect(await settleSectionDenseReadHold()).toBe(false);
-    expect(sectionDenseReadsHeld()).toBe(false);
+    expect(await sectionDenseReadsHeld()).toBe(false);
     expect(checkpointState.ops).toEqual([`set:${SECTION_CHUNKER_VERSION_KEY}`]);
     expect(checkpointState.values.has(SECTION_REBUILD_PENDING_KEY)).toBe(false);
     expect(kicks).toEqual([]);
@@ -1198,7 +1198,7 @@ describe("memory v3 section-dense-store: chunker version guard", () => {
     expect(
       await holdSectionDenseReadsUntilRebuilt(() => kicks.push(kicks.length)),
     ).toBe(true);
-    expect(sectionDenseReadsHeld()).toBe(true);
+    expect(await sectionDenseReadsHeld()).toBe(true);
     // The marker landed before the failure, so the durable state says stale,
     // while the failed write left the old version on record.
     expect(checkpointState.values.get(SECTION_REBUILD_PENDING_KEY)).toBe("1");
@@ -1216,8 +1216,8 @@ describe("memory v3 section-dense-store: chunker version guard", () => {
     );
     expect(state.scrollCalls).toEqual([]);
     expect(kicks).toEqual([0]);
-    commitSectionEmbedHighWater(1700000002000);
-    expect(sectionDenseReadsHeld()).toBe(false);
+    await commitSectionEmbedHighWater(1700000002000);
+    expect(await sectionDenseReadsHeld()).toBe(false);
   });
 
   test("a version check that fails while the marker cannot be read holds dense reads until the ledger answers", async () => {
@@ -1227,14 +1227,14 @@ describe("memory v3 section-dense-store: chunker version guard", () => {
     checkpointState.throwOnGet = SECTION_REBUILD_PENDING_KEY;
 
     expect(await holdSectionDenseReadsUntilRebuilt()).toBe(true);
-    expect(sectionDenseReadsHeld()).toBe(true);
+    expect(await sectionDenseReadsHeld()).toBe(true);
 
     // The marker reads again, absent, with no high-water and an empty
     // collection: nothing pending, and the retried check opens reads.
     checkpointState.throwOnGet = null;
     setSystemTime(new Date("2026-01-01T00:01:00Z"));
     expect(await settleSectionDenseReadHold()).toBe(false);
-    expect(sectionDenseReadsHeld()).toBe(false);
+    expect(await sectionDenseReadsHeld()).toBe(false);
     expect(checkpointState.values.get(SECTION_CHUNKER_VERSION_KEY)).toBe(
       String(SECTION_CHUNKER_VERSION),
     );

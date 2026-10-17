@@ -56,7 +56,7 @@ import { ensureMemoryV3InjectedSectionsSchema } from "../plugins/defaults/memory
 
 await initializeDb();
 
-function resetTables(): void {
+async function resetTables(): Promise<void> {
   const db = getDb();
   db.delete(channelInboundEvents).run();
   db.delete(externalConversationBindings).run();
@@ -71,7 +71,7 @@ function resetTables(): void {
   getMemoryDb()!.delete(memoryJobs).run();
   // The plugin creates this table itself (init hook, or a store's first use);
   // the reset runs before either, so stand it up here.
-  ensureMemoryV3InjectedSectionsSchema(getMemorySqlite()!);
+  await ensureMemoryV3InjectedSectionsSchema(getMemorySqlite()!);
   getMemorySqlite()!.exec("DELETE FROM memory_v3_injected_sections");
   db.run("DELETE FROM message_attachments");
   db.run("DELETE FROM attachments");
@@ -119,8 +119,8 @@ async function seedSource(title: string): Promise<{ id: string }> {
 }
 
 describe("forkConversationForRetrospective", () => {
-  beforeEach(() => {
-    resetTables();
+  beforeEach(async () => {
+    await resetTables();
   });
 
   test("full fork presents the source window without copying rows", async () => {
@@ -267,8 +267,8 @@ describe("forkConversationForRetrospective", () => {
 });
 
 describe("forkConversationForRetrospective — compacted source", () => {
-  beforeEach(() => {
-    resetTables();
+  beforeEach(async () => {
+    await resetTables();
   });
 
   interface CompactedSource {
@@ -751,8 +751,8 @@ describe("forkConversationForRetrospective — compacted source", () => {
 });
 
 describe("forkConversationForRetrospective with unfinalized rows", () => {
-  beforeEach(() => {
-    resetTables();
+  beforeEach(async () => {
+    await resetTables();
   });
 
   test("skips the unfinalized tail and anchors at the last finalized message", async () => {

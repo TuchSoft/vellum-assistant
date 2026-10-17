@@ -78,19 +78,22 @@ export function memoryReader<Handle>(
  * connection is ensured again.
  */
 export function ensureOncePerConnection(
-  ensure: (memoryRaw: MemorySqlite) => void,
+  ensure: (memoryRaw: MemorySqlite) => void | Promise<void>,
   degradedMessage: string,
-): (memoryRaw: MemorySqlite) => void {
+): (memoryRaw: MemorySqlite) => Promise<void> {
   const ensured = new WeakSet<MemorySqlite>();
   let warned = false;
-  return (memoryRaw) => {
+  return async (memoryRaw) => {
     if (ensured.has(memoryRaw)) {
       return;
     }
+    // Mark before awaiting: the DDL runs synchronously up to the first await,
+    // so a re-entrant call must not start a second ensure.
+    ensured.add(memoryRaw);
     try {
-      ensure(memoryRaw);
-      ensured.add(memoryRaw);
+      await ensure(memoryRaw);
     } catch (err) {
+      ensured.delete(memoryRaw);
       if (!warned) {
         warned = true;
         log.warn({ err }, degradedMessage);
@@ -211,8 +214,8 @@ const LEGACY_CARDS_TABLE = "memory_v3_ever_injected";
  * read that throws is an unreadable ledger.
  */
 interface CheckpointLedger {
-  get(key: string): string | null;
-  set(key: string, value: string): void;
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
 }
 
 const memoryCheckpointLedger: CheckpointLedger = {
@@ -270,10 +273,10 @@ function legacyCardsTableExists(memoryRaw: MemorySqlite): boolean {
  * nothing on record; the copy runs on a later ensure once the legacy rows
  * are there.
  */
-export function ensureMemoryV3InjectedSectionsSchema(
+export async function ensureMemoryV3InjectedSectionsSchema(
   memoryRaw: MemorySqlite,
   ledger: CheckpointLedger = memoryCheckpointLedger,
-): void {
+): Promise<void> {
   memoryRaw.exec(/*sql*/ `
     CREATE TABLE IF NOT EXISTS ${SECTIONS_TABLE} (
       conversation_id TEXT NOT NULL,
@@ -297,7 +300,7 @@ export function ensureMemoryV3InjectedSectionsSchema(
   }
   let copied: boolean;
   try {
-    copied = ledger.get(SECTIONS_LEGACY_COPY_DONE_KEY) !== null;
+    copied = (await ledger.get(SECTIONS_LEGACY_COPY_DONE_KEY)) !== null;
   } catch (err) {
     log.warn(
       { err },
@@ -315,7 +318,7 @@ export function ensureMemoryV3InjectedSectionsSchema(
     FROM ${LEGACY_CARDS_TABLE}
   `);
   try {
-    ledger.set(SECTIONS_LEGACY_COPY_DONE_KEY, "1");
+    await ledger.set(SECTIONS_LEGACY_COPY_DONE_KEY, "1");
   } catch (err) {
     log.warn(
       { err },

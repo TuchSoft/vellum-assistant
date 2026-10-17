@@ -1135,7 +1135,7 @@ export async function claimDueSchedules(now: number): Promise<ScheduleJob[]> {
   // the claim writes — rather than at the tick boundary, to shrink the window
   // in which a lease armed mid-tick could miss a claim that already passed an
   // earlier check. Fail-open via the lease read.
-  if (isLifecycleQuiesced()) {
+  if (await isLifecycleQuiesced()) {
     return [];
   }
 

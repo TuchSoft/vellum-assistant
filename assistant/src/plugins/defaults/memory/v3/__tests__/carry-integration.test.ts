@@ -153,13 +153,13 @@ let testSqlite: Database;
 // resolved via `getMemorySqlite` — stubbed to a second in-memory DB carrying
 // the relocated tables' schema. Messages stay in main.
 let memorySqlite: Database;
-let testDb = makeDb();
-function makeDb() {
+let testDb = await makeDb();
+async function makeDb() {
   testSqlite = new Database(":memory:");
   const db = drizzle(testSqlite, { schema });
   memorySqlite = new Database(":memory:");
   ensureMemoryV3SelectionsSchema(memorySqlite);
-  ensureMemoryV3InjectedSectionsSchema(memorySqlite);
+  await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
   ensureMemoryV3PoolsSchema(memorySqlite);
   // Minimal `messages` shape — metadata persistence, the prune valve's
   // v3-ownership scan, and the restart rehydration read only these columns.
@@ -1174,7 +1174,7 @@ beforeAll(async () => {
   // The injector gates on `memory.v3.live` (read via real `getConfig()`),
   // which defaults false — seed it true so the live path runs.
   setConfig("memory", { v3: { live: true } });
-  testDb = makeDb();
+  testDb = await makeDb();
   providerStub = makeProviderStub();
   resetMemoryV3InjectorStateForTests();
   records.length = 0;

@@ -149,7 +149,7 @@ const { memoryEmbeddings, memoryJobs } =
 const { claimMemoryJobs, enqueueMemoryJob } =
   await import("../../../../../persistence/jobs-store.js");
 type MemoryJobMod = typeof import("../../../../../persistence/jobs-store.js");
-type MemoryJob = ReturnType<MemoryJobMod["claimMemoryJobs"]>[number];
+type MemoryJob = Awaited<ReturnType<MemoryJobMod["claimMemoryJobs"]>>[number];
 const { embedConceptPageJob, enqueueEmbedConceptPageJob } =
   await import("../embed-concept-page.js");
 const { writePage } = await import("../../substrate/page-store.js");
@@ -519,11 +519,11 @@ describe("embedConceptPageJob — Qdrant breaker integration", () => {
 });
 
 describe("enqueueEmbedConceptPageJob", () => {
-  test("enqueues a pending embed_concept_page job with the slug payload", () => {
+  test("enqueues a pending embed_concept_page job with the slug payload", async () => {
     const id = enqueueEmbedConceptPageJob({ slug: "alice-prefers-vs-code" });
     expect(id).toBeTruthy();
 
-    const claimed = claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
+    const claimed = await claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
     expect(claimed).toHaveLength(1);
     const [job] = claimed;
     expect(job.type).toBe("embed_concept_page");
@@ -539,7 +539,7 @@ describe("enqueueEmbedConceptPageJob", () => {
 
     enqueueEmbedConceptPageJob({ slug: "round-trip-slug" });
 
-    const claimed = claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
+    const claimed = await claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
     expect(claimed).toHaveLength(1);
     const [job] = claimed;
     expect(job.type).toBe("embed_concept_page");
@@ -549,7 +549,7 @@ describe("enqueueEmbedConceptPageJob", () => {
     expect(upsertCalls[0].slug).toBe("round-trip-slug");
   });
 
-  test("inserted job row carries the right type and slug payload", () => {
+  test("inserted job row carries the right type and slug payload", async () => {
     const id = enqueueEmbedConceptPageJob({ slug: "row-check" });
 
     const row = getMemoryDb()!
@@ -562,7 +562,7 @@ describe("enqueueEmbedConceptPageJob", () => {
     expect(JSON.parse(row!.payload)).toEqual({ slug: "row-check" });
   });
 
-  test("coalesces with an existing pending job for the same slug", () => {
+  test("coalesces with an existing pending job for the same slug", async () => {
     const firstId = enqueueEmbedConceptPageJob({ slug: "dup-slug" });
     const secondId = enqueueEmbedConceptPageJob({ slug: "dup-slug" });
 
@@ -575,7 +575,7 @@ describe("enqueueEmbedConceptPageJob", () => {
     expect(rows).toHaveLength(1);
   });
 
-  test("different slugs do not coalesce", () => {
+  test("different slugs do not coalesce", async () => {
     enqueueEmbedConceptPageJob({ slug: "slug-a" });
     enqueueEmbedConceptPageJob({ slug: "slug-b" });
 
@@ -589,7 +589,7 @@ describe("enqueueEmbedConceptPageJob", () => {
     expect(slugs).toEqual(["slug-a", "slug-b"]);
   });
 
-  test("a coalesced enqueue keeps the pending row's runAfter (backoff preserved)", () => {
+  test("a coalesced enqueue keeps the pending row's runAfter (backoff preserved)", async () => {
     // Seed a pending row deferred into the future — the shape a
     // breaker-deferred or retry-backed-off row has. A coalescing enqueue
     // must not pull it earlier.
@@ -611,11 +611,11 @@ describe("enqueueEmbedConceptPageJob", () => {
     expect(row!.runAfter).toBe(futureRunAfter);
   });
 
-  test("a running job for the slug does not suppress a fresh enqueue", () => {
+  test("a running job for the slug does not suppress a fresh enqueue", async () => {
     // A running job may have already read the page from disk, so a write
     // landing after it started must still get its own pending row.
     const firstId = enqueueEmbedConceptPageJob({ slug: "in-flight" });
-    const claimed = claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
+    const claimed = await claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
     expect(claimed.map((j) => j.id)).toEqual([firstId]);
 
     const secondId = enqueueEmbedConceptPageJob({ slug: "in-flight" });

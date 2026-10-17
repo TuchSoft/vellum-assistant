@@ -75,7 +75,7 @@ import { handleListMessages } from "../runtime/routes/conversation-routes.js";
 
 await initializeDb();
 
-function resetTables(): void {
+async function resetTables(): Promise<void> {
   const db = getDb();
   db.delete(channelInboundEvents).run();
   db.delete(externalConversationBindings).run();
@@ -91,7 +91,7 @@ function resetTables(): void {
   getMemoryDb()!.delete(memoryJobs).run();
   // The plugin creates this table itself (init hook, or a store's first use);
   // the reset runs before either, so stand it up here.
-  ensureMemoryV3InjectedSectionsSchema(getMemorySqlite()!);
+  await ensureMemoryV3InjectedSectionsSchema(getMemorySqlite()!);
   getMemorySqlite()!.exec("DELETE FROM memory_v3_injected_sections");
   db.run("DELETE FROM message_attachments");
   db.run("DELETE FROM attachments");
@@ -104,8 +104,8 @@ function parseMetadata(metadata: string | null): unknown {
 }
 
 describe("forkConversation", () => {
-  beforeEach(() => {
-    resetTables();
+  beforeEach(async () => {
+    await resetTables();
   });
 
   test("forks a full transcript with copied history and lineage", async () => {
@@ -1748,8 +1748,8 @@ describe("forkConversation", () => {
 });
 
 describe("forkConversation + memory_retrospective_state", () => {
-  beforeEach(() => {
-    resetTables();
+  beforeEach(async () => {
+    await resetTables();
   });
 
   test("does not seed state when the source has none", async () => {
@@ -2074,8 +2074,8 @@ describe("forkConversation + memory_retrospective_state", () => {
 });
 
 describe("forkConversation with unfinalized rows", () => {
-  beforeEach(() => {
-    resetTables();
+  beforeEach(async () => {
+    await resetTables();
   });
 
   test("skips unfinalized rows and anchors the fork at the last finalized message", async () => {

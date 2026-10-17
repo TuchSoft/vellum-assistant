@@ -741,7 +741,9 @@ async function handleUpdateMemoryItem(
  * repeated creates. An enqueue failure never fails the create: the fact is
  * already safe in the buffer and surfaces as a pending graph node.
  */
-function maybeEnqueueConsolidationForCreate(config: AssistantConfig): void {
+async function maybeEnqueueConsolidationForCreate(
+  config: AssistantConfig,
+): Promise<void> {
   try {
     // `usesConceptPageMemory` already covers the memory-off case (an explicit
     // `memory.enabled === false` makes it false), so a second
@@ -757,7 +759,7 @@ function maybeEnqueueConsolidationForCreate(config: AssistantConfig): void {
       60 *
       60 *
       1000;
-    if (consolidationBackoffRemainingMs(intervalMs, Date.now()) > 0) {
+    if ((await consolidationBackoffRemainingMs(intervalMs, Date.now())) > 0) {
       return;
     }
     enqueueMemoryJob("memory_v2_consolidate", {

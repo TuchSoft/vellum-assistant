@@ -168,11 +168,11 @@ export function deleteWatcher(id: string): boolean {
  * Atomically claim watchers that are due for polling. Sets their status
  * to 'polling' using optimistic locking on the current nextPollAt.
  */
-export function claimDueWatchers(now: number): Watcher[] {
+export async function claimDueWatchers(now: number): Promise<Watcher[]> {
   // Drain gate: while a quiesce lease is active, claim nothing — a watcher
   // poll runs provider requests that create no row the drain snapshot can
   // see, so it must not start at all. Fail-open via the lease read.
-  if (isLifecycleQuiesced()) {
+  if (await isLifecycleQuiesced()) {
     return [];
   }
 

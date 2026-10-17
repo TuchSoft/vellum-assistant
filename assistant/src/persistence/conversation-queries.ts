@@ -1056,7 +1056,7 @@ export async function searchConversations(
   const maxMsgsPerConv = opts?.maxMessagesPerConversation ?? 3;
 
   const hasTokens = hasLexicalTokens(trimmed);
-  const contentSearchAvailable = isLexicalBackfillComplete();
+  const contentSearchAvailable = await isLexicalBackfillComplete();
 
   // LIKE pattern for title matching (message-content indexes don't cover titles).
   const titlePattern = likeContainsPattern(query);

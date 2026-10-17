@@ -236,14 +236,12 @@ export function startMemoryJobsWorkerLoop(): MemoryJobsWorker {
   // touched the DB), so migrations are settled. Best-effort: on failure the
   // throttle stays at 0 and jobs fire on the first tick (the pre-persistence
   // behavior), which is a safe degradation.
-  try {
-    seedCleanupScheduleFromCheckpoints();
-  } catch (err) {
+  void seedCleanupScheduleFromCheckpoints().catch((err) =>
     log.warn(
       { err },
       "Failed to seed cleanup schedule from checkpoints; jobs will fire on the first tick",
-    );
-  }
+    ),
+  );
 
   // After running-job recovery (so legitimate in-flight retries aren't
   // swept), clean up orphan memory-retrospective background conversations
@@ -396,7 +394,7 @@ export async function runMemoryJobsOnce(
   // embed lane inside `claimMemoryJobs`. With memory disabled, the slow and
   // embed lanes get no budget and the fast lane is restricted to the
   // message-lexical types (they ride the fast lane).
-  const claimed = claimMemoryJobs(
+  const claimed = await claimMemoryJobs(
     {
       slowLlm: memoryEnabled ? cfgSlow : 0,
       fast: cfgFast,
@@ -407,10 +405,10 @@ export async function runMemoryJobsOnce(
 
   if (claimed.length === 0) {
     if (enableScheduledCleanup) {
-      maybeEnqueueScheduledCleanupJobs(config);
+      await maybeEnqueueScheduledCleanupJobs(config);
     }
-    maybeEnqueueGraphMaintenanceJobs(config);
-    maybeEnqueueRetrospectiveSweepJob(config);
+    await maybeEnqueueGraphMaintenanceJobs(config);
+    await maybeEnqueueRetrospectiveSweepJob(config);
     if (memoryEnabled) {
       await maybeRunDbMaintenance();
       await maybeRunPassiveWalCheckpoint();
@@ -477,10 +475,10 @@ export async function runMemoryJobsOnce(
   ]);
 
   if (enableScheduledCleanup) {
-    maybeEnqueueScheduledCleanupJobs(config);
+    await maybeEnqueueScheduledCleanupJobs(config);
   }
-  maybeEnqueueGraphMaintenanceJobs(config);
-  maybeEnqueueRetrospectiveSweepJob(config);
+  await maybeEnqueueGraphMaintenanceJobs(config);
+  await maybeEnqueueRetrospectiveSweepJob(config);
   await maybeRunDbMaintenance();
   await maybeRunPassiveWalCheckpoint();
   return slowProcessed + fastProcessed + embedProcessed;
@@ -771,9 +769,11 @@ const CLEANUP_ENQUEUE_CHECKPOINT_KEYS: Record<CleanupJobKind, string> = {
  * Must run after DB migrations settle — the worker startup path already
  * satisfies this (it touches the DB before calling here).
  */
-export function seedCleanupScheduleFromCheckpoints(): void {
+export async function seedCleanupScheduleFromCheckpoints(): Promise<void> {
   for (const kind of CLEANUP_JOB_KINDS) {
-    const raw = getMemoryCheckpoint(CLEANUP_ENQUEUE_CHECKPOINT_KEYS[kind]);
+    const raw = await getMemoryCheckpoint(
+      CLEANUP_ENQUEUE_CHECKPOINT_KEYS[kind],
+    );
     if (raw === null) {
       continue;
     }
@@ -791,9 +791,15 @@ export function seedCleanupScheduleFromCheckpoints(): void {
  * the next enqueue re-persists here, so the checkpoint self-heals on the tick
  * after a retention change.
  */
-function recordCleanupEnqueued(kind: CleanupJobKind, nowMs: number): void {
+async function recordCleanupEnqueued(
+  kind: CleanupJobKind,
+  nowMs: number,
+): Promise<void> {
   markScheduledCleanupEnqueued(kind, nowMs);
-  setMemoryCheckpoint(CLEANUP_ENQUEUE_CHECKPOINT_KEYS[kind], String(nowMs));
+  await setMemoryCheckpoint(
+    CLEANUP_ENQUEUE_CHECKPOINT_KEYS[kind],
+    String(nowMs),
+  );
 }
 
 /**
@@ -812,10 +818,10 @@ function recordCleanupEnqueued(kind: CleanupJobKind, nowMs: number): void {
  *
  * Returns true if at least one job was enqueued this call.
  */
-export function maybeEnqueueScheduledCleanupJobs(
+export async function maybeEnqueueScheduledCleanupJobs(
   config: AssistantConfig,
   nowMs = Date.now(),
-): boolean {
+): Promise<boolean> {
   const cleanup = config.memory.cleanup;
   if (!cleanup.enabled) {
     return false;
@@ -838,7 +844,7 @@ export function maybeEnqueueScheduledCleanupJobs(
     const jobId = enqueuePruneOldConversationsJob(
       cleanup.conversationRetentionDays,
     );
-    recordCleanupEnqueued("conversations", nowMs);
+    await recordCleanupEnqueued("conversations", nowMs);
     enqueuedAny = true;
     log.debug(
       { jobId, retentionDays: cleanup.conversationRetentionDays },
@@ -859,7 +865,7 @@ export function maybeEnqueueScheduledCleanupJobs(
     const jobId = enqueuePruneOldLlmRequestLogsJob(
       cleanup.llmRequestLogRetentionMs,
     );
-    recordCleanupEnqueued("llm_request_logs", nowMs);
+    await recordCleanupEnqueued("llm_request_logs", nowMs);
     enqueuedAny = true;
     log.debug(
       { jobId, retentionMs: cleanup.llmRequestLogRetentionMs },
@@ -876,7 +882,7 @@ export function maybeEnqueueScheduledCleanupJobs(
     const jobId = enqueuePruneOldToolInvocationsJob(
       config.auditLog.retentionDays,
     );
-    recordCleanupEnqueued("tool_invocations", nowMs);
+    await recordCleanupEnqueued("tool_invocations", nowMs);
     enqueuedAny = true;
     log.debug(
       { jobId, retentionDays: config.auditLog.retentionDays },
@@ -944,10 +950,10 @@ export const RETROSPECTIVE_SWEEP_CHECKPOINT = "retro_sweep:last_run";
  * Exported for tests; the worker calls it on every idle/drain tick. Returns
  * true if a sweep job was enqueued this call.
  */
-export function maybeEnqueueRetrospectiveSweepJob(
+export async function maybeEnqueueRetrospectiveSweepJob(
   config: AssistantConfig,
   nowMs = Date.now(),
-): boolean {
+): Promise<boolean> {
   if (!isMemoryEnabled(config)) {
     return false;
   }
@@ -956,9 +962,9 @@ export function maybeEnqueueRetrospectiveSweepJob(
     return false;
   }
 
-  const checkpoint = getMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT);
+  const checkpoint = await getMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT);
   if (checkpoint === null) {
-    setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, String(nowMs));
+    await setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, String(nowMs));
     return false;
   }
 
@@ -969,12 +975,12 @@ export function maybeEnqueueRetrospectiveSweepJob(
   }
 
   if (hasActiveJobOfType("memory_retrospective_sweep")) {
-    setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, String(nowMs));
+    await setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, String(nowMs));
     return false;
   }
 
   enqueueMemoryJob("memory_retrospective_sweep", {});
-  setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, String(nowMs));
+  await setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, String(nowMs));
   return true;
 }
 
@@ -1068,11 +1074,11 @@ export function consolidationFailureBackoffMs(
  * the create-memory route's consolidation nudge honors the same backoff as
  * the scheduler.
  */
-export function consolidationBackoffRemainingMs(
+export async function consolidationBackoffRemainingMs(
   intervalMs: number,
   nowMs: number,
-): number {
-  const state = readConsolidationFailureState();
+): Promise<number> {
+  const state = await readConsolidationFailureState();
   if (state === null) {
     return 0;
   }
@@ -1113,20 +1119,20 @@ export function consolidationBackoffRemainingMs(
  * topic tree self-heals even if the primary post-consolidation follow-up
  * enqueue is missed ({@link enqueueV3BackstopJobs}).
  */
-export function maybeEnqueueGraphMaintenanceJobs(
+export async function maybeEnqueueGraphMaintenanceJobs(
   config: AssistantConfig,
   nowMs = Date.now(),
-): void {
+): Promise<void> {
   if (!isMemoryEnabled(config)) {
     return;
   }
 
   if (usesConceptPageMemory(config.memory)) {
-    enqueueSubstrateMaintenanceJobs(config, nowMs);
+    await enqueueSubstrateMaintenanceJobs(config, nowMs);
   } else {
     // V1 — delete with v1. Dropping only the banner-marked function body below
     // would leave this call dangling: collapse the branch to the substrate arm.
-    enqueueV1MaintenanceJobs(config, nowMs);
+    await enqueueV1MaintenanceJobs(config, nowMs);
   }
 
   // v3 self-maintenance backstop. Orthogonal to the mutual exclusion above:
@@ -1135,7 +1141,7 @@ export function maybeEnqueueGraphMaintenanceJobs(
   // off. The job handler itself no-ops when v3 is off, so this guard is
   // belt-and-suspenders that also avoids a wasted enqueue.
   if (isMemoryV3Live(config)) {
-    enqueueV3BackstopJobs(nowMs);
+    await enqueueV3BackstopJobs(nowMs);
   }
 }
 
@@ -1147,10 +1153,10 @@ export function maybeEnqueueGraphMaintenanceJobs(
  * buffer-drainer, enqueued on an interval cadence plus a size-based trigger,
  * both gated by the consolidation failure backoff.
  */
-function enqueueSubstrateMaintenanceJobs(
+async function enqueueSubstrateMaintenanceJobs(
   config: AssistantConfig,
   nowMs: number,
-): void {
+): Promise<void> {
   const tuning = resolveSubstrateTuning(config.memory);
 
   // The single buffer-drainer entry, shared by the interval cadence and the
@@ -1162,12 +1168,12 @@ function enqueueSubstrateMaintenanceJobs(
   };
 
   const lastRun = parseInt(
-    getMemoryCheckpoint(consolidateEntry.key) ?? "0",
+    (await getMemoryCheckpoint(consolidateEntry.key)) ?? "0",
     10,
   );
   let enqueuedConsolidate = false;
   if (nowMs - lastRun >= consolidateEntry.intervalMs) {
-    enqueuedConsolidate = maybeEnqueueScheduledConsolidation(
+    enqueuedConsolidate = await maybeEnqueueScheduledConsolidation(
       consolidateEntry,
       nowMs,
     );
@@ -1191,7 +1197,7 @@ function enqueueSubstrateMaintenanceJobs(
     !hasActiveJobOfType(consolidateEntry.jobType)
   ) {
     if (memoryBufferLineCount() >= maxLines) {
-      const backoffRemainingMs = consolidationBackoffRemainingMs(
+      const backoffRemainingMs = await consolidationBackoffRemainingMs(
         consolidateEntry.intervalMs,
         nowMs,
       );
@@ -1205,7 +1211,7 @@ function enqueueSubstrateMaintenanceJobs(
           consolidateEntry.jobType,
           AUTOMATIC_CONSOLIDATION_JOB_PAYLOAD,
         );
-        setMemoryCheckpoint(consolidateEntry.key, String(nowMs));
+        await setMemoryCheckpoint(consolidateEntry.key, String(nowMs));
       }
     }
   }
@@ -1217,14 +1223,14 @@ function enqueueSubstrateMaintenanceJobs(
  * (with its staleness override) skips it. Returns true when the job was
  * enqueued.
  */
-function maybeEnqueueScheduledConsolidation(
+async function maybeEnqueueScheduledConsolidation(
   entry: { key: string; intervalMs: number; jobType: MemoryJobType },
   nowMs: number,
-): boolean {
+): Promise<boolean> {
   // Failure backoff: skip WITHOUT advancing the checkpoint so the enqueue
   // fires on the first tick after the window elapses instead of a full
   // interval later.
-  const backoffRemainingMs = consolidationBackoffRemainingMs(
+  const backoffRemainingMs = await consolidationBackoffRemainingMs(
     entry.intervalMs,
     nowMs,
   );
@@ -1252,12 +1258,12 @@ function maybeEnqueueScheduledConsolidation(
       log.debug(
         "Scheduled consolidation skipped: buffer under minimum line threshold",
       );
-      setMemoryCheckpoint(entry.key, String(nowMs));
+      await setMemoryCheckpoint(entry.key, String(nowMs));
       return false;
     }
   }
   enqueueMemoryJob(entry.jobType, AUTOMATIC_CONSOLIDATION_JOB_PAYLOAD);
-  setMemoryCheckpoint(entry.key, String(nowMs));
+  await setMemoryCheckpoint(entry.key, String(nowMs));
   return true;
 }
 
@@ -1269,10 +1275,10 @@ function maybeEnqueueScheduledConsolidation(
  * consolidate, pattern_scan, narrative) and the PKB filing/compaction
  * schedule.
  */
-function enqueueV1MaintenanceJobs(
+async function enqueueV1MaintenanceJobs(
   config: AssistantConfig,
   nowMs: number,
-): void {
+): Promise<void> {
   const schedule: Array<{
     key: string;
     intervalMs: number;
@@ -1300,10 +1306,10 @@ function enqueueV1MaintenanceJobs(
     },
   ];
   for (const { key, intervalMs, jobType } of schedule) {
-    const lastRun = parseInt(getMemoryCheckpoint(key) ?? "0", 10);
+    const lastRun = parseInt((await getMemoryCheckpoint(key)) ?? "0", 10);
     if (nowMs - lastRun >= intervalMs) {
       enqueueMemoryJob(jobType, {});
-      setMemoryCheckpoint(key, String(nowMs));
+      await setMemoryCheckpoint(key, String(nowMs));
     }
   }
 
@@ -1353,9 +1359,9 @@ function enqueueV1MaintenanceJobs(
     if (!enabled) {
       continue;
     }
-    const checkpoint = getMemoryCheckpoint(key);
+    const checkpoint = await getMemoryCheckpoint(key);
     if (checkpoint === null) {
-      setMemoryCheckpoint(key, String(nowMs));
+      await setMemoryCheckpoint(key, String(nowMs));
       continue;
     }
     const lastRun = parseInt(checkpoint, 10);
@@ -1363,7 +1369,7 @@ function enqueueV1MaintenanceJobs(
       continue;
     }
     if (!withinActiveHours || !hasWork()) {
-      setMemoryCheckpoint(key, String(nowMs));
+      await setMemoryCheckpoint(key, String(nowMs));
       continue;
     }
     if (
@@ -1373,7 +1379,7 @@ function enqueueV1MaintenanceJobs(
       continue;
     }
     enqueueMemoryJob(jobType, {});
-    setMemoryCheckpoint(key, String(nowMs));
+    await setMemoryCheckpoint(key, String(nowMs));
   }
 }
 
@@ -1385,14 +1391,16 @@ function enqueueV1MaintenanceJobs(
  * trigger; this interval only self-heals when that follow-up is missed
  * (failed enqueue).
  */
-function enqueueV3BackstopJobs(nowMs: number): void {
+async function enqueueV3BackstopJobs(nowMs: number): Promise<void> {
   const lastRun = parseInt(
-    getMemoryCheckpoint(GRAPH_MAINTENANCE_CHECKPOINTS.memoryV3Maintain) ?? "0",
+    (await getMemoryCheckpoint(
+      GRAPH_MAINTENANCE_CHECKPOINTS.memoryV3Maintain,
+    )) ?? "0",
     10,
   );
   if (nowMs - lastRun >= GRAPH_V3_MAINTAIN_INTERVAL_MS) {
     enqueueMemoryJob("memory_v3_maintain", {});
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       GRAPH_MAINTENANCE_CHECKPOINTS.memoryV3Maintain,
       String(nowMs),
     );

@@ -232,14 +232,14 @@ export function listEnrollments(
  * 2. For each, UPDATE with WHERE status='active' — only succeeds if not already claimed
  * 3. Check rawChanges() to confirm the lock was acquired
  */
-export function claimDueEnrollments(
+export async function claimDueEnrollments(
   now: number,
   limit = 10,
-): SequenceEnrollment[] {
+): Promise<SequenceEnrollment[]> {
   // Drain gate: while a quiesce lease is active, claim nothing — a sequence
   // step's outreach starts before any row the drain snapshot can see.
   // Fail-open via the lease read.
-  if (isLifecycleQuiesced()) {
+  if (await isLifecycleQuiesced()) {
     return [];
   }
 

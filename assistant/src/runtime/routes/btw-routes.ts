@@ -96,7 +96,7 @@ async function handleBtw({
       log.debug("Returning authored empty-state greeting");
       return streamText(pickRandom(authored));
     }
-    const cached = getCachedEmptyStateGreeting(greetingCacheScope);
+    const cached = await getCachedEmptyStateGreeting(greetingCacheScope);
     if (cached) {
       log.debug("Returning cached empty-state greeting");
       return streamText(cached);
@@ -174,7 +174,7 @@ async function handleBtw({
 
           if (isGreeting && result.text) {
             // setCachedEmptyStateGreeting is a no-op when the TTL is 0.
-            setCachedEmptyStateGreeting(result.text, greetingCacheScope);
+            await setCachedEmptyStateGreeting(result.text, greetingCacheScope);
             log.debug("Cached empty-state greeting text");
           }
 

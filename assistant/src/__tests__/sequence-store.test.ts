@@ -63,7 +63,7 @@ describe("sequence-store", () => {
   // ── Sequence CRUD ───────────────────────────────────────────────
 
   describe("createSequence", () => {
-    test("creates a sequence with correct fields", () => {
+    test("creates a sequence with correct fields", async () => {
       const seq = createSequence({
         name: "Investor outreach",
         description: "Reach out to investors",
@@ -81,7 +81,7 @@ describe("sequence-store", () => {
       expect(seq.status).toBe("active");
     });
 
-    test("defaults exitOnReply to true", () => {
+    test("defaults exitOnReply to true", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -90,7 +90,7 @@ describe("sequence-store", () => {
       expect(seq.exitOnReply).toBe(true);
     });
 
-    test("allows overriding exitOnReply", () => {
+    test("allows overriding exitOnReply", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -102,7 +102,7 @@ describe("sequence-store", () => {
   });
 
   describe("getSequence", () => {
-    test("returns sequence by id", () => {
+    test("returns sequence by id", async () => {
       const created = createSequence({
         name: "Test",
         channel: "gmail",
@@ -114,19 +114,19 @@ describe("sequence-store", () => {
       expect(fetched!.steps).toHaveLength(3);
     });
 
-    test("returns undefined for non-existent id", () => {
+    test("returns undefined for non-existent id", async () => {
       expect(getSequence("non-existent")).toBeUndefined();
     });
   });
 
   describe("listSequences", () => {
-    test("lists all sequences", () => {
+    test("lists all sequences", async () => {
       createSequence({ name: "A", channel: "gmail", steps: testSteps });
       createSequence({ name: "B", channel: "email", steps: testSteps });
       expect(listSequences()).toHaveLength(2);
     });
 
-    test("filters by status", () => {
+    test("filters by status", async () => {
       createSequence({ name: "Active", channel: "gmail", steps: testSteps });
       const paused = createSequence({
         name: "Paused",
@@ -141,7 +141,7 @@ describe("sequence-store", () => {
   });
 
   describe("updateSequence", () => {
-    test("updates name and description", () => {
+    test("updates name and description", async () => {
       const seq = createSequence({
         name: "Old",
         channel: "gmail",
@@ -155,7 +155,7 @@ describe("sequence-store", () => {
       expect(updated!.description).toBe("Updated");
     });
 
-    test("updates status", () => {
+    test("updates status", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -165,7 +165,7 @@ describe("sequence-store", () => {
       expect(updated!.status).toBe("paused");
     });
 
-    test("updates steps", () => {
+    test("updates steps", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -178,7 +178,7 @@ describe("sequence-store", () => {
   });
 
   describe("deleteSequence", () => {
-    test("deletes sequence and cancels active enrollments", () => {
+    test("deletes sequence and cancels active enrollments", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -198,7 +198,7 @@ describe("sequence-store", () => {
   // ── Enrollment CRUD ─────────────────────────────────────────────
 
   describe("enrollContact", () => {
-    test("creates enrollment with correct fields", () => {
+    test("creates enrollment with correct fields", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -221,7 +221,7 @@ describe("sequence-store", () => {
       expect(enrollment.context).toEqual({ company: "Acme Corp" });
     });
 
-    test("computes nextStepAt from first step delay", () => {
+    test("computes nextStepAt from first step delay", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -239,13 +239,13 @@ describe("sequence-store", () => {
       expect(enrollment.nextStepAt).toBeLessThanOrEqual(after + 1);
     });
 
-    test("throws for non-existent sequence", () => {
+    test("throws for non-existent sequence", async () => {
       expect(() =>
         enrollContact({ sequenceId: "fake", contactEmail: "a@test.com" }),
       ).toThrow("Sequence not found");
     });
 
-    test("throws for sequence with no steps", () => {
+    test("throws for sequence with no steps", async () => {
       const seq = createSequence({
         name: "Empty",
         channel: "gmail",
@@ -259,7 +259,7 @@ describe("sequence-store", () => {
   });
 
   describe("listEnrollments", () => {
-    test("filters by sequenceId", () => {
+    test("filters by sequenceId", async () => {
       const s1 = createSequence({
         name: "S1",
         channel: "gmail",
@@ -277,7 +277,7 @@ describe("sequence-store", () => {
       expect(listEnrollments({ sequenceId: s2.id })).toHaveLength(1);
     });
 
-    test("filters by status", () => {
+    test("filters by status", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -294,7 +294,7 @@ describe("sequence-store", () => {
       expect(listEnrollments({ status: "completed" })).toHaveLength(1);
     });
 
-    test("filters by contactEmail", () => {
+    test("filters by contactEmail", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -310,7 +310,7 @@ describe("sequence-store", () => {
   // ── Claim & Advance ─────────────────────────────────────────────
 
   describe("claimDueEnrollments", () => {
-    test("claims enrollments with nextStepAt <= now", () => {
+    test("claims enrollments with nextStepAt <= now", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -319,12 +319,12 @@ describe("sequence-store", () => {
       enrollContact({ sequenceId: seq.id, contactEmail: "a@test.com" });
 
       // The first step has delay 0, so nextStepAt is ~now
-      const claimed = claimDueEnrollments(Date.now() + 1000);
+      const claimed = await claimDueEnrollments(Date.now() + 1000);
       expect(claimed).toHaveLength(1);
       expect(claimed[0].contactEmail).toBe("a@test.com");
     });
 
-    test("does not claim enrollments not yet due", () => {
+    test("does not claim enrollments not yet due", async () => {
       const futureSteps: SequenceStep[] = [
         {
           index: 0,
@@ -342,11 +342,11 @@ describe("sequence-store", () => {
       });
       enrollContact({ sequenceId: seq.id, contactEmail: "a@test.com" });
 
-      const claimed = claimDueEnrollments(Date.now());
+      const claimed = await claimDueEnrollments(Date.now());
       expect(claimed).toHaveLength(0);
     });
 
-    test("optimistic locking prevents double-claiming", () => {
+    test("optimistic locking prevents double-claiming", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -355,14 +355,14 @@ describe("sequence-store", () => {
       enrollContact({ sequenceId: seq.id, contactEmail: "a@test.com" });
 
       const now = Date.now() + 1000;
-      const first = claimDueEnrollments(now);
-      const second = claimDueEnrollments(now);
+      const first = await claimDueEnrollments(now);
+      const second = await claimDueEnrollments(now);
 
       expect(first).toHaveLength(1);
       expect(second).toHaveLength(0);
     });
 
-    test("respects limit parameter", () => {
+    test("respects limit parameter", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -372,11 +372,11 @@ describe("sequence-store", () => {
       enrollContact({ sequenceId: seq.id, contactEmail: "b@test.com" });
       enrollContact({ sequenceId: seq.id, contactEmail: "c@test.com" });
 
-      const claimed = claimDueEnrollments(Date.now() + 1000, 2);
+      const claimed = await claimDueEnrollments(Date.now() + 1000, 2);
       expect(claimed).toHaveLength(2);
     });
 
-    test("does not claim paused enrollments", () => {
+    test("does not claim paused enrollments", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -388,13 +388,13 @@ describe("sequence-store", () => {
       });
       exitEnrollment(enrollment.id, "cancelled");
 
-      const claimed = claimDueEnrollments(Date.now() + 1000);
+      const claimed = await claimDueEnrollments(Date.now() + 1000);
       expect(claimed).toHaveLength(0);
     });
   });
 
   describe("advanceEnrollment", () => {
-    test("increments currentStep", () => {
+    test("increments currentStep", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -414,13 +414,13 @@ describe("sequence-store", () => {
       expect(advanced!.conversationId).toBe("thread-123");
     });
 
-    test("returns undefined for non-existent id", () => {
+    test("returns undefined for non-existent id", async () => {
       expect(advanceEnrollment("fake")).toBeUndefined();
     });
   });
 
   describe("exitEnrollment", () => {
-    test("sets status and clears nextStepAt", () => {
+    test("sets status and clears nextStepAt", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -462,7 +462,7 @@ describe("sequence-store", () => {
   // ── Query Helpers ───────────────────────────────────────────────
 
   describe("findActiveEnrollmentsByEmail", () => {
-    test("finds active enrollments for an email", () => {
+    test("finds active enrollments for an email", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",
@@ -479,13 +479,13 @@ describe("sequence-store", () => {
       expect(active).toHaveLength(1);
     });
 
-    test("returns empty for unknown email", () => {
+    test("returns empty for unknown email", async () => {
       expect(findActiveEnrollmentsByEmail("unknown@test.com")).toHaveLength(0);
     });
   });
 
   describe("countActiveEnrollments", () => {
-    test("counts only active enrollments for a sequence", () => {
+    test("counts only active enrollments for a sequence", async () => {
       const seq = createSequence({
         name: "Test",
         channel: "gmail",

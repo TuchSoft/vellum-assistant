@@ -156,7 +156,7 @@ export async function maybeRunDbMaintenance(nowMs = Date.now()): Promise<void> {
   const { intervalMs, quietPeriodMs } = getConfig().memory.maintenance;
 
   const lastRun = parseInt(
-    getMemoryCheckpoint(DB_MAINTENANCE_CHECKPOINT_KEY) ?? "0",
+    (await getMemoryCheckpoint(DB_MAINTENANCE_CHECKPOINT_KEY)) ?? "0",
     10,
   );
   if (nowMs - lastRun < intervalMs) {
@@ -186,7 +186,7 @@ export async function maybeRunDbMaintenance(nowMs = Date.now()): Promise<void> {
     log.error({ err }, "Database maintenance failed unexpectedly");
   }
   // Always set checkpoint — even on failure — to avoid retry-hammering every tick.
-  setMemoryCheckpoint(DB_MAINTENANCE_CHECKPOINT_KEY, String(nowMs));
+  await setMemoryCheckpoint(DB_MAINTENANCE_CHECKPOINT_KEY, String(nowMs));
 }
 
 /**
@@ -211,7 +211,7 @@ export async function maybeRunPassiveWalCheckpoint(
   nowMs = Date.now(),
 ): Promise<void> {
   const lastRun = parseInt(
-    getMemoryCheckpoint(DB_PASSIVE_CHECKPOINT_KEY) ?? "0",
+    (await getMemoryCheckpoint(DB_PASSIVE_CHECKPOINT_KEY)) ?? "0",
     10,
   );
   if (nowMs - lastRun < PASSIVE_CHECKPOINT_INTERVAL_MS) {
@@ -242,5 +242,5 @@ export async function maybeRunPassiveWalCheckpoint(
     log.warn({ err }, "Passive WAL checkpoint threw (non-fatal)");
   }
   // Always set checkpoint — even on failure — to avoid retry-hammering every tick.
-  setMemoryCheckpoint(DB_PASSIVE_CHECKPOINT_KEY, String(nowMs));
+  await setMemoryCheckpoint(DB_PASSIVE_CHECKPOINT_KEY, String(nowMs));
 }

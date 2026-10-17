@@ -75,8 +75,8 @@ let testSqlite: Database;
 // lives on the dedicated memory connection, resolved via `getMemorySqlite`,
 // stubbed to a second in-memory DB carrying the store's schema.
 let memorySqlite: Database;
-let testDb = makeDb();
-function makeDb() {
+let testDb = await makeDb();
+async function makeDb() {
   testSqlite = new Database(":memory:");
   const db = drizzle(testSqlite, { schema });
   // Minimal `messages` shape, `collectPersistedV3Sections` reads only
@@ -92,7 +92,7 @@ function makeDb() {
     )
   `);
   memorySqlite = new Database(":memory:");
-  ensureMemoryV3InjectedSectionsSchema(memorySqlite);
+  await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
   return db;
 }
 
@@ -251,10 +251,10 @@ function insertUserRowWithV3Block(
     );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   pruneMockActive = true;
   pruneConfig = null;
-  testDb = makeDb();
+  testDb = await makeDb();
 });
 
 afterAll(async () => {
@@ -271,7 +271,7 @@ describe("parseInjectedSections / filterPrunedSections", () => {
     section("page-b", "Design#1"),
   ]);
 
-  test("parses preamble and per-section pieces at the path headers, keyed by (slug, key)", () => {
+  test("parses preamble and per-section pieces at the path headers, keyed by (slug, key)", async () => {
     const parsed = parseInjectedSections(inner);
     expect(parsed.preamble).toBe(V3_INJECTION_HEADER);
     expect(parsed.sections.map((s) => [s.slug, s.key])).toEqual([
@@ -282,7 +282,7 @@ describe("parseInjectedSections / filterPrunedSections", () => {
     expect(parsed.sections[1]!.text).toBe(section("page-a", "Notes"));
   });
 
-  test("skill catalog hint is a non-section piece and leaves the read-affordance preamble intact", () => {
+  test("skill catalog hint is a non-section piece and leaves the read-affordance preamble intact", async () => {
     const mixed = renderInjectionBlockInner([
       "# Skill: telegram-setup\nSet up Telegram.",
       lead("page-a"),
@@ -298,7 +298,7 @@ describe("parseInjectedSections / filterPrunedSections", () => {
     expect(mixed).toContain("assistant plugins search <name>");
   });
 
-  test("no pruned section present → returns the SAME reference (no-op)", () => {
+  test("no pruned section present → returns the SAME reference (no-op)", async () => {
     expect(filterPrunedSections(inner, "current", refSet(["page-z", ""]))).toBe(
       inner,
     );
@@ -309,7 +309,7 @@ describe("parseInjectedSections / filterPrunedSections", () => {
     expect(filterPrunedSections(inner, "current", new Map())).toBe(inner);
   });
 
-  test("strips exactly the pruned section by header span, leaving siblings and the remainder byte-identical", () => {
+  test("strips exactly the pruned section by header span, leaving siblings and the remainder byte-identical", async () => {
     expect(
       filterPrunedSections(inner, "current", refSet(["page-a", "Notes"])),
     ).toBe(
@@ -326,7 +326,7 @@ describe("parseInjectedSections / filterPrunedSections", () => {
     );
   });
 
-  test("a `# ` line inside a section body is never a boundary", () => {
+  test("a `# ` line inside a section body is never a boundary", async () => {
     // A lead's own `# Title` line follows the path header with a single
     // newline; a heading inside a section body (a code comment, an H1 in
     // page prose) can even sit on a blank-line seam. Neither splits the
@@ -344,7 +344,7 @@ describe("parseInjectedSections / filterPrunedSections", () => {
     ).toBe(renderInjectionBlockInner([lead("page-b")]));
   });
 
-  test("all sections pruned → empty string (caller drops the block)", () => {
+  test("all sections pruned → empty string (caller drops the block)", async () => {
     expect(
       filterPrunedSections(
         inner,
@@ -354,14 +354,14 @@ describe("parseInjectedSections / filterPrunedSections", () => {
     ).toBe("");
   });
 
-  test("text with no section headers passes through unchanged", () => {
+  test("text with no section headers passes through unchanged", async () => {
     const plain = "remember: user prefers tea";
     expect(filterPrunedSections(plain, "current", refSet(["page-a", ""]))).toBe(
       plain,
     );
   });
 
-  test("a capability chunk terminates the preceding section", () => {
+  test("a capability chunk terminates the preceding section", async () => {
     const mixed = renderInjectionBlockInner([
       lead("page-a"),
       CAPABILITY_CHUNK,
@@ -386,7 +386,7 @@ describe("parseInjectedSections / filterPrunedSections", () => {
     });
   });
 
-  test("pruning a section never swallows a trailing capability chunk", () => {
+  test("pruning a section never swallows a trailing capability chunk", async () => {
     const mixed = renderInjectionBlockInner([
       lead("page-a"),
       CAPABILITY_CHUNK,
@@ -405,7 +405,7 @@ describe("parseInjectedSections / filterPrunedSections", () => {
     ).toBe(renderInjectionBlockInner([CAPABILITY_CHUNK]));
   });
 
-  test("a body line that would read as a section header is escaped at render time and never splits the section", () => {
+  test("a body line that would read as a section header is escaped at render time and never splits the section", async () => {
     const body = [
       "prose",
       "# memory/concepts/example.md",
@@ -438,7 +438,7 @@ describe("parseInjectedSections / filterPrunedSections", () => {
     expect(entry.slice(entry.indexOf("\n") + 1)).toBe(escapeInjectedBody(body));
   });
 
-  test("a legacy block (a pre-stamp row's) is filtered by card under each lead ref: a tombstoned card leaves, the rest stays byte-identical, and the block is never indexed", () => {
+  test("a legacy block (a pre-stamp row's) is filtered by card under each lead ref: a tombstoned card leaves, the rest stays byte-identical, and the block is never indexed", async () => {
     const cardA = legacyCard("page-a");
     const cardB = legacyCard("page-b");
     const legacyInner = [V3_INJECTION_HEADER, cardA, cardB].join("\n\n");
@@ -492,7 +492,7 @@ describe("parseInjectedSections / filterPrunedSections", () => {
     ).toBe(reinjected);
   });
 
-  test("a legacy block is read with its build's card grammar: an unescaped head line shaped like a page header opens a card, as it did for that build's valve", () => {
+  test("a legacy block is read with its build's card grammar: an unescaped head line shaped like a page header opens a card, as it did for that build's valve", async () => {
     const cardA = [
       injectedSectionHeader("page-a", ""),
       "# Page A",
@@ -526,7 +526,7 @@ describe("parseInjectedSections / filterPrunedSections", () => {
     ).toBe([V3_INJECTION_HEADER, cardA].join("\n\n"));
   });
 
-  test("all sections pruned keeps the preamble + capability chunks", () => {
+  test("all sections pruned keeps the preamble + capability chunks", async () => {
     const mixed = renderInjectionBlockInner([lead("page-a"), CAPABILITY_CHUNK]);
     expect(
       filterPrunedSections(
@@ -544,7 +544,7 @@ describe("newestCopyIndexes / filterResidentSections", () => {
   const oldA = renderInjectionBlockInner([lead("page-a"), lead("page-b")]);
   const newA = renderInjectionBlockInner([lead("page-a")]);
 
-  test("a section injected on two blocks is current on the later one only; the earlier copy is superseded", () => {
+  test("a section injected on two blocks is current on the later one only; the earlier copy is superseded", async () => {
     const newest = newestCopyIndexes([current(oldA), null, current(newA)]);
     expect(newest.get(sectionRefId({ slug: "page-a", key: "" }))).toBe(2);
     expect(newest.get(sectionRefId({ slug: "page-b", key: "" }))).toBe(0);
@@ -567,7 +567,7 @@ describe("newestCopyIndexes / filterResidentSections", () => {
     ).toBe("");
   });
 
-  test("a capability chunk rendered again on a later block supersedes the earlier copy under its capability slug; the earlier block's sections and its other capability stay", () => {
+  test("a capability chunk rendered again on a later block supersedes the earlier copy under its capability slug; the earlier block's sections and its other capability stay", async () => {
     const cli = "# CLI command: export\nExport a conversation.";
     const older = renderInjectionBlockInner([
       lead("page-a"),
@@ -603,7 +603,7 @@ describe("newestCopyIndexes / filterResidentSections", () => {
     ).toBe(renderInjectionBlockInner([lead("page-a"), CAPABILITY_CHUNK]));
   });
 
-  test("a section on one block only is current there (the never-pruned case is unchanged)", () => {
+  test("a section on one block only is current there (the never-pruned case is unchanged)", async () => {
     const newest = newestCopyIndexes([current(oldA)]);
     expect(filterResidentSections(oldA, "current", 0, refSet(), newest)).toBe(
       oldA,
@@ -621,7 +621,7 @@ describe("filterResidentPointerEntries", () => {
   );
   const none = new Map<string, number>();
 
-  test("returns the same reference when nothing named is pruned or superseded, or for a non-pointer block", () => {
+  test("returns the same reference when nothing named is pruned or superseded, or for a non-pointer block", async () => {
     expect(
       filterResidentPointerEntries(pointer, 3, refSet(["page-c", ""]), none),
     ).toBe(pointer);
@@ -631,7 +631,7 @@ describe("filterResidentPointerEntries", () => {
     ).toBe(notPointer);
   });
 
-  test("drops exactly the pruned sections' lines, keeping the lead line and the rest byte-identical", () => {
+  test("drops exactly the pruned sections' lines, keeping the lead line and the rest byte-identical", async () => {
     expect(
       filterResidentPointerEntries(
         pointer,
@@ -649,7 +649,7 @@ describe("filterResidentPointerEntries", () => {
     );
   });
 
-  test("drops a line whose section's newest copy sits on a later index; keeps one at or before the pointer", () => {
+  test("drops a line whose section's newest copy sits on a later index; keeps one at or before the pointer", async () => {
     const newest = new Map([
       [sectionRefId({ slug: "page-a", key: "" }), 5],
       [sectionRefId({ slug: "page-a", key: "Notes" }), 3],
@@ -671,7 +671,7 @@ describe("filterResidentPointerEntries", () => {
     );
   });
 
-  test("returns '' when every entry is pruned or superseded (the caller drops the block)", () => {
+  test("returns '' when every entry is pruned or superseded (the caller drops the block)", async () => {
     expect(
       filterResidentPointerEntries(
         pointer,
@@ -698,12 +698,12 @@ describe("filterResidentPointerEntries", () => {
 describe("planPrune", () => {
   const deps = { maxResidentBytes: 300, targetResidentBytes: 200 };
 
-  test("no-op below (or at) the cap", () => {
+  test("no-op below (or at) the cap", async () => {
     recordInjected("conv-1", [{ slug: "page-a", key: "", bytes: 300 }], 1_000);
     expect(planPrune(deps, "conv-1")).toBeNull();
   });
 
-  test("over the cap: prunes oldest-first by last selection recency down to the target", () => {
+  test("over the cap: prunes oldest-first by last selection recency down to the target", async () => {
     recordInjected(
       "conv-1",
       [
@@ -730,7 +730,7 @@ describe("planPrune", () => {
     });
   });
 
-  test("recency is per section row: two sections of one page selected on one turn both carry its stamp, and neither is evicted ahead of an older section", () => {
+  test("recency is per section row: two sections of one page selected on one turn both carry its stamp, and neither is evicted ahead of an older section", async () => {
     recordInjected(
       "conv-1",
       [
@@ -762,7 +762,7 @@ describe("planPrune", () => {
     ]);
   });
 
-  test("re-selection recency outranks injection order", () => {
+  test("re-selection recency outranks injection order", async () => {
     recordInjected(
       "conv-1",
       [{ slug: "page-old", key: "", bytes: 200 }],
@@ -781,7 +781,7 @@ describe("planPrune", () => {
     expect(plan!.sections).toEqual([{ slug: "page-new", key: "" }]);
   });
 
-  test("a row with no selection stamp ranks by injected_at", () => {
+  test("a row with no selection stamp ranks by injected_at", async () => {
     recordInjected("conv-1", [{ slug: "page-a", key: "", bytes: 200 }], 5_000);
     recordInjected("conv-1", [{ slug: "page-b", key: "", bytes: 200 }], 1_000);
     recordInjected("conv-1", [{ slug: "page-c", key: "", bytes: 200 }], 9_000);
@@ -797,7 +797,7 @@ describe("planPrune", () => {
     ]);
   });
 
-  test("no lane exemptions: the oldest section is pruned whatever page it belongs to", () => {
+  test("no lane exemptions: the oldest section is pruned whatever page it belongs to", async () => {
     recordInjected(
       "conv-1",
       [
@@ -819,7 +819,7 @@ describe("planPrune", () => {
     ]);
   });
 
-  test("zero-byte rows (capability slugs) are skipped (pruning them frees nothing)", () => {
+  test("zero-byte rows (capability slugs) are skipped (pruning them frees nothing)", async () => {
     recordInjected(
       "conv-1",
       [
@@ -834,7 +834,7 @@ describe("planPrune", () => {
     expect(plan!.sections).toEqual([{ slug: "page-b", key: "" }]);
   });
 
-  test("a truncated fork's inherited sections are candidates carrying the bytes of their inherited spans", () => {
+  test("a truncated fork's inherited sections are candidates carrying the bytes of their inherited spans", async () => {
     const entries = [lead("page-a"), section("page-a", "Notes")];
     seedEverInjectedFromBlocks(
       "conv-parent",
@@ -871,7 +871,7 @@ describe("planPrune", () => {
     });
   });
 
-  test("returns null when only zero-byte candidates remain over the cap", () => {
+  test("returns null when only zero-byte candidates remain over the cap", async () => {
     recordInjected(
       "conv-1",
       [{ slug: "skills/meet-join", key: "", bytes: 0 }],
@@ -898,7 +898,7 @@ describe("stripPrunedSectionsFromMessages", () => {
     };
   }
 
-  test("strips pruned sections from v3-owned blocks in place by header span", () => {
+  test("strips pruned sections from v3-owned blocks in place by header span", async () => {
     const message = userMessage(v3Block(wrapMemoryBlock(innerAB)), "hello");
     const messages = [message];
 
@@ -919,7 +919,7 @@ describe("stripPrunedSectionsFromMessages", () => {
     ]);
   });
 
-  test("drops a pruned section's line from pointer blocks too, removing a pointer left empty", () => {
+  test("drops a pruned section's line from pointer blocks too, removing a pointer left empty", async () => {
     const pointerAB = wrapMemoryPointerBlock(
       renderPointerInner([
         { slug: "page-a", key: "Notes" },
@@ -951,7 +951,7 @@ describe("stripPrunedSectionsFromMessages", () => {
     expect(third.content).toEqual([{ type: "text", text: "once more" }]);
   });
 
-  test("drops a pointer line written before its section's re-injection, keeps the one written after", () => {
+  test("drops a pointer line written before its section's re-injection, keeps the one written after", async () => {
     const oldBlock = renderInjectionBlockInner([
       lead("page-a"),
       lead("page-b"),
@@ -990,7 +990,7 @@ describe("stripPrunedSectionsFromMessages", () => {
     ]);
   });
 
-  test("strips a copy superseded by a re-injection later in the history, even though the section is not pruned", () => {
+  test("strips a copy superseded by a re-injection later in the history, even though the section is not pruned", async () => {
     const oldBlock = renderInjectionBlockInner([
       lead("page-a"),
       lead("page-b"),
@@ -1018,7 +1018,7 @@ describe("stripPrunedSectionsFromMessages", () => {
     ]);
   });
 
-  test("removes a block whose sections are ALL pruned (matching rehydration's skip)", () => {
+  test("removes a block whose sections are ALL pruned (matching rehydration's skip)", async () => {
     const message = userMessage(v3Block(wrapMemoryBlock(innerAB)), "hello");
 
     stripPrunedSectionsFromMessages(
@@ -1029,7 +1029,7 @@ describe("stripPrunedSectionsFromMessages", () => {
     expect(message.content).toEqual([{ type: "text", text: "hello" }]);
   });
 
-  test("leaves a block memory-v3 did not place untouched, even one byte-identical to an owned block naming a pruned page", () => {
+  test("leaves a block memory-v3 did not place untouched, even one byte-identical to an owned block naming a pruned page", async () => {
     // A pre-cutover v2 block can render the same bytes as a v3 entry (v2's
     // full-page fallback on a headingless page). Ownership is by object
     // identity, never text, so the unowned twin is never rewritten.
@@ -1054,7 +1054,7 @@ describe("stripPrunedSectionsFromMessages", () => {
     });
   });
 
-  test("a re-entry copy of a skill chunk and of a CLI command retires once a later turn's persisted copy exists; the older block's section stays", () => {
+  test("a re-entry copy of a skill chunk and of a CLI command retires once a later turn's persisted copy exists; the older block's section stays", async () => {
     const cli = "# CLI command: export\nExport a conversation.";
     const reentry = userMessage(
       v3Block(
@@ -1087,7 +1087,7 @@ describe("stripPrunedSectionsFromMessages", () => {
     });
   });
 
-  test("stripping a section from a capability-bearing v3 block keeps the capability chunk", () => {
+  test("stripping a section from a capability-bearing v3 block keeps the capability chunk", async () => {
     const mixedInner = renderInjectionBlockInner([
       lead("page-a"),
       CAPABILITY_CHUNK,
@@ -1111,7 +1111,7 @@ describe("stripPrunedSectionsFromMessages", () => {
     });
   });
 
-  test("ignores assistant messages, non-memory blocks, and unpruned v3 blocks", () => {
+  test("ignores assistant messages, non-memory blocks, and unpruned v3 blocks", async () => {
     const assistant: Message = {
       role: "assistant",
       content: [{ type: "text", text: wrapMemoryBlock(innerAB) }],
@@ -1464,7 +1464,7 @@ describe("schedulePruneValve", () => {
 });
 
 describe("legacy card rows", () => {
-  test("the schema ensure copies memory_v3_ever_injected rows in at zero bytes: dedup-only, never counted, never planned", () => {
+  test("the schema ensure copies memory_v3_ever_injected rows in at zero bytes: dedup-only, never counted, never planned", async () => {
     memorySqlite.run(/*sql*/ `
       CREATE TABLE memory_v3_ever_injected (
         conversation_id TEXT NOT NULL,
@@ -1483,9 +1483,9 @@ describe("legacy card rows", () => {
     // The one-shot copy records itself in the checkpoint ledger; this suite
     // runs on a bare memory database, so hand the ensure a map-backed one.
     const values = new Map<string, string>();
-    ensureMemoryV3InjectedSectionsSchema(memorySqlite, {
-      get: (key) => values.get(key) ?? null,
-      set: (key, value) => {
+    await ensureMemoryV3InjectedSectionsSchema(memorySqlite, {
+      get: async (key) => values.get(key) ?? null,
+      set: async (key, value) => {
         values.set(key, value);
       },
     });

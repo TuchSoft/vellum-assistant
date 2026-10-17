@@ -325,7 +325,7 @@ const LEGACY_UNREAD_HEAL_COMPLETE_KEY =
  */
 export async function healLegacyGuardianReceiptUnread(): Promise<void> {
   try {
-    if (getMemoryCheckpoint(LEGACY_UNREAD_HEAL_COMPLETE_KEY) === "1") {
+    if ((await getMemoryCheckpoint(LEGACY_UNREAD_HEAL_COMPLETE_KEY)) === "1") {
       return;
     }
   } catch (err) {
@@ -376,7 +376,7 @@ export async function healLegacyGuardianReceiptUnread(): Promise<void> {
   }
 
   try {
-    setMemoryCheckpoint(LEGACY_UNREAD_HEAL_COMPLETE_KEY, "1");
+    await setMemoryCheckpoint(LEGACY_UNREAD_HEAL_COMPLETE_KEY, "1");
   } catch (err) {
     // The heal itself landed; only the sentinel is missing, so the next
     // round repeats a pass that now has nothing to do.

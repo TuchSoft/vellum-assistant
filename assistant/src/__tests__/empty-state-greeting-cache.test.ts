@@ -47,57 +47,61 @@ afterEach(() => {
 });
 
 describe("empty-state greeting cache", () => {
-  test("returns null when the cache is empty", () => {
-    expect(getCachedEmptyStateGreeting()).toBeNull();
+  test("returns null when the cache is empty", async () => {
+    expect(await getCachedEmptyStateGreeting()).toBeNull();
   });
 
-  test("round-trips set then get within the TTL", () => {
-    setCachedEmptyStateGreeting("hey there");
-    expect(getCachedEmptyStateGreeting()).toBe("hey there");
+  test("round-trips set then get within the TTL", async () => {
+    await setCachedEmptyStateGreeting("hey there");
+    expect(await getCachedEmptyStateGreeting()).toBe("hey there");
   });
 
-  test("keeps cached greetings separate by timezone scope", () => {
-    setCachedEmptyStateGreeting("hey eastern", "America/New_York");
-    setCachedEmptyStateGreeting("hey central", "America/Chicago");
+  test("keeps cached greetings separate by timezone scope", async () => {
+    await setCachedEmptyStateGreeting("hey eastern", "America/New_York");
+    await setCachedEmptyStateGreeting("hey central", "America/Chicago");
 
-    expect(getCachedEmptyStateGreeting("America/New_York")).toBe("hey eastern");
-    expect(getCachedEmptyStateGreeting("America/Chicago")).toBe("hey central");
-    expect(getCachedEmptyStateGreeting("Europe/Skopje")).toBeNull();
+    expect(await getCachedEmptyStateGreeting("America/New_York")).toBe(
+      "hey eastern",
+    );
+    expect(await getCachedEmptyStateGreeting("America/Chicago")).toBe(
+      "hey central",
+    );
+    expect(await getCachedEmptyStateGreeting("Europe/Skopje")).toBeNull();
   });
 
-  test("returns null once the TTL is exceeded", () => {
-    setCachedEmptyStateGreeting("stale");
+  test("returns null once the TTL is exceeded", async () => {
+    await setCachedEmptyStateGreeting("stale");
     checkpointStore.set(
       TIMESTAMP_KEY,
       String(Date.now() - (4 * 60 + 1) * 60 * 1000),
     );
-    expect(getCachedEmptyStateGreeting()).toBeNull();
+    expect(await getCachedEmptyStateGreeting()).toBeNull();
   });
 
-  test("returns the cached value just within the TTL", () => {
-    setCachedEmptyStateGreeting("fresh enough");
+  test("returns the cached value just within the TTL", async () => {
+    await setCachedEmptyStateGreeting("fresh enough");
     checkpointStore.set(
       TIMESTAMP_KEY,
       String(Date.now() - (3 * 60 + 59) * 60 * 1000),
     );
-    expect(getCachedEmptyStateGreeting()).toBe("fresh enough");
+    expect(await getCachedEmptyStateGreeting()).toBe("fresh enough");
   });
 
-  test("TTL of 0 disables caching: writes are skipped and reads miss", () => {
+  test("TTL of 0 disables caching: writes are skipped and reads miss", async () => {
     setCacheTtlMs(0);
-    setCachedEmptyStateGreeting("should not persist");
+    await setCachedEmptyStateGreeting("should not persist");
     expect(checkpointStore.size).toBe(0);
-    expect(getCachedEmptyStateGreeting()).toBeNull();
+    expect(await getCachedEmptyStateGreeting()).toBeNull();
   });
 
-  test("TTL of 0 ignores a value cached while caching was enabled", () => {
-    setCachedEmptyStateGreeting("cached while on");
+  test("TTL of 0 ignores a value cached while caching was enabled", async () => {
+    await setCachedEmptyStateGreeting("cached while on");
     setCacheTtlMs(0);
-    expect(getCachedEmptyStateGreeting()).toBeNull();
+    expect(await getCachedEmptyStateGreeting()).toBeNull();
   });
 
-  test("returns null when the timestamp checkpoint is missing", () => {
+  test("returns null when the timestamp checkpoint is missing", async () => {
     checkpointStore.set("empty_state:greeting:text", "orphaned");
-    expect(getCachedEmptyStateGreeting()).toBeNull();
+    expect(await getCachedEmptyStateGreeting()).toBeNull();
   });
 });

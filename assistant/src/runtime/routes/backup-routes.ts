@@ -174,7 +174,7 @@ export async function handleBackupList(): Promise<BackupListResponse> {
 
   let nextRunAt: string | null = null;
   if (config.backup.enabled) {
-    const lastRunRaw = getMemoryCheckpoint(LAST_RUN_CHECKPOINT_KEY);
+    const lastRunRaw = await getMemoryCheckpoint(LAST_RUN_CHECKPOINT_KEY);
     if (lastRunRaw != null) {
       const lastRunMs = Number.parseInt(lastRunRaw, 10);
       if (!Number.isNaN(lastRunMs)) {
@@ -430,7 +430,7 @@ export async function handleBackupStatus(): Promise<{
   const config = getConfig();
   const backup = config.backup;
 
-  const lastRunRaw = getMemoryCheckpoint(LAST_RUN_CHECKPOINT_KEY);
+  const lastRunRaw = await getMemoryCheckpoint(LAST_RUN_CHECKPOINT_KEY);
   const lastRunMs = lastRunRaw ? Number.parseInt(lastRunRaw, 10) : NaN;
   const lastRunAt = !Number.isNaN(lastRunMs)
     ? new Date(lastRunMs).toISOString()

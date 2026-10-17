@@ -280,11 +280,10 @@ export async function runDaemon(): Promise<void> {
     const { migrationsOk } = initResult;
     dbReady = true;
     // A quiesce lease can survive a stop that happened mid-drain; clear it so
-    // a fresh boot never starts with background work paused. Placed
-    // synchronously after DB init — before any await yields to the
-    // already-listening HTTP server — so it cannot delete a lease a client
-    // arms against THIS boot.
-    clearLifecycleQuiesce();
+    // a fresh boot never starts with background work paused. Awaited here,
+    // before the rest of startup proceeds, so it lands before any client can
+    // arm a lease against THIS boot.
+    await clearLifecycleQuiesce();
     // Floor the stream seq counter above every persisted conversation
     // anchor before turns can stamp events. Anchors are getCurrentSeq()
     // snapshots already served to clients, and a crashed process can have
@@ -818,7 +817,7 @@ export async function runDaemon(): Promise<void> {
   // indexing runs off the event loop via the background job worker; see the
   // function's docstring for the guards and the deliberate exception it makes
   // to the "no work at daemon startup" rule.
-  maybeEnqueueLexicalBackfillOnUpgrade();
+  await maybeEnqueueLexicalBackfillOnUpgrade();
 
   // Spawn the resource monitor as a child of the daemon when enabled, off the
   // main event loop.

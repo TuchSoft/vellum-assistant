@@ -70,49 +70,64 @@ beforeEach(() => {
 });
 
 describe("maybeEnqueueRetrospectiveSweepJob", () => {
-  test("first tick with no checkpoint: seeds to now WITHOUT enqueuing", () => {
+  test("first tick with no checkpoint: seeds to now WITHOUT enqueuing", async () => {
     const now = Date.now();
 
-    const enqueued = maybeEnqueueRetrospectiveSweepJob(buildConfig(), now);
+    const enqueued = await maybeEnqueueRetrospectiveSweepJob(
+      buildConfig(),
+      now,
+    );
 
     expect(enqueued).toBe(false);
     expect(countSweepJobs()).toBe(0);
-    expect(getMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT)).toBe(
+    expect(await getMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT)).toBe(
       String(now),
     );
   });
 
-  test("enqueues once the interval has elapsed and advances the checkpoint", () => {
+  test("enqueues once the interval has elapsed and advances the checkpoint", async () => {
     const now = Date.now();
-    setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, staleCheckpoint(now));
+    await setMemoryCheckpoint(
+      RETROSPECTIVE_SWEEP_CHECKPOINT,
+      staleCheckpoint(now),
+    );
 
-    const enqueued = maybeEnqueueRetrospectiveSweepJob(buildConfig(), now);
+    const enqueued = await maybeEnqueueRetrospectiveSweepJob(
+      buildConfig(),
+      now,
+    );
 
     expect(enqueued).toBe(true);
     expect(countSweepJobs()).toBe(1);
-    expect(getMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT)).toBe(
+    expect(await getMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT)).toBe(
       String(now),
     );
   });
 
-  test("does not enqueue before the interval has elapsed", () => {
+  test("does not enqueue before the interval has elapsed", async () => {
     const now = Date.now();
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       RETROSPECTIVE_SWEEP_CHECKPOINT,
       String(now - SWEEP_INTERVAL_MS / 2),
     );
 
-    const enqueued = maybeEnqueueRetrospectiveSweepJob(buildConfig(), now);
+    const enqueued = await maybeEnqueueRetrospectiveSweepJob(
+      buildConfig(),
+      now,
+    );
 
     expect(enqueued).toBe(false);
     expect(countSweepJobs()).toBe(0);
   });
 
-  test("does not enqueue when memory is disabled", () => {
+  test("does not enqueue when memory is disabled", async () => {
     const now = Date.now();
-    setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, staleCheckpoint(now));
+    await setMemoryCheckpoint(
+      RETROSPECTIVE_SWEEP_CHECKPOINT,
+      staleCheckpoint(now),
+    );
 
-    const enqueued = maybeEnqueueRetrospectiveSweepJob(
+    const enqueued = await maybeEnqueueRetrospectiveSweepJob(
       buildConfig({ memoryEnabled: false }),
       now,
     );
@@ -121,12 +136,12 @@ describe("maybeEnqueueRetrospectiveSweepJob", () => {
     expect(countSweepJobs()).toBe(0);
   });
 
-  test("does not enqueue when retrospectives are disabled, and leaves the checkpoint alone", () => {
+  test("does not enqueue when retrospectives are disabled, and leaves the checkpoint alone", async () => {
     const now = Date.now();
     const stale = staleCheckpoint(now);
-    setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, stale);
+    await setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, stale);
 
-    const enqueued = maybeEnqueueRetrospectiveSweepJob(
+    const enqueued = await maybeEnqueueRetrospectiveSweepJob(
       buildConfig({ retrospectiveEnabled: false }),
       now,
     );
@@ -135,23 +150,33 @@ describe("maybeEnqueueRetrospectiveSweepJob", () => {
     expect(countSweepJobs()).toBe(0);
     // Checkpoint untouched, so re-enabling sweeps on the next tick rather
     // than waiting out another full interval.
-    expect(getMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT)).toBe(stale);
+    expect(await getMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT)).toBe(
+      stale,
+    );
 
-    expect(maybeEnqueueRetrospectiveSweepJob(buildConfig(), now)).toBe(true);
+    expect(await maybeEnqueueRetrospectiveSweepJob(buildConfig(), now)).toBe(
+      true,
+    );
     expect(countSweepJobs()).toBe(1);
   });
 
-  test("does not stack a second sweep while one is still in flight, but advances the checkpoint", () => {
+  test("does not stack a second sweep while one is still in flight, but advances the checkpoint", async () => {
     const now = Date.now();
     // A prior sweep is already pending.
     enqueueMemoryJob("memory_retrospective_sweep", {});
-    setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, staleCheckpoint(now));
+    await setMemoryCheckpoint(
+      RETROSPECTIVE_SWEEP_CHECKPOINT,
+      staleCheckpoint(now),
+    );
 
-    const enqueued = maybeEnqueueRetrospectiveSweepJob(buildConfig(), now);
+    const enqueued = await maybeEnqueueRetrospectiveSweepJob(
+      buildConfig(),
+      now,
+    );
 
     expect(enqueued).toBe(false);
     expect(countSweepJobs()).toBe(1); // no second copy
-    expect(getMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT)).toBe(
+    expect(await getMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT)).toBe(
       String(now),
     );
   });

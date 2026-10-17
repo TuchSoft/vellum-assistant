@@ -123,7 +123,7 @@ describe("enqueuePkbIndexJob", () => {
     db.delete(memoryJobs).run();
   });
 
-  test("does not enqueue when memory v2 is enabled", () => {
+  test("does not enqueue when memory v2 is enabled", async () => {
     v2Enabled = true;
 
     const id = enqueuePkbIndexJob({
@@ -132,19 +132,19 @@ describe("enqueuePkbIndexJob", () => {
     });
 
     expect(id).toBe("");
-    expect(claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 })).toHaveLength(
-      0,
-    );
+    expect(
+      await claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 }),
+    ).toHaveLength(0);
   });
 
-  test("enqueues a pending embed_pkb_file job with payload", () => {
+  test("enqueues a pending embed_pkb_file job with payload", async () => {
     const id = enqueuePkbIndexJob({
       pkbRoot: "/pkb/root",
       absPath: "/pkb/root/note.md",
     });
     expect(id).toBeTruthy();
 
-    const claimed = claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
+    const claimed = await claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
     expect(claimed).toHaveLength(1);
     const [job] = claimed;
     const expectedType: MemoryJobType = "embed_pkb_file";
@@ -161,7 +161,7 @@ describe("enqueuePkbIndexJob", () => {
       absPath: "/pkb/root/note.md",
     });
 
-    const claimed = claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
+    const claimed = await claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
     expect(claimed).toHaveLength(1);
     const [job] = claimed;
     expect(job.type).toBe("embed_pkb_file");

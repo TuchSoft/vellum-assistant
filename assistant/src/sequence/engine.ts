@@ -34,7 +34,7 @@ const STEP_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes per step
  */
 export async function runSequencesOnce(): Promise<number> {
   const now = Date.now();
-  const claimed = claimDueEnrollments(now, BATCH_SIZE);
+  const claimed = await claimDueEnrollments(now, BATCH_SIZE);
   if (claimed.length === 0) {
     return 0;
   }

@@ -276,7 +276,7 @@ export async function orchestrateOAuthConnect(
               },
               "Deferred OAuth2 flow completed — tokens stored",
             );
-            invalidateAssistantSuggestedPromptsCache();
+            await invalidateAssistantSuggestedPromptsCache();
             void emitPostConnectNudge(options.service);
             options.onDeferredComplete?.({
               success: true,
@@ -403,7 +403,7 @@ export async function orchestrateOAuthConnect(
       "orchestrateOAuthConnect: tokens stored, connect complete",
     );
 
-    invalidateAssistantSuggestedPromptsCache();
+    await invalidateAssistantSuggestedPromptsCache();
     void emitPostConnectNudge(options.service);
 
     return {

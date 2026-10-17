@@ -269,7 +269,7 @@ export async function indexMessageNow(
         // V1 — delete with v1. Dropping only the banner-marked function body
         // below would leave this call dangling: collapse the branch to the
         // substrate arm.
-        enqueueV1IndexTriggers(
+        await enqueueV1IndexTriggers(
           input.conversationId,
           isAutoAnalysisSource,
           batchSize,
@@ -374,22 +374,22 @@ export async function indexMessageNow(
  * compress the whole conversation and build for auto-analysis conversations
  * too.
  */
-function enqueueV1IndexTriggers(
+async function enqueueV1IndexTriggers(
   conversationId: string,
   isAutoAnalysisSource: boolean,
   batchSize: number,
   idleTimeoutMs: number,
-): void {
+): Promise<void> {
   if (!isAutoAnalysisSource) {
     const graphPendingKey = `graph_extract:${conversationId}:pending_count`;
-    const graphCurrentVal = getMemoryCheckpoint(graphPendingKey);
+    const graphCurrentVal = await getMemoryCheckpoint(graphPendingKey);
     const graphPendingCount =
       (graphCurrentVal ? parseInt(graphCurrentVal, 10) : 0) + 1;
-    setMemoryCheckpoint(graphPendingKey, String(graphPendingCount));
+    await setMemoryCheckpoint(graphPendingKey, String(graphPendingCount));
 
     const graphBatchFired = graphPendingCount >= batchSize;
     if (graphBatchFired) {
-      setMemoryCheckpoint(graphPendingKey, "0");
+      await setMemoryCheckpoint(graphPendingKey, "0");
     }
 
     // Single pending `graph_extract` row per conversation. If the

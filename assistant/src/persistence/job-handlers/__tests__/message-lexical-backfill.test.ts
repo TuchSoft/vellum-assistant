@@ -219,8 +219,8 @@ describe("backfillLexicalIndexJob", () => {
     getDb().delete(messages).run();
     getDb().delete(conversations).run();
     getMemoryDb()!.delete(memoryJobs).run();
-    resetMessageCursorCheckpoint(CHECKPOINT_KEY, CHECKPOINT_ID_KEY);
-    deleteMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY);
+    await resetMessageCursorCheckpoint(CHECKPOINT_KEY, CHECKPOINT_ID_KEY);
+    await deleteMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY);
   }, 30_000);
 
   test("indexes a batch of messages and advances the checkpoint", async () => {
@@ -251,7 +251,7 @@ describe("backfillLexicalIndexJob", () => {
     expect(batch[0].createdAt).toBe(1_000);
 
     // Cursor advanced to the last message in the batch.
-    const cursor = readMessageCursorCheckpoint(
+    const cursor = await readMessageCursorCheckpoint(
       CHECKPOINT_KEY,
       CHECKPOINT_ID_KEY,
     );
@@ -259,7 +259,7 @@ describe("backfillLexicalIndexJob", () => {
 
     // A short batch does not re-enqueue, and marks the backfill complete.
     expect(pendingBackfillJobCount()).toBe(0);
-    expect(isLexicalBackfillComplete()).toBe(true);
+    expect(await isLexicalBackfillComplete()).toBe(true);
   });
 
   test("resumes from the persisted cursor, skipping already-indexed rows", async () => {
@@ -278,7 +278,7 @@ describe("backfillLexicalIndexJob", () => {
     });
 
     // Pretend the first message was already indexed by a prior invocation.
-    writeMessageCursorCheckpoint(CHECKPOINT_KEY, CHECKPOINT_ID_KEY, {
+    await writeMessageCursorCheckpoint(CHECKPOINT_KEY, CHECKPOINT_ID_KEY, {
       createdAt: 1_000,
       messageId: "msg-old",
     });
@@ -309,7 +309,7 @@ describe("backfillLexicalIndexJob", () => {
     expect(pendingBackfillJobCount()).toBe(1);
     // A full batch means more rows may remain, so the backfill is NOT yet
     // complete — the completion marker must stay unset until a short batch.
-    expect(isLexicalBackfillComplete()).toBe(false);
+    expect(await isLexicalBackfillComplete()).toBe(false);
   });
 
   test("does nothing (no upsert, no re-enqueue) when there are no messages, and marks complete", async () => {
@@ -318,7 +318,7 @@ describe("backfillLexicalIndexJob", () => {
     expect(pendingBackfillJobCount()).toBe(0);
     // An empty batch is a drained backfill (an already-empty or fully-indexed
     // table) — the completion marker is written.
-    expect(isLexicalBackfillComplete()).toBe(true);
+    expect(await isLexicalBackfillComplete()).toBe(true);
   });
 
   test("force resets the cursor and re-indexes from the beginning", async () => {
@@ -332,11 +332,11 @@ describe("backfillLexicalIndexJob", () => {
 
     // A stale cursor past every row would normally skip everything, and a prior
     // run had already marked the backfill complete.
-    writeMessageCursorCheckpoint(CHECKPOINT_KEY, CHECKPOINT_ID_KEY, {
+    await writeMessageCursorCheckpoint(CHECKPOINT_KEY, CHECKPOINT_ID_KEY, {
       createdAt: 9_999,
       messageId: "msg-zzz",
     });
-    setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
+    await setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
 
     await backfillLexicalIndexJob(makeJob({ force: true }), TEST_CONFIG);
 
@@ -345,7 +345,7 @@ describe("backfillLexicalIndexJob", () => {
     expect(upsertBatchCalls[0].map((p) => p.messageId)).toEqual(["msg-x"]);
 
     // Cursor now points at the last re-indexed message, not the stale value.
-    const cursor = readMessageCursorCheckpoint(
+    const cursor = await readMessageCursorCheckpoint(
       CHECKPOINT_KEY,
       CHECKPOINT_ID_KEY,
     );
@@ -353,7 +353,7 @@ describe("backfillLexicalIndexJob", () => {
 
     // force cleared the completion marker; the short re-index batch then drained
     // and re-marked it complete.
-    expect(isLexicalBackfillComplete()).toBe(true);
+    expect(await isLexicalBackfillComplete()).toBe(true);
   });
 
   test("force clears the completion marker even when the re-run does not drain in one batch", async () => {
@@ -368,14 +368,14 @@ describe("backfillLexicalIndexJob", () => {
         createdAt: 1_000 + i,
       });
     }
-    setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
+    await setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
 
     await backfillLexicalIndexJob(makeJob({ force: true }), TEST_CONFIG);
 
     expect(upsertBatchCalls[0]).toHaveLength(200);
     expect(pendingBackfillJobCount()).toBe(1);
     // Marker was cleared by force and not re-set (batch was full → more remain).
-    expect(isLexicalBackfillComplete()).toBe(false);
+    expect(await isLexicalBackfillComplete()).toBe(false);
   });
 
   test("lazily initializes the index when not yet initialized (worker process)", async () => {
@@ -403,8 +403,8 @@ describe("backfillLexicalIndexJob", () => {
   // memoryEnabled = true — so each test starts from a fresh, memory-enabled,
   // never-backfilled instance.
   describe("maybeEnqueueLexicalBackfillOnUpgrade", () => {
-    test("enqueues exactly one backfill job when memory is enabled and the checkpoint is unset", () => {
-      maybeEnqueueLexicalBackfillOnUpgrade();
+    test("enqueues exactly one backfill job when memory is enabled and the checkpoint is unset", async () => {
+      await maybeEnqueueLexicalBackfillOnUpgrade();
 
       const rows = getMemoryDb()!
         .select({ type: memoryJobs.type })
@@ -414,10 +414,10 @@ describe("backfillLexicalIndexJob", () => {
       expect(rows[0].type).toBe("backfill_lexical_index");
     });
 
-    test("does NOT enqueue when the completion checkpoint is already set", () => {
-      setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
+    test("does NOT enqueue when the completion checkpoint is already set", async () => {
+      await setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
 
-      maybeEnqueueLexicalBackfillOnUpgrade();
+      await maybeEnqueueLexicalBackfillOnUpgrade();
 
       expect(pendingBackfillJobCount()).toBe(0);
     });
@@ -425,31 +425,31 @@ describe("backfillLexicalIndexJob", () => {
     // Message-content search is host infrastructure: the backfill enqueues
     // regardless of the memory feature's or memory plugin's state (the job
     // worker drains the lexical types even while memory is disabled).
-    test("enqueues even when memory is disabled", () => {
+    test("enqueues even when memory is disabled", async () => {
       setMemoryEnabled(false);
 
-      maybeEnqueueLexicalBackfillOnUpgrade();
+      await maybeEnqueueLexicalBackfillOnUpgrade();
 
       expect(pendingBackfillJobCount()).toBe(1);
     });
 
-    test("enqueues even when the memory plugin is disabled", () => {
+    test("enqueues even when the memory plugin is disabled", async () => {
       setMemoryEnabled(true);
       setMemoryPluginDisabled(true);
 
-      maybeEnqueueLexicalBackfillOnUpgrade();
+      await maybeEnqueueLexicalBackfillOnUpgrade();
 
       expect(pendingBackfillJobCount()).toBe(1);
     });
 
-    test("does NOT enqueue a duplicate when a backfill job is already pending", () => {
+    test("does NOT enqueue a duplicate when a backfill job is already pending", async () => {
       // First call enqueues the one-time job.
-      maybeEnqueueLexicalBackfillOnUpgrade();
+      await maybeEnqueueLexicalBackfillOnUpgrade();
       expect(pendingBackfillJobCount()).toBe(1);
 
       // A second call (e.g. a restart mid-backfill) must not pile on a duplicate
       // while the prior job is still pending.
-      maybeEnqueueLexicalBackfillOnUpgrade();
+      await maybeEnqueueLexicalBackfillOnUpgrade();
       expect(pendingBackfillJobCount()).toBe(1);
     });
   });
@@ -461,8 +461,8 @@ describe("backfillLexicalIndexJob", () => {
     test("force: true clears the completion marker synchronously at enqueue, before the job runs", async () => {
       // Pretend a prior backfill already fully drained on this instance, so
       // reads would be serving from the lexical index.
-      setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
-      expect(isLexicalBackfillComplete()).toBe(true);
+      await setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
+      expect(await isLexicalBackfillComplete()).toBe(true);
 
       const { jobId } = await callBackfillRoute({ force: true });
       expect(jobId).toBeTruthy();
@@ -470,7 +470,7 @@ describe("backfillLexicalIndexJob", () => {
       // The marker is cleared the instant the forced rebuild is enqueued —
       // before the worker claims the job — so reads immediately fall back to
       // FTS instead of serving from the stale/emptying lexical index.
-      expect(isLexicalBackfillComplete()).toBe(false);
+      expect(await isLexicalBackfillComplete()).toBe(false);
       // The job was enqueued with the force payload for the worker to process.
       expect(pendingBackfillJobCount()).toBe(1);
     });
@@ -478,22 +478,22 @@ describe("backfillLexicalIndexJob", () => {
     test("non-force enqueue does NOT clear the completion marker", async () => {
       // A completed instance stays on the lexical read path for a resume-style
       // (non-force) enqueue — only a forced rebuild re-arms the FTS fallback.
-      setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
-      expect(isLexicalBackfillComplete()).toBe(true);
+      await setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
+      expect(await isLexicalBackfillComplete()).toBe(true);
 
       const { jobId } = await callBackfillRoute({});
       expect(jobId).toBeTruthy();
 
-      expect(isLexicalBackfillComplete()).toBe(true);
+      expect(await isLexicalBackfillComplete()).toBe(true);
       expect(pendingBackfillJobCount()).toBe(1);
     });
 
     test("force: false is treated as non-force and leaves the marker set", async () => {
-      setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
+      await setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
 
       await callBackfillRoute({ force: false });
 
-      expect(isLexicalBackfillComplete()).toBe(true);
+      expect(await isLexicalBackfillComplete()).toBe(true);
     });
   });
 });

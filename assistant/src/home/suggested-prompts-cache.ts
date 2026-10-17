@@ -24,10 +24,10 @@ const LLM_CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const CHECKPOINT_KEY_JSON = "home:suggested_prompts:json";
 const CHECKPOINT_KEY_TIMESTAMP = "home:suggested_prompts:cached_at";
 
-export function readCachedPrompts(): SuggestedPrompt[] | null {
+export async function readCachedPrompts(): Promise<SuggestedPrompt[] | null> {
   try {
-    const json = getMemoryCheckpoint(CHECKPOINT_KEY_JSON);
-    const timestampStr = getMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
+    const json = await getMemoryCheckpoint(CHECKPOINT_KEY_JSON);
+    const timestampStr = await getMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
     if (!json || !timestampStr) {
       return null;
     }
@@ -45,10 +45,12 @@ export function readCachedPrompts(): SuggestedPrompt[] | null {
   }
 }
 
-export function writeCachedPrompts(prompts: SuggestedPrompt[]): boolean {
+export async function writeCachedPrompts(
+  prompts: SuggestedPrompt[],
+): Promise<boolean> {
   try {
-    setMemoryCheckpoint(CHECKPOINT_KEY_JSON, JSON.stringify(prompts));
-    setMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP, String(Date.now()));
+    await setMemoryCheckpoint(CHECKPOINT_KEY_JSON, JSON.stringify(prompts));
+    await setMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP, String(Date.now()));
     return true;
   } catch {
     // Cache write failure is non-fatal — the next refresh regenerates.
@@ -63,10 +65,10 @@ export function writeCachedPrompts(prompts: SuggestedPrompt[]): boolean {
  * Called from OAuth connect/disconnect paths so suggestions reflect the
  * new state within one reload instead of waiting for the TTL.
  */
-export function invalidateAssistantSuggestedPromptsCache(): void {
+export async function invalidateAssistantSuggestedPromptsCache(): Promise<void> {
   try {
-    deleteMemoryCheckpoint(CHECKPOINT_KEY_JSON);
-    deleteMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
+    await deleteMemoryCheckpoint(CHECKPOINT_KEY_JSON);
+    await deleteMemoryCheckpoint(CHECKPOINT_KEY_TIMESTAMP);
   } catch {
     // Invalidation failure is non-fatal — the TTL still bounds staleness.
   }

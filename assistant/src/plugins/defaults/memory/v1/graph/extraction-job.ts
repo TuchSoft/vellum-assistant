@@ -41,7 +41,7 @@ export async function graphExtractJob(
 
   // Read checkpoint for incremental extraction
   const checkpointKey = `graph_extract:${conversationId}:last_ts`;
-  const lastTs = getMemoryCheckpoint(checkpointKey);
+  const lastTs = await getMemoryCheckpoint(checkpointKey);
   const afterTimestamp = lastTs ? parseInt(lastTs, 10) : undefined;
 
   const activeContextNodeIds = Array.isArray(job.payload.activeContextNodeIds)
@@ -57,7 +57,10 @@ export async function graphExtractJob(
     // Update checkpoint to the newest message actually processed — using
     // Date.now() could skip messages that arrived during extraction.
     if (result.lastProcessedTimestamp) {
-      setMemoryCheckpoint(checkpointKey, String(result.lastProcessedTimestamp));
+      await setMemoryCheckpoint(
+        checkpointKey,
+        String(result.lastProcessedTimestamp),
+      );
     }
 
     log.info(

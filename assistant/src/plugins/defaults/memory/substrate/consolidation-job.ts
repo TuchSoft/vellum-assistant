@@ -213,8 +213,8 @@ export interface ConsolidationFailureState {
  * payloads read as `null` (no failures on record) — corruption self-heals on
  * the next record/clear.
  */
-export function readConsolidationFailureState(): ConsolidationFailureState | null {
-  const raw = getMemoryCheckpoint(CONSOLIDATION_FAILURE_CHECKPOINT_KEY);
+export async function readConsolidationFailureState(): Promise<ConsolidationFailureState | null> {
+  const raw = await getMemoryCheckpoint(CONSOLIDATION_FAILURE_CHECKPOINT_KEY);
   if (raw === null) {
     return null;
   }
@@ -245,18 +245,18 @@ export function readConsolidationFailureState(): ConsolidationFailureState | nul
  * the kind to this (most recent) failure's classification.
  * Best-effort: failure bookkeeping must never change the handler's outcome.
  */
-function recordConsolidationFailure(
+async function recordConsolidationFailure(
   nowMs: number,
   kind: ConsolidationFailureKind,
-): void {
+): Promise<void> {
   try {
-    const prior = readConsolidationFailureState();
+    const prior = await readConsolidationFailureState();
     const state: ConsolidationFailureState = {
       consecutiveFailures: (prior?.consecutiveFailures ?? 0) + 1,
       lastFailureAt: nowMs,
       kind,
     };
-    setMemoryCheckpoint(
+    await setMemoryCheckpoint(
       CONSOLIDATION_FAILURE_CHECKPOINT_KEY,
       JSON.stringify(state),
     );
@@ -269,9 +269,9 @@ function recordConsolidationFailure(
 }
 
 /** Clear the failure state after a progressing run. Best-effort. */
-function clearConsolidationFailureState(): void {
+async function clearConsolidationFailureState(): Promise<void> {
   try {
-    deleteMemoryCheckpoint(CONSOLIDATION_FAILURE_CHECKPOINT_KEY);
+    await deleteMemoryCheckpoint(CONSOLIDATION_FAILURE_CHECKPOINT_KEY);
   } catch (err) {
     log.warn(
       { err },
@@ -586,7 +586,7 @@ export async function memoryV2ConsolidateJob(
         },
         "consolidation run failed; follow-ups skipped",
       );
-      recordConsolidationFailure(Date.now(), failureKind);
+      await recordConsolidationFailure(Date.now(), failureKind);
       return runResult.error?.message !== undefined
         ? { kind: "run_failed", reason: runResult.error.message }
         : { kind: "run_failed" };
@@ -677,9 +677,9 @@ export async function memoryV2ConsolidateJob(
     // re-firing every worker poll; only a progressing run clears the backoff.
     if (runResult.skipReason === undefined) {
       if (noProgress) {
-        recordConsolidationFailure(Date.now(), "transient");
+        await recordConsolidationFailure(Date.now(), "transient");
       } else {
-        clearConsolidationFailureState();
+        await clearConsolidationFailureState();
       }
     }
 

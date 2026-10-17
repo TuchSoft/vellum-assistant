@@ -114,20 +114,20 @@ export const SECTION_REBUILD_PENDING_KEY =
  * a lane init's check has not completed ({@link settleSectionDenseReadHold}).
  */
 export async function ensureSectionChunkerVersion(): Promise<boolean> {
-  const recorded = getMemoryCheckpoint(SECTION_CHUNKER_VERSION_KEY);
+  const recorded = await getMemoryCheckpoint(SECTION_CHUNKER_VERSION_KEY);
   if (recorded === String(SECTION_CHUNKER_VERSION)) {
-    return getMemoryCheckpoint(SECTION_REBUILD_PENDING_KEY) !== null;
+    return (await getMemoryCheckpoint(SECTION_REBUILD_PENDING_KEY)) !== null;
   }
   const stale = await sectionStoreHoldsStaleVectors();
   if (stale) {
-    setMemoryCheckpoint(SECTION_REBUILD_PENDING_KEY, "1");
-    deleteMemoryCheckpoint(MAINTAIN_EMBED_HIGH_WATER_KEY);
+    await setMemoryCheckpoint(SECTION_REBUILD_PENDING_KEY, "1");
+    await deleteMemoryCheckpoint(MAINTAIN_EMBED_HIGH_WATER_KEY);
     log.info(
       { recorded, current: SECTION_CHUNKER_VERSION },
       "memory-v3 section chunker version changed: the next maintain pass rebuilds the section dense store from every page",
     );
   }
-  setMemoryCheckpoint(
+  await setMemoryCheckpoint(
     SECTION_CHUNKER_VERSION_KEY,
     String(SECTION_CHUNKER_VERSION),
   );
@@ -146,10 +146,10 @@ export async function ensureSectionChunkerVersion(): Promise<boolean> {
  * store can be read.
  */
 async function sectionStoreHoldsStaleVectors(): Promise<boolean> {
-  if (getMemoryCheckpoint(MAINTAIN_EMBED_HIGH_WATER_KEY) !== null) {
+  if ((await getMemoryCheckpoint(MAINTAIN_EMBED_HIGH_WATER_KEY)) !== null) {
     return true;
   }
-  if (getMemoryCheckpoint(SECTION_REBUILD_PENDING_KEY) !== null) {
+  if ((await getMemoryCheckpoint(SECTION_REBUILD_PENDING_KEY)) !== null) {
     return true;
   }
   const result = await getSectionDenseClient().scroll(SECTION_COLLECTION, {
@@ -261,7 +261,7 @@ async function applySectionChunkerVersionCheck(): Promise<boolean> {
  * ({@link settleSectionDenseReadHold}), never on the marker's absence, which
  * is exactly what the failed check left unproven.
  */
-export function sectionDenseReadsHeld(): boolean {
+export async function sectionDenseReadsHeld(): Promise<boolean> {
   if (_hold === "open") {
     return false;
   }
@@ -269,7 +269,7 @@ export function sectionDenseReadsHeld(): boolean {
     return true;
   }
   try {
-    if (getMemoryCheckpoint(SECTION_REBUILD_PENDING_KEY) !== null) {
+    if ((await getMemoryCheckpoint(SECTION_REBUILD_PENDING_KEY)) !== null) {
       return true;
     }
   } catch {
@@ -323,9 +323,11 @@ function releaseSectionDenseReadHold(): void {
  * rebuild marked pending, every capability row the store held), so the same
  * commit clears the pending marker and releases this process's read hold.
  */
-export function commitSectionEmbedHighWater(highWaterMs: number): void {
-  setMemoryCheckpoint(MAINTAIN_EMBED_HIGH_WATER_KEY, String(highWaterMs));
-  deleteMemoryCheckpoint(SECTION_REBUILD_PENDING_KEY);
+export async function commitSectionEmbedHighWater(
+  highWaterMs: number,
+): Promise<void> {
+  await setMemoryCheckpoint(MAINTAIN_EMBED_HIGH_WATER_KEY, String(highWaterMs));
+  await deleteMemoryCheckpoint(SECTION_REBUILD_PENDING_KEY);
   releaseSectionDenseReadHold();
 }
 
@@ -461,7 +463,7 @@ export async function ensureSectionCollection(
     // down its absent-key path (re-embed every page); leaving it set would strand
     // every page older than the checkpoint, invisible to the dense lane until it
     // is next edited.
-    deleteMemoryCheckpoint(MAINTAIN_EMBED_HIGH_WATER_KEY);
+    await deleteMemoryCheckpoint(MAINTAIN_EMBED_HIGH_WATER_KEY);
   }
 
   // Always ensure the `article` payload index — on EVERY path (fresh create,

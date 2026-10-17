@@ -71,9 +71,9 @@ const LEXICAL_BACKFILL_CHECKPOINT_ID_KEY = "lexical:messages:last_id";
  * unavailable at boot) is swallowed and logged so a memory hiccup never blocks
  * daemon startup, matching the surrounding startup steps.
  */
-export function maybeEnqueueLexicalBackfillOnUpgrade(): void {
+export async function maybeEnqueueLexicalBackfillOnUpgrade(): Promise<void> {
   try {
-    if (isLexicalBackfillComplete()) {
+    if (await isLexicalBackfillComplete()) {
       return;
     }
     if (hasActiveJobOfType("backfill_lexical_index")) {
@@ -114,7 +114,7 @@ export async function backfillLexicalIndexJob(
   const db = getDb();
   const force = job.payload.force === true;
   if (force) {
-    resetMessageCursorCheckpoint(
+    await resetMessageCursorCheckpoint(
       LEXICAL_BACKFILL_CHECKPOINT_KEY,
       LEXICAL_BACKFILL_CHECKPOINT_ID_KEY,
     );
@@ -123,10 +123,10 @@ export async function backfillLexicalIndexJob(
     // The route also clears this at enqueue time (so reads fall back to FTS
     // before the worker claims the job); clearing again here is idempotent and
     // keeps the forced-run semantics self-contained in the handler.
-    clearLexicalBackfillComplete();
+    await clearLexicalBackfillComplete();
   }
 
-  const cursor = readMessageCursorCheckpoint(
+  const cursor = await readMessageCursorCheckpoint(
     LEXICAL_BACKFILL_CHECKPOINT_KEY,
     LEXICAL_BACKFILL_CHECKPOINT_ID_KEY,
   );
@@ -171,7 +171,7 @@ export async function backfillLexicalIndexJob(
     await withQdrantBreaker(() => index.upsertMessagesBatch(points));
 
     const lastMessage = batch[batch.length - 1];
-    writeMessageCursorCheckpoint(
+    await writeMessageCursorCheckpoint(
       LEXICAL_BACKFILL_CHECKPOINT_KEY,
       LEXICAL_BACKFILL_CHECKPOINT_ID_KEY,
       {
@@ -192,6 +192,6 @@ export async function backfillLexicalIndexJob(
     // completion sentinel so the one-time startup auto-enqueue never schedules
     // it again on this instance. Idempotent: re-running after completion draws
     // an empty batch and simply re-sets the same marker.
-    setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
+    await setMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY, "1");
   }
 }

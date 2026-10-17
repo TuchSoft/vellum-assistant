@@ -141,7 +141,7 @@ export async function runNarrativeRefinement(
   };
 
   // Collect: all nodes with existing narrative roles + top significance nodes
-  const allNodes = queryNodes({
+  const allNodes = await queryNodes({
     fidelityNot: ["gone"],
     limit: 10000,
   });
@@ -237,7 +237,7 @@ export async function runNarrativeRefinement(
     }
 
     if (hasChange) {
-      updateNode(update.id, changes);
+      await updateNode(update.id, changes);
       result.nodesUpdated++;
     }
   }

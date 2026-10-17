@@ -183,29 +183,30 @@ const CONSOLIDATE_TOOL_SCHEMA = {
 // Partition builders
 // ---------------------------------------------------------------------------
 
-function getRecentNodes(days: number = 7): MemoryNode[] {
+async function getRecentNodes(days: number = 7): Promise<MemoryNode[]> {
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-  return queryNodes({
+  const nodes = await queryNodes({
     fidelityNot: ["gone"],
     createdAfter: cutoff,
     limit: 10000,
-  }).filter((n) => !isCapabilityNode(n));
+  });
+  return nodes.filter((n) => !isCapabilityNode(n));
 }
 
-function getTopSignificanceNodes(n: number = 50): MemoryNode[] {
-  return queryNodes({
+async function getTopSignificanceNodes(n: number = 50): Promise<MemoryNode[]> {
+  const nodes = await queryNodes({
     fidelityNot: ["gone"],
     minSignificance: 0.6,
-  })
-    .filter((n) => !isCapabilityNode(n))
-    .slice(0, n);
+  });
+  return nodes.filter((n) => !isCapabilityNode(n)).slice(0, n);
 }
 
-function getRandomSample(n: number = 30): MemoryNode[] {
-  const all = queryNodes({
+async function getRandomSample(n: number = 30): Promise<MemoryNode[]> {
+  const queried = await queryNodes({
     fidelityNot: ["gone"],
     limit: 10000,
-  }).filter((n) => !isCapabilityNode(n));
+  });
+  const all = queried.filter((n) => !isCapabilityNode(n));
   // Fisher-Yates shuffle, take first n
   for (let i = all.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -422,7 +423,7 @@ async function consolidateChunk(
     relationship: string;
   }> = [];
   for (const node of nodes) {
-    for (const edge of getEdgesForNode(node.id)) {
+    for (const edge of await getEdgesForNode(node.id)) {
       if (nodeIds.has(edge.sourceNodeId) && nodeIds.has(edge.targetNodeId)) {
         edges.push({
           sourceId: edge.sourceNodeId,
@@ -541,12 +542,12 @@ async function consolidateChunk(
           "memory database unavailable — graph consolidation cannot proceed",
         );
       }
-      mdb.transaction(() => {
+      await mdb.transaction(async () => {
         if (changes.content) {
           const cleanContent = deduplicateParagraphs(changes.content);
           const node = nodeMap.get(update.id);
           if (node && node.content !== cleanContent) {
-            recordNodeEdit({
+            await recordNodeEdit({
               nodeId: update.id,
               previousContent: node.content,
               newContent: cleanContent,
@@ -555,7 +556,7 @@ async function consolidateChunk(
           }
         }
 
-        updateNode(update.id, changes);
+        await updateNode(update.id, changes);
       });
       result.nodesUpdated++;
       // Sync in-memory state with what updateNode actually wrote to the DB
@@ -577,7 +578,7 @@ async function consolidateChunk(
       continue;
     }
     try {
-      createEdge({
+      await createEdge({
         sourceNodeId: merge.survivor_id,
         targetNodeId: merge.deleted_id,
         relationship: "supersedes",
@@ -594,15 +595,15 @@ async function consolidateChunk(
         deleted?.eventDate != null &&
         survivor.eventDate == null
       ) {
-        updateNode(merge.survivor_id, { eventDate: deleted.eventDate });
+        await updateNode(merge.survivor_id, { eventDate: deleted.eventDate });
         survivor.eventDate = deleted.eventDate;
 
         // The deleted node's triggers will be cascade-deleted when the node
         // is removed. Ensure the survivor has an event trigger for the
         // inherited eventDate (updateNode only syncs existing triggers).
-        const survivorTriggers = getTriggersForNode(merge.survivor_id);
+        const survivorTriggers = await getTriggersForNode(merge.survivor_id);
         if (!survivorTriggers.some((t) => t.type === "event")) {
-          createTrigger({
+          await createTrigger({
             nodeId: merge.survivor_id,
             type: "event",
             schedule: null,
@@ -627,7 +628,7 @@ async function consolidateChunk(
         deleted.imageRefs.length > 0 &&
         (survivor.imageRefs == null || survivor.imageRefs.length === 0)
       ) {
-        updateNode(merge.survivor_id, { imageRefs: deleted.imageRefs });
+        await updateNode(merge.survivor_id, { imageRefs: deleted.imageRefs });
         survivor.imageRefs = deleted.imageRefs;
       }
     } catch (err) {
@@ -642,7 +643,7 @@ async function consolidateChunk(
     } // safety
     try {
       log.info({ nodeId: id }, "Consolidation deleting node");
-      deleteNode(id);
+      await deleteNode(id);
       result.nodesDeleted++;
       result.deletedIds.push(id);
     } catch (err) {
@@ -680,9 +681,9 @@ export async function runConsolidation(
 
   // Define partitions
   const partitions: Array<{ name: string; nodes: MemoryNode[] }> = [
-    { name: "recent", nodes: getRecentNodes() },
-    { name: "significant", nodes: getTopSignificanceNodes() },
-    { name: "random", nodes: getRandomSample() },
+    { name: "recent", nodes: await getRecentNodes() },
+    { name: "significant", nodes: await getTopSignificanceNodes() },
+    { name: "random", nodes: await getRandomSample() },
   ];
 
   for (const partition of partitions) {

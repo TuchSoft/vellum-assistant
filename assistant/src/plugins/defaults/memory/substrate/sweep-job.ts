@@ -151,14 +151,14 @@ export async function memoryV2SweepJob(
     }
 
     // Warm both guardian-delivery cache keys (vellum + unfiltered) so
-    // resolveUserName's sync guardian-file resolution, including its
+    // resolveUserName's guardian-file resolution, including its
     // any-channel fallback, hits fresh keys instead of falling back to
     // users/default.md on this worker process's cold cache.
     await warmGuardianBindings();
 
     const systemPrompt = renderSweepPrompt({
       assistantName: getAssistantName(),
-      userName: resolveUserName(workspaceDir),
+      userName: await resolveUserName(workspaceDir),
     });
     const userText =
       `## existingBuffer\n\n${existingBuffer || "(empty)"}\n\n` +

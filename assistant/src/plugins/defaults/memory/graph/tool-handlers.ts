@@ -109,10 +109,10 @@ export interface DeleteMemoryResult {
   message: string;
 }
 
-export function handleDeleteMemory(
+export async function handleDeleteMemory(
   input: DeleteMemoryInput,
   config: AssistantConfig,
-): DeleteMemoryResult {
+): Promise<DeleteMemoryResult> {
   if (!input.content?.trim()) {
     return { success: false, message: "content is required" };
   }
@@ -126,7 +126,7 @@ export function handleDeleteMemory(
   }
 
   const search = input.content.trim().toLowerCase();
-  const nodes = queryNodes({
+  const nodes = await queryNodes({
     fidelityNot: ["gone"],
   });
 
@@ -158,7 +158,7 @@ export function handleDeleteMemory(
   }
 
   const target = candidates[0]!;
-  deleteNode(target.id);
+  await deleteNode(target.id);
   return {
     success: true,
     message: `Deleted: "${target.content.slice(0, SNIPPET_LENGTH)}"`,
@@ -179,11 +179,11 @@ export interface UpdateMemoryResult {
   message: string;
 }
 
-export function handleUpdateMemory(
+export async function handleUpdateMemory(
   input: UpdateMemoryInput,
   conversationId: string,
   config: AssistantConfig,
-): UpdateMemoryResult {
+): Promise<UpdateMemoryResult> {
   if (!input.old_content?.trim() || !input.new_content?.trim()) {
     return {
       success: false,
@@ -201,7 +201,7 @@ export function handleUpdateMemory(
 
   const search = input.old_content.trim().toLowerCase();
   const newContent = input.new_content.trim();
-  const nodes = queryNodes({
+  const nodes = await queryNodes({
     fidelityNot: ["gone"],
   });
 
@@ -246,14 +246,14 @@ export function handleUpdateMemory(
     };
   }
 
-  recordNodeEdit({
+  await recordNodeEdit({
     nodeId: target.id,
     previousContent: target.content,
     newContent,
     source: "manual",
     conversationId,
   });
-  updateNode(target.id, { content: newContent });
+  await updateNode(target.id, { content: newContent });
   enqueueMemoryJob("embed_graph_node", { nodeId: target.id });
 
   return {
@@ -292,10 +292,10 @@ export interface ListMemoryResult {
   total: number;
 }
 
-export function handleListMemory(
+export async function handleListMemory(
   input: ListMemoryInput,
   config: AssistantConfig,
-): ListMemoryResult {
+): Promise<ListMemoryResult> {
   if (!usesConceptPageMemory(config.memory)) {
     return {
       success: false,
@@ -314,7 +314,7 @@ export function handleListMemory(
   // nodes carry only middling significance and would otherwise fall outside a
   // significance-capped page. The DB still orders by significance DESC, so the
   // most relevant matches surface first after slicing.
-  const allNodes = queryNodes({
+  const allNodes = await queryNodes({
     fidelityNot: ["gone"],
     ...(search || kind ? {} : { limit }),
   });
@@ -352,7 +352,9 @@ export interface StatsMemoryResult {
   stats: GraphStats | null;
 }
 
-export function handleStatsMemory(config: AssistantConfig): StatsMemoryResult {
+export async function handleStatsMemory(
+  config: AssistantConfig,
+): Promise<StatsMemoryResult> {
   if (!usesConceptPageMemory(config.memory)) {
     return {
       success: false,
@@ -360,7 +362,7 @@ export function handleStatsMemory(config: AssistantConfig): StatsMemoryResult {
       stats: null,
     };
   }
-  const stats = computeGraphStats();
+  const stats = await computeGraphStats();
   const n = stats.total;
   const e = stats.edgeCount;
   return {

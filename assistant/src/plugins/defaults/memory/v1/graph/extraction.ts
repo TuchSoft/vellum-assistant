@@ -1182,7 +1182,7 @@ export async function runGraphExtraction(
   const candidateNodeIds = new Set(candidateNodes.map((n) => n.id));
 
   // 4. Build prompt
-  const identityContext = buildIdentityContext();
+  const identityContext = await buildIdentityContext();
 
   const activeSet = opts?.activeContextNodeIds
     ? new Set(opts.activeContextNodeIds)

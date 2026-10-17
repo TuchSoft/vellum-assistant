@@ -79,7 +79,12 @@ function upsertSkillCapabilityNode(
   try {
     const content = buildSkillContent(input);
     const sourceKey = `${SKILL_SOURCE_PREFIX}${skillId}`;
-    upsertCapabilityNode(sourceKey, content);
+    void upsertCapabilityNode(sourceKey, content).catch((err) => {
+      log.warn(
+        { err, skillId },
+        "Failed to upsert skill capability graph node",
+      );
+    });
   } catch (err) {
     log.warn({ err, skillId }, "Failed to upsert skill capability graph node");
   }
@@ -95,7 +100,12 @@ function upsertCliCapabilityNode(
   try {
     const content = `The "assistant ${commandName}" CLI command is available. ${description}.`;
     const sourceKey = `${CLI_SOURCE_PREFIX}${commandName}`;
-    upsertCapabilityNode(sourceKey, content);
+    void upsertCapabilityNode(sourceKey, content).catch((err) => {
+      log.warn(
+        { err, commandName },
+        "Failed to upsert CLI capability graph node",
+      );
+    });
   } catch (err) {
     log.warn(
       { err, commandName },
@@ -262,7 +272,10 @@ function buildSkillContent(input: SkillCapabilityInput): string {
  * those rows target the v1 Qdrant collection, and dispatch discards them
  * while concept-page memory is active.
  */
-function upsertCapabilityNode(sourceKey: string, content: string): void {
+async function upsertCapabilityNode(
+  sourceKey: string,
+  content: string,
+): Promise<void> {
   const db = memoryDbOrNull("upsertCapabilityNode");
   if (!db) {
     return;
@@ -315,7 +328,7 @@ function upsertCapabilityNode(sourceKey: string, content: string): void {
   }
 
   // Create new capability node
-  const node = createNode({
+  const node = await createNode({
     content,
     type: "procedural" as const,
     created: now,

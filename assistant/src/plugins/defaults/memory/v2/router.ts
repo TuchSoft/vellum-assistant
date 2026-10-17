@@ -395,7 +395,7 @@ async function runRouterBatch(
   } = params;
 
   // Warm both guardian-delivery cache keys (vellum + unfiltered) so
-  // resolveUserName's sync guardian-file resolution, including its
+  // resolveUserName's guardian-file resolution, including its
   // any-channel fallback, hits fresh keys instead of falling back to
   // users/default.md on a cold/TTL-expired cache. Two local-socket IPC
   // reads per batch, dwarfed by the batch's provider call.
@@ -406,7 +406,7 @@ async function runRouterBatch(
     workspaceDir,
     {
       assistantName: getAssistantName(),
-      userName: resolveUserName(workspaceDir),
+      userName: await resolveUserName(workspaceDir),
       pageIndexBlock: batchIndex.rendered,
     },
     params.routerPromptOverride ?? null,

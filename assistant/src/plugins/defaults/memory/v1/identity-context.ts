@@ -16,7 +16,7 @@ const IDENTITY_PROMPT_FILES = ["IDENTITY.md", "SOUL.md"] as const;
  * `memory-identity-context-parity.test.ts`; diverge deliberately, not by
  * accident.
  */
-export function buildIdentityContext(): string | null {
+export async function buildIdentityContext(): Promise<string | null> {
   const parts: string[] = [];
   for (const file of IDENTITY_PROMPT_FILES) {
     const content = readPromptFile(getWorkspacePromptPath(file));
@@ -31,7 +31,7 @@ export function buildIdentityContext(): string | null {
     }
     parts.push(content);
   }
-  const guardianPersona = resolveGuardianPersona();
+  const guardianPersona = await resolveGuardianPersona();
   if (guardianPersona) {
     parts.push(guardianPersona);
   }

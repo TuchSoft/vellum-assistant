@@ -117,7 +117,7 @@ export async function embedGraphNodeJob(job: MemoryJob): Promise<void> {
     return;
   }
 
-  const node = getNode(nodeId);
+  const node = await getNode(nodeId);
   if (!node) {
     return;
   }

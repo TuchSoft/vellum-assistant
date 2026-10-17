@@ -62,7 +62,9 @@ export async function searchMemorySource(
       return { evidence: [] };
     }
 
-    const nodes = getNodesByIds(searchResults.map((result) => result.nodeId));
+    const nodes = await getNodesByIds(
+      searchResults.map((result) => result.nodeId),
+    );
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
     const evidence: RecallEvidence[] = searchResults.flatMap((result) => {
       const node = nodeById.get(result.nodeId);

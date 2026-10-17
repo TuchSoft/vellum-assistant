@@ -508,12 +508,12 @@ export async function runForkBasedRetrospective(
   // fix on its own); the tool-context pin resolves the fork's execution-side
   // tool inventory under the source's client context and carries the wire
   // surface when the source has no recorded one (`sourceToolSurface` below).
-  // Warm both guardian-delivery cache keys (vellum + unfiltered) so the sync
+  // Warm both guardian-delivery cache keys (vellum + unfiltered) so the
   // slug resolution inside resolveSourceParityPins (resolveUserSlug(undefined)),
   // including its any-channel fallback, hits fresh keys instead of falling
   // back to "default" on a cold/TTL-expired cache.
   await warmGuardianBindings();
-  const { personaOverride, toolContextPin } = resolveSourceParityPins(
+  const { personaOverride, toolContextPin } = await resolveSourceParityPins(
     sourceConversation,
     newMessages,
   );
@@ -829,10 +829,10 @@ interface SourceParityPins {
  * `hasNoClient = true` with or without capabilities — so unset is parity
  * for the former and outcome-equal for the latter.
  */
-function resolveSourceParityPins(
+async function resolveSourceParityPins(
   source: Pick<ConversationRow, "id" | "originChannel" | "originInterface">,
   sliceMessages: Array<{ role: string; metadata: string | null }>,
-): SourceParityPins {
+): Promise<SourceParityPins> {
   const channel = source.originChannel;
   const channelRouted = channel != null && channel !== "vellum";
   const recovered = resolveSourceLiveInterface(source, sliceMessages);
@@ -863,7 +863,7 @@ function resolveSourceParityPins(
   const personaOverride: SystemPromptPersonaOverride = channelRouted
     ? { hasNoClient }
     : {
-        userSlug: resolveUserSlug(undefined) ?? "default",
+        userSlug: (await resolveUserSlug(undefined)) ?? "default",
         channelSlug: "vellum",
         hasNoClient,
       };
@@ -960,7 +960,7 @@ function resolveSourceLiveClientOs(
 }
 
 type PriorRetrospective = NonNullable<
-  ReturnType<typeof findMostRecentRetrospectiveFor>
+  Awaited<ReturnType<typeof findMostRecentRetrospectiveFor>>
 >;
 
 /**
@@ -975,7 +975,7 @@ async function resolvePriorRetrospective(
   sourceConversationId: string,
   rememberedLog: string[],
 ): Promise<{ prior: PriorRetrospective | null; priorRemembers: string[] }> {
-  const prior = findMostRecentRetrospectiveFor(sourceConversationId);
+  const prior = await findMostRecentRetrospectiveFor(sourceConversationId);
   return {
     prior,
     priorRemembers: await collectPriorRetrospectiveRemembers(

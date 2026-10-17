@@ -284,10 +284,7 @@ function rowToNode(row: typeof memoryGraphNodes.$inferSelect): MemoryNode {
     lastReinforced: row.lastReinforced,
     sourceConversations: JSON.parse(row.sourceConversations) as string[],
     sourceType: row.sourceType as
-      | "direct"
-      | "inferred"
-      | "observed"
-      | "told-by-other",
+      "direct" | "inferred" | "observed" | "told-by-other",
     narrativeRole: row.narrativeRole as MemoryNode["narrativeRole"],
     partOfStory: row.partOfStory,
     imageRefs: row.imageRefs ? (JSON.parse(row.imageRefs) as ImageRef[]) : null,
@@ -501,8 +498,8 @@ async function handleListMemoryItems(queryParams: Record<string, string>) {
   return { items, total, kindCounts };
 }
 
-function handleGetMemoryItem(id: string) {
-  const node = getNode(id);
+async function handleGetMemoryItem(id: string) {
+  const node = await getNode(id);
   if (!node) {
     throw new NotFoundError("Memory item not found");
   }
@@ -618,7 +615,7 @@ async function handleCreateMemoryItem(body: Record<string, unknown>) {
     imageRefs: null,
   };
 
-  const created = createNode(newNode);
+  const created = await createNode(newNode);
   if (isMemoryEnabled()) {
     enqueueMemoryJob("embed_graph_node", { nodeId: created.id });
   }
@@ -630,7 +627,7 @@ async function handleUpdateMemoryItem(
   id: string,
   body: Record<string, unknown>,
 ) {
-  const existing = getNode(id);
+  const existing = await getNode(id);
   if (!existing) {
     throw new NotFoundError("Memory item not found");
   }
@@ -716,14 +713,14 @@ async function handleUpdateMemoryItem(
     }
   }
 
-  updateNode(id, changes);
+  await updateNode(id, changes);
 
   if (contentChanged && isMemoryEnabled()) {
     enqueueMemoryJob("embed_graph_node", { nodeId: id });
   }
 
   // Fetch updated node
-  const updated = getNode(id);
+  const updated = await getNode(id);
   if (!updated) {
     throw new NotFoundError("Memory item not found after update");
   }
@@ -770,14 +767,14 @@ async function maybeEnqueueConsolidationForCreate(
   }
 }
 
-function handleDeleteMemoryItem(id: string) {
-  const existing = getNode(id);
+async function handleDeleteMemoryItem(id: string) {
+  const existing = await getNode(id);
   if (!existing) {
     throw new NotFoundError("Memory item not found");
   }
 
   // Soft-delete the node (deleteNode sets fidelity='gone' and enqueues Qdrant cleanup)
-  deleteNode(id);
+  await deleteNode(id);
 
   return null;
 }
@@ -1074,7 +1071,7 @@ export const ROUTES: RouteDefinition[] = [
       success: z.boolean(),
       message: z.string(),
     }),
-    handler: ({ body }) => {
+    handler: async ({ body }) => {
       const parsed = z.object({ content: z.string() }).safeParse(body ?? {});
       if (!parsed.success) {
         throw new BadRequestError("content (string) is required");
@@ -1103,7 +1100,7 @@ export const ROUTES: RouteDefinition[] = [
       success: z.boolean(),
       message: z.string(),
     }),
-    handler: ({ body }) => {
+    handler: async ({ body }) => {
       const parsed = z
         .object({ oldContent: z.string(), newContent: z.string() })
         .safeParse(body ?? {});

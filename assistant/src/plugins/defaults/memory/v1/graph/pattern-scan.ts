@@ -126,7 +126,7 @@ export async function runPatternScan(
 
   // Sample: take all nodes (for a graph of ~1000, this is manageable)
   // For larger graphs, we'd sample more selectively
-  const allNodes = queryNodes({
+  const allNodes = await queryNodes({
     fidelityNot: ["gone"],
     limit: 200,
   });
@@ -202,7 +202,7 @@ export async function runPatternScan(
         : ("narrative" as const);
     const sig = Math.max(0.3, Math.min(0.8, pattern.significance));
 
-    const newNode = createNode({
+    const newNode = await createNode({
       content: pattern.content,
       type,
       created: now,
@@ -234,7 +234,7 @@ export async function runPatternScan(
     // Create part-of edges from source nodes to pattern node
     for (const sourceId of validSources) {
       try {
-        createEdge({
+        await createEdge({
           sourceNodeId: sourceId,
           targetNodeId: newNode.id,
           relationship: "part-of",

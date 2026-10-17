@@ -586,7 +586,7 @@ export async function loadContextMemory(
   }
 
   // Also include top-significance nodes as a fallback
-  const topSignificance = queryNodes({
+  const topSignificance = await queryNodes({
     fidelityNot: ["gone"],
     limit: maxNodes,
   });
@@ -599,7 +599,7 @@ export async function loadContextMemory(
   // Include recent nodes (last 7 days) so recency is always represented.
   // Exclude procedural nodes (capabilities) — they have reserved slots
   // and shouldn't compete with organic memories on recency alone.
-  const recentNodes = queryNodes({
+  const recentNodes = await queryNodes({
     fidelityNot: ["gone"],
     createdAfter: nowMs - 7 * 24 * 60 * 60 * 1000,
     limit: maxNodes,
@@ -615,13 +615,13 @@ export async function loadContextMemory(
 
   // Hydrate all candidate nodes
   const allCandidateIds = [...semanticCandidateIds.keys()];
-  const candidateNodes = getNodesByIds(allCandidateIds);
+  const candidateNodes = await getNodesByIds(allCandidateIds);
   const nodeMap = new Map(candidateNodes.map((n) => [n.id, n]));
 
   // 3. Evaluate triggers
-  const temporalTriggers = getActiveTriggersByType("temporal");
-  const semanticTriggers = getActiveTriggersByType("semantic");
-  const eventTriggers = getActiveTriggersByType("event");
+  const temporalTriggers = await getActiveTriggersByType("temporal");
+  const semanticTriggers = await getActiveTriggersByType("semantic");
+  const eventTriggers = await getActiveTriggersByType("event");
 
   const triggeredTemporal = evaluateTemporalTriggers(temporalTriggers, now);
   const triggeredSemantic = queryVector
@@ -643,7 +643,7 @@ export async function loadContextMemory(
 
     // Ensure triggered nodes are in the candidate set
     if (!nodeMap.has(t.trigger.nodeId)) {
-      const node = getNodesByIds([t.trigger.nodeId])[0];
+      const node = (await getNodesByIds([t.trigger.nodeId]))[0];
       if (node) {
         nodeMap.set(node.id, node);
         semanticCandidateIds.set(node.id, 0);
@@ -655,7 +655,7 @@ export async function loadContextMemory(
   // Collect edges for all candidate nodes
   const allEdges: MemoryEdge[] = [];
   for (const id of nodeMap.keys()) {
-    allEdges.push(...getEdgesForNode(id));
+    allEdges.push(...(await getEdgesForNode(id)));
   }
 
   // Start spreading from top semantic hits + triggered nodes
@@ -674,7 +674,7 @@ export async function loadContextMemory(
     (id) => !nodeMap.has(id),
   );
   if (newNodeIds.length > 0) {
-    const newNodes = getNodesByIds(newNodeIds);
+    const newNodes = await getNodesByIds(newNodeIds);
     for (const node of newNodes) {
       nodeMap.set(node.id, node);
     }
@@ -758,7 +758,7 @@ export async function loadContextMemory(
     const distinctCount = uniqueCapabilityIds.size + untaggedCount;
     if (distinctCount < capabilityReserve) {
       const alreadySeen = new Set(capabilityEntries.map((e) => e.node.id));
-      const fallback = queryCapabilityNodes(capabilityReserve * 4);
+      const fallback = await queryCapabilityNodes(capabilityReserve * 4);
       for (const node of fallback) {
         if (alreadySeen.has(node.id)) {
           continue;
@@ -1207,7 +1207,7 @@ export async function retrieveForTurn(
   const pureSemanticHits = allCandidateIds.size;
 
   // 3. Evaluate semantic triggers
-  const semanticTriggers = getActiveTriggersByType("semantic");
+  const semanticTriggers = await getActiveTriggersByType("semantic");
   const triggeredSemantic =
     queryEmbeddings.length > 0
       ? evaluateSemanticTriggers(semanticTriggers, queryEmbeddings[0])
@@ -1251,7 +1251,7 @@ export async function retrieveForTurn(
   }
 
   // 5. Hydrate and score
-  const nodes = getNodesByIds(newCandidateIds);
+  const nodes = await getNodesByIds(newCandidateIds);
   const scored: ScoredNode[] = [];
   const capabilityCandidates: { node: MemoryNode; sim: number }[] = [];
 

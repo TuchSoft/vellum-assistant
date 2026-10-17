@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 import type { AssistantEvent } from "../api/index.js";
 
@@ -25,7 +25,9 @@ const { createSurfaceMutex, handleSurfaceAction, surfaceProxyResolver } =
 import type { Conversation } from "../daemon/conversation.js";
 import type { SurfaceType, UiSurfaceShow } from "../daemon/message-protocol.js";
 import type { UserMessageAttachment } from "../daemon/message-types/shared.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { asConversation } from "./helpers/mock-conversation.js";
+import { describePg } from "./pg-test-db.js";
 
 interface ProcessMessageCall {
   content: string;
@@ -94,32 +96,31 @@ function makeContext(sent: AssistantEvent[] = []): Conversation & {
   });
 }
 
-describe("surface action delivery to assistant", () => {
-  beforeEach(() => {
+describePg("surface action delivery to assistant", () => {
+  beforeEach(async () => {
     broadcastedMessages = [];
+    await requireMainDb().run("DELETE FROM conversations");
   });
 
   test.each([true, false])(
     "matching surface answers retain their session across cleanup (pending=%s)",
     async (hasPending) => {
-      const { initializeDb } = await import("../persistence/db-init.js");
       const { createConversation } =
         await import("../persistence/conversation-crud.js");
       const { ConversationModeSessionCoordinator } =
         await import("../daemon/conversation-mode-session.js");
       const { cleanupStandaloneSurface } =
         await import("../daemon/conversation-surfaces.js");
-      await initializeDb();
-      const conversation = createConversation();
+      const conversation = await createConversation();
       const coordinator = new ConversationModeSessionCoordinator(
         conversation.id,
       );
-      const handle = coordinator.activateSource({
+      const handle = (await coordinator.activateSource({
         sourceId: "browser-source",
         generation: 1,
         mode: "browser",
         sourceStartedAt: 100,
-      })!;
+      }))!;
       coordinator.claimTurn("turn-origin", handle, 110);
       coordinator.recordStructuralWait("turn-origin", {
         kind: "surface",
@@ -166,22 +167,20 @@ describe("surface action delivery to assistant", () => {
   test.each([false, true])(
     "queued surface answers retain handoff ownership without pinning the old turn (wait=%s)",
     async (hasRecordedWait) => {
-      const { initializeDb } = await import("../persistence/db-init.js");
       const { createConversation } =
         await import("../persistence/conversation-crud.js");
       const { ConversationModeSessionCoordinator } =
         await import("../daemon/conversation-mode-session.js");
-      await initializeDb();
-      const conversation = createConversation();
+      const conversation = await createConversation();
       const coordinator = new ConversationModeSessionCoordinator(
         conversation.id,
       );
-      const handle = coordinator.activateSource({
+      const handle = (await coordinator.activateSource({
         sourceId: "browser-source",
         generation: 1,
         mode: "browser",
         sourceStartedAt: 100,
-      })!;
+      }))!;
       coordinator.claimTurn("turn-origin", handle, 110);
       if (hasRecordedWait) {
         coordinator.recordStructuralWait("turn-origin", {
@@ -567,8 +566,7 @@ describe("surface action delivery to assistant", () => {
     expect(completeMsg).toBeDefined();
 
     const submittedData = completeMsg?.submittedData as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     // The files array with base64 blobs should be stripped from the
     // completion event — only the sanitized payload (without files) is sent.
     expect(submittedData?.files).toBeUndefined();

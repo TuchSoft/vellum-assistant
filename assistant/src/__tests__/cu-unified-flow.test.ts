@@ -350,7 +350,7 @@ describe("surfaceProxyResolver — CU tool routing", () => {
       setOverridesForTesting({ "session-groups": false });
       const ctx = setupProxy();
       ctx.currentRequestId = "turn-123";
-      const activateSource = mock(() => {
+      const activateSource = mock(async () => {
         throw new Error("disabled tracking must not activate a source");
       });
       (
@@ -360,11 +360,11 @@ describe("surfaceProxyResolver — CU tool routing", () => {
       ).computerUseModeSessions = new ComputerUseModeSessionProducer(
         {
           activateSource,
-          beginDraining: mock(() => false),
-          claimTurn: mock(() => undefined),
-          getTurnOwner: mock(() => undefined),
-          recordActivity: mock(() => false),
-          retireSource: mock(() => false),
+          beginDraining: mock(async () => false),
+          claimTurn: mock(async () => undefined),
+          getTurnOwner: mock(async () => undefined),
+          recordActivity: mock(async () => false),
+          retireSource: mock(async () => false),
         },
         isSessionGroupsEnabled,
       );

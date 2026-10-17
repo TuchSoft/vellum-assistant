@@ -60,6 +60,7 @@ import {
   updateSessionDelivery,
   updateSessionStatus,
 } from "./helpers/verification-sessions-ipc-sim.js";
+import { describePg } from "./pg-test-db.js";
 
 // The inbound stages read/write sessions via the gateway-backed IPC client;
 // delegate it to the in-memory sim so the bootstrap flow keeps running
@@ -137,7 +138,7 @@ describe("Channel verification reply templates", () => {
 // Call session mode metadata: createCallSession persists callMode
 // ---------------------------------------------------------------------------
 
-describe("Call session mode metadata", () => {
+describePg("Call session mode metadata", () => {
   // Cold DB init runs every migration; give it headroom over Bun's 5s default
   // hook timeout so a loaded CI runner doesn't trip it.
   beforeEach(async () => {
@@ -151,7 +152,7 @@ describe("Call session mode metadata", () => {
     const { getOrCreateConversation } =
       await import("../persistence/conversation-key-store.js");
 
-    const { conversationId } = getOrCreateConversation("test-conv-mode");
+    const { conversationId } = await getOrCreateConversation("test-conv-mode");
     const session = createCallSession({
       direction: "inbound",
       conversationId,
@@ -178,7 +179,7 @@ describe("Call session mode metadata", () => {
     const { getOrCreateConversation } =
       await import("../persistence/conversation-key-store.js");
 
-    const { conversationId } = getOrCreateConversation(
+    const { conversationId } = await getOrCreateConversation(
       "test-conv-mode-default",
     );
     const session = createCallSession({

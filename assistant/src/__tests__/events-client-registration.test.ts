@@ -31,7 +31,7 @@ describe("events client registration", () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "test-mac-001",
@@ -58,7 +58,7 @@ describe("events client registration", () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "test-windows-001",
@@ -86,7 +86,7 @@ describe("events client registration", () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
-    handleSubscribeAssistantEvents({ abortSignal: ac.signal }, { hub });
+    await handleSubscribeAssistantEvents({ abortSignal: ac.signal }, { hub });
 
     expect(hub.listClients()).toHaveLength(0);
 
@@ -97,7 +97,7 @@ describe("events client registration", () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         headers: { "x-vellum-interface-id": "macos" },
         abortSignal: ac.signal,
@@ -115,13 +115,14 @@ describe("events client registration", () => {
   test("throws BadRequestError when clientId is provided without interfaceId", () => {
     const hub = new AssistantEventHub();
 
-    expect(() =>
-      handleSubscribeAssistantEvents(
-        {
-          headers: { "x-vellum-client-id": "test-mac-001" },
-        },
-        { hub },
-      ),
+    expect(
+      () =>
+        await handleSubscribeAssistantEvents(
+          {
+            headers: { "x-vellum-client-id": "test-mac-001" },
+          },
+          { hub },
+        ),
     ).toThrow(BadRequestError);
     expect(hub.listClients()).toHaveLength(0);
   });
@@ -129,16 +130,17 @@ describe("events client registration", () => {
   test("throws BadRequestError when interfaceId is invalid", () => {
     const hub = new AssistantEventHub();
 
-    expect(() =>
-      handleSubscribeAssistantEvents(
-        {
-          headers: {
-            "x-vellum-client-id": "test-bad-001",
-            "x-vellum-interface-id": "not-a-valid-interface",
+    expect(
+      () =>
+        await handleSubscribeAssistantEvents(
+          {
+            headers: {
+              "x-vellum-client-id": "test-bad-001",
+              "x-vellum-interface-id": "not-a-valid-interface",
+            },
           },
-        },
-        { hub },
-      ),
+          { hub },
+        ),
     ).toThrow(BadRequestError);
     expect(hub.listClients()).toHaveLength(0);
   });
@@ -149,7 +151,7 @@ describe("events client registration", () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "test-mac-002",
@@ -180,7 +182,7 @@ describe("events client registration", () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "test-mac-003",
@@ -208,7 +210,7 @@ describe("events client registration", () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "test-mac-004",
@@ -242,7 +244,7 @@ describe("events client registration", () => {
     const hub = new AssistantEventHub({ maxSubscribers: 1 });
 
     const ac1 = new AbortController();
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "evict-me",
@@ -256,7 +258,7 @@ describe("events client registration", () => {
     expect(hub.listClients().some((c) => c.clientId === "evict-me")).toBe(true);
 
     const ac2 = new AbortController();
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "i-stay",
@@ -281,16 +283,17 @@ describe("events client registration", () => {
   test("throws ServiceUnavailableError when hub has zero capacity", () => {
     const hub = new AssistantEventHub({ maxSubscribers: 0 });
 
-    expect(() =>
-      handleSubscribeAssistantEvents(
-        {
-          headers: {
-            "x-vellum-client-id": "no-room",
-            "x-vellum-interface-id": "macos",
+    expect(
+      () =>
+        await handleSubscribeAssistantEvents(
+          {
+            headers: {
+              "x-vellum-client-id": "no-room",
+              "x-vellum-interface-id": "macos",
+            },
           },
-        },
-        { hub },
-      ),
+          { hub },
+        ),
     ).toThrow(ServiceUnavailableError);
     expect(hub.listClients()).toHaveLength(0);
   });
@@ -302,7 +305,7 @@ describe("events client registration", () => {
     const ac1 = new AbortController();
     const ac2 = new AbortController();
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "dedup-001",
@@ -316,7 +319,7 @@ describe("events client registration", () => {
     expect(hub.listClients()).toHaveLength(1);
     expect(hub.subscriberCount()).toBe(1);
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "dedup-001",
@@ -354,7 +357,7 @@ describe("events client registration", () => {
 
     expect(evicted).toBe(false);
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "evict-cb-001",
@@ -377,7 +380,7 @@ describe("events client registration", () => {
     const ac1 = new AbortController();
     const ac2 = new AbortController();
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "client-A",
@@ -388,7 +391,7 @@ describe("events client registration", () => {
       { hub },
     );
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "client-B",
@@ -411,7 +414,7 @@ describe("events client registration", () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "principal-client-001",
@@ -436,7 +439,7 @@ describe("events client registration", () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         headers: {
           "x-vellum-client-id": "principal-client-002",

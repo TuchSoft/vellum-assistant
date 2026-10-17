@@ -69,66 +69,68 @@ describe("resolveConversationLineage", () => {
     persistedReadFails = false;
   });
 
-  test("a plain conversation is its own lineage", () => {
+  test("a plain conversation is its own lineage", async () => {
     residents.set("conv-a", undefined);
 
-    expect(resolveConversationLineage("conv-a")).toEqual(["conv-a"]);
+    expect(await resolveConversationLineage("conv-a")).toEqual(["conv-a"]);
   });
 
-  test("one fork level reaches the spawner", () => {
+  test("one fork level reaches the spawner", async () => {
     residents.set("conv-child", "conv-parent");
     residents.set("conv-parent", undefined);
 
-    expect(resolveConversationLineage("conv-child")).toEqual([
+    expect(await resolveConversationLineage("conv-child")).toEqual([
       "conv-child",
       "conv-parent",
     ]);
   });
 
-  test("two fork levels are ordered nearest first", () => {
+  test("two fork levels are ordered nearest first", async () => {
     residents.set("conv-child", "conv-mid");
     residents.set("conv-mid", "conv-root");
     residents.set("conv-root", undefined);
 
-    expect(resolveConversationLineage("conv-child")).toEqual([
+    expect(await resolveConversationLineage("conv-child")).toEqual([
       "conv-child",
       "conv-mid",
       "conv-root",
     ]);
   });
 
-  test("a background subagent id reaches its user-visible parent", () => {
+  test("a background subagent id reaches its user-visible parent", async () => {
     // The live-voice duplex continuation: the seed id is registered only in
     // the subagent index, never in the eviction-managed top-level store.
     subagentResidents.set("conv-subagent", "conv-visible");
     residents.set("conv-visible", undefined);
 
-    expect(resolveConversationLineage("conv-subagent")).toEqual([
+    expect(await resolveConversationLineage("conv-subagent")).toEqual([
       "conv-subagent",
       "conv-visible",
     ]);
   });
 
-  test("nested subagents walk out of the subagent index into the store", () => {
+  test("nested subagents walk out of the subagent index into the store", async () => {
     subagentResidents.set("conv-inner", "conv-outer");
     subagentResidents.set("conv-outer", "conv-visible");
     residents.set("conv-visible", undefined);
 
-    expect(resolveConversationLineage("conv-inner")).toEqual([
+    expect(await resolveConversationLineage("conv-inner")).toEqual([
       "conv-inner",
       "conv-outer",
       "conv-visible",
     ]);
   });
 
-  test("a conversation resident nowhere and unparented in the database is its own lineage", () => {
-    expect(resolveConversationLineage("conv-gone")).toEqual(["conv-gone"]);
+  test("a conversation resident nowhere and unparented in the database is its own lineage", async () => {
+    expect(await resolveConversationLineage("conv-gone")).toEqual([
+      "conv-gone",
+    ]);
   });
 
-  test("a non-resident ancestor with no durable parentage ends the walk", () => {
+  test("a non-resident ancestor with no durable parentage ends the walk", async () => {
     residents.set("conv-child", "conv-evicted");
 
-    expect(resolveConversationLineage("conv-child")).toEqual([
+    expect(await resolveConversationLineage("conv-child")).toEqual([
       "conv-child",
       "conv-evicted",
     ]);
@@ -139,57 +141,62 @@ describe("resolveConversationLineage", () => {
   // idle top-level conversations are evicted, so an artifact linked after
   // either point must still reach the user-visible thread.
 
-  test("a seed dropped from the subagent index still reaches its parent", () => {
+  test("a seed dropped from the subagent index still reaches its parent", async () => {
     persistedParents.set("conv-terminal-subagent", "conv-visible");
     residents.set("conv-visible", undefined);
 
-    expect(resolveConversationLineage("conv-terminal-subagent")).toEqual([
+    expect(await resolveConversationLineage("conv-terminal-subagent")).toEqual([
       "conv-terminal-subagent",
       "conv-visible",
     ]);
   });
 
-  test("an ancestor resident only in the database is reached", () => {
+  test("an ancestor resident only in the database is reached", async () => {
     subagentResidents.set("conv-inner", "conv-outer");
     persistedParents.set("conv-outer", "conv-visible");
 
-    expect(resolveConversationLineage("conv-inner")).toEqual([
+    expect(await resolveConversationLineage("conv-inner")).toEqual([
       "conv-inner",
       "conv-outer",
       "conv-visible",
     ]);
   });
 
-  test("the resident record wins over the durable column", () => {
+  test("the resident record wins over the durable column", async () => {
     subagentResidents.set("conv-fork", "conv-resident-parent");
     persistedParents.set("conv-fork", "conv-stale-parent");
     residents.set("conv-resident-parent", undefined);
 
-    expect(resolveConversationLineage("conv-fork")).toEqual([
+    expect(await resolveConversationLineage("conv-fork")).toEqual([
       "conv-fork",
       "conv-resident-parent",
     ]);
   });
 
-  test("a failing durable read degrades to the chain resolved so far", () => {
+  test("a failing durable read degrades to the chain resolved so far", async () => {
     subagentResidents.set("conv-inner", "conv-outer");
     persistedReadFails = true;
 
-    expect(() => resolveConversationLineage("conv-inner")).not.toThrow();
-    expect(resolveConversationLineage("conv-inner")).toEqual([
+    expect(async () => {
+      await resolveConversationLineage("conv-inner");
+    }).not.toThrow();
+    expect(await resolveConversationLineage("conv-inner")).toEqual([
       "conv-inner",
       "conv-outer",
     ]);
   });
 
-  test("a cycle spanning the durable column terminates", () => {
+  test("a cycle spanning the durable column terminates", async () => {
     persistedParents.set("conv-a", "conv-b");
     persistedParents.set("conv-b", "conv-a");
 
-    expect(resolveConversationLineage("conv-a")).toEqual(["conv-a", "conv-b"]);
+    expect(await resolveConversationLineage("conv-a")).toEqual([
+      "conv-a",
+      "conv-b",
+    ]);
   });
 
-  test("a durable chain longer than the depth cap is truncated at the cap", () => {
+  test("a durable chain longer than the depth cap is truncated at the cap", async () => {
     const chain = Array.from(
       { length: MAX_LINEAGE_DEPTH + 5 },
       (_, i) => `conv-durable-${i}`,
@@ -201,25 +208,30 @@ describe("resolveConversationLineage", () => {
       }
     }
 
-    expect(resolveConversationLineage(chain[0]!)).toEqual(
+    expect(await resolveConversationLineage(chain[0]!)).toEqual(
       chain.slice(0, MAX_LINEAGE_DEPTH),
     );
   });
 
-  test("a self-referential parent does not loop forever", () => {
+  test("a self-referential parent does not loop forever", async () => {
     residents.set("conv-self", "conv-self");
 
-    expect(resolveConversationLineage("conv-self")).toEqual(["conv-self"]);
+    expect(await resolveConversationLineage("conv-self")).toEqual([
+      "conv-self",
+    ]);
   });
 
-  test("a cycle between two conversations terminates", () => {
+  test("a cycle between two conversations terminates", async () => {
     residents.set("conv-a", "conv-b");
     residents.set("conv-b", "conv-a");
 
-    expect(resolveConversationLineage("conv-a")).toEqual(["conv-a", "conv-b"]);
+    expect(await resolveConversationLineage("conv-a")).toEqual([
+      "conv-a",
+      "conv-b",
+    ]);
   });
 
-  test("a chain longer than the depth cap is truncated at the cap", () => {
+  test("a chain longer than the depth cap is truncated at the cap", async () => {
     const chain = Array.from(
       { length: MAX_LINEAGE_DEPTH + 5 },
       (_, i) => `conv-${i}`,
@@ -228,7 +240,7 @@ describe("resolveConversationLineage", () => {
       residents.set(id, chain[i + 1]);
     }
 
-    expect(resolveConversationLineage(chain[0]!)).toEqual(
+    expect(await resolveConversationLineage(chain[0]!)).toEqual(
       chain.slice(0, MAX_LINEAGE_DEPTH),
     );
   });

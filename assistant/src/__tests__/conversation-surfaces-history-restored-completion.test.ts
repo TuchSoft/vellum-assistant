@@ -718,13 +718,13 @@ describe("surfaces completed without ever awaiting an action", () => {
 describe("markSurfaceCompleted in-memory patching", () => {
   beforeEach(resetSurfaceState);
 
-  test("marks only the newest in-memory copy of a duplicated surfaceId", () => {
+  test("marks only the newest in-memory copy of a duplicated surfaceId", async () => {
     const surfaceId = "surface-duplicated-1";
     const older = { type: "ui_surface", surfaceId } as Record<string, unknown>;
     const newer = { type: "ui_surface", surfaceId } as Record<string, unknown>;
     const messages = [{ content: [older] }, { content: [newer] }];
 
-    markSurfaceCompleted(
+    await markSurfaceCompleted(
       { conversationId: CONVERSATION_ID, messages },
       surfaceId,
       "Done",
@@ -737,14 +737,14 @@ describe("markSurfaceCompleted in-memory patching", () => {
     expect(older.completed).toBeUndefined();
   });
 
-  test("leaves in-memory messages pending when the persisted write throws", () => {
+  test("leaves in-memory messages pending when the persisted write throws", async () => {
     const surfaceId = "surface-rollback-1";
     seedSurfaceRow(surfaceId, "choice");
     const block = { type: "ui_surface", surfaceId } as Record<string, unknown>;
     persistError = new Error("database is locked");
 
     expect(
-      markSurfaceCompleted(
+      await markSurfaceCompleted(
         { conversationId: CONVERSATION_ID, messages: [{ content: [block] }] },
         surfaceId,
         "Done",
@@ -758,12 +758,12 @@ describe("markSurfaceCompleted in-memory patching", () => {
     expect(readPersistedSurface(surfaceId)?.completed).toBeUndefined();
   });
 
-  test("patches in-memory messages when there is no persisted block to write", () => {
+  test("patches in-memory messages when there is no persisted block to write", async () => {
     const surfaceId = "surface-memory-only-1";
     const block = { type: "ui_surface", surfaceId } as Record<string, unknown>;
 
     expect(
-      markSurfaceCompleted(
+      await markSurfaceCompleted(
         { conversationId: CONVERSATION_ID, messages: [{ content: [block] }] },
         surfaceId,
         "Done",

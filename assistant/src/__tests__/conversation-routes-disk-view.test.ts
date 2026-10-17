@@ -6,7 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 
 import { createAssistantMessage } from "../agent/message-types.js";
 import type { Conversation } from "../daemon/conversation.js";
@@ -29,12 +29,7 @@ import {
   getConversationByKey,
   getOrCreateConversation as getOrCreateConversationMapping,
 } from "../persistence/conversation-key-store.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import {
-  conversationKeys,
-  conversations,
-} from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   AssistantEventHub,
   assistantEventHub,
@@ -47,6 +42,7 @@ import { setOverridesForTesting } from "./feature-flag-test-helpers.js";
 import { callHandler } from "./helpers/call-route-handler.js";
 import { mockUnownedModeSessions } from "./helpers/mock-conversation.js";
 import { setConfig } from "./helpers/set-config.js";
+import { describePg } from "./pg-test-db.js";
 
 const testDir = process.env.VELLUM_WORKSPACE_DIR!;
 const conversationsDir = join(testDir, "conversations");
@@ -58,8 +54,6 @@ mkdirSync(conversationsDir, { recursive: true });
 // these route sends.
 setConfig("memory", { enabled: false, v2: { enabled: false } });
 setConfig("secretDetection", { enabled: false });
-
-await initializeDb();
 
 const conversationInstances = new Map<string, Conversation>();
 
@@ -85,11 +79,11 @@ const authContext: AuthContext = {
   policyEpoch: 1,
 };
 
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
-  db.run("DELETE FROM conversation_keys");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
+  await db.run("DELETE FROM conversation_keys");
 }
 
 function resetConversationsDir(): void {
@@ -309,7 +303,7 @@ function createFakeConversation(conversationId: string): Conversation {
       );
       this.messages.push(assistantMessage);
 
-      const conversationRow = getConversation(this.conversationId);
+      const conversationRow = await getConversation(this.conversationId);
       if (conversationRow) {
         syncMessageToDisk(
           this.conversationId,
@@ -348,12 +342,12 @@ function getOrCreateFakeConversation(conversationId: string): Conversation {
 }
 
 async function waitFor<T>(
-  getter: () => T | undefined,
+  getter: () => T | undefined | Promise<T | undefined>,
   timeoutMs = 3000,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const value = getter();
+    const value = await getter();
     if (value !== undefined) {
       return value;
     }
@@ -362,8 +356,8 @@ async function waitFor<T>(
   throw new Error("Timed out waiting for expected disk-view output");
 }
 
-beforeEach(() => {
-  resetTables();
+beforeEach(async () => {
+  await resetTables();
   resetConversationsDir();
   conversationInstances.clear();
   pendingInteractions.clear();
@@ -390,131 +384,134 @@ beforeEach(() => {
 // If the interface propagation or factory candidate list construction
 // regresses, these tests will fail.
 
-describe("macOS browser backend fallback (no extension, no cdp-inspect)", () => {
-  test("macOS turn without extension sets turnInterfaceContext to macos, enabling local fallback", async () => {
-    const conversationKey = `macos-fallback-${crypto.randomUUID()}`;
-    const content = "Test macOS fallback path.";
-    let capturedConversation: Conversation | undefined;
+describePg(
+  "macOS browser backend fallback (no extension, no cdp-inspect)",
+  () => {
+    test("macOS turn without extension sets turnInterfaceContext to macos, enabling local fallback", async () => {
+      const conversationKey = `macos-fallback-${crypto.randomUUID()}`;
+      const content = "Test macOS fallback path.";
+      let capturedConversation: Conversation | undefined;
 
-    const deps = {
-      sendMessageDeps: {
-        getOrCreateConversation: async (conversationId: string) => {
-          const conv = getOrCreateFakeConversation(conversationId);
-          capturedConversation = conv;
-          return conv;
-        },
-        assistantEventHub: new AssistantEventHub(),
-        resolveAttachments: () => [],
-      },
-    };
-    const response = await callHandler(
-      (args) => handleSendMessage(args, deps),
-      new Request("http://localhost/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-vellum-principal-type": authContext.principalType,
-        },
-        body: JSON.stringify({
-          conversationKey,
-          content,
-          sourceChannel: "vellum",
-          interface: "macos",
-        }),
-      }),
-      undefined,
-      202,
-    );
-
-    expect(response.status).toBe(202);
-
-    // The conversation instance should have its turnInterfaceContext set
-    // to "macos" by handleSendMessage. This is the value the CDP factory
-    // reads (via ToolContext.transportInterface) to decide whether to
-    // include cdp-inspect as a desktop-auto candidate and ultimately fall
-    // back to local Playwright when cdp-inspect is unavailable.
-    expect(capturedConversation).toBeDefined();
-    const interfaceCtx = capturedConversation!.getTurnInterfaceContext();
-    expect(interfaceCtx).not.toBeNull();
-    expect(interfaceCtx!.userMessageInterface).toBe("macos");
-    expect(interfaceCtx!.assistantMessageInterface).toBe("macos");
-  });
-
-  test("macOS turn correctly persists interface metadata through the agent loop", async () => {
-    const conversationKey = `macos-metadata-${crypto.randomUUID()}`;
-    const content = "Verify interface metadata persistence.";
-
-    const response = await callHandler(
-      (args) =>
-        handleSendMessage(args, {
-          sendMessageDeps: {
-            getOrCreateConversation: async (conversationId: string) =>
-              getOrCreateFakeConversation(conversationId),
-            assistantEventHub: new AssistantEventHub(),
-            resolveAttachments: () => [],
+      const deps = {
+        sendMessageDeps: {
+          getOrCreateConversation: async (conversationId: string) => {
+            const conv = getOrCreateFakeConversation(conversationId);
+            capturedConversation = conv;
+            return conv;
           },
-        }),
-      new Request("http://localhost/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-vellum-principal-type": authContext.principalType,
+          assistantEventHub: new AssistantEventHub(),
+          resolveAttachments: async () => [],
         },
-        body: JSON.stringify({
-          conversationKey,
-          content,
-          sourceChannel: "vellum",
-          interface: "macos",
-        }),
-      }),
-      undefined,
-      202,
-    );
-
-    expect(response.status).toBe(202);
-    const body = (await response.json()) as {
-      accepted: boolean;
-      conversationId: string;
-    };
-
-    // Wait for the agent loop to persist the assistant reply (the fake
-    // runAgentLoop persists interface metadata into message records).
-    const conversationRow = getConversation(body.conversationId);
-    expect(conversationRow).not.toBeNull();
-    const conversationDir = getConversationDirPath(
-      body.conversationId,
-      conversationRow!.createdAt,
-    );
-    const messagesPath = join(conversationDir, "messages.jsonl");
-
-    const lines = await waitFor(() => {
-      if (!existsSync(messagesPath)) {
-        return undefined;
-      }
-      const raw = readFileSync(messagesPath, "utf-8").trim();
-      if (!raw) {
-        return undefined;
-      }
-      const parsed = raw.split("\n").map(
-        (line) =>
-          JSON.parse(line) as {
-            role: string;
-            metadata?: Record<string, unknown>;
+      };
+      const response = await callHandler(
+        (args) => handleSendMessage(args, deps),
+        new Request("http://localhost/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-vellum-principal-type": authContext.principalType,
           },
+          body: JSON.stringify({
+            conversationKey,
+            content,
+            sourceChannel: "vellum",
+            interface: "macos",
+          }),
+        }),
+        undefined,
+        202,
       );
-      return parsed.length >= 2 ? parsed : undefined;
+
+      expect(response.status).toBe(202);
+
+      // The conversation instance should have its turnInterfaceContext set
+      // to "macos" by handleSendMessage. This is the value the CDP factory
+      // reads (via ToolContext.transportInterface) to decide whether to
+      // include cdp-inspect as a desktop-auto candidate and ultimately fall
+      // back to local Playwright when cdp-inspect is unavailable.
+      expect(capturedConversation).toBeDefined();
+      const interfaceCtx = capturedConversation!.getTurnInterfaceContext();
+      expect(interfaceCtx).not.toBeNull();
+      expect(interfaceCtx!.userMessageInterface).toBe("macos");
+      expect(interfaceCtx!.assistantMessageInterface).toBe("macos");
     });
 
-    // The assistant reply (second line) should carry the interface metadata
-    // set by setTurnInterfaceContext during the macOS turn setup.
-    const assistantLine = lines[1];
-    expect(assistantLine?.role).toBe("assistant");
-    expect(assistantLine?.metadata?.userMessageInterface).toBe("macos");
-    expect(assistantLine?.metadata?.assistantMessageInterface).toBe("macos");
-  });
-});
+    test("macOS turn correctly persists interface metadata through the agent loop", async () => {
+      const conversationKey = `macos-metadata-${crypto.randomUUID()}`;
+      const content = "Verify interface metadata persistence.";
 
-describe("POST /v1/messages — body.conversationId direct id lookup", () => {
+      const response = await callHandler(
+        (args) =>
+          handleSendMessage(args, {
+            sendMessageDeps: {
+              getOrCreateConversation: async (conversationId: string) =>
+                getOrCreateFakeConversation(conversationId),
+              assistantEventHub: new AssistantEventHub(),
+              resolveAttachments: async () => [],
+            },
+          }),
+        new Request("http://localhost/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-vellum-principal-type": authContext.principalType,
+          },
+          body: JSON.stringify({
+            conversationKey,
+            content,
+            sourceChannel: "vellum",
+            interface: "macos",
+          }),
+        }),
+        undefined,
+        202,
+      );
+
+      expect(response.status).toBe(202);
+      const body = (await response.json()) as {
+        accepted: boolean;
+        conversationId: string;
+      };
+
+      // Wait for the agent loop to persist the assistant reply (the fake
+      // runAgentLoop persists interface metadata into message records).
+      const conversationRow = await getConversation(body.conversationId);
+      expect(conversationRow).not.toBeNull();
+      const conversationDir = getConversationDirPath(
+        body.conversationId,
+        conversationRow!.createdAt,
+      );
+      const messagesPath = join(conversationDir, "messages.jsonl");
+
+      const lines = await waitFor(() => {
+        if (!existsSync(messagesPath)) {
+          return undefined;
+        }
+        const raw = readFileSync(messagesPath, "utf-8").trim();
+        if (!raw) {
+          return undefined;
+        }
+        const parsed = raw.split("\n").map(
+          (line) =>
+            JSON.parse(line) as {
+              role: string;
+              metadata?: Record<string, unknown>;
+            },
+        );
+        return parsed.length >= 2 ? parsed : undefined;
+      });
+
+      // The assistant reply (second line) should carry the interface metadata
+      // set by setTurnInterfaceContext during the macOS turn setup.
+      const assistantLine = lines[1];
+      expect(assistantLine?.role).toBe("assistant");
+      expect(assistantLine?.metadata?.userMessageInterface).toBe("macos");
+      expect(assistantLine?.metadata?.assistantMessageInterface).toBe("macos");
+    });
+  },
+);
+
+describePg("POST /v1/messages — body.conversationId direct id lookup", () => {
   // The handler accepts two scope inputs with distinct semantics:
   //
   //   - `body.conversationId` is the assistant-minted internal id and is
@@ -538,7 +535,7 @@ describe("POST /v1/messages — body.conversationId direct id lookup", () => {
             getOrCreateConversation: async (conversationId: string) =>
               getOrCreateFakeConversation(conversationId),
             assistantEventHub: new AssistantEventHub(),
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       new Request("http://localhost/v1/messages", {
@@ -585,23 +582,29 @@ describe("POST /v1/messages — body.conversationId direct id lookup", () => {
           const failed = await sendMessage(body);
           expect(failed.status).toBe(500);
         }
-        expect(getDb().select().from(conversations).all()).toHaveLength(0);
-        expect(getDb().select().from(conversationKeys).all()).toHaveLength(0);
+        expect(
+          await requireMainDb().all("SELECT * FROM conversations"),
+        ).toHaveLength(0);
+        expect(
+          await requireMainDb().all("SELECT * FROM conversation_keys"),
+        ).toHaveLength(0);
         expect(conversationInstances.size).toBe(0);
         expect(bootstrapFiles.every((path) => existsSync(path))).toBe(true);
 
         ipc.mockResolvedValueOnce({ ok: true });
         const retried = await sendMessage(body);
         expect(retried.status).toBe(202);
-        const rows = getDb().select().from(conversations).all();
+        const rows = await requireMainDb().all("SELECT * FROM conversations");
         expect(rows).toHaveLength(1);
-        expect(getDb().select().from(conversationKeys).all()).toHaveLength(1);
-        await waitFor(() => {
-          const messages = readPersistedMessages(rows[0]!.id);
+        expect(
+          await requireMainDb().all("SELECT * FROM conversation_keys"),
+        ).toHaveLength(1);
+        await waitFor(async () => {
+          const messages = await readPersistedMessages(rows[0]!.id);
           return messages.length === 2 ? messages : undefined;
         });
         expect(bootstrapFiles.every((path) => existsSync(path))).toBe(true);
-        getOrCreateConversationMapping("second-successful-chat");
+        await getOrCreateConversationMapping("second-successful-chat");
         expect(bootstrapFiles.some((path) => existsSync(path))).toBe(false);
       } finally {
         ipc.mockRestore();
@@ -614,7 +617,7 @@ describe("POST /v1/messages — body.conversationId direct id lookup", () => {
   );
 
   test("an autonomy write failure preserves an existing chat and its messages", async () => {
-    const seeded = getOrCreateConversationMapping("existing-chat");
+    const seeded = await getOrCreateConversationMapping("existing-chat");
     await addMessage(seeded.conversationId, "user", "Existing message");
     const ipc = spyOn(gatewayClient, "ipcCall").mockResolvedValueOnce(
       undefined,
@@ -628,8 +631,10 @@ describe("POST /v1/messages — body.conversationId direct id lookup", () => {
         riskThreshold: "none",
       });
       expect(response.status).toBe(500);
-      expect(getConversation(seeded.conversationId)).not.toBeNull();
-      expect(readPersistedMessages(seeded.conversationId)).toHaveLength(1);
+      expect(await getConversation(seeded.conversationId)).not.toBeNull();
+      expect(await readPersistedMessages(seeded.conversationId)).toHaveLength(
+        1,
+      );
     } finally {
       ipc.mockRestore();
     }
@@ -638,7 +643,9 @@ describe("POST /v1/messages — body.conversationId direct id lookup", () => {
   test("a minted chat with a concurrent message survives an autonomy write failure", async () => {
     const ipc = spyOn(gatewayClient, "ipcCall").mockImplementationOnce(
       async () => {
-        const row = getDb().select().from(conversations).all()[0]!;
+        const row = (
+          await requireMainDb().all("SELECT * FROM conversations")
+        )[0]!;
         await addMessage(row.id, "user", "Concurrent message");
         return undefined;
       },
@@ -651,9 +658,9 @@ describe("POST /v1/messages — body.conversationId direct id lookup", () => {
         riskThreshold: "none",
       });
       expect(response.status).toBe(500);
-      const rows = getDb().select().from(conversations).all();
+      const rows = await requireMainDb().all("SELECT * FROM conversations");
       expect(rows).toHaveLength(1);
-      expect(readPersistedMessages(rows[0]!.id)).toHaveLength(1);
+      expect(await readPersistedMessages(rows[0]!.id)).toHaveLength(1);
     } finally {
       ipc.mockRestore();
     }
@@ -672,9 +679,9 @@ describe("POST /v1/messages — body.conversationId direct id lookup", () => {
         riskThreshold: "none",
       });
       expect(response.status).toBe(500);
-      const mapping = getConversationByKey("shared-chat-key");
+      const mapping = await getConversationByKey("shared-chat-key");
       expect(mapping).not.toBeNull();
-      expect(getConversation(mapping!.conversationId)).not.toBeNull();
+      expect(await getConversation(mapping!.conversationId)).not.toBeNull();
     } finally {
       ipc.mockRestore();
     }
@@ -684,7 +691,7 @@ describe("POST /v1/messages — body.conversationId direct id lookup", () => {
     // Pre-materialise a conversation via the key path, then send a message
     // by its assistant-minted internal id.
     const externalKey = `pre-materialised-${crypto.randomUUID()}`;
-    const seeded = getOrCreateConversationMapping(externalKey);
+    const seeded = await getOrCreateConversationMapping(externalKey);
 
     const response = await sendMessage({
       conversationId: seeded.conversationId,
@@ -702,7 +709,7 @@ describe("POST /v1/messages — body.conversationId direct id lookup", () => {
     expect(body.conversationId).toBe(seeded.conversationId);
 
     // No new external-key row should be materialised under the internal id.
-    expect(getConversationByKey(seeded.conversationId)).toBeNull();
+    expect(await getConversationByKey(seeded.conversationId)).toBeNull();
   });
 
   test("body.conversationId=<non-existent-id> returns 404", async () => {
@@ -727,11 +734,11 @@ describe("POST /v1/messages — body.conversationId direct id lookup", () => {
     // Seed a conversation for the id we'll send. Also seed a separate
     // conversation under a key the client will pass alongside — but the
     // handler must scope to the id, NOT the key.
-    const idSeed = getOrCreateConversationMapping(
+    const idSeed = await getOrCreateConversationMapping(
       `id-honored-${crypto.randomUUID()}`,
     );
     const keyValue = `key-ignored-${crypto.randomUUID()}`;
-    const keySeed = getOrCreateConversationMapping(keyValue);
+    const keySeed = await getOrCreateConversationMapping(keyValue);
     expect(idSeed.conversationId).not.toBe(keySeed.conversationId);
 
     const response = await sendMessage({
@@ -749,7 +756,7 @@ describe("POST /v1/messages — body.conversationId direct id lookup", () => {
   });
 });
 
-describe("conversationKey send path disk-view regression", () => {
+describePg("conversationKey send path disk-view regression", () => {
   test("first send on a fresh conversationKey creates disk-view dir and writes user+assistant records", async () => {
     const conversationKey = `fresh-conv-key-${crypto.randomUUID()}`;
     const content = "Please persist this first turn.";
@@ -761,7 +768,7 @@ describe("conversationKey send path disk-view regression", () => {
             getOrCreateConversation: async (conversationId: string) =>
               getOrCreateFakeConversation(conversationId),
             assistantEventHub: new AssistantEventHub(),
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       new Request("http://localhost/v1/messages", {
@@ -792,14 +799,14 @@ describe("conversationKey send path disk-view regression", () => {
     expect(body.messageId).toBeDefined();
 
     // Verify the real key store mapping is reused after the first send.
-    const mapping = getOrCreateConversationMapping(conversationKey);
+    const mapping = await getOrCreateConversationMapping(conversationKey);
     expect(mapping.created).toBe(false);
     expect(mapping.conversationId).toBe(body.conversationId);
-    expect(getConversationByKey(conversationKey)?.conversationId).toBe(
+    expect((await getConversationByKey(conversationKey))?.conversationId).toBe(
       body.conversationId,
     );
 
-    const conversationRow = getConversation(body.conversationId);
+    const conversationRow = await getConversation(body.conversationId);
     expect(conversationRow).not.toBeNull();
     const conversationDir = getConversationDirPath(
       body.conversationId,
@@ -838,7 +845,7 @@ describe("conversationKey send path disk-view regression", () => {
 // when the request arrived, and a setup keyed on "was idle on arrival" would
 // hand a host-capable macOS client a turn with no `computer-use` or
 // `app-control` tools.
-describe("host-proxy preactivation across an interrupt", () => {
+describePg("host-proxy preactivation across an interrupt", () => {
   afterEach(() => {
     setOverridesForTesting({});
   });
@@ -873,7 +880,7 @@ describe("host-proxy preactivation across an interrupt", () => {
             getOrCreateConversation: async (conversationId: string) =>
               getOrCreateFakeConversation(conversationId),
             assistantEventHub: new AssistantEventHub(),
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       new Request("http://localhost/v1/messages", {
@@ -901,7 +908,8 @@ describe("host-proxy preactivation across an interrupt", () => {
     // stand in for.
     setOverridesForTesting({ "interrupt-on-send": true });
     const conversationKey = `macos-interrupt-${crypto.randomUUID()}`;
-    const { conversationId } = getOrCreateConversationMapping(conversationKey);
+    const { conversationId } =
+      await getOrCreateConversationMapping(conversationKey);
     const conv = busyConversation(conversationId) as Conversation & {
       hostCuProxy?: unknown;
       hostAppControlProxy?: unknown;
@@ -944,7 +952,8 @@ describe("host-proxy preactivation across an interrupt", () => {
     // the persist and the dispatch all run off the response.
     setOverridesForTesting({ "interrupt-on-send": true });
     const conversationKey = `macos-async-${crypto.randomUUID()}`;
-    const { conversationId } = getOrCreateConversationMapping(conversationKey);
+    const { conversationId } =
+      await getOrCreateConversationMapping(conversationKey);
     const conv = getOrCreateFakeConversation(conversationId) as Conversation & {
       processing: boolean;
       owner: number;
@@ -1002,7 +1011,8 @@ describe("host-proxy preactivation across an interrupt", () => {
     // Without an event the message is accepted and then silently gone.
     setOverridesForTesting({ "interrupt-on-send": true });
     const conversationKey = `macos-qfull-${crypto.randomUUID()}`;
-    const { conversationId } = getOrCreateConversationMapping(conversationKey);
+    const { conversationId } =
+      await getOrCreateConversationMapping(conversationKey);
     const conv = getOrCreateFakeConversation(conversationId) as Conversation & {
       processing: boolean;
       owner: number;
@@ -1090,7 +1100,8 @@ describe("host-proxy preactivation across an interrupt", () => {
     // this conversation would emit one belonging to an interrupt long over.
     setOverridesForTesting({ "interrupt-on-send": true });
     const conversationKey = `macos-nobridge-${crypto.randomUUID()}`;
-    const { conversationId } = getOrCreateConversationMapping(conversationKey);
+    const { conversationId } =
+      await getOrCreateConversationMapping(conversationKey);
     const clientMessageId = `cmid-${crypto.randomUUID()}`;
     await addMessage(conversationId, "user", "already sent", {
       clientMessageId,
@@ -1115,7 +1126,8 @@ describe("host-proxy preactivation across an interrupt", () => {
     // nothing, leaving the send answered by neither.
     setOverridesForTesting({ "interrupt-on-send": true });
     const conversationKey = `macos-prepersist-${crypto.randomUUID()}`;
-    const { conversationId } = getOrCreateConversationMapping(conversationKey);
+    const { conversationId } =
+      await getOrCreateConversationMapping(conversationKey);
     const clientMessageId = `cmid-${crypto.randomUUID()}`;
     const conv = busyConversation(conversationId) as Conversation & {
       currentTurnClientMessageId?: string;
@@ -1125,7 +1137,7 @@ describe("host-proxy preactivation across an interrupt", () => {
     conv.currentTurnClientMessageId = clientMessageId;
     conv.currentRequestId = "in-flight-req";
     expect(
-      findMessageIdByClientMessageId(conversationId, clientMessageId),
+      await findMessageIdByClientMessageId(conversationId, clientMessageId),
     ).toBeUndefined();
 
     const response = await sendMacosMessage(
@@ -1156,7 +1168,8 @@ describe("host-proxy preactivation across an interrupt", () => {
     // either, so a refused enqueue there has to be reported the same way.
     setOverridesForTesting({ "interrupt-on-send": true });
     const conversationKey = `macos-lockrace-${crypto.randomUUID()}`;
-    const { conversationId } = getOrCreateConversationMapping(conversationKey);
+    const { conversationId } =
+      await getOrCreateConversationMapping(conversationKey);
     const conv = busyConversation(conversationId) as Conversation & {
       acquireProcessingFenced: () => Promise<number | null>;
       enqueueMessage: () => {
@@ -1217,7 +1230,8 @@ describe("host-proxy preactivation across an interrupt", () => {
     // client's optimistic row could never be reconciled against it.
     setOverridesForTesting({ "interrupt-on-send": true });
     const conversationKey = `macos-slash-${crypto.randomUUID()}`;
-    const { conversationId } = getOrCreateConversationMapping(conversationKey);
+    const { conversationId } =
+      await getOrCreateConversationMapping(conversationKey);
     busyConversation(conversationId);
 
     // `/compact` with an argument is the cheapest route to the canned
@@ -1231,9 +1245,9 @@ describe("host-proxy preactivation across an interrupt", () => {
     expect(typeof body.messageId).toBe("string");
 
     // The handover and the canned branch both run off the response.
-    const row = await waitFor(() =>
+    const row = await waitFor(async () =>
       body.messageId
-        ? (readPersistedMessages(conversationId).find(
+        ? ((await readPersistedMessages(conversationId)).find(
             (m) => m.id === body.messageId,
           ) ?? undefined)
         : undefined,
@@ -1249,7 +1263,8 @@ describe("host-proxy preactivation across an interrupt", () => {
     // and one would lose.
     setOverridesForTesting({ "interrupt-on-send": true });
     const conversationKey = `macos-inflight-${crypto.randomUUID()}`;
-    const { conversationId } = getOrCreateConversationMapping(conversationKey);
+    const { conversationId } =
+      await getOrCreateConversationMapping(conversationKey);
     const clientMessageId = `cmid-${crypto.randomUUID()}`;
     const conv = getOrCreateFakeConversation(conversationId) as Conversation & {
       processing: boolean;
@@ -1302,7 +1317,8 @@ describe("host-proxy preactivation across an interrupt", () => {
     // advertised naming no row at all.
     setOverridesForTesting({ "interrupt-on-send": true });
     const conversationKey = `macos-released-inflight-${crypto.randomUUID()}`;
-    const { conversationId } = getOrCreateConversationMapping(conversationKey);
+    const { conversationId } =
+      await getOrCreateConversationMapping(conversationKey);
     const clientMessageId = `cmid-${crypto.randomUUID()}`;
     const conv = getOrCreateFakeConversation(conversationId);
     const reservedRequestId = crypto.randomUUID();
@@ -1325,7 +1341,7 @@ describe("host-proxy preactivation across an interrupt", () => {
     expect(body.requestId).toBe(reservedRequestId);
     expect(body.messageId).toBe(reservedRequestId);
     // And nothing of its own: no second row racing the insert, no turn.
-    expect(readPersistedMessages(conversationId)).toHaveLength(0);
+    expect(await readPersistedMessages(conversationId)).toHaveLength(0);
     expect(conv.isProcessing()).toBe(false);
   });
 
@@ -1337,7 +1353,8 @@ describe("host-proxy preactivation across an interrupt", () => {
     // answer would be cancelled for good.
     setOverridesForTesting({ "interrupt-on-send": true });
     const conversationKey = `macos-dup-${crypto.randomUUID()}`;
-    const { conversationId } = getOrCreateConversationMapping(conversationKey);
+    const { conversationId } =
+      await getOrCreateConversationMapping(conversationKey);
     const clientMessageId = `cmid-${crypto.randomUUID()}`;
     const existing = await addMessage(
       conversationId,
@@ -1372,7 +1389,8 @@ describe("host-proxy preactivation across an interrupt", () => {
     // drain at dequeue time, not to this request.
     setOverridesForTesting({ "interrupt-on-send": false });
     const conversationKey = `macos-queued-${crypto.randomUUID()}`;
-    const { conversationId } = getOrCreateConversationMapping(conversationKey);
+    const { conversationId } =
+      await getOrCreateConversationMapping(conversationKey);
     const conv = busyConversation(conversationId) as Conversation & {
       preactivatedSkillIds?: string[];
     };

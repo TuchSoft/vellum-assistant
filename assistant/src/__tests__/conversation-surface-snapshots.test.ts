@@ -110,7 +110,7 @@ describe("listConversationSurfaceSnapshots", () => {
     conversationImpl = makeConversation();
   });
 
-  test("fails closed when no conversation is loaded", () => {
+  test("fails closed when no conversation is loaded", async () => {
     conversationImpl = undefined;
     seedRows([
       {
@@ -128,10 +128,10 @@ describe("listConversationSurfaceSnapshots", () => {
       },
     ]);
 
-    expect(listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([]);
+    expect(await listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([]);
   });
 
-  test("fails closed when turn-or-resting trust is missing", () => {
+  test("fails closed when turn-or-resting trust is missing", async () => {
     conversationImpl = makeConversation({ trust: undefined });
     seedRows([
       {
@@ -149,10 +149,10 @@ describe("listConversationSurfaceSnapshots", () => {
       },
     ]);
 
-    expect(listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([]);
+    expect(await listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([]);
   });
 
-  test("live state wins over stale persisted data for the same surface ID", () => {
+  test("live state wins over stale persisted data for the same surface ID", async () => {
     const liveData = taskProgressData("Live title", [
       { label: "Compare the last incident", status: "in_progress" },
     ]);
@@ -177,7 +177,7 @@ describe("listConversationSurfaceSnapshots", () => {
       ]),
     });
 
-    expect(listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([
+    expect(await listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([
       {
         surfaceId: "surf_abc",
         surfaceType: "card",
@@ -187,7 +187,7 @@ describe("listConversationSurfaceSnapshots", () => {
     ]);
   });
 
-  test("a current-turn surface is visible before final message persistence", () => {
+  test("a current-turn surface is visible before final message persistence", async () => {
     const data = taskProgressData("Researching the billing outage", [
       { label: "Pull error logs", status: "in_progress" },
     ]);
@@ -199,7 +199,7 @@ describe("listConversationSurfaceSnapshots", () => {
       ],
     });
 
-    expect(listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([
+    expect(await listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([
       {
         surfaceId: "surf_abc",
         surfaceType: "card",
@@ -209,7 +209,7 @@ describe("listConversationSurfaceSnapshots", () => {
     ]);
   });
 
-  test("an ui_update inside the debounce window is visible", () => {
+  test("an ui_update inside the debounce window is visible", async () => {
     const persisted = taskProgressData("Researching the billing outage", [
       { label: "Pull error logs", status: "in_progress" },
     ]);
@@ -236,12 +236,12 @@ describe("listConversationSurfaceSnapshots", () => {
       ]),
     });
 
-    expect(listConversationSurfaceSnapshots(CONVERSATION_ID)[0]?.data).toEqual(
-      live,
-    );
+    expect(
+      (await listConversationSurfaceSnapshots(CONVERSATION_ID))[0]?.data,
+    ).toEqual(live);
   });
 
-  test("unbounded persisted fallback finds an active card behind the compaction boundary", () => {
+  test("unbounded persisted fallback finds an active card behind the compaction boundary", async () => {
     const data = taskProgressData("Researching the billing outage", [
       { label: "Propose a fix", status: "pending" },
     ]);
@@ -262,7 +262,7 @@ describe("listConversationSurfaceSnapshots", () => {
       surfaceState: new Map(),
     });
 
-    expect(listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([
+    expect(await listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([
       {
         surfaceId: "surf_abc",
         surfaceType: "card",
@@ -272,7 +272,7 @@ describe("listConversationSurfaceSnapshots", () => {
     ]);
   });
 
-  test("completion is represented so completed surfaces can be excluded", () => {
+  test("completion is represented so completed surfaces can be excluded", async () => {
     seedRows([
       {
         id: "msg-1",
@@ -291,13 +291,13 @@ describe("listConversationSurfaceSnapshots", () => {
       },
     ]);
 
-    const snapshots = listConversationSurfaceSnapshots(CONVERSATION_ID);
+    const snapshots = await listConversationSurfaceSnapshots(CONVERSATION_ID);
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0]?.completed).toBe(true);
     expect(snapshots[0]?.completionSummary).toBe("All steps finished");
   });
 
-  test("current-turn completion overlays a not-yet-persisted surface", () => {
+  test("current-turn completion overlays a not-yet-persisted surface", async () => {
     const data = taskProgressData("Done", [
       { label: "Propose a fix", status: "completed" },
     ]);
@@ -315,7 +315,9 @@ describe("listConversationSurfaceSnapshots", () => {
       ],
     });
 
-    expect(listConversationSurfaceSnapshots(CONVERSATION_ID)[0]).toEqual({
+    expect(
+      (await listConversationSurfaceSnapshots(CONVERSATION_ID))[0],
+    ).toEqual({
       surfaceId: "surf_abc",
       surfaceType: "card",
       data,
@@ -324,7 +326,7 @@ describe("listConversationSurfaceSnapshots", () => {
     });
   });
 
-  test("dismissed surfaces are absent", () => {
+  test("dismissed surfaces are absent", async () => {
     seedRows([
       {
         id: "msg-1",
@@ -336,10 +338,10 @@ describe("listConversationSurfaceSnapshots", () => {
       currentTurnSurfaces: [],
     });
 
-    expect(listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([]);
+    expect(await listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([]);
   });
 
-  test("duplicate IDs resolve deterministically with newest data and first-seen order", () => {
+  test("duplicate IDs resolve deterministically with newest data and first-seen order", async () => {
     const older = taskProgressData("Older", [
       { label: "Pull error logs", status: "pending" },
     ]);
@@ -386,7 +388,7 @@ describe("listConversationSurfaceSnapshots", () => {
     ]);
 
     expect(
-      listConversationSurfaceSnapshots(CONVERSATION_ID).map(
+      (await listConversationSurfaceSnapshots(CONVERSATION_ID)).map(
         (snapshot: ConversationSurfaceSnapshot) => ({
           surfaceId: snapshot.surfaceId,
           title: (snapshot.data.templateData as { title?: string }).title,
@@ -398,7 +400,7 @@ describe("listConversationSurfaceSnapshots", () => {
     ]);
   });
 
-  test("hides guardian-provenance rows from an untrusted loaded conversation", () => {
+  test("hides guardian-provenance rows from an untrusted loaded conversation", async () => {
     seedRows([
       {
         id: "msg-guardian",
@@ -432,13 +434,13 @@ describe("listConversationSurfaceSnapshots", () => {
     conversationImpl = makeConversation({ trust: CONTACT_TRUST });
 
     expect(
-      listConversationSurfaceSnapshots(CONVERSATION_ID).map(
+      (await listConversationSurfaceSnapshots(CONVERSATION_ID)).map(
         (snapshot) => snapshot.surfaceId,
       ),
     ).toEqual(["surf_contact"]);
   });
 
-  test("does not leak a guardian-only live card to an untrusted view", () => {
+  test("does not leak a guardian-only live card to an untrusted view", async () => {
     seedRows([]);
     conversationImpl = makeConversation({
       trust: CONTACT_TRUST,
@@ -455,10 +457,10 @@ describe("listConversationSurfaceSnapshots", () => {
       ]),
     });
 
-    expect(listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([]);
+    expect(await listConversationSurfaceSnapshots(CONVERSATION_ID)).toEqual([]);
   });
 
-  test("serves a contact-provenance row to an untrusted requester", () => {
+  test("serves a contact-provenance row to an untrusted requester", async () => {
     const data = taskProgressData("Visible", [
       { label: "Public", status: "pending" },
     ]);
@@ -478,12 +480,12 @@ describe("listConversationSurfaceSnapshots", () => {
     ]);
     conversationImpl = makeConversation({ trust: CONTACT_TRUST });
 
-    expect(listConversationSurfaceSnapshots(CONVERSATION_ID)[0]?.data).toEqual(
-      data,
-    );
+    expect(
+      (await listConversationSurfaceSnapshots(CONVERSATION_ID))[0]?.data,
+    ).toEqual(data);
   });
 
-  test("returned snapshots do not expose daemon-owned mutable objects", () => {
+  test("returned snapshots do not expose daemon-owned mutable objects", async () => {
     const liveData = taskProgressData("Live", [
       { label: "Pull error logs", status: "pending" },
     ]);
@@ -507,7 +509,7 @@ describe("listConversationSurfaceSnapshots", () => {
     ]);
     conversationImpl = makeConversation({ surfaceState });
 
-    const [snapshot] = listConversationSurfaceSnapshots(CONVERSATION_ID);
+    const [snapshot] = await listConversationSurfaceSnapshots(CONVERSATION_ID);
     expect(snapshot).toBeDefined();
     expect(snapshot?.data).not.toBe(liveData);
     snapshot!.data.title = "mutated";
@@ -515,7 +517,7 @@ describe("listConversationSurfaceSnapshots", () => {
     expect(surfaceState.get("surf_abc")?.data).toEqual(liveData);
   });
 
-  test("does not memoize persisted scan results into live surfaceState", () => {
+  test("does not memoize persisted scan results into live surfaceState", async () => {
     const surfaceState = new Map<
       string,
       { surfaceType: string; data: Record<string, unknown> }
@@ -537,7 +539,9 @@ describe("listConversationSurfaceSnapshots", () => {
     ]);
     conversationImpl = makeConversation({ surfaceState });
 
-    expect(listConversationSurfaceSnapshots(CONVERSATION_ID)).toHaveLength(1);
+    expect(
+      await listConversationSurfaceSnapshots(CONVERSATION_ID),
+    ).toHaveLength(1);
     expect(surfaceState.size).toBe(0);
   });
 });

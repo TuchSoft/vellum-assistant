@@ -334,7 +334,7 @@ function makeDeps(
     sendMessageDeps: {
       getOrCreateConversation: async () => conversation,
       assistantEventHub: { publish: async () => {} } as any,
-      resolveAttachments: () => [],
+      resolveAttachments: async () => [],
     },
   };
 }

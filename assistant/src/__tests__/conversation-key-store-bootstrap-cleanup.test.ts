@@ -13,7 +13,7 @@
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { assertNotLiveDb } from "./assert-not-live-db.js";
 
@@ -25,14 +25,8 @@ import {
   _resetFirstConversationSeenForTesting,
   getOrCreateConversation,
 } from "../persistence/conversation-key-store.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import {
-  conversationKeys,
-  conversations,
-} from "../persistence/schema/index.js";
-
-await initializeDb();
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
 const bootstrapPath = join(testDir, "BOOTSTRAP.md");
 const bootstrapReferencePath = join(testDir, "BOOTSTRAP-REFERENCE.md");
@@ -42,10 +36,10 @@ function seedBootstrapFiles(): void {
   writeFileSync(bootstrapReferencePath, "# Reference\n", "utf-8");
 }
 
-beforeEach(() => {
-  const db = getDb();
-  db.delete(conversationKeys).run();
-  db.delete(conversations).run();
+beforeEach(async () => {
+  const db = requireMainDb();
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM conversations");
 
   assertNotLiveDb(conversationsDir);
   rmSync(conversationsDir, { recursive: true, force: true });
@@ -57,12 +51,12 @@ beforeEach(() => {
   seedBootstrapFiles();
 });
 
-describe("getOrCreateConversation bootstrap bookkeeping", () => {
-  test("background side threads do not consume the first-conversation slot", () => {
+describePg("getOrCreateConversation bootstrap bookkeeping", () => {
+  test("background side threads do not consume the first-conversation slot", async () => {
     // The exact onboarding sequence: three hidden side threads, then the
     // user's first real chat.
     for (const key of ["onboarding-research", "personality", "identity"]) {
-      const created = getOrCreateConversation(key, {
+      const created = await getOrCreateConversation(key, {
         conversationType: "background",
       });
       expect(created.created).toBe(true);
@@ -70,7 +64,7 @@ describe("getOrCreateConversation bootstrap bookkeeping", () => {
       expect(existsSync(bootstrapPath)).toBe(true);
     }
 
-    const firstVisible = getOrCreateConversation("user-first-chat");
+    const firstVisible = await getOrCreateConversation("user-first-chat");
     expect(firstVisible.created).toBe(true);
     expect(firstVisible.conversationType).toBe("standard");
 
@@ -80,38 +74,40 @@ describe("getOrCreateConversation bootstrap bookkeeping", () => {
     expect(existsSync(bootstrapReferencePath)).toBe(true);
   });
 
-  test("a background create after the first standard one is still inert", () => {
-    getOrCreateConversation("user-first-chat");
+  test("a background create after the first standard one is still inert", async () => {
+    await getOrCreateConversation("user-first-chat");
     expect(existsSync(bootstrapPath)).toBe(true);
 
-    getOrCreateConversation("side-thread", { conversationType: "background" });
+    await getOrCreateConversation("side-thread", {
+      conversationType: "background",
+    });
     expect(existsSync(bootstrapPath)).toBe(true);
     expect(existsSync(bootstrapReferencePath)).toBe(true);
   });
 
-  test("the second standard conversation still deletes the bootstrap files", () => {
-    getOrCreateConversation("first-chat");
+  test("the second standard conversation still deletes the bootstrap files", async () => {
+    await getOrCreateConversation("first-chat");
     expect(existsSync(bootstrapPath)).toBe(true);
 
-    getOrCreateConversation("second-chat");
+    await getOrCreateConversation("second-chat");
     expect(existsSync(bootstrapPath)).toBe(false);
     expect(existsSync(bootstrapReferencePath)).toBe(false);
   });
 
-  test("background creates interleaved with standard ones do not shift the slot", () => {
-    getOrCreateConversation("bg-a", { conversationType: "background" });
-    getOrCreateConversation("first-chat");
-    getOrCreateConversation("bg-b", { conversationType: "background" });
+  test("background creates interleaved with standard ones do not shift the slot", async () => {
+    await getOrCreateConversation("bg-a", { conversationType: "background" });
+    await getOrCreateConversation("first-chat");
+    await getOrCreateConversation("bg-b", { conversationType: "background" });
     expect(existsSync(bootstrapPath)).toBe(true);
 
     // Only the second STANDARD conversation ends onboarding.
-    getOrCreateConversation("second-chat");
+    await getOrCreateConversation("second-chat");
     expect(existsSync(bootstrapPath)).toBe(false);
   });
 
-  test("resolving an existing key never re-runs the bookkeeping", () => {
-    const first = getOrCreateConversation("first-chat");
-    const again = getOrCreateConversation("first-chat");
+  test("resolving an existing key never re-runs the bookkeeping", async () => {
+    const first = await getOrCreateConversation("first-chat");
+    const again = await getOrCreateConversation("first-chat");
     expect(again.created).toBe(false);
     expect(again.conversationId).toBe(first.conversationId);
     expect(existsSync(bootstrapPath)).toBe(true);

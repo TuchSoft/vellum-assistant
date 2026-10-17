@@ -257,7 +257,7 @@ function makeDeps(conversation: Conversation) {
     sendMessageDeps: {
       getOrCreateConversation: async () => conversation,
       assistantEventHub: { publish: async () => {} } as never,
-      resolveAttachments: () => [],
+      resolveAttachments: async () => [],
     },
   };
 }
@@ -413,8 +413,7 @@ describe("POST /messages turn trust", () => {
 
     // The turn carries the trust this request resolved, not the moved slot.
     const turnTrust = spies.agentLoopOptions()?.turnTrustContext as
-      | { trustClass?: string }
-      | undefined;
+      { trustClass?: string } | undefined;
     expect(turnTrust).toBeDefined();
     expect(turnTrust?.trustClass).toBe("guardian");
   });

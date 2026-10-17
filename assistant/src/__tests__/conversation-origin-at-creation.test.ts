@@ -13,141 +13,160 @@
  * parameter existed, or migrating them stops being safe to do piecemeal.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import {
   createConversation,
   getConversationOriginChannel,
   setConversationOriginChannelIfUnset,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations } from "../persistence/schema/index.js";
-
-await initializeDb();
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
 /** The raw column, not the parsed accessor, so NULL stays distinguishable. */
-function rawOriginChannel(id: string): string | null {
-  const row = getDb()
-    .all(`SELECT origin_channel FROM conversations WHERE id = '${id}'`)
-    .at(0) as { origin_channel: string | null } | undefined;
+async function rawOriginChannel(id: string): Promise<string | null> {
+  const row = await requireMainDb().get<{ origin_channel: string | null }>(
+    "SELECT origin_channel FROM conversations WHERE id = ?",
+    [id],
+  );
   return row?.origin_channel ?? null;
 }
 
-beforeEach(() => {
-  getDb().delete(conversations).run();
+beforeEach(async () => {
+  await requireMainDb().run("DELETE FROM conversations");
 });
 
-describe("stating the origin at creation", () => {
-  test("stamps a native conversation", () => {
-    const conv = createConversation({ title: "in-app", origin: "vellum" });
+describePg("stating the origin at creation", () => {
+  test("stamps a native conversation", async () => {
+    const conv = await createConversation({
+      title: "in-app",
+      origin: "vellum",
+    });
 
-    expect(rawOriginChannel(conv.id)).toBe("vellum");
+    expect(await rawOriginChannel(conv.id)).toBe("vellum");
   });
 
-  test("stamps an external channel", () => {
-    const conv = createConversation({ title: "from-slack", origin: "slack" });
+  test("stamps an external channel", async () => {
+    const conv = await createConversation({
+      title: "from-slack",
+      origin: "slack",
+    });
 
-    expect(rawOriginChannel(conv.id)).toBe("slack");
+    expect(await rawOriginChannel(conv.id)).toBe("slack");
   });
 
-  test("a stamped row is attributed before any message arrives", () => {
+  test("a stamped row is attributed before any message arrives", async () => {
     // The point of the change: the row is already correct, so nothing has to
     // run afterward to make it so.
-    const conv = createConversation({ title: "from-slack", origin: "slack" });
+    const conv = await createConversation({
+      title: "from-slack",
+      origin: "slack",
+    });
 
-    expect(getConversationOriginChannel(conv.id)).toBe("slack");
+    expect(await getConversationOriginChannel(conv.id)).toBe("slack");
   });
 });
 
-describe("inheriting the origin from a parent", () => {
-  test("a fork lands on its parent's channel", () => {
-    const parent = createConversation({ title: "parent", origin: "telegram" });
+describePg("inheriting the origin from a parent", () => {
+  test("a fork lands on its parent's channel", async () => {
+    const parent = await createConversation({
+      title: "parent",
+      origin: "telegram",
+    });
 
-    const fork = createConversation({
+    const fork = await createConversation({
       title: "fork",
       origin: { inheritFrom: parent.id },
     });
 
-    expect(rawOriginChannel(fork.id)).toBe("telegram");
+    expect(await rawOriginChannel(fork.id)).toBe("telegram");
   });
 
-  test("inheriting from a native parent stays native", () => {
-    const parent = createConversation({ title: "parent", origin: "vellum" });
+  test("inheriting from a native parent stays native", async () => {
+    const parent = await createConversation({
+      title: "parent",
+      origin: "vellum",
+    });
 
-    const fork = createConversation({
+    const fork = await createConversation({
       title: "fork",
       origin: { inheritFrom: parent.id },
     });
 
-    expect(rawOriginChannel(fork.id)).toBe("vellum");
+    expect(await rawOriginChannel(fork.id)).toBe("vellum");
   });
 
-  test("a parent whose own origin is unset yields an unset origin", () => {
+  test("a parent whose own origin is unset yields an unset origin", async () => {
     // Faithful inheritance, not an error. Most rows sit unattributed until a
     // message claims them or startup sweeps them, so treating this as a
     // failure would break the majority of forks and subagent spawns.
-    const parent = createConversation({ title: "unattributed-parent" });
+    const parent = await createConversation({ title: "unattributed-parent" });
 
-    const fork = createConversation({
+    const fork = await createConversation({
       title: "fork",
       origin: { inheritFrom: parent.id },
     });
 
-    expect(rawOriginChannel(fork.id)).toBeNull();
+    expect(await rawOriginChannel(fork.id)).toBeNull();
   });
 
-  test("a parent that does not exist fails the insert rather than defaulting", () => {
+  test("a parent that does not exist fails the insert rather than defaulting", async () => {
     // Defaulting here would be a trust grant, not a cosmetic guess:
     // `recoverRestingTrustContext` recovers INTERNAL_GUARDIAN_TRUST_CONTEXT
     // for the native channel, so a fork of a remote conversation whose parent
     // we failed to read would come back as the guardian's own on every later
     // wake and boot-resume.
-    expect(() =>
-      createConversation({
+    await expect(async () => {
+      await createConversation({
         title: "orphan",
         origin: { inheritFrom: "no-such-conversation" },
-      }),
-    ).toThrow(/Cannot inherit conversation origin/);
+      });
+    }).toThrow(/Cannot inherit conversation origin/);
   });
 
-  test("a remote parent's fork does not become native", () => {
+  test("a remote parent's fork does not become native", async () => {
     // The property that matters for trust, stated directly.
-    const parent = createConversation({ title: "parent", origin: "slack" });
+    const parent = await createConversation({
+      title: "parent",
+      origin: "slack",
+    });
 
-    const fork = createConversation({
+    const fork = await createConversation({
       title: "fork",
       origin: { inheritFrom: parent.id },
     });
 
-    expect(rawOriginChannel(fork.id)).not.toBe("vellum");
-    expect(rawOriginChannel(fork.id)).toBe("slack");
+    expect(await rawOriginChannel(fork.id)).not.toBe("vellum");
+    expect(await rawOriginChannel(fork.id)).toBe("slack");
   });
 });
 
-describe("callers that have not been migrated yet", () => {
-  test("omitting the origin leaves the column unset", () => {
-    const conv = createConversation({ title: "unmigrated" });
+describePg("callers that have not been migrated yet", () => {
+  test("omitting the origin leaves the column unset", async () => {
+    const conv = await createConversation({ title: "unmigrated" });
 
-    expect(rawOriginChannel(conv.id)).toBeNull();
+    expect(await rawOriginChannel(conv.id)).toBeNull();
   });
 
-  test("attribution still claims an unstamped row", () => {
-    const conv = createConversation({ title: "unmigrated" });
+  test("attribution still claims an unstamped row", async () => {
+    const conv = await createConversation({ title: "unmigrated" });
 
-    setConversationOriginChannelIfUnset(conv.id, "slack");
+    await setConversationOriginChannelIfUnset(conv.id, "slack");
 
-    expect(rawOriginChannel(conv.id)).toBe("slack");
+    expect(await rawOriginChannel(conv.id)).toBe("slack");
   });
 
-  test("attribution does not overwrite an origin stated at creation", () => {
+  test("attribution does not overwrite an origin stated at creation", async () => {
     // The `isNull` guard is what makes stamping and attribution able to
     // coexist during the migration: a row that already knows its origin is
     // never re-claimed by a later message.
-    const conv = createConversation({ title: "from-slack", origin: "slack" });
+    const conv = await createConversation({
+      title: "from-slack",
+      origin: "slack",
+    });
 
-    setConversationOriginChannelIfUnset(conv.id, "telegram");
+    await setConversationOriginChannelIfUnset(conv.id, "telegram");
 
-    expect(rawOriginChannel(conv.id)).toBe("slack");
+    expect(await rawOriginChannel(conv.id)).toBe("slack");
   });
 });

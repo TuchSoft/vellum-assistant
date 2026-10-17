@@ -11,7 +11,7 @@
  *   - Conversations seeded with a non-default source (e.g. `"auto-analysis"`)
  *     are returned with that value reflected verbatim.
  */
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, expect, mock, test } from "bun:test";
 
 mock.module("../config/env.js", () => ({
   isHttpAuthDisabled: () => true,
@@ -26,12 +26,10 @@ mock.module("../config/env.js", () => ({
 }));
 
 import { createConversation } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { RuntimeHttpServer } from "../runtime/http-server.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 type ConversationSummary = {
   id: string;
@@ -40,13 +38,13 @@ type ConversationSummary = {
   conversationType: string;
 };
 
-describe("GET /v1/conversations includes source discriminator", () => {
+describePg("GET /v1/conversations includes source discriminator", () => {
   let server: RuntimeHttpServer | null = null;
 
   beforeEach(async () => {
     await server?.stop();
     server = null;
-    clearTables();
+    await clearTables();
   });
 
   afterAll(async () => {
@@ -55,8 +53,8 @@ describe("GET /v1/conversations includes source discriminator", () => {
   });
 
   test("returns source for every listed conversation", async () => {
-    createConversation("First conversation");
-    createConversation("Second conversation");
+    await createConversation("First conversation");
+    await createConversation("Second conversation");
     await startServer();
 
     const response = await fetch(url("/conversations"));
@@ -73,7 +71,7 @@ describe("GET /v1/conversations includes source discriminator", () => {
   });
 
   test('defaults source to "user" for conversations created without an explicit source', async () => {
-    const created = createConversation("Default-source conversation");
+    const created = await createConversation("Default-source conversation");
     await startServer();
 
     const response = await fetch(url("/conversations"));
@@ -88,7 +86,7 @@ describe("GET /v1/conversations includes source discriminator", () => {
   });
 
   test('reflects a custom source (e.g. "auto-analysis") verbatim', async () => {
-    const created = createConversation({
+    const created = await createConversation({
       title: "Auto-analysis conversation",
       source: "auto-analysis",
     });
@@ -105,13 +103,13 @@ describe("GET /v1/conversations includes source discriminator", () => {
     expect(listed?.source).toBe("auto-analysis");
   });
 
-  function clearTables(): void {
-    const db = getDb();
-    db.run("DELETE FROM conversation_assistant_attention_state");
-    db.run("DELETE FROM external_conversation_bindings");
-    db.run("DELETE FROM conversation_keys");
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversations");
+  async function clearTables(): Promise<void> {
+    const db = requireMainDb();
+    await db.run("DELETE FROM conversation_assistant_attention_state");
+    await db.run("DELETE FROM external_conversation_bindings");
+    await db.run("DELETE FROM conversation_keys");
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
   }
 
   async function startServer(): Promise<void> {

@@ -9,35 +9,32 @@
  * prefix (`import:<provider>`, or `import:unknown` when absent).
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 mock.module("../plugins/defaults/memory/indexer.js", () => ({
   indexMessageNow: async () => {},
 }));
 
 import { getMessages } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations, messages } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { ROUTES } from "../runtime/routes/conversations-import-routes.js";
 import type { RouteHandlerArgs } from "../runtime/routes/types.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM conversations");
+async function resetTables() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM conversations");
 }
 
 const importHandler = ROUTES.find(
   (r) => r.operationId === "conversations_import",
 )!.handler;
 
-describe("conversations import system-row filtering", () => {
+describePg("conversations import system-row filtering", () => {
   beforeEach(resetTables);
 
   test("imports renderable turns but drops system rows", async () => {
@@ -73,21 +70,21 @@ describe("conversations import system-row filtering", () => {
 
     // AND the persisted rows are exactly the user/assistant turns, never the
     // system scaffolding
-    const db = getDb();
-    const conv = db.select().from(conversations).all()[0];
-    const rows = getMessages(conv.id);
+    const db = requireMainDb();
+    const conv = (
+      await db.all<{ id: string }>("SELECT * FROM conversations")
+    )[0]!;
+    const rows = await getMessages(conv.id);
     expect(rows.map((m) => m.role)).toEqual(["user", "assistant"]);
     expect(
-      db
-        .select()
-        .from(messages)
-        .all()
-        .some((m) => m.role === "system"),
+      (await db.all<{ role: string }>("SELECT * FROM messages")).some(
+        (m) => m.role === "system",
+      ),
     ).toBe(false);
   });
 });
 
-describe("conversations import provenance source", () => {
+describePg("conversations import provenance source", () => {
   beforeEach(resetTables);
 
   test("stamps import:<provider> from a prefixed sourceKey and keeps dedup", async () => {
@@ -109,8 +106,10 @@ describe("conversations import provenance source", () => {
     expect(result.imported).toBe(1);
 
     // THEN the created row records the provider-derived provenance source
-    const db = getDb();
-    const conv = db.select().from(conversations).all()[0];
+    const db = requireMainDb();
+    const conv = (
+      await db.all<{ source: string }>("SELECT * FROM conversations")
+    )[0]!;
     expect(conv.source).toBe("import:chatgpt");
 
     // AND re-importing the same sourceKey still dedups (no second row)
@@ -119,7 +118,7 @@ describe("conversations import provenance source", () => {
     } as unknown as RouteHandlerArgs)) as { imported: number; skipped: number };
     expect(again.imported).toBe(0);
     expect(again.skipped).toBe(1);
-    expect(db.select().from(conversations).all()).toHaveLength(1);
+    expect(await db.all("SELECT * FROM conversations")).toHaveLength(1);
   });
 
   test("normalizes non-canonical prefixes instead of dropping them", async () => {
@@ -146,11 +145,10 @@ describe("conversations import provenance source", () => {
     expect(result.imported).toBe(2);
 
     // THEN each prefix is normalized into import:<provider>, not import:unknown
-    const db = getDb();
-    const sources = db
-      .select()
-      .from(conversations)
-      .all()
+    const db = requireMainDb();
+    const sources = (
+      await db.all<{ source: string }>("SELECT * FROM conversations")
+    )
       .map((row) => row.source)
       .sort();
     expect(sources).toEqual(["import:chat-gpt", "import:openai"]);
@@ -174,8 +172,10 @@ describe("conversations import provenance source", () => {
     expect(result.imported).toBe(1);
 
     // THEN the created row falls back to the unknown-provider source
-    const db = getDb();
-    const conv = db.select().from(conversations).all()[0];
+    const db = requireMainDb();
+    const conv = (
+      await db.all<{ source: string }>("SELECT * FROM conversations")
+    )[0]!;
     expect(conv.source).toBe("import:unknown");
   });
 });

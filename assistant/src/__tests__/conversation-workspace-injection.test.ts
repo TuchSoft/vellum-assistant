@@ -334,7 +334,7 @@ describe("Conversation workspace injection — subagents", () => {
     resetPluginRegistryAndRegisterDefaults();
   });
 
-  test("workspace context resolves for subagent conversations not in the store", () => {
+  test("workspace context resolves for subagent conversations not in the store", async () => {
     const provider = {
       name: "mock",
       async sendMessage(): Promise<ProviderResponse> {
@@ -364,7 +364,7 @@ describe("Conversation workspace injection — subagents", () => {
 
       // The per-conversation workspace lookup still resolves them, so subagent
       // turns retain workspace grounding.
-      const context = resolveWorkspaceTopLevelContext(subagentId);
+      const context = await resolveWorkspaceTopLevelContext(subagentId);
       expect(context).not.toBeNull();
       expect(context).toContain("Root: /tmp");
     } finally {

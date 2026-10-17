@@ -1485,7 +1485,8 @@ describe("pairDeliveryWithConversation", () => {
         conversationMetadata: { groupId: "group-123" },
       });
       const original = structuredClone(signal);
-      const assistantInitiatedThread = resolveAssistantInitiatedThread(signal);
+      const assistantInitiatedThread =
+        await resolveAssistantInitiatedThread(signal);
       getConversationMock.mockClear();
       mockExistingConversations[signal.sourceContextId] = {
         id: signal.sourceContextId,
@@ -1515,7 +1516,8 @@ describe("pairDeliveryWithConversation", () => {
 
     test("an ineligible prepared resolution retains passive pairing when the flag changes", async () => {
       const signal = share();
-      const assistantInitiatedThread = resolveAssistantInitiatedThread(signal);
+      const assistantInitiatedThread =
+        await resolveAssistantInitiatedThread(signal);
       assistantInitiatedThreadsEnabled = true;
       mockExistingConversations[signal.sourceContextId] = {
         id: signal.sourceContextId,
@@ -1546,7 +1548,7 @@ describe("pairDeliveryWithConversation", () => {
         });
         const original = structuredClone(signal);
         const assistantInitiatedThread =
-          resolveAssistantInitiatedThread(signal);
+          await resolveAssistantInitiatedThread(signal);
         getConversationMock.mockClear();
 
         const result = await pairDeliveryWithConversation(
@@ -1574,7 +1576,8 @@ describe("pairDeliveryWithConversation", () => {
     test("platform delivery does not pair a prepared vellum resolution", async () => {
       assistantInitiatedThreadsEnabled = true;
       const signal = share();
-      const assistantInitiatedThread = resolveAssistantInitiatedThread(signal);
+      const assistantInitiatedThread =
+        await resolveAssistantInitiatedThread(signal);
 
       const result = await pairDeliveryWithConversation(
         signal,

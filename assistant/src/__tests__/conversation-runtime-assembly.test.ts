@@ -3,7 +3,6 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import type { PostCompactContext } from "@vellumai/plugin-api";
-import { eq } from "drizzle-orm";
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -147,9 +146,8 @@ import {
 } from "../messaging/providers/slack/message-metadata.js";
 import { parentAlias } from "../messaging/providers/slack/render-transcript.js";
 import type { MessageRow } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
-import { conversations, messages } from "../persistence/schema/index.js";
 import { registerDefaultPluginInjectors } from "../plugins/defaults/index.js";
 import { ConversationGraphMemory } from "../plugins/defaults/memory/graph/conversation-graph-memory.js";
 import postCompact from "../plugins/defaults/memory/hooks/post-compact.js";
@@ -182,6 +180,7 @@ import {
   getWorkspacePromptPath,
 } from "../util/platform.js";
 import { asConversation } from "./helpers/mock-conversation.js";
+import { describePg } from "./pg-test-db.js";
 
 // `applyRuntimeInjections` self-resolves the Slack active-thread focus block by
 // reading the live conversation's persisted message rows, so the schema must
@@ -3374,18 +3373,18 @@ describe("applyRuntimeInjections — PKB relevance hints", () => {
 // Slack channel chronological rendering (multi-thread)
 // ---------------------------------------------------------------------------
 
-describe("Slack channel chronological rendering — multi-thread", () => {
-  afterEach(() => {
+describePg("Slack channel chronological rendering — multi-thread", () => {
+  afterEach(async () => {
     clearConversations();
     // The focus-block tests persist rows under the runtime-assembly fallback
     // conversation; clear them so later tests resolve against an empty DB.
-    const db = getDb();
-    db.delete(messages)
-      .where(eq(messages.conversationId, "runtime-assembly-fallback"))
-      .run();
-    db.delete(conversations)
-      .where(eq(conversations.id, "runtime-assembly-fallback"))
-      .run();
+    const db = requireMainDb();
+    await db.run("DELETE FROM messages WHERE conversation_id = ?", [
+      "runtime-assembly-fallback",
+    ]);
+    await db.run("DELETE FROM conversations WHERE id = ?", [
+      "runtime-assembly-fallback",
+    ]);
   });
 
   // Slack ts values are seconds-since-epoch with microsecond precision.
@@ -3479,7 +3478,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
     // Persist the rows + live conversation so `applyRuntimeInjections`
     // self-resolves the chronological transcript from conversation state,
     // exactly as production does.
-    seedSlackChannelConversationWithRows(slackChannelCaps, rows);
+    await seedSlackChannelConversationWithRows(slackChannelCaps, rows);
     const { messages } = await applyRuntimeInjections([lastUserMessage], {
       conversationId: FALLBACK_CONVERSATION_ID,
     });
@@ -3813,7 +3812,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
         slackMeta: buildSlackMeta({ channelTs: T0_REPLY1 }),
       }),
     ];
-    seedSlackChannelConversationWithRows(
+    await seedSlackChannelConversationWithRows(
       {
         channel: "slack",
         dashboardCapable: false,
@@ -3871,7 +3870,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
       }),
     ];
     // A persisted watermark at T0 folds the first row into the summary.
-    seedSlackChannelConversationWithRows(slackCaps, rows, {
+    await seedSlackChannelConversationWithRows(slackCaps, rows, {
       slackContextCompactionWatermarkTs: T0,
       contextCompactedMessageCount: 1,
     });
@@ -3933,7 +3932,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
         extraOuterMetadata: { provenanceTrustClass: "guardian" },
       }),
     ];
-    seedSlackChannelConversationWithRows(slackCaps, rows);
+    await seedSlackChannelConversationWithRows(slackCaps, rows);
     const { messages: result } = await applyRuntimeInjections(
       runMessagesWithMemory,
       { conversationId: FALLBACK_CONVERSATION_ID },
@@ -3999,7 +3998,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
         extraOuterMetadata: { provenanceTrustClass: "guardian" },
       }),
     ];
-    seedSlackChannelConversationWithRows(slackCaps, rows);
+    await seedSlackChannelConversationWithRows(slackCaps, rows);
     const { messages: result } = await applyRuntimeInjections(
       runMessagesWithMemory,
       { conversationId: FALLBACK_CONVERSATION_ID },
@@ -4040,7 +4039,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
         extraOuterMetadata: { provenanceTrustClass: "guardian" },
       }),
     ];
-    seedSlackChannelConversationWithRows(slackCaps, rows);
+    await seedSlackChannelConversationWithRows(slackCaps, rows);
     const { messages: result } = await applyRuntimeInjections(
       [{ role: "user", content: [{ type: "text", text: "inbound" }] }],
       { conversationId: FALLBACK_CONVERSATION_ID },
@@ -4068,8 +4067,8 @@ describe("Slack channel chronological rendering — multi-thread", () => {
 
   /** A Slack DM conversation with one persisted transcript row, the live
    *  conversation the assembly under test resolves. */
-  function seedSlackImConversation(): void {
-    seedSlackChannelConversationWithRows(
+  async function seedSlackImConversation(): Promise<void> {
+    await seedSlackChannelConversationWithRows(
       {
         channel: "slack",
         dashboardCapable: false,
@@ -4143,7 +4142,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
     const seen = { ctx: null as TurnContext | null, commits: 0 };
     registerPluginInjectors(V3_PROBE_PLUGIN, [probeMemoryV3Injector(seen)]);
     try {
-      seedSlackImConversation();
+      await seedSlackImConversation();
 
       const { messages: result, blocks } = await applyRuntimeInjections(
         [{ role: "user", content: [{ type: "text", text: "inbound" }] }],
@@ -4275,7 +4274,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
     );
     const pluginDir = disableChannelPlugin();
     try {
-      seedSlackImConversation();
+      await seedSlackImConversation();
 
       const first = await applyRuntimeInjections(
         [{ role: "user", content: [{ type: "text", text: "inbound" }] }],
@@ -4326,7 +4325,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
       mirrorMemoryV3Injectors(claimed, seen),
     );
     try {
-      seedSlackImConversation();
+      await seedSlackImConversation();
 
       for (const turnIndex of [0, 1]) {
         const { messages: result, blocks } = await applyRuntimeInjections(
@@ -4467,7 +4466,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
         },
       }),
     ];
-    const result = loadSlackChronologicalMessages("conv-1", caps, {
+    const result = await loadSlackChronologicalMessages("conv-1", caps, {
       loader: () => rows,
       trustClass: "trusted_contact",
     });
@@ -4523,7 +4522,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
       cardRow,
     ];
 
-    const result = loadSlackChronologicalContext("conv-1", caps, {
+    const result = await loadSlackChronologicalContext("conv-1", caps, {
       loader: () => rows,
       trustClass: "guardian",
     });
@@ -4578,7 +4577,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
       }),
     ];
 
-    const result = loadSlackChronologicalContext("conv-1", caps, {
+    const result = await loadSlackChronologicalContext("conv-1", caps, {
       loader: () => rows,
       trustClass: "guardian",
       contextSummary: "## Summary\n- compacted Slack history",
@@ -4700,7 +4699,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
       }),
     ];
 
-    const result = loadSlackActiveThreadFocusBlock("conv-1", caps, {
+    const result = await loadSlackActiveThreadFocusBlock("conv-1", caps, {
       loader: () => rows,
       trustClass: "guardian",
       contextCompactedMessageCount: 3,
@@ -4749,7 +4748,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
       }),
     ];
 
-    const result = loadSlackChronologicalContext("conv-1", caps, {
+    const result = await loadSlackChronologicalContext("conv-1", caps, {
       loader: () => rows,
       trustClass: "guardian",
       contextSummary: "## Summary\n- compacted long Slack thread",
@@ -4787,7 +4786,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
 
   // ── loadSlackChronologicalMessages returns null for non-slack channels ─
   test("loadSlackChronologicalMessages returns null for non-slack channels", async () => {
-    const result = loadSlackChronologicalMessages(
+    const result = await loadSlackChronologicalMessages(
       "conv-1",
       {
         channel: "telegram",
@@ -4823,39 +4822,46 @@ describe("Slack channel chronological rendering — multi-thread", () => {
   // `<active_thread>` focus block from the conversation's stored rows — the same
   // way it does in production, where the injector reads the live conversation
   // rather than receiving a pre-built block.
-  function seedSlackChannelConversationWithRows(
+  async function seedSlackChannelConversationWithRows(
     caps: ChannelCapabilities,
     rows: MessageRow[],
     compaction: SeededCompactionState = {},
-  ): void {
-    const db = getDb();
+  ): Promise<void> {
+    const db = requireMainDb();
     const now = Date.now();
-    db.delete(messages)
-      .where(eq(messages.conversationId, "runtime-assembly-fallback"))
-      .run();
-    db.insert(conversations)
-      .values({
-        id: "runtime-assembly-fallback",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+    await db.run("DELETE FROM messages WHERE conversation_id = ?", [
+      "runtime-assembly-fallback",
+    ]);
+    await db.run("DELETE FROM conversations WHERE id = ?", [
+      "runtime-assembly-fallback",
+    ]);
+    await db.run(
+      "INSERT INTO conversations (id, created_at, updated_at) VALUES (?, ?, ?)",
+      ["runtime-assembly-fallback", now, now],
+    );
     if (rows.length > 0) {
-      db.insert(messages)
-        .values(
-          rows.map((r) => ({
-            id: r.id,
-            conversationId: "runtime-assembly-fallback",
-            role: r.role,
-            content:
-              typeof r.content === "string"
-                ? r.content
-                : JSON.stringify(r.content),
-            createdAt: r.createdAt,
-            metadata: r.metadata,
-          })),
-        )
-        .run();
+      for (let start = 0; start < rows.length; start += 50) {
+        const chunk = rows.slice(start, start + 50);
+        const values: string[] = [];
+        const params: Array<string | number | null> = [];
+        for (const r of chunk) {
+          values.push("(?, ?, ?, ?, ?, ?)");
+          params.push(
+            r.id,
+            "runtime-assembly-fallback",
+            r.role,
+            typeof r.content === "string"
+              ? r.content
+              : JSON.stringify(r.content),
+            r.createdAt,
+            r.metadata ?? null,
+          );
+        }
+        await db.run(
+          `INSERT INTO messages (id, conversation_id, role, content, created_at, metadata) VALUES ${values.join(", ")}`,
+          params,
+        );
+      }
     }
     setConversation(
       "runtime-assembly-fallback",
@@ -4894,8 +4900,12 @@ describe("Slack channel chronological rendering — multi-thread", () => {
       supportsVoiceInput: false,
       chatType: "channel",
     };
-    seedSlackChannelConversationWithRows(slackChannelCaps, rows, compaction);
-    const focusBlock = loadSlackActiveThreadFocusBlock(
+    await seedSlackChannelConversationWithRows(
+      slackChannelCaps,
+      rows,
+      compaction,
+    );
+    const focusBlock = await loadSlackActiveThreadFocusBlock(
       "runtime-assembly-fallback",
       slackChannelCaps,
       {
@@ -5363,7 +5373,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
   });
 
   test("loadSlackActiveThreadFocusBlock returns null for non-slack channels", async () => {
-    const result = loadSlackActiveThreadFocusBlock(
+    const result = await loadSlackActiveThreadFocusBlock(
       "conv-1",
       {
         channel: "telegram",
@@ -5392,7 +5402,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
       chatType: "im",
     };
     expect(
-      loadSlackActiveThreadFocusBlock("conv-1", dmCapsWithImType, {
+      await loadSlackActiveThreadFocusBlock("conv-1", dmCapsWithImType, {
         loader: () => {
           loaderCalls += 1;
           return [];
@@ -5406,7 +5416,7 @@ describe("Slack channel chronological rendering — multi-thread", () => {
       supportsVoiceInput: false,
     };
     expect(
-      loadSlackActiveThreadFocusBlock("conv-1", dmCapsNoChatType, {
+      await loadSlackActiveThreadFocusBlock("conv-1", dmCapsNoChatType, {
         loader: () => {
           loaderCalls += 1;
           return [];

@@ -10,9 +10,7 @@
  * effect adds to the reserved row.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
-
-import { eq } from "drizzle-orm";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 mock.module("../persistence/embeddings/qdrant-client.js", () => ({
   getQdrantClient: () => ({
@@ -52,63 +50,49 @@ import {
   reserveMessage,
   resurfaceArchivedConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations, messages } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   MEMORY_RETROSPECTIVE_INSTRUCTION_KIND,
   SKILL_CARD_MESSAGE_KIND,
 } from "../plugins/defaults/memory/memory-retrospective-constants.js";
 import { setConfig } from "./helpers/set-config.js";
+import { describePg } from "./pg-test-db.js";
 
 setConfig("memory", { extraction: { useLLM: false } });
-
-await initializeDb();
 
 const DONE_CONVERSATION_ID = "conv-done";
 const RETRO_FORK_ID = "conv-done-retro-fork";
 
-function insertConversation(id: string): void {
+async function insertConversation(id: string): Promise<void> {
   const now = Date.now();
-  getDb()
-    .insert(conversations)
-    .values({
-      id,
-      title: null,
-      createdAt: now,
-      updatedAt: now,
-      totalInputTokens: 0,
-      totalOutputTokens: 0,
-      totalEstimatedCost: 0,
-      contextSummary: null,
-      contextCompactedMessageCount: 0,
-      contextCompactedAt: null,
-    })
-    .run();
+  await requireMainDb().run(
+    "INSERT INTO conversations (id, created_at, updated_at) VALUES (?, ?, ?)",
+    [id, now, now],
+  );
 }
 
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
-  insertConversation(DONE_CONVERSATION_ID);
-  insertConversation(RETRO_FORK_ID);
-  archiveConversation(DONE_CONVERSATION_ID);
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
+  await insertConversation(DONE_CONVERSATION_ID);
+  await insertConversation(RETRO_FORK_ID);
+  await archiveConversation(DONE_CONVERSATION_ID);
   listInvalidations.length = 0;
 }
 
-function archivedAtOf(id: string): number | null | undefined {
-  return getConversation(id)?.archivedAt;
+async function archivedAtOf(id: string): Promise<number | null | undefined> {
+  return (await getConversation(id))?.archivedAt;
 }
 
 function blocks(text: string): string {
   return JSON.stringify([{ type: "text", text }]);
 }
 
-describe("Done conversations and new activity", () => {
-  beforeEach(() => {
+describePg("Done conversations and new activity", () => {
+  beforeEach(async () => {
     sidebarDoneEnabled = true;
-    resetTables();
+    await resetTables();
   });
 
   test("assistant output from a scheduled run brings the conversation back", async () => {
@@ -131,7 +115,7 @@ describe("Done conversations and new activity", () => {
       },
     );
 
-    expect(archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
+    expect(await archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
     expect(listInvalidations).toHaveLength(0);
 
     // The run's own output is what the user reads.
@@ -142,7 +126,7 @@ describe("Done conversations and new activity", () => {
       { metadata: { automated: true }, skipIndexing: true },
     );
 
-    expect(archivedAtOf(DONE_CONVERSATION_ID)).toBeNull();
+    expect(await archivedAtOf(DONE_CONVERSATION_ID)).toBeNull();
     expect(listInvalidations).toEqual([
       { reason: "reordered", conversationIds: DONE_CONVERSATION_ID },
     ]);
@@ -156,24 +140,27 @@ describe("Done conversations and new activity", () => {
       "inflight/ref.jsonl",
     );
 
-    expect(archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
+    expect(await archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
     expect(listInvalidations).toHaveLength(0);
 
     // The finalize seam is what resurfaces it, once the row holds content.
     expect(
-      resurfaceArchivedConversation(DONE_CONVERSATION_ID, reserved.createdAt),
+      await resurfaceArchivedConversation(
+        DONE_CONVERSATION_ID,
+        reserved.createdAt,
+      ),
     ).toBe(true);
-    expect(archivedAtOf(DONE_CONVERSATION_ID)).toBeNull();
+    expect(await archivedAtOf(DONE_CONVERSATION_ID)).toBeNull();
     expect(listInvalidations).toHaveLength(1);
   });
 
-  test("a Done mark made after the activity wins over the resurface", () => {
+  test("a Done mark made after the activity wins over the resurface", async () => {
     const activityAt = Date.now() - 60_000;
 
     expect(
-      resurfaceArchivedConversation(DONE_CONVERSATION_ID, activityAt),
+      await resurfaceArchivedConversation(DONE_CONVERSATION_ID, activityAt),
     ).toBe(false);
-    expect(archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
+    expect(await archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
     expect(listInvalidations).toHaveLength(0);
   });
 
@@ -186,7 +173,7 @@ describe("Done conversations and new activity", () => {
       skipIndexing: true,
     });
 
-    expect(archivedAtOf(DONE_CONVERSATION_ID)).toBeNull();
+    expect(await archivedAtOf(DONE_CONVERSATION_ID)).toBeNull();
     expect(listInvalidations).toHaveLength(1);
   });
 
@@ -204,7 +191,7 @@ describe("Done conversations and new activity", () => {
       skipIndexing: true,
     });
 
-    expect(archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
+    expect(await archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
     expect(listInvalidations).toHaveLength(0);
   });
 
@@ -220,7 +207,7 @@ describe("Done conversations and new activity", () => {
       skipIndexing: true,
     });
 
-    expect(archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
+    expect(await archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
     expect(listInvalidations).toHaveLength(0);
   });
 
@@ -255,7 +242,7 @@ describe("Done conversations and new activity", () => {
       },
     );
 
-    expect(archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
+    expect(await archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
     expect(listInvalidations).toHaveLength(0);
   });
 
@@ -276,14 +263,13 @@ describe("Done conversations and new activity", () => {
       { metadata: { automated: true }, skipIndexing: true },
     );
 
-    expect(archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
+    expect(await archivedAtOf(DONE_CONVERSATION_ID)).not.toBeNull();
     expect(listInvalidations).toHaveLength(0);
     expect(
-      getDb()
-        .select()
-        .from(messages)
-        .where(eq(messages.conversationId, DONE_CONVERSATION_ID))
-        .all(),
+      await requireMainDb().all(
+        "SELECT * FROM messages WHERE conversation_id = ?",
+        [DONE_CONVERSATION_ID],
+      ),
     ).toHaveLength(2);
   });
 });

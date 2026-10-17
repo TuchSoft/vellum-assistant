@@ -1,22 +1,16 @@
-import type { Database } from "bun:sqlite";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { createConversation } from "../persistence/conversation-crud.js";
-import { ensureGroupMigration } from "../persistence/conversation-group-migration.js";
+import { ensureGroupMigrationAsync } from "../persistence/conversation-group-migration.js";
 import {
   listConversations,
   listPinnedConversations,
 } from "../persistence/conversation-queries.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { createGroup } from "../persistence/group-crud.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-ensureGroupMigration();
-
-function getRawDb(): Database {
-  return (getDb() as unknown as { $client: Database }).$client;
-}
+await ensureGroupMigrationAsync();
 
 /**
  * Every conversation list orders by recency, pinned and custom groups
@@ -30,16 +24,20 @@ function getRawDb(): Database {
  * Each test sets `display_order` to contradict recency, so a read that
  * consults it fails here rather than passing by coincidence.
  */
-describe("conversation list ordering ignores display_order", () => {
+describePg("conversation list ordering ignores display_order", () => {
   beforeEach(async () => {
-    const raw = getRawDb();
-    raw.run("DELETE FROM conversations");
-    raw.run("DELETE FROM conversation_groups WHERE is_system_group = 0");
+    const db = requireMainDb();
+    await db.run("DELETE FROM conversations");
+    await db.run("DELETE FROM conversation_groups WHERE is_system_group = 0");
   });
 
   /** Give a row a `display_order` and a recency stamp that disagree. */
-  function arrange(id: string, displayOrder: number, lastMessageAt: number) {
-    getRawDb().run(
+  async function arrange(
+    id: string,
+    displayOrder: number,
+    lastMessageAt: number,
+  ): Promise<void> {
+    await requireMainDb().run(
       "UPDATE conversations SET display_order = ?, last_message_at = ? WHERE id = ?",
       [displayOrder, lastMessageAt, id],
     );
@@ -47,34 +45,34 @@ describe("conversation list ordering ignores display_order", () => {
 
   test("a custom group orders by recency, ignoring display_order", async () => {
     const groupId = (await createGroup("Briefs")).id;
-    createConversation({ id: "conv-old", source: "user", groupId });
-    createConversation({ id: "conv-new", source: "user", groupId });
+    await createConversation({ id: "conv-old", source: "user", groupId });
+    await createConversation({ id: "conv-new", source: "user", groupId });
     // `display_order` says old-then-new; recency says the opposite.
-    arrange("conv-old", 0, 1_000);
-    arrange("conv-new", 1, 9_000);
+    await arrange("conv-old", 0, 1_000);
+    await arrange("conv-new", 1, 9_000);
 
-    expect(listConversations({ groupId }).map((c) => c.id)).toEqual([
+    expect((await listConversations({ groupId })).map((c) => c.id)).toEqual([
       "conv-new",
       "conv-old",
     ]);
   });
 
   test("the pinned group orders by recency, ignoring display_order", async () => {
-    createConversation({
+    await createConversation({
       id: "pin-old",
       source: "user",
       groupId: "system:pinned",
     });
-    createConversation({
+    await createConversation({
       id: "pin-new",
       source: "user",
       groupId: "system:pinned",
     });
-    arrange("pin-old", 0, 1_000);
-    arrange("pin-new", 1, 9_000);
+    await arrange("pin-old", 0, 1_000);
+    await arrange("pin-new", 1, 9_000);
 
     expect(
-      listConversations({ groupId: "system:pinned" }).map((c) => c.id),
+      (await listConversations({ groupId: "system:pinned" })).map((c) => c.id),
     ).toEqual(["pin-new", "pin-old"]);
   });
 
@@ -82,21 +80,21 @@ describe("conversation list ordering ignores display_order", () => {
      the same guarantee: one section must not have two orderings depending on
      which read served it. */
   test("listPinnedConversations orders by recency too", async () => {
-    createConversation({
+    await createConversation({
       id: "pin-old",
       source: "user",
       groupId: "system:pinned",
     });
-    createConversation({
+    await createConversation({
       id: "pin-new",
       source: "user",
       groupId: "system:pinned",
     });
-    getRawDb().run("UPDATE conversations SET is_pinned = 1");
-    arrange("pin-old", 0, 1_000);
-    arrange("pin-new", 1, 9_000);
+    await requireMainDb().run("UPDATE conversations SET is_pinned = 1");
+    await arrange("pin-old", 0, 1_000);
+    await arrange("pin-new", 1, 9_000);
 
-    expect(listPinnedConversations().map((c) => c.id)).toEqual([
+    expect((await listPinnedConversations()).map((c) => c.id)).toEqual([
       "pin-new",
       "pin-old",
     ]);

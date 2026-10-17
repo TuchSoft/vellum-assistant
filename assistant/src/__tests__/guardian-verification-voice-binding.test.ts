@@ -2,7 +2,7 @@
  * Regression test: guardian verification calls must create a voice channel
  * binding so the conversation never appears as an unbound desktop conversation.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 mock.module("../calls/twilio-config.js", () => ({
   getTwilioConfig: () => ({
@@ -70,12 +70,10 @@ mock.module("../persistence/conversation-title-service.js", () => ({
 
 import { startVerificationCall } from "../calls/call-domain.js";
 import { getOrCreateConversation } from "../persistence/conversation-key-store.js";
-import { initializeDb } from "../persistence/db-init.js";
 import { getBindingByConversation } from "../persistence/external-conversation-store.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-describe("startVerificationCall — voice binding", () => {
+describePg("startVerificationCall — voice binding", () => {
   beforeEach(() => {
     mockPreflightResult = {
       ok: true as const,
@@ -98,10 +96,10 @@ describe("startVerificationCall — voice binding", () => {
 
     // Look up the conversation that was created for this guardian verification
     const convKey = `guardian-verify:${sessionId}`;
-    const { conversationId } = getOrCreateConversation(convKey);
+    const { conversationId } = await getOrCreateConversation(convKey);
 
     // The conversation must have a voice channel binding
-    const binding = getBindingByConversation(conversationId);
+    const binding = await getBindingByConversation(conversationId);
     expect(binding).not.toBeNull();
     expect(binding!.sourceChannel).toBe("phone");
   });

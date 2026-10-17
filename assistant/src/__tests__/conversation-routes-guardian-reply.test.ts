@@ -210,7 +210,7 @@ describe("handleSendMessage guardian reply interception", () => {
           sendMessageDeps: {
             getOrCreateConversation: async () => session,
             assistantEventHub: { publish: async () => {} } as any,
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       req,
@@ -301,7 +301,7 @@ describe("handleSendMessage guardian reply interception", () => {
           sendMessageDeps: {
             getOrCreateConversation: async () => session,
             assistantEventHub: { publish: async () => {} } as any,
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       req,
@@ -381,7 +381,7 @@ describe("handleSendMessage guardian reply interception", () => {
           sendMessageDeps: {
             getOrCreateConversation: async () => session,
             assistantEventHub: { publish: async () => {} } as any,
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       req,
@@ -470,7 +470,7 @@ describe("handleSendMessage guardian reply interception", () => {
           sendMessageDeps: {
             getOrCreateConversation: async () => session,
             assistantEventHub: { publish: async () => {} } as any,
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       req,
@@ -558,7 +558,7 @@ describe("handleSendMessage guardian reply interception", () => {
           sendMessageDeps: {
             getOrCreateConversation: async () => session,
             assistantEventHub: { publish: async () => {} } as any,
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       req,
@@ -642,7 +642,7 @@ describe("handleSendMessage guardian reply interception", () => {
           sendMessageDeps: {
             getOrCreateConversation: async () => session,
             assistantEventHub: { publish: async () => {} } as any,
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       req,
@@ -720,7 +720,7 @@ describe("handleSendMessage guardian reply interception", () => {
           sendMessageDeps: {
             getOrCreateConversation: async () => session,
             assistantEventHub: { publish: async () => {} } as any,
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       req,
@@ -800,7 +800,7 @@ describe("handleSendMessage guardian reply interception", () => {
           sendMessageDeps: {
             getOrCreateConversation: async () => session,
             assistantEventHub: { publish: async () => {} } as any,
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
           approvalConversationGenerator: mockGenerator as any,
         }),
@@ -881,7 +881,7 @@ describe("handleSendMessage guardian reply interception", () => {
           sendMessageDeps: {
             getOrCreateConversation: async () => session,
             assistantEventHub: { publish: async () => {} } as any,
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
           approvalConversationGenerator: mockGenerator as any,
         }),

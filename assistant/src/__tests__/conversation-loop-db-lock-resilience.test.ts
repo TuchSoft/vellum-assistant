@@ -159,7 +159,7 @@ describe("agent loop SQLite write-contention resilience", () => {
     // ... the finalization completed ...
     expect(state.assistantRowAwaitingFinalization).toBe(false);
     // ... and the persisted seq advanced because the content is durable.
-    expect(getConversationPersistedSeq(CONVERSATION_ID)).toBe(5);
+    expect(await getConversationPersistedSeq(CONVERSATION_ID)).toBe(5);
   });
 
   test("swallows a persistent SQLITE_BUSY without aborting the turn", async () => {
@@ -178,6 +178,6 @@ describe("agent loop SQLite write-contention resilience", () => {
     // ... no content landed ...
     expect(writtenContentById.has("assistant-row")).toBe(false);
     // ... and the seq was NOT advanced past content that never became durable.
-    expect(getConversationPersistedSeq(CONVERSATION_ID)).toBeNull();
+    expect(await getConversationPersistedSeq(CONVERSATION_ID)).toBeNull();
   });
 });

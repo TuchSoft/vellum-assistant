@@ -12,15 +12,16 @@ import {
 } from "../daemon/conversation-history.js";
 import { registerPluginHooks } from "../hooks/registry.js";
 import { addMessage, getMessages } from "../persistence/conversation-crud.js";
-import { getDb, getMemorySqlite } from "../persistence/db-connection.js";
+import { getMemorySqlite } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
-import { conversations, messages } from "../persistence/schema/index.js";
 import memoryMessageDeleted from "../plugins/defaults/memory/hooks/message-deleted.js";
 import {
   ensureRetrospectiveCursorColumn,
   getRetrospectiveState,
 } from "../plugins/defaults/memory/memory-retrospective-state.js";
 import type { PluginHooks } from "../plugins/types.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
@@ -32,24 +33,17 @@ registerPluginHooks("default-memory", {
 
 const CONV_ID = "conv-retry-discard-test";
 
-function seedConversation(): void {
+async function seedConversation(): Promise<void> {
   const now = Date.now();
-  getDb()
-    .insert(conversations)
-    .values({
-      id: CONV_ID,
-      title: "Retry discard test",
-      createdAt: now,
-      updatedAt: now,
-      source: "test",
-      conversationType: "standard",
-    })
-    .run();
+  await requireMainDb().run(
+    "INSERT INTO conversations (id, title, created_at, updated_at, source, conversation_type) VALUES (?, ?, ?, ?, ?, ?)",
+    [CONV_ID, "Retry discard test", now, now, "test", "standard"],
+  );
 }
 
-function clearAll(): void {
-  getDb().delete(messages).run();
-  getDb().delete(conversations).run();
+async function clearAll(): Promise<void> {
+  await requireMainDb().run("DELETE FROM messages");
+  await requireMainDb().run("DELETE FROM conversations");
 }
 
 const text = (t: string) => JSON.stringify([{ type: "text", text: t }]);
@@ -80,24 +74,24 @@ async function seed(
   return ids;
 }
 
-beforeEach(() => {
-  clearAll();
-  seedConversation();
+beforeEach(async () => {
+  await clearAll();
+  await seedConversation();
 });
 
-describe("discardLastAssistantDisplayTurn", () => {
+describePg("discardLastAssistantDisplayTurn", () => {
   test("deletes the assistant reply, keeps the user anchor", async () => {
     const [userId, assistantId] = await seed([
       { role: "user", content: text("hello") },
       { role: "assistant", content: text("Processing failed: boom") },
     ]);
 
-    const result = discardLastAssistantDisplayTurn(CONV_ID);
+    const result = await discardLastAssistantDisplayTurn(CONV_ID);
 
     expect(result).not.toBeNull();
     expect(result!.anchor.id).toBe(userId);
     expect(result!.deletedMessageIds).toEqual([assistantId]);
-    expect(getMessages(CONV_ID).map((m) => m.id)).toEqual([userId]);
+    expect((await getMessages(CONV_ID)).map((m) => m.id)).toEqual([userId]);
   });
 
   test("deletes a multi-row display turn (assistant, tool_result, assistant)", async () => {
@@ -108,12 +102,12 @@ describe("discardLastAssistantDisplayTurn", () => {
       { role: "assistant", content: text("found it") },
     ]);
 
-    const result = discardLastAssistantDisplayTurn(CONV_ID);
+    const result = await discardLastAssistantDisplayTurn(CONV_ID);
 
     expect(result!.anchor.id).toBe(userId);
     // Newest-first: an interrupted run leaves a well-formed shorter tail.
     expect(result!.deletedMessageIds).toEqual([a2, tr, a1]);
-    expect(getMessages(CONV_ID).map((m) => m.id)).toEqual([userId]);
+    expect((await getMessages(CONV_ID)).map((m) => m.id)).toEqual([userId]);
   });
 
   test("never anchors on a tool-result-only user row", async () => {
@@ -123,7 +117,7 @@ describe("discardLastAssistantDisplayTurn", () => {
       { role: "user", content: toolResultOnly() },
     ]);
 
-    const result = discardLastAssistantDisplayTurn(CONV_ID);
+    const result = await discardLastAssistantDisplayTurn(CONV_ID);
 
     expect(result!.anchor.id).toBe(userId);
     expect(result!.deletedMessageIds).toEqual([tr, a1]);
@@ -143,11 +137,11 @@ describe("discardLastAssistantDisplayTurn", () => {
       { role: "assistant", content: text("Processing failed: boom") },
     ]);
 
-    const result = discardLastAssistantDisplayTurn(CONV_ID);
+    const result = await discardLastAssistantDisplayTurn(CONV_ID);
 
     expect(result!.anchor.id).toBe(wakeId);
     expect(result!.deletedMessageIds).toEqual([replyId]);
-    expect(getMessages(CONV_ID)).toHaveLength(3);
+    expect(await getMessages(CONV_ID)).toHaveLength(3);
   });
 
   test("earlier turns are untouched", async () => {
@@ -158,11 +152,11 @@ describe("discardLastAssistantDisplayTurn", () => {
       { role: "assistant", content: text("second answer") },
     ]);
 
-    const result = discardLastAssistantDisplayTurn(CONV_ID);
+    const result = await discardLastAssistantDisplayTurn(CONV_ID);
 
     expect(result!.anchor.id).toBe(u2);
     expect(result!.deletedMessageIds).toEqual([a2]);
-    expect(getMessages(CONV_ID).map((m) => m.id)).toEqual([u1, a1, u2]);
+    expect((await getMessages(CONV_ID)).map((m) => m.id)).toEqual([u1, a1, u2]);
   });
 
   test("no turn-starting user row → null, nothing deleted", async () => {
@@ -170,8 +164,10 @@ describe("discardLastAssistantDisplayTurn", () => {
       { role: "assistant", content: text("orphan assistant row") },
     ]);
 
-    expect(discardLastAssistantDisplayTurn(CONV_ID)).toBeNull();
-    expect(getMessages(CONV_ID).map((m) => m.id)).toEqual([assistantId]);
+    expect(await discardLastAssistantDisplayTurn(CONV_ID)).toBeNull();
+    expect((await getMessages(CONV_ID)).map((m) => m.id)).toEqual([
+      assistantId,
+    ]);
   });
 
   test("empty tail → anchor returned with no deletions", async () => {
@@ -179,11 +175,11 @@ describe("discardLastAssistantDisplayTurn", () => {
       { role: "user", content: text("no reply yet") },
     ]);
 
-    const result = discardLastAssistantDisplayTurn(CONV_ID);
+    const result = await discardLastAssistantDisplayTurn(CONV_ID);
 
     expect(result!.anchor.id).toBe(userId);
     expect(result!.deletedMessageIds).toEqual([]);
-    expect(getMessages(CONV_ID).map((m) => m.id)).toEqual([userId]);
+    expect((await getMessages(CONV_ID)).map((m) => m.id)).toEqual([userId]);
   });
 
   test("clears the anchor's turnOutcome failure stamp", async () => {
@@ -196,9 +192,9 @@ describe("discardLastAssistantDisplayTurn", () => {
       { role: "assistant", content: text("Processing failed: boom") },
     ]);
 
-    discardLastAssistantDisplayTurn(CONV_ID);
+    await discardLastAssistantDisplayTurn(CONV_ID);
 
-    const anchor = getMessages(CONV_ID).find((m) => m.id === userId)!;
+    const anchor = (await getMessages(CONV_ID)).find((m) => m.id === userId)!;
     const metadata = JSON.parse(anchor.metadata!) as Record<string, unknown>;
     expect(metadata.turnOutcome).toBeNull();
     expect(metadata.turnFailureCode).toBeNull();
@@ -225,42 +221,48 @@ describe("extractUserPromptText", () => {
   });
 });
 
-describe("discardLastAssistantDisplayTurn keeps the memory-retrospective cursor placeable", () => {
-  beforeEach(() => {
-    ensureRetrospectiveCursorColumn("test");
-    getMemorySqlite()!.exec(`DELETE FROM memory_retrospective_state`);
-  });
+describePg(
+  "discardLastAssistantDisplayTurn keeps the memory-retrospective cursor placeable",
+  () => {
+    beforeEach(() => {
+      ensureRetrospectiveCursorColumn("test");
+      getMemorySqlite()!.exec(`DELETE FROM memory_retrospective_state`);
+    });
 
-  test("a cursor stored without its timestamp gets it from the reply being discarded", async () => {
-    const [, assistantId] = await seed([
-      { role: "user", content: text("hello") },
-      { role: "assistant", content: text("first attempt") },
-    ]);
-    const replyCreatedAt = getMessages(CONV_ID).find(
-      (m) => m.id === assistantId,
-    )!.createdAt;
-    // A state row as a build without the timestamp column wrote it: the
-    // retrospective reviewed through the reply, so the cursor sits on it.
-    getMemorySqlite()!
-      .query(
-        `INSERT INTO memory_retrospective_state
+    test("a cursor stored without its timestamp gets it from the reply being discarded", async () => {
+      const [, assistantId] = await seed([
+        { role: "user", content: text("hello") },
+        { role: "assistant", content: text("first attempt") },
+      ]);
+      const replyCreatedAt = (await getMessages(CONV_ID)).find(
+        (m) => m.id === assistantId,
+      )!.createdAt;
+      // A state row as a build without the timestamp column wrote it: the
+      // retrospective reviewed through the reply, so the cursor sits on it.
+      getMemorySqlite()!
+        .query(
+          `INSERT INTO memory_retrospective_state
            (conversation_id, last_processed_message_id, last_run_at, remembered_log, last_processed_created_at)
          VALUES (?, ?, 1, NULL, NULL)`,
-      )
-      .run(CONV_ID, assistantId);
+        )
+        .run(CONV_ID, assistantId);
 
-    discardLastAssistantDisplayTurn(CONV_ID);
+      await discardLastAssistantDisplayTurn(CONV_ID);
 
-    expect(getMessages(CONV_ID).some((m) => m.id === assistantId)).toBe(false);
-    // The hook chain is fire-and-forget from the delete primitive, so the
-    // stamp lands shortly after the discard returns.
-    const deadline = Date.now() + 2_000;
-    let stamped =
-      getRetrospectiveState(CONV_ID)?.lastProcessedCreatedAt ?? null;
-    while (stamped === null && Date.now() < deadline) {
-      await Bun.sleep(10);
-      stamped = getRetrospectiveState(CONV_ID)?.lastProcessedCreatedAt ?? null;
-    }
-    expect(stamped).toBe(replyCreatedAt);
-  });
-});
+      expect(
+        (await getMessages(CONV_ID)).some((m) => m.id === assistantId),
+      ).toBe(false);
+      // The hook chain is fire-and-forget from the delete primitive, so the
+      // stamp lands shortly after the discard returns.
+      const deadline = Date.now() + 2_000;
+      let stamped =
+        getRetrospectiveState(CONV_ID)?.lastProcessedCreatedAt ?? null;
+      while (stamped === null && Date.now() < deadline) {
+        await Bun.sleep(10);
+        stamped =
+          getRetrospectiveState(CONV_ID)?.lastProcessedCreatedAt ?? null;
+      }
+      expect(stamped).toBe(replyCreatedAt);
+    });
+  },
+);

@@ -7,7 +7,7 @@
  *  - Is idempotent across successive edits (subsequent edits keep updating).
  *  - Treats missing-target edits as a silent no-op (no throw, no row change).
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { eq } from "drizzle-orm";
 
@@ -15,20 +15,22 @@ import { readSlackMetadata } from "../messaging/providers/slack/message-metadata
 import { readProviderMetadata } from "../messaging/read-provider-metadata.js";
 import { addMessage } from "../persistence/conversation-crud.js";
 import { getConversationByKey } from "../persistence/conversation-key-store.js";
-import { getDb, getMemoryDb } from "../persistence/db-connection.js";
+import { getMemoryDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { linkMessage, recordInbound } from "../persistence/delivery-crud.js";
-import { memoryJobs, messages } from "../persistence/schema/index.js";
+import { memoryJobs } from "../persistence/schema/index.js";
 import { handleEditIntercept } from "../runtime/routes/inbound-stages/edit-intercept.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM channel_inbound_events");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM channel_inbound_events");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM conversations");
   // memory_jobs lives in the dedicated memory connection.
   getMemoryDb()!.run("DELETE FROM memory_jobs");
 }
@@ -78,7 +80,7 @@ async function seedSlackMessage(opts: {
   const { conversationExternalId, channelTs, initialContent } = opts;
   const sourceChannel = opts.sourceChannel ?? "slack";
 
-  const inboundResult = recordInbound(
+  const inboundResult = await recordInbound(
     sourceChannel,
     conversationExternalId,
     channelTs,
@@ -94,7 +96,7 @@ async function seedSlackMessage(opts: {
     { metadata: { userMessageChannel: sourceChannel }, skipIndexing: true },
   );
 
-  linkMessage(inboundResult.eventId, inserted.id);
+  await linkMessage(inboundResult.eventId, inserted.id);
 
   return {
     conversationId: inboundResult.conversationId,
@@ -104,16 +106,14 @@ async function seedSlackMessage(opts: {
   };
 }
 
-function readMessageRow(messageId: string): {
+async function readMessageRow(messageId: string): Promise<{
   content: string;
   metadata: string | null;
-} {
-  const db = getDb();
-  const row = db
-    .select({ content: messages.content, metadata: messages.metadata })
-    .from(messages)
-    .where(eq(messages.id, messageId))
-    .get();
+}> {
+  const row = await requireMainDb().get<{
+    content: string;
+    metadata: string | null;
+  }>("SELECT content, metadata FROM messages WHERE id = ?", [messageId]);
   if (!row) {
     throw new Error(`message ${messageId} not found`);
   }
@@ -126,9 +126,9 @@ function nextEditEventId(): string {
   return `edit-event-${Date.now()}-${editEventCounter}`;
 }
 
-describe("Slack edit propagation", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("Slack edit propagation", () => {
+  beforeEach(async () => {
+    await resetTables();
     editEventCounter = 0;
   });
 
@@ -139,7 +139,7 @@ describe("Slack edit propagation", () => {
       initialContent: "original text",
     });
 
-    const before = readMessageRow(seeded.messageId);
+    const before = await readMessageRow(seeded.messageId);
     expect(before.content).toBe("original text");
 
     const t0 = Date.now();
@@ -156,7 +156,7 @@ describe("Slack edit propagation", () => {
     expect(respJson.accepted).toBe(true);
     expect(respJson.duplicate).toBe(false);
 
-    const after = readMessageRow(seeded.messageId);
+    const after = await readMessageRow(seeded.messageId);
     expect(after.content).toBe("new text");
 
     expect(after.metadata).not.toBeNull();
@@ -199,7 +199,7 @@ describe("Slack edit propagation", () => {
     expect(respJson.accepted).toBe(true);
     expect(respJson.duplicate).toBe(false);
 
-    const after = readMessageRow(seeded.messageId);
+    const after = await readMessageRow(seeded.messageId);
     expect(after.content).toBe("corrected text");
 
     const neutral = readProviderMetadata(after.metadata);
@@ -216,13 +216,10 @@ describe("Slack edit propagation", () => {
   test("an edit of a message the assistant never stored creates no conversation", async () => {
     // Keying a conversation off the edit's own address made every edit of an
     // unseen message mint one, permanently titled with the loading placeholder.
-    const db = getDb();
-    const countRows = (table: string): number =>
-      (
-        db.$client.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
-          n: number;
-        }
-      ).n;
+    const countRows = async (table: string): Promise<number> =>
+      (await requireMainDb().get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM ${table}`,
+      ))!.n;
 
     const resp = (await handleEditIntercept({
       sourceChannel: "slack",
@@ -235,9 +232,9 @@ describe("Slack edit propagation", () => {
 
     expect(resp.accepted).toBe(true);
     expect(resp.edited).toBe(false);
-    expect(countRows("conversations")).toBe(0);
-    expect(countRows("channel_inbound_events")).toBe(0);
-    expect(countRows("messages")).toBe(0);
+    expect(await countRows("conversations")).toBe(0);
+    expect(await countRows("channel_inbound_events")).toBe(0);
+    expect(await countRows("messages")).toBe(0);
   }, 30_000);
 
   test("an edit records against the edited message's conversation, not a new one", async () => {
@@ -246,12 +243,9 @@ describe("Slack edit propagation", () => {
       channelTs: "1234.5678",
       initialContent: "original text",
     });
-    const db = getDb();
-    const conversationsBefore = (
-      db.$client.prepare("SELECT COUNT(*) AS n FROM conversations").get() as {
-        n: number;
-      }
-    ).n;
+    const conversationsBefore = (await requireMainDb().get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM conversations",
+    ))!.n;
 
     await handleEditIntercept({
       sourceChannel: "slack",
@@ -262,19 +256,17 @@ describe("Slack edit propagation", () => {
       content: "new text",
     });
 
-    const conversationsAfter = (
-      db.$client.prepare("SELECT COUNT(*) AS n FROM conversations").get() as {
-        n: number;
-      }
-    ).n;
+    const conversationsAfter = (await requireMainDb().get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM conversations",
+    ))!.n;
     expect(conversationsAfter).toBe(conversationsBefore);
 
-    const editEvents = db.$client
-      .prepare(
-        `SELECT conversation_id AS conversationId FROM channel_inbound_events
+    const editEvents = await requireMainDb().all<{
+      conversationId: string;
+    }>(
+      `SELECT conversation_id AS "conversationId" FROM channel_inbound_events
          WHERE external_message_id LIKE 'edit-event-%'`,
-      )
-      .all() as Array<{ conversationId: string }>;
+    );
     expect(editEvents).toHaveLength(1);
     expect(editEvents[0].conversationId).toBe(seeded.conversationId);
   });
@@ -312,14 +304,11 @@ describe("Slack edit propagation", () => {
       channelTs: "1234.5678",
       initialContent: "original text",
     });
-    const db = getDb();
-    const conversationCount = (): number =>
-      (
-        db.$client.prepare("SELECT COUNT(*) AS n FROM conversations").get() as {
-          n: number;
-        }
-      ).n;
-    const before = conversationCount();
+    const conversationCount = async (): Promise<number> =>
+      (await requireMainDb().get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM conversations",
+      ))!.n;
+    const before = await conversationCount();
 
     const resp = await handleEditIntercept({
       sourceChannel: "slack",
@@ -336,10 +325,10 @@ describe("Slack edit propagation", () => {
     // The thread id names where the reply goes, not a conversation of the
     // edit's own. Keying one off it is what minted a conversation per edit.
     const threadedKey = `asst:self:slack:${conversationExternalId}:thread:${threadTs}`;
-    expect(getConversationByKey(threadedKey)).toBeNull();
-    expect(conversationCount()).toBe(before);
+    expect(await getConversationByKey(threadedKey)).toBeNull();
+    expect(await conversationCount()).toBe(before);
 
-    const after = readMessageRow(seeded.messageId);
+    const after = await readMessageRow(seeded.messageId);
     const outer = JSON.parse(after.metadata!) as Record<string, unknown>;
     const slackMeta = readSlackMetadata(outer.slackMeta as string);
     expect(slackMeta?.threadTs).toBe(threadTs);
@@ -361,7 +350,7 @@ describe("Slack edit propagation", () => {
       content: "first edit",
     });
 
-    const afterFirst = readMessageRow(seeded.messageId);
+    const afterFirst = await readMessageRow(seeded.messageId);
     expect(afterFirst.content).toBe("first edit");
     const firstSlackMeta = readSlackMetadata(
       (JSON.parse(afterFirst.metadata!) as Record<string, unknown>)
@@ -383,7 +372,7 @@ describe("Slack edit propagation", () => {
       content: "second edit",
     });
 
-    const afterSecond = readMessageRow(seeded.messageId);
+    const afterSecond = await readMessageRow(seeded.messageId);
     expect(afterSecond.content).toBe("second edit");
     const secondSlackMeta = readSlackMetadata(
       (JSON.parse(afterSecond.metadata!) as Record<string, unknown>)
@@ -404,7 +393,7 @@ describe("Slack edit propagation", () => {
       initialContent: "original text",
     });
 
-    const before = readMessageRow(seeded.messageId);
+    const before = await readMessageRow(seeded.messageId);
 
     const resp = await handleEditIntercept({
       sourceChannel: "slack",
@@ -422,7 +411,7 @@ describe("Slack edit propagation", () => {
     expect(respJson.duplicate).toBe(false);
     expect(respJson.noop).toBe(true);
 
-    const after = readMessageRow(seeded.messageId);
+    const after = await readMessageRow(seeded.messageId);
     expect(after.content).toBe(before.content);
     // No metadata mutation either -- the write is fully skipped.
     expect(after.metadata).toBe(before.metadata);
@@ -455,7 +444,7 @@ describe("Slack edit propagation", () => {
       content: "edited searchable text",
     });
 
-    expect(readMessageRow(seeded.messageId).content).toBe(
+    expect((await readMessageRow(seeded.messageId)).content).toBe(
       "edited searchable text",
     );
     // The edit reindexed the message into the lexical index.
@@ -470,7 +459,7 @@ describe("Slack edit propagation", () => {
       channelTs: "1234.5678",
       initialContent: "original text",
     });
-    const beforeUnknown = readMessageRow(seeded.messageId);
+    const beforeUnknown = await readMessageRow(seeded.messageId);
 
     const resp = await handleEditIntercept({
       sourceChannel: "slack",
@@ -486,7 +475,7 @@ describe("Slack edit propagation", () => {
     expect(respJson.accepted).toBe(true);
     expect(respJson.duplicate).toBe(false);
 
-    const afterUnknown = readMessageRow(seeded.messageId);
+    const afterUnknown = await readMessageRow(seeded.messageId);
     expect(afterUnknown.content).toBe(beforeUnknown.content);
     expect(afterUnknown.metadata).toBe(beforeUnknown.metadata);
   }, 30_000);

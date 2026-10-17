@@ -13,93 +13,93 @@
  * native, would resume as the guardian's own.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { recoverRestingTrustContext } from "../daemon/conversation-resting-trust.js";
 import { setConversationOriginChannelIfUnset } from "../persistence/conversation-crud.js";
 import { getOrCreateConversation } from "../persistence/conversation-key-store.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function rawOriginChannel(id: string): string | null {
-  const row = getDb()
-    .all(`SELECT origin_channel FROM conversations WHERE id = '${id}'`)
-    .at(0) as { origin_channel: string | null } | undefined;
+async function rawOriginChannel(id: string): Promise<string | null> {
+  const row = await requireMainDb().get<{ origin_channel: string | null }>(
+    "SELECT origin_channel FROM conversations WHERE id = ?",
+    [id],
+  );
   return row?.origin_channel ?? null;
 }
 
-beforeEach(() => {
-  getDb().delete(conversations).run();
+beforeEach(async () => {
+  await requireMainDb().run("DELETE FROM conversations");
 });
 
-describe("materializing a conversation from a channel key", () => {
-  test("stamps the channel at creation, before any message", () => {
-    const { conversationId, created } = getOrCreateConversation(
+describePg("materializing a conversation from a channel key", () => {
+  test("stamps the channel at creation, before any message", async () => {
+    const { conversationId, created } = await getOrCreateConversation(
       "default:slack:slack",
       { origin: "slack" },
     );
 
     expect(created).toBe(true);
-    expect(rawOriginChannel(conversationId)).toBe("slack");
+    expect(await rawOriginChannel(conversationId)).toBe("slack");
   });
 
-  test("the first message does not change what creation established", () => {
+  test("the first message does not change what creation established", async () => {
     // Attribution is guarded on `IS NULL`, so a row attributed at creation is
     // never re-claimed. Before and after the first message agree.
-    const { conversationId } = getOrCreateConversation("default:slack:slack", {
-      origin: "slack",
-    });
-    const atCreation = rawOriginChannel(conversationId);
+    const { conversationId } = await getOrCreateConversation(
+      "default:slack:slack",
+      { origin: "slack" },
+    );
+    const atCreation = await rawOriginChannel(conversationId);
 
-    setConversationOriginChannelIfUnset(conversationId, "telegram");
+    await setConversationOriginChannelIfUnset(conversationId, "telegram");
 
-    expect(rawOriginChannel(conversationId)).toBe(atCreation);
-    expect(rawOriginChannel(conversationId)).toBe("slack");
+    expect(await rawOriginChannel(conversationId)).toBe(atCreation);
+    expect(await rawOriginChannel(conversationId)).toBe("slack");
   });
 
-  test("reusing an existing key does not re-attribute it", () => {
-    const first = getOrCreateConversation("default:slack:slack", {
+  test("reusing an existing key does not re-attribute it", async () => {
+    const first = await getOrCreateConversation("default:slack:slack", {
       origin: "slack",
     });
 
-    const second = getOrCreateConversation("default:slack:slack", {
+    const second = await getOrCreateConversation("default:slack:slack", {
       origin: "vellum",
     });
 
     expect(second.created).toBe(false);
     expect(second.conversationId).toBe(first.conversationId);
-    expect(rawOriginChannel(first.conversationId)).toBe("slack");
+    expect(await rawOriginChannel(first.conversationId)).toBe("slack");
   });
 
-  test("a caller that states no origin leaves the column unset", () => {
-    const { conversationId } = getOrCreateConversation("some:other:key");
+  test("a caller that states no origin leaves the column unset", async () => {
+    const { conversationId } = await getOrCreateConversation("some:other:key");
 
-    expect(rawOriginChannel(conversationId)).toBeNull();
+    expect(await rawOriginChannel(conversationId)).toBeNull();
   });
 });
 
-describe("what the attribution protects", () => {
-  test("a channel conversation recovers no resting trust", () => {
+describePg("what the attribution protects", () => {
+  test("a channel conversation recovers no resting trust", async () => {
     // The property the whole change exists to hold. Driven through the
     // creation seam rather than a raw column write, so it fails if creation
     // ever stops attributing the row.
-    const { conversationId } = getOrCreateConversation("default:slack:slack", {
-      origin: "slack",
-    });
+    const { conversationId } = await getOrCreateConversation(
+      "default:slack:slack",
+      { origin: "slack" },
+    );
 
-    expect(recoverRestingTrustContext(conversationId)).toBeNull();
+    expect(await recoverRestingTrustContext(conversationId)).toBeNull();
   });
 
-  test("a native conversation still recovers guardian trust", () => {
+  test("a native conversation still recovers guardian trust", async () => {
     // The other half: attributing at creation must not withdraw trust from
     // the guardian's own conversations, or every local wake regresses.
-    const { conversationId } = getOrCreateConversation("native-key", {
+    const { conversationId } = await getOrCreateConversation("native-key", {
       origin: "vellum",
     });
 
-    expect(recoverRestingTrustContext(conversationId)).not.toBeNull();
+    expect(await recoverRestingTrustContext(conversationId)).not.toBeNull();
   });
 });

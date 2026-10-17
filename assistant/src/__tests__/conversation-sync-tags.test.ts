@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, expect, test } from "bun:test";
 
 import type { AssistantEventEnvelope } from "../api/index.js";
 import {
@@ -13,8 +13,7 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { assistantEventHub } from "../runtime/assistant-event-hub.js";
 import { ROUTES as CONVERSATION_LIST_ROUTES } from "../runtime/routes/conversation-list-routes.js";
 import { ROUTES as CONVERSATION_MANAGEMENT_ROUTES } from "../runtime/routes/conversation-management-routes.js";
@@ -22,16 +21,15 @@ import type { RouteDefinition } from "../runtime/routes/types.js";
 import { publishConversationTitleChanged } from "../runtime/sync/resource-sync-events.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
 import { waitFor } from "./helpers/wait-for.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function clearTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM conversation_assistant_attention_state");
-  db.run("DELETE FROM external_conversation_bindings");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function clearTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM conversation_assistant_attention_state");
+  await db.run("DELETE FROM external_conversation_bindings");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 function findRoute(
@@ -69,9 +67,9 @@ async function captureEvents(
   }
 }
 
-describe("conversation sync tags", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("conversation sync tags", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   afterAll(() => {
@@ -86,7 +84,7 @@ describe("conversation sync tags", () => {
     // conversation `sync_changed` metadata tag is included as a belt-and-
     // suspenders signal for sibling-tab consumers that missed the typed
     // event. No `conversation_list_invalidated` broadcast is emitted.
-    const conversation = createConversation("Old title");
+    const conversation = await createConversation("Old title");
     const route = findRoute(
       CONVERSATION_MANAGEMENT_ROUTES,
       "renameConversation",
@@ -125,7 +123,7 @@ describe("conversation sync tags", () => {
     // conversation metadata tag is the belt-and-suspenders signal. The list
     // umbrella is deliberately omitted so web never redrains the paginated
     // list for a title change.
-    const conversation = createConversation("Generating…");
+    const conversation = await createConversation("Generating…");
 
     const received = await captureEvents(() => {
       publishConversationTitleChanged(conversation.id, "Generated title");
@@ -184,8 +182,8 @@ describe("conversation sync tags", () => {
     // are bundled in to give any single-row consumer a hint that the
     // touched conversations' positions have moved (currently web
     // consumes only the umbrella tag; metadata tags are forward-compat).
-    const first = createConversation("First");
-    const second = createConversation("Second");
+    const first = await createConversation("First");
+    const second = await createConversation("Second");
     const route = findRoute(
       CONVERSATION_MANAGEMENT_ROUTES,
       "reorderConversations",
@@ -225,8 +223,8 @@ describe("conversation sync tags", () => {
     // single `sync_changed` with only the per-conversation
     // `conversation:<id>:metadata` tag, which web consumes by GET-and-
     // patching the single cached row via `refreshConversationRow`.
-    const conversation = createConversation("Attention");
-    projectAssistantMessage({
+    const conversation = await createConversation("Attention");
+    await projectAssistantMessage({
       conversationId: conversation.id,
       messageId: "assistant-message-1",
       messageAt: 1_700_000_000_000,
@@ -264,13 +262,13 @@ describe("conversation sync tags", () => {
     // Symmetric with `record seen`: mark-unread flips the per-conversation
     // hasUnseen flag back to true. Same per-conversation sync tag, same
     // absence of list-level fan-out.
-    const conversation = createConversation("Attention");
-    projectAssistantMessage({
+    const conversation = await createConversation("Attention");
+    await projectAssistantMessage({
       conversationId: conversation.id,
       messageId: "assistant-message-1",
       messageAt: 1_700_000_000_000,
     });
-    recordConversationSeenSignal({
+    await recordConversationSeenSignal({
       conversationId: conversation.id,
       sourceChannel: "vellum",
       signalType: "macos_conversation_opened",
@@ -306,7 +304,7 @@ describe("conversation sync tags", () => {
     // refetch. This is the fix for LUM-1907: background processes that
     // add assistant messages (notification delivery, proactive artifacts)
     // now automatically notify clients.
-    const conversation = createConversation("Attention sync");
+    const conversation = await createConversation("Attention sync");
 
     const received = await captureEvents(async () => {
       await addMessage(
@@ -329,7 +327,7 @@ describe("conversation sync tags", () => {
     // When the conversation is already unseen (attention cursor was
     // already past the seen cursor), a subsequent assistant message
     // should NOT emit a metadata tag — no state transition occurred.
-    const conversation = createConversation("Already unseen");
+    const conversation = await createConversation("Already unseen");
     await addMessage(
       conversation.id,
       "assistant",
@@ -367,7 +365,7 @@ describe("conversation sync tags", () => {
   test("addMessage('user') does not emit a metadata sync tag", async () => {
     // User messages never affect attention state — only assistant
     // messages advance the attention cursor via projectAssistantMessage.
-    const conversation = createConversation("User message");
+    const conversation = await createConversation("User message");
 
     const received: AssistantEventEnvelope[] = [];
     const subscription = assistantEventHub.subscribe({

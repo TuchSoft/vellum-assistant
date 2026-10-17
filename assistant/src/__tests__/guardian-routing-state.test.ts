@@ -1,16 +1,13 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 mock.module("../config/env.js", () => ({ isHttpAuthDisabled: () => true }));
-import { eq } from "drizzle-orm";
 
 // ---------------------------------------------------------------------------
 // Test isolation: in-memory SQLite via temp directory
 // ---------------------------------------------------------------------------
 import type { TrustContext } from "../daemon/trust-context-types.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import * as deliveryCrud from "../persistence/delivery-crud.js";
-import { channelInboundEvents, messages } from "../persistence/schema/index.js";
 import { sweepFailedEvents } from "../runtime/channel-retry-sweep.js";
 import {
   resolveRoutingState,
@@ -24,20 +21,32 @@ import {
 import { createGuardianBinding } from "./helpers/create-guardian-binding.js";
 import { resetGatewayAclStore } from "./helpers/gateway-acl-store.js";
 import { bridgeState } from "./helpers/gateway-guardian-requests-store-bridge.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables(): void {
+async function resetTables(): Promise<void> {
   bridgeState.reset();
-  const db = getDb();
-  db.run("DELETE FROM channel_inbound_events");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
-  db.run("DELETE FROM external_conversation_bindings");
-  db.run("DELETE FROM contact_channels");
-  db.run("DELETE FROM contacts");
+  const db = requireMainDb();
+  await db.run("DELETE FROM channel_inbound_events");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
+  await db.run("DELETE FROM external_conversation_bindings");
+  await db.run("DELETE FROM contact_channels");
+  await db.run("DELETE FROM contacts");
   resetGatewayAclStore();
+}
+
+async function insertMessage(row: {
+  id: string;
+  conversationId: string;
+  role: string;
+  content: string;
+  createdAt: number;
+}): Promise<void> {
+  await requireMainDb().run(
+    "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+    [row.id, row.conversationId, row.role, row.content, row.createdAt],
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -145,9 +154,9 @@ describe("resolveRoutingStateFromRuntime", () => {
 // Integration tests: inbound message handler interactivity
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("inbound-message-handler trusted-contact interactivity", () => {
+describePg("inbound-message-handler trusted-contact interactivity", () => {
   beforeEach(async () => {
-    resetTables();
+    await resetTables();
     setAdapterProcessMessage(undefined);
     // Insert a test contact so the contacts-based ACL lookup passes
     await seedContactChannel({
@@ -201,16 +210,13 @@ describe("inbound-message-handler trusted-contact interactivity", () => {
       ) => {
         processCalls.push({ options });
         const messageId = `msg-tc-interactive-${Date.now()}`;
-        const db = getDb();
-        db.insert(messages)
-          .values({
-            id: messageId,
-            conversationId,
-            role: "user",
-            content: JSON.stringify([{ type: "text", text: "hello" }]),
-            createdAt: Date.now(),
-          })
-          .run();
+        await insertMessage({
+          id: messageId,
+          conversationId,
+          role: "user",
+          content: JSON.stringify([{ type: "text", text: "hello" }]),
+          createdAt: Date.now(),
+        });
         return { messageId };
       },
     );
@@ -244,16 +250,13 @@ describe("inbound-message-handler trusted-contact interactivity", () => {
       ) => {
         processCalls.push({ options });
         const messageId = `msg-tc-noroute-${Date.now()}`;
-        const db = getDb();
-        db.insert(messages)
-          .values({
-            id: messageId,
-            conversationId,
-            role: "user",
-            content: JSON.stringify([{ type: "text", text: "hello" }]),
-            createdAt: Date.now(),
-          })
-          .run();
+        await insertMessage({
+          id: messageId,
+          conversationId,
+          role: "user",
+          content: JSON.stringify([{ type: "text", text: "hello" }]),
+          createdAt: Date.now(),
+        });
         return { messageId };
       },
     );
@@ -293,16 +296,13 @@ describe("inbound-message-handler trusted-contact interactivity", () => {
       ) => {
         processCalls.push({ options });
         const messageId = `msg-guardian-${Date.now()}`;
-        const db = getDb();
-        db.insert(messages)
-          .values({
-            id: messageId,
-            conversationId,
-            role: "user",
-            content: JSON.stringify([{ type: "text", text: "hello" }]),
-            createdAt: Date.now(),
-          })
-          .run();
+        await insertMessage({
+          id: messageId,
+          conversationId,
+          role: "user",
+          content: JSON.stringify([{ type: "text", text: "hello" }]),
+          createdAt: Date.now(),
+        });
         return { messageId };
       },
     );
@@ -343,21 +343,21 @@ describe("inbound-message-handler trusted-contact interactivity", () => {
 // Integration tests: channel-retry-sweep routing state
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("channel-retry-sweep routing state", () => {
+describePg("channel-retry-sweep routing state", () => {
   beforeEach(async () => {
-    resetTables();
+    await resetTables();
   });
 
-  function seedFailedEvent(
+  async function seedFailedEvent(
     trustClass: "guardian" | "trusted_contact" | "unknown",
     guardianExternalUserId?: string,
-  ): string {
-    const inbound = deliveryCrud.recordInbound(
+  ): Promise<string> {
+    const inbound = await deliveryCrud.recordInbound(
       "telegram",
       `chat-${trustClass}`,
       `msg-${trustClass}-${Date.now()}`,
     );
-    deliveryCrud.storePayload(inbound.eventId, {
+    await deliveryCrud.storePayload(inbound.eventId, {
       content: "retry me",
       sourceChannel: "telegram",
       interface: "telegram",
@@ -370,36 +370,28 @@ describe("channel-retry-sweep routing state", () => {
       },
     });
 
-    const db = getDb();
-    db.update(channelInboundEvents)
-      .set({
-        processingStatus: "failed",
-        processingAttempts: 1,
-        retryAfter: Date.now() - 1,
-      })
-      .where(eq(channelInboundEvents.id, inbound.eventId))
-      .run();
+    await requireMainDb().run(
+      "UPDATE channel_inbound_events SET processing_status = ?, processing_attempts = ?, retry_after = ? WHERE id = ?",
+      ["failed", 1, Date.now() - 1, inbound.eventId],
+    );
 
     return inbound.eventId;
   }
 
   test("trusted_contact with guardian binding replays as interactive", async () => {
-    seedFailedEvent("trusted_contact", "guardian-for-sweep");
+    await seedFailedEvent("trusted_contact", "guardian-for-sweep");
     let capturedOptions: { isInteractive?: boolean } | undefined;
 
     await sweepFailedEvents(async (conversationId, _content, options) => {
       capturedOptions = options as { isInteractive?: boolean };
       const messageId = `message-tc-sweep-${Date.now()}`;
-      const db = getDb();
-      db.insert(messages)
-        .values({
-          id: messageId,
-          conversationId,
-          role: "user",
-          content: JSON.stringify([{ type: "text", text: "retry me" }]),
-          createdAt: Date.now(),
-        })
-        .run();
+      await insertMessage({
+        id: messageId,
+        conversationId,
+        role: "user",
+        content: JSON.stringify([{ type: "text", text: "retry me" }]),
+        createdAt: Date.now(),
+      });
       return { messageId };
     });
 
@@ -407,22 +399,19 @@ describe("channel-retry-sweep routing state", () => {
   });
 
   test("trusted_contact without guardian binding replays as non-interactive", async () => {
-    seedFailedEvent("trusted_contact");
+    await seedFailedEvent("trusted_contact");
     let capturedOptions: { isInteractive?: boolean } | undefined;
 
     await sweepFailedEvents(async (conversationId, _content, options) => {
       capturedOptions = options as { isInteractive?: boolean };
       const messageId = `message-tc-no-binding-${Date.now()}`;
-      const db = getDb();
-      db.insert(messages)
-        .values({
-          id: messageId,
-          conversationId,
-          role: "user",
-          content: JSON.stringify([{ type: "text", text: "retry me" }]),
-          createdAt: Date.now(),
-        })
-        .run();
+      await insertMessage({
+        id: messageId,
+        conversationId,
+        role: "user",
+        content: JSON.stringify([{ type: "text", text: "retry me" }]),
+        createdAt: Date.now(),
+      });
       return { messageId };
     });
 
@@ -430,22 +419,19 @@ describe("channel-retry-sweep routing state", () => {
   });
 
   test("guardian replays as interactive", async () => {
-    seedFailedEvent("guardian", "guardian-self");
+    await seedFailedEvent("guardian", "guardian-self");
     let capturedOptions: { isInteractive?: boolean } | undefined;
 
     await sweepFailedEvents(async (conversationId, _content, options) => {
       capturedOptions = options as { isInteractive?: boolean };
       const messageId = `message-guardian-sweep-${Date.now()}`;
-      const db = getDb();
-      db.insert(messages)
-        .values({
-          id: messageId,
-          conversationId,
-          role: "user",
-          content: JSON.stringify([{ type: "text", text: "retry me" }]),
-          createdAt: Date.now(),
-        })
-        .run();
+      await insertMessage({
+        id: messageId,
+        conversationId,
+        role: "user",
+        content: JSON.stringify([{ type: "text", text: "retry me" }]),
+        createdAt: Date.now(),
+      });
       return { messageId };
     });
 
@@ -453,22 +439,19 @@ describe("channel-retry-sweep routing state", () => {
   });
 
   test("unknown replays as non-interactive", async () => {
-    seedFailedEvent("unknown");
+    await seedFailedEvent("unknown");
     let capturedOptions: { isInteractive?: boolean } | undefined;
 
     await sweepFailedEvents(async (conversationId, _content, options) => {
       capturedOptions = options as { isInteractive?: boolean };
       const messageId = `message-unknown-sweep-${Date.now()}`;
-      const db = getDb();
-      db.insert(messages)
-        .values({
-          id: messageId,
-          conversationId,
-          role: "user",
-          content: JSON.stringify([{ type: "text", text: "retry me" }]),
-          createdAt: Date.now(),
-        })
-        .run();
+      await insertMessage({
+        id: messageId,
+        conversationId,
+        role: "user",
+        content: JSON.stringify([{ type: "text", text: "retry me" }]),
+        createdAt: Date.now(),
+      });
       return { messageId };
     });
 

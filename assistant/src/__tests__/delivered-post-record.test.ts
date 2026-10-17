@@ -6,9 +6,7 @@
  * index so a later reaction or delete naming the post resolves to the row.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
-
-import { eq } from "drizzle-orm";
+import { beforeEach, expect, test } from "bun:test";
 
 import { readProviderMessageMetadata } from "../messaging/provider-message-metadata.js";
 import { recordDeliveredChannelPost } from "../notifications/delivered-post-record.js";
@@ -16,23 +14,20 @@ import {
   createConversation,
   getMessageById,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { channelOutboundPosts } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { safeParseRecord } from "../util/json.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM channel_outbound_posts");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM channel_outbound_posts");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
-describe("recordDeliveredChannelPost", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("recordDeliveredChannelPost", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
   test("writes the sent text with the envelope, the acknowledged id, and the index entry", async () => {
@@ -50,7 +45,7 @@ describe("recordDeliveredChannelPost", () => {
       providerMessageId: "1756800000.000100",
     });
 
-    const row = getMessageById(messageId);
+    const row = await getMessageById(messageId);
     expect(row?.role).toBe("assistant");
     expect(JSON.stringify(row?.content)).toContain(
       "Morning check-in: two items need your eyes today.",
@@ -65,11 +60,15 @@ describe("recordDeliveredChannelPost", () => {
     expect(envelope?.eventKind).toBe("message");
     expect(envelope?.messageId).toBe("1756800000.000100");
 
-    const indexed = getDb()
-      .select()
-      .from(channelOutboundPosts)
-      .where(eq(channelOutboundPosts.messageId, messageId))
-      .all();
+    const indexed = await requireMainDb().all<{
+      sourceChannel: string;
+      externalChatId: string;
+      providerMessageId: string;
+      conversationId: string;
+    }>(
+      'SELECT source_channel AS "sourceChannel", external_chat_id AS "externalChatId", provider_message_id AS "providerMessageId", conversation_id AS "conversationId" FROM channel_outbound_posts WHERE message_id = ?',
+      [messageId],
+    );
     expect(indexed).toHaveLength(1);
     expect(indexed[0]?.sourceChannel).toBe("slack");
     expect(indexed[0]?.externalChatId).toBe("D0123456789");
@@ -93,15 +92,15 @@ describe("recordDeliveredChannelPost", () => {
     });
 
     const envelope = readProviderMessageMetadata(
-      safeParseRecord(getMessageById(messageId)?.metadata ?? "{}").providerMeta,
+      safeParseRecord((await getMessageById(messageId))?.metadata ?? "{}")
+        .providerMeta,
     );
     expect(envelope?.source).toBe("telegram");
     expect(envelope?.messageId).toBe("4242");
-    const indexed = getDb()
-      .select()
-      .from(channelOutboundPosts)
-      .where(eq(channelOutboundPosts.providerMessageId, "4242"))
-      .all();
+    const indexed = await requireMainDb().all(
+      "SELECT provider_message_id FROM channel_outbound_posts WHERE provider_message_id = ?",
+      ["4242"],
+    );
     expect(indexed).toHaveLength(1);
   });
 });

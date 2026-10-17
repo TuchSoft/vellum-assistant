@@ -1,0 +1,148 @@
+assistant/src/__tests__/channel-approval-routes.test.ts
+  h_a912520b04f25d 207-208,215,224,265-266,362-363,412-413,493-494,607-608,738-739,870-871,1041,1049,1058,1076-1077,1306-1307,1374-1375,1447-1448,1454,1564,1628,1689,1790,1804,1861,1915,1917,1923
+assistant/src/__tests__/channel-guardian.test.ts
+  h_a912520b04f25d 187,375,408,413,424,439,452,470,484,503,653,659,666,683,689,706,712,775,799,901,956,1062,1096,1101,1115,1129,1143,1149,1168,1256,1313,1338,1355,1372,1378,1397,1833,1860,1879,2087,2173,2450,2525,2605
+assistant/src/__tests__/channel-inbound-disk-pressure.test.ts
+  h_a912520b04f25d 82-83,115,117,225,280,286
+assistant/src/__tests__/contact-store-interaction-info.test.ts
+  h_a912520b04f25d 51,55,64,75,84,90,99
+assistant/src/__tests__/contact-store-user-file.test.ts
+  h_a912520b04f25d 46,50-51,65,79-80,93-94,104,118,126,141,145-146,149,156,167,212,237,261,287,303,333,361,392,422,454,487
+assistant/src/__tests__/contacts-tools.test.ts
+  h_a912520b04f25d 52,56,69,73,80,106,173,177,192,228-229,239,254,272,299,328-341,379,394,409-410,435-436
+assistant/src/__tests__/contacts-write.test.ts
+  h_a912520b04f25d 79,83,88,111,115-116,133-134,146,161-162,176-177,188,200-201,214,232,236,238,252,276,278,297,313,330-331,345,362-363,377
+assistant/src/__tests__/conversation-attention-telegram.test.ts
+  h_a912520b04f25d 67-68,111,269
+assistant/src/__tests__/conversation-runtime-assembly.test.ts
+  h_a912520b04f25d 298,307,315,323,329,338,346,352,358,364,372,380,388,396,404,431,436,452,467,486,501,517,531,546,559,574,590,619,633,649,664,677,692,712,719,724,741,751,767,785,814,831,928,947,970,992,1010,1041,1052,1064,1112,1314,1343,1360,1379,1405,1433,1455,1477,1499,1521,1549,1568,1587,1604,1721,1730,1733,1743,1752,1763,1778,1801,1817,1831,1842,1858,1875,1895,1917,1961,1980,2022,2044,2065,2083,2119,2153,2179,2206,2219,2229,2248,2264,2275,2285,2303,2318,2331,2343,2794,2798,2814,2828,2842,2874,2973,3020,3263,4434,4488,4538,4616,4636,4657,4717,4789,5365,5380,5471,5482,5501,5509,5535,5593,5629,5689,5735,5772,5829,5853,5967,5979,5992,6007,6076,6106,6155,6203,6229,6234,6308,6368,6431,6488,6568,6800,6842,6920,7031
+assistant/src/__tests__/delete-propagation.test.ts
+  h_a912520b04f25d 69-70,172,571
+assistant/src/__tests__/dm-backfill.test.ts
+  h_a912520b04f25d 134-135,145-146,303,305,386
+assistant/src/__tests__/guardian-binding-drift-heal.test.ts
+  h_a912520b04f25d 46-47,53,60,75,84,106,111,125,140,145,160,171
+assistant/src/__tests__/guardian-dispatch.test.ts
+  h_a912520b04f25d 114,126,152,201
+assistant/src/__tests__/guardian-routing-state.test.ts
+  h_a912520b04f25d 48,63,74,89,103,121,132,149,153,188,280,347
+assistant/src/__tests__/helpers/channel-test-adapter.ts
+  h_a912520b04f25d 133,146,159,167,170,175
+assistant/src/__tests__/helpers/create-guardian-binding.ts
+  h_a912520b04f25d 32,39,47,60
+assistant/src/__tests__/helpers/seed-contact-channel.ts
+  h_a912520b04f25d 28,43,49
+assistant/src/__tests__/inbound-admitted-introduction-nudge.test.ts
+  h_a912520b04f25d 71,94,184
+assistant/src/__tests__/inbound-invite-redemption.test.ts
+  h_a912520b04f25d 216,237
+assistant/src/__tests__/invite-redeemed-ipc.test.ts
+  h_a912520b04f25d 44-47,53,57,66-68,80,87-88,90
+assistant/src/__tests__/invite-routes-http.test.ts
+  h_a912520b04f25d 141-144,163,335,371,404,419
+assistant/src/__tests__/non-member-access-request.test.ts
+  h_a912520b04f25d 136,163,209-210,237,288,349,452,488,510-511,569,631,663,670,710,926,1180
+assistant/src/__tests__/notification-guardian-path.test.ts
+  h_a912520b04f25d 116,127,154
+assistant/src/__tests__/reaction-persistence.test.ts
+  h_a912520b04f25d 121-122,214,218,225,231,241,659,669,716
+assistant/src/__tests__/runtime-attachment-metadata.test.ts
+  h_a912520b04f25d 248-249,258,260,263,329,350,376
+assistant/src/__tests__/send-endpoint-busy.test.ts
+  h_a912520b04f25d 313,324
+assistant/src/__tests__/settings-routes.test.ts
+  h_a912520b04f25d 140,155,183,205,211,278
+assistant/src/__tests__/slack-inbound-verification.test.ts
+  h_a912520b04f25d 121,140,184,212,240,286
+assistant/src/__tests__/thread-backfill.test.ts
+  h_a912520b04f25d 444,1957-1960,1970-1973,2239,2241,2399,2543,2588
+assistant/src/__tests__/trusted-contact-inline-approval-integration.test.ts
+  h_a912520b04f25d 244,328,418,425,479,531,605,633,643,653,674,998,1073,1195,1423
+assistant/src/__tests__/trusted-contact-lifecycle-notifications.test.ts
+  h_a912520b04f25d 148,154,161,171,240,247,257,328,335,397,471,497
+assistant/src/__tests__/trusted-contact-multichannel.test.ts
+  h_a912520b04f25d 114,191-192,226,252,274,284,297,299,308,316,330,334,359,388,392
+assistant/src/__tests__/trusted-contact-verification.test.ts
+  h_a912520b04f25d 49,53,80,89,101,120,128,137,155,162,170,177,179,209,215,223,225
+assistant/src/a2a/__tests__/e2e-a2a-channel.test.ts
+  h_a912520b04f25d 147,162,165,178,191,298-299,304,306,313,317,319,322-323,327,336,338,357-360,366,375,394,402,503,512,530
+assistant/src/approvals/guardian-decision-primitive.ts
+  h_a912520b04f25d 399
+assistant/src/approvals/guardian-request-resolvers.ts
+  h_a912520b04f25d 315,668,671,683,900,909,1052,1093
+assistant/src/calls/__tests__/call-controller.test.ts
+  h_a912520b04f25d 363,376,504,1407,1609,1621,4678
+assistant/src/calls/access-request-wait.ts
+  h_a912520b04f25d 226,228,253
+assistant/src/calls/guardian-wait-controller.ts
+  h_a912520b04f25d 336,380,407-410
+assistant/src/contacts/contact-read-sync.ts
+  h_a912520b04f25d 1-48
+assistant/src/contacts/contact-store-postgres.test.ts
+  h_a912520b04f25d 1-196
+assistant/src/contacts/contact-store.ts
+  h_a912520b04f25d 1,6-9,23-26,29,36-37,39-45,51,53-54,68-69,71-72,76-78,81,84,91,93,96-97,99,124-127,130-132,135-137,154,166,179-185,189,193-197,218-224,228,243-246,259-264,267,271-302,318,321,337-338,340,343,348,353,372-376,394-395,397,399,401,413-422,425,430,435,443-446,459,464-467,476,479,497-501,504-506,523-524,526,532-533,540,542,569-570,572,578,601-602,604,611-620,624,630-633,642,650,652-655,673,689,693,705,724-726,742,747,759,767,772,774,777,781-783,785,790-791,798-801,803,808-809,811-813,816,822,825,829-830,832,834-842,846-851,854,874-877,879,895-896,898-901,903,906,919-920,922,926-934,942-943,955,959,966,968,977-978,980,985,989-998,1007-1008,1010,1013-1014,1017-1019,1025,1027,1032,1041,1044-1048,1057,1061,1068-1078,1085-1089,1102,1105,1131,1134-1136,1139,1142,1148-1152,1158-1159,1164,1173,1184,1186-1189,1192
+assistant/src/contacts/contacts-write.ts
+  h_a912520b04f25d 9,25-61,80,86-117,125-132
+assistant/src/contacts/member-write-relay.ts
+  h_a912520b04f25d 103,122,124,126
+assistant/src/contacts/mirror-reconciler.ts
+  h_a912520b04f25d 146
+assistant/src/daemon/conversation-agent-loop.ts
+  h_a912520b04f25d 1475
+assistant/src/daemon/conversation-runtime-assembly.ts
+  h_a912520b04f25d 206,208,220
+assistant/src/daemon/handlers/__tests__/config-a2a-accept.test.ts
+  h_a912520b04f25d 127,145,170,176,209,235,258,322,324,491,526
+assistant/src/daemon/handlers/__tests__/config-a2a-complete.test.ts
+  h_a912520b04f25d 73,82-83,86,103,110-111,117,125,129-131,139,148-149,159,161,172,182-183,187,195,203-204,208,216,230-231,236
+assistant/src/daemon/handlers/__tests__/config-a2a-invite.test.ts
+  h_a912520b04f25d 66,75-76,85-86,95,97,99,103,106-107,113,119,126,131,133,146,148
+assistant/src/daemon/handlers/__tests__/config-a2a-redeem.test.ts
+  h_a912520b04f25d 49,54-55,62,69-70,73,79,82,86,90-91,94,103,109,112,116,120,124-125,130,132,135-136,140
+assistant/src/daemon/handlers/__tests__/config-a2a.test.ts
+  h_a912520b04f25d 37,42-43,49,51,58,63-64,69-71,78,83
+assistant/src/daemon/handlers/config-a2a.ts
+  h_a912520b04f25d 4,7,9,33,93,99,107,113,128,130,132,134,150,174,182,208,221,226-227,234,236,250,256,258,260,264,270,282,287-288,295,297,415,498
+assistant/src/daemon/handlers/config-channels.ts
+  h_a912520b04f25d 306,384,392
+assistant/src/ipc/routes/__tests__/contacts-mirror-apply.test.ts
+  h_a912520b04f25d 56,60-61,89-90,110,127,165,179,202,231,273-274,278,281-284
+assistant/src/ipc/routes/__tests__/contacts-mirror-ipc-routes.test.ts
+  h_a912520b04f25d 20,39,43,52,56,61,65,69,73,77,81,100-112,137,143,163,165,197,199,219,221,238,240,248,263,265,272,274,282-283,285,290,292,311-312,314,319,321,361-362,364,369,371,379-382,387,389,409-410,418,421-422,426,431,436,471-472,476,479-482
+assistant/src/ipc/routes/contacts-mirror-ipc-routes.ts
+  h_a912520b04f25d 23,68,71,76,78-98,114,117,122,124-135,146,149,154,156-158,195,198,220,227,254-256,258-259,263,266,269
+assistant/src/ipc/routes/invite-ipc-routes.ts
+  h_a912520b04f25d 29,31
+assistant/src/messaging/providers/slack/adapter.ts
+  h_a912520b04f25d 284
+assistant/src/notifications/decision-engine.ts
+  h_a912520b04f25d 1080
+assistant/src/plugins/defaults/memory/hooks/user-prompt-submit.ts
+  h_a912520b04f25d 268
+assistant/src/prompts/persona-resolver.ts
+  h_a912520b04f25d 6,92,116-119,156
+assistant/src/runtime/guardian-vellum-migration.ts
+  h_a912520b04f25d 79,85-88
+assistant/src/runtime/invite-service.ts
+  h_a912520b04f25d 105
+assistant/src/runtime/routes/contact-routes.ts
+  h_a912520b04f25d 354,381,891
+assistant/src/runtime/routes/global-search-routes.ts
+  h_a912520b04f25d 360
+assistant/src/runtime/routes/integrations/a2a.ts
+  h_a912520b04f25d 50,52,55,57,69,83,92,127,142,165
+assistant/src/tools/followups/followup_create.ts
+  h_a912520b04f25d 88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "38d88cddff04b07611dd5a0846eac24a1c1e20da",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

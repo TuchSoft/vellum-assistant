@@ -161,7 +161,7 @@ describe("inbound invite messages — no daemon-side interception", () => {
 
     // The sender was NOT made a member.
     expect(
-      findContactChannel({
+      await findContactChannel({
         channelType: "telegram",
         address: "user-invite-123",
       }),
@@ -189,7 +189,7 @@ describe("inbound invite messages — no daemon-side interception", () => {
 
     // No membership granted.
     expect(
-      findContactChannel({
+      await findContactChannel({
         channelType: "telegram",
         address: "user-invite-123",
       }),

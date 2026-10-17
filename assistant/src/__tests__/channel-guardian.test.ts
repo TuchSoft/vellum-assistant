@@ -814,7 +814,7 @@ describe("HTTP handler channel-aware guardian status", () => {
   });
 
   test("status action returns guardian username/displayName from binding metadata", async () => {
-    createGuardianBinding({
+    await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "user-43",
       guardianPrincipalId: "user-43",

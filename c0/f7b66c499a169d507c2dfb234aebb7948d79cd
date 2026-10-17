@@ -1,0 +1,156 @@
+assistant/src/__tests__/conversation-fork-crud.test.ts
+  h_a912520b04f25d 78,94,107-108,1751-1752,2077-2078
+assistant/src/__tests__/conversation-fork-retrospective.test.ts
+  h_a912520b04f25d 59,74,122-123,270-271,754-755
+assistant/src/__tests__/empty-state-greeting-cache.test.ts
+  h_a912520b04f25d 50-51,54-56,59-61,63-69,72-73,78,81-82,87,90,92,94,97-98,100,103,105
+assistant/src/__tests__/jobs-store-qdrant-breaker.test.ts
+  h_a912520b04f25d 42,47,76,104,117,127,141,184,195,201,234
+assistant/src/__tests__/memory-jobs-worker-cleanup-cadence.test.ts
+  h_a912520b04f25d 109,113,118,123-125,129,136,141,146,151,154,158,162,166,174,180,183,187,193-199,203,208-214,218,222-228,232,239,246,254,270,277,284,290,298,303-305,309,311,315,320,324,332
+assistant/src/__tests__/sequence-store.test.ts
+  h_a912520b04f25d 66,84,93,105,117,123,129,144,158,168,181,201,224,242,248,262,280,297,313,322,327,345,349,358-359,365,375,379,391,397,417,423,465,482,488
+assistant/src/daemon/__tests__/embedding-reconcile.test.ts
+  h_a912520b04f25d 101-102,328-329,355,488-489
+assistant/src/daemon/__tests__/lifecycle-embedding-reconcile.test.ts
+  h_a912520b04f25d 60-61
+assistant/src/daemon/embedding-reconcile.ts
+  h_a912520b04f25d 88,90,223,225,227,233,237,239,245,248,339,356,389
+assistant/src/daemon/lifecycle.ts
+  h_a912520b04f25d 283-286,820
+assistant/src/heartbeat/heartbeat-service.ts
+  h_a912520b04f25d 529
+assistant/src/home/home-greeting-cache.ts
+  h_a912520b04f25d 58,60-62,89,93-95
+assistant/src/home/suggested-prompts-cache.ts
+  h_a912520b04f25d 27,29-30,48-50,52-53,68,70-71
+assistant/src/notifications/guardian-feed-projection.ts
+  h_a912520b04f25d 328,379
+assistant/src/oauth/connect-orchestrator.ts
+  h_a912520b04f25d 279,406
+assistant/src/oauth/oauth-store.ts
+  h_a912520b04f25d 1244
+assistant/src/persistence/__tests__/checkpoints-postgres.test.ts
+  h_a912520b04f25d 1-153
+assistant/src/persistence/__tests__/lifecycle-quiesce.test.ts
+  h_a912520b04f25d 31-33,36,38,41-42,45,47,51,58-60,62,65-68,71-73,76-80
+assistant/src/persistence/checkpoints.ts
+  h_a912520b04f25d 3,10-16,20-25,27-28,31,33,36-39,42,45-51,55,59-61,64,67-68,100-101,115-116
+assistant/src/persistence/conversation-queries.ts
+  h_a912520b04f25d 1059
+assistant/src/persistence/db-facade.ts
+  h_a912520b04f25d 260-273
+assistant/src/persistence/db-maintenance.ts
+  h_a912520b04f25d 159,189,214,245
+assistant/src/persistence/job-handlers/__tests__/message-lexical-backfill.test.ts
+  h_a912520b04f25d 222-223,254,262,281,312,321,335,339,348,356,371,378,406-407,417-418,420,428,431,436,440,445,447,452,464-465,473,481-482,487,492,496
+assistant/src/persistence/job-handlers/message-lexical-backfill.ts
+  h_a912520b04f25d 74,76,117,126,129,174,195
+assistant/src/persistence/jobs-store.ts
+  h_a912520b04f25d 904,907,915
+assistant/src/persistence/lifecycle-quiesce.ts
+  h_a912520b04f25d 35,37,43,51,54,69-70,74,76
+assistant/src/plugins/defaults/memory/__tests__/db-maintenance.test.ts
+  h_a912520b04f25d 37-39,106,110,119-121,158,172-174,187-189,205-207,227-229,246,248,256,260-262,267,279,291,307,326
+assistant/src/plugins/defaults/memory/__tests__/indexer-tier-dispatch.test.ts
+  h_a912520b04f25d 113-118,139,149,164
+assistant/src/plugins/defaults/memory/__tests__/jobs-worker-pkb-schedule.test.ts
+  h_a912520b04f25d 147,152,158-159,162,167-169,176-179,182,187-189,195,201-202,204,210,219-221,225,228,239-241,247-248,251,258-259,262,265,271-273,279-282
+assistant/src/plugins/defaults/memory/__tests__/jobs-worker-quiesce-gate.test.ts
+  h_a912520b04f25d 46,49,53,55,57,63,66,72-73,76,84
+assistant/src/plugins/defaults/memory/__tests__/jobs-worker-retrospective-sweep.test.ts
+  h_a912520b04f25d 73,76-79,83,88,90-93,95-98,102,107,109,114-117,123,125-128,130,139,142,144,153-155,157-159,163,167-170,172-175,179
+assistant/src/plugins/defaults/memory/__tests__/jobs-worker-v2-schedule.test.ts
+  h_a912520b04f25d 170,173,178,182,193,201,207,212,214,219,225,230,236,242,247,251,256,260,272,277,281,286,290,295-299,301,310,313-317,319,330,335,338,343,351,354,359,367,370,374-376,379,389,394-396,402,410,413,418,426,429,434,443,449,454,463,468,478,488,492-493,499,503,508,511,516,524,528,531,536,543-546,551,555,559,562-565,570,575,582-585,591,596,600,607-610,616,621,628-631,637,642,646,649-652,654,656,666-667,670,673,678-679,682-684,687-691,694,699-700,703,708-711,716,720,728,733-735,738,742,750,756,760,768,773-775,778,787,794,801,805,815,822,826,833,837-839,842,846,854,858-860
+assistant/src/plugins/defaults/memory/context-search/sources/conversations.ts
+  h_a912520b04f25d 134
+assistant/src/plugins/defaults/memory/graph/__tests__/conversation-graph-memory-v2-routing.test.ts
+  h_a912520b04f25d 144,231,251,339-340
+assistant/src/plugins/defaults/memory/indexer.ts
+  h_a912520b04f25d 272,377,382,385,388,392
+assistant/src/plugins/defaults/memory/jobs-worker.ts
+  h_a912520b04f25d 239,243-244,397,408,410-411,478,480-481,772,774-776,794-797,799-802,821,824,847,868,885,953,956,965,967,978,983,1077,1080-1081,1122,1125,1131,1135,1144,1156,1159,1171,1176,1200,1214,1226,1229,1233,1261,1266,1278,1281,1309,1312,1362,1364,1372,1382,1394,1396-1398,1403
+assistant/src/plugins/defaults/memory/jobs/__tests__/embed-concept-page.test.ts
+  h_a912520b04f25d 152,522,526,542,552,565,578,592,614,618
+assistant/src/plugins/defaults/memory/src/memory-item-routes.ts
+  h_a912520b04f25d 744-746,762
+assistant/src/plugins/defaults/memory/substrate/consolidation-job.ts
+  h_a912520b04f25d 216-217,248,251,253,259,272,274,589,680,682
+assistant/src/plugins/defaults/memory/v1/graph/bootstrap.test.ts
+  h_a912520b04f25d 103,107,112,115,126,171
+assistant/src/plugins/defaults/memory/v1/graph/bootstrap.ts
+  h_a912520b04f25d 130,174,198,320-321,334,431-432,454,461,531,555,571
+assistant/src/plugins/defaults/memory/v1/graph/extraction-job.ts
+  h_a912520b04f25d 44,60-63
+assistant/src/plugins/defaults/memory/v1/job-handlers/backfill.ts
+  h_a912520b04f25d 28,34,74
+assistant/src/plugins/defaults/memory/v1/jobs/embed-pkb-file.test.ts
+  h_a912520b04f25d 126,135-137,140,147,164
+assistant/src/plugins/defaults/memory/v3/__tests__/carry-integration.test.ts
+  h_a912520b04f25d 156-157,162,1177
+assistant/src/plugins/defaults/memory/v3/__tests__/injection.test.ts
+  h_a912520b04f25d 117-118,122,418
+assistant/src/plugins/defaults/memory/v3/__tests__/live-integration.test.ts
+  h_a912520b04f25d 100-101,106,306,309
+assistant/src/plugins/defaults/memory/v3/__tests__/plugin-schema.test.ts
+  h_a912520b04f25d 84,90,113,116,128,140,173,189,203,214,224,226,236,244,254,256,269,284-285,309,331,335,355,362,364,374,384,404,413,423,432,447,458,467,483,490,493,504-505,507,513,522
+assistant/src/plugins/defaults/memory/v3/__tests__/section-dense-store.test.ts
+  h_a912520b04f25d 379,986,1003,1035,1056,1087,1094-1095,1111,1138-1140,1161,1176,1183,1201,1219-1220,1230,1237
+assistant/src/plugins/defaults/memory/v3/__tests__/selection-log-store.test.ts
+  h_a912520b04f25d 61-62,72,216,224
+assistant/src/plugins/defaults/memory/v3/__tests__/shadow-plugin.test.ts
+  h_a912520b04f25d 251-252,259,702,733
+assistant/src/plugins/defaults/memory/v3/dense.ts
+  h_a912520b04f25d 80
+assistant/src/plugins/defaults/memory/v3/ever-injected-store.test.ts
+  h_a912520b04f25d 59-60,62,107,110,149,155,190,222,229,273,298,320,357,375,387,405,416-419,436,447,484,503,543,568,608,645,699,732,746,761,763,775,784-785,798,804,829,839
+assistant/src/plugins/defaults/memory/v3/maintain-job.ts
+  h_a912520b04f25d 386-387,400
+assistant/src/plugins/defaults/memory/v3/plugin-schema.ts
+  h_a912520b04f25d 81,83,86,90-92,94,96,217-218,276,279,303,321
+assistant/src/plugins/defaults/memory/v3/prune.test.ts
+  h_a912520b04f25d 78-79,95,254,257,274,285,301,312,329,347,357,364,389,408,441,495,529,547,570,606,624,634,652,674,701,706,733,765,784,800,822,837,874,901,922,954,993,1021,1032,1057,1090,1114,1467,1486-1488
+assistant/src/plugins/defaults/memory/v3/section-dense-store.ts
+  h_a912520b04f25d 117,119,123-124,130,149,152,264,272,326-330,466
+assistant/src/runtime/routes/backup-routes.ts
+  h_a912520b04f25d 177,433
+assistant/src/runtime/routes/btw-routes.ts
+  h_a912520b04f25d 99,177
+assistant/src/runtime/routes/consolidation-routes.ts
+  h_a912520b04f25d 58-59,69,73
+assistant/src/runtime/routes/empty-state-greeting-cache.ts
+  h_a912520b04f25d 37,39,47,50,73,76,83-87
+assistant/src/runtime/routes/filing-routes.ts
+  h_a912520b04f25d 72-73
+assistant/src/runtime/routes/lifecycle-routes.ts
+  h_a912520b04f25d 113,122,140-141,184
+assistant/src/runtime/routes/messages-lexical-routes.ts
+  h_a912520b04f25d 46,51
+assistant/src/runtime/routes/schedule-routes.ts
+  h_a912520b04f25d 1334
+assistant/src/schedule/schedule-store.ts
+  h_a912520b04f25d 1138
+assistant/src/schedule/scheduler.ts
+  h_a912520b04f25d 727
+assistant/src/sequence/engine.ts
+  h_a912520b04f25d 37
+assistant/src/sequence/store.ts
+  h_a912520b04f25d 235,238,242
+assistant/src/watcher/engine.ts
+  h_a912520b04f25d 235,445
+assistant/src/watcher/telemetry.ts
+  h_a912520b04f25d 52-54,73
+assistant/src/watcher/watcher-store.ts
+  h_a912520b04f25d 171,175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c0f7b66c499a169d507c2dfb234aebb7948d79cd",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

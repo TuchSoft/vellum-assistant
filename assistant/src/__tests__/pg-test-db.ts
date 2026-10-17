@@ -11,11 +11,10 @@
  *   - `test-preload.ts` imports this module (dynamically, only when
  *     `VELLUM_PG_TEST_URL` is set) so every facade-touching suite gets an
  *     isolated schema without per-file setup.
- *   - Conformance suites import {@link PG_TEST_URL} to gate their `describe`
- *     and read the connection URL.
+ *   - Conformance suites gate their `describe` on {@link describePg}.
  *
- * With `VELLUM_PG_TEST_URL` unset nothing is provisioned and {@link PG_TEST_URL}
- * is `undefined`, so Postgres-backed suites skip.
+ * With `VELLUM_PG_TEST_URL` unset nothing is provisioned, so Postgres-backed
+ * suites skip.
  */
 
 import { afterAll, describe } from "bun:test";
@@ -27,23 +26,8 @@ import { BASELINE_STATEMENTS } from "../persistence/pg-migrations/baseline.gener
 
 const baseUrl = process.env.VELLUM_PG_TEST_URL?.trim() || undefined;
 
-/**
- * Whether a Postgres test database is configured. The URL itself is only
- * available after {@link preparePgTestDatabase} has run.
- */
-export const hasPgTestDatabase = baseUrl !== undefined;
-
-/**
- * The URL facade-backed tests should connect to. Only populated after
- * {@link preparePgTestDatabase} has run (the preload does this before any test
- * module loads).
- */
-export function pgTestUrl(): string | undefined {
-  return baseUrl ? process.env.VELLUM_DATABASE_URL : undefined;
-}
-
 /** `describe` when a Postgres test database is configured, `describe.skip` otherwise. */
-export const describePg = hasPgTestDatabase ? describe : describe.skip;
+export const describePg = baseUrl ? describe : describe.skip;
 
 let provisioned:
   | { url: string; schema: string; admin: postgres.Sql }

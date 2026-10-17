@@ -1,10 +1,9 @@
 import { and, asc, desc, eq, gte, lte } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
-import { getDb } from "../persistence/db-connection.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { isLifecycleQuiesced } from "../persistence/lifecycle-quiesce.js";
-import { rawChanges } from "../persistence/raw-query.js";
-import { watcherEvents, watchers } from "../persistence/schema/index.js";
 import { truncate } from "../util/truncate.js";
 import { DEFAULT_POLL_INTERVAL_MS } from "./constants.js";
 
@@ -43,9 +42,12 @@ export interface WatcherEvent {
   createdAt: number;
 }
 
+type WatcherRow = SchemaTables["watchers"]["$inferSelect"];
+type WatcherEventRow = SchemaTables["watcherEvents"]["$inferSelect"];
+
 // ── Watcher CRUD ────────────────────────────────────────────────────
 
-export function createWatcher(params: {
+export async function createWatcher(params: {
   name: string;
   providerId: string;
   actionPrompt: string;
@@ -53,8 +55,9 @@ export function createWatcher(params: {
   pollIntervalMs?: number;
   enabled?: boolean;
   configJson?: string | null;
-}): Watcher {
-  const db = getDb();
+}): Promise<Watcher> {
+  const db = requireMainDb();
+  const watchers = db.schema.watchers;
   const id = uuid();
   const now = Date.now();
   const pollIntervalMs = params.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -80,34 +83,38 @@ export function createWatcher(params: {
     updatedAt: now,
   };
 
-  db.insert(watchers).values(row).run();
+  await db.orm.insert(watchers).values(row);
   return row;
 }
 
-export function getWatcher(id: string): Watcher | null {
-  const db = getDb();
-  const row = db.select().from(watchers).where(eq(watchers.id, id)).get();
+export async function getWatcher(id: string): Promise<Watcher | null> {
+  const db = requireMainDb();
+  const watchers = db.schema.watchers;
+  const rows = await db.orm.select().from(watchers).where(eq(watchers.id, id));
+  const row = rows[0];
   if (!row) {
     return null;
   }
   return parseWatcherRow(row);
 }
 
-export function listWatchers(options?: { enabledOnly?: boolean }): Watcher[] {
-  const db = getDb();
+export async function listWatchers(options?: {
+  enabledOnly?: boolean;
+}): Promise<Watcher[]> {
+  const db = requireMainDb();
+  const watchers = db.schema.watchers;
   const conditions = options?.enabledOnly
     ? eq(watchers.enabled, true)
     : undefined;
-  const rows = db
+  const rows = await db.orm
     .select()
     .from(watchers)
     .where(conditions)
-    .orderBy(asc(watchers.createdAt))
-    .all();
+    .orderBy(asc(watchers.createdAt));
   return rows.map(parseWatcherRow);
 }
 
-export function updateWatcher(
+export async function updateWatcher(
   id: string,
   updates: {
     name?: string;
@@ -116,15 +123,17 @@ export function updateWatcher(
     enabled?: boolean;
     configJson?: string | null;
   },
-): Watcher | null {
-  const db = getDb();
-  const existing = db.select().from(watchers).where(eq(watchers.id, id)).get();
+): Promise<Watcher | null> {
+  const db = requireMainDb();
+  const watchers = db.schema.watchers;
+  const rows = await db.orm.select().from(watchers).where(eq(watchers.id, id));
+  const existing = rows[0];
   if (!existing) {
     return null;
   }
 
   const now = Date.now();
-  const set: Record<string, unknown> = { updatedAt: now };
+  const set: Partial<typeof watchers.$inferInsert> = { updatedAt: now };
 
   if (updates.name !== undefined) {
     set.name = updates.name;
@@ -152,14 +161,18 @@ export function updateWatcher(
     }
   }
 
-  db.update(watchers).set(set).where(eq(watchers.id, id)).run();
-  return getWatcher(id);
+  await db.orm.update(watchers).set(set).where(eq(watchers.id, id));
+  return await getWatcher(id);
 }
 
-export function deleteWatcher(id: string): boolean {
-  const db = getDb();
-  db.delete(watchers).where(eq(watchers.id, id)).run();
-  return rawChanges() > 0;
+export async function deleteWatcher(id: string): Promise<boolean> {
+  const db = requireMainDb();
+  const watchers = db.schema.watchers;
+  const deleted = await db.orm
+    .delete(watchers)
+    .where(eq(watchers.id, id))
+    .returning({ id: watchers.id });
+  return deleted.length > 0;
 }
 
 // ── Claim / Complete ────────────────────────────────────────────────
@@ -169,15 +182,16 @@ export function deleteWatcher(id: string): boolean {
  * to 'polling' using optimistic locking on the current nextPollAt.
  */
 export async function claimDueWatchers(now: number): Promise<Watcher[]> {
-  // Drain gate: while a quiesce lease is active, claim nothing — a watcher
+  // Drain gate: while a quiesce lease is active, claim nothing. A watcher
   // poll runs provider requests that create no row the drain snapshot can
   // see, so it must not start at all. Fail-open via the lease read.
   if (await isLifecycleQuiesced()) {
     return [];
   }
 
-  const db = getDb();
-  const candidates = db
+  const db = requireMainDb();
+  const watchers = db.schema.watchers;
+  const candidates = await db.orm
     .select()
     .from(watchers)
     .where(
@@ -187,12 +201,12 @@ export async function claimDueWatchers(now: number): Promise<Watcher[]> {
         lte(watchers.nextPollAt, now),
       ),
     )
-    .orderBy(asc(watchers.nextPollAt))
-    .all();
+    .orderBy(asc(watchers.nextPollAt));
 
   const claimed: Watcher[] = [];
   for (const row of candidates) {
-    db.update(watchers)
+    const locked = await db.orm
+      .update(watchers)
       .set({ status: "polling", updatedAt: now })
       .where(
         and(
@@ -201,9 +215,9 @@ export async function claimDueWatchers(now: number): Promise<Watcher[]> {
           eq(watchers.status, "idle"),
         ),
       )
-      .run();
+      .returning({ id: watchers.id });
 
-    if (rawChanges() === 0) {
+    if (locked.length === 0) {
       continue;
     }
     claimed.push(
@@ -216,18 +230,20 @@ export async function claimDueWatchers(now: number): Promise<Watcher[]> {
 /**
  * Complete a watcher poll: update watermark, advance nextPollAt, reset errors.
  */
-export function completeWatcherPoll(
+export async function completeWatcherPoll(
   id: string,
   result: { watermark: string; conversationId?: string },
-): void {
-  const db = getDb();
-  const watcher = db.select().from(watchers).where(eq(watchers.id, id)).get();
+): Promise<void> {
+  const db = requireMainDb();
+  const watchers = db.schema.watchers;
+  const rows = await db.orm.select().from(watchers).where(eq(watchers.id, id));
+  const watcher = rows[0];
   if (!watcher) {
     return;
   }
 
   const now = Date.now();
-  const set: Record<string, unknown> = {
+  const set: Partial<typeof watchers.$inferInsert> = {
     status: "idle",
     watermark: result.watermark,
     lastPollAt: now,
@@ -241,7 +257,7 @@ export function completeWatcherPoll(
     set.conversationId = result.conversationId;
   }
 
-  db.update(watchers).set(set).where(eq(watchers.id, id)).run();
+  await db.orm.update(watchers).set(set).where(eq(watchers.id, id));
 }
 
 /**
@@ -250,9 +266,14 @@ export function completeWatcherPoll(
  * (e.g. credential health gate) that should NOT count toward the circuit
  * breaker threshold.
  */
-export function skipWatcherPoll(id: string, reason: string): void {
-  const db = getDb();
-  const watcher = db.select().from(watchers).where(eq(watchers.id, id)).get();
+export async function skipWatcherPoll(
+  id: string,
+  reason: string,
+): Promise<void> {
+  const db = requireMainDb();
+  const watchers = db.schema.watchers;
+  const rows = await db.orm.select().from(watchers).where(eq(watchers.id, id));
+  const watcher = rows[0];
   if (!watcher) {
     return;
   }
@@ -265,7 +286,8 @@ export function skipWatcherPoll(id: string, reason: string): void {
     60 * 60 * 1000,
   );
 
-  db.update(watchers)
+  await db.orm
+    .update(watchers)
     .set({
       status: "idle",
       lastError: truncate(reason, 2000, ""),
@@ -273,16 +295,20 @@ export function skipWatcherPoll(id: string, reason: string): void {
       nextPollAt: now + backoff,
       updatedAt: now,
     })
-    .where(eq(watchers.id, id))
-    .run();
+    .where(eq(watchers.id, id));
 }
 
 /**
  * Record a poll error: increment consecutive errors, apply backoff.
  */
-export function failWatcherPoll(id: string, error: string): void {
-  const db = getDb();
-  const watcher = db.select().from(watchers).where(eq(watchers.id, id)).get();
+export async function failWatcherPoll(
+  id: string,
+  error: string,
+): Promise<void> {
+  const db = requireMainDb();
+  const watchers = db.schema.watchers;
+  const rows = await db.orm.select().from(watchers).where(eq(watchers.id, id));
+  const watcher = rows[0];
   if (!watcher) {
     return;
   }
@@ -292,7 +318,8 @@ export function failWatcherPoll(id: string, error: string): void {
   // Exponential backoff: base * 2^(errors-1), capped at 1 hour
   const backoff = Math.min(30_000 * Math.pow(2, errors - 1), 60 * 60 * 1000);
 
-  db.update(watchers)
+  await db.orm
+    .update(watchers)
     .set({
       status: "idle",
       consecutiveErrors: errors,
@@ -301,51 +328,57 @@ export function failWatcherPoll(id: string, error: string): void {
       nextPollAt: now + backoff,
       updatedAt: now,
     })
-    .where(eq(watchers.id, id))
-    .run();
+    .where(eq(watchers.id, id));
 }
 
 /**
  * Disable a watcher (circuit breaker tripped).
  */
-export function disableWatcher(id: string, reason: string): void {
-  const db = getDb();
-  db.update(watchers)
+export async function disableWatcher(
+  id: string,
+  reason: string,
+): Promise<void> {
+  const db = requireMainDb();
+  const watchers = db.schema.watchers;
+  await db.orm
+    .update(watchers)
     .set({
       status: "disabled",
       enabled: false,
       lastError: truncate(reason, 2000, ""),
       updatedAt: Date.now(),
     })
-    .where(eq(watchers.id, id))
-    .run();
+    .where(eq(watchers.id, id));
 }
 
 /**
  * Persist a background conversation ID for a watcher.
  * Called after creating the conversation in Phase 2 of the engine tick.
  */
-export function setWatcherConversationId(
+export async function setWatcherConversationId(
   id: string,
   conversationId: string,
-): void {
-  const db = getDb();
-  db.update(watchers)
+): Promise<void> {
+  const db = requireMainDb();
+  const watchers = db.schema.watchers;
+  await db.orm
+    .update(watchers)
     .set({ conversationId, updatedAt: Date.now() })
-    .where(eq(watchers.id, id))
-    .run();
+    .where(eq(watchers.id, id));
 }
 
 /**
  * Reset watchers stuck in 'polling' back to 'idle' (daemon restart recovery).
  */
-export function resetStuckWatchers(): number {
-  const db = getDb();
-  db.update(watchers)
+export async function resetStuckWatchers(): Promise<number> {
+  const db = requireMainDb();
+  const watchers = db.schema.watchers;
+  const updated = await db.orm
+    .update(watchers)
     .set({ status: "idle", updatedAt: Date.now() })
     .where(eq(watchers.status, "polling"))
-    .run();
-  return rawChanges();
+    .returning({ id: watchers.id });
+  return updated.length;
 }
 
 // ── Watcher Events ──────────────────────────────────────────────────
@@ -354,70 +387,66 @@ export function resetStuckWatchers(): number {
  * Insert a watcher event with dedup on (watcher_id, external_id).
  * Returns true if the event was inserted (new), false if it already existed.
  */
-export function insertWatcherEvent(params: {
+export async function insertWatcherEvent(params: {
   watcherId: string;
   externalId: string;
   eventType: string;
   summary: string;
   payloadJson: string;
-}): boolean {
-  const db = getDb();
+}): Promise<boolean> {
+  const db = requireMainDb();
+  const watcherEvents = db.schema.watcherEvents;
   const id = uuid();
   const now = Date.now();
 
-  try {
-    db.insert(watcherEvents)
-      .values({
-        id,
-        watcherId: params.watcherId,
-        externalId: params.externalId,
-        eventType: params.eventType,
-        summary: params.summary,
-        payloadJson: params.payloadJson,
-        disposition: "pending",
-        llmAction: null,
-        processedAt: null,
-        createdAt: now,
-      })
-      .run();
-    return true;
-  } catch (err: unknown) {
-    // UNIQUE constraint violation — event already exists
-    if (
-      err instanceof Error &&
-      err.message.includes("UNIQUE constraint failed")
-    ) {
-      return false;
-    }
-    throw err;
-  }
+  const inserted = await db.orm
+    .insert(watcherEvents)
+    .values({
+      id,
+      watcherId: params.watcherId,
+      externalId: params.externalId,
+      eventType: params.eventType,
+      summary: params.summary,
+      payloadJson: params.payloadJson,
+      disposition: "pending",
+      llmAction: null,
+      processedAt: null,
+      createdAt: now,
+    })
+    .onConflictDoNothing()
+    .returning({ id: watcherEvents.id });
+  return inserted.length > 0;
 }
 
 /**
  * Update the disposition and LLM action for a watcher event.
  */
-export function updateEventDisposition(
+export async function updateEventDisposition(
   eventId: string,
   disposition: string,
   llmAction?: string,
-): void {
-  const db = getDb();
-  db.update(watcherEvents)
+): Promise<void> {
+  const db = requireMainDb();
+  const watcherEvents = db.schema.watcherEvents;
+  await db.orm
+    .update(watcherEvents)
     .set({
       disposition,
       llmAction: llmAction?.slice(0, 5000) ?? null,
       processedAt: Date.now(),
     })
-    .where(eq(watcherEvents.id, eventId))
-    .run();
+    .where(eq(watcherEvents.id, eventId));
 }
 
 /**
  * Get pending events for a watcher.
  */
-export function getPendingEvents(watcherId: string): WatcherEvent[] {
-  const db = getDb();
-  return db
+export async function getPendingEvents(
+  watcherId: string,
+): Promise<WatcherEvent[]> {
+  const db = requireMainDb();
+  const watcherEvents = db.schema.watcherEvents;
+  const rows = await db.orm
     .select()
     .from(watcherEvents)
     .where(
@@ -426,20 +455,20 @@ export function getPendingEvents(watcherId: string): WatcherEvent[] {
         eq(watcherEvents.disposition, "pending"),
       ),
     )
-    .orderBy(asc(watcherEvents.createdAt))
-    .all()
-    .map(parseEventRow);
+    .orderBy(asc(watcherEvents.createdAt));
+  return rows.map(parseEventRow);
 }
 
 /**
  * List watcher events for digest queries.
  */
-export function listWatcherEvents(options?: {
+export async function listWatcherEvents(options?: {
   watcherId?: string;
   limit?: number;
   since?: number;
-}): WatcherEvent[] {
-  const db = getDb();
+}): Promise<WatcherEvent[]> {
+  const db = requireMainDb();
+  const watcherEvents = db.schema.watcherEvents;
   const conditions = [];
   if (options?.watcherId) {
     conditions.push(eq(watcherEvents.watcherId, options.watcherId));
@@ -450,19 +479,18 @@ export function listWatcherEvents(options?: {
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-  return db
+  const rows = await db.orm
     .select()
     .from(watcherEvents)
     .where(where)
     .orderBy(desc(watcherEvents.createdAt))
-    .limit(options?.limit ?? 50)
-    .all()
-    .map(parseEventRow);
+    .limit(options?.limit ?? 50);
+  return rows.map(parseEventRow);
 }
 
 // ── Row parsers ─────────────────────────────────────────────────────
 
-function parseWatcherRow(row: typeof watchers.$inferSelect): Watcher {
+function parseWatcherRow(row: WatcherRow): Watcher {
   return {
     id: row.id,
     name: row.name,
@@ -484,7 +512,7 @@ function parseWatcherRow(row: typeof watchers.$inferSelect): Watcher {
   };
 }
 
-function parseEventRow(row: typeof watcherEvents.$inferSelect): WatcherEvent {
+function parseEventRow(row: WatcherEventRow): WatcherEvent {
   return {
     id: row.id,
     watcherId: row.watcherId,

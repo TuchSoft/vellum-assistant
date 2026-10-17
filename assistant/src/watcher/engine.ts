@@ -201,8 +201,8 @@ function renderFencedEvents(
  * Initialize the watcher engine. Call once at daemon startup.
  * Resets any watchers stuck in 'polling' state from a prior crash.
  */
-export function initWatcherEngine(): void {
-  const reset = resetStuckWatchers();
+export async function initWatcherEngine(): Promise<void> {
+  const reset = await resetStuckWatchers();
   if (reset > 0) {
     log.info({ count: reset }, "Reset stuck watchers to idle on startup");
   }
@@ -236,7 +236,10 @@ export async function runWatchersOnce(
   for (const watcher of claimed) {
     const provider = getWatcherProvider(watcher.providerId);
     if (!provider) {
-      failWatcherPoll(watcher.id, `Unknown provider: ${watcher.providerId}`);
+      await failWatcherPoll(
+        watcher.id,
+        `Unknown provider: ${watcher.providerId}`,
+      );
       continue;
     }
 
@@ -255,7 +258,10 @@ export async function runWatchersOnce(
           health.status === "missing_token" ||
           (health.status === "expired" && !health.canAutoRecover))
       ) {
-        skipWatcherPoll(watcher.id, `Credential unhealthy: ${health.details}`);
+        await skipWatcherPoll(
+          watcher.id,
+          `Credential unhealthy: ${health.details}`,
+        );
         notifyAuthEpisodeOnce(notify, watcher.id, "credential-unhealthy", {
           title: `Reconnect needed: ${watcher.name}`,
           body: `Your ${watcher.credentialService} account's authorization is no longer valid, so ${watcher.name} is paused. Reconnect the account to resume monitoring. (${health.details})`,
@@ -294,7 +300,7 @@ export async function runWatchersOnce(
       const newPayloads: Array<Record<string, unknown>> = [];
       for (const item of result.items) {
         const payload = capPayloadForStorage(item.payload);
-        const inserted = insertWatcherEvent({
+        const inserted = await insertWatcherEvent({
           watcherId: watcher.id,
           externalId: item.externalId,
           eventType: item.eventType,
@@ -332,7 +338,7 @@ export async function runWatchersOnce(
         }
       }
 
-      completeWatcherPoll(watcher.id, {
+      await completeWatcherPoll(watcher.id, {
         watermark: result.watermark,
         conversationId: watcher.conversationId ?? undefined,
       });
@@ -346,7 +352,7 @@ export async function runWatchersOnce(
         { err, watcherId: watcher.id, name: watcher.name },
         "Watcher poll failed",
       );
-      failWatcherPoll(watcher.id, message);
+      await failWatcherPoll(watcher.id, message);
 
       // Auth-shaped failures point at a broken account connection. Tell the
       // user to reconnect immediately (once per episode) rather than waiting
@@ -362,7 +368,7 @@ export async function runWatchersOnce(
       // Circuit breaker: disable after too many consecutive errors
       if (watcher.consecutiveErrors + 1 >= MAX_CONSECUTIVE_ERRORS) {
         const reason = `Disabled after ${MAX_CONSECUTIVE_ERRORS} consecutive errors. Last: ${message}`;
-        disableWatcher(watcher.id, reason);
+        await disableWatcher(watcher.id, reason);
         // Close out the auth episode: the disable notification below is the
         // final word for this outage. Clearing lets a fresh episode (and a
         // fresh reconnect notification) start if the user re-enables the
@@ -394,7 +400,7 @@ export async function runWatchersOnce(
   // applies a timeout and surfaces failures as `activity.failed`
   // notifications on the home feed.
   for (const watcher of claimed) {
-    const pendingEvents = getPendingEvents(watcher.id);
+    const pendingEvents = await getPendingEvents(watcher.id);
     if (pendingEvents.length === 0) {
       continue;
     }
@@ -472,7 +478,7 @@ export async function runWatchersOnce(
     // persistence when the runner failed before bootstrap (conversationId
     // is empty) — otherwise we'd overwrite a valid prior id with "".
     if (result.conversationId !== "") {
-      setWatcherConversationId(watcher.id, result.conversationId);
+      await setWatcherConversationId(watcher.id, result.conversationId);
       recordWatcherLlmProcessed(watcher.providerId, result.conversationId);
     }
 
@@ -481,7 +487,7 @@ export async function runWatchersOnce(
       // notify/escalate tools for events it deems worth surfacing — we
       // do not parse <watcher-disposition> blocks back out here.
       for (const event of pendingEvents) {
-        updateEventDisposition(event.id, "silent", "Processed by LLM");
+        await updateEventDisposition(event.id, "silent", "Processed by LLM");
       }
       processed++;
     } else {
@@ -494,7 +500,7 @@ export async function runWatchersOnce(
         "Failed to process watcher events",
       );
       for (const event of pendingEvents) {
-        updateEventDisposition(
+        await updateEventDisposition(
           event.id,
           "error",
           result.error?.message ?? "Unknown error",

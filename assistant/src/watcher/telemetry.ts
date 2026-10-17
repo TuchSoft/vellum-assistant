@@ -55,7 +55,7 @@ export async function recordWatcherInventoryIfDue(now: number): Promise<void> {
     if (now - last < WATCHER_INVENTORY_INTERVAL_MS) {
       return;
     }
-    for (const watcher of listWatchers({ enabledOnly: true })) {
+    for (const watcher of await listWatchers({ enabledOnly: true })) {
       const recorded = await recordLifecycleEvent(
         `watcher_enabled:${watcher.providerId}`,
       );

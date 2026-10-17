@@ -96,22 +96,22 @@ function handleWatcherCreate({ body = {} }: RouteHandlerArgs) {
   });
 }
 
-function handleWatcherList({ body = {} }: RouteHandlerArgs) {
+async function handleWatcherList({ body = {} }: RouteHandlerArgs) {
   const { watcher_id: watcherId, enabled_only: enabledOnly } = parseBody(
     WatcherListParams,
     body,
   );
 
   if (watcherId) {
-    const watcher = getWatcher(watcherId);
+    const watcher = await getWatcher(watcherId);
     if (!watcher) {
       throw new NotFoundError(`Watcher not found: ${watcherId}`);
     }
-    const events = listWatcherEvents({ watcherId, limit: 10 });
+    const events = await listWatcherEvents({ watcherId, limit: 10 });
     return { watcher, events };
   }
 
-  return listWatchers({ enabledOnly });
+  return await listWatchers({ enabledOnly });
 }
 
 function handleWatcherUpdate({ body = {} }: RouteHandlerArgs) {
@@ -154,23 +154,23 @@ function handleWatcherUpdate({ body = {} }: RouteHandlerArgs) {
     );
   }
 
-  const watcher = updateWatcher(watcherId, updates);
-  if (!watcher) {
-    throw new NotFoundError(`Watcher not found: ${watcherId}`);
-  }
-
-  return watcher;
+  return updateWatcher(watcherId, updates).then((watcher) => {
+    if (!watcher) {
+      throw new NotFoundError(`Watcher not found: ${watcherId}`);
+    }
+    return watcher;
+  });
 }
 
-function handleWatcherDelete({ body = {} }: RouteHandlerArgs) {
+async function handleWatcherDelete({ body = {} }: RouteHandlerArgs) {
   const { watcher_id: watcherId } = parseBody(WatcherDeleteParams, body);
 
-  const watcher = getWatcher(watcherId);
+  const watcher = await getWatcher(watcherId);
   if (!watcher) {
     throw new NotFoundError(`Watcher not found: ${watcherId}`);
   }
 
-  deleteWatcher(watcherId);
+  await deleteWatcher(watcherId);
 
   const provider = getWatcherProvider(watcher.providerId);
   provider?.cleanup?.(watcherId);
@@ -178,7 +178,7 @@ function handleWatcherDelete({ body = {} }: RouteHandlerArgs) {
   return { deleted: true, name: watcher.name };
 }
 
-function handleWatcherDigest({ body = {} }: RouteHandlerArgs) {
+async function handleWatcherDigest({ body = {} }: RouteHandlerArgs) {
   const {
     watcher_id: watcherId,
     hours,
@@ -186,9 +186,9 @@ function handleWatcherDigest({ body = {} }: RouteHandlerArgs) {
   } = parseBody(WatcherDigestParams, body);
 
   const since = Date.now() - hours * 3_600_000;
-  const events = listWatcherEvents({ watcherId, limit, since });
+  const events = await listWatcherEvents({ watcherId, limit, since });
 
-  const allWatchers = listWatchers();
+  const allWatchers = await listWatchers();
   const watcherNames: Record<string, string> = {};
   for (const w of allWatchers) {
     watcherNames[w.id] = w.name;

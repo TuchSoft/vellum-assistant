@@ -2,13 +2,14 @@
  * Integration tests for the watcher IPC routes.
  *
  * Exercises the full IPC round-trip: AssistantIpcServer + cliIpcCall over
- * the Unix domain socket, with the real SQLite watcher store backing
+ * the Unix domain socket, with the real Postgres-backed watcher store backing
  * the route handlers.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 
-import { initializeDb } from "../../persistence/db-init.js";
+import { describePg } from "../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { registerWatcherProvider } from "../../watcher/provider-registry.js";
 import type { WatcherProvider } from "../../watcher/provider-types.js";
 import type { Watcher, WatcherEvent } from "../../watcher/watcher-store.js";
@@ -18,8 +19,6 @@ import { cliIpcCall } from "../cli-client.js";
 // ---------------------------------------------------------------------------
 // DB + provider setup
 // ---------------------------------------------------------------------------
-
-await initializeDb();
 
 const mockProvider: WatcherProvider = {
   id: "test-provider",
@@ -46,6 +45,9 @@ let server: AssistantIpcServer | null = null;
 const createdWatcherIds: string[] = [];
 
 beforeEach(async () => {
+  const db = requireMainDb();
+  await db.run("DELETE FROM watcher_events");
+  await db.run("DELETE FROM watchers");
   server = new AssistantIpcServer();
   await server.start();
   // Allow the server socket to bind.
@@ -85,7 +87,7 @@ async function createTestWatcher(
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("watcher IPC routes", () => {
+describePg("watcher IPC routes", () => {
   // -- CRUD round-trip --------------------------------------------------------
 
   test("create -> list -> update -> delete round-trip", async () => {

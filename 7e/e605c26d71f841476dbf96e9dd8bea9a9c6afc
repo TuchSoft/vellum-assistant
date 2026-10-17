@@ -1,0 +1,16 @@
+assistant/src/__tests__/channel-guardian.test.ts
+  h_a912520b04f25d 817
+assistant/src/__tests__/inbound-invite-redemption.test.ts
+  h_a912520b04f25d 164,192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7ee605c26d71f841476dbf96e9dd8bea9a9c6afc",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

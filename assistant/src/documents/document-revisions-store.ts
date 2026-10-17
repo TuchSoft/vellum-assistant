@@ -5,7 +5,8 @@
  * Snapshot writes run inside the caller's transaction, next to the document
  * write they precede, so a snapshot exists exactly when its write landed.
  */
-import { rawAll, rawGet, rawRun } from "../persistence/raw-query.js";
+import type { AsyncDb } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 
 /** Who made the write a snapshot was taken ahead of. */
 export type DocumentRevisionAuthor = "user" | "assistant";
@@ -66,24 +67,26 @@ function mapRowToSummary(
  * history to the newest {@link MAX_REVISIONS_PER_DOCUMENT}. A revision that is
  * already snapshotted keeps its first snapshot.
  */
-export function recordDocumentSnapshot(
+export async function recordDocumentSnapshot(
   state: DocumentSnapshotSource,
   author: DocumentRevisionAuthor,
-): void {
-  rawRun(
-    "documentRevisions:record",
-    /*sql*/ `INSERT OR IGNORE INTO document_revisions (surface_id, revision, title, content, word_count, author, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    state.surfaceId,
-    state.revision,
-    state.title,
-    state.content,
-    state.wordCount,
-    author,
-    Date.now(),
+  db: AsyncDb = requireMainDb(),
+): Promise<void> {
+  await db.run(
+    /*sql*/ `INSERT INTO document_revisions (surface_id, revision, title, content, word_count, author, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT DO NOTHING`,
+    [
+      state.surfaceId,
+      state.revision,
+      state.title,
+      state.content,
+      state.wordCount,
+      author,
+      Date.now(),
+    ],
   );
-  rawRun(
-    "documentRevisions:prune",
+  await db.run(
     /*sql*/ `DELETE FROM document_revisions
      WHERE surface_id = ?
        AND revision NOT IN (
@@ -92,9 +95,7 @@ export function recordDocumentSnapshot(
          ORDER BY revision DESC
          LIMIT ?
        )`,
-    state.surfaceId,
-    state.surfaceId,
-    MAX_REVISIONS_PER_DOCUMENT,
+    [state.surfaceId, state.surfaceId, MAX_REVISIONS_PER_DOCUMENT],
   );
 }
 
@@ -104,14 +105,16 @@ export function recordDocumentSnapshot(
  * {@link USER_SNAPSHOT_INTERVAL_MS}, or when the latest one preceded an
  * assistant edit, so the assistant's result survives the user's next edits.
  */
-export function shouldSnapshotBeforeUserSave(surfaceId: string): boolean {
-  const latest = rawGet<{ author: string; created_at: number }>(
-    "documentRevisions:latest",
+export async function shouldSnapshotBeforeUserSave(
+  surfaceId: string,
+  db: AsyncDb = requireMainDb(),
+): Promise<boolean> {
+  const latest = await db.get<{ author: string; created_at: number }>(
     /*sql*/ `SELECT author, created_at FROM document_revisions
      WHERE surface_id = ?
      ORDER BY revision DESC
      LIMIT 1`,
-    surfaceId,
+    [surfaceId],
   );
   if (!latest) {
     return true;
@@ -123,31 +126,31 @@ export function shouldSnapshotBeforeUserSave(surfaceId: string): boolean {
 }
 
 /** A document's snapshots, newest first, without their bodies. */
-export function listDocumentRevisions(
+export async function listDocumentRevisions(
   surfaceId: string,
-): DocumentRevisionSummary[] {
-  return rawAll<Omit<RevisionRow, "content">>(
-    "documentRevisions:list",
+): Promise<DocumentRevisionSummary[]> {
+  const db = requireMainDb();
+  const rows = await db.all<Omit<RevisionRow, "content">>(
     /*sql*/ `SELECT revision, author, created_at, word_count, title
      FROM document_revisions
      WHERE surface_id = ?
      ORDER BY revision DESC`,
-    surfaceId,
-  ).map(mapRowToSummary);
+    [surfaceId],
+  );
+  return rows.map(mapRowToSummary);
 }
 
 /** One snapshot with its body, or `null` when it does not exist. */
-export function getDocumentRevision(
+export async function getDocumentRevision(
   surfaceId: string,
   revision: number,
-): DocumentRevisionRecord | null {
-  const row = rawGet<RevisionRow>(
-    "documentRevisions:get",
+  db: AsyncDb = requireMainDb(),
+): Promise<DocumentRevisionRecord | null> {
+  const row = await db.get<RevisionRow>(
     /*sql*/ `SELECT revision, author, created_at, word_count, title, content
      FROM document_revisions
      WHERE surface_id = ? AND revision = ?`,
-    surfaceId,
-    revision,
+    [surfaceId, revision],
   );
   return row ? { ...mapRowToSummary(row), content: row.content } : null;
 }

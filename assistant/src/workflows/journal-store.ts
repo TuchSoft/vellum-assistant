@@ -14,7 +14,7 @@
  * (the engine, a later PR) own gating.
  */
 
-import { rawAll, rawGet, rawRun } from "../persistence/raw-query.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 
 export type WorkflowRunStatus =
   | "running"
@@ -215,11 +215,11 @@ function rowToJournalEntry(row: WorkflowJournalRow): WorkflowJournalEntry {
 // ---------------------------------------------------------------------------
 
 /** Insert a new workflow run. Defaults status to `running`. */
-export function createRun(input: CreateRunInput): WorkflowRun {
+export async function createRun(input: CreateRunInput): Promise<WorkflowRun> {
   const now = Date.now();
   const status = input.status ?? "running";
-  rawRun(
-    "journal:createRun",
+  const db = requireMainDb();
+  await db.run(
     /*sql*/ `
     INSERT INTO workflow_runs (
       id, name, script_source, script_hash, args_json, capabilities_json,
@@ -227,29 +227,31 @@ export function createRun(input: CreateRunInput): WorkflowRun {
       output_tokens, result_json, error, created_at, updated_at, finished_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, NULL, ?, ?, NULL)
     `,
-    input.id,
-    input.name ?? null,
-    input.scriptSource,
-    input.scriptHash,
-    serializeJsonColumn(input.args),
-    serializeJsonColumn(input.capabilities),
-    status,
-    input.conversationId ?? null,
-    serializeJsonColumn(input.trust),
-    now,
-    now,
+    [
+      input.id,
+      input.name ?? null,
+      input.scriptSource,
+      input.scriptHash,
+      serializeJsonColumn(input.args),
+      serializeJsonColumn(input.capabilities),
+      status,
+      input.conversationId ?? null,
+      serializeJsonColumn(input.trust),
+      now,
+      now,
+    ],
   );
-  return getRun(input.id)!;
+  return (await getRun(input.id))!;
 }
 
 /**
  * Patch mutable fields on a run and bump `updated_at`. Only the fields present
  * in `input` are written. Returns the updated run, or null if it doesn't exist.
  */
-export function updateRun(
+export async function updateRun(
   runId: string,
   input: UpdateRunInput,
-): WorkflowRun | null {
+): Promise<WorkflowRun | null> {
   const sets: string[] = [];
   const params: (string | number | null)[] = [];
 
@@ -278,12 +280,12 @@ export function updateRun(
   params.push(Date.now());
   params.push(runId);
 
-  rawRun(
-    "journal:updateRun",
+  const db = requireMainDb();
+  await db.run(
     `UPDATE workflow_runs SET ${sets.join(", ")} WHERE id = ?`,
-    ...params,
+    params,
   );
-  return getRun(runId);
+  return await getRun(runId);
 }
 
 /**
@@ -291,26 +293,28 @@ export function updateRun(
  * both `updated_at` and `finished_at`. Returns the updated run, or null if it
  * doesn't exist.
  */
-export function finishRun(
+export async function finishRun(
   runId: string,
   input: FinishRunInput,
-): WorkflowRun | null {
+): Promise<WorkflowRun | null> {
   const now = Date.now();
-  rawRun(
-    "journal:finishRun",
+  const db = requireMainDb();
+  await db.run(
     /*sql*/ `
     UPDATE workflow_runs
     SET status = ?, result_json = ?, error = ?, updated_at = ?, finished_at = ?
     WHERE id = ?
     `,
-    input.status,
-    serializeJsonColumn(input.result),
-    input.error ?? null,
-    now,
-    now,
-    runId,
+    [
+      input.status,
+      serializeJsonColumn(input.result),
+      input.error ?? null,
+      now,
+      now,
+      runId,
+    ],
   );
-  return getRun(runId);
+  return await getRun(runId);
 }
 
 // ---------------------------------------------------------------------------
@@ -330,11 +334,11 @@ export function finishRun(
  * the call doesn't re-run on every future resume). `created_at` is left at its
  * original value on conflict so the row keeps its first-write timestamp.
  */
-export function appendJournalEntry(
+export async function appendJournalEntry(
   input: AppendJournalEntryInput,
-): WorkflowJournalEntry {
-  rawRun(
-    "journal:appendJournalEntry",
+): Promise<WorkflowJournalEntry> {
+  const db = requireMainDb();
+  await db.run(
     /*sql*/ `
     INSERT INTO workflow_journal (
       run_id, seq, call_hash, kind, request_json, result_json, status,
@@ -349,18 +353,20 @@ export function appendJournalEntry(
       input_tokens = excluded.input_tokens,
       output_tokens = excluded.output_tokens
     `,
-    input.runId,
-    input.seq,
-    input.callHash,
-    input.kind,
-    serializeJsonColumn(input.request),
-    serializeJsonColumn(input.result),
-    input.status,
-    input.inputTokens ?? null,
-    input.outputTokens ?? null,
-    Date.now(),
+    [
+      input.runId,
+      input.seq,
+      input.callHash,
+      input.kind,
+      serializeJsonColumn(input.request),
+      serializeJsonColumn(input.result),
+      input.status,
+      input.inputTokens ?? null,
+      input.outputTokens ?? null,
+      Date.now(),
+    ],
   );
-  return getJournalEntry(input.runId, input.seq)!;
+  return (await getJournalEntry(input.runId, input.seq))!;
 }
 
 // ---------------------------------------------------------------------------
@@ -368,35 +374,36 @@ export function appendJournalEntry(
 // ---------------------------------------------------------------------------
 
 /** Fetch a single run by id, or null if it doesn't exist. */
-export function getRun(runId: string): WorkflowRun | null {
-  const row = rawGet<WorkflowRunRow>(
-    "journal:getRun",
+export async function getRun(runId: string): Promise<WorkflowRun | null> {
+  const db = requireMainDb();
+  const row = await db.get<WorkflowRunRow>(
     `SELECT * FROM workflow_runs WHERE id = ?`,
-    runId,
+    [runId],
   );
   return row ? rowToRun(row) : null;
 }
 
 /** Fetch a run's full journal in sequence order for resume replay. */
-export function getJournal(runId: string): WorkflowJournalEntry[] {
-  const rows = rawAll<WorkflowJournalRow>(
-    "journal:getJournal",
+export async function getJournal(
+  runId: string,
+): Promise<WorkflowJournalEntry[]> {
+  const db = requireMainDb();
+  const rows = await db.all<WorkflowJournalRow>(
     `SELECT * FROM workflow_journal WHERE run_id = ? ORDER BY seq ASC`,
-    runId,
+    [runId],
   );
   return rows.map(rowToJournalEntry);
 }
 
 /** Fetch a single journal entry by its `(run_id, seq)` key, or null. */
-export function getJournalEntry(
+export async function getJournalEntry(
   runId: string,
   seq: number,
-): WorkflowJournalEntry | null {
-  const row = rawGet<WorkflowJournalRow>(
-    "journal:getJournalEntry",
+): Promise<WorkflowJournalEntry | null> {
+  const db = requireMainDb();
+  const row = await db.get<WorkflowJournalRow>(
     `SELECT * FROM workflow_journal WHERE run_id = ? AND seq = ?`,
-    runId,
-    seq,
+    [runId, seq],
   );
   return row ? rowToJournalEntry(row) : null;
 }
@@ -407,18 +414,18 @@ export interface ListRunsOptions {
 }
 
 /** List runs newest-first, optionally filtered by status. */
-export function listRuns(options: ListRunsOptions): WorkflowRun[] {
+export async function listRuns(
+  options: ListRunsOptions,
+): Promise<WorkflowRun[]> {
+  const db = requireMainDb();
   const rows = options.status
-    ? rawAll<WorkflowRunRow>(
-        "journal:listRuns:byStatus",
+    ? await db.all<WorkflowRunRow>(
         `SELECT * FROM workflow_runs WHERE status = ? ORDER BY created_at DESC LIMIT ?`,
-        options.status,
-        options.limit,
+        [options.status, options.limit],
       )
-    : rawAll<WorkflowRunRow>(
-        "journal:listRuns:all",
+    : await db.all<WorkflowRunRow>(
         `SELECT * FROM workflow_runs ORDER BY created_at DESC LIMIT ?`,
-        options.limit,
+        [options.limit],
       );
   return rows.map(rowToRun);
 }
@@ -439,11 +446,11 @@ export function listRuns(options: ListRunsOptions): WorkflowRun[] {
  * the counters here would drift the cap accounting. Returns the number of rows
  * reconciled.
  */
-export function markRunningAsInterrupted(): number {
-  return rawRun(
-    "journal:markRunningAsInterrupted",
+export async function markRunningAsInterrupted(): Promise<number> {
+  const db = requireMainDb();
+  return await db.run(
     /*sql*/ `UPDATE workflow_runs SET status = 'interrupted', updated_at = ? WHERE status = 'running'`,
-    Date.now(),
+    [Date.now()],
   );
 }
 
@@ -476,10 +483,10 @@ const TERMINAL_RUN_STATUS_SQL = TERMINAL_RUN_STATUSES.map((s) => `'${s}'`).join(
  * rows are crash-orphaned and still resumable — deleting either would destroy
  * an in-flight or resumable run. Returns the number of runs deleted.
  */
-export function pruneRuns(retentionDays: number): number {
+export async function pruneRuns(retentionDays: number): Promise<number> {
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-  rawRun(
-    "journal:pruneRuns:journal",
+  const db = requireMainDb();
+  await db.run(
     /*sql*/ `
     DELETE FROM workflow_journal
     WHERE run_id IN (
@@ -488,15 +495,14 @@ export function pruneRuns(retentionDays: number): number {
         AND created_at IS NOT NULL AND created_at < ?
     )
     `,
-    cutoff,
+    [cutoff],
   );
-  return rawRun(
-    "journal:pruneRuns:runs",
+  return await db.run(
     /*sql*/ `
     DELETE FROM workflow_runs
     WHERE status IN (${TERMINAL_RUN_STATUS_SQL})
       AND created_at IS NOT NULL AND created_at < ?
     `,
-    cutoff,
+    [cutoff],
   );
 }

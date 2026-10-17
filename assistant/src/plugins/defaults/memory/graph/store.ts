@@ -5,17 +5,12 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
-import {
-  type DrizzleDb,
-  getMemoryDb,
-} from "../../../../persistence/db-connection.js";
+import type {
+  AsyncDb,
+  SchemaTables,
+} from "../../../../persistence/db-facade.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { enqueueMemoryJob } from "../../../../persistence/jobs-store.js";
-import {
-  memoryGraphEdges,
-  memoryGraphNodeEdits,
-  memoryGraphNodes,
-  memoryGraphTriggers,
-} from "../../../../persistence/schema/index.js";
 import type {
   ApplyDiffResult,
   EmotionalCharge,
@@ -33,21 +28,14 @@ import type {
 } from "./types.js";
 
 /**
- * The memory graph cluster lives in the dedicated memory database
- * (`assistant-memory.db`). This store is the hub for all graph reads and writes,
- * including non-nullable-return writes and the `applyDiff` transaction, so it
- * resolves a guaranteed connection and throws when the memory database cannot be
- * opened — the same posture the main `getDb()` had before the relocation, rather
- * than fabricating rows for an absent connection.
+ * The memory graph cluster lives in the shared Postgres database. This store is
+ * the hub for all graph reads and writes, including non-nullable-return writes
+ * and the `applyDiff` transaction, so it resolves a guaranteed connection and
+ * throws when the database is unavailable rather than fabricating rows for an
+ * absent connection.
  */
-function memoryDb(): DrizzleDb {
-  const db = getMemoryDb();
-  if (!db) {
-    throw new Error(
-      "memory database unavailable — memory graph store cannot proceed",
-    );
-  }
-  return db;
+function memoryDb(): AsyncDb {
+  return requireMainDb();
 }
 
 // ---------------------------------------------------------------------------
@@ -55,7 +43,9 @@ function memoryDb(): DrizzleDb {
 // ---------------------------------------------------------------------------
 
 /** Project a `memory_graph_nodes` row onto its domain node. */
-function rowToNode(row: typeof memoryGraphNodes.$inferSelect): MemoryNode {
+function rowToNode(
+  row: SchemaTables["memoryGraphNodes"]["$inferSelect"],
+): MemoryNode {
   return {
     id: row.id,
     content: row.content,
@@ -103,7 +93,9 @@ function nodeToInsertValues(node: NewNode, id: string) {
   };
 }
 
-function rowToEdge(row: typeof memoryGraphEdges.$inferSelect): MemoryEdge {
+function rowToEdge(
+  row: SchemaTables["memoryGraphEdges"]["$inferSelect"],
+): MemoryEdge {
   return {
     id: row.id,
     sourceNodeId: row.sourceNodeId,
@@ -115,7 +107,7 @@ function rowToEdge(row: typeof memoryGraphEdges.$inferSelect): MemoryEdge {
 }
 
 function rowToTrigger(
-  row: typeof memoryGraphTriggers.$inferSelect,
+  row: SchemaTables["memoryGraphTriggers"]["$inferSelect"],
 ): MemoryTrigger {
   return {
     id: row.id,
@@ -124,7 +116,11 @@ function rowToTrigger(
     schedule: row.schedule,
     condition: row.condition,
     conditionEmbedding: row.conditionEmbedding
-      ? new Float32Array(row.conditionEmbedding as ArrayBuffer)
+      ? new Float32Array(
+          row.conditionEmbedding.buffer,
+          row.conditionEmbedding.byteOffset,
+          row.conditionEmbedding.byteLength / 4,
+        )
       : null,
     threshold: row.threshold,
     eventDate: row.eventDate,
@@ -197,44 +193,47 @@ export function deduplicateParagraphs(content: string): string {
 // Node CRUD
 // ---------------------------------------------------------------------------
 
-export function createNode(node: NewNode): MemoryNode {
+export async function createNode(node: NewNode): Promise<MemoryNode> {
   const db = memoryDb();
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
   const id = uuid();
   const cleanContent = deduplicateParagraphs(node.content);
-  db.insert(memoryGraphNodes)
-    .values(nodeToInsertValues({ ...node, content: cleanContent }, id))
-    .run();
+  await db.orm
+    .insert(memoryGraphNodes)
+    .values(nodeToInsertValues({ ...node, content: cleanContent }, id));
   return { ...node, content: cleanContent, id };
 }
 
-export function getNode(id: string): MemoryNode | null {
+export async function getNode(id: string): Promise<MemoryNode | null> {
   const db = memoryDb();
-  const row = db
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
+  const rows = await db.orm
     .select()
     .from(memoryGraphNodes)
-    .where(eq(memoryGraphNodes.id, id))
-    .get();
+    .where(eq(memoryGraphNodes.id, id));
+  const row = rows[0];
   return row ? rowToNode(row) : null;
 }
 
-export function getNodesByIds(ids: string[]): MemoryNode[] {
+export async function getNodesByIds(ids: string[]): Promise<MemoryNode[]> {
   if (ids.length === 0) {
     return [];
   }
   const db = memoryDb();
-  const rows = db
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
+  const rows = await db.orm
     .select()
     .from(memoryGraphNodes)
-    .where(inArray(memoryGraphNodes.id, ids))
-    .all();
+    .where(inArray(memoryGraphNodes.id, ids));
   return rows.map(rowToNode);
 }
 
-export function updateNode(
+export async function updateNode(
   id: string,
   changes: Partial<Omit<MemoryNode, "id">>,
-): void {
+): Promise<void> {
   const db = memoryDb();
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
   const updates: Record<string, unknown> = {};
 
   if (changes.content !== undefined) {
@@ -298,33 +297,34 @@ export function updateNode(
     return;
   }
 
-  db.update(memoryGraphNodes)
+  await db.orm
+    .update(memoryGraphNodes)
     .set(updates)
-    .where(eq(memoryGraphNodes.id, id))
-    .run();
+    .where(eq(memoryGraphNodes.id, id));
 
   // Sync event triggers when eventDate changes
   if (changes.eventDate !== undefined) {
-    const triggers = getTriggersForNode(id);
+    const triggers = await getTriggersForNode(id);
     const eventTriggers = triggers.filter((t) => t.type === "event");
     for (const trigger of eventTriggers) {
       if (changes.eventDate === null) {
         // Clearing eventDate — delete orphaned event trigger
-        deleteTrigger(trigger.id);
+        await deleteTrigger(trigger.id);
       } else {
         // Updating eventDate — sync trigger's eventDate
-        updateTrigger(trigger.id, { eventDate: changes.eventDate });
+        await updateTrigger(trigger.id, { eventDate: changes.eventDate });
       }
     }
   }
 }
 
-export function deleteNode(id: string): void {
+export async function deleteNode(id: string): Promise<void> {
   const db = memoryDb();
-  db.update(memoryGraphNodes)
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
+  await db.orm
+    .update(memoryGraphNodes)
     .set({ fidelity: "gone", lastAccessed: Date.now() })
-    .where(eq(memoryGraphNodes.id, id))
-    .run();
+    .where(eq(memoryGraphNodes.id, id));
   enqueueMemoryJob("delete_qdrant_vectors", {
     targetType: "graph_node",
     targetId: id,
@@ -347,8 +347,11 @@ export interface NodeQueryFilters {
   limit?: number;
 }
 
-export function queryNodes(filters: NodeQueryFilters): MemoryNode[] {
+export async function queryNodes(
+  filters: NodeQueryFilters,
+): Promise<MemoryNode[]> {
   const db = memoryDb();
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
   const conditions = [];
 
   if (filters.types && filters.types.length > 0) {
@@ -391,7 +394,7 @@ export function queryNodes(filters: NodeQueryFilters): MemoryNode[] {
     );
   }
 
-  let query = db
+  let query = db.orm
     .select()
     .from(memoryGraphNodes)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
@@ -401,7 +404,7 @@ export function queryNodes(filters: NodeQueryFilters): MemoryNode[] {
     query = query.limit(filters.limit) as typeof query;
   }
 
-  return query.all().map(rowToNode);
+  return (await query).map(rowToNode);
 }
 
 /**
@@ -416,9 +419,12 @@ export function queryNodes(filters: NodeQueryFilters): MemoryNode[] {
  * whose embedding jobs haven't completed yet). The content-pattern filter
  * prevents organic procedural memories from crowding out real capabilities.
  */
-export function queryCapabilityNodes(limit: number): MemoryNode[] {
+export async function queryCapabilityNodes(
+  limit: number,
+): Promise<MemoryNode[]> {
   const db = memoryDb();
-  const rows = db
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
+  const rows = await db.orm
     .select()
     .from(memoryGraphNodes)
     .where(
@@ -436,52 +442,53 @@ export function queryCapabilityNodes(limit: number): MemoryNode[] {
       ),
     )
     .orderBy(sql`${memoryGraphNodes.significance} DESC`)
-    .limit(limit)
-    .all();
+    .limit(limit);
   return rows.map(rowToNode);
 }
 
 /** Count all non-gone nodes in the workspace memory pool. */
-export function countNodes(): number {
+export async function countNodes(): Promise<number> {
   const db = memoryDb();
-  const result = db
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
+  const rows = await db.orm
     .select({ count: sql<number>`count(*)` })
     .from(memoryGraphNodes)
-    .where(sql`${memoryGraphNodes.fidelity} != 'gone'`)
-    .get();
-  return result?.count ?? 0;
+    .where(sql`${memoryGraphNodes.fidelity} != 'gone'`);
+  return rows[0]?.count ?? 0;
 }
 
 // ---------------------------------------------------------------------------
 // Edge CRUD
 // ---------------------------------------------------------------------------
 
-export function createEdge(edge: NewEdge): MemoryEdge {
+export async function createEdge(edge: NewEdge): Promise<MemoryEdge> {
   const db = memoryDb();
+  const memoryGraphEdges = db.schema.memoryGraphEdges;
   const id = uuid();
-  db.insert(memoryGraphEdges)
-    .values({
-      id,
-      sourceNodeId: edge.sourceNodeId,
-      targetNodeId: edge.targetNodeId,
-      relationship: edge.relationship,
-      weight: edge.weight,
-      created: edge.created,
-    })
-    .run();
+  await db.orm.insert(memoryGraphEdges).values({
+    id,
+    sourceNodeId: edge.sourceNodeId,
+    targetNodeId: edge.targetNodeId,
+    relationship: edge.relationship,
+    weight: edge.weight,
+    created: edge.created,
+  });
   return { ...edge, id };
 }
 
-export function deleteEdge(id: string): void {
+export async function deleteEdge(id: string): Promise<void> {
   const db = memoryDb();
-  db.delete(memoryGraphEdges).where(eq(memoryGraphEdges.id, id)).run();
+  const memoryGraphEdges = db.schema.memoryGraphEdges;
+  await db.orm.delete(memoryGraphEdges).where(eq(memoryGraphEdges.id, id));
 }
 
-export function getEdgesForNode(
+export async function getEdgesForNode(
   nodeId: string,
   direction?: "incoming" | "outgoing",
-): MemoryEdge[] {
+): Promise<MemoryEdge[]> {
   const db = memoryDb();
+  const memoryGraphEdges = db.schema.memoryGraphEdges;
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
   const dirCondition =
     direction === "outgoing"
       ? eq(memoryGraphEdges.sourceNodeId, nodeId)
@@ -499,54 +506,55 @@ export function getEdgesForNode(
     sql`NOT EXISTS (SELECT 1 FROM ${memoryGraphNodes} WHERE ${memoryGraphNodes.id} = ${memoryGraphEdges.targetNodeId} AND ${memoryGraphNodes.fidelity} = 'gone')`,
   );
 
-  return db
-    .select()
-    .from(memoryGraphEdges)
-    .where(condition)
-    .all()
-    .map(rowToEdge);
+  const rows = await db.orm.select().from(memoryGraphEdges).where(condition);
+  return rows.map(rowToEdge);
 }
 
 // ---------------------------------------------------------------------------
 // Trigger CRUD
 // ---------------------------------------------------------------------------
 
-export function createTrigger(trigger: NewTrigger): MemoryTrigger {
+export async function createTrigger(
+  trigger: NewTrigger,
+): Promise<MemoryTrigger> {
   const db = memoryDb();
+  const memoryGraphTriggers = db.schema.memoryGraphTriggers;
   const id = uuid();
-  db.insert(memoryGraphTriggers)
-    .values({
-      id,
-      nodeId: trigger.nodeId,
-      type: trigger.type,
-      schedule: trigger.schedule,
-      condition: trigger.condition,
-      conditionEmbedding: trigger.conditionEmbedding
-        ? Buffer.from(trigger.conditionEmbedding.buffer)
-        : null,
-      threshold: trigger.threshold,
-      eventDate: trigger.eventDate,
-      rampDays: trigger.rampDays,
-      followUpDays: trigger.followUpDays,
-      recurring: trigger.recurring,
-      consumed: trigger.consumed,
-      cooldownMs: trigger.cooldownMs,
-      lastFired: trigger.lastFired,
-    })
-    .run();
+  await db.orm.insert(memoryGraphTriggers).values({
+    id,
+    nodeId: trigger.nodeId,
+    type: trigger.type,
+    schedule: trigger.schedule,
+    condition: trigger.condition,
+    conditionEmbedding: trigger.conditionEmbedding
+      ? Buffer.from(trigger.conditionEmbedding.buffer)
+      : null,
+    threshold: trigger.threshold,
+    eventDate: trigger.eventDate,
+    rampDays: trigger.rampDays,
+    followUpDays: trigger.followUpDays,
+    recurring: trigger.recurring,
+    consumed: trigger.consumed,
+    cooldownMs: trigger.cooldownMs,
+    lastFired: trigger.lastFired,
+  });
   return { ...trigger, id };
 }
 
-export function deleteTrigger(id: string): void {
+export async function deleteTrigger(id: string): Promise<void> {
   const db = memoryDb();
-  db.delete(memoryGraphTriggers).where(eq(memoryGraphTriggers.id, id)).run();
+  const memoryGraphTriggers = db.schema.memoryGraphTriggers;
+  await db.orm
+    .delete(memoryGraphTriggers)
+    .where(eq(memoryGraphTriggers.id, id));
 }
 
-export function updateTrigger(
+export async function updateTrigger(
   id: string,
   updates: Partial<MemoryTrigger>,
-): void {
+): Promise<void> {
   const db = memoryDb();
+  const memoryGraphTriggers = db.schema.memoryGraphTriggers;
   const values: Record<string, unknown> = {};
   if (updates.consumed !== undefined) {
     values.consumed = updates.consumed;
@@ -572,33 +580,37 @@ export function updateTrigger(
   if (Object.keys(values).length === 0) {
     return;
   }
-  db.update(memoryGraphTriggers)
+  await db.orm
+    .update(memoryGraphTriggers)
     .set(values)
-    .where(eq(memoryGraphTriggers.id, id))
-    .run();
+    .where(eq(memoryGraphTriggers.id, id));
 }
 
-export function getTriggersForNode(nodeId: string): MemoryTrigger[] {
+export async function getTriggersForNode(
+  nodeId: string,
+): Promise<MemoryTrigger[]> {
   const db = memoryDb();
-  return db
+  const memoryGraphTriggers = db.schema.memoryGraphTriggers;
+  const rows = await db.orm
     .select()
     .from(memoryGraphTriggers)
-    .where(eq(memoryGraphTriggers.nodeId, nodeId))
-    .all()
-    .map(rowToTrigger);
+    .where(eq(memoryGraphTriggers.nodeId, nodeId));
+  return rows.map(rowToTrigger);
 }
 
-export function getActiveTriggersByType(
+export async function getActiveTriggersByType(
   type: MemoryTrigger["type"],
-): MemoryTrigger[] {
+): Promise<MemoryTrigger[]> {
   const db = memoryDb();
+  const memoryGraphTriggers = db.schema.memoryGraphTriggers;
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
   const conditions = [
     eq(memoryGraphTriggers.type, type),
     eq(memoryGraphTriggers.consumed, false),
   ];
 
   // Join to nodes table to exclude triggers whose node is soft-deleted.
-  const rows = db
+  const rows = await db.orm
     .select({
       trigger: memoryGraphTriggers,
     })
@@ -607,8 +619,7 @@ export function getActiveTriggersByType(
       memoryGraphNodes,
       eq(memoryGraphTriggers.nodeId, memoryGraphNodes.id),
     )
-    .where(and(...conditions, sql`${memoryGraphNodes.fidelity} != 'gone'`))
-    .all();
+    .where(and(...conditions, sql`${memoryGraphNodes.fidelity} != 'gone'`));
   return rows.map((r) => rowToTrigger(r.trigger));
 }
 
@@ -623,18 +634,19 @@ const REINFORCEMENT_STABILITY_MULTIPLIER = 1.5;
  * Increments reinforcementCount, multiplies stability by 1.5,
  * and optionally boosts significance back toward peak.
  */
-export function reinforceNode(id: string): void {
+export async function reinforceNode(id: string): Promise<void> {
   const db = memoryDb();
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
   const now = Date.now();
-  db.update(memoryGraphNodes)
+  await db.orm
+    .update(memoryGraphNodes)
     .set({
       reinforcementCount: sql`${memoryGraphNodes.reinforcementCount} + 1`,
       stability: sql`${memoryGraphNodes.stability} * ${REINFORCEMENT_STABILITY_MULTIPLIER}`,
       lastReinforced: now,
-      significance: sql`MIN(1.0, ${memoryGraphNodes.significance} * 1.1)`,
+      significance: sql`LEAST(1.0, ${memoryGraphNodes.significance} * 1.1)`,
     })
-    .where(eq(memoryGraphNodes.id, id))
-    .run();
+    .where(eq(memoryGraphNodes.id, id));
 }
 
 /**
@@ -642,13 +654,13 @@ export function reinforceNode(id: string): void {
  * earned durability (stability, reinforcementCount, significance).
  * A "supersedes" edge is created, and the old node is returned for content update.
  */
-export function supersedeNode(
+export async function supersedeNode(
   oldNodeId: string,
   newNode: NewNode,
-): { newNode: MemoryNode; oldNode: MemoryNode | null } {
-  const oldNode = getNode(oldNodeId);
+): Promise<{ newNode: MemoryNode; oldNode: MemoryNode | null }> {
+  const oldNode = await getNode(oldNodeId);
   if (!oldNode) {
-    return { newNode: createNode(newNode), oldNode: null };
+    return { newNode: await createNode(newNode), oldNode: null };
   }
 
   // Inherit the old node's earned durability
@@ -664,10 +676,10 @@ export function supersedeNode(
     imageRefs: newNode.imageRefs ?? oldNode.imageRefs,
   };
 
-  const created = createNode(inherited);
+  const created = await createNode(inherited);
 
   // Create supersedes edge
-  createEdge({
+  await createEdge({
     sourceNodeId: created.id,
     targetNodeId: oldNodeId,
     relationship: "supersedes",
@@ -685,14 +697,18 @@ export function supersedeNode(
 /**
  * Apply a MemoryDiff atomically. All operations run in a single transaction.
  */
-export function applyDiff(
+export async function applyDiff(
   diff: MemoryDiff,
   opts?: {
     conversationId?: string;
     source?: "extraction" | "consolidation" | "manual";
   },
-): ApplyDiffResult {
+): Promise<ApplyDiffResult> {
   const db = memoryDb();
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
+  const memoryGraphEdges = db.schema.memoryGraphEdges;
+  const memoryGraphTriggers = db.schema.memoryGraphTriggers;
+  const memoryGraphNodeEdits = db.schema.memoryGraphNodeEdits;
   const result: ApplyDiffResult = {
     nodesCreated: 0,
     nodesUpdated: 0,
@@ -710,14 +726,14 @@ export function applyDiff(
   // collect the deleted node ids and enqueue them after the transaction commits.
   const deletedNodeIds: string[] = [];
 
-  db.transaction((tx) => {
+  await db.transaction(async (tx) => {
     // Soft-delete nodes (set fidelity='gone'); the Qdrant cleanup is enqueued
     // after commit.
     for (const id of diff.deleteNodeIds) {
-      tx.update(memoryGraphNodes)
+      await tx.orm
+        .update(memoryGraphNodes)
         .set({ fidelity: "gone", lastAccessed: Date.now() })
-        .where(eq(memoryGraphNodes.id, id))
-        .run();
+        .where(eq(memoryGraphNodes.id, id));
       deletedNodeIds.push(id);
       result.nodesDeleted++;
     }
@@ -726,9 +742,9 @@ export function applyDiff(
     for (const node of diff.createNodes) {
       const id = uuid();
       const cleanContent = deduplicateParagraphs(node.content);
-      tx.insert(memoryGraphNodes)
-        .values(nodeToInsertValues({ ...node, content: cleanContent }, id))
-        .run();
+      await tx.orm
+        .insert(memoryGraphNodes)
+        .values(nodeToInsertValues({ ...node, content: cleanContent }, id));
       result.nodesCreated++;
       result.createdNodeIds.push(id);
     }
@@ -779,37 +795,35 @@ export function applyDiff(
 
       // Record edit history when content changes
       if (updates.content !== undefined) {
-        const current = tx
+        const currentRows = await tx.orm
           .select({ content: memoryGraphNodes.content })
           .from(memoryGraphNodes)
-          .where(eq(memoryGraphNodes.id, update.id))
-          .get();
+          .where(eq(memoryGraphNodes.id, update.id));
+        const current = currentRows[0];
         if (current && current.content !== updates.content) {
-          tx.insert(memoryGraphNodeEdits)
-            .values({
-              id: uuid(),
-              nodeId: update.id,
-              previousContent: current.content,
-              newContent: updates.content as string,
-              source: opts?.source ?? "extraction",
-              conversationId: opts?.conversationId ?? null,
-              created: Date.now(),
-            })
-            .run();
+          await tx.orm.insert(memoryGraphNodeEdits).values({
+            id: uuid(),
+            nodeId: update.id,
+            previousContent: current.content,
+            newContent: updates.content as string,
+            source: opts?.source ?? "extraction",
+            conversationId: opts?.conversationId ?? null,
+            created: Date.now(),
+          });
         }
       }
 
       if (Object.keys(updates).length > 0) {
-        tx.update(memoryGraphNodes)
+        await tx.orm
+          .update(memoryGraphNodes)
           .set(updates)
-          .where(eq(memoryGraphNodes.id, update.id))
-          .run();
+          .where(eq(memoryGraphNodes.id, update.id));
         result.nodesUpdated++;
       }
 
       // Sync event triggers when eventDate changes
       if (c.eventDate !== undefined) {
-        const triggers = tx
+        const triggers = await tx.orm
           .select()
           .from(memoryGraphTriggers)
           .where(
@@ -817,22 +831,21 @@ export function applyDiff(
               eq(memoryGraphTriggers.nodeId, update.id),
               eq(memoryGraphTriggers.type, "event"),
             ),
-          )
-          .all();
+          );
 
         for (const trigger of triggers) {
           if (c.eventDate == null) {
             // eventDate cleared — delete orphaned event trigger
-            tx.delete(memoryGraphTriggers)
-              .where(eq(memoryGraphTriggers.id, trigger.id))
-              .run();
+            await tx.orm
+              .delete(memoryGraphTriggers)
+              .where(eq(memoryGraphTriggers.id, trigger.id));
             result.triggersDeleted++;
           } else {
             // eventDate changed — sync trigger
-            tx.update(memoryGraphTriggers)
+            await tx.orm
+              .update(memoryGraphTriggers)
               .set({ eventDate: c.eventDate })
-              .where(eq(memoryGraphTriggers.id, trigger.id))
-              .run();
+              .where(eq(memoryGraphTriggers.id, trigger.id));
           }
         }
       }
@@ -841,71 +854,67 @@ export function applyDiff(
     // Reinforce nodes
     const now = Date.now();
     for (const id of diff.reinforceNodeIds) {
-      tx.update(memoryGraphNodes)
+      await tx.orm
+        .update(memoryGraphNodes)
         .set({
           reinforcementCount: sql`${memoryGraphNodes.reinforcementCount} + 1`,
           stability: sql`${memoryGraphNodes.stability} * ${REINFORCEMENT_STABILITY_MULTIPLIER}`,
           lastReinforced: now,
-          significance: sql`MIN(1.0, ${memoryGraphNodes.significance} * 1.1)`,
+          significance: sql`LEAST(1.0, ${memoryGraphNodes.significance} * 1.1)`,
         })
-        .where(eq(memoryGraphNodes.id, id))
-        .run();
+        .where(eq(memoryGraphNodes.id, id));
       result.nodesReinforced++;
     }
 
     // Delete edges
     for (const id of diff.deleteEdgeIds) {
-      tx.delete(memoryGraphEdges).where(eq(memoryGraphEdges.id, id)).run();
+      await tx.orm.delete(memoryGraphEdges).where(eq(memoryGraphEdges.id, id));
       result.edgesDeleted++;
     }
 
     // Create edges
     for (const edge of diff.createEdges) {
       const id = uuid();
-      tx.insert(memoryGraphEdges)
-        .values({
-          id,
-          sourceNodeId: edge.sourceNodeId,
-          targetNodeId: edge.targetNodeId,
-          relationship: edge.relationship,
-          weight: edge.weight,
-          created: edge.created,
-        })
-        .run();
+      await tx.orm.insert(memoryGraphEdges).values({
+        id,
+        sourceNodeId: edge.sourceNodeId,
+        targetNodeId: edge.targetNodeId,
+        relationship: edge.relationship,
+        weight: edge.weight,
+        created: edge.created,
+      });
       result.edgesCreated++;
     }
 
     // Delete triggers
     for (const id of diff.deleteTriggerIds) {
-      tx.delete(memoryGraphTriggers)
-        .where(eq(memoryGraphTriggers.id, id))
-        .run();
+      await tx.orm
+        .delete(memoryGraphTriggers)
+        .where(eq(memoryGraphTriggers.id, id));
       result.triggersDeleted++;
     }
 
     // Create triggers
     for (const trigger of diff.createTriggers) {
       const id = uuid();
-      tx.insert(memoryGraphTriggers)
-        .values({
-          id,
-          nodeId: trigger.nodeId,
-          type: trigger.type,
-          schedule: trigger.schedule,
-          condition: trigger.condition,
-          conditionEmbedding: trigger.conditionEmbedding
-            ? Buffer.from(trigger.conditionEmbedding.buffer)
-            : null,
-          threshold: trigger.threshold,
-          eventDate: trigger.eventDate,
-          rampDays: trigger.rampDays,
-          followUpDays: trigger.followUpDays,
-          recurring: trigger.recurring,
-          consumed: trigger.consumed,
-          cooldownMs: trigger.cooldownMs,
-          lastFired: trigger.lastFired,
-        })
-        .run();
+      await tx.orm.insert(memoryGraphTriggers).values({
+        id,
+        nodeId: trigger.nodeId,
+        type: trigger.type,
+        schedule: trigger.schedule,
+        condition: trigger.condition,
+        conditionEmbedding: trigger.conditionEmbedding
+          ? Buffer.from(trigger.conditionEmbedding.buffer)
+          : null,
+        threshold: trigger.threshold,
+        eventDate: trigger.eventDate,
+        rampDays: trigger.rampDays,
+        followUpDays: trigger.followUpDays,
+        recurring: trigger.recurring,
+        consumed: trigger.consumed,
+        cooldownMs: trigger.cooldownMs,
+        lastFired: trigger.lastFired,
+      });
       result.triggersCreated++;
     }
   });
@@ -928,47 +937,48 @@ export function applyDiff(
 // ---------------------------------------------------------------------------
 
 /** Record a content change to a memory node for edit chain tracking. */
-export function recordNodeEdit(opts: {
+export async function recordNodeEdit(opts: {
   nodeId: string;
   previousContent: string;
   newContent: string;
   source: "extraction" | "consolidation" | "manual";
   conversationId?: string;
-}): void {
+}): Promise<void> {
   const db = memoryDb();
-  db.insert(memoryGraphNodeEdits)
-    .values({
-      id: uuid(),
-      nodeId: opts.nodeId,
-      previousContent: opts.previousContent,
-      newContent: opts.newContent,
-      source: opts.source,
-      conversationId: opts.conversationId ?? null,
-      created: Date.now(),
-    })
-    .run();
+  const memoryGraphNodeEdits = db.schema.memoryGraphNodeEdits;
+  await db.orm.insert(memoryGraphNodeEdits).values({
+    id: uuid(),
+    nodeId: opts.nodeId,
+    previousContent: opts.previousContent,
+    newContent: opts.newContent,
+    source: opts.source,
+    conversationId: opts.conversationId ?? null,
+    created: Date.now(),
+  });
 }
 
 /** Retrieve the edit history for a memory node, newest first. */
-export function getNodeEditHistory(
+export async function getNodeEditHistory(
   nodeId: string,
   limit = 20,
-): Array<{
-  id: string;
-  previousContent: string;
-  newContent: string;
-  source: string;
-  conversationId: string | null;
-  created: number;
-}> {
+): Promise<
+  Array<{
+    id: string;
+    previousContent: string;
+    newContent: string;
+    source: string;
+    conversationId: string | null;
+    created: number;
+  }>
+> {
   const db = memoryDb();
-  return db
+  const memoryGraphNodeEdits = db.schema.memoryGraphNodeEdits;
+  return await db.orm
     .select()
     .from(memoryGraphNodeEdits)
     .where(eq(memoryGraphNodeEdits.nodeId, nodeId))
     .orderBy(desc(memoryGraphNodeEdits.created))
-    .limit(limit)
-    .all();
+    .limit(limit);
 }
 
 // ---------------------------------------------------------------------------
@@ -1020,9 +1030,9 @@ export interface GraphStats {
  *
  * Callers that only need the summary number can use `countNodes()` instead.
  */
-export function computeGraphStats(): GraphStats {
+export async function computeGraphStats(): Promise<GraphStats> {
   // Full scan — significance DESC so topNodes is just the first slice.
-  const nodes = queryNodes({ fidelityNot: ["gone"] });
+  const nodes = await queryNodes({ fidelityNot: ["gone"] });
 
   const byType: Partial<Record<MemoryType, number>> = {};
   const byFidelity: FidelityBreakdown = {
@@ -1059,7 +1069,9 @@ export function computeGraphStats(): GraphStats {
 
   // Live edge count: both endpoints must be non-gone.
   const db = memoryDb();
-  const edgeResult = db
+  const memoryGraphEdges = db.schema.memoryGraphEdges;
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
+  const edgeRows = await db.orm
     .select({ count: sql<number>`count(*)` })
     .from(memoryGraphEdges)
     .where(
@@ -1067,8 +1079,8 @@ export function computeGraphStats(): GraphStats {
         sql`NOT EXISTS (SELECT 1 FROM ${memoryGraphNodes} WHERE ${memoryGraphNodes.id} = ${memoryGraphEdges.sourceNodeId} AND ${memoryGraphNodes.fidelity} = 'gone')`,
         sql`NOT EXISTS (SELECT 1 FROM ${memoryGraphNodes} WHERE ${memoryGraphNodes.id} = ${memoryGraphEdges.targetNodeId} AND ${memoryGraphNodes.fidelity} = 'gone')`,
       ),
-    )
-    .get();
+    );
+  const edgeResult = edgeRows[0];
 
   return {
     total: nodes.length,

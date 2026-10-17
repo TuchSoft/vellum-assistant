@@ -1,7 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 
-import { getDb } from "../../../persistence/db-connection.js";
-import { conversations } from "../../../persistence/schema/index.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { MEMORY_RETROSPECTIVE_SOURCES } from "./memory-retrospective-constants.js";
 
 const MAX_FORK_CHAIN_DEPTH = 16;
@@ -33,13 +32,14 @@ const MAX_FORK_CHAIN_DEPTH = 16;
  * Hits `idx_conversations_fork_parent_conversation_id` for the
  * `forkParentConversationId` lookup.
  */
-export function findMostRecentRetrospectiveFor(
+export async function findMostRecentRetrospectiveFor(
   parentConversationId: string,
-): { id: string; forkParentConversationId: string } | null {
-  const db = getDb();
+): Promise<{ id: string; forkParentConversationId: string } | null> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
   let currentId: string | null = parentConversationId;
   for (let depth = 0; depth < MAX_FORK_CHAIN_DEPTH && currentId; depth++) {
-    const row = db
+    const rows = await db.orm
       .select({ id: conversations.id })
       .from(conversations)
       .where(
@@ -49,20 +49,19 @@ export function findMostRecentRetrospectiveFor(
         ),
       )
       .orderBy(desc(conversations.createdAt))
-      .limit(1)
-      .get();
+      .limit(1);
+    const row = rows[0];
     if (row) {
       return { id: row.id, forkParentConversationId: currentId };
     }
 
-    const parent = db
+    const parentRows = await db.orm
       .select({
         forkParentConversationId: conversations.forkParentConversationId,
       })
       .from(conversations)
-      .where(eq(conversations.id, currentId))
-      .get();
-    currentId = parent?.forkParentConversationId ?? null;
+      .where(eq(conversations.id, currentId));
+    currentId = parentRows[0]?.forkParentConversationId ?? null;
   }
   return null;
 }

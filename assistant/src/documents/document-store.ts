@@ -7,8 +7,8 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { getSqlite } from "../persistence/db-connection.js";
-import { rawAll, rawGet, rawRun } from "../persistence/raw-query.js";
+import type { AsyncDb } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { getLogger } from "../util/logger.js";
 import {
   type DocumentRevisionAuthor,
@@ -52,17 +52,16 @@ function countWords(content: string): number {
 // Junction table helper
 // ---------------------------------------------------------------------------
 
-/** Insert a document–conversation association (idempotent via INSERT OR IGNORE). */
-export function addDocumentConversation(
+/** Insert a document–conversation association (idempotent). */
+export async function addDocumentConversation(
   surfaceId: string,
   conversationId: string,
-): void {
-  rawRun(
-    "documents:addDocumentConversation",
-    /*sql*/ `INSERT OR IGNORE INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?)`,
-    surfaceId,
-    conversationId,
-    Date.now(),
+): Promise<void> {
+  const db = requireMainDb();
+  await db.run(
+    /*sql*/ `INSERT INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?)
+    ON CONFLICT DO NOTHING`,
+    [surfaceId, conversationId, Date.now()],
   );
 }
 
@@ -107,14 +106,16 @@ function mapRowToRecord(row: DocumentRow): DocumentRecord {
 }
 
 /** Look up a single document by surface ID. Returns `null` when not found. */
-export function getDocumentById(surfaceId: string): DocumentRecord | null {
+export async function getDocumentById(
+  surfaceId: string,
+): Promise<DocumentRecord | null> {
   try {
-    const row = rawGet<DocumentRow>(
-      "documents:getDocumentById",
+    const db = requireMainDb();
+    const row = await db.get<DocumentRow>(
       /*sql*/ `SELECT surface_id, conversation_id, title, content, word_count, created_at, updated_at, revision
        FROM documents
        WHERE surface_id = ?`,
-      surfaceId,
+      [surfaceId],
     );
 
     if (!row) {
@@ -131,21 +132,20 @@ export function getDocumentById(surfaceId: string): DocumentRecord | null {
 }
 
 /** Return true when a document is associated with a conversation. */
-export function isDocumentAssociatedWithConversation(
+export async function isDocumentAssociatedWithConversation(
   surfaceId: string,
   conversationId: string,
-): boolean {
+): Promise<boolean> {
   try {
-    const row = rawGet<{ found: number }>(
-      "documents:isAssociatedWithConversation",
+    const db = requireMainDb();
+    const row = await db.get<{ found: number }>(
       /*sql*/ `
       SELECT 1 AS found
       FROM document_conversations
       WHERE surface_id = ? AND conversation_id = ?
       LIMIT 1
       `,
-      surfaceId,
-      conversationId,
+      [surfaceId, conversationId],
     );
     return row != null;
   } catch (error) {
@@ -161,12 +161,12 @@ export function isDocumentAssociatedWithConversation(
  * List documents for a given conversation (via the junction table).
  * Returns an empty array when the conversation has no documents or on error.
  */
-export function getDocumentsForConversation(
+export async function getDocumentsForConversation(
   conversationId: string,
-): DocumentSummary[] {
+): Promise<DocumentSummary[]> {
   try {
-    const rows = rawAll<DocumentListRow>(
-      "documents:getDocumentsForConversation",
+    const db = requireMainDb();
+    const rows = await db.all<DocumentListRow>(
       /*sql*/ `
       SELECT d.surface_id, dc.conversation_id AS conversation_id,
              d.title, d.word_count, d.created_at, d.updated_at, d.revision
@@ -175,7 +175,7 @@ export function getDocumentsForConversation(
       WHERE dc.conversation_id = ?
       ORDER BY d.updated_at DESC
       `,
-      conversationId,
+      [conversationId],
     );
 
     log.info(
@@ -193,16 +193,14 @@ export function getDocumentsForConversation(
  * List every document, most recently updated first.
  * Returns an empty array on error.
  */
-export function listAllDocuments(): DocumentSummary[] {
+export async function listAllDocuments(): Promise<DocumentSummary[]> {
   try {
-    const rows = rawAll<DocumentListRow>(
-      "documents:listAllDocuments",
-      /*sql*/ `
+    const db = requireMainDb();
+    const rows = await db.all<DocumentListRow>(/*sql*/ `
       SELECT surface_id, conversation_id, title, word_count, created_at, updated_at, revision
       FROM documents
       ORDER BY updated_at DESC
-      `,
-    );
+      `);
 
     log.info({ count: rows.length }, "Listed documents");
     return rows.map(mapRowToSummary);
@@ -218,38 +216,36 @@ export function listAllDocuments(): DocumentSummary[] {
  * conversation are returned.
  * Returns documents ordered by most recently updated.
  */
-export function searchDocumentsByTitle(
+export async function searchDocumentsByTitle(
   query: string,
   options: { conversationId?: string } = {},
-): DocumentSummary[] {
+): Promise<DocumentSummary[]> {
   try {
     const pattern = `%${escapeSqlLikePattern(query)}%`;
+    const db = requireMainDb();
     const rows = options.conversationId
-      ? rawAll<DocumentListRow>(
-          "documents:searchByTitle:scoped",
+      ? await db.all<DocumentListRow>(
           /*sql*/ `
           SELECT d.surface_id, dc.conversation_id AS conversation_id,
                  d.title, d.word_count, d.created_at, d.updated_at, d.revision
           FROM documents d
           INNER JOIN document_conversations dc ON d.surface_id = dc.surface_id
           WHERE dc.conversation_id = ?
-            AND d.title COLLATE NOCASE LIKE ? ESCAPE '\\'
+            AND d.title ILIKE ? ESCAPE '\\'
           ORDER BY d.updated_at DESC
           LIMIT 20
           `,
-          options.conversationId,
-          pattern,
+          [options.conversationId, pattern],
         )
-      : rawAll<DocumentListRow>(
-          "documents:searchByTitle:all",
+      : await db.all<DocumentListRow>(
           /*sql*/ `
           SELECT surface_id, conversation_id, title, word_count, created_at, updated_at, revision
           FROM documents
-          WHERE title COLLATE NOCASE LIKE ? ESCAPE '\\'
+          WHERE title ILIKE ? ESCAPE '\\'
           ORDER BY updated_at DESC
           LIMIT 20
           `,
-          pattern,
+          [pattern],
         );
 
     log.info(
@@ -272,15 +268,15 @@ export function searchDocumentsByTitle(
  * second same-title document, we reuse the first (still-empty) draft instead
  * of producing a duplicate row. Returns `null` when no candidate exists.
  */
-export function findRecentEmptyDocumentByTitle(
+export async function findRecentEmptyDocumentByTitle(
   conversationId: string,
   title: string,
   withinMs: number,
-): { surfaceId: string } | null {
+): Promise<{ surfaceId: string } | null> {
   try {
     const threshold = Date.now() - withinMs;
-    const row = rawGet<{ surface_id: string }>(
-      "documents:findRecentEmptyByTitle",
+    const db = requireMainDb();
+    const row = await db.get<{ surface_id: string }>(
       /*sql*/ `SELECT surface_id FROM documents
        WHERE conversation_id = ?
          AND title = ?
@@ -288,9 +284,7 @@ export function findRecentEmptyDocumentByTitle(
          AND created_at >= ?
        ORDER BY created_at DESC
        LIMIT 1`,
-      conversationId,
-      title,
-      threshold,
+      [conversationId, title, threshold],
     );
     return row ? { surfaceId: row.surface_id } : null;
   } catch (error) {
@@ -306,17 +300,16 @@ export function findRecentEmptyDocumentByTitle(
  * Delete a document and its conversation associations.
  * Returns `true` if the document existed and was deleted, `false` otherwise.
  */
-export function deleteDocument(surfaceId: string): boolean {
+export async function deleteDocument(surfaceId: string): Promise<boolean> {
   try {
-    const changes = rawRun(
-      "documents:deleteDocument:doc",
+    const db = requireMainDb();
+    const changes = await db.run(
       /*sql*/ `DELETE FROM documents WHERE surface_id = ?`,
-      surfaceId,
+      [surfaceId],
     );
-    rawRun(
-      "documents:deleteDocument:associations",
+    await db.run(
       /*sql*/ `DELETE FROM document_conversations WHERE surface_id = ?`,
-      surfaceId,
+      [surfaceId],
     );
     const existed = changes > 0;
     log.info({ surfaceId, existed }, "Deleted document");
@@ -352,16 +345,16 @@ const MAX_FIND_MATCHES = 50;
  * Returns matching lines with line numbers and match positions.
  * Results are capped at {@link MAX_FIND_MATCHES} to avoid oversized responses.
  */
-export function findInDocument(
+export async function findInDocument(
   surfaceId: string,
   query: string,
   options: { regex?: boolean; caseSensitive?: boolean } = {},
-): FindResult | null {
+): Promise<FindResult | null> {
   try {
-    const row = rawGet<{ content: string }>(
-      "documents:findInDocument:getContent",
+    const db = requireMainDb();
+    const row = await db.get<{ content: string }>(
       /*sql*/ `SELECT content FROM documents WHERE surface_id = ?`,
-      surfaceId,
+      [surfaceId],
     );
     if (!row) {
       return null;
@@ -442,16 +435,18 @@ export type SaveDocumentResult =
   | { success: true; surfaceId: string; revision: number }
   | { success: false; error: string; conflict?: DocumentRevisionConflict };
 
-function readDocumentState(surfaceId: string): DocumentSnapshotSource | null {
-  const row = rawGet<{
+async function readDocumentState(
+  surfaceId: string,
+  db: AsyncDb,
+): Promise<DocumentSnapshotSource | null> {
+  const row = await db.get<{
     revision: number;
     title: string;
     content: string;
     word_count: number;
   }>(
-    "documents:readDocumentState",
     /*sql*/ `SELECT revision, title, content, word_count FROM documents WHERE surface_id = ?`,
-    surfaceId,
+    [surfaceId],
   );
   return row
     ? {
@@ -469,13 +464,16 @@ function readDocumentState(surfaceId: string): DocumentSnapshotSource | null {
  * and changes something and {@link shouldSnapshotBeforeUserSave} allows it.
  * Runs inside the save's transaction.
  */
-function snapshotBeforeUserSave(params: {
-  surfaceId: string;
-  title: string;
-  content: string;
-  baseRevision?: number;
-}): void {
-  const current = readDocumentState(params.surfaceId);
+async function snapshotBeforeUserSave(
+  params: {
+    surfaceId: string;
+    title: string;
+    content: string;
+    baseRevision?: number;
+  },
+  db: AsyncDb,
+): Promise<void> {
+  const current = await readDocumentState(params.surfaceId, db);
   if (
     !current ||
     (params.baseRevision !== undefined &&
@@ -484,8 +482,8 @@ function snapshotBeforeUserSave(params: {
   ) {
     return;
   }
-  if (shouldSnapshotBeforeUserSave(params.surfaceId)) {
-    recordDocumentSnapshot(current, "user");
+  if (await shouldSnapshotBeforeUserSave(params.surfaceId, db)) {
+    await recordDocumentSnapshot(current, "user", db);
   }
 }
 
@@ -497,18 +495,20 @@ function snapshotBeforeUserSave(params: {
  * nothing is written and the result carries the row's current state. A row
  * that does not exist yet is created either way.
  */
-function writeDocument(params: {
-  surfaceId: string;
-  conversationId: string;
-  title: string;
-  content: string;
-  wordCount: number;
-  baseRevision?: number;
-}): { revision: number } | { conflict: DocumentRevisionConflict } {
+async function writeDocument(
+  params: {
+    surfaceId: string;
+    conversationId: string;
+    title: string;
+    content: string;
+    wordCount: number;
+    baseRevision?: number;
+  },
+  db: AsyncDb,
+): Promise<{ revision: number } | { conflict: DocumentRevisionConflict }> {
   const now = Date.now();
   if (params.baseRevision === undefined) {
-    const row = rawGet<{ revision: number }>(
-      "documents:saveDocument",
+    const row = await db.get<{ revision: number }>(
       /*sql*/ `INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at, revision)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
        ON CONFLICT(surface_id) DO UPDATE SET
@@ -518,6 +518,42 @@ function writeDocument(params: {
          updated_at = excluded.updated_at,
          revision = documents.revision + 1
        RETURNING revision`,
+      [
+        params.surfaceId,
+        params.conversationId,
+        params.title,
+        params.content,
+        params.wordCount,
+        now,
+        now,
+      ],
+    );
+    return { revision: row!.revision };
+  }
+
+  const updated = await db.get<{ revision: number }>(
+    /*sql*/ `UPDATE documents
+     SET title = ?, content = ?, word_count = ?, updated_at = ?, revision = revision + 1
+     WHERE surface_id = ? AND revision = ?
+     RETURNING revision`,
+    [
+      params.title,
+      params.content,
+      params.wordCount,
+      now,
+      params.surfaceId,
+      params.baseRevision,
+    ],
+  );
+  if (updated) {
+    return updated;
+  }
+  const inserted = await db.get<{ revision: number }>(
+    /*sql*/ `INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at, revision)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+     ON CONFLICT(surface_id) DO NOTHING
+     RETURNING revision`,
+    [
       params.surfaceId,
       params.conversationId,
       params.title,
@@ -525,44 +561,12 @@ function writeDocument(params: {
       params.wordCount,
       now,
       now,
-    );
-    return { revision: row!.revision };
-  }
-
-  const updated = rawGet<{ revision: number }>(
-    "documents:saveDocument:conditional",
-    /*sql*/ `UPDATE documents
-     SET title = ?, content = ?, word_count = ?, updated_at = ?, revision = revision + 1
-     WHERE surface_id = ? AND revision = ?
-     RETURNING revision`,
-    params.title,
-    params.content,
-    params.wordCount,
-    now,
-    params.surfaceId,
-    params.baseRevision,
-  );
-  if (updated) {
-    return updated;
-  }
-  const inserted = rawGet<{ revision: number }>(
-    "documents:saveDocument:insertIfMissing",
-    /*sql*/ `INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at, revision)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-     ON CONFLICT(surface_id) DO NOTHING
-     RETURNING revision`,
-    params.surfaceId,
-    params.conversationId,
-    params.title,
-    params.content,
-    params.wordCount,
-    now,
-    now,
+    ],
   );
   if (inserted) {
     return inserted;
   }
-  const current = readDocumentState(params.surfaceId);
+  const current = await readDocumentState(params.surfaceId, db);
   if (!current) {
     throw new Error("Document disappeared during a conditional save");
   }
@@ -580,21 +584,20 @@ function writeDocument(params: {
  * overwrite may first snapshot the replaced state into the document's history
  * (see {@link snapshotBeforeUserSave}).
  */
-export function saveDocument(params: {
+export async function saveDocument(params: {
   surfaceId: string;
   conversationId: string;
   title: string;
   content: string;
   wordCount: number;
   baseRevision?: number;
-}): SaveDocumentResult {
+}): Promise<SaveDocumentResult> {
   try {
-    const written = getSqlite()
-      .transaction(() => {
-        snapshotBeforeUserSave(params);
-        return writeDocument(params);
-      })
-      .immediate();
+    const db = requireMainDb();
+    const written = await db.transaction(async (tx) => {
+      await snapshotBeforeUserSave(params, tx);
+      return await writeDocument(params, tx);
+    });
     if ("conflict" in written) {
       log.info(
         {
@@ -624,7 +627,7 @@ export function saveDocument(params: {
     // cause the save response to report failure: the document itself is
     // already persisted at this point.
     try {
-      addDocumentConversation(params.surfaceId, params.conversationId);
+      await addDocumentConversation(params.surfaceId, params.conversationId);
     } catch (err) {
       log.warn(
         { err, surfaceId: params.surfaceId },
@@ -648,8 +651,7 @@ export function saveDocument(params: {
 
 /** What a {@link mutateDocumentContent} callback decides for one attempt. */
 export type ContentMutation<T> =
-  | { content: string; value: T }
-  | { value: T; content?: undefined };
+  { content: string; value: T } | { value: T; content?: undefined };
 
 /** Thrown inside a write transaction to roll it back after losing a race. */
 class LostRevisionRace extends Error {}
@@ -668,16 +670,17 @@ class LostRevisionRace extends Error {}
  * Returns `null` when the document does not exist, otherwise the callback's
  * value, the body now stored, and the revision after the call.
  */
-export function mutateDocumentContent<T>(
+export async function mutateDocumentContent<T>(
   surfaceId: string,
   author: DocumentRevisionAuthor,
   mutate: (current: {
     content: string;
     revision: number;
   }) => ContentMutation<T>,
-): { value: T; content: string; revision: number } | null {
+): Promise<{ value: T; content: string; revision: number } | null> {
+  const db = requireMainDb();
   for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt++) {
-    const current = readDocumentState(surfaceId);
+    const current = await readDocumentState(surfaceId, db);
     if (!current) {
       return null;
     }
@@ -694,27 +697,26 @@ export function mutateDocumentContent<T>(
     }
     const newContent = mutation.content;
     try {
-      const written = getSqlite()
-        .transaction(() => {
-          recordDocumentSnapshot(current, author);
-          const row = rawGet<{ revision: number }>(
-            "documents:mutateDocumentContent:update",
-            /*sql*/ `UPDATE documents
+      const written = await db.transaction(async (tx) => {
+        await recordDocumentSnapshot(current, author, tx);
+        const row = await tx.get<{ revision: number }>(
+          /*sql*/ `UPDATE documents
              SET content = ?, word_count = ?, updated_at = ?, revision = revision + 1
              WHERE surface_id = ? AND revision = ?
              RETURNING revision`,
+          [
             newContent,
             countWords(newContent),
             Date.now(),
             surfaceId,
             current.revision,
-          );
-          if (!row) {
-            throw new LostRevisionRace();
-          }
-          return row;
-        })
-        .immediate();
+          ],
+        );
+        if (!row) {
+          throw new LostRevisionRace();
+        }
+        return row;
+      });
       return {
         value: mutation.value,
         content: newContent,
@@ -742,32 +744,28 @@ export type RestoreDocumentRevisionResult =
  * Put a snapshot's title and body back as a new revision of the document.
  * The current state is snapshotted first, so the restore is itself undoable.
  */
-export function restoreDocumentRevision(
+export async function restoreDocumentRevision(
   surfaceId: string,
   revision: number,
-): RestoreDocumentRevisionResult {
-  return getSqlite()
-    .transaction((): RestoreDocumentRevisionResult => {
-      const current = readDocumentState(surfaceId);
+): Promise<RestoreDocumentRevisionResult> {
+  const db = requireMainDb();
+  return await db.transaction(
+    async (tx): Promise<RestoreDocumentRevisionResult> => {
+      const current = await readDocumentState(surfaceId, tx);
       if (!current) {
         return { success: false, notFound: "document" };
       }
-      const target = getDocumentRevision(surfaceId, revision);
+      const target = await getDocumentRevision(surfaceId, revision, tx);
       if (!target) {
         return { success: false, notFound: "revision" };
       }
-      recordDocumentSnapshot(current, "user");
-      const row = rawGet<{ revision: number }>(
-        "documents:restoreDocumentRevision",
+      await recordDocumentSnapshot(current, "user", tx);
+      const row = await tx.get<{ revision: number }>(
         /*sql*/ `UPDATE documents
          SET title = ?, content = ?, word_count = ?, updated_at = ?, revision = revision + 1
          WHERE surface_id = ?
          RETURNING revision`,
-        target.title,
-        target.content,
-        target.wordCount,
-        Date.now(),
-        surfaceId,
+        [target.title, target.content, target.wordCount, Date.now(), surfaceId],
       );
       log.info(
         { surfaceId, restoredRevision: revision, revision: row!.revision },
@@ -779,8 +777,8 @@ export function restoreDocumentRevision(
         title: target.title,
         content: target.content,
       };
-    })
-    .immediate();
+    },
+  );
 }
 
 export const DEFAULT_DOCUMENT_TITLE = "Untitled Document";
@@ -789,13 +787,13 @@ export const DEFAULT_DOCUMENT_TITLE = "Untitled Document";
  * Create a new document owned by `conversationId` under a freshly minted
  * surface ID. A missing or empty title falls back to `DEFAULT_DOCUMENT_TITLE`.
  */
-export function createDocument(params: {
+export async function createDocument(params: {
   conversationId: string;
   title?: string;
   content?: string;
-}): SaveDocumentResult {
+}): Promise<SaveDocumentResult> {
   const content = params.content ?? "";
-  return saveDocument({
+  return await saveDocument({
     surfaceId: `doc-${randomUUID()}`,
     conversationId: params.conversationId,
     title: params.title || DEFAULT_DOCUMENT_TITLE,
@@ -890,19 +888,23 @@ function replaceText(
  * Find and replace text within a document, like sed, as an assistant edit.
  * Supports literal text and regex patterns with optional backreferences.
  */
-export function replaceInDocument(
+export async function replaceInDocument(
   surfaceId: string,
   find: string,
   replace: string,
   options: ReplaceInDocumentOptions = {},
-): ReplaceInDocumentResult {
+): Promise<ReplaceInDocumentResult> {
   try {
-    const outcome = mutateDocumentContent(surfaceId, "assistant", (current) => {
-      const replaced = replaceText(current.content, find, replace, options);
-      return replaced.replacementsMade === 0
-        ? { value: 0 }
-        : { content: replaced.content, value: replaced.replacementsMade };
-    });
+    const outcome = await mutateDocumentContent(
+      surfaceId,
+      "assistant",
+      (current) => {
+        const replaced = replaceText(current.content, find, replace, options);
+        return replaced.replacementsMade === 0
+          ? { value: 0 }
+          : { content: replaced.content, value: replaced.replacementsMade };
+      },
+    );
     if (!outcome) {
       return { success: false, error: "Document not found" };
     }
@@ -1044,28 +1046,32 @@ export interface DocumentContentUpdated {
 }
 
 /** Update persisted document content (append or replace) as an assistant edit. */
-export function updateDocumentContent(
+export async function updateDocumentContent(
   surfaceId: string,
   markdown: string,
   mode: string,
-): DocumentContentUpdated | { success: false; error: string } {
+): Promise<DocumentContentUpdated | { success: false; error: string }> {
   try {
     const appending = mode === "append";
-    const outcome = mutateDocumentContent(surfaceId, "assistant", (current) => {
-      const appliedMarkdown = appending
-        ? stripDuplicateLeadingBlocks(current.content, markdown)
-        : markdown;
-      const sep =
-        appending && current.content.length > 0 && appliedMarkdown.length > 0
-          ? "\n\n"
-          : "";
-      return {
-        content: appending
-          ? current.content + sep + appliedMarkdown
-          : appliedMarkdown,
-        value: appliedMarkdown,
-      };
-    });
+    const outcome = await mutateDocumentContent(
+      surfaceId,
+      "assistant",
+      (current) => {
+        const appliedMarkdown = appending
+          ? stripDuplicateLeadingBlocks(current.content, markdown)
+          : markdown;
+        const sep =
+          appending && current.content.length > 0 && appliedMarkdown.length > 0
+            ? "\n\n"
+            : "";
+        return {
+          content: appending
+            ? current.content + sep + appliedMarkdown
+            : appliedMarkdown,
+          value: appliedMarkdown,
+        };
+      },
+    );
     if (!outcome) {
       log.info({ surfaceId }, "No persisted document to update");
       return { success: false, error: "Document not found" };

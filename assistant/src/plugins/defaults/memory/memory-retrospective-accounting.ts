@@ -42,13 +42,12 @@ import {
   messageMetadataIsAmbientSightKeep,
   SIGHT_FRAME_ATTACHMENT_IDS_KEY,
 } from "../../../persistence/conversation-types.js";
-import { getDb } from "../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import {
   messagesAfterBoundFilter,
   type MessagesAfterRef,
   resolveMessagesAfterBound,
 } from "../../../persistence/message-cursor.js";
-import { messages } from "../../../persistence/schema/index.js";
 import { SKILL_CARD_MESSAGE_KIND } from "./memory-retrospective-constants.js";
 
 /**
@@ -191,7 +190,9 @@ export async function hasQualifyingUserMessageAfter(
   }
   const afterCursor =
     start.kind === "after" ? [messagesAfterBoundFilter(start.bound)] : [];
-  const rows = getDb()
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const rows = await db.orm
     .select({ content: messages.content, metadata: messages.metadata })
     .from(messages)
     .where(
@@ -200,8 +201,7 @@ export async function hasQualifyingUserMessageAfter(
         eq(messages.role, "user"),
         ...afterCursor,
       ),
-    )
-    .all();
+    );
 
   return rows.some(
     (row) =>
@@ -240,8 +240,9 @@ async function countExcludedMessagesAfter(
   conversationId: string,
   after: MessagesAfterRef,
 ): Promise<number> {
-  const db = getDb();
-  const candidates = db
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const candidates = await db.orm
     .select({
       id: messages.id,
       createdAt: messages.createdAt,
@@ -256,8 +257,7 @@ async function countExcludedMessagesAfter(
           like(messages.metadata, `%"${SIGHT_FRAME_ATTACHMENT_IDS_KEY}"%`),
         ),
       ),
-    )
-    .all();
+    );
   if (candidates.length === 0) {
     return 0;
   }

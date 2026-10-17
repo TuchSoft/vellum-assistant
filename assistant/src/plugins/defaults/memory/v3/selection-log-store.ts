@@ -28,9 +28,11 @@
 import type { MemoryV3SelectionLog } from "../../../../api/responses/memory-v3-selection-log.js";
 import { getConfig } from "../../../../config/loader.js";
 import { isMemoryV3Live } from "../../../../config/memory-v3-gate.js";
-import { getDb, getSqliteFrom } from "../../../../persistence/db-connection.js";
+import {
+  getMemoryAsyncDb,
+  requireMainDb,
+} from "../../../../persistence/db-facade.js";
 import { getLogger } from "../logging.js";
-import { memorySqliteOrNull } from "../memory-db.js";
 import { wrapMemoryBlock } from "../memory-marker.js";
 import { getWorkspaceDir } from "../paths.js";
 import { readPage } from "../substrate/page-store.js";
@@ -146,22 +148,22 @@ const MAX_FORK_HOPS = 64;
  * Read the `forkSourceMessageId` back-pointer that `cloneForkMessageMetadata`
  * stamps onto every message a fork copies, for the given message ids.
  */
-function forkSourceIdsOf(messageIds: string[]): string[] {
+async function forkSourceIdsOf(messageIds: string[]): Promise<string[]> {
   if (messageIds.length === 0) {
     return [];
   }
   const placeholders = messageIds.map(() => "?").join(", ");
-  const rows = getSqliteFrom(getDb())
-    .query(
-      /*sql*/ `
-      SELECT json_extract(metadata, '$.forkSourceMessageId') AS src
+  const db = requireMainDb();
+  const rows = await db.all<{ src: string | null }>(
+    /*sql*/ `
+      SELECT metadata::jsonb ->> 'forkSourceMessageId' AS src
       -- No completeness predicate: ids come from this store's own selection
       -- log, written for rows the injection pipeline already processed.
       FROM messages
       WHERE id IN (${placeholders})
     `,
-    )
-    .all(...messageIds) as Array<{ src: string | null }>;
+    messageIds,
+  );
   return rows
     .map((r) => r.src)
     .filter((src): src is string => typeof src === "string" && src.length > 0);
@@ -176,14 +178,16 @@ function forkSourceIdsOf(messageIds: string[]): string[] {
  * where `lookup` finds something and return it. Returns `null` when no
  * ancestor has a match (or the ids aren't fork copies).
  */
-function viaForkSource<T>(
+async function viaForkSource<T>(
   messageIds: string[],
   lookup: (messageIds: string[]) => T | null,
-): T | null {
+): Promise<T | null> {
   let frontier = messageIds;
   const visited = new Set(messageIds);
   for (let hop = 0; hop < MAX_FORK_HOPS; hop++) {
-    const sources = forkSourceIdsOf(frontier).filter((id) => !visited.has(id));
+    const sources = (await forkSourceIdsOf(frontier)).filter(
+      (id) => !visited.has(id),
+    );
     if (sources.length === 0) {
       return null;
     }
@@ -386,13 +390,13 @@ export async function getMemoryV3SelectionForInspectorByMessageIds(
 ): Promise<MemoryV3SelectionLog | null> {
   const rows =
     rowsForMessageIds(messageIds) ??
-    viaForkSource(messageIds, rowsForMessageIds);
+    (await viaForkSource(messageIds, rowsForMessageIds));
   if (rows) {
     return buildSelectionLog(rows);
   }
   const pool =
     readPoolForMessageIds(messageIds) ??
-    viaForkSource(messageIds, readPoolForMessageIds);
+    (await viaForkSource(messageIds, readPoolForMessageIds));
   return pool ? poolOnlyLog(pool.turn, pool.record) : null;
 }
 
@@ -444,21 +448,22 @@ function isSelectionSource(source: string): source is SelectionSource {
   return (SELECTION_SOURCES as readonly string[]).includes(source);
 }
 
-export function summarizeSelections(conversationId: string): SelectionSummary {
-  const raw = memorySqliteOrNull("summarizeSelections");
-  const rows = raw
-    ? (raw
-        .query(
-          /*sql*/ `
-      SELECT turn, slug, source FROM memory_v3_selections
-      WHERE conversation_id = ?
-    `,
-        )
-        .all(conversationId) as Array<{
+export async function summarizeSelections(
+  conversationId: string,
+): Promise<SelectionSummary> {
+  const db = getMemoryAsyncDb();
+  const rows = db
+    ? await db.all<{
         turn: number;
         slug: string;
         source: string;
-      }>)
+      }>(
+        /*sql*/ `
+      SELECT turn, slug, source FROM memory_v3_selections
+      WHERE conversation_id = ?
+    `,
+        [conversationId],
+      )
     : [];
 
   const bySource = Object.fromEntries(

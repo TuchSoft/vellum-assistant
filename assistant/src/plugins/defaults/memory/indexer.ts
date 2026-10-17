@@ -16,17 +16,18 @@ import {
   getMemoryCheckpoint,
   setMemoryCheckpoint,
 } from "../../../persistence/checkpoints.js";
-import { getDb } from "../../../persistence/db-connection.js";
+import {
+  getMemoryAsyncDb,
+  requireMainDb,
+} from "../../../persistence/db-facade.js";
 import {
   enqueueMemoryJob,
   isMemoryEnabled,
   upsertDebouncedJob,
 } from "../../../persistence/jobs-store.js";
-import { memorySegments, messages } from "../../../persistence/schema/index.js";
 import type { TrustClass } from "../../../runtime/actor-trust-resolver.js";
 import { isAutoAnalysisConversation } from "../../../runtime/services/auto-analysis-guard.js";
 import { getLogger } from "./logging.js";
-import { memoryDbOrNull } from "./memory-db.js";
 import { isMemoryRetrospectiveConversation } from "./memory-retrospective-enqueue.js";
 import { maybeEnqueueRetrospective } from "./memory-retrospective-trigger-check.js";
 import { extractMediaBlockMeta } from "./message-media.js";
@@ -81,10 +82,11 @@ export async function indexMessageNow(
     return { indexedSegments: 0, enqueuedJobs: 0 };
   }
 
-  const mem = memoryDbOrNull("indexMessageNow");
+  const mem = getMemoryAsyncDb();
   if (!mem) {
     return { indexedSegments: 0, enqueuedJobs: 0 };
   }
+  const memorySegments = mem.schema.memorySegments;
   const now = Date.now();
   const segments = segmentText(
     text,
@@ -127,16 +129,18 @@ export async function indexMessageNow(
   // streaming row exists, and orphan prevention is about deletion, not
   // completeness. A post-write re-check below closes the narrower window
   // where the delete lands mid-transaction.
-  const sourceMessage = getDb()
+  const mainDb = requireMainDb();
+  const messages = mainDb.schema.messages;
+  const sourceMessageRows = await mainDb.orm
     .select({ id: messages.id })
     .from(messages)
-    .where(eq(messages.id, input.messageId))
-    .get();
+    .where(eq(messages.id, input.messageId));
+  const sourceMessage = sourceMessageRows[0];
   if (!sourceMessage) {
     return { indexedSegments: 0, enqueuedJobs: 0 };
   }
 
-  mem.transaction((tx) => {
+  await mem.transaction(async (tx) => {
     for (const segment of segments) {
       if (segment.text.length < MIN_SEGMENT_CHARS) {
         skippedShortSegments++;
@@ -146,13 +150,14 @@ export async function indexMessageNow(
       const hash = createHash("sha256").update(segment.text).digest("hex");
 
       // Check if this segment already exists with the same content hash
-      const existing = tx
+      const existingRows = await tx.orm
         .select({ contentHash: memorySegments.contentHash })
         .from(memorySegments)
-        .where(eq(memorySegments.id, segmentId))
-        .get();
+        .where(eq(memorySegments.id, segmentId));
+      const existing = existingRows[0];
 
-      tx.insert(memorySegments)
+      await tx.orm
+        .insert(memorySegments)
         .values({
           id: segmentId,
           messageId: input.messageId,
@@ -173,8 +178,7 @@ export async function indexMessageNow(
             contentHash: hash,
             updatedAt: now,
           },
-        })
-        .run();
+        });
 
       if (existing?.contentHash === hash) {
         skippedEmbedJobs++;
@@ -200,16 +204,15 @@ export async function indexMessageNow(
   // drop the pieces this call just wrote and skip the embedding jobs, so a
   // delete racing a backfill leaves nothing searchable behind. No embeddings
   // exist yet. The skipped jobs are what would have created them.
-  const stillExists = getDb()
+  const stillExistsRows = await mainDb.orm
     .select({ id: messages.id })
     .from(messages)
-    .where(eq(messages.id, input.messageId))
-    .get();
+    .where(eq(messages.id, input.messageId));
+  const stillExists = stillExistsRows[0];
   if (!stillExists) {
-    mem
+    await mem.orm
       .delete(memorySegments)
-      .where(eq(memorySegments.messageId, input.messageId))
-      .run();
+      .where(eq(memorySegments.messageId, input.messageId));
     return { indexedSegments: 0, enqueuedJobs: 0 };
   }
 

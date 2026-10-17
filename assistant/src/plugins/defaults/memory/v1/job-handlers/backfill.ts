@@ -7,12 +7,11 @@ import {
   resetMessageCursorCheckpoint,
   writeMessageCursorCheckpoint,
 } from "../../../../../persistence/checkpoints.js";
-import { getDb } from "../../../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import {
   enqueueMemoryJob,
   type MemoryJob,
 } from "../../../../../persistence/jobs-store.js";
-import { messages } from "../../../../../persistence/schema/index.js";
 import { indexMessageNow } from "../../indexer.js";
 
 const BACKFILL_CHECKPOINT_KEY = "memory:backfill:last_created_at";
@@ -22,7 +21,8 @@ export async function backfillJob(
   job: MemoryJob,
   config: AssistantConfig,
 ): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
+  const messages = db.schema.messages;
   const force = job.payload.force === true;
   if (force) {
     await resetMessageCursorCheckpoint(
@@ -35,7 +35,7 @@ export async function backfillJob(
     BACKFILL_CHECKPOINT_KEY,
     BACKFILL_CHECKPOINT_ID_KEY,
   );
-  const batch = db
+  const batch = await db.orm
     .select()
     .from(messages)
     .where(
@@ -51,8 +51,7 @@ export async function backfillJob(
       ),
     )
     .orderBy(asc(messages.createdAt), asc(messages.id))
-    .limit(200)
-    .all();
+    .limit(200);
 
   if (batch.length > 0) {
     for (const message of batch) {

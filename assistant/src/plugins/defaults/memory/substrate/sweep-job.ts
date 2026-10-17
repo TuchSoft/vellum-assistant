@@ -38,12 +38,8 @@ import { usesConceptPageMemory } from "../../../../config/memory-v3-gate.js";
 import type { AssistantConfig } from "../../../../config/types.js";
 import { warmGuardianBindings } from "../../../../contacts/guardian-delivery-reader.js";
 import { emitBackgroundFailureSignal } from "../../../../notifications/background-failure-signal.js";
-import { getDb } from "../../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import type { MemoryJob } from "../../../../persistence/jobs-store.js";
-import {
-  conversations,
-  messages,
-} from "../../../../persistence/schema/index.js";
 import { appendBufferAndArchive } from "../buffer-file.js";
 import { formatRememberEntry } from "../buffer-format.js";
 import {
@@ -140,7 +136,7 @@ export async function memoryV2SweepJob(
   // continues to return 0 on caught failures (preserving the existing
   // silent-failure contract); only the notification side-effect is new.
   try {
-    const recentText = loadRecentMessagesText(Date.now());
+    const recentText = await loadRecentMessagesText(Date.now());
     if (!recentText) {
       log.debug("No recent messages in window; sweep skipped");
       return 0;
@@ -261,15 +257,17 @@ function readBufferText(memoryDir: string): string {
  * cap, the *oldest* messages are dropped (truncate-from-front) so the model
  * always sees the latest context.
  */
-function loadRecentMessagesText(nowMs: number): string {
+async function loadRecentMessagesText(nowMs: number): Promise<string> {
   const cutoff = nowMs - RECENT_MESSAGES_WINDOW_MS;
-  const db = getDb();
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const conversations = db.schema.conversations;
   // Pull newest-first then reverse for chronological output. Bounding the
   // initial limit (1000) defends against pathological busy windows where a
   // naive scan would touch every recent message. Joining conversations and
   // excluding background/scheduled types keeps automation chatter
   // (heartbeats, filing, scheduled jobs) out of buffer.md.
-  const rows = db
+  const rows = await db.orm
     .select({
       role: messages.role,
       content: messages.content,
@@ -284,8 +282,7 @@ function loadRecentMessagesText(nowMs: number): string {
       ),
     )
     .orderBy(desc(messages.createdAt))
-    .limit(1000)
-    .all();
+    .limit(1000);
   if (rows.length === 0) {
     return "";
   }

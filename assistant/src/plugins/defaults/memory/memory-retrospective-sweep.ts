@@ -68,13 +68,12 @@ import type { AssistantConfig } from "../../../config/types.js";
 import { AUTO_ANALYSIS_SOURCE } from "../../../persistence/auto-analysis-constants.js";
 import { getConversationRecentProvenanceTrustClass } from "../../../persistence/conversation-crud.js";
 import { MEMORY_V2_CONSOLIDATION_SOURCE } from "../../../persistence/conversation-types.js";
-import { getDb } from "../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import type { MemoryJob } from "../../../persistence/jobs-store.js";
 import {
   isMemoryEnabled,
   listPendingMemoryRetrospectiveSourceConversationIds,
 } from "../../../persistence/jobs-store.js";
-import { conversations } from "../../../persistence/schema/index.js";
 import { getLogger } from "./logging.js";
 import { countRetrospectiveMessagesAfter } from "./memory-retrospective-accounting.js";
 import { MEMORY_RETROSPECTIVE_SOURCES } from "./memory-retrospective-constants.js";
@@ -178,12 +177,14 @@ export function effectiveSweepLookbackMs(config: AssistantConfig): number {
  * exclude rows with no recorded message stamp: absent any evidence of recent
  * activity, a conversation is not sweepable.
  */
-export function listSweepCandidateConversationIds(
+export async function listSweepCandidateConversationIds(
   cursor: string,
   limit: number,
   lastMessageAtCutoff: number,
-): string[] {
-  return getDb()
+): Promise<string[]> {
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const rows = await db.orm
     .select({ id: conversations.id })
     .from(conversations)
     .where(
@@ -195,9 +196,8 @@ export function listSweepCandidateConversationIds(
       ),
     )
     .orderBy(asc(conversations.id))
-    .limit(limit)
-    .all()
-    .map((row) => row.id);
+    .limit(limit);
+  return rows.map((row) => row.id);
 }
 
 export interface RetrospectiveSweepResult {
@@ -232,7 +232,7 @@ export async function runRetrospectiveSweep(
   let enqueued = 0;
   let cursor = "";
   for (;;) {
-    const page = listSweepCandidateConversationIds(
+    const page = await listSweepCandidateConversationIds(
       cursor,
       SWEEP_BATCH,
       lookbackCutoff,

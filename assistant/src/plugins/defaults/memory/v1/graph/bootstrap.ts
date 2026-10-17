@@ -21,27 +21,19 @@ import {
   getMemoryCheckpoint,
   setMemoryCheckpoint,
 } from "../../../../../persistence/checkpoints.js";
-import { getDb } from "../../../../../persistence/db-connection.js";
+import {
+  getMemoryAsyncDb,
+  requireMainDb,
+} from "../../../../../persistence/db-facade.js";
 import { initQdrantClient } from "../../../../../persistence/embeddings/qdrant-client.js";
 import {
   enqueueMemoryJob,
   hasActiveJobOfType,
   isMemoryEnabled,
 } from "../../../../../persistence/jobs-store.js";
-import {
-  rawAll,
-  rawGet,
-  rawRun,
-} from "../../../../../persistence/raw-query.js";
-import {
-  conversations,
-  memoryGraphNodes,
-  memorySegments,
-} from "../../../../../persistence/schema/index.js";
 import { resolveQdrantUrl } from "../../embeddings.js";
 import { countNodes } from "../../graph/store.js";
 import { getLogger } from "../../logging.js";
-import { memoryDbOrNull } from "../../memory-db.js";
 import { getWorkspaceDir } from "../../paths.js";
 import { runGraphExtraction } from "./extraction.js";
 
@@ -111,15 +103,14 @@ export async function bootstrapFromHistory(
   };
 
   // Load all conversations, ordered chronologically
-  const db = getDb();
-  const allConversations = db
+  const db = requireMainDb();
+  const allConversations = await db.orm
     .select({
-      id: conversations.id,
-      createdAt: conversations.createdAt,
+      id: db.schema.conversations.id,
+      createdAt: db.schema.conversations.createdAt,
     })
-    .from(conversations)
-    .orderBy(asc(conversations.createdAt))
-    .all();
+    .from(db.schema.conversations)
+    .orderBy(asc(db.schema.conversations.createdAt));
 
   log.info(
     { total: allConversations.length },
@@ -175,7 +166,7 @@ export async function bootstrapFromHistory(
 
       // Progress logging
       if (result.conversationsProcessed % progressInterval === 0) {
-        const nodeCount = countNodes();
+        const nodeCount = await countNodes();
         log.info(
           {
             processed: result.conversationsProcessed,
@@ -338,36 +329,36 @@ export async function maybeEnqueueGraphBootstrap(): Promise<void> {
     return;
   }
 
-  // Graph nodes live on the memory connection; segments still live on main.
-  const memoryDb = memoryDbOrNull("maybeEnqueueGraphBootstrap");
+  // Graph nodes live on the memory slot; segments live on main.
+  const memoryDb = getMemoryAsyncDb();
   if (!memoryDb) {
     return;
   }
+  const memoryGraphNodes = memoryDb.schema.memoryGraphNodes;
+  const memorySegments = memoryDb.schema.memorySegments;
 
   // Check for non-procedural graph nodes (procedural = capability seeds, not real memories)
-  const nonProceduralCount =
-    memoryDb
-      .select({ count: sql<number>`count(*)` })
-      .from(memoryGraphNodes)
-      .where(
-        and(
-          ne(memoryGraphNodes.type, "procedural"),
-          sql`${memoryGraphNodes.fidelity} != 'gone'`,
-        ),
-      )
-      .get()?.count ?? 0;
+  const nonProceduralRows = await memoryDb.orm
+    .select({ count: sql<number>`count(*)` })
+    .from(memoryGraphNodes)
+    .where(
+      and(
+        ne(memoryGraphNodes.type, "procedural"),
+        sql`${memoryGraphNodes.fidelity} != 'gone'`,
+      ),
+    );
+  const nonProceduralCount = nonProceduralRows[0]?.count ?? 0;
 
   if (nonProceduralCount > 0) {
     return; // Graph already populated
   }
 
   // Check for historical data to bootstrap from. Segments live on the
-  // memory connection alongside the graph nodes read above.
-  const segmentCount =
-    memoryDb
-      .select({ count: sql<number>`count(*)` })
-      .from(memorySegments)
-      .get()?.count ?? 0;
+  // memory slot alongside the graph nodes read above.
+  const segmentRows = await memoryDb.orm
+    .select({ count: sql<number>`count(*)` })
+    .from(memorySegments);
+  const segmentCount = segmentRows[0]?.count ?? 0;
 
   const hasJournalFiles = existsSync(join(getWorkspaceDir(), "journal"));
 
@@ -440,17 +431,21 @@ export async function migrateToolCreatedItems(): Promise<void> {
   const placeholders = kinds.map(() => "?").join(", ");
 
   let rows: LegacyItem[];
+  const db = requireMainDb();
   try {
-    rows = rawAll<LegacyItem>(
-      "memoryGraph:migrateItems:select",
+    rows = await db.all<LegacyItem>(
       `SELECT id, kind, subject, statement, confidence, importance, scope_id, first_seen_at
        FROM memory_items
        WHERE kind IN (${placeholders}) AND status = 'active'`,
-      ...kinds,
+      kinds,
     );
   } catch (err) {
     // Table may not exist (fresh install) — nothing to migrate
-    if (err instanceof Error && err.message.includes("no such table")) {
+    if (
+      err instanceof Error &&
+      (err.message.includes("no such table") ||
+        err.message.includes("does not exist"))
+    ) {
       await setMemoryCheckpoint(MIGRATE_ITEMS_CHECKPOINT, "done");
       return;
     }
@@ -475,11 +470,11 @@ export async function migrateToolCreatedItems(): Promise<void> {
 
     // Check if already migrated (sourceKey exists in graph)
     const sourceKey = `${prefix}${row.id}`;
-    const existing = rawGet<{ id: string }>(
-      "memoryGraph:migrateItems:existing",
+    const existingRows = await db.all<{ id: string }>(
       `SELECT id FROM memory_graph_nodes WHERE source_conversations LIKE ?`,
-      `%${sourceKey}%`,
+      [`%${sourceKey}%`],
     );
+    const existing = existingRows[0];
     if (existing) {
       continue;
     }
@@ -494,8 +489,7 @@ export async function migrateToolCreatedItems(): Promise<void> {
       originalIntensity: 0.1,
     });
 
-    rawRun(
-      "memoryGraph:migrateItems:insert",
+    await db.run(
       `INSERT INTO memory_graph_nodes (
         id, content, type, created, last_accessed, last_consolidated,
         event_date, emotional_charge, fidelity, confidence, significance,
@@ -503,25 +497,27 @@ export async function migrateToolCreatedItems(): Promise<void> {
         source_conversations, source_type, narrative_role, part_of_story,
         scope_id
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id,
-      content,
-      "semantic",
-      row.first_seen_at || now,
-      now,
-      now,
-      null,
-      emotionalCharge,
-      "vivid",
-      row.confidence,
-      row.importance,
-      14,
-      0,
-      now,
-      JSON.stringify([sourceKey]),
-      "direct",
-      null,
-      null,
-      row.scope_id || "default",
+      [
+        id,
+        content,
+        "semantic",
+        row.first_seen_at || now,
+        now,
+        now,
+        null,
+        emotionalCharge,
+        "vivid",
+        row.confidence,
+        row.importance,
+        14,
+        0,
+        now,
+        JSON.stringify([sourceKey]),
+        "direct",
+        null,
+        null,
+        row.scope_id || "default",
+      ],
     );
 
     enqueueMemoryJob("embed_graph_node", { nodeId: id });

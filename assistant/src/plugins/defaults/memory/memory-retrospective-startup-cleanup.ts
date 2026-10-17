@@ -52,11 +52,10 @@ import {
   sql,
 } from "drizzle-orm";
 
-import { getDb, getMemoryDb } from "../../../persistence/db-connection.js";
 import {
-  conversations,
-  memoryJobs,
-} from "../../../persistence/schema/index.js";
+  getMemoryAsyncDb,
+  requireMainDb,
+} from "../../../persistence/db-facade.js";
 import { getMemoryConfig } from "./config.js";
 import { getLogger } from "./logging.js";
 import { MEMORY_RETROSPECTIVE_SOURCES } from "./memory-retrospective-constants.js";
@@ -99,21 +98,23 @@ export async function sweepOrphanMemoryRetrospectiveConversations(
   }
 
   const cutoff = now - ORPHAN_AGE_MS;
-  const db = getDb();
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
 
-  // `memory_jobs` lives on the dedicated memory connection. If it is unavailable
-  // we cannot tell which sources have in-flight retrospective jobs, so skip the
-  // sweep rather than risk deleting a conversation whose job is still running.
-  const memoryDb = getMemoryDb();
+  // `memory_jobs` lives on the memory slot. If it is unavailable we cannot
+  // tell which sources have in-flight retrospective jobs, so skip the sweep
+  // rather than risk deleting a conversation whose job is still running.
+  const memoryDb = getMemoryAsyncDb();
   if (!memoryDb) {
     return { swept: 0 };
   }
+  const memoryJobs = memoryDb.schema.memoryJobs;
 
   // Compute the preserved dedup baseline per source. Runs whose state row
   // predates the persisted `remembered_log` pull dedup context by scanning
   // the most-recent prior retro (via `findMostRecentRetrospectiveFor`);
   // sweeping it would leave those runs with no baseline at all.
-  const allRetros = db
+  const allRetros = await db.orm
     .select({
       id: conversations.id,
       source: conversations.source,
@@ -126,8 +127,7 @@ export async function sweepOrphanMemoryRetrospectiveConversations(
         inArray(conversations.source, MEMORY_RETROSPECTIVE_SOURCES),
         isNotNull(conversations.forkParentConversationId),
       ),
-    )
-    .all();
+    );
   const retrosPerSource = new Map<string, RetroRow[]>();
   for (const row of allRetros) {
     const parent = row.forkParentConversationId;
@@ -154,15 +154,15 @@ export async function sweepOrphanMemoryRetrospectiveConversations(
   // compare source-id to source-id by filtering on
   // `conversations.forkParentConversationId`, not `conversations.id`.
   //
-  // Read in the same synchronous block as the orphan query below — AFTER the
-  // awaited baseline loads above. The sweep runs concurrently with worker
-  // ticking, and a retrospective forked while baselines were loading inherits
-  // the copied source prefix's old `lastMessageAt`, so the age cutoff alone
-  // does not protect it; its pending/running job must be in this set when the
-  // orphan candidates are classified.
-  const activeJobSourceConversationIds = memoryDb
+  // Read immediately before the orphan query below, AFTER the awaited baseline
+  // loads above. The sweep runs concurrently with worker ticking, and a
+  // retrospective forked while baselines were loading inherits the copied
+  // source prefix's old `lastMessageAt`, so the age cutoff alone does not
+  // protect it; its pending/running job must be in this set when the orphan
+  // candidates are classified.
+  const activeJobRows = await memoryDb.orm
     .select({
-      conversationId: sql<string>`json_extract(${memoryJobs.payload}, '$.conversationId')`,
+      conversationId: sql<string>`${memoryJobs.payload}::jsonb ->> 'conversationId'`,
     })
     .from(memoryJobs)
     .where(
@@ -170,39 +170,39 @@ export async function sweepOrphanMemoryRetrospectiveConversations(
         eq(memoryJobs.type, "memory_retrospective"),
         inArray(memoryJobs.status, ["pending", "running"]),
       ),
-    )
-    .all()
+    );
+  const activeJobSourceConversationIds = activeJobRows
     .map((row) => row.conversationId)
     .filter((id): id is string => typeof id === "string" && id.length > 0);
 
-  const orphans = db
-    .select({ id: conversations.id })
-    .from(conversations)
-    .where(
-      and(
-        inArray(conversations.source, MEMORY_RETROSPECTIVE_SOURCES),
-        // Conservative: only sweep rows that have had at least one message
-        // AND haven't seen activity recently. Conversations without a
-        // last_message_at value are too fresh to assess.
-        isNotNull(conversations.lastMessageAt),
-        lt(conversations.lastMessageAt, cutoff),
-        activeJobSourceConversationIds.length > 0
-          ? // `forkParentConversationId` is nullable, and SQLite's
-            // `NULL NOT IN (...)` evaluates to unknown (falsy), so legacy
-            // rows with a null parent would never match. Include them
-            // explicitly so the sweep covers them.
-            or(
-              isNull(conversations.forkParentConversationId),
-              notInArray(
-                conversations.forkParentConversationId,
-                activeJobSourceConversationIds,
-              ),
-            )
-          : sql`1=1`,
-      ),
-    )
-    .all()
-    .filter((row) => !preservedIds.has(row.id));
+  const orphans = (
+    await db.orm
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(
+        and(
+          inArray(conversations.source, MEMORY_RETROSPECTIVE_SOURCES),
+          // Conservative: only sweep rows that have had at least one message
+          // AND haven't seen activity recently. Conversations without a
+          // last_message_at value are too fresh to assess.
+          isNotNull(conversations.lastMessageAt),
+          lt(conversations.lastMessageAt, cutoff),
+          activeJobSourceConversationIds.length > 0
+            ? // `forkParentConversationId` is nullable, and SQL's
+              // `NULL NOT IN (...)` evaluates to unknown (falsy), so legacy
+              // rows with a null parent would never match. Include them
+              // explicitly so the sweep covers them.
+              or(
+                isNull(conversations.forkParentConversationId),
+                notInArray(
+                  conversations.forkParentConversationId,
+                  activeJobSourceConversationIds,
+                ),
+              )
+            : sql`1=1`,
+        ),
+      )
+  ).filter((row) => !preservedIds.has(row.id));
 
   let swept = 0;
   for (const row of orphans) {

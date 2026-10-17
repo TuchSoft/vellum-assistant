@@ -16,7 +16,7 @@ import {
   normalizeSubagentLabel,
   TERMINAL_STATUSES,
 } from "../subagent/types.js";
-import { rawAll, rawGet, rawRun } from "./raw-query.js";
+import { requireMainDb } from "./db-facade.js";
 
 /** A durable subagent lifecycle record (camelCase mirror of the row). */
 export interface SubagentRecord {
@@ -55,10 +55,9 @@ export interface SubagentRecord {
 }
 
 /**
- * A record plus its SQLite `rowid`, which is insertion order and therefore
- * spawn order (a row is written when the subagent is spawned). Breaks a
- * same-millisecond `created_at` tie deterministically. Kept off
- * `SubagentRecord` so it cannot ride a record spread onto a wire response.
+ * A record plus its `spawnSeq`, the `created_at` stamp that breaks a
+ * same-millisecond tie deterministically. Kept off `SubagentRecord` so it
+ * cannot ride a record spread onto a wire response.
  */
 export interface RehydratableSubagentRecord extends SubagentRecord {
   spawnSeq: number;
@@ -125,9 +124,9 @@ function rowToRehydratableRecord(
  * transition; the conflict clause refreshes the mutable lifecycle fields while
  * the immutable identity/config columns stay as first written.
  */
-export function upsertSubagentRecord(rec: SubagentRecord): void {
-  rawRun(
-    "subagent:upsertRecord",
+export async function upsertSubagentRecord(rec: SubagentRecord): Promise<void> {
+  const db = requireMainDb();
+  await db.run(
     `INSERT INTO subagents (
        id, parent_conversation_id, conversation_id, label, objective, role,
        is_fork, send_result_to_user, parent_tool_use_id, status, error,
@@ -143,32 +142,34 @@ export function upsertSubagentRecord(rec: SubagentRecord): void {
        input_tokens = excluded.input_tokens,
        output_tokens = excluded.output_tokens,
        estimated_cost = excluded.estimated_cost`,
-    rec.id,
-    rec.parentConversationId,
-    rec.conversationId,
-    rec.label,
-    rec.objective,
-    rec.role,
-    rec.isFork ? 1 : 0,
-    rec.sendResultToUser == null ? null : rec.sendResultToUser ? 1 : 0,
-    rec.parentToolUseId,
-    rec.status,
-    rec.error,
-    rec.createdAt,
-    rec.startedAt,
-    rec.completedAt,
-    rec.inputTokens,
-    rec.outputTokens,
-    rec.estimatedCost,
-    rec.budgetStopReason ?? null,
+    [
+      rec.id,
+      rec.parentConversationId,
+      rec.conversationId,
+      rec.label,
+      rec.objective,
+      rec.role,
+      rec.isFork ? 1 : 0,
+      rec.sendResultToUser == null ? null : rec.sendResultToUser ? 1 : 0,
+      rec.parentToolUseId,
+      rec.status,
+      rec.error,
+      rec.createdAt,
+      rec.startedAt,
+      rec.completedAt,
+      rec.inputTokens,
+      rec.outputTokens,
+      rec.estimatedCost,
+      rec.budgetStopReason ?? null,
+    ],
   );
 }
 
 /** Load every persisted subagent record, unbounded. */
-export function loadAllSubagentRecords(): SubagentRecord[] {
-  return rawAll<SubagentRow>("subagent:loadAll", `SELECT * FROM subagents`).map(
-    rowToRecord,
-  );
+export async function loadAllSubagentRecords(): Promise<SubagentRecord[]> {
+  const db = requireMainDb();
+  const rows = await db.all<SubagentRow>(`SELECT * FROM subagents`);
+  return rows.map(rowToRecord);
 }
 
 /**
@@ -188,25 +189,24 @@ export function loadAllSubagentRecords(): SubagentRecord[] {
  * each other, so the caller needs a spawn key that does not depend on the order
  * rows arrive in.
  */
-export function loadRehydratableSubagentRecords(bound: {
+export async function loadRehydratableSubagentRecords(bound: {
   terminalStatuses: readonly string[];
   maxTerminal: number;
-}): RehydratableSubagentRecord[] {
+}): Promise<RehydratableSubagentRecord[]> {
   const placeholders = bound.terminalStatuses.map(() => "?").join(", ");
-  return rawAll<RehydratableSubagentRow>(
-    "subagent:loadRehydratable",
-    `SELECT *, rowid AS spawn_seq FROM subagents WHERE status NOT IN (${placeholders})
+  const db = requireMainDb();
+  const rows = await db.all<RehydratableSubagentRow>(
+    `SELECT *, created_at AS spawn_seq FROM subagents WHERE status NOT IN (${placeholders})
      UNION ALL
      SELECT * FROM (
-       SELECT *, rowid AS spawn_seq FROM subagents
+       SELECT *, created_at AS spawn_seq FROM subagents
          WHERE status IN (${placeholders})
          ORDER BY COALESCE(completed_at, created_at) DESC
          LIMIT ?
-     )`,
-    ...bound.terminalStatuses,
-    ...bound.terminalStatuses,
-    bound.maxTerminal,
-  ).map(rowToRehydratableRecord);
+     ) AS terminal`,
+    [...bound.terminalStatuses, ...bound.terminalStatuses, bound.maxTerminal],
+  );
+  return rows.map(rowToRehydratableRecord);
 }
 
 /**
@@ -216,13 +216,13 @@ export function loadRehydratableSubagentRecords(bound: {
  * current lifecycle status) from durable storage without consulting the live
  * SubagentManager.
  */
-export function getSubagentRecordByConversationId(
+export async function getSubagentRecordByConversationId(
   conversationId: string,
-): SubagentRecord | undefined {
-  const row = rawGet<SubagentRow>(
-    "subagent:getByConversationId",
+): Promise<SubagentRecord | undefined> {
+  const db = requireMainDb();
+  const row = await db.get<SubagentRow>(
     `SELECT * FROM subagents WHERE conversation_id = ?`,
-    conversationId,
+    [conversationId],
   );
   return row ? rowToRecord(row) : undefined;
 }
@@ -232,11 +232,13 @@ export function getSubagentRecordByConversationId(
  * subagents the live SubagentManager no longer holds, evicted by the TTL sweep,
  * not yet rehydrated after a restart, or past the rehydration bound.
  */
-export function getSubagentRecordById(id: string): SubagentRecord | undefined {
-  const row = rawGet<SubagentRow>(
-    "subagent:getById",
+export async function getSubagentRecordById(
+  id: string,
+): Promise<SubagentRecord | undefined> {
+  const db = requireMainDb();
+  const row = await db.get<SubagentRow>(
     `SELECT * FROM subagents WHERE id = ?`,
-    id,
+    [id],
   );
   return row ? rowToRecord(row) : undefined;
 }
@@ -257,19 +259,19 @@ export function getSubagentRecordById(id: string): SubagentRecord | undefined {
  * Ordered by spawn order, matching the in-memory index, which the manager moves
  * to the newest subagent to claim the label whatever order the runs finish in.
  * Ordering by completion instead would resolve two concurrent same-label runs
- * to the older one whenever the newer finished first. `rowid` breaks a
- * same-millisecond `created_at` tie by insertion order, which is spawn order.
+ * to the older one whenever the newer finished first. `id` breaks a
+ * same-millisecond `created_at` tie.
  */
-export function getSubagentRecordByLabel(
+export async function getSubagentRecordByLabel(
   parentConversationId: string,
   normalizedLabel: string,
-): SubagentRecord | undefined {
-  const rows = rawAll<SubagentRow>(
-    "subagent:getByLabel",
+): Promise<SubagentRecord | undefined> {
+  const db = requireMainDb();
+  const rows = await db.all<SubagentRow>(
     `SELECT * FROM subagents
        WHERE parent_conversation_id = ?
-       ORDER BY created_at DESC, rowid DESC`,
-    parentConversationId,
+       ORDER BY created_at DESC, id DESC`,
+    [parentConversationId],
   );
   const row = rows.find(
     (r) => normalizeSubagentLabel(r.label) === normalizedLabel,
@@ -293,13 +295,13 @@ export function getSubagentRecordByLabel(
  * The terminal status set is supplied by the caller so this layer stays
  * decoupled from the subagent domain's status enum.
  */
-export function getSubagentRecordsByParent(
+export async function getSubagentRecordsByParent(
   parentConversationId: string,
   bound: { terminalStatuses: readonly string[]; maxTerminal: number },
-): SubagentRecord[] {
+): Promise<SubagentRecord[]> {
   const placeholders = bound.terminalStatuses.map(() => "?").join(", ");
-  return rawAll<SubagentRow>(
-    "subagent:getByParent",
+  const db = requireMainDb();
+  const rows = await db.all<SubagentRow>(
     `SELECT * FROM subagents
        WHERE parent_conversation_id = ? AND status NOT IN (${placeholders})
      UNION ALL
@@ -308,13 +310,16 @@ export function getSubagentRecordsByParent(
          WHERE parent_conversation_id = ? AND status IN (${placeholders})
          ORDER BY COALESCE(completed_at, created_at) DESC
          LIMIT ?
-     )`,
-    parentConversationId,
-    ...bound.terminalStatuses,
-    parentConversationId,
-    ...bound.terminalStatuses,
-    bound.maxTerminal,
-  ).map(rowToRecord);
+     ) AS terminal`,
+    [
+      parentConversationId,
+      ...bound.terminalStatuses,
+      parentConversationId,
+      ...bound.terminalStatuses,
+      bound.maxTerminal,
+    ],
+  );
+  return rows.map(rowToRecord);
 }
 
 /**
@@ -421,19 +426,19 @@ export interface RecentSimilarSpawns {
  * {@link normalizeSpawnObjective} on exactly the objectives (accented, oddly
  * spaced) a re-run is most likely to differ by.
  */
-export function countRecentSimilarSpawns(args: {
+export async function countRecentSimilarSpawns(args: {
   parentConversationId: string;
   normalizedObjective: string;
   sinceMs: number;
-}): RecentSimilarSpawns {
-  const rows = rawAll<{
+}): Promise<RecentSimilarSpawns> {
+  const db = requireMainDb();
+  const rows = await db.all<{
     parent_conversation_id: string;
     objective: string;
     status: string;
     estimated_cost: number;
     budget_stop_reason: string | null;
   }>(
-    "subagent:countRecentSimilar",
     `SELECT parent_conversation_id, objective, status, estimated_cost, budget_stop_reason
        FROM subagents
        WHERE created_at >= ?
@@ -443,9 +448,7 @@ export function countRecentSimilarSpawns(args: {
          )
        ORDER BY created_at DESC
        LIMIT ?`,
-    args.sinceMs,
-    ...DEAD_END_SPAWN_STATUSES,
-    RECENT_SPAWN_SCAN_LIMIT,
+    [args.sinceMs, ...DEAD_END_SPAWN_STATUSES, RECENT_SPAWN_SCAN_LIMIT],
   );
 
   const tally: RecentSimilarSpawns = {
@@ -498,17 +501,17 @@ export function countRecentSimilarSpawns(args: {
  * swept children when the parent goes away. Served by
  * `idx_subagents_parent_conversation_id`.
  */
-export function deleteSubagentRecordsByParent(
+export async function deleteSubagentRecordsByParent(
   parentConversationId: string,
-): void {
-  rawRun(
-    "subagent:deleteRecordsByParent",
-    `DELETE FROM subagents WHERE parent_conversation_id = ?`,
+): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM subagents WHERE parent_conversation_id = ?`, [
     parentConversationId,
-  );
+  ]);
 }
 
 /** Delete every subagent record. For clear-all, when all chat data goes away. */
-export function deleteAllSubagentRecords(): void {
-  rawRun("subagent:deleteAllRecords", `DELETE FROM subagents`);
+export async function deleteAllSubagentRecords(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM subagents`);
 }

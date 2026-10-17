@@ -24,12 +24,13 @@ import {
 } from "../../../../config/memory-v3-gate.js";
 import type { AssistantConfig } from "../../../../config/types.js";
 import { estimateTextTokens } from "../../../../context/token-estimator.js";
-import { getDb, getMemoryDb } from "../../../../persistence/db-connection.js";
+import {
+  getMemoryAsyncDb,
+  requireMainDb,
+} from "../../../../persistence/db-facade.js";
 import { embedWithRetry } from "../../../../persistence/embeddings/embed.js";
 import { generateSparseEmbedding } from "../../../../persistence/embeddings/embedding-backend.js";
 import type { QdrantSparseVector } from "../../../../persistence/embeddings/qdrant-client.js";
-import { conversations } from "../../../../persistence/schema/conversations.js";
-import { memorySummaries } from "../../../../persistence/schema/index.js";
 import { getLogger } from "../logging.js";
 import { wrapMemoryBlock } from "../memory-marker.js";
 import { getWorkspaceDir } from "../paths.js";
@@ -231,13 +232,15 @@ export class ConversationGraphMemory {
    *
    * Returns up to 3 summary texts, most recent first.
    */
-  private fetchRecentSummaries(): string[] {
+  private async fetchRecentSummaries(): Promise<string[]> {
     try {
-      const db = getDb();
-      const memoryDb = getMemoryDb();
+      const db = requireMainDb();
+      const memoryDb = getMemoryAsyncDb();
       if (!memoryDb) {
         return [];
       }
+      const memorySummaries = memoryDb.schema.memorySummaries;
+      const conversations = db.schema.conversations;
 
       // Page through candidate summary keys most-recent first from the memory
       // connection (which holds memory_summaries), resolving each page's
@@ -260,25 +263,25 @@ export class ConversationGraphMemory {
         const beyondCursor: SQL | undefined = cursor
           ? sql`(${memorySummaries.updatedAt}, ${memorySummaries.scopeKey}) < (${cursor.updatedAt}, ${cursor.scopeKey})`
           : undefined;
-        const page: Array<{ scopeKey: string; updatedAt: number }> = memoryDb
-          .select({
-            scopeKey: memorySummaries.scopeKey,
-            updatedAt: memorySummaries.updatedAt,
-          })
-          .from(memorySummaries)
-          .where(
-            and(
-              eq(memorySummaries.scope, "conversation"),
-              ne(memorySummaries.scopeKey, this.conversationId),
-              beyondCursor,
-            ),
-          )
-          .orderBy(
-            desc(memorySummaries.updatedAt),
-            desc(memorySummaries.scopeKey),
-          )
-          .limit(RECENT_SUMMARY_PAGE_SIZE)
-          .all();
+        const page: Array<{ scopeKey: string; updatedAt: number }> =
+          await memoryDb.orm
+            .select({
+              scopeKey: memorySummaries.scopeKey,
+              updatedAt: memorySummaries.updatedAt,
+            })
+            .from(memorySummaries)
+            .where(
+              and(
+                eq(memorySummaries.scope, "conversation"),
+                ne(memorySummaries.scopeKey, this.conversationId),
+                beyondCursor,
+              ),
+            )
+            .orderBy(
+              desc(memorySummaries.updatedAt),
+              desc(memorySummaries.scopeKey),
+            )
+            .limit(RECENT_SUMMARY_PAGE_SIZE);
         if (page.length === 0) {
           break;
         }
@@ -287,14 +290,13 @@ export class ConversationGraphMemory {
         const pageKeys = page.map((r) => r.scopeKey);
 
         const typeByConversation = new Map<string, string>();
-        const rows = db
+        const rows = await db.orm
           .select({
             id: conversations.id,
             type: conversations.conversationType,
           })
           .from(conversations)
-          .where(inArray(conversations.id, pageKeys))
-          .all();
+          .where(inArray(conversations.id, pageKeys));
         for (const r of rows) {
           typeByConversation.set(r.id, r.type);
         }
@@ -331,7 +333,7 @@ export class ConversationGraphMemory {
       // the selection order (user summaries most-recent first, then the one
       // background summary).
       const textByKey = new Map<string, string>();
-      const selectedRows = memoryDb
+      const selectedRows = await memoryDb.orm
         .select({
           scopeKey: memorySummaries.scopeKey,
           summary: memorySummaries.summary,
@@ -342,8 +344,7 @@ export class ConversationGraphMemory {
             eq(memorySummaries.scope, "conversation"),
             inArray(memorySummaries.scopeKey, selectedKeys),
           ),
-        )
-        .all();
+        );
       for (const r of selectedRows) {
         textByKey.set(r.scopeKey, r.summary);
       }
@@ -600,7 +601,7 @@ export class ConversationGraphMemory {
     try {
       // Decide which retrieval mode to use
       if (!this.initialized || this.needsReload) {
-        const recentSummaries = this.fetchRecentSummaries();
+        const recentSummaries = await this.fetchRecentSummaries();
         const firstUserText = extractUserText(lastMessage);
 
         return await this.runContextLoad(

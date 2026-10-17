@@ -3,17 +3,13 @@ import { readFile } from "node:fs/promises";
 import { embedAndUpsert } from "@vellumai/plugin-api";
 import { and, eq } from "drizzle-orm";
 
-import { getDb } from "../../../../../persistence/db-connection.js";
+import {
+  getMemoryAsyncDb,
+  requireMainDb,
+} from "../../../../../persistence/db-facade.js";
 import type { EmbeddingInput } from "../../../../../persistence/embeddings/embedding-types.js";
 import { asString } from "../../../../../persistence/job-utils.js";
 import type { MemoryJob } from "../../../../../persistence/jobs-store.js";
-import {
-  mediaAssets,
-  memorySegments,
-  memorySummaries,
-  messages,
-} from "../../../../../persistence/schema/index.js";
-import { memoryDbOrNull } from "../../memory-db.js";
 import { extractMediaBlocks } from "../../message-media.js";
 
 export async function embedSegmentJob(job: MemoryJob): Promise<void> {
@@ -21,15 +17,16 @@ export async function embedSegmentJob(job: MemoryJob): Promise<void> {
   if (!segmentId) {
     return;
   }
-  const mem = memoryDbOrNull("embedSegmentJob");
+  const mem = getMemoryAsyncDb();
   if (!mem) {
     return;
   }
-  const segment = mem
+  const memorySegments = mem.schema.memorySegments;
+  const segmentRows = await mem.orm
     .select()
     .from(memorySegments)
-    .where(eq(memorySegments.id, segmentId))
-    .get();
+    .where(eq(memorySegments.id, segmentId));
+  const segment = segmentRows[0];
   if (!segment) {
     return;
   }
@@ -45,15 +42,16 @@ export async function embedSummaryJob(job: MemoryJob): Promise<void> {
   if (!summaryId) {
     return;
   }
-  const db = memoryDbOrNull("embedSummaryJob");
+  const db = getMemoryAsyncDb();
   if (!db) {
     return;
   }
-  const summary = db
+  const memorySummaries = db.schema.memorySummaries;
+  const summaryRows = await db.orm
     .select()
     .from(memorySummaries)
-    .where(eq(memorySummaries.id, summaryId))
-    .get();
+    .where(eq(memorySummaries.id, summaryId));
+  const summary = summaryRows[0];
   if (!summary) {
     return;
   }
@@ -75,12 +73,13 @@ export async function embedMediaJob(job: MemoryJob): Promise<void> {
     return;
   }
 
-  const db = getDb();
-  const asset = db
+  const db = requireMainDb();
+  const mediaAssets = db.schema.mediaAssets;
+  const assetRows = await db.orm
     .select()
     .from(mediaAssets)
-    .where(eq(mediaAssets.id, assetId))
-    .get();
+    .where(eq(mediaAssets.id, assetId));
+  const asset = assetRows[0];
   if (!asset || asset.status !== "indexed") {
     return;
   }
@@ -109,12 +108,13 @@ export async function embedAttachmentJob(job: MemoryJob): Promise<void> {
     return;
   }
 
-  const db = getDb();
-  const message = db
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const messageRows = await db.orm
     .select()
     .from(messages)
-    .where(and(eq(messages.id, messageId), eq(messages.finalized, 1)))
-    .get();
+    .where(and(eq(messages.id, messageId), eq(messages.finalized, 1)));
+  const message = messageRows[0];
   if (!message) {
     return;
   }

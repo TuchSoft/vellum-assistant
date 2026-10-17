@@ -7,7 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { rawAll, rawGet, rawRun } from "../persistence/raw-query.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { getLogger } from "../util/logger.js";
 
 const log = getLogger("document-comments-store");
@@ -78,7 +78,7 @@ function mapRowToComment(row: CommentRow): CommentRecord {
 // CRUD
 // ---------------------------------------------------------------------------
 
-export function createComment(params: {
+export async function createComment(params: {
   surfaceId: string;
   conversationId: string;
   author: string;
@@ -87,28 +87,30 @@ export function createComment(params: {
   anchorEnd?: number | null;
   anchorText?: string | null;
   parentCommentId?: string | null;
-}): CommentRecord {
+}): Promise<CommentRecord> {
   const id = `comment-${randomUUID()}`;
   const now = Date.now();
+  const db = requireMainDb();
 
-  rawRun(
-    "docComments:createComment",
+  await db.run(
     /*sql*/ `INSERT INTO document_comments
       (id, surface_id, conversation_id, author, content,
        anchor_start, anchor_end, anchor_text, parent_comment_id,
        status, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
-    id,
-    params.surfaceId,
-    params.conversationId,
-    params.author,
-    params.content,
-    params.anchorStart ?? null,
-    params.anchorEnd ?? null,
-    params.anchorText ?? null,
-    params.parentCommentId ?? null,
-    now,
-    now,
+    [
+      id,
+      params.surfaceId,
+      params.conversationId,
+      params.author,
+      params.content,
+      params.anchorStart ?? null,
+      params.anchorEnd ?? null,
+      params.anchorText ?? null,
+      params.parentCommentId ?? null,
+      now,
+      now,
+    ],
   );
 
   log.info({ id, surfaceId: params.surfaceId }, "Created comment");
@@ -131,22 +133,22 @@ export function createComment(params: {
   };
 }
 
-export function getComment(id: string): CommentRecord | null {
-  const row = rawGet<CommentRow>(
-    "docComments:getComment",
+export async function getComment(id: string): Promise<CommentRecord | null> {
+  const db = requireMainDb();
+  const row = await db.get<CommentRow>(
     /*sql*/ `SELECT * FROM document_comments WHERE id = ?`,
-    id,
+    [id],
   );
   return row ? mapRowToComment(row) : null;
 }
 
-export function listComments(
+export async function listComments(
   surfaceId: string,
   opts?: {
     status?: "open" | "resolved" | "all";
     topLevelOnly?: boolean;
   },
-): CommentRecord[] {
+): Promise<CommentRecord[]> {
   const status = opts?.status ?? "all";
   const topLevelOnly = opts?.topLevelOnly ?? false;
 
@@ -163,26 +165,26 @@ export function listComments(
   }
 
   const where = conditions.join(" AND ");
-  const rows = rawAll<CommentRow>(
-    "docComments:listComments",
+  const db = requireMainDb();
+  const rows = await db.all<CommentRow>(
     /*sql*/ `SELECT * FROM document_comments WHERE ${where} ORDER BY created_at ASC`,
-    ...params,
+    params,
   );
 
   return rows.map(mapRowToComment);
 }
 
-export function resolveComment(id: string, resolvedBy: string): boolean {
+export async function resolveComment(
+  id: string,
+  resolvedBy: string,
+): Promise<boolean> {
   const now = Date.now();
-  const changes = rawRun(
-    "docComments:resolveComment",
+  const db = requireMainDb();
+  const changes = await db.run(
     /*sql*/ `UPDATE document_comments
       SET status = 'resolved', resolved_by = ?, resolved_at = ?, updated_at = ?
       WHERE id = ?`,
-    resolvedBy,
-    now,
-    now,
-    id,
+    [resolvedBy, now, now, id],
   );
   if (changes > 0) {
     log.info({ id, resolvedBy }, "Resolved comment");
@@ -190,15 +192,14 @@ export function resolveComment(id: string, resolvedBy: string): boolean {
   return changes > 0;
 }
 
-export function reopenComment(id: string): boolean {
+export async function reopenComment(id: string): Promise<boolean> {
   const now = Date.now();
-  const changes = rawRun(
-    "docComments:reopenComment",
+  const db = requireMainDb();
+  const changes = await db.run(
     /*sql*/ `UPDATE document_comments
       SET status = 'open', resolved_by = NULL, resolved_at = NULL, updated_at = ?
       WHERE id = ?`,
-    now,
-    id,
+    [now, id],
   );
   if (changes > 0) {
     log.info({ id }, "Reopened comment");
@@ -206,14 +207,15 @@ export function reopenComment(id: string): boolean {
   return changes > 0;
 }
 
-export function updateCommentContent(id: string, content: string): boolean {
+export async function updateCommentContent(
+  id: string,
+  content: string,
+): Promise<boolean> {
   const now = Date.now();
-  const changes = rawRun(
-    "docComments:updateCommentContent",
+  const db = requireMainDb();
+  const changes = await db.run(
     /*sql*/ `UPDATE document_comments SET content = ?, updated_at = ? WHERE id = ?`,
-    content,
-    now,
-    id,
+    [content, now, id],
   );
   if (changes > 0) {
     log.info({ id }, "Updated comment content");
@@ -221,12 +223,12 @@ export function updateCommentContent(id: string, content: string): boolean {
   return changes > 0;
 }
 
-export function deleteComment(id: string): boolean {
+export async function deleteComment(id: string): Promise<boolean> {
   // Replies cascade-delete via the self-referential FK on parent_comment_id.
-  const changes = rawRun(
-    "docComments:deleteComment",
+  const db = requireMainDb();
+  const changes = await db.run(
     /*sql*/ `DELETE FROM document_comments WHERE id = ?`,
-    id,
+    [id],
   );
   if (changes > 0) {
     log.info({ id }, "Deleted comment and its replies");
@@ -234,12 +236,14 @@ export function deleteComment(id: string): boolean {
   return changes > 0;
 }
 
-export function getCommentCountForDocument(surfaceId: string): number {
-  const row = rawGet<{ count: number }>(
-    "docComments:getCommentCount",
+export async function getCommentCountForDocument(
+  surfaceId: string,
+): Promise<number> {
+  const db = requireMainDb();
+  const row = await db.get<{ count: number }>(
     /*sql*/ `SELECT COUNT(*) AS count FROM document_comments
       WHERE surface_id = ? AND status = 'open'`,
-    surfaceId,
+    [surfaceId],
   );
-  return row?.count ?? 0;
+  return Number(row?.count ?? 0);
 }

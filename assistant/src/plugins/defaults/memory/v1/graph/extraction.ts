@@ -18,11 +18,7 @@ import {
 import { and, asc, desc, eq, gt } from "drizzle-orm";
 
 import type { AssistantConfig } from "../../../../../config/types.js";
-import { getDb } from "../../../../../persistence/db-connection.js";
-import {
-  conversations,
-  messages,
-} from "../../../../../persistence/schema/index.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import {
   enqueueGraphNodeEmbed,
   enqueueGraphTriggerEmbed,
@@ -579,8 +575,7 @@ export function parseEpochMs(value: unknown): number | null {
  * (by its index into `diff.createNodes`, resolved to a real ID after apply).
  */
 export type DeferredEdgeEndpoint =
-  | { kind: "existing"; nodeId: string }
-  | { kind: "new"; newNodeIndex: number };
+  { kind: "existing"; nodeId: string } | { kind: "new"; newNodeIndex: number };
 
 export interface DeferredEdge {
   source: DeferredEdgeEndpoint;
@@ -692,13 +687,13 @@ export function applySupersessionDurability(
   }
 }
 
-export function parseExtractionResponse(
+export async function parseExtractionResponse(
   input: Record<string, unknown>,
   conversationId: string,
   candidateNodeIds: Set<string>,
   /** Epoch ms — when the conversation happened (not extraction time). */
   conversationTimestamp: number,
-): {
+): Promise<{
   diff: MemoryDiff;
   /**
    * Edges with at least one endpoint that is a new node (new→existing,
@@ -711,7 +706,7 @@ export function parseExtractionResponse(
     newNodeIndex: number;
     trigger: Omit<NewTrigger, "nodeId">;
   }>;
-} {
+}> {
   const now = conversationTimestamp;
   const createNodes = (input.create_nodes ?? []) as RawCreateNode[];
   const updateNodes = (input.update_nodes ?? []) as RawUpdateNode[];
@@ -889,7 +884,7 @@ export function parseExtractionResponse(
         if (!ref.description || typeof ref.description !== "string") {
           continue;
         }
-        const mimeType = resolveImageRefMimeType(
+        const mimeType = await resolveImageRefMimeType(
           ref.message_id,
           ref.block_index,
           conversationId,
@@ -1135,7 +1130,7 @@ export async function runGraphExtraction(
   };
 
   // 1. Load transcript — try multimodal first, fall back to text-only
-  const imageResult = loadTranscriptWithImages(
+  const imageResult = await loadTranscriptWithImages(
     conversationId,
     opts?.afterTimestamp,
   );
@@ -1204,7 +1199,7 @@ export async function runGraphExtraction(
   //    or correctly date events mentioned in the conversation.
   const conversationTimestamp =
     opts?.conversationTimestamp ??
-    resolveConversationTimestamp(conversationId) ??
+    (await resolveConversationTimestamp(conversationId)) ??
     imageResult?.lastTimestamp ??
     Date.now();
 
@@ -1251,19 +1246,20 @@ export async function runGraphExtraction(
     return emptyResult;
   }
 
-  const { diff, deferredEdges, deferredTriggers } = parseExtractionResponse(
-    toolBlock.input as Record<string, unknown>,
-    conversationId,
-    candidateNodeIds,
-    conversationTimestamp,
-  );
+  const { diff, deferredEdges, deferredTriggers } =
+    await parseExtractionResponse(
+      toolBlock.input as Record<string, unknown>,
+      conversationId,
+      candidateNodeIds,
+      conversationTimestamp,
+    );
 
   // 7. Inherit durability from superseded nodes before applying the diff.
   const candidateNodeMap = new Map(candidateNodes.map((n) => [n.id, n]));
   applySupersessionDurability(diff, deferredEdges, candidateNodeMap);
 
   // 8. Apply the diff
-  const result = applyDiff(diff, { conversationId });
+  const result = await applyDiff(diff, { conversationId });
 
   // 9. Apply deferred edges and triggers using the created node IDs
   const createdNodeIds = result.createdNodeIds;
@@ -1284,7 +1280,7 @@ export async function runGraphExtraction(
       continue;
     }
 
-    createEdge({
+    await createEdge({
       sourceNodeId,
       targetNodeId,
       relationship: de.relationship as NewEdge["relationship"],
@@ -1302,7 +1298,7 @@ export async function runGraphExtraction(
       continue;
     }
 
-    const trigger = createTrigger({
+    const trigger = await createTrigger({
       ...dt.trigger,
       nodeId: newNodeId,
     });
@@ -1314,7 +1310,7 @@ export async function runGraphExtraction(
   }
 
   // 10. Embed new nodes — inline for bootstrap, async for live conversations
-  const createdNodes = getNodesByIds(createdNodeIds);
+  const createdNodes = await getNodesByIds(createdNodeIds);
   if (opts?.embedInline) {
     const { embedGraphNodeDirect } =
       await import("../../graph/graph-search.js");
@@ -1362,40 +1358,44 @@ export async function runGraphExtraction(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function resolveConversationTimestamp(conversationId: string): number | null {
-  const db = getDb();
+async function resolveConversationTimestamp(
+  conversationId: string,
+): Promise<number | null> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const conversations = db.schema.conversations;
   // Use the last message timestamp, not the conversation creation time.
   // A conversation can span hours/days — memories should be timestamped
   // to when the relevant content was actually discussed. Any-state read,
   // deliberately: only `createdAt` is consumed, and a streaming last row
   // still marks when discussion happened.
-  const lastMsg = db
+  const lastMsgRows = await db.orm
     .select({ createdAt: messages.createdAt })
     .from(messages)
     .where(eq(messages.conversationId, conversationId))
     .orderBy(desc(messages.createdAt))
-    .limit(1)
-    .get();
+    .limit(1);
+  const lastMsg = lastMsgRows[0];
   if (lastMsg) {
     return lastMsg.createdAt;
   }
 
   // Fallback to conversation creation time if no messages in DB
-  const conv = db
+  const convRows = await db.orm
     .select({ createdAt: conversations.createdAt })
     .from(conversations)
-    .where(eq(conversations.id, conversationId))
-    .get();
-  return conv?.createdAt ?? null;
+    .where(eq(conversations.id, conversationId));
+  return convRows[0]?.createdAt ?? null;
 }
 
-function resolveImageRefMimeType(
+async function resolveImageRefMimeType(
   messageId: string,
   blockIndex: number,
   conversationId: string,
-): string | null {
-  const db = getDb();
-  const msg = db
+): Promise<string | null> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const msgRows = await db.orm
     .select({ content: messages.content })
     .from(messages)
     .where(
@@ -1404,8 +1404,8 @@ function resolveImageRefMimeType(
         eq(messages.conversationId, conversationId),
         eq(messages.finalized, 1),
       ),
-    )
-    .get();
+    );
+  const msg = msgRows[0];
   if (!msg) {
     return null;
   }
@@ -1429,12 +1429,13 @@ async function loadTranscriptFromDisk(
   conversationId: string,
   afterTimestamp?: number,
 ): Promise<string | null> {
-  const db = getDb();
-  const conv = db
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  const convRows = await db.orm
     .select({ createdAt: conversations.createdAt })
     .from(conversations)
-    .where(eq(conversations.id, conversationId))
-    .get();
+    .where(eq(conversations.id, conversationId));
+  const conv = convRows[0];
 
   if (!conv) {
     return null;
@@ -1493,15 +1494,16 @@ async function loadTranscriptFromDisk(
  *
  * Images are capped at 10 per transcript to control extraction cost.
  */
-function loadTranscriptWithImages(
+async function loadTranscriptWithImages(
   conversationId: string,
   afterTimestamp?: number,
-): {
+): Promise<{
   message: Message;
   hasImages: boolean;
   lastTimestamp: number | null;
-} | null {
-  const db = getDb();
+} | null> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
 
   // Build query conditions
   const conditions = [
@@ -1512,7 +1514,7 @@ function loadTranscriptWithImages(
     conditions.push(gt(messages.createdAt, afterTimestamp));
   }
 
-  const rows = db
+  const rows = await db.orm
     .select({
       id: messages.id,
       role: messages.role,
@@ -1521,8 +1523,7 @@ function loadTranscriptWithImages(
     })
     .from(messages)
     .where(and(...conditions))
-    .orderBy(asc(messages.createdAt))
-    .all();
+    .orderBy(asc(messages.createdAt));
 
   if (rows.length === 0) {
     return null;
@@ -1605,7 +1606,7 @@ async function findCandidateNodes(
   if (skipQdrant) {
     // Bootstrap mode: load candidates directly from DB (embeddings may not be ready).
     // Get the most recent and most significant non-gone nodes.
-    const dbCandidates = queryNodes({
+    const dbCandidates = await queryNodes({
       fidelityNot: ["gone"],
       limit: 100,
     });
@@ -1651,5 +1652,5 @@ async function findCandidateNodes(
     return [];
   }
 
-  return getNodesByIds([...allNodeIds]);
+  return await getNodesByIds([...allNodeIds]);
 }

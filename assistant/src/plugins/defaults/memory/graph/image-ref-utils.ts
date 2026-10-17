@@ -1,7 +1,6 @@
 import { eq } from "drizzle-orm";
 
-import { getDb } from "../../../../persistence/db-connection.js";
-import { messages } from "../../../../persistence/schema/index.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { extractMediaBlocks } from "../message-media.js";
 import type { ImageRef } from "./types.js";
 
@@ -13,15 +12,16 @@ import type { ImageRef } from "./types.js";
 export async function loadImageRefData(
   ref: ImageRef,
 ): Promise<{ data: Buffer; mimeType: string } | null> {
-  const db = getDb();
-  const msg = db
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const rows = await db.orm
     .select({ content: messages.content })
     .from(messages)
     // No completeness predicate: refs come from the extracted memory graph,
     // and extraction reads finalized rows only, so an unfinalized id cannot
     // reach here. Do not copy this shape for ids with other provenance.
-    .where(eq(messages.id, ref.messageId))
-    .get();
+    .where(eq(messages.id, ref.messageId));
+  const msg = rows[0];
   if (!msg) {
     return null;
   }

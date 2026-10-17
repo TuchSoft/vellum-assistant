@@ -5,7 +5,10 @@ import {
 import { and, eq, isNotNull, like, ne } from "drizzle-orm";
 
 import { messageMetadataIsAmbientSightKeep } from "../../../../../persistence/conversation-types.js";
-import { getDb } from "../../../../../persistence/db-connection.js";
+import {
+  getMemoryAsyncDb,
+  requireMainDb,
+} from "../../../../../persistence/db-facade.js";
 import { withQdrantBreaker } from "../../../../../persistence/embeddings/qdrant-circuit-breaker.js";
 import {
   asString,
@@ -15,40 +18,45 @@ import {
   enqueueMemoryJob,
   type MemoryJob,
 } from "../../../../../persistence/jobs-store.js";
-import {
-  mediaAssets,
-  memoryEmbeddings,
-  memoryGraphNodes,
-  memoryGraphTriggers,
-  memorySegments,
-  memorySummaries,
-  messages,
-} from "../../../../../persistence/schema/index.js";
 import { getLogger } from "../../logging.js";
-import { memoryDbOrNull } from "../../memory-db.js";
 import { extractMediaBlockMeta } from "../../message-media.js";
 
 const log = getLogger("memory-jobs-worker");
 
 export async function rebuildIndexJob(): Promise<void> {
-  const db = getDb();
-  const memoryDb = memoryDbOrNull("rebuildIndexJob");
+  const db = requireMainDb();
+  const memoryDb = getMemoryAsyncDb();
+  const mediaAssets = db.schema.mediaAssets;
+  const messages = db.schema.messages;
+  const memoryEmbeddings = memoryDb?.schema.memoryEmbeddings;
+  const memorySummaries = memoryDb?.schema.memorySummaries;
+  const memorySegments = memoryDb?.schema.memorySegments;
+  const memoryGraphNodes = memoryDb?.schema.memoryGraphNodes;
+  const memoryGraphTriggers = memoryDb?.schema.memoryGraphTriggers;
 
   // memory_embeddings, memory_segments, and memory_summaries live on the memory
-  // connection; wipe embeddings there and re-enqueue segments and summaries from
+  // slot; wipe embeddings there and re-enqueue segments and summaries from
   // there. Media stays on the main handle.
-  memoryDb?.delete(memoryEmbeddings).run();
+  if (memoryDb && memoryEmbeddings) {
+    await memoryDb.orm.delete(memoryEmbeddings);
+  }
 
   const summaries =
-    memoryDb?.select({ id: memorySummaries.id }).from(memorySummaries).all() ??
-    [];
+    memoryDb && memorySummaries
+      ? await memoryDb.orm
+          .select({ id: memorySummaries.id })
+          .from(memorySummaries)
+      : [];
   for (const summary of summaries) {
     enqueueMemoryJob("embed_summary", { summaryId: summary.id });
   }
 
   const segments =
-    memoryDb?.select({ id: memorySegments.id }).from(memorySegments).all() ??
-    [];
+    memoryDb && memorySegments
+      ? await memoryDb.orm
+          .select({ id: memorySegments.id })
+          .from(memorySegments)
+      : [];
   for (const segment of segments) {
     enqueueMemoryJob("embed_segment", { segmentId: segment.id });
   }
@@ -57,16 +65,15 @@ export async function rebuildIndexJob(): Promise<void> {
   // backend supports multimodal inputs. Without this gate, embed_media and
   // embed_attachment jobs would all fail for text-only backends.
   if (await selectedBackendSupportsMultimodal()) {
-    const assets = db
+    const assets = await db.orm
       .select({ id: mediaAssets.id })
       .from(mediaAssets)
-      .where(eq(mediaAssets.status, "indexed"))
-      .all();
+      .where(eq(mediaAssets.status, "indexed"));
     for (const asset of assets) {
       enqueueMemoryJob("embed_media", { assetId: asset.id });
     }
 
-    const imageMessages = db
+    const imageMessages = await db.orm
       .select({
         id: messages.id,
         content: messages.content,
@@ -78,8 +85,7 @@ export async function rebuildIndexJob(): Promise<void> {
           eq(messages.finalized, 1),
           like(messages.content, '%"type":"image"%'),
         ),
-      )
-      .all();
+      );
     for (const msg of imageMessages) {
       // Ambient camera keeps were persisted with indexing skipped, and a
       // rebuild must not be the thing that quietly puts them into memory
@@ -100,24 +106,22 @@ export async function rebuildIndexJob(): Promise<void> {
     }
   }
 
-  // The graph cluster lives on the memory connection; re-embeds read it there.
-  if (memoryDb) {
+  // The graph cluster lives on the memory slot; re-embeds read it there.
+  if (memoryDb && memoryGraphNodes && memoryGraphTriggers) {
     // Re-embed graph nodes stored in the memory graph.
-    const graphNodes = memoryDb
+    const graphNodes = await memoryDb.orm
       .select({ id: memoryGraphNodes.id })
       .from(memoryGraphNodes)
-      .where(ne(memoryGraphNodes.fidelity, "gone"))
-      .all();
+      .where(ne(memoryGraphNodes.fidelity, "gone"));
     for (const node of graphNodes) {
       enqueueMemoryJob("embed_graph_node", { nodeId: node.id });
     }
 
     // Re-embed semantic triggers that have condition text.
-    const triggers = memoryDb
+    const triggers = await memoryDb.orm
       .select({ id: memoryGraphTriggers.id })
       .from(memoryGraphTriggers)
-      .where(isNotNull(memoryGraphTriggers.condition))
-      .all();
+      .where(isNotNull(memoryGraphTriggers.condition));
     for (const trigger of triggers) {
       enqueueMemoryJob("graph_trigger_embed", { triggerId: trigger.id });
     }

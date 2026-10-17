@@ -91,7 +91,7 @@ import {
   lineageMessagesAfterFilter,
   type LineageSegment,
   REFERENTIAL_FORK_STRATEGY,
-  resolveConversationLineage,
+  resolveConversationLineageAsync,
 } from "./conversation-lineage.js";
 import { repairConversationModeSessionBoundaries } from "./conversation-mode-sessions.js";
 import {
@@ -2714,7 +2714,7 @@ async function loadLineageRow(
 async function resolveLineage(
   conversationId: string,
 ): Promise<LineageSegment[]> {
-  return await resolveConversationLineage(conversationId, {
+  return await resolveConversationLineageAsync(conversationId, {
     loadConversation: loadLineageRow,
     loadMessageBound,
   });

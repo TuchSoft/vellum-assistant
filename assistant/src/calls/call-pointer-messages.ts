@@ -55,13 +55,15 @@ type PointerAudienceMode = "auto" | "trusted" | "untrusted";
  * They take the deterministic fallback instead. Defaults to non-owner when
  * evidence is insufficient.
  */
-function resolvePointerAudienceIsOwner(conversationId: string): boolean {
+async function resolvePointerAudienceIsOwner(
+  conversationId: string,
+): Promise<boolean> {
   try {
     // Provenance is read from persisted message metadata, so it survives
     // conversation eviction — a known contact is diverted to the deterministic
     // fallback even on a cold load where the in-memory trust context is absent.
     const provenance =
-      getConversationRecentProvenanceTrustClass(conversationId);
+      await getConversationRecentProvenanceTrustClass(conversationId);
     if (isContactTrustClass(provenance)) {
       return false;
     }
@@ -69,7 +71,7 @@ function resolvePointerAudienceIsOwner(conversationId: string): boolean {
       return true;
     }
 
-    const originChannel = getConversationOriginChannel(conversationId);
+    const originChannel = await getConversationOriginChannel(conversationId);
     if (originChannel === "vellum") {
       return true;
     }
@@ -135,7 +137,8 @@ export async function addPointerMessage(
 
   const ownerAudience =
     audienceMode === "trusted" ||
-    (audienceMode === "auto" && resolvePointerAudienceIsOwner(conversationId));
+    (audienceMode === "auto" &&
+      (await resolvePointerAudienceIsOwner(conversationId)));
 
   if (ownerAudience) {
     // Route through the daemon conversation — the assistant generates the

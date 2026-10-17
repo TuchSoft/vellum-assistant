@@ -46,11 +46,13 @@ const log = getLogger("media-resolve");
  * a workspace reference read back from the attachment store. Returns `null`
  * when a reference can no longer be resolved.
  */
-export function mediaSourceBytes(source: MediaSource): Buffer | null {
+export async function mediaSourceBytes(
+  source: MediaSource,
+): Promise<Buffer | null> {
   if (source.type === "base64") {
     return Buffer.from(source.data, "base64");
   }
-  return getAttachmentContent(source.attachmentId);
+  return await getAttachmentContent(source.attachmentId);
 }
 
 /**
@@ -65,11 +67,13 @@ export function mediaSourceBytes(source: MediaSource): Buffer | null {
  * Answers for the formats every provider reads, so HEIF counts as unsendable
  * even though a Gemini turn ({@link MediaResolveOptions}) would carry it.
  */
-export function isUnsendableImageSource(source: MediaSource): boolean {
+export async function isUnsendableImageSource(
+  source: MediaSource,
+): Promise<boolean> {
   const bytes =
     source.type === "base64"
       ? imageHeadBytes(source.data)
-      : getAttachmentContent(source.attachmentId);
+      : await getAttachmentContent(source.attachmentId);
   return bytes != null && sendableImageMimeType(bytes, {}) === null;
 }
 
@@ -166,13 +170,13 @@ export function mediaSourceDescriptor(source: MediaSource): string {
  * read. For consumers that hold an individual in-memory block (image
  * captioning, media retry) and need its bytes outside the provider transform.
  */
-export function resolveMediaSourceData(
+export async function resolveMediaSourceData(
   source: MediaSource,
-): { data: string; media_type: string } | null {
+): Promise<{ data: string; media_type: string } | null> {
   if (source.type === "base64") {
     return { data: source.data, media_type: source.media_type };
   }
-  const bytes = getAttachmentContent(source.attachmentId);
+  const bytes = await getAttachmentContent(source.attachmentId);
   if (!bytes) {
     return null;
   }
@@ -231,7 +235,7 @@ async function resolveImageBlock(
       source: { type: "base64", media_type: sniffed, data: block.source.data },
     };
   }
-  const bytes = getAttachmentContent(block.source.attachmentId);
+  const bytes = await getAttachmentContent(block.source.attachmentId);
   if (!bytes) {
     log.warn(
       { attachmentId: block.source.attachmentId },
@@ -265,7 +269,7 @@ async function resolveImageBlock(
   };
 }
 
-function resolveFileBlock(block: FileContent): ContentBlock {
+async function resolveFileBlock(block: FileContent): Promise<ContentBlock> {
   // Video and over-cap text stay a workspace file. Do not load bytes or
   // carry extracted_text into the provider prompt: serializers name the
   // file and stop there.
@@ -280,7 +284,7 @@ function resolveFileBlock(block: FileContent): ContentBlock {
     return block;
   }
   const { attachmentId, media_type, filename } = block.source;
-  const bytes = getAttachmentContent(attachmentId);
+  const bytes = await getAttachmentContent(attachmentId);
   if (!bytes) {
     log.warn(
       { attachmentId, filename },

@@ -224,16 +224,16 @@ export function resolveUniqueFilename(dir: string, filename: string): string {
  * Ensure an attachment is present in the conversation's attachments/
  * subdirectory and return the filename recorded in the disk view.
  */
-function writeAttachmentFile(
+async function writeAttachmentFile(
   conversationDirPath: string,
   attachmentId: string,
   originalFilename: string,
-): string | null {
+): Promise<string | null> {
   try {
     const attachDir = join(conversationDirPath, "attachments");
     mkdirSync(attachDir, { recursive: true });
 
-    const existingPath = getFilePathForAttachment(attachmentId);
+    const existingPath = await getFilePathForAttachment(attachmentId);
     if (
       existingPath &&
       existsSync(existingPath) &&
@@ -242,7 +242,7 @@ function writeAttachmentFile(
       return basename(existingPath);
     }
 
-    const content = getAttachmentContent(attachmentId);
+    const content = await getAttachmentContent(attachmentId);
     if (!content) {
       return null;
     }
@@ -271,13 +271,13 @@ function writeAttachmentFile(
  *
  * Requires `createdAtMs` of the conversation to resolve the directory path.
  */
-export function syncMessageToDisk(
+export async function syncMessageToDisk(
   conversationId: string,
   messageId: string,
   createdAtMs: number,
-): void {
+): Promise<void> {
   try {
-    const message = getMessageById(messageId, conversationId);
+    const message = await getMessageById(messageId, conversationId);
     if (!message) {
       log.warn(
         { conversationId, messageId },
@@ -292,10 +292,10 @@ export function syncMessageToDisk(
     );
 
     // Project attachments to disk
-    const attachmentMeta = getAttachmentMetadataForMessage(messageId);
+    const attachmentMeta = await getAttachmentMetadataForMessage(messageId);
     const attachmentFilenames: string[] = [];
     for (const att of attachmentMeta) {
-      const resolved = writeAttachmentFile(
+      const resolved = await writeAttachmentFile(
         dirPath,
         att.id,
         att.originalFilename,
@@ -351,11 +351,11 @@ export function syncMessageToDisk(
  * message consolidation). Existing attachment files are preserved to avoid
  * losing file-backed rows where base64 payloads were already compacted out.
  */
-export function rebuildConversationDiskViewFromDbState(
+export async function rebuildConversationDiskViewFromDbState(
   conversationId: string,
-): void {
+): Promise<void> {
   try {
-    const conv = getConversation(conversationId);
+    const conv = await getConversation(conversationId);
     if (!conv) {
       log.warn(
         { conversationId },
@@ -374,9 +374,9 @@ export function rebuildConversationDiskViewFromDbState(
     // unrecoverable for replay.
     mkdirSync(join(dirPath, "attachments"), { recursive: true });
 
-    const convMessages = getMessages(conversationId);
+    const convMessages = await getMessages(conversationId);
     for (const msg of convMessages) {
-      syncMessageToDisk(conversationId, msg.id, conv.createdAt);
+      await syncMessageToDisk(conversationId, msg.id, conv.createdAt);
     }
 
     updateMetaFile(conv);

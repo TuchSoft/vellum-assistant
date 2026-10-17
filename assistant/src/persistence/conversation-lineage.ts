@@ -100,6 +100,12 @@ export interface LineageResolverDeps {
   loadMessageBound: (messageId: string) => LineageBound | null;
 }
 
+/** Async equivalent of {@link LineageResolverDeps}. */
+export interface AsyncLineageResolverDeps {
+  loadConversation: (id: string) => Promise<LineageConversationRow | null>;
+  loadMessageBound: (messageId: string) => Promise<LineageBound | null>;
+}
+
 /**
  * Walk a conversation's fork chain into the ordered segments that make up its
  * logical message set. The first segment is always the conversation itself.
@@ -146,6 +152,48 @@ export function resolveConversationLineage(
       break;
     }
     const parent = deps.loadConversation(parentId);
+    if (parent === null) {
+      break;
+    }
+    tightest = tightest === null ? bound : earlierBound(tightest, bound);
+    segments.push({ conversationId: parentId, through: tightest });
+    visited.add(parentId);
+    current = parent;
+  }
+
+  return segments;
+}
+
+/**
+ * Async walk of the same fork chain as {@link resolveConversationLineage}, for
+ * callers whose loaders read the async facade. Stopping rules, bound
+ * tightening, and the returned segments are identical; only the two lookups
+ * are awaited.
+ */
+export async function resolveConversationLineageAsync(
+  conversationId: string,
+  deps: AsyncLineageResolverDeps,
+): Promise<LineageSegment[]> {
+  const segments: LineageSegment[] = [{ conversationId, through: null }];
+  const visited = new Set<string>([conversationId]);
+
+  let current = await deps.loadConversation(conversationId);
+  let tightest: LineageBound | null = null;
+  while (current !== null && segments.length < MAX_LINEAGE_DEPTH) {
+    if (!isReferentialFork(current)) {
+      break;
+    }
+    const parentId = current.forkParentConversationId as string;
+    if (visited.has(parentId)) {
+      break;
+    }
+    const bound = await deps.loadMessageBound(
+      current.forkParentMessageId as string,
+    );
+    if (bound === null) {
+      break;
+    }
+    const parent = await deps.loadConversation(parentId);
     if (parent === null) {
       break;
     }

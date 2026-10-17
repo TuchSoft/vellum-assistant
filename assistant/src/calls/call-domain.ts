@@ -288,7 +288,7 @@ export async function createInboundVoiceSession(
       ? `asst:${assistantId}:voice:inbound:${callSid}`
       : `voice:inbound:${callSid}`;
   const { conversationId: voiceConversationId } =
-    getOrCreateConversation(voiceConvKey);
+    await getOrCreateConversation(voiceConvKey);
 
   upsertBinding({
     conversationId: voiceConversationId,
@@ -459,7 +459,7 @@ export async function startCall(
       ? `asst:${assistantId}:voice:call:${session.id}`
       : `voice:call:${session.id}`;
     const { conversationId: voiceConversationId } =
-      getOrCreateConversation(voiceConvKey);
+      await getOrCreateConversation(voiceConvKey);
 
     upsertBinding({
       conversationId: voiceConversationId,
@@ -969,7 +969,7 @@ export async function startVerificationCall(
     // and bind it to the voice channel so it never appears as an unbound
     // desktop conversation.
     const convKey = `guardian-verify:${verificationSessionId}`;
-    const { conversationId } = getOrCreateConversation(convKey);
+    const { conversationId } = await getOrCreateConversation(convKey);
 
     upsertBinding({
       conversationId,
@@ -1103,7 +1103,7 @@ export async function startInviteCall(
     // desktop conversation.
     const timestamp = Date.now();
     const convKey = `invite-call:${phoneNumber}:${timestamp}`;
-    const { conversationId } = getOrCreateConversation(convKey);
+    const { conversationId } = await getOrCreateConversation(convKey);
 
     upsertBinding({
       conversationId,

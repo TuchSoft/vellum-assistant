@@ -347,7 +347,7 @@ export async function sendDiscordAttachments(
     }
 
     try {
-      const content = getAttachmentContent(meta.id);
+      const content = await getAttachmentContent(meta.id);
       if (!content) {
         log.error(
           { attachmentId: meta.id },

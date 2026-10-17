@@ -68,7 +68,7 @@ export function getLiveVoiceSessionManager(): LiveVoiceSessionManager {
                   require("../persistence/conversation-crud.js") as typeof import("../persistence/conversation-crud.js");
                 const { publishConversationListAndMetadataChanged } =
                   require("../runtime/sync/resource-sync-events.js") as typeof import("../runtime/sync/resource-sync-events.js");
-                if (ensureConversationExists(conversationId, "vellum")) {
+                if (await ensureConversationExists(conversationId, "vellum")) {
                   publishConversationListAndMetadataChanged(
                     "created",
                     conversationId,

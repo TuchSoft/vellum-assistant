@@ -529,30 +529,29 @@ export async function archiveLiveVoiceAudioArtifact(
 
   try {
     const position = input.position ?? nextAttachmentPosition(input.messageId);
-    const stored =
-      input.audio.type === "base64"
-        ? await attachInlineAttachmentToMessage(
+    const stored = await (input.audio.type === "base64"
+      ? attachInlineAttachmentToMessage(
+          input.messageId,
+          position,
+          validated.filename,
+          validated.mimeType,
+          input.audio.dataBase64,
+        )
+      : (async () => {
+          if (!existsSync(input.audio.filePath)) {
+            return null;
+          }
+          const sizeBytes =
+            input.audio.sizeBytes ?? statSync(input.audio.filePath).size;
+          return await attachFileBackedAttachmentToMessage(
             input.messageId,
             position,
             validated.filename,
             validated.mimeType,
-            input.audio.dataBase64,
-          )
-        : (() => {
-            if (!existsSync(input.audio.filePath)) {
-              return null;
-            }
-            const sizeBytes =
-              input.audio.sizeBytes ?? statSync(input.audio.filePath).size;
-            return attachFileBackedAttachmentToMessage(
-              input.messageId,
-              position,
-              validated.filename,
-              validated.mimeType,
-              input.audio.filePath,
-              sizeBytes,
-            );
-          })();
+            input.audio.filePath,
+            sizeBytes,
+          );
+        })());
 
     if (!stored) {
       return resultWarning(
@@ -665,9 +664,9 @@ export async function linkLiveVoiceAssistantResponseAudioToMessage(
   return linkLiveVoiceAudioToMessage({ ...input, role: "assistant" });
 }
 
-export function linkLiveVoiceAudioArtifactToMessage(
+export async function linkLiveVoiceAudioArtifactToMessage(
   input: LinkLiveVoiceAudioArtifactInput,
-): LiveVoiceAudioArchiveResult {
+): Promise<LiveVoiceAudioArchiveResult> {
   const { artifact } = input;
   if (!isArtifactMetadata(artifact)) {
     return resultWarning(
@@ -719,7 +718,7 @@ export function linkLiveVoiceAudioArtifactToMessage(
     return { type: "archived", artifact, idempotent: true };
   }
 
-  if (!attachmentExists(artifact.attachmentId)) {
+  if (!(await attachmentExists(artifact.attachmentId))) {
     return resultUnlinked(
       "attachment_not_found",
       "Live voice audio archive attachment was not found.",
@@ -728,12 +727,12 @@ export function linkLiveVoiceAudioArtifactToMessage(
   }
 
   try {
-    const linkedAttachmentId = linkAttachmentToMessage(
+    const linkedAttachmentId = await linkAttachmentToMessage(
       messageId,
       artifact.attachmentId,
       input.position ?? nextAttachmentPosition(messageId),
     );
-    const linkedAttachment = getAttachmentById(linkedAttachmentId);
+    const linkedAttachment = await getAttachmentById(linkedAttachmentId);
     const linkedArtifact = linkedAttachment
       ? artifactFromAttachment({
           attachmentId: linkedAttachment.id,

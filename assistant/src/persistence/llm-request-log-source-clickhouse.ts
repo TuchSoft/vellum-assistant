@@ -108,9 +108,11 @@ export interface ClickHouseLlmRequestLogSourceDeps {
   /** Override the in-memory platform assistant id. */
   resolveAssistantId?: () => Promise<string | null>;
   /** Override the turn-id resolver (default: `getAssistantMessageIdsInTurn`). */
-  resolveTurnMessageIds?: (messageId: string) => string[];
+  resolveTurnMessageIds?: (messageId: string) => string[] | Promise<string[]>;
   /** Override the message lookup (default: `getMessageById`). */
-  resolveMessage?: (messageId: string) => ClickHouseMessageRow | null;
+  resolveMessage?: (
+    messageId: string,
+  ) => ClickHouseMessageRow | null | Promise<ClickHouseMessageRow | null>;
   /** Override fetch for testing. */
   fetchImpl?: ClickHouseFetch;
 }
@@ -123,10 +125,12 @@ export class ClickHouseLlmRequestLogSource implements LlmRequestLogSource {
   private readonly resolveUrl: () => Promise<string | null>;
   private readonly resolvePassword: () => Promise<string | null>;
   private readonly resolveAssistantId: () => Promise<string | null>;
-  private readonly resolveTurnMessageIds: (messageId: string) => string[];
+  private readonly resolveTurnMessageIds: (
+    messageId: string,
+  ) => string[] | Promise<string[]>;
   private readonly resolveMessage: (
     messageId: string,
-  ) => ClickHouseMessageRow | null;
+  ) => ClickHouseMessageRow | null | Promise<ClickHouseMessageRow | null>;
   private readonly fetchImpl: ClickHouseFetch;
 
   constructor(
@@ -195,7 +199,7 @@ export class ClickHouseLlmRequestLogSource implements LlmRequestLogSource {
   }
 
   async getRequestLogsByMessageId(messageId: string): Promise<LogRow[]> {
-    const turnIds = this.resolveTurnMessageIds(messageId);
+    const turnIds = await this.resolveTurnMessageIds(messageId);
     let rows = await this.selectByMessageIds(turnIds);
 
     if (rows.length === 0) {
@@ -203,7 +207,7 @@ export class ClickHouseLlmRequestLogSource implements LlmRequestLogSource {
       // logs match the queried message's turn, see if it was forked from
       // another and resolve that source's turn. The fork relationship lives
       // in local SQLite (message.metadata.forkSourceMessageId), not CH.
-      const message = this.resolveMessage(messageId);
+      const message = await this.resolveMessage(messageId);
       if (message?.metadata) {
         try {
           const parsed = messageMetadataSchema.safeParse(
@@ -215,7 +219,8 @@ export class ClickHouseLlmRequestLogSource implements LlmRequestLogSource {
               ? parsed.data.forkSourceMessageId
               : null;
           if (sourceMessageId && sourceMessageId !== messageId) {
-            const sourceTurnIds = this.resolveTurnMessageIds(sourceMessageId);
+            const sourceTurnIds =
+              await this.resolveTurnMessageIds(sourceMessageId);
             rows = await this.selectByMessageIds(sourceTurnIds);
           }
         } catch {

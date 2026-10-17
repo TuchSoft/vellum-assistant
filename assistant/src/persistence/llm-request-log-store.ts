@@ -549,11 +549,11 @@ export function getRequestLogsByConversationId(
  *
  * Scoped to a single conversation and a time range to avoid cross-turn bleed.
  */
-function selectOrphanedLogsInRange(
+async function selectOrphanedLogsInRange(
   conversationId: string,
   startTime: number,
   endTime: number,
-): LogRow[] {
+): Promise<LogRow[]> {
   if (endTime <= startTime) {
     return [];
   }
@@ -594,7 +594,7 @@ function selectOrphanedLogsInRange(
   const candidateMessageIds = [
     ...new Set(candidates.map((c) => c.messageId as string)),
   ];
-  const existing = existingMessageIds(candidateMessageIds);
+  const existing = await existingMessageIds(candidateMessageIds);
 
   // Orphaned = the referenced message no longer exists.
   return candidates.filter((c) => !existing.has(c.messageId as string));
@@ -832,10 +832,12 @@ function isTurnAuthoredLog(row: LogRow): boolean {
   return row.callSite == null || row.callSite === "mainAgent";
 }
 
-export function getRequestLogsByMessageId(messageId: string): LogRow[] {
+export async function getRequestLogsByMessageId(
+  messageId: string,
+): Promise<LogRow[]> {
   // Resolve all assistant message IDs in the same turn so the inspector
   // shows every LLM call from the entire agent turn, not just the queried message.
-  const turnMessageIds = getAssistantMessageIdsInTurn(messageId);
+  const turnMessageIds = await getAssistantMessageIdsInTurn(messageId);
   const turnLogs = selectLogsByMessageIds(turnMessageIds);
   const seen = new Set(turnLogs.map((l) => l.id));
   const merged = [...turnLogs];
@@ -846,11 +848,14 @@ export function getRequestLogsByMessageId(messageId: string): LogRow[] {
   //  2. Unlinked — messageId is still NULL because the backfill hasn't run yet
   //     or failed silently. This covers the race where the client queries the
   //     inspector before handleMessageComplete persists and backfills.
-  const message = getMessageById(messageId);
+  const message = await getMessageById(messageId);
   if (message) {
-    const bounds = getTurnTimeBounds(message.conversationId, message.createdAt);
+    const bounds = await getTurnTimeBounds(
+      message.conversationId,
+      message.createdAt,
+    );
     if (bounds) {
-      const orphanedLogs = selectOrphanedLogsInRange(
+      const orphanedLogs = await selectOrphanedLogsInRange(
         message.conversationId,
         bounds.startTime,
         bounds.endTime,
@@ -913,7 +918,8 @@ export function getRequestLogsByMessageId(messageId: string): LogRow[] {
           ? parsed.data.forkSourceMessageId
           : null;
       if (sourceMessageId && sourceMessageId !== messageId) {
-        const sourceTurnIds = getAssistantMessageIdsInTurn(sourceMessageId);
+        const sourceTurnIds =
+          await getAssistantMessageIdsInTurn(sourceMessageId);
         for (const log of selectLogsByMessageIds(sourceTurnIds)) {
           if (!seen.has(log.id)) {
             merged.push(log);

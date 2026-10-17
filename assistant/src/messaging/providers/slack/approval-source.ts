@@ -49,11 +49,11 @@ function toReference(
   };
 }
 
-export function resolveSlackApprovalSource(
+export async function resolveSlackApprovalSource(
   conversationId: string,
   hint: ApprovalSourceHint | undefined,
-): ApprovalSourceReference | null {
-  const rawBinding = getBindingByConversation(conversationId);
+): Promise<ApprovalSourceReference | null> {
+  const rawBinding = await getBindingByConversation(conversationId);
   const binding = rawBinding?.sourceChannel === "slack" ? rawBinding : null;
 
   // The chat's display name lives on the binding row, which ingress
@@ -76,7 +76,7 @@ export function resolveSlackApprovalSource(
     );
   }
 
-  const inbound = getLatestInboundEventReference(conversationId, "slack");
+  const inbound = await getLatestInboundEventReference(conversationId, "slack");
 
   const chatId =
     hint?.requesterChatId ?? inbound?.externalChatId ?? binding?.externalChatId;

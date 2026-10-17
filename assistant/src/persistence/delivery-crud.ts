@@ -146,7 +146,7 @@ async function legacySlackConversationHasThreadEvidence(
       SLACK_LEGACY_THREAD_EVIDENCE_BATCH_SIZE,
       remaining,
     );
-    const metadataRows = selectProviderMetaCandidateMetadata(
+    const metadataRows = await selectProviderMetaCandidateMetadata(
       conversationId,
       batchLimit,
       offset,
@@ -208,7 +208,7 @@ export async function resolveInboundConversation(
     return getOrCreateConversation(threadedKey, opts);
   }
 
-  const threadedMapping = getConversationByKey(threadedKey);
+  const threadedMapping = await getConversationByKey(threadedKey);
   if (threadedMapping) {
     return { conversationId: threadedMapping.conversationId };
   }
@@ -218,7 +218,7 @@ export async function resolveInboundConversation(
     externalChatId,
     null,
   );
-  const legacyMapping = getConversationByKey(legacyKey);
+  const legacyMapping = await getConversationByKey(legacyKey);
   if (
     legacyMapping &&
     (await legacySlackConversationHasThreadEvidence(
@@ -227,8 +227,8 @@ export async function resolveInboundConversation(
       threadId,
     ))
   ) {
-    setConversationKeyIfAbsent(threadedKey, legacyMapping.conversationId);
-    const aliasedMapping = getConversationByKey(threadedKey);
+    await setConversationKeyIfAbsent(threadedKey, legacyMapping.conversationId);
+    const aliasedMapping = await getConversationByKey(threadedKey);
     if (aliasedMapping) {
       return { conversationId: aliasedMapping.conversationId };
     }
@@ -256,7 +256,7 @@ export async function findInboundConversationId(
     externalChatId,
     sourceThreadId,
   );
-  const threadedMapping = getConversationByKey(threadedKey);
+  const threadedMapping = await getConversationByKey(threadedKey);
   if (threadedMapping) {
     return threadedMapping.conversationId;
   }
@@ -267,7 +267,7 @@ export async function findInboundConversationId(
   }
 
   const legacyKey = buildScopedConversationKey(sourceChannel, externalChatId);
-  const legacyMapping = getConversationByKey(legacyKey);
+  const legacyMapping = await getConversationByKey(legacyKey);
   if (
     legacyMapping &&
     (await legacySlackConversationHasThreadEvidence(

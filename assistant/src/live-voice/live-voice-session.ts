@@ -1691,7 +1691,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
         this.persistPhoto(frame);
         return;
       case "attach_frame":
-        this.parkTurnFrame(frame);
+        await this.parkTurnFrame(frame);
         return;
       case "sight_start":
         await this.sequenceSightFrame(frame);
@@ -2013,7 +2013,9 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
    * to nothing would otherwise leave the user believing the assistant can see
    * something it never received, one turn later and with nothing said.
    */
-  private parkTurnFrame(frame: LiveVoiceClientAttachFrameFrame): void {
+  private async parkTurnFrame(
+    frame: LiveVoiceClientAttachFrameFrame,
+  ): Promise<void> {
     if (frame.attachmentId === null) {
       const parked = this.pendingTurnAttachmentId;
       this.pendingTurnAttachmentId = null;
@@ -2023,7 +2025,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
 
     let exists = false;
     try {
-      exists = attachmentExists(frame.attachmentId);
+      exists = await attachmentExists(frame.attachmentId);
     } catch (err) {
       log.warn(
         { err, attachmentId: frame.attachmentId },
@@ -8381,7 +8383,7 @@ async function defaultStartVoiceTurn(
   // id the app supplied. Its guardian identity resolves through
   // `resolveLocalLiveVoiceIdentity`, and a phone call reaches the assistant
   // through the telephony path rather than here.
-  const createdConversation = ensureConversationExists(
+  const createdConversation = await ensureConversationExists(
     options.conversationId,
     "vellum",
   );

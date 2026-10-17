@@ -80,7 +80,10 @@ const SOURCE_RESOLVERS: Partial<
     (
       conversationId: string,
       hint: ApprovalSourceHint | undefined,
-    ) => ApprovalSourceReference | null
+    ) =>
+      | ApprovalSourceReference
+      | null
+      | Promise<ApprovalSourceReference | null>
   >
 > = {
   slack: resolveSlackApprovalSource,
@@ -92,17 +95,17 @@ const SOURCE_RESOLVERS: Partial<
  * when the resolver cannot derive a reference. Never throws — approval
  * creation must not fail because a card link could not be built.
  */
-export function resolveApprovalSourceReference(
+export async function resolveApprovalSourceReference(
   sourceChannel: string,
   conversationId: string,
   hint?: ApprovalSourceHint,
-): ApprovalSourceReference | null {
+): Promise<ApprovalSourceReference | null> {
   const resolver = SOURCE_RESOLVERS[sourceChannel];
   if (!resolver) {
     return null;
   }
   try {
-    return resolver(conversationId, hint);
+    return await resolver(conversationId, hint);
   } catch (err) {
     log.warn(
       { err, sourceChannel, conversationId },

@@ -315,10 +315,10 @@ export interface NewestSightFrame {
  * and a frame still in flight is not. One indexed row, since it runs on every
  * voice turn.
  */
-export function newestPersistedSightFrame(
+export async function newestPersistedSightFrame(
   conversationId: string,
-): NewestSightFrame | null {
-  const newest = selectNewestSightFrameCapture(conversationId);
+): Promise<NewestSightFrame | null> {
+  const newest = await selectNewestSightFrameCapture(conversationId);
   return newest === null
     ? null
     : { attachmentId: newest.attachmentId, capturedAt: newest.createdAt };
@@ -702,7 +702,9 @@ function persistStandaloneImage(
   let incarnation: number | null;
   try {
     incarnation =
-      acceptedIncarnation ?? getConversation(conversationId)?.createdAt ?? null;
+      acceptedIncarnation ??
+      (await getConversation(conversationId))?.createdAt ??
+      null;
   } catch (err) {
     // This read is the one thing here that runs outside the job's own catch,
     // and the contract above is that an image never takes its caller down: the
@@ -860,7 +862,7 @@ async function writeStandaloneImage(
   // this module holds would leave the clone behind for good.
   const strandedClones: string[] = [];
   try {
-    const attachments = resolveAttachmentsForPersist([attachmentId]);
+    const attachments = await resolveAttachmentsForPersist([attachmentId]);
     if (attachments.length === 0) {
       log.warn(
         { attachmentId, kind },

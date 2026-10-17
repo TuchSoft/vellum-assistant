@@ -1220,7 +1220,7 @@ export async function startVoiceTurn(
     // lost lock race stores exactly what the first attempt would have.
     const turnAttachments =
       opts.attachments && opts.attachments.length > 0
-        ? resolveAttachmentsForPersist([...opts.attachments])
+        ? await resolveAttachmentsForPersist([...opts.attachments])
         : [];
     linkedAttachmentIds = turnAttachments.map((a) => a.id);
     const persistResult = await conversation.persistUserMessage({
@@ -1552,7 +1552,7 @@ export async function startVoiceTurn(
   // answer is about. One indexed row; a log-only read that fails must not
   // take the turn down with it.
   try {
-    const newestFrame = newestPersistedSightFrame(opts.conversationId);
+    const newestFrame = await newestPersistedSightFrame(opts.conversationId);
     if (newestFrame) {
       dispatch.newestSightFrame = {
         attachmentId: newestFrame.attachmentId,
@@ -1945,7 +1945,10 @@ export async function startVoiceTurn(
         deleteMessageById(reservedAssistantRowId);
         action = "delete_overruled";
       } else {
-        const row = getMessageById(reservedAssistantRowId, opts.conversationId);
+        const row = await getMessageById(
+          reservedAssistantRowId,
+          opts.conversationId,
+        );
         const terminalMarkerLength = row
           ? terminalControlMarkerLength(joinedTextOfBlocks(row.content))
           : 0;

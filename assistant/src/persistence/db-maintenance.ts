@@ -174,7 +174,7 @@ export async function maybeRunDbMaintenance(nowMs = Date.now()): Promise<void> {
   // checkpoint below is only written once maintenance actually runs, so a
   // deferred run is simply retried on a later (still-idle) worker tick.
   if (quietPeriodMs > 0) {
-    const lastUserMessageAt = getLastInteractiveUserMessageTimestamp();
+    const lastUserMessageAt = await getLastInteractiveUserMessageTimestamp();
     if (lastUserMessageAt > 0 && nowMs - lastUserMessageAt < quietPeriodMs) {
       return;
     }

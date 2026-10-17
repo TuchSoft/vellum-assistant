@@ -193,11 +193,11 @@ export async function bridgeConfirmationRequestToGuardian(
       // Reference to the channel message that triggered the confirmation, so
       // approval cards can link the guardian back to the source conversation.
       // The hint's field names match TrustContext, so it passes straight through.
-      ...resolveApprovalSourceReference(
+      ...(await resolveApprovalSourceReference(
         sourceChannel,
         conversationId,
         trustContext,
-      ),
+      )),
     },
     dedupeKey: `tc-confirmation-request:${guardianRequest.id}`,
     // The broadcaster awaits the returned promise, so the delivery row is

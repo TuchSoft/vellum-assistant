@@ -24,10 +24,15 @@ export interface AttachedImage {
 }
 
 /** The attachments the send boundary will drop, by filename. */
-export function unsendableImageFilenames(images: AttachedImage[]): string[] {
-  return images
-    .filter((image) => isUnsendableImageSource(image.source))
-    .map((image) => image.filename);
+export async function unsendableImageFilenames(
+  images: AttachedImage[],
+): Promise<string[]> {
+  const unsendable = await Promise.all(
+    images.map(async (image) =>
+      (await isUnsendableImageSource(image.source)) ? image.filename : null,
+    ),
+  );
+  return unsendable.filter((filename) => filename !== null);
 }
 
 /** Transcript copy for the images this message cannot send to the model. */
@@ -52,7 +57,7 @@ export async function postUnsendableImageNotice(
   conversationId: string,
   images: AttachedImage[],
 ): Promise<void> {
-  const filenames = unsendableImageFilenames(images);
+  const filenames = await unsendableImageFilenames(images);
   if (filenames.length === 0) {
     return;
   }

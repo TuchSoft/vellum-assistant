@@ -207,11 +207,11 @@ export async function createOrReuseToolGrantRequest(
       questionText,
       // Reference to the channel message that triggered the escalation, so
       // approval cards can link the guardian back to the source conversation.
-      ...resolveApprovalSourceReference(sourceChannel, conversationId, {
+      ...(await resolveApprovalSourceReference(sourceChannel, conversationId, {
         requesterChatId,
         sourceMessageId,
         sourceThreadId,
-      }),
+      })),
     },
     dedupeKey: `tool-grant-request:${guardianRequest.id}`,
     // The broadcaster awaits the returned promise, so the delivery row is

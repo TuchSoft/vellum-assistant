@@ -28,7 +28,7 @@ export async function mediaProcessingJob(job: MemoryJob): Promise<void> {
     return;
   }
 
-  const asset = getMediaAssetById(mediaAssetId);
+  const asset = await getMediaAssetById(mediaAssetId);
   if (!asset) {
     log.warn({ jobId: job.id, mediaAssetId }, "Media asset not found");
     return;
@@ -39,7 +39,7 @@ export async function mediaProcessingJob(job: MemoryJob): Promise<void> {
       { assetId: mediaAssetId, mediaType: asset.mediaType },
       "Skipping media processing pipeline — only video assets are supported",
     );
-    updateMediaAssetStatus(mediaAssetId, "indexed");
+    await updateMediaAssetStatus(mediaAssetId, "indexed");
     if (await selectedBackendSupportsMultimodal(getConfig())) {
       enqueueMemoryJob("embed_media", { assetId: mediaAssetId });
     }

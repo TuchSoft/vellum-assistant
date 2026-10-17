@@ -83,7 +83,7 @@ export async function unsendableImageReplacement(
   // Resolve reference sources to their bytes so a reloaded (referenced) image
   // is gated on the same payload/dimension caps as an inline one. When the
   // attachment can no longer be read, leave the block untouched.
-  const resolved = resolveMediaSourceData(block.source);
+  const resolved = await resolveMediaSourceData(block.source);
   if (!resolved) {
     return null;
   }
@@ -160,7 +160,7 @@ export async function persistUnsendableImageDowngrades(
   conversationId: string,
 ): Promise<number> {
   let rewritten = 0;
-  for (const row of getMessages(conversationId)) {
+  for (const row of await getMessages(conversationId)) {
     const hasImageBlock = row.content.some(
       (b) =>
         b.type === "image" ||

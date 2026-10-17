@@ -5,7 +5,15 @@
  * These tests exercise the route handler functions (the IPC-facing entry
  * points) rather than the shared helper directly.
  */
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 mock.module("../runtime/assistant-event-hub.js", () => ({
   assistantEventHub: { publish: async () => {} },
@@ -33,10 +41,12 @@ mock.module("../providers/platform-proxy/context.js", () => ({
 
 import { createConversation } from "../persistence/conversation-crud.js";
 import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { providerConnections } from "../persistence/schema/inference.js";
 import { ROUTES } from "../runtime/routes/inference-profile-session-routes.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
@@ -63,24 +73,26 @@ const listRoute = ROUTES.find(
   (r) => r.operationId === "inference_profile_list",
 )!;
 
-function clearTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM conversation_assistant_attention_state");
-  db.run("DELETE FROM external_conversation_bindings");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function clearTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM conversation_assistant_attention_state");
+  await db.run("DELETE FROM external_conversation_bindings");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
-describe("inference_profile_open IPC op", () => {
-  beforeEach(clearTables);
+describePg("inference_profile_open IPC op", () => {
+  beforeEach(async () => {
+    await clearTables();
+  });
   afterAll(() => {
     resetDbForTesting();
     mock.restore();
   });
 
   test("opens a session with TTL and returns sessionId + expiresAt", async () => {
-    const conv = createConversation("ipc-open-ttl");
+    const conv = await createConversation("ipc-open-ttl");
 
     const result = await openRoute.handler({
       body: { conversationId: conv.id, profile: "balanced", ttlSeconds: 300 },
@@ -99,7 +111,7 @@ describe("inference_profile_open IPC op", () => {
   });
 
   test("opens a sticky session (no ttlSeconds) — sessionId=null, expiresAt=null", async () => {
-    const conv = createConversation("ipc-open-sticky");
+    const conv = await createConversation("ipc-open-sticky");
 
     const result = await openRoute.handler({
       body: { conversationId: conv.id, profile: "balanced" },
@@ -116,7 +128,7 @@ describe("inference_profile_open IPC op", () => {
   });
 
   test("rejects profile=null with BadRequestError", async () => {
-    const conv = createConversation("ipc-open-null-profile");
+    const conv = await createConversation("ipc-open-null-profile");
 
     await expect(
       openRoute.handler({
@@ -127,7 +139,7 @@ describe("inference_profile_open IPC op", () => {
   });
 
   test("replaced carries prior session when opening over an active session", async () => {
-    const conv = createConversation("ipc-open-replace");
+    const conv = await createConversation("ipc-open-replace");
 
     const first = (await openRoute.handler({
       body: { conversationId: conv.id, profile: "balanced", ttlSeconds: 300 },
@@ -149,11 +161,13 @@ describe("inference_profile_open IPC op", () => {
   });
 });
 
-describe("inference_profile_close IPC op", () => {
-  beforeEach(clearTables);
+describePg("inference_profile_close IPC op", () => {
+  beforeEach(async () => {
+    await clearTables();
+  });
 
   test("closes an active session — noop=false, closed carries profile and sessionId", async () => {
-    const conv = createConversation("ipc-close-active");
+    const conv = await createConversation("ipc-close-active");
 
     const opened = (await openRoute.handler({
       body: { conversationId: conv.id, profile: "balanced", ttlSeconds: 300 },
@@ -175,7 +189,7 @@ describe("inference_profile_close IPC op", () => {
   });
 
   test("close with no active session — noop=true, closed=null", async () => {
-    const conv = createConversation("ipc-close-noop");
+    const conv = await createConversation("ipc-close-noop");
 
     const result = (await closeRoute.handler({
       body: { conversationId: conv.id },
@@ -187,12 +201,14 @@ describe("inference_profile_close IPC op", () => {
   });
 });
 
-describe("inference_profile_list IPC op", () => {
-  beforeEach(clearTables);
+describePg("inference_profile_list IPC op", () => {
+  beforeEach(async () => {
+    await clearTables();
+  });
 
   test("lists active sessions across all conversations when no filter", async () => {
-    const conv1 = createConversation("ipc-list-all-1");
-    const conv2 = createConversation("ipc-list-all-2");
+    const conv1 = await createConversation("ipc-list-all-1");
+    const conv2 = await createConversation("ipc-list-all-2");
 
     await openRoute.handler({
       body: { conversationId: conv1.id, profile: "balanced", ttlSeconds: 300 },
@@ -219,8 +235,8 @@ describe("inference_profile_list IPC op", () => {
   });
 
   test("scopes to a single conversation when conversationId filter is provided", async () => {
-    const conv1 = createConversation("ipc-list-filter-1");
-    const conv2 = createConversation("ipc-list-filter-2");
+    const conv1 = await createConversation("ipc-list-filter-1");
+    const conv2 = await createConversation("ipc-list-filter-2");
 
     await openRoute.handler({
       body: { conversationId: conv1.id, profile: "balanced", ttlSeconds: 300 },
@@ -245,7 +261,7 @@ describe("inference_profile_list IPC op", () => {
   });
 
   test("returns empty list when no active session for the given conversationId", async () => {
-    const conv = createConversation("ipc-list-empty");
+    const conv = await createConversation("ipc-list-empty");
 
     const result = (await listRoute.handler({
       queryParams: { conversationId: conv.id },

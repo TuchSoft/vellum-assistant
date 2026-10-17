@@ -8,7 +8,15 @@
  * can surface it inline. Reactions must NOT dispatch to the agent loop —
  * they don't trigger a response.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 // ---------------------------------------------------------------------------
 // Test isolation: in-memory SQLite via temp directory
@@ -79,22 +87,17 @@ function seedGatewayGuardian(
   gatewayGuardians.push({ status: "active", ...g });
 }
 
-import { eq } from "drizzle-orm";
-
 import type { Conversation } from "../daemon/conversation.js";
 import { readSlackMetadata } from "../messaging/providers/slack/message-metadata.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { linkMessage, recordInbound } from "../persistence/delivery-crud.js";
-import { messages } from "../persistence/schema/conversations.js";
 import { isReactionEvent } from "../runtime/routes/inbound-stages/reaction-intercept.js";
 import {
   handleChannelInbound,
   seedContactChannel,
 } from "./helpers/channel-test-adapter.js";
 import { createGuardianBinding } from "./helpers/create-guardian-binding.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -105,13 +108,13 @@ const SLACK_CHANNEL_ID = "C0REACTION";
 const SLACK_USER_ID = "U_REACTOR";
 const SLACK_DISPLAY_NAME = "Bob Reactor";
 
-function resetState(): void {
-  const db = getDb();
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM channel_inbound_events");
-  db.run("DELETE FROM conversations");
-  db.run("DELETE FROM contact_channels");
-  db.run("DELETE FROM contacts");
+async function resetState(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM channel_inbound_events");
+  await db.run("DELETE FROM conversations");
+  await db.run("DELETE FROM contact_channels");
+  await db.run("DELETE FROM contacts");
   gatewayGuardians = [];
   _conversationMocks.clear();
 }
@@ -171,39 +174,32 @@ function buildReactionRequest(
  * Store the message a reaction will be attached to. A reaction resolves its
  * conversation through this row, so without one there is nothing to annotate.
  */
-function seedStoredMessage(reactedTs: string): string {
-  const event = recordInbound(
+async function seedStoredMessage(reactedTs: string): Promise<string> {
+  const event = await recordInbound(
     "slack",
     SLACK_CHANNEL_ID,
     `${SLACK_CHANNEL_ID}:${reactedTs}:seed`,
     { sourceMessageId: reactedTs },
   );
-  const db = getDb();
+  const db = requireMainDb();
   const messageId = `msg-${reactedTs}`;
-  db.$client
-    .prepare(
-      `INSERT INTO messages (id, conversation_id, role, content, created_at)
-       VALUES (?, ?, 'user', '"hello"', ?)`,
-    )
-    .run(messageId, event.conversationId, Date.now());
-  linkMessage(event.eventId, messageId);
+  await db.run(
+    `INSERT INTO messages (id, conversation_id, role, content, created_at)
+     VALUES (?, ?, 'user', '"hello"', ?)`,
+    [messageId, event.conversationId, Date.now()],
+  );
+  await linkMessage(event.eventId, messageId);
   return event.conversationId;
 }
 
-function readPersistedMessages(): Array<{
-  role: string;
-  content: string;
-  metadata: string | null;
-}> {
-  const db = getDb();
-  return db
-    .select({
-      role: messages.role,
-      content: messages.content,
-      metadata: messages.metadata,
-    })
-    .from(messages)
-    .all();
+async function readPersistedMessages(): Promise<
+  Array<{
+    role: string;
+    content: string;
+    metadata: string | null;
+  }>
+> {
+  return requireMainDb().all("SELECT role, content, metadata FROM messages");
 }
 
 // ---------------------------------------------------------------------------
@@ -237,15 +233,15 @@ describe("isReactionEvent", () => {
 // End-to-end persistence tests
 // ---------------------------------------------------------------------------
 
-describe("Slack reaction event persistence", () => {
+describePg("Slack reaction event persistence", () => {
   beforeEach(async () => {
-    resetState();
-    seedActiveMember();
+    await resetState();
+    await seedActiveMember();
     msgCounter = 0;
   });
 
   test("reaction:thumbsup is persisted with slackMeta.eventKind=reaction", async () => {
-    seedStoredMessage("1700000000.111111");
+    await seedStoredMessage("1700000000.111111");
     let agentDispatched = false;
     const processMessage = async (): Promise<{ messageId: string }> => {
       agentDispatched = true;
@@ -265,7 +261,7 @@ describe("Slack reaction event persistence", () => {
 
     expect(agentDispatched).toBe(false);
 
-    const rows = readPersistedMessages().filter(
+    const rows = (await readPersistedMessages()).filter(
       (r) => r.content === "[reaction]",
     );
     expect(rows.length).toBe(1);
@@ -307,12 +303,12 @@ describe("Slack reaction event persistence", () => {
   });
 
   test("reaction_removed:eyes records op === removed", async () => {
-    seedStoredMessage("1700000000.111111");
+    await seedStoredMessage("1700000000.111111");
     const req = buildReactionRequest("reaction_removed:eyes");
     const resp = await handleChannelInbound(req, undefined, TEST_BEARER_TOKEN);
     expect(resp.status).toBe(200);
 
-    const rows = readPersistedMessages().filter(
+    const rows = (await readPersistedMessages()).filter(
       (r) => r.content === "[reaction]",
     );
     expect(rows.length).toBe(1);
@@ -337,20 +333,20 @@ describe("Slack reaction event persistence", () => {
       "dropped_unresolvable_payload",
     );
 
-    const rows = readPersistedMessages();
+    const rows = await readPersistedMessages();
     expect(rows.length).toBe(0);
   });
 
   test("a reaction never claims a thread, so it is not thread evidence", async () => {
     // Storing the gateway's fabricated thread id here made the row look like
     // proof that a thread belongs to this conversation.
-    seedStoredMessage("1700000000.111111");
+    await seedStoredMessage("1700000000.111111");
     await handleChannelInbound(
       buildReactionRequest("reaction:thumbsup"),
       undefined,
       TEST_BEARER_TOKEN,
     );
-    const rows = readPersistedMessages().filter(
+    const rows = (await readPersistedMessages()).filter(
       (r) => r.content === "[reaction]",
     );
     const meta = readSlackMetadata(
@@ -361,7 +357,7 @@ describe("Slack reaction event persistence", () => {
   });
 
   test("reaction without threadId omits threadTs in metadata", async () => {
-    seedStoredMessage("1700000000.222222");
+    await seedStoredMessage("1700000000.222222");
     const req = buildReactionRequest("reaction:wave", {
       sourceMetadata: {
         messageId: "1700000000.222222",
@@ -371,7 +367,7 @@ describe("Slack reaction event persistence", () => {
     const resp = await handleChannelInbound(req, undefined, TEST_BEARER_TOKEN);
     expect(resp.status).toBe(200);
 
-    const rows = readPersistedMessages().filter(
+    const rows = (await readPersistedMessages()).filter(
       (r) => r.content === "[reaction]",
     );
     expect(rows.length).toBe(1);
@@ -385,7 +381,7 @@ describe("Slack reaction event persistence", () => {
   });
 
   test("agent loop is never dispatched for reaction events", async () => {
-    seedStoredMessage("1700000000.111111");
+    await seedStoredMessage("1700000000.111111");
     let dispatchCount = 0;
     const processMessage = async (): Promise<{ messageId: string }> => {
       dispatchCount++;
@@ -407,7 +403,7 @@ describe("Slack reaction event persistence", () => {
   });
 
   test("duplicate reaction events do not double-persist", async () => {
-    seedStoredMessage("1700000000.111111");
+    await seedStoredMessage("1700000000.111111");
     const sharedExternalMessageId = `${SLACK_CHANNEL_ID}:1700000000.555555:alice`;
     const makeReq = () =>
       buildReactionRequest("reaction:tada", {
@@ -430,14 +426,14 @@ describe("Slack reaction event persistence", () => {
     const j2 = (await r2.json()) as Record<string, unknown>;
     expect(j2.duplicate).toBe(true);
 
-    const rows = readPersistedMessages().filter(
+    const rows = (await readPersistedMessages()).filter(
       (r) => r.content === "[reaction]",
     );
     expect(rows.length).toBe(1);
   });
 
   test("a persisted reaction stale-marks the resident conversation", async () => {
-    const conversationId = seedStoredMessage("1700000000.111111");
+    const conversationId = await seedStoredMessage("1700000000.111111");
     const markHistoryStale = mock(() => {});
     _conversationMocks.set(conversationId, {
       markHistoryStale,
@@ -453,7 +449,7 @@ describe("Slack reaction event persistence", () => {
   });
 
   test("a duplicate reaction does not stale-mark again", async () => {
-    const conversationId = seedStoredMessage("1700000000.111111");
+    const conversationId = await seedStoredMessage("1700000000.111111");
     const markHistoryStale = mock(() => {});
     _conversationMocks.set(conversationId, {
       markHistoryStale,
@@ -474,14 +470,12 @@ describe("Slack reaction event persistence", () => {
     // is the `slackMeta` on the assistant row. Seeded here the way the
     // outbound reconciler writes it.
     const botTs = "1700000000.999999";
-    const conversationId = seedStoredMessage("1700000000.111111");
-    const db = getDb();
-    db.$client
-      .prepare(
-        `INSERT INTO messages (id, conversation_id, role, content, created_at, metadata)
-         VALUES (?, ?, 'assistant', '"posted"', ?, ?)`,
-      )
-      .run(
+    const conversationId = await seedStoredMessage("1700000000.111111");
+    const db = requireMainDb();
+    await db.run(
+      `INSERT INTO messages (id, conversation_id, role, content, created_at, metadata)
+       VALUES (?, ?, 'assistant', '"posted"', ?, ?)`,
+      [
         "msg-bot-post",
         conversationId,
         Date.now(),
@@ -493,7 +487,8 @@ describe("Slack reaction event persistence", () => {
             eventKind: "message",
           }),
         }),
-      );
+      ],
+    );
 
     const resp = await handleChannelInbound(
       buildReactionRequest("reaction:tada", {
@@ -513,11 +508,9 @@ describe("Slack reaction event persistence", () => {
     expect(dispatchedWakes).toHaveLength(1);
     expect(dispatchedWakes[0].conversationId).toBe(conversationId);
     expect(typeof dispatchedWakes[0].slackReactionRowMeta).toBe("string");
-    const reactionRow = db.$client
-      .prepare(
-        "SELECT conversation_id AS conversationId FROM messages WHERE content = '[reaction]'",
-      )
-      .get() as { conversationId: string } | null;
+    const reactionRow = await db.get<{ conversationId: string }>(
+      "SELECT conversation_id AS conversationId FROM messages WHERE content = '[reaction]'",
+    );
     expect(reactionRow).toBeNull();
   });
 
@@ -525,22 +518,19 @@ describe("Slack reaction event persistence", () => {
     // Two linked rows on one provider id would let a later edit or delete of
     // the message resolve to the reaction instead.
     const reactedTs = "1700000000.111111";
-    seedStoredMessage(reactedTs);
+    await seedStoredMessage(reactedTs);
     await handleChannelInbound(
       buildReactionRequest("reaction:thumbsup"),
       undefined,
       TEST_BEARER_TOKEN,
     );
 
-    const db = getDb();
-    const claimants = (
-      db.$client
-        .prepare(
-          `SELECT COUNT(*) AS n FROM channel_inbound_events
-           WHERE source_message_id = ? AND message_id IS NOT NULL`,
-        )
-        .get(reactedTs) as { n: number }
-    ).n;
+    const db = requireMainDb();
+    const claimants = (await db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM channel_inbound_events
+         WHERE source_message_id = ? AND message_id IS NOT NULL`,
+      [reactedTs],
+    ))!.n;
     expect(claimants).toBe(1);
   });
 
@@ -549,13 +539,9 @@ describe("Slack reaction event persistence", () => {
     // conversation off the reaction's own address minted one per reacted
     // message, each holding a single "[reaction]" row and a permanent
     // "Generating title..." placeholder.
-    const db = getDb();
-    const countRows = (table: string): number =>
-      (
-        db.$client.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
-          n: number;
-        }
-      ).n;
+    const db = requireMainDb();
+    const countRows = async (table: string): Promise<number> =>
+      (await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`))!.n;
 
     const resp = await handleChannelInbound(
       buildReactionRequest("reaction:thumbsup"),
@@ -566,19 +552,17 @@ describe("Slack reaction event persistence", () => {
 
     expect(json.accepted).toBe(true);
     expect(json.reaction).toBe("dropped_unknown_target");
-    expect(countRows("conversations")).toBe(0);
-    expect(countRows("channel_inbound_events")).toBe(0);
-    expect(readPersistedMessages().length).toBe(0);
+    expect(await countRows("conversations")).toBe(0);
+    expect(await countRows("channel_inbound_events")).toBe(0);
+    expect((await readPersistedMessages()).length).toBe(0);
   });
 
   test("reaction lands in the conversation of the reacted message, not a new one", async () => {
-    const targetConversationId = seedStoredMessage("1700000000.111111");
-    const db = getDb();
-    const conversationsBefore = (
-      db.$client.prepare("SELECT COUNT(*) AS n FROM conversations").get() as {
-        n: number;
-      }
-    ).n;
+    const targetConversationId = await seedStoredMessage("1700000000.111111");
+    const db = requireMainDb();
+    const conversationsBefore = (await db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM conversations",
+    ))!.n;
 
     const resp = await handleChannelInbound(
       buildReactionRequest("reaction:thumbsup"),
@@ -587,43 +571,34 @@ describe("Slack reaction event persistence", () => {
     );
     expect(resp.status).toBe(200);
 
-    const conversationsAfter = (
-      db.$client.prepare("SELECT COUNT(*) AS n FROM conversations").get() as {
-        n: number;
-      }
-    ).n;
+    const conversationsAfter = (await db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM conversations",
+    ))!.n;
     expect(conversationsAfter).toBe(conversationsBefore);
 
-    const reactionRow = db.$client
-      .prepare(
-        "SELECT conversation_id AS conversationId FROM messages WHERE content = '[reaction]'",
-      )
-      .get() as { conversationId: string } | null;
+    const reactionRow = await db.get<{ conversationId: string }>(
+      "SELECT conversation_id AS conversationId FROM messages WHERE content = '[reaction]'",
+    );
     expect(reactionRow?.conversationId).toBe(targetConversationId);
   });
 
   test("link to channel_inbound_events is created", async () => {
-    seedStoredMessage("1700000000.111111");
+    await seedStoredMessage("1700000000.111111");
     const req = buildReactionRequest("reaction:thumbsup");
     const resp = await handleChannelInbound(req, undefined, TEST_BEARER_TOKEN);
     const json = (await resp.json()) as Record<string, unknown>;
     const eventId = json.eventId as string;
 
-    const db = getDb();
-    const messageRows = db
-      .select()
-      .from(messages)
-      .all()
-      .filter((row) => row.content === "[reaction]");
+    const db = requireMainDb();
+    const messageRows = (
+      await db.all<{ id: string; content: string }>("SELECT * FROM messages")
+    ).filter((row) => row.content === "[reaction]");
     expect(messageRows.length).toBe(1);
 
-    const { channelInboundEvents } =
-      await import("../persistence/schema/index.js");
-    const eventRow = db
-      .select({ messageId: channelInboundEvents.messageId })
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, eventId))
-      .get();
+    const eventRow = await db.get<{ messageId: string | null }>(
+      'SELECT message_id AS "messageId" FROM channel_inbound_events WHERE id = ?',
+      [eventId],
+    );
     expect(eventRow?.messageId).toBe(messageRows[0].id);
   });
 });
@@ -638,7 +613,7 @@ describe("Slack reaction event persistence", () => {
 // write a binding — it is dropped as channel noise. A known contact's reaction
 // is recorded; neither triggers a verification challenge.
 
-describe("reaction access control (no verification handshake)", () => {
+describePg("reaction access control (no verification handshake)", () => {
   const STRANGER_USER_ID = "U_REACTION_STRANGER";
   const CONTACT_USER_ID = "U_REACTION_CONTACT";
   const GUARDIAN_USER_ID = "U_GUARDIAN_REACT";
@@ -648,16 +623,14 @@ describe("reaction access control (no verification handshake)", () => {
   // externalChatId fallback and mask the bug.
   const GUARDIAN_DM_CHAT = "D_GUARDIAN_DM";
 
-  function tableCount(table: string): number {
-    return (
-      getDb().$client.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
-        n: number;
-      }
-    ).n;
+  async function tableCount(table: string): Promise<number> {
+    return (await requireMainDb().get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM ${table}`,
+    ))!.n;
   }
 
   beforeEach(async () => {
-    resetState();
+    await resetState();
     // The assistant has a guardian (as in production); the reactors below are
     // different users.
     seedGatewayGuardian({
@@ -704,9 +677,9 @@ describe("reaction access control (no verification handshake)", () => {
     // No verification handshake, and no side effects: a dropped reaction leaves
     // no transcript row, no conversation, and no binding. (Sessions are
     // gateway-owned; the absent challenge is asserted via the response above.)
-    expect(readPersistedMessages().length).toBe(0);
-    expect(tableCount("conversations")).toBe(0);
-    expect(tableCount("external_conversation_bindings")).toBe(0);
+    expect((await readPersistedMessages()).length).toBe(0);
+    expect(await tableCount("conversations")).toBe(0);
+    expect(await tableCount("external_conversation_bindings")).toBe(0);
   });
 
   test("known contact's reaction is recorded — no challenge", async () => {
@@ -722,7 +695,7 @@ describe("reaction access control (no verification handshake)", () => {
       displayName: "Pending Contact",
     });
 
-    seedStoredMessage("1700000000.111111");
+    await seedStoredMessage("1700000000.111111");
     const req = buildReactionRequest("reaction:tada", {
       actorExternalId: CONTACT_USER_ID,
       actorDisplayName: "Pending Contact",
@@ -734,7 +707,7 @@ describe("reaction access control (no verification handshake)", () => {
     expect(json.denied).not.toBe(true);
     expect(json.reason).not.toBe("verification_challenge_sent");
 
-    const rows = readPersistedMessages().filter(
+    const rows = (await readPersistedMessages()).filter(
       (r) => r.content === "[reaction]",
     );
     expect(rows.length).toBe(1);

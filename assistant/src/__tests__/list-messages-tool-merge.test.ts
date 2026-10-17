@@ -6,7 +6,8 @@
  * of "Unknown" after a conversation reload.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -25,18 +26,16 @@ import {
   updateMessageMetadata,
 } from "../persistence/conversation-crud.js";
 import { COMPUTER_USE_SCREENSHOT_ATTACHMENT_IDS_KEY } from "../persistence/conversation-types.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 function createTestArgs(conversationId: string) {
@@ -68,11 +67,13 @@ interface MessagePayload {
   }>;
 }
 
-describe("handleListMessages tool_result merging", () => {
-  beforeEach(resetTables);
+describePg("handleListMessages tool_result merging", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("merges tool_result from user message into preceding assistant", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     // User prompt
     await addMessage(
       conv.id,
@@ -136,7 +137,7 @@ describe("handleListMessages tool_result merging", () => {
   });
 
   test("merges multiple tool_results into matching tool_uses", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -178,7 +179,7 @@ describe("handleListMessages tool_result merging", () => {
   });
 
   test("plain user message passes through unchanged", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -204,7 +205,7 @@ describe("handleListMessages tool_result merging", () => {
   });
 
   test("includes merged assistant ids for consecutive assistant history rows", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -233,7 +234,7 @@ describe("handleListMessages tool_result merging", () => {
   });
 
   test("preserves donor automatic screenshot provenance during consolidation", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -250,7 +251,7 @@ describe("handleListMessages tool_result merging", () => {
       "application/pdf",
       "JVBERg==",
     );
-    linkAttachmentToMessage(anchor.id, explicit.id, 0);
+    await linkAttachmentToMessage(anchor.id, explicit.id, 0);
 
     const donor = await addMessage(
       conv.id,
@@ -262,13 +263,13 @@ describe("handleListMessages tool_result merging", () => {
       "image/png",
       "c2NyZWVuc2hvdA==",
     );
-    linkAttachmentToMessage(donor.id, screenshot.id, 0);
-    updateMessageMetadata(donor.id, {
+    await linkAttachmentToMessage(donor.id, screenshot.id, 0);
+    await updateMessageMetadata(donor.id, {
       [COMPUTER_USE_SCREENSHOT_ATTACHMENT_IDS_KEY]: [screenshot.id],
     });
 
-    const anchorBefore = getMessageById(anchor.id)?.metadata;
-    const donorBefore = getMessageById(donor.id)?.metadata;
+    const anchorBefore = (await getMessageById(anchor.id))?.metadata;
+    const donorBefore = (await getMessageById(donor.id))?.metadata;
     const response = await handleListMessages(createTestArgs(conv.id));
     const body = response as { messages: MessagePayload[] };
     const merged = body.messages[1]!;
@@ -297,12 +298,12 @@ describe("handleListMessages tool_result merging", () => {
         ? attachmentBlocks[1].attachment?.computerUseScreenshot
         : undefined,
     ).toBe(true);
-    expect(getMessageById(anchor.id)?.metadata).toBe(anchorBefore);
-    expect(getMessageById(donor.id)?.metadata).toBe(donorBefore);
+    expect((await getMessageById(anchor.id))?.metadata).toBe(anchorBefore);
+    expect((await getMessageById(donor.id))?.metadata).toBe(donorBefore);
   });
 
   test("orphan tool_result at pagination boundary is suppressed entirely", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     // Orphan tool_result with no preceding assistant in this page. The
     // matching tool_use lives on the previous page, so renderHistoryContent
     // would silently drop the orphan downstream and leave a blank user
@@ -335,7 +336,7 @@ describe("handleListMessages tool_result merging", () => {
   });
 
   test("mixed content at pagination boundary keeps real user text", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     // Row has both real user text AND an orphan tool_result. The orphan
     // gets stripped (it'd be dropped by renderHistoryContent anyway), but
     // the user text is preserved.
@@ -369,7 +370,7 @@ describe("handleListMessages tool_result merging", () => {
   });
 
   test("orphan tool_result + system_notice at boundary is suppressed", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     // System notices ride alongside tool_results in the agent loop. At a
     // boundary they shouldn't keep the row alive on their own — the row
     // is still semantically tool-result-only from the user's perspective.
@@ -399,7 +400,7 @@ describe("handleListMessages tool_result merging", () => {
   });
 
   test("multi-turn: each tool_result merges into correct assistant", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     // Turn 1
     await addMessage(
       conv.id,
@@ -467,7 +468,7 @@ describe("handleListMessages tool_result merging", () => {
   });
 
   test("tool_result with is_error propagates error status", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",

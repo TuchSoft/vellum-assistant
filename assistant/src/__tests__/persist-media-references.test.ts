@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { referenceMediaBlocksForPersist } from "../daemon/persist-media-references.js";
 import { getAttachmentsForMessage } from "../persistence/attachments-store.js";
@@ -6,29 +7,29 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { mediaSourceBytes } from "../providers/media-resolve.js";
 import type { ContentBlock } from "../providers/types.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 // "aGVsbG8=" = "hello"
 const IMAGE_B64 = Buffer.from("hello").toString("base64");
 
-describe("referenceMediaBlocksForPersist", () => {
-  beforeEach(resetTables);
+describePg("referenceMediaBlocksForPersist", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("materializes tool_result base64 media into a linked workspace_ref", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msg = await addMessage(conv.id, "user", "tool results");
 
     const blocks: ContentBlock[] = [
@@ -73,13 +74,13 @@ describe("referenceMediaBlocksForPersist", () => {
     if (nested.source.type !== "workspace_ref") {
       throw new Error("expected ref");
     }
-    const linked = getAttachmentsForMessage(msg.id);
+    const linked = await getAttachmentsForMessage(msg.id);
     expect(linked.map((a) => a.id)).toEqual([nested.source.attachmentId]);
     expect(mediaSourceBytes(nested.source)?.toString()).toBe("hello");
   });
 
   test("leaves an already-referenced block untouched and creates no row", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msg = await addMessage(conv.id, "user", "tool results");
 
     const blocks: ContentBlock[] = [
@@ -109,11 +110,11 @@ describe("referenceMediaBlocksForPersist", () => {
     );
 
     expect(referenced).toEqual(blocks);
-    expect(getAttachmentsForMessage(msg.id)).toHaveLength(0);
+    expect(await getAttachmentsForMessage(msg.id)).toHaveLength(0);
   });
 
   test("retries unresolved materialization and applies the computer-use filename", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msg = await addMessage(conv.id, "user", "tool results");
     const blocks: ContentBlock[] = [
       {
@@ -157,7 +158,7 @@ describe("referenceMediaBlocksForPersist", () => {
       throw new Error("expected recovered image");
     }
     expect(nested.source.type).toBe("workspace_ref");
-    expect(getAttachmentsForMessage(msg.id)).toEqual([
+    expect(await getAttachmentsForMessage(msg.id)).toEqual([
       expect.objectContaining({ originalFilename: "computer-use-click.png" }),
     ]);
   });

@@ -14,7 +14,8 @@
  * file to avoid disturbing the no-op resize cases.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 // ── Module mock (must precede the import of the module under test) ────
 // Simulate a host where resizing succeeds: any oversized image is shrunk to a
@@ -39,25 +40,23 @@ import {
   createConversation,
   getMessages,
 } from "../persistence/conversation-crud.js";
-import { getDb, getMemorySqlite } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   persistUnsendableImageDowngrades,
   unsendableImageReplacement,
 } from "../plugins/defaults/image-recovery/recover.js";
 import { base64Source } from "../providers/media-resolve.js";
 import type { ContentBlock } from "../providers/types.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  getMemorySqlite()?.run("DELETE FROM memory_segments");
-  getMemorySqlite()?.run("DELETE FROM memory_embeddings");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM memory_segments");
+  await db.run("DELETE FROM memory_embeddings");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 /** Minimal PNG whose IHDR declares dimensions past the 8000px provider cap. */
@@ -113,20 +112,22 @@ function toolResultWithImage(data: string): ContentBlock {
   };
 }
 
-function storedContent(conversationId: string): ContentBlock[][] {
-  return getMessages(conversationId).map((row) => row.content);
+async function storedContent(
+  conversationId: string,
+): Promise<ContentBlock[][]> {
+  return (await getMessages(conversationId)).map((row) => row.content);
 }
 
-describe("persistUnsendableImageDowngrades (downscalable host)", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("persistUnsendableImageDowngrades (downscalable host)", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
   /** JARVIS-1041: an oversized screenshot that CAN be shrunk must persist the
    *  downscaled bytes, not the note and not the original. */
   test("persists the downscaled image for a shrinkable tool_result screenshot", async () => {
     // GIVEN a tool_result holding an oversized but shrinkable screenshot
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -139,7 +140,7 @@ describe("persistUnsendableImageDowngrades (downscalable host)", () => {
 
     // THEN the nested block stays an image, rewritten to the downscaled payload
     expect(rewritten).toBe(1);
-    const [content] = storedContent(conv.id);
+    const [content] = await storedContent(conv.id);
     const toolResult = content.find((b) => b.type === "tool_result") as {
       contentBlocks?: ContentBlock[];
     };
@@ -212,7 +213,7 @@ describe("persistUnsendableImageDowngrades (downscalable host)", () => {
   /** Re-running is a no-op: the downscaled payload is within limits. */
   test("is idempotent after a downscale rewrite", async () => {
     // GIVEN a conversation whose oversized screenshot was already downscaled
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",

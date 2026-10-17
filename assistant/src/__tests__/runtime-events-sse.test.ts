@@ -7,17 +7,16 @@
  *   - Happy path: stream receives a published AssistantEventEnvelope
  *   - Unfiltered: streams events from multiple conversations
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { getOrCreateConversation } from "../persistence/conversation-key-store.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { buildAssistantEvent } from "../runtime/assistant-event.js";
 import { assistantEventHub } from "../runtime/assistant-event-hub.js";
 import { mintToken } from "../runtime/auth/token-service.js";
 import { RuntimeHttpServer } from "../runtime/http-server.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 const TEST_JWT = mintToken({
   aud: "vellum-daemon",
@@ -28,14 +27,14 @@ const TEST_JWT = mintToken({
 });
 const AUTH_HEADERS = { Authorization: `Bearer ${TEST_JWT}` };
 
-describe("SSE assistant-events endpoint", () => {
+describePg("SSE assistant-events endpoint", () => {
   let server: RuntimeHttpServer;
   let port: number;
 
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM conversation_keys");
-    db.run("DELETE FROM conversations");
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM conversation_keys");
+    await db.run("DELETE FROM conversations");
   });
 
   async function startServer(): Promise<void> {
@@ -97,13 +96,13 @@ describe("SSE assistant-events endpoint", () => {
     // buffering in Bun's loopback SSE implementation. The HTTP auth and
     // routing are already covered by other test files; here we focus on the
     // SSE subscription logic and frame delivery.
-    const { conversationId } = getOrCreateConversation("sse-happy-path");
+    const { conversationId } = await getOrCreateConversation("sse-happy-path");
 
     const ac = new AbortController();
 
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
-    const stream = handleSubscribeAssistantEvents({
+    const stream = await handleSubscribeAssistantEvents({
       queryParams: { conversationKey: "sse-happy-path" },
       abortSignal: ac.signal,
     });
@@ -147,7 +146,7 @@ describe("SSE assistant-events endpoint", () => {
 
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       { abortSignal: ac.signal },
       { hub: testHub },
     );

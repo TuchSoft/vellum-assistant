@@ -20,15 +20,15 @@
  * workspace) so the durable-persist leg exercises the same path production does.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import {
   addMessage,
   createConversation,
   getMessages,
 } from "../persistence/conversation-crud.js";
-import { getDb, getMemorySqlite } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { HOOKS } from "../plugin-api/constants.js";
 import type {
   PluginLogger,
@@ -50,8 +50,7 @@ import {
   resetPluginRegistryForTests,
 } from "../plugins/registry.js";
 import type { ContentBlock, Message } from "../providers/types.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 /** Provider rejection text matched by `isImageDimensionsTooLargeError`. */
 const IMAGE_ERROR_MESSAGE =
@@ -66,14 +65,14 @@ const noopLogger: PluginLogger = {
   debug: () => {},
 };
 
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  getMemorySqlite()?.run("DELETE FROM memory_segments");
-  getMemorySqlite()?.run("DELETE FROM memory_embeddings");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM memory_segments");
+  await db.run("DELETE FROM memory_embeddings");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 /**
@@ -173,10 +172,10 @@ function makePostModelCallCtx(
   };
 }
 
-describe("image-recovery post-model-call hook — direct", () => {
-  beforeEach(() => {
+describePg("image-recovery post-model-call hook — direct", () => {
+  beforeEach(async () => {
     resetImageRecoveryStoreForTests();
-    resetTables();
+    await resetTables();
   });
 
   test("recoverable image error → recovers oversized image and continues", async () => {
@@ -250,7 +249,7 @@ describe("image-recovery post-model-call hook — direct", () => {
       type: "image",
       source: { type: "base64", media_type: "image/jpeg", data: pngData },
     };
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(conv.id, "user", JSON.stringify([mislabeled]), {
       skipIndexing: true,
     });
@@ -277,7 +276,7 @@ describe("image-recovery post-model-call hook — direct", () => {
       media_type: "image/png",
       data: pngData,
     });
-    const storedImage = getMessages(conv.id)[0].content[0] as Extract<
+    const storedImage = (await getMessages(conv.id))[0].content[0] as Extract<
       ContentBlock,
       { type: "image" }
     >;
@@ -326,7 +325,7 @@ describe("image-recovery post-model-call hook — direct", () => {
 
   test("durably persists the downgrade so the image cannot resurface", async () => {
     // GIVEN a conversation whose stored history holds an oversized image.
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -348,7 +347,9 @@ describe("image-recovery post-model-call hook — direct", () => {
     // THEN the stored row no longer holds the oversized payload — it was
     // rewritten (downscaled or replaced with the unsendable note) so a later
     // turn cannot rehydrate the rejected upload from the DB.
-    expect(getMessages(conv.id)[0].content).not.toContain(OVERSIZED_IMAGE_DATA);
+    expect((await getMessages(conv.id))[0].content).not.toContain(
+      OVERSIZED_IMAGE_DATA,
+    );
   });
 
   test("second consecutive image rejection is left to surface", async () => {
@@ -449,8 +450,8 @@ describe("image-recovery post-model-call hook — direct", () => {
 
 // ─── stop hook (terminal cleanup) ────────────────────────────────────────────
 
-describe("image-recovery stop hook — direct", () => {
-  beforeEach(() => {
+describePg("image-recovery stop hook — direct", () => {
+  beforeEach(async () => {
     resetImageRecoveryStoreForTests();
   });
 
@@ -481,11 +482,11 @@ describe("image-recovery stop hook — direct", () => {
   });
 });
 
-describe("image-recovery post-model-call hook — via runHook", () => {
-  beforeEach(() => {
+describePg("image-recovery post-model-call hook — via runHook", () => {
+  beforeEach(async () => {
     resetPluginRegistryForTests();
     resetImageRecoveryStoreForTests();
-    resetTables();
+    await resetTables();
     clearImageRecoveryAttempted("conv-pmc");
   });
 

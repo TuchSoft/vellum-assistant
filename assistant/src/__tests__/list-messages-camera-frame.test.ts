@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -12,19 +13,17 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-describe("handleListMessages camera-frame projection", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM message_attachments");
-    db.run("DELETE FROM attachments");
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversations");
+describePg("handleListMessages camera-frame projection", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM message_attachments");
+    await db.run("DELETE FROM attachments");
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
   });
 
   test.each([
@@ -67,7 +66,7 @@ describe("handleListMessages camera-frame projection", () => {
       cameraFrame: false,
     },
   ])("classifies $name from metadata", async ({ metadata, cameraFrame }) => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const row = await addMessage(
       conv.id,
       "user",
@@ -97,15 +96,16 @@ describe("handleListMessages camera-frame projection", () => {
   test.each(["not-json", "null", "", "{}"])(
     "omits cameraFrame for unreadable or empty metadata %j",
     async (metadata) => {
-      const conv = createConversation();
+      const conv = await createConversation();
       const row = await addMessage(
         conv.id,
         "user",
         JSON.stringify([{ type: "text", text: "(camera frame)" }]),
       );
-      getDb()
-        .$client.prepare("UPDATE messages SET metadata = ? WHERE id = ?")
-        .run(metadata, row.id);
+      await requireMainDb().run(
+        "UPDATE messages SET metadata = ? WHERE id = ?",
+        [metadata, row.id],
+      );
 
       const response = (await handleListMessages({
         queryParams: { conversationId: conv.id },

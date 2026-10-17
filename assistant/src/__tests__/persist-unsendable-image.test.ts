@@ -12,7 +12,14 @@
  * workspace).
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 import { uploadAttachment } from "../persistence/attachments-store.js";
 import {
@@ -20,24 +27,22 @@ import {
   createConversation,
   getMessages,
 } from "../persistence/conversation-crud.js";
-import { getDb, getMemorySqlite } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   persistUnsendableImageDowngrades,
   unsendableImageReplacement,
 } from "../plugins/defaults/image-recovery/recover.js";
 import type { ContentBlock } from "../providers/types.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  getMemorySqlite()?.run("DELETE FROM memory_segments");
-  getMemorySqlite()?.run("DELETE FROM memory_embeddings");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM memory_segments");
+  await db.run("DELETE FROM memory_embeddings");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 /**
@@ -105,21 +110,23 @@ function toolResultWithImage(data: string): ContentBlock {
   };
 }
 
-function storedContent(conversationId: string): ContentBlock[][] {
-  return getMessages(conversationId).map((row) => row.content);
+async function storedContent(
+  conversationId: string,
+): Promise<ContentBlock[][]> {
+  return (await getMessages(conversationId)).map((row) => row.content);
 }
 
 const PROVIDER_MAX_IMAGE_DIMENSION = 8000;
 
-describe("persistUnsendableImageDowngrades", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("persistUnsendableImageDowngrades", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
   /** A stored image past the provider pixel cap is swapped for a text note. */
   test("replaces an oversized image block with a text note", async () => {
     // GIVEN a message holding text plus an image past the pixel cap
-    const conv = createConversation();
+    const conv = await createConversation();
     const oversized = makePngBase64(PROVIDER_MAX_IMAGE_DIMENSION + 1000, 6000);
     await addMessage(
       conv.id,
@@ -136,7 +143,7 @@ describe("persistUnsendableImageDowngrades", () => {
 
     // THEN one message is rewritten with no image block left
     expect(rewritten).toBe(1);
-    const [content] = storedContent(conv.id);
+    const [content] = await storedContent(conv.id);
     expect(content.some((b) => b.type === "image")).toBe(false);
     // AND the original text is preserved alongside the substituted note
     expect(content.filter((b) => b.type === "text")).toHaveLength(2);
@@ -146,7 +153,7 @@ describe("persistUnsendableImageDowngrades", () => {
    *  to a valid re-upload. */
   test("re-uploaded smaller image survives while the rejected original is removed", async () => {
     // GIVEN turn 1 contains an oversized upload that was rejected
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -166,7 +173,7 @@ describe("persistUnsendableImageDowngrades", () => {
 
     // THEN only the rejected original is removed
     expect(rewritten).toBe(1);
-    const [first, second] = storedContent(conv.id);
+    const [first, second] = await storedContent(conv.id);
     expect(first.some((b) => b.type === "image")).toBe(false);
     // AND the valid re-upload is left intact
     expect(second.some((b) => b.type === "image")).toBe(true);
@@ -175,7 +182,7 @@ describe("persistUnsendableImageDowngrades", () => {
   /** Sendable images are never disturbed by the recovery path. */
   test("leaves a normally-sized image untouched", async () => {
     // GIVEN a message with an image well within provider limits
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -188,14 +195,14 @@ describe("persistUnsendableImageDowngrades", () => {
 
     // THEN nothing is rewritten and the image remains
     expect(rewritten).toBe(0);
-    const [content] = storedContent(conv.id);
+    const [content] = await storedContent(conv.id);
     expect(content.some((b) => b.type === "image")).toBe(true);
   });
 
   /** The byte-size cap is enforced independently of pixel dimensions. */
   test("removes an image whose payload exceeds the per-image byte cap", async () => {
     // GIVEN an image within the pixel cap but with a payload over 5 MB
-    const conv = createConversation();
+    const conv = await createConversation();
     const huge = makePngBase64(1000, 1000, 6 * 1024 * 1024);
     await addMessage(conv.id, "user", JSON.stringify([imageBlock(huge)]), {
       skipIndexing: true,
@@ -206,7 +213,7 @@ describe("persistUnsendableImageDowngrades", () => {
 
     // THEN the oversized-payload image is removed
     expect(rewritten).toBe(1);
-    const [content] = storedContent(conv.id);
+    const [content] = await storedContent(conv.id);
     expect(content.some((b) => b.type === "image")).toBe(false);
   });
 
@@ -215,7 +222,7 @@ describe("persistUnsendableImageDowngrades", () => {
    *  16×14 px upload) must not rehydrate and re-reject on later turns. */
   test("removes an image below the minimum-size floor", async () => {
     // GIVEN a message holding a tiny image below the provider minimum
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -228,7 +235,7 @@ describe("persistUnsendableImageDowngrades", () => {
 
     // THEN the undersized image is removed (upscale is a no-op on this host)
     expect(rewritten).toBe(1);
-    const [content] = storedContent(conv.id);
+    const [content] = await storedContent(conv.id);
     expect(content.some((b) => b.type === "image")).toBe(false);
   });
 
@@ -239,7 +246,7 @@ describe("persistUnsendableImageDowngrades", () => {
    *  survives. */
   test("downgrades an oversized image nested in tool_result.contentBlocks", async () => {
     // GIVEN an assistant turn whose tool_result holds an oversized screenshot
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -252,7 +259,7 @@ describe("persistUnsendableImageDowngrades", () => {
 
     // THEN the message is rewritten with the nested image swapped for a note
     expect(rewritten).toBe(1);
-    const [content] = storedContent(conv.id);
+    const [content] = await storedContent(conv.id);
     const toolResult = content.find((b) => b.type === "tool_result");
     expect(toolResult).toBeDefined();
     // AND the tool_result is preserved (pairing intact) with no image left
@@ -265,7 +272,7 @@ describe("persistUnsendableImageDowngrades", () => {
   /** A sendable nested screenshot is never disturbed. */
   test("leaves a normally-sized tool_result image untouched", async () => {
     // GIVEN a tool_result with an image well within provider limits
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -278,7 +285,7 @@ describe("persistUnsendableImageDowngrades", () => {
 
     // THEN nothing is rewritten and the nested image remains
     expect(rewritten).toBe(0);
-    const [content] = storedContent(conv.id);
+    const [content] = await storedContent(conv.id);
     const toolResult = content.find((b) => b.type === "tool_result") as {
       contentBlocks?: ContentBlock[];
     };
@@ -292,7 +299,7 @@ describe("persistUnsendableImageDowngrades", () => {
    *  media_type corrected — so it stops re-rejecting on every later turn. */
   test("relabels a mislabeled image instead of removing it", async () => {
     // GIVEN a normally-sized PNG stored with a declared type of image/jpeg
-    const conv = createConversation();
+    const conv = await createConversation();
     const pngData = makePngBase64(1024, 768);
     await addMessage(
       conv.id,
@@ -306,7 +313,7 @@ describe("persistUnsendableImageDowngrades", () => {
 
     // THEN the image survives with its media type corrected to the sniffed one
     expect(rewritten).toBe(1);
-    const [content] = storedContent(conv.id);
+    const [content] = await storedContent(conv.id);
     const image = content.find((b) => b.type === "image") as Extract<
       ContentBlock,
       { type: "image" }
@@ -325,7 +332,7 @@ describe("persistUnsendableImageDowngrades", () => {
   /** Re-running after a rewrite is a safe no-op (no image blocks remain). */
   test("is idempotent — a second run rewrites nothing", async () => {
     // GIVEN a conversation whose oversized image has already been downgraded
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",

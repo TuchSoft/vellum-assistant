@@ -1,4 +1,12 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 import type { Conversation } from "../daemon/conversation.js";
 import {
@@ -10,8 +18,7 @@ import {
   getConversation,
   setConversationInferenceProfileSession,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { assistantEventHub } from "../runtime/assistant-event-hub.js";
 import {
   startInferenceProfileSessionReaper,
@@ -20,21 +27,20 @@ import {
 } from "../runtime/routes/inference-profile-session-reaper.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
 import { waitFor } from "./helpers/wait-for.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function clearTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM conversation_assistant_attention_state");
-  db.run("DELETE FROM external_conversation_bindings");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function clearTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM conversation_assistant_attention_state");
+  await db.run("DELETE FROM external_conversation_bindings");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
-describe("inference-profile-session-reaper", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("inference-profile-session-reaper", () => {
+  beforeEach(async () => {
+    await clearTables();
     stopInferenceProfileSessionReaper();
   });
 
@@ -45,25 +51,25 @@ describe("inference-profile-session-reaper", () => {
   });
 
   test("basic sweep: clears 2 expired sessions, leaves 1 future session untouched, emits 2 events", async () => {
-    const conv1 = createConversation("reaper-conv-1");
-    const conv2 = createConversation("reaper-conv-2");
-    const conv3 = createConversation("reaper-conv-3");
+    const conv1 = await createConversation("reaper-conv-1");
+    const conv2 = await createConversation("reaper-conv-2");
+    const conv3 = await createConversation("reaper-conv-3");
 
     // Two expired sessions
-    setConversationInferenceProfileSession(
+    await setConversationInferenceProfileSession(
       conv1.id,
       "balanced",
       "session-1",
       Date.now() - 1,
     );
-    setConversationInferenceProfileSession(
+    await setConversationInferenceProfileSession(
       conv2.id,
       "quality-optimized",
       "session-2",
       Date.now() - 1,
     );
     // One future session — should NOT be cleared
-    setConversationInferenceProfileSession(
+    await setConversationInferenceProfileSession(
       conv3.id,
       "cost-optimized",
       "session-3",
@@ -86,20 +92,28 @@ describe("inference-profile-session-reaper", () => {
       },
     });
 
-    tickInferenceProfileReaper();
+    await tickInferenceProfileReaper();
     await waitFor(() => publishedEvents.length === 2, {
       message: "Timed out waiting for inference profile reaper event",
     });
 
     // Expired rows should be cleared
-    expect(getConversation(conv1.id)?.inferenceProfile).toBeNull();
-    expect(getConversation(conv1.id)?.inferenceProfileExpiresAt).toBeNull();
-    expect(getConversation(conv2.id)?.inferenceProfile).toBeNull();
-    expect(getConversation(conv2.id)?.inferenceProfileExpiresAt).toBeNull();
+    expect((await getConversation(conv1.id))?.inferenceProfile).toBeNull();
+    expect(
+      (await getConversation(conv1.id))?.inferenceProfileExpiresAt,
+    ).toBeNull();
+    expect((await getConversation(conv2.id))?.inferenceProfile).toBeNull();
+    expect(
+      (await getConversation(conv2.id))?.inferenceProfileExpiresAt,
+    ).toBeNull();
 
     // Future row should be untouched
-    expect(getConversation(conv3.id)?.inferenceProfile).toBe("cost-optimized");
-    expect(getConversation(conv3.id)?.inferenceProfileExpiresAt).not.toBeNull();
+    expect((await getConversation(conv3.id))?.inferenceProfile).toBe(
+      "cost-optimized",
+    );
+    expect(
+      (await getConversation(conv3.id))?.inferenceProfileExpiresAt,
+    ).not.toBeNull();
 
     // Exactly 2 events emitted
     expect(publishedEvents).toHaveLength(2);
@@ -114,8 +128,8 @@ describe("inference-profile-session-reaper", () => {
 
   test("syncs the live in-memory Conversation instance for each cleared session", async () => {
     // GIVEN an expired session-backed override persisted on a conversation row
-    const conv = createConversation("reaper-live-sync");
-    setConversationInferenceProfileSession(
+    const conv = await createConversation("reaper-live-sync");
+    await setConversationInferenceProfileSession(
       conv.id,
       "balanced",
       "session-live",
@@ -155,7 +169,7 @@ describe("inference-profile-session-reaper", () => {
     setConversation(conv.id, liveConversation);
 
     // WHEN the reaper sweeps the expired session
-    tickInferenceProfileReaper();
+    await tickInferenceProfileReaper();
 
     // THEN the live instance is cleared in lock-step with the DB row, so the
     // per-turn override derivation reads the cleared state without re-fetching
@@ -170,23 +184,23 @@ describe("inference-profile-session-reaper", () => {
   });
 
   test("CAS protection: row with NULL expiresAt (sticky override) is not touched", async () => {
-    const conv = createConversation("reaper-cas-conv");
+    const conv = await createConversation("reaper-cas-conv");
 
     // Seed a row that initially looks expired — but before the reaper runs,
     // simulate a concurrent write that sets expiresAt to NULL (sticky override).
-    setConversationInferenceProfileSession(
+    await setConversationInferenceProfileSession(
       conv.id,
       "balanced",
       null,
       null, // NULL expiresAt — sticky, non-session override
     );
 
-    tickInferenceProfileReaper();
+    await tickInferenceProfileReaper();
     await Promise.resolve();
 
     // The row must not have been cleared — expiresAt was NULL so the WHERE
     // condition `inference_profile_expires_at IS NOT NULL AND <= now` did not match.
-    const row = getConversation(conv.id);
+    const row = await getConversation(conv.id);
     expect(row?.inferenceProfile).toBe("balanced");
     expect(row?.inferenceProfileExpiresAt).toBeNull();
   });

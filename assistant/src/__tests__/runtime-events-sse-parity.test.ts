@@ -15,16 +15,15 @@
  *   - generation_handoff (terminal)
  *   - generation_cancelled (terminal)
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import type { AssistantEvent, AssistantEventEnvelope } from "../api/index.js";
 import { getOrCreateConversation } from "../persistence/conversation-key-store.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { buildAssistantEvent } from "../runtime/assistant-event.js";
 import { assistantEventHub } from "../runtime/assistant-event-hub.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -41,13 +40,13 @@ async function publishAndReadFrame(
   conversationKey: string,
   message: AssistantEvent,
 ): Promise<AssistantEventEnvelope> {
-  const { conversationId } = getOrCreateConversation(conversationKey);
+  const { conversationId } = await getOrCreateConversation(conversationKey);
 
   const ac = new AbortController();
 
   const { handleSubscribeAssistantEvents } =
     await import("../runtime/routes/events-routes.js");
-  const stream = handleSubscribeAssistantEvents({
+  const stream = await handleSubscribeAssistantEvents({
     queryParams: { conversationKey },
     abortSignal: ac.signal,
   });
@@ -77,11 +76,11 @@ async function publishAndReadFrame(
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("SSE HTTP parity — streaming/delta message types", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM conversation_keys");
-    db.run("DELETE FROM conversations");
+describePg("SSE HTTP parity — streaming/delta message types", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM conversation_keys");
+    await db.run("DELETE FROM conversations");
   });
 
   // ── assistant_text_delta ─────────────────────────────────────────────────
@@ -308,12 +307,12 @@ describe("SSE HTTP parity — streaming/delta message types", () => {
 
   test("SSE envelope preserves conversationId across all event types", async () => {
     const conversationKey = "parity-envelope-check";
-    const { conversationId } = getOrCreateConversation(conversationKey);
+    const { conversationId } = await getOrCreateConversation(conversationKey);
 
     const ac = new AbortController();
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
-    const stream = handleSubscribeAssistantEvents({
+    const stream = await handleSubscribeAssistantEvents({
       queryParams: { conversationKey },
       abortSignal: ac.signal,
     });

@@ -4,7 +4,8 @@
  * keeping a cursor on a row learns where it sat once the row is gone.
  * DB-backed: exercises the real delete primitives against the test database.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { registerPluginHooks } from "../hooks/registry.js";
 import type { MessageDeletedContext } from "../hooks/types.js";
@@ -14,12 +15,9 @@ import {
   deleteMessageById,
   getMessages,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations, messages } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import type { PluginHooks } from "../plugins/types.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 const CONV_ID = "conv-message-deleted-hook";
 
@@ -48,33 +46,31 @@ async function waitForCalls(count: number): Promise<void> {
 
 const text = (t: string) => JSON.stringify([{ type: "text", text: t }]);
 
-beforeEach(() => {
+beforeEach(async () => {
   received.length = 0;
-  getDb().delete(messages).run();
-  getDb().delete(conversations).run();
+  const db = requireMainDb();
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
   const now = Date.now();
-  getDb()
-    .insert(conversations)
-    .values({
-      id: CONV_ID,
-      title: "message-deleted hook",
-      createdAt: now,
-      updatedAt: now,
-      source: "test",
-      conversationType: "standard",
-    })
-    .run();
+  await db.orm.insert(db.schema.conversations).values({
+    id: CONV_ID,
+    title: "message-deleted hook",
+    createdAt: now,
+    updatedAt: now,
+    source: "test",
+    conversationType: "standard",
+  });
 });
 
-describe("message-deleted hook dispatch", () => {
+describePg("message-deleted hook dispatch", () => {
   test("deleteMessageById dispatches once with the row's position", async () => {
     await addMessage(CONV_ID, "user", text("hello"));
     const reply = await addMessage(CONV_ID, "assistant", text("hi"));
-    const replyCreatedAt = getMessages(CONV_ID).find(
+    const replyCreatedAt = (await getMessages(CONV_ID)).find(
       (m) => m.id === reply.id,
     )!.createdAt;
 
-    deleteMessageById(reply.id);
+    await deleteMessageById(reply.id);
     await waitForCalls(1);
 
     expect(received).toEqual([
@@ -91,9 +87,11 @@ describe("message-deleted hook dispatch", () => {
     await addMessage(CONV_ID, "assistant", text("one"));
     const user2 = await addMessage(CONV_ID, "user", text("second"));
     const reply2 = await addMessage(CONV_ID, "assistant", text("two"));
-    const byId = new Map(getMessages(CONV_ID).map((m) => [m.id, m.createdAt]));
+    const byId = new Map(
+      (await getMessages(CONV_ID)).map((m) => [m.id, m.createdAt]),
+    );
 
-    expect(deleteLastExchange(CONV_ID)).toBe(2);
+    expect(await deleteLastExchange(CONV_ID)).toBe(2);
     await waitForCalls(2);
 
     expect([...received].sort((a, b) => a.createdAt - b.createdAt)).toEqual([
@@ -111,7 +109,7 @@ describe("message-deleted hook dispatch", () => {
   });
 
   test("a delete of a missing row dispatches nothing", async () => {
-    deleteMessageById("no-such-row");
+    await deleteMessageById("no-such-row");
     await Bun.sleep(50);
 
     expect(received).toEqual([]);

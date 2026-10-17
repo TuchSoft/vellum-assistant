@@ -9,7 +9,15 @@
  * - The no-param and `beforeTimestamp`-only paths keep their existing shapes.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -29,9 +37,7 @@ import {
   recordConversationPersistedSeq,
   setConversationProcessingStartedAt,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { messages } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   _resetStreamStateForTesting,
   getCurrentSeq,
@@ -39,15 +45,14 @@ import {
 } from "../runtime/assistant-stream-state.js";
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
 import { BadRequestError } from "../runtime/routes/errors.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 /**
@@ -58,25 +63,23 @@ function resetTables() {
  *
  * Returns the seeded rows in chronological order (id `msg-1` ... `msg-N`).
  */
-function seedMessages(
+async function seedMessages(
   conversationId: string,
   count: number,
-): Array<{ id: string; createdAt: number; role: string }> {
-  const db = getDb();
+): Promise<Array<{ id: string; createdAt: number; role: string }>> {
+  const db = requireMainDb();
   const seeded: Array<{ id: string; createdAt: number; role: string }> = [];
   for (let i = 1; i <= count; i++) {
     const role = i % 2 === 1 ? "user" : "assistant";
     const id = `msg-${i}`;
     const createdAt = i;
-    db.insert(messages)
-      .values({
-        id,
-        conversationId,
-        role,
-        content: JSON.stringify([{ type: "text", text: `message ${i}` }]),
-        createdAt,
-      })
-      .run();
+    await db.orm.insert(db.schema.messages).values({
+      id,
+      conversationId,
+      role,
+      content: JSON.stringify([{ type: "text", text: `message ${i}` }]),
+      createdAt,
+    });
     seeded.push({ id, createdAt, role });
   }
   return seeded;
@@ -140,9 +143,9 @@ async function callList(query: Record<string, string>): Promise<ListResponse> {
   })) as unknown as ListResponse;
 }
 
-describe("handleListMessages page=latest", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("handleListMessages page=latest", () => {
+  beforeEach(async () => {
+    await resetTables();
     _resetStreamStateForTesting();
     mockAssistantName = null;
   });
@@ -153,12 +156,12 @@ describe("handleListMessages page=latest", () => {
        * The startup seq floor resumes issuance above this value, so it
        * must reflect the highest anchor any conversation has served.
        */
-      const a = createConversation();
-      const b = createConversation();
-      recordConversationPersistedSeq(a.id, 41);
-      recordConversationPersistedSeq(b.id, 907779);
+      const a = await createConversation();
+      const b = await createConversation();
+      await recordConversationPersistedSeq(a.id, 41);
+      await recordConversationPersistedSeq(b.id, 907779);
 
-      expect(getMaxPersistedConversationSeq()).toBe(907779);
+      expect(await getMaxPersistedConversationSeq()).toBe(907779);
     });
 
     test("returns the recorded persisted seq for the conversation", async () => {
@@ -168,10 +171,10 @@ describe("handleListMessages page=latest", () => {
        */
 
       // GIVEN a conversation with persisted messages
-      const conv = createConversation();
-      seedMessages(conv.id, 3);
+      const conv = await createConversation();
+      await seedMessages(conv.id, 3);
       // AND the daemon has recorded a persisted seq for it
-      recordConversationPersistedSeq(conv.id, 42);
+      await recordConversationPersistedSeq(conv.id, 42);
 
       // WHEN the snapshot is fetched
       const body = await callList({ conversationId: conv.id, page: "latest" });
@@ -188,8 +191,8 @@ describe("handleListMessages page=latest", () => {
        */
 
       // GIVEN a conversation with no recorded persisted seq
-      const conv = createConversation();
-      seedMessages(conv.id, 2);
+      const conv = await createConversation();
+      await seedMessages(conv.id, 2);
 
       // WHEN the snapshot is fetched
       const body = await callList({ conversationId: conv.id, page: "latest" });
@@ -202,9 +205,9 @@ describe("handleListMessages page=latest", () => {
       /** `seq` is present on every resolved-conversation response shape. */
 
       // GIVEN a conversation with a recorded persisted seq
-      const conv = createConversation();
-      seedMessages(conv.id, 2);
-      recordConversationPersistedSeq(conv.id, 7);
+      const conv = await createConversation();
+      await seedMessages(conv.id, 2);
+      await recordConversationPersistedSeq(conv.id, 7);
 
       // WHEN fetched with no pagination params
       const body = await callList({ conversationId: conv.id });
@@ -220,29 +223,29 @@ describe("handleListMessages page=latest", () => {
        */
 
       // GIVEN a conversation whose persisted seq has been recorded
-      const conv = createConversation();
-      recordConversationPersistedSeq(conv.id, 12);
+      const conv = await createConversation();
+      await recordConversationPersistedSeq(conv.id, 12);
 
       // WHEN a lower seq is recorded (a late, out-of-order commit)
-      recordConversationPersistedSeq(conv.id, 8);
+      await recordConversationPersistedSeq(conv.id, 8);
 
       // THEN the high-water seq is unchanged
       expect((await callList({ conversationId: conv.id })).seq).toBe(12);
 
       // AND a higher seq still advances it
-      recordConversationPersistedSeq(conv.id, 20);
+      await recordConversationPersistedSeq(conv.id, 20);
       expect((await callList({ conversationId: conv.id })).seq).toBe(20);
     });
 
     test("recording ignores non-positive and non-finite seq values", async () => {
       // GIVEN a freshly created conversation (no stream activity → null seed)
-      const conv = createConversation();
+      const conv = await createConversation();
 
       // WHEN non-positive / non-finite seqs are recorded
-      recordConversationPersistedSeq(conv.id, 0);
-      recordConversationPersistedSeq(conv.id, -3);
-      recordConversationPersistedSeq(conv.id, Number.NaN);
-      recordConversationPersistedSeq(conv.id, Number.POSITIVE_INFINITY);
+      await recordConversationPersistedSeq(conv.id, 0);
+      await recordConversationPersistedSeq(conv.id, -3);
+      await recordConversationPersistedSeq(conv.id, Number.NaN);
+      await recordConversationPersistedSeq(conv.id, Number.POSITIVE_INFINITY);
 
       // THEN none take effect and seq stays null
       expect((await callList({ conversationId: conv.id })).seq).toBeNull();
@@ -261,7 +264,7 @@ describe("handleListMessages page=latest", () => {
       expect(getCurrentSeq()).toBe(5);
 
       // WHEN a brand-new conversation is created and its snapshot fetched
-      const conv = createConversation();
+      const conv = await createConversation();
       const body = await callList({ conversationId: conv.id, page: "latest" });
 
       // THEN the snapshot is anchored to the global seq at creation time
@@ -279,7 +282,7 @@ describe("handleListMessages page=latest", () => {
       expect(getCurrentSeq()).toBe(0);
 
       // WHEN a conversation is created and its snapshot fetched
-      const conv = createConversation();
+      const conv = await createConversation();
       const body = await callList({ conversationId: conv.id, page: "latest" });
 
       // THEN seq remains null
@@ -296,9 +299,9 @@ describe("handleListMessages page=latest", () => {
        */
 
       // GIVEN a conversation marked as processing
-      const conv = createConversation();
-      seedMessages(conv.id, 1);
-      setConversationProcessingStartedAt(conv.id, Date.now());
+      const conv = await createConversation();
+      await seedMessages(conv.id, 1);
+      await setConversationProcessingStartedAt(conv.id, Date.now());
 
       // WHEN the snapshot is fetched
       const body = await callList({ conversationId: conv.id, page: "latest" });
@@ -309,8 +312,8 @@ describe("handleListMessages page=latest", () => {
 
     test("reports processing=false when the conversation is idle", async () => {
       // GIVEN an idle conversation (processing_started_at is null)
-      const conv = createConversation();
-      seedMessages(conv.id, 2);
+      const conv = await createConversation();
+      await seedMessages(conv.id, 2);
 
       // WHEN the snapshot is fetched
       const body = await callList({ conversationId: conv.id, page: "latest" });
@@ -323,9 +326,9 @@ describe("handleListMessages page=latest", () => {
       /** `processing` is present on every resolved-conversation shape. */
 
       // GIVEN a processing conversation
-      const conv = createConversation();
-      seedMessages(conv.id, 1);
-      setConversationProcessingStartedAt(conv.id, Date.now());
+      const conv = await createConversation();
+      await seedMessages(conv.id, 1);
+      await setConversationProcessingStartedAt(conv.id, Date.now());
 
       // WHEN fetched with no pagination params
       const body = await callList({ conversationId: conv.id });
@@ -347,8 +350,8 @@ describe("handleListMessages page=latest", () => {
   });
 
   test("page=latest with no limit returns all messages chronologically", async () => {
-    const conv = createConversation();
-    seedMessages(conv.id, 120);
+    const conv = await createConversation();
+    await seedMessages(conv.id, 120);
 
     const body = await callList({ conversationId: conv.id, page: "latest" });
 
@@ -361,8 +364,8 @@ describe("handleListMessages page=latest", () => {
   });
 
   test("page=latest&limit=50 with 120 seeded messages returns newest 50 chronologically", async () => {
-    const conv = createConversation();
-    seedMessages(conv.id, 120);
+    const conv = await createConversation();
+    await seedMessages(conv.id, 120);
 
     const body = await callList({
       conversationId: conv.id,
@@ -380,8 +383,8 @@ describe("handleListMessages page=latest", () => {
   });
 
   test("page=latest&limit=50 with 10 seeded messages returns all 10 with hasMore=false", async () => {
-    const conv = createConversation();
-    seedMessages(conv.id, 10);
+    const conv = await createConversation();
+    await seedMessages(conv.id, 10);
 
     const body = await callList({
       conversationId: conv.id,
@@ -398,8 +401,8 @@ describe("handleListMessages page=latest", () => {
   });
 
   test("beforeTimestamp wins when combined with page=latest", async () => {
-    const conv = createConversation();
-    seedMessages(conv.id, 120);
+    const conv = await createConversation();
+    await seedMessages(conv.id, 120);
 
     // beforeTimestamp=100 + limit=50 should return msgs 50..99 (the 50 messages
     // immediately older than ts=100), regardless of the page=latest signal.
@@ -429,7 +432,7 @@ describe("handleListMessages page=latest", () => {
   });
 
   test("page=latest on empty conversation returns null pagination metadata", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
 
     const body = await callList({ conversationId: conv.id, page: "latest" });
 
@@ -440,29 +443,27 @@ describe("handleListMessages page=latest", () => {
   });
 
   test("messages expose Slack message and thread links from slackMeta", async () => {
-    const conv = createConversation();
-    const db = getDb();
-    db.insert(messages)
-      .values({
-        id: "msg-slack",
-        conversationId: conv.id,
-        role: "user",
-        content: JSON.stringify([{ type: "text", text: "Slack reply" }]),
-        metadata: JSON.stringify({
-          slackMeta: writeSlackMetadata({
-            source: "slack",
-            channelId: "C123ABCDEF",
-            channelName: "engineering",
-            channelTs: "1710000000.000200",
-            threadTs: "1710000000.000100",
-            displayName: "Alice",
-            actorExternalUserId: "U_ALICE",
-            eventKind: "message",
-          }),
+    const conv = await createConversation();
+    const db = requireMainDb();
+    await db.orm.insert(db.schema.messages).values({
+      id: "msg-slack",
+      conversationId: conv.id,
+      role: "user",
+      content: JSON.stringify([{ type: "text", text: "Slack reply" }]),
+      metadata: JSON.stringify({
+        slackMeta: writeSlackMetadata({
+          source: "slack",
+          channelId: "C123ABCDEF",
+          channelName: "engineering",
+          channelTs: "1710000000.000200",
+          threadTs: "1710000000.000100",
+          displayName: "Alice",
+          actorExternalUserId: "U_ALICE",
+          eventKind: "message",
         }),
-        createdAt: 1,
-      })
-      .run();
+      }),
+      createdAt: 1,
+    });
 
     const body = await callList({ conversationId: conv.id, page: "latest" });
 
@@ -498,29 +499,27 @@ describe("handleListMessages page=latest", () => {
     // nothing, so a client cannot attribute it to Slack. This is the silent
     // half of the reconciliation gap, pinned so a reader that starts
     // tolerating the partial form has to justify it here.
-    const conv = createConversation();
-    const db = getDb();
-    db.insert(messages)
-      .values({
-        id: "msg-slack-partial",
-        conversationId: conv.id,
-        role: "assistant",
-        content: JSON.stringify([{ type: "text", text: "Posted to Slack" }]),
-        metadata: JSON.stringify({
-          userMessageChannel: "slack",
-          assistantMessageChannel: "slack",
-          slackMeta: JSON.stringify({
-            source: "slack",
-            eventKind: "message",
-            channelId: "C123ABCDEF",
-            threadTs: "1710000000.000100",
-            timestampTimezone: "America/New_York",
-            timestampTimezoneLabel: "ET",
-          }),
+    const conv = await createConversation();
+    const db = requireMainDb();
+    await db.orm.insert(db.schema.messages).values({
+      id: "msg-slack-partial",
+      conversationId: conv.id,
+      role: "assistant",
+      content: JSON.stringify([{ type: "text", text: "Posted to Slack" }]),
+      metadata: JSON.stringify({
+        userMessageChannel: "slack",
+        assistantMessageChannel: "slack",
+        slackMeta: JSON.stringify({
+          source: "slack",
+          eventKind: "message",
+          channelId: "C123ABCDEF",
+          threadTs: "1710000000.000100",
+          timestampTimezone: "America/New_York",
+          timestampTimezoneLabel: "ET",
         }),
-        createdAt: 1,
-      })
-      .run();
+      }),
+      createdAt: 1,
+    });
 
     const body = await callList({ conversationId: conv.id, page: "latest" });
 
@@ -533,30 +532,28 @@ describe("handleListMessages page=latest", () => {
     // post-send reconciliation. The wire projection reads it through the
     // envelope's Slack view, so the client sees exactly what a legacy
     // `slackMeta` row projects.
-    const conv = createConversation();
-    const db = getDb();
-    db.insert(messages)
-      .values({
-        id: "msg-slack-neutral",
-        conversationId: conv.id,
-        role: "assistant",
-        content: JSON.stringify([{ type: "text", text: "Posted to Slack" }]),
-        metadata: JSON.stringify({
-          userMessageChannel: "slack",
-          assistantMessageChannel: "slack",
-          providerMeta: JSON.stringify({
-            source: "slack",
-            conversationExternalId: "C123ABCDEF",
-            messageId: "1710000000.000200",
-            threadId: "1710000000.000100",
-            eventKind: "message",
-            timestampTimezone: "America/New_York",
-            timestampTimezoneLabel: "ET",
-          }),
+    const conv = await createConversation();
+    const db = requireMainDb();
+    await db.orm.insert(db.schema.messages).values({
+      id: "msg-slack-neutral",
+      conversationId: conv.id,
+      role: "assistant",
+      content: JSON.stringify([{ type: "text", text: "Posted to Slack" }]),
+      metadata: JSON.stringify({
+        userMessageChannel: "slack",
+        assistantMessageChannel: "slack",
+        providerMeta: JSON.stringify({
+          source: "slack",
+          conversationExternalId: "C123ABCDEF",
+          messageId: "1710000000.000200",
+          threadId: "1710000000.000100",
+          eventKind: "message",
+          timestampTimezone: "America/New_York",
+          timestampTimezoneLabel: "ET",
         }),
-        createdAt: 1,
-      })
-      .run();
+      }),
+      createdAt: 1,
+    });
 
     const body = await callList({ conversationId: conv.id, page: "latest" });
 
@@ -574,7 +571,7 @@ describe("handleListMessages page=latest", () => {
     // transport returned, the identical row projects a full envelope. Built by
     // running the production reconciliation merge over the partial form rather
     // than hand-writing the result, so the two stay in step.
-    const conv = createConversation();
+    const conv = await createConversation();
     const partial = {
       source: "slack",
       eventKind: "message" as const,
@@ -589,21 +586,19 @@ describe("handleListMessages page=latest", () => {
       source: "slack",
     });
 
-    const db = getDb();
-    db.insert(messages)
-      .values({
-        id: "msg-slack-reconciled",
-        conversationId: conv.id,
-        role: "assistant",
-        content: JSON.stringify([{ type: "text", text: "Posted to Slack" }]),
-        metadata: JSON.stringify({
-          userMessageChannel: "slack",
-          assistantMessageChannel: "slack",
-          slackMeta: reconciled,
-        }),
-        createdAt: 1,
-      })
-      .run();
+    const db = requireMainDb();
+    await db.orm.insert(db.schema.messages).values({
+      id: "msg-slack-reconciled",
+      conversationId: conv.id,
+      role: "assistant",
+      content: JSON.stringify([{ type: "text", text: "Posted to Slack" }]),
+      metadata: JSON.stringify({
+        userMessageChannel: "slack",
+        assistantMessageChannel: "slack",
+        slackMeta: reconciled,
+      }),
+      createdAt: 1,
+    });
 
     const body = await callList({ conversationId: conv.id, page: "latest" });
 
@@ -619,29 +614,27 @@ describe("handleListMessages page=latest", () => {
   });
 
   test("top-level Slack messages with matching threadTs use plain permalinks", async () => {
-    const conv = createConversation();
-    const db = getDb();
-    db.insert(messages)
-      .values({
-        id: "msg-slack-top-level",
-        conversationId: conv.id,
-        role: "user",
-        content: JSON.stringify([{ type: "text", text: "Slack top-level" }]),
-        metadata: JSON.stringify({
-          slackMeta: writeSlackMetadata({
-            source: "slack",
-            channelId: "C123ABCDEF",
-            channelName: "engineering",
-            channelTs: "1710000000.000200",
-            threadTs: "1710000000.000200",
-            displayName: "Alice",
-            actorExternalUserId: "U_ALICE",
-            eventKind: "message",
-          }),
+    const conv = await createConversation();
+    const db = requireMainDb();
+    await db.orm.insert(db.schema.messages).values({
+      id: "msg-slack-top-level",
+      conversationId: conv.id,
+      role: "user",
+      content: JSON.stringify([{ type: "text", text: "Slack top-level" }]),
+      metadata: JSON.stringify({
+        slackMeta: writeSlackMetadata({
+          source: "slack",
+          channelId: "C123ABCDEF",
+          channelName: "engineering",
+          channelTs: "1710000000.000200",
+          threadTs: "1710000000.000200",
+          displayName: "Alice",
+          actorExternalUserId: "U_ALICE",
+          eventKind: "message",
         }),
-        createdAt: 1,
-      })
-      .run();
+      }),
+      createdAt: 1,
+    });
 
     const body = await callList({ conversationId: conv.id, page: "latest" });
 
@@ -666,25 +659,23 @@ describe("handleListMessages page=latest", () => {
 
   test("assistant Slack messages without stored sender use the assistant name", async () => {
     mockAssistantName = "Nova";
-    const conv = createConversation();
-    const db = getDb();
-    db.insert(messages)
-      .values({
-        id: "msg-slack-assistant",
-        conversationId: conv.id,
-        role: "assistant",
-        content: JSON.stringify([{ type: "text", text: "Slack response" }]),
-        metadata: JSON.stringify({
-          slackMeta: writeSlackMetadata({
-            source: "slack",
-            channelId: "C123ABCDEF",
-            channelTs: "1710000000.000300",
-            eventKind: "message",
-          }),
+    const conv = await createConversation();
+    const db = requireMainDb();
+    await db.orm.insert(db.schema.messages).values({
+      id: "msg-slack-assistant",
+      conversationId: conv.id,
+      role: "assistant",
+      content: JSON.stringify([{ type: "text", text: "Slack response" }]),
+      metadata: JSON.stringify({
+        slackMeta: writeSlackMetadata({
+          source: "slack",
+          channelId: "C123ABCDEF",
+          channelTs: "1710000000.000300",
+          eventKind: "message",
         }),
-        createdAt: 1,
-      })
-      .run();
+      }),
+      createdAt: 1,
+    });
 
     const body = await callList({ conversationId: conv.id, page: "latest" });
 
@@ -695,25 +686,23 @@ describe("handleListMessages page=latest", () => {
 
   test("user Slack messages without stored sender do not use the assistant name", async () => {
     mockAssistantName = "Nova";
-    const conv = createConversation();
-    const db = getDb();
-    db.insert(messages)
-      .values({
-        id: "msg-slack-user",
-        conversationId: conv.id,
-        role: "user",
-        content: JSON.stringify([{ type: "text", text: "Slack request" }]),
-        metadata: JSON.stringify({
-          slackMeta: writeSlackMetadata({
-            source: "slack",
-            channelId: "C123ABCDEF",
-            channelTs: "1710000000.000300",
-            eventKind: "message",
-          }),
+    const conv = await createConversation();
+    const db = requireMainDb();
+    await db.orm.insert(db.schema.messages).values({
+      id: "msg-slack-user",
+      conversationId: conv.id,
+      role: "user",
+      content: JSON.stringify([{ type: "text", text: "Slack request" }]),
+      metadata: JSON.stringify({
+        slackMeta: writeSlackMetadata({
+          source: "slack",
+          channelId: "C123ABCDEF",
+          channelTs: "1710000000.000300",
+          eventKind: "message",
         }),
-        createdAt: 1,
-      })
-      .run();
+      }),
+      createdAt: 1,
+    });
 
     const body = await callList({ conversationId: conv.id, page: "latest" });
 
@@ -742,7 +731,7 @@ describe("handleListMessages page=latest", () => {
   });
 
   test("page=invalid throws BadRequestError", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
 
     await expect(
       handleListMessages({
@@ -757,8 +746,8 @@ describe("handleListMessages page=latest", () => {
   });
 
   test("no-param GET returns full history without pagination metadata", async () => {
-    const conv = createConversation();
-    seedMessages(conv.id, 5);
+    const conv = await createConversation();
+    await seedMessages(conv.id, 5);
 
     const body = await callList({ conversationId: conv.id });
 
@@ -772,8 +761,8 @@ describe("handleListMessages page=latest", () => {
   });
 
   test("beforeTimestamp-only GET keeps existing conditional-metadata shape (no results)", async () => {
-    const conv = createConversation();
-    seedMessages(conv.id, 5);
+    const conv = await createConversation();
+    await seedMessages(conv.id, 5);
 
     // beforeTimestamp before all seeded rows => no results, metadata omitted.
     const body = await callList({
@@ -790,8 +779,8 @@ describe("handleListMessages page=latest", () => {
   });
 
   test("beforeTimestamp-only GET keeps existing conditional-metadata shape (with results)", async () => {
-    const conv = createConversation();
-    seedMessages(conv.id, 5);
+    const conv = await createConversation();
+    await seedMessages(conv.id, 5);
 
     const body = await callList({
       conversationId: conv.id,

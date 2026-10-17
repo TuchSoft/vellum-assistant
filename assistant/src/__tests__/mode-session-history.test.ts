@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -21,11 +28,9 @@ import {
   beginConversationModeSession,
   finalizeConversationModeSession,
 } from "../persistence/conversation-mode-sessions.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 interface MessagesResponse {
   messages: ConversationMessage[];
@@ -43,16 +48,16 @@ function registerCoordinator(
   } as unknown as Conversation);
 }
 
-describe("mode-session history projection", () => {
+describePg("mode-session history projection", () => {
   afterEach(() => {
     setModeSessionRecoveryHealthy(true);
     clearConversations();
   });
 
   test("omits unrecovered active descriptors while preserving terminal history and stamps", async () => {
-    const conversation = createConversation();
+    const conversation = await createConversation();
     for (const id of ["active-session", "terminal-session"]) {
-      beginConversationModeSession({
+      await beginConversationModeSession({
         id,
         conversationId: conversation.id,
         mode: "browser",
@@ -69,7 +74,7 @@ describe("mode-session history projection", () => {
         },
       );
     }
-    finalizeConversationModeSession({
+    await finalizeConversationModeSession({
       id: "terminal-session",
       conversationId: conversation.id,
       expectedRevision: 1,
@@ -88,18 +93,18 @@ describe("mode-session history projection", () => {
       ["active-session", "terminal-session"],
     );
   });
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversation_mode_sessions");
-    db.run("DELETE FROM conversations");
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversation_mode_sessions");
+    await db.run("DELETE FROM conversations");
   });
 
   test.each([false, true])(
     "omits orphaned active descriptors with live coordinator=%s",
     async (hasCoordinator) => {
-      const conversation = createConversation();
-      beginConversationModeSession({
+      const conversation = await createConversation();
+      await beginConversationModeSession({
         id: "orphan-session",
         conversationId: conversation.id,
         mode: "browser",
@@ -135,7 +140,7 @@ describe("mode-session history projection", () => {
   );
 
   test("returns same-conversation summaries, membership, aliases, and activity", async () => {
-    const conversation = createConversation();
+    const conversation = await createConversation();
     const coordinator = new ConversationModeSessionCoordinator(conversation.id);
     registerCoordinator(conversation.id, coordinator);
     const session = coordinator.activateSource({
@@ -198,10 +203,10 @@ describe("mode-session history projection", () => {
   });
 
   test("drops copied membership without a child-owned lifecycle record", async () => {
-    const parent = createConversation();
-    const child = createConversation();
+    const parent = await createConversation();
+    const child = await createConversation();
     expect(
-      beginConversationModeSession({
+      await beginConversationModeSession({
         id: "session-parent",
         conversationId: parent.id,
         mode: "browser",
@@ -231,7 +236,7 @@ describe("mode-session history projection", () => {
   });
 
   test("bounds and validates explicitly requested IDs", async () => {
-    const conversation = createConversation();
+    const conversation = await createConversation();
     const ids = Array.from({ length: 101 }, (_, index) => `session-${index}`);
     await expect(
       handleListMessages({

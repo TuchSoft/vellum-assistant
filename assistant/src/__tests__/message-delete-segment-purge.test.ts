@@ -5,7 +5,8 @@
  * The conversation-keyed purge does not apply here, so this explicit delete is
  * the sole cleanup for message-scoped rows. There is no orphan-sweep backstop.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -18,25 +19,23 @@ import {
   createConversation,
   deleteMessageById,
 } from "../persistence/conversation-crud.js";
-import { getMemorySqlite, getSqlite } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function seedSegment(
+async function seedSegment(
   segmentId: string,
   messageId: string,
   conversationId: string,
-): void {
-  const mem = getMemorySqlite()!;
-  mem.run(
+): Promise<void> {
+  const mem = requireMainDb();
+  await mem.run(
     `INSERT INTO memory_segments
        (id, message_id, conversation_id, role, segment_index, text,
         token_estimate, created_at, updated_at)
      VALUES ('${segmentId}', '${messageId}', '${conversationId}', 'user', 0,
              'text', 1, 0, 0)`,
   );
-  mem.run(
+  await mem.run(
     `INSERT INTO memory_embeddings
        (id, target_type, target_id, provider, model, dimensions,
         created_at, updated_at)
@@ -44,55 +43,54 @@ function seedSegment(
   );
 }
 
-function memoryRows(table: string): string[] {
-  return (
-    getMemorySqlite()!
-      .query(`SELECT id FROM ${table} ORDER BY id`)
-      .all() as Array<{ id: string }>
-  ).map((r) => r.id);
+async function memoryRows(table: string): Promise<string[]> {
+  const rows = await requireMainDb().all<{ id: string }>(
+    `SELECT id FROM ${table} ORDER BY id`,
+  );
+  return rows.map((r) => r.id);
 }
 
-beforeEach(() => {
-  const sqlite = getSqlite();
-  getMemorySqlite()!.run("DELETE FROM memory_embeddings");
-  getMemorySqlite()!.run("DELETE FROM memory_segments");
-  sqlite.run("DELETE FROM messages");
-  sqlite.run("DELETE FROM conversations");
+beforeEach(async () => {
+  const db = requireMainDb();
+  await db.run("DELETE FROM memory_embeddings");
+  await db.run("DELETE FROM memory_segments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 });
 
-describe("deleteMessageById segment purge", () => {
+describePg("deleteMessageById segment purge", () => {
   test("purges the deleted message's segments and embeddings, leaving a sibling's intact", async () => {
-    const conv = createConversation("conv");
+    const conv = await createConversation("conv");
     const msgA = await addMessage(conv.id, "user", "a", { skipIndexing: true });
     const msgB = await addMessage(conv.id, "user", "b", { skipIndexing: true });
-    seedSegment("seg-a", msgA.id, conv.id);
-    seedSegment("seg-b", msgB.id, conv.id);
+    await seedSegment("seg-a", msgA.id, conv.id);
+    await seedSegment("seg-b", msgB.id, conv.id);
 
-    const result = deleteMessageById(msgA.id);
+    const result = await deleteMessageById(msgA.id);
 
     // The deleted message's ids are returned for the caller's Qdrant purge.
     expect(result.segmentIds).toEqual(["seg-a"]);
     // Its segment and embedding are gone; the sibling message's survive.
-    expect(memoryRows("memory_segments")).toEqual(["seg-b"]);
-    expect(memoryRows("memory_embeddings")).toEqual(["emb-seg-b"]);
+    expect(await memoryRows("memory_segments")).toEqual(["seg-b"]);
+    expect(await memoryRows("memory_embeddings")).toEqual(["emb-seg-b"]);
     // The conversation and the sibling message live on.
     expect(
-      getSqlite().query("SELECT COUNT(*) AS c FROM conversations").get(),
+      await requireMainDb().get("SELECT COUNT(*) AS c FROM conversations"),
     ).toEqual({ c: 1 });
-    expect(getSqlite().query("SELECT id FROM messages").all()).toEqual([
+    expect(await requireMainDb().all("SELECT id FROM messages")).toEqual([
       { id: msgB.id },
     ]);
   });
 
   test("returns no ids and no-ops when the message has no segments", async () => {
-    const conv = createConversation("conv");
+    const conv = await createConversation("conv");
     const msg = await addMessage(conv.id, "user", "no segments", {
       skipIndexing: true,
     });
 
-    const result = deleteMessageById(msg.id);
+    const result = await deleteMessageById(msg.id);
 
     expect(result.segmentIds).toEqual([]);
-    expect(memoryRows("memory_segments")).toEqual([]);
+    expect(await memoryRows("memory_segments")).toEqual([]);
   });
 });

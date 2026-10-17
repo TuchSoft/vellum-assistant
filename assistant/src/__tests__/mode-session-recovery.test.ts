@@ -1,7 +1,5 @@
-import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
-
-import { drizzle } from "drizzle-orm/bun-sqlite";
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import {
   isModeSessionRecoveryHealthy,
@@ -21,9 +19,9 @@ import {
   recoverActiveConversationModeSessions,
   updateConversationModeSessionActivity,
 } from "../persistence/conversation-mode-sessions.js";
-import { migrateCreateConversationModeSessions } from "../persistence/migrations/381-create-conversation-mode-sessions.js";
-import * as schema from "../persistence/schema.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { setOverridesForTesting } from "./feature-flag-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 afterEach(() => {
   setDbReady(true);
@@ -31,24 +29,20 @@ afterEach(() => {
   setOverridesForTesting({});
 });
 
-function createStore() {
-  const sqlite = new Database(":memory:");
-  sqlite.exec(/* sql */ `
-    PRAGMA foreign_keys = ON;
-    CREATE TABLE conversations (id TEXT PRIMARY KEY);
-    INSERT INTO conversations (id) VALUES ('conv-123');
-  `);
-  const db = drizzle(sqlite, { schema });
-  migrateCreateConversationModeSessions(db);
+async function createStore() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM conversation_mode_sessions");
+  await db.run("DELETE FROM conversations");
+  await db.run("INSERT INTO conversations (id) VALUES ('conv-123')");
   return { db, options: { db } };
 }
 
-describe("mode session startup recovery", () => {
-  test("publishes readiness only after recovery succeeds", () => {
+describePg("mode session startup recovery", () => {
+  test("publishes readiness only after recovery succeeds", async () => {
     setDbMigrating();
     let readinessDuringRecovery = getDbMigrationReadiness();
 
-    const result = recoverModeSessionsBeforeDbReady(() => {
+    const result = await recoverModeSessionsBeforeDbReady(async () => {
       readinessDuringRecovery = getDbMigrationReadiness();
       return 2;
     });
@@ -66,11 +60,11 @@ describe("mode session startup recovery", () => {
 
   test.each([false, true])(
     "keeps ordinary work ready after recovery fails with flag %s",
-    (enabled) => {
+    async (enabled) => {
       setOverridesForTesting({ "session-groups": enabled });
       setDbMigrating();
       const recoveryError = new Error("recovery failed");
-      const result = recoverModeSessionsBeforeDbReady(() => {
+      const result = await recoverModeSessionsBeforeDbReady(async () => {
         throw recoveryError;
       });
       expect(result).toEqual({ ok: false, error: recoveryError });
@@ -83,7 +77,7 @@ describe("mode session startup recovery", () => {
       setOverridesForTesting({ "session-groups": true });
       expect(isSessionGroupsEnabled()).toBe(false);
       setDbMigrating();
-      expect(recoverModeSessionsBeforeDbReady(() => 1)).toEqual({
+      expect(await recoverModeSessionsBeforeDbReady(async () => 1)).toEqual({
         ok: true,
         interruptedCount: 1,
       });
@@ -91,9 +85,9 @@ describe("mode session startup recovery", () => {
     },
   );
 
-  test("interrupts active records without fabricating an end time", () => {
-    const { options } = createStore();
-    beginConversationModeSession(
+  test("interrupts active records without fabricating an end time", async () => {
+    const { options } = await createStore();
+    await beginConversationModeSession(
       {
         id: "session-active",
         conversationId: "conv-123",
@@ -102,7 +96,7 @@ describe("mode session startup recovery", () => {
       },
       options,
     );
-    updateConversationModeSessionActivity(
+    await updateConversationModeSessionActivity(
       {
         id: "session-active",
         conversationId: "conv-123",
@@ -113,9 +107,9 @@ describe("mode session startup recovery", () => {
       options,
     );
 
-    expect(recoverActiveConversationModeSessions(options)).toBe(1);
+    expect(await recoverActiveConversationModeSessions(options)).toBe(1);
     expect(
-      getConversationModeSession("conv-123", "session-active", options),
+      await getConversationModeSession("conv-123", "session-active", options),
     ).toMatchObject({
       status: "interrupted",
       lastActivityAt: 140,
@@ -124,12 +118,12 @@ describe("mode session startup recovery", () => {
       endReason: "assistant_restarted",
       revision: 3,
     });
-    expect(recoverActiveConversationModeSessions(options)).toBe(0);
+    expect(await recoverActiveConversationModeSessions(options)).toBe(0);
   });
 
-  test("preserves terminal truth and prevents an old callback from reopening it", () => {
-    const { options } = createStore();
-    beginConversationModeSession(
+  test("preserves terminal truth and prevents an old callback from reopening it", async () => {
+    const { options } = await createStore();
+    await beginConversationModeSession(
       {
         id: "session-completed",
         conversationId: "conv-123",
@@ -138,7 +132,7 @@ describe("mode session startup recovery", () => {
       },
       options,
     );
-    finalizeConversationModeSession(
+    await finalizeConversationModeSession(
       {
         id: "session-completed",
         conversationId: "conv-123",
@@ -150,9 +144,9 @@ describe("mode session startup recovery", () => {
       options,
     );
 
-    expect(recoverActiveConversationModeSessions(options)).toBe(0);
+    expect(await recoverActiveConversationModeSessions(options)).toBe(0);
     expect(
-      updateConversationModeSessionActivity(
+      await updateConversationModeSessionActivity(
         {
           id: "session-completed",
           conversationId: "conv-123",
@@ -168,9 +162,9 @@ describe("mode session startup recovery", () => {
     });
   });
 
-  test("recovered work can only continue under a fresh session id", () => {
-    const { options } = createStore();
-    beginConversationModeSession(
+  test("recovered work can only continue under a fresh session id", async () => {
+    const { options } = await createStore();
+    await beginConversationModeSession(
       {
         id: "session-before-restart",
         conversationId: "conv-123",
@@ -179,22 +173,27 @@ describe("mode session startup recovery", () => {
       },
       options,
     );
-    recoverModeSessionsBeforeDbReady(() => {
+    await recoverModeSessionsBeforeDbReady(async () => {
       throw new Error("recovery unavailable");
     });
     expect(
-      getConversationModeSession("conv-123", "session-before-restart", options)
-        ?.status,
+      (
+        await getConversationModeSession(
+          "conv-123",
+          "session-before-restart",
+          options,
+        )
+      )?.status,
     ).toBe("active");
     setDbMigrating();
     expect(
-      recoverModeSessionsBeforeDbReady(() =>
+      await recoverModeSessionsBeforeDbReady(() =>
         recoverActiveConversationModeSessions(options),
       ),
     ).toEqual({ ok: true, interruptedCount: 1 });
 
     expect(
-      beginConversationModeSession(
+      await beginConversationModeSession(
         {
           id: "session-before-restart",
           conversationId: "conv-123",
@@ -205,7 +204,7 @@ describe("mode session startup recovery", () => {
       ),
     ).toMatchObject({ ok: false, reason: "already_exists" });
     expect(
-      beginConversationModeSession(
+      await beginConversationModeSession(
         {
           id: "session-after-restart",
           conversationId: "conv-123",

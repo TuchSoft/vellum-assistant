@@ -1,6 +1,14 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 mock.module("../heartbeat/heartbeat-service.js", () => ({
   HeartbeatService: {
@@ -64,6 +72,7 @@ import {
   createConversation,
 } from "../persistence/conversation-crud.js";
 import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import {
   clearLifecycleQuiesce,
@@ -91,19 +100,21 @@ import {
 } from "../schedule/schedule-store.js";
 import { getWorkspacePluginsDir } from "../util/platform.js";
 import { setOverridesForTesting } from "./feature-flag-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
-function clearTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM llm_usage_events");
-  db.run("DELETE FROM heartbeat_runs");
-  db.run("DELETE FROM cron_runs");
-  db.run("DELETE FROM cron_jobs");
-  db.run("DELETE FROM task_runs");
-  db.run("DELETE FROM tasks");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function clearTables(): Promise<void> {
+  const db = requireMainDb();
+  // `llm_usage_events` is still served by the SQLite usage store.
+  getDb().run("DELETE FROM llm_usage_events");
+  await db.run("DELETE FROM heartbeat_runs");
+  await db.run("DELETE FROM cron_runs");
+  await db.run("DELETE FROM cron_jobs");
+  await db.run("DELETE FROM task_runs");
+  await db.run("DELETE FROM tasks");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 function findRoute(endpoint: string, method: string): RouteDefinition {
@@ -126,12 +137,12 @@ function findHeartbeatRoute(endpoint: string, method: string): RouteDefinition {
   return route;
 }
 
-function recordUsageCostAt(
+async function recordUsageCostAt(
   conversationId: string,
   requestId: string,
   createdAt: number,
   estimatedCostUsd: number,
-) {
+): Promise<void> {
   const event = recordUsageEvent(
     {
       conversationId,
@@ -158,7 +169,7 @@ function recordUsageCostAt(
   );
 }
 
-function setScheduleRunWindow({
+async function setScheduleRunWindow({
   runId,
   startedAt,
   finishedAt,
@@ -168,16 +179,17 @@ function setScheduleRunWindow({
   startedAt: number;
   finishedAt: number | null;
   status?: "ok" | "error" | "running";
-}) {
-  rawRun(
-    "test:setCronRunWindow",
+}): Promise<void> {
+  await requireMainDb().run(
     "UPDATE cron_runs SET status = ?, started_at = ?, finished_at = ?, duration_ms = ?, created_at = ? WHERE id = ?",
-    status,
-    startedAt,
-    finishedAt,
-    finishedAt == null ? null : finishedAt - startedAt,
-    startedAt,
-    runId,
+    [
+      status,
+      startedAt,
+      finishedAt,
+      finishedAt == null ? null : finishedAt - startedAt,
+      startedAt,
+      runId,
+    ],
   );
 }
 
@@ -192,9 +204,9 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   throw new Error("Timed out waiting for schedule route event");
 }
 
-describe("schedule run-now trust propagation", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("schedule run-now trust propagation", () => {
+  beforeEach(async () => {
+    await clearTables();
     resetConversationMock();
   });
 
@@ -226,9 +238,9 @@ describe("schedule run-now trust propagation", () => {
 
 // ── GET /schedules — default defer exclusion ──────────────────────────────
 
-describe("GET /schedules — default defer exclusion", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("GET /schedules — default defer exclusion", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   test("excludes deferred wakes by default", async () => {
@@ -277,9 +289,9 @@ describe("GET /schedules — default defer exclusion", () => {
   });
 
   test("includes source conversation availability metadata", async () => {
-    const activeSource = createConversation("Active schedule source");
-    const archivedSource = createConversation("Archived schedule source");
-    expect(archiveConversation(archivedSource.id)).toBe(true);
+    const activeSource = await createConversation("Active schedule source");
+    const archivedSource = await createConversation("Archived schedule source");
+    expect(await archiveConversation(archivedSource.id)).toBe(true);
 
     await createSchedule({
       name: "Active source schedule",
@@ -488,13 +500,13 @@ describe("GET /schedules — default defer exclusion", () => {
 
 // ── GET /schedules/:id ────────────────────────────────────────────────────
 
-describe("GET /schedules/:id", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("GET /schedules/:id", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   test("returns the full schedule by ID", async () => {
-    const source = createConversation("Schedule source");
+    const source = await createConversation("Schedule source");
     const schedule = await createSchedule({
       name: "Single schedule",
       description: "Fetch me by ID",
@@ -564,7 +576,7 @@ describe("GET /schedules/:id", () => {
     expect(result.schedule.id).toBe(deferred.id);
   });
 
-  test("throws NotFoundError for a missing schedule", () => {
+  test("throws NotFoundError for a missing schedule", async () => {
     const route = findRoute("schedules/:id", "GET");
     expect(() =>
       route.handler({ pathParams: { id: "missing-schedule" } }),
@@ -577,9 +589,9 @@ describe("GET /schedules/:id", () => {
 
 // ── schedules/:id/runs limit handling ─────────────────────────────────────
 
-describe("schedule runs list — limit handling", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("schedule runs list — limit handling", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   test("returns with default limit when no param is provided", async () => {
@@ -691,9 +703,9 @@ describe("schedule runs list — limit handling", () => {
 
 // ── run metadata ──────────────────────────────────────────────────────────
 
-describe("schedule and heartbeat run metadata", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("schedule and heartbeat run metadata", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   test("schedule runs expose conversation availability and cost by run window", async () => {
@@ -704,28 +716,23 @@ describe("schedule and heartbeat run metadata", () => {
       syntax: "cron",
       reuseConversation: true,
     });
-    const conversation = createConversation({
+    const conversation = await createConversation({
       title: "Reused schedule conversation",
       source: "schedule",
       scheduleJobId: job.id,
     });
     const runId = await createScheduleRun(job.id, conversation.id);
     await completeScheduleRun(runId, { status: "ok" });
-    rawRun(
-      "test:setCronRunTimes",
+    await requireMainDb().run(
       "UPDATE cron_runs SET started_at = ?, finished_at = ?, duration_ms = ?, created_at = ? WHERE id = ?",
-      1000,
-      2000,
-      1000,
-      1000,
-      runId,
+      [1000, 2000, 1000, 1000, runId],
     );
 
-    recordUsageCostAt(conversation.id, "req-before-run", 500, 0.5);
-    recordUsageCostAt(conversation.id, "req-at-start", 1000, 0.01);
-    recordUsageCostAt(conversation.id, "req-inside-run", 1500, 0.02);
-    recordUsageCostAt(conversation.id, "req-at-finish", 2000, 0.03);
-    recordUsageCostAt(conversation.id, "req-after-run", 2500, 0.75);
+    await recordUsageCostAt(conversation.id, "req-before-run", 500, 0.5);
+    await recordUsageCostAt(conversation.id, "req-at-start", 1000, 0.01);
+    await recordUsageCostAt(conversation.id, "req-inside-run", 1500, 0.02);
+    await recordUsageCostAt(conversation.id, "req-at-finish", 2000, 0.03);
+    await recordUsageCostAt(conversation.id, "req-after-run", 2500, 0.75);
 
     const route = findRoute("schedules/:id/runs", "GET");
     const result = (await route.handler({ pathParams: { id: job.id } })) as {
@@ -751,17 +758,15 @@ describe("schedule and heartbeat run metadata", () => {
       message: "hi",
       syntax: "cron",
     });
-    const conversation = createConversation({
+    const conversation = await createConversation({
       title: "Archived schedule conversation",
       source: "schedule",
       scheduleJobId: job.id,
     });
     const archivedAt = 3000;
-    rawRun(
-      "test:archiveConversation",
+    await requireMainDb().run(
       "UPDATE conversations SET archived_at = ? WHERE id = ?",
-      archivedAt,
-      conversation.id,
+      [archivedAt, conversation.id],
     );
     const runId = await createScheduleRun(job.id, conversation.id);
     await completeScheduleRun(runId, { status: "ok" });
@@ -828,33 +833,26 @@ describe("schedule and heartbeat run metadata", () => {
     expect(scriptResult.runs[0].conversationArchivedAt).toBeNull();
   });
 
-  test("heartbeat runs expose conversation availability and cost from startedAt", () => {
-    const conversation = createConversation({
+  test("heartbeat runs expose conversation availability and cost from startedAt", async () => {
+    const conversation = await createConversation({
       title: "Heartbeat conversation",
       source: "heartbeat",
     });
-    const runId = insertPendingHeartbeatRun(900);
-    startHeartbeatRun(runId);
-    rawRun(
-      "test:setHeartbeatRunOk",
+    const runId = await insertPendingHeartbeatRun(900);
+    await startHeartbeatRun(runId);
+    await requireMainDb().run(
       "UPDATE heartbeat_runs SET status = 'ok', scheduled_for = ?, started_at = ?, finished_at = ?, duration_ms = ?, conversation_id = ?, created_at = ? WHERE id = ?",
-      900,
-      1000,
-      2000,
-      1000,
-      conversation.id,
-      900,
-      runId,
+      [900, 1000, 2000, 1000, conversation.id, 900, runId],
     );
 
-    recordUsageCostAt(conversation.id, "hb-before", 900, 0.4);
-    recordUsageCostAt(conversation.id, "hb-at-start", 1000, 0.01);
-    recordUsageCostAt(conversation.id, "hb-inside", 1500, 0.02);
-    recordUsageCostAt(conversation.id, "hb-at-finish", 2000, 0.03);
-    recordUsageCostAt(conversation.id, "hb-after", 2100, 0.5);
+    await recordUsageCostAt(conversation.id, "hb-before", 900, 0.4);
+    await recordUsageCostAt(conversation.id, "hb-at-start", 1000, 0.01);
+    await recordUsageCostAt(conversation.id, "hb-inside", 1500, 0.02);
+    await recordUsageCostAt(conversation.id, "hb-at-finish", 2000, 0.03);
+    await recordUsageCostAt(conversation.id, "hb-after", 2100, 0.5);
 
     const route = findHeartbeatRoute("heartbeat/runs", "GET");
-    const result = route.handler({}) as {
+    const result = (await route.handler({})) as {
       runs: Array<{
         conversationId: string | null;
         conversationExists: boolean;
@@ -870,55 +868,51 @@ describe("schedule and heartbeat run metadata", () => {
     expect(result.runs[0].estimatedCostUsd).toBeCloseTo(0.06);
   });
 
-  test("heartbeat run cost falls back to scheduledFor when startedAt is missing", () => {
-    const conversation = createConversation({
+  test("heartbeat run cost falls back to scheduledFor when startedAt is missing", async () => {
+    const conversation = await createConversation({
       title: "Heartbeat fallback conversation",
       source: "heartbeat",
     });
-    const runId = insertPendingHeartbeatRun(1000);
-    rawRun(
-      "test:setHeartbeatRunRunning",
+    const runId = await insertPendingHeartbeatRun(1000);
+    await requireMainDb().run(
       "UPDATE heartbeat_runs SET status = 'running', finished_at = NULL, conversation_id = ?, created_at = ? WHERE id = ?",
-      conversation.id,
-      1000,
-      runId,
+      [conversation.id, 1000, runId],
     );
 
-    recordUsageCostAt(conversation.id, "hb-fallback-before", 999, 0.4);
-    recordUsageCostAt(conversation.id, "hb-fallback-inside", 1500, 0.02);
+    await recordUsageCostAt(conversation.id, "hb-fallback-before", 999, 0.4);
+    await recordUsageCostAt(conversation.id, "hb-fallback-inside", 1500, 0.02);
 
     const route = findHeartbeatRoute("heartbeat/runs", "GET");
-    const result = route.handler({}) as {
+    const result = (await route.handler({})) as {
       runs: Array<{ estimatedCostUsd: number }>;
     };
 
     expect(result.runs[0].estimatedCostUsd).toBeCloseTo(0.02);
   });
 
-  test("heartbeat runs omit bookkeeping rows so timer resets don't render as runs", () => {
+  test("heartbeat runs omit bookkeeping rows so timer resets don't render as runs", async () => {
     const now = Date.now();
 
     // Timer resets (e.g. guardian messages) supersede the pending row and
     // schedule a new one an interval into the future.
     for (let i = 0; i < 3; i++) {
-      supersedePendingRun(insertPendingHeartbeatRun(now + 60 * 60 * 1000 + i));
+      await supersedePendingRun(
+        await insertPendingHeartbeatRun(now + 60 * 60 * 1000 + i),
+      );
     }
     // The next scheduled run, not yet fired.
-    insertPendingHeartbeatRun(now + 60 * 60 * 1000 + 10);
+    await insertPendingHeartbeatRun(now + 60 * 60 * 1000 + 10);
 
     // The one run that actually executed.
-    const okId = insertPendingHeartbeatRun(now - 1000);
-    startHeartbeatRun(okId);
-    rawRun(
-      "test:setHeartbeatRunOk",
+    const okId = await insertPendingHeartbeatRun(now - 1000);
+    await startHeartbeatRun(okId);
+    await requireMainDb().run(
       "UPDATE heartbeat_runs SET status = 'ok', finished_at = ?, duration_ms = ? WHERE id = ?",
-      now,
-      1000,
-      okId,
+      [now, 1000, okId],
     );
 
     const route = findHeartbeatRoute("heartbeat/runs", "GET");
-    const result = route.handler({}) as {
+    const result = (await route.handler({})) as {
       runs: Array<{ id: string; status: string }>;
     };
 
@@ -930,14 +924,14 @@ describe("schedule and heartbeat run metadata", () => {
 
 // ── schedules/usage-summary ───────────────────────────────────────────────
 
-describe("GET /schedules/usage-summary", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("GET /schedules/usage-summary", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
-  function getUsageSummary(queryParams: Record<string, string>) {
+  async function getUsageSummary(queryParams: Record<string, string>) {
     const route = findRoute("schedules/usage-summary", "GET");
-    return route.handler({ queryParams }) as {
+    return (await route.handler({ queryParams })) as {
       summaries: Array<{
         scheduleId: string;
         runCount: number;
@@ -947,8 +941,8 @@ describe("GET /schedules/usage-summary", () => {
     };
   }
 
-  test("returns zero rows when no schedules exist", () => {
-    const result = getUsageSummary({ from: "0", to: "5000" });
+  test("returns zero rows when no schedules exist", async () => {
+    const result = await getUsageSummary({ from: "0", to: "5000" });
 
     expect(result.summaries).toEqual([]);
   });
@@ -968,7 +962,7 @@ describe("GET /schedules/usage-summary", () => {
       enabled: false,
     });
 
-    const result = getUsageSummary({ from: "0", to: "5000" });
+    const result = await getUsageSummary({ from: "0", to: "5000" });
     const byScheduleId = new Map(
       result.summaries.map((summary) => [summary.scheduleId, summary]),
     );
@@ -1000,35 +994,35 @@ describe("GET /schedules/usage-summary", () => {
     const runningRun = await createScheduleRun(schedule.id, "conv-runs");
     const afterRun = await createScheduleRun(schedule.id, "conv-runs");
 
-    setScheduleRunWindow({
+    await setScheduleRunWindow({
       runId: beforeRun,
       startedAt: 999,
       finishedAt: 1100,
     });
-    setScheduleRunWindow({
+    await setScheduleRunWindow({
       runId: startRun,
       startedAt: 1000,
       finishedAt: 1200,
     });
-    setScheduleRunWindow({
+    await setScheduleRunWindow({
       runId: errorRun,
       startedAt: 1500,
       finishedAt: 1700,
       status: "error",
     });
-    setScheduleRunWindow({
+    await setScheduleRunWindow({
       runId: runningRun,
       startedAt: 2000,
       finishedAt: null,
       status: "running",
     });
-    setScheduleRunWindow({
+    await setScheduleRunWindow({
       runId: afterRun,
       startedAt: 2001,
       finishedAt: 2100,
     });
 
-    const result = getUsageSummary({ from: "1000", to: "2000" });
+    const result = await getUsageSummary({ from: "1000", to: "2000" });
 
     expect(result.summaries).toHaveLength(1);
     expect(result.summaries[0].runCount).toBe(3);
@@ -1042,7 +1036,7 @@ describe("GET /schedules/usage-summary", () => {
       syntax: "cron",
       reuseConversation: true,
     });
-    const conversation = createConversation({
+    const conversation = await createConversation({
       title: "Reused schedule conversation",
       source: "schedule",
       scheduleJobId: schedule.id,
@@ -1053,25 +1047,30 @@ describe("GET /schedules/usage-summary", () => {
       conversation.id,
     );
 
-    setScheduleRunWindow({
+    await setScheduleRunWindow({
       runId: includedRun,
       startedAt: 1000,
       finishedAt: 2000,
     });
-    setScheduleRunWindow({
+    await setScheduleRunWindow({
       runId: outsideRangeRun,
       startedAt: 3000,
       finishedAt: 3500,
     });
 
-    recordUsageCostAt(conversation.id, "summary-before-run", 900, 0.4);
-    recordUsageCostAt(conversation.id, "summary-at-start", 1000, 0.01);
-    recordUsageCostAt(conversation.id, "summary-inside-run", 1500, 0.02);
-    recordUsageCostAt(conversation.id, "summary-at-finish", 2000, 0.03);
-    recordUsageCostAt(conversation.id, "summary-between-runs", 2500, 0.5);
-    recordUsageCostAt(conversation.id, "summary-outside-range-run", 3200, 0.8);
+    await recordUsageCostAt(conversation.id, "summary-before-run", 900, 0.4);
+    await recordUsageCostAt(conversation.id, "summary-at-start", 1000, 0.01);
+    await recordUsageCostAt(conversation.id, "summary-inside-run", 1500, 0.02);
+    await recordUsageCostAt(conversation.id, "summary-at-finish", 2000, 0.03);
+    await recordUsageCostAt(conversation.id, "summary-between-runs", 2500, 0.5);
+    await recordUsageCostAt(
+      conversation.id,
+      "summary-outside-range-run",
+      3200,
+      0.8,
+    );
 
-    const result = getUsageSummary({ from: "1000", to: "2000" });
+    const result = await getUsageSummary({ from: "1000", to: "2000" });
 
     expect(result.summaries).toHaveLength(1);
     expect(result.summaries[0]).toMatchObject({
@@ -1082,13 +1081,17 @@ describe("GET /schedules/usage-summary", () => {
     expect(result.summaries[0].totalEstimatedCostUsd).toBeCloseTo(0.06);
   });
 
-  test("validates required numeric range parameters", () => {
-    expect(() => getUsageSummary({ to: "2000" })).toThrow(BadRequestError);
-    expect(() => getUsageSummary({ from: "1000" })).toThrow(BadRequestError);
-    expect(() => getUsageSummary({ from: "abc", to: "2000" })).toThrow(
+  test("validates required numeric range parameters", async () => {
+    await expect(getUsageSummary({ to: "2000" })).rejects.toThrow(
       BadRequestError,
     );
-    expect(() => getUsageSummary({ from: "3000", to: "2000" })).toThrow(
+    await expect(getUsageSummary({ from: "1000" })).rejects.toThrow(
+      BadRequestError,
+    );
+    await expect(getUsageSummary({ from: "abc", to: "2000" })).rejects.toThrow(
+      BadRequestError,
+    );
+    await expect(getUsageSummary({ from: "3000", to: "2000" })).rejects.toThrow(
       BadRequestError,
     );
   });
@@ -1096,9 +1099,9 @@ describe("GET /schedules/usage-summary", () => {
 
 // ── POST /schedules — create ─────────────────────────────────────────────
 
-describe("POST /schedules — create", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("POST /schedules — create", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   async function postCreate(body: Record<string, unknown>) {
@@ -1352,9 +1355,9 @@ describe("POST /schedules — create", () => {
 
 // ── PATCH /schedules/:id — description ───────────────────────────────────
 
-describe("PATCH /schedules/:id — description", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("PATCH /schedules/:id — description", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   test("updates authored descriptions", async () => {
@@ -1458,14 +1461,14 @@ describe("PATCH /schedules/:id — description", () => {
 
 // ── Plugin-sourced schedules ──────────────────────────────────────────────
 
-describe("plugin-sourced schedules over routes", () => {
+describePg("plugin-sourced schedules over routes", () => {
   const SOURCE_KEY = "plugin:example-plugin/daily-digest";
 
   // The store's enable path probes the declaration's on-disk presence and its
   // plugin's manifest before re-arming, so the suite keeps a declaration
   // directory and a valid package.json in place.
-  beforeEach(() => {
-    clearTables();
+  beforeEach(async () => {
+    await clearTables();
     const pluginDir = join(getWorkspacePluginsDir(), "example-plugin");
     rmSync(pluginDir, { recursive: true, force: true });
     const declarationDir = join(pluginDir, "schedules", "daily-digest");
@@ -1726,9 +1729,9 @@ describe("plugin-sourced schedules over routes", () => {
 
 // ── Wake mode support ─────────────────────────────────────────────────────
 
-describe("wake mode in schedule routes", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("wake mode in schedule routes", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   test("PATCH accepts 'wake' as a valid mode for an owner", async () => {
@@ -1780,9 +1783,9 @@ describe("wake mode in schedule routes", () => {
   });
 });
 
-describe("PATCH /schedules/:id — timeout override", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("PATCH /schedules/:id — timeout override", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   async function listOne(): Promise<{ id: string; timeoutMs: number | null }> {
@@ -1852,9 +1855,9 @@ describe("PATCH /schedules/:id — timeout override", () => {
 
 // ── GET /schedules with the inference_profile filter ────────────────────────────
 
-describe("GET /schedules - inference_profile filter", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("GET /schedules - inference_profile filter", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   test("narrows the list to schedules pinned to that profile", async () => {
@@ -1952,9 +1955,9 @@ describe("GET /schedules - inference_profile filter", () => {
 
 // ── POST /schedules/reassign-profile ─────────────────────────────────────
 
-describe("POST /schedules/reassign-profile", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("POST /schedules/reassign-profile", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   function reassignRoute(): RouteDefinition {
@@ -2123,11 +2126,9 @@ describe("POST /schedules/reassign-profile", () => {
     });
     // A profile deleted out from under its schedules leaves rows naming a key
     // that no longer resolves; the sweep must still be able to move them.
-    rawRun(
-      "test:setDanglingInferenceProfile",
+    await requireMainDb().run(
       "UPDATE cron_jobs SET inference_profile = ? WHERE id = ?",
-      "deleted-profile",
-      schedule.id,
+      ["deleted-profile", schedule.id],
     );
 
     const result = (await reassignRoute().handler({
@@ -2157,11 +2158,9 @@ describe("POST /schedules/reassign-profile", () => {
       message: "hi",
       syntax: "cron",
     });
-    rawRun(
-      "test:setDanglingInferenceProfile",
+    await requireMainDb().run(
       "UPDATE cron_jobs SET inference_profile = ? WHERE id = ?",
-      "deleted-profile",
-      dangling.id,
+      ["deleted-profile", dangling.id],
     );
     // Already on the target: counted as untouched, and its updatedAt proves it.
     await createSchedule({
@@ -2212,12 +2211,9 @@ describe("POST /schedules/reassign-profile", () => {
       nextRunAt: Date.now() + 60_000,
       inferenceProfile: "cost-optimized",
     });
-    rawRun(
-      "test:setTerminalScheduleStatuses",
+    await requireMainDb().run(
       "UPDATE cron_jobs SET status = CASE id WHEN ? THEN 'fired' ELSE 'cancelled' END WHERE id IN (?, ?)",
-      fired.id,
-      fired.id,
-      cancelled.id,
+      [fired.id, fired.id, cancelled.id],
     );
     const live = await createSchedule({
       name: "Still running",
@@ -2255,10 +2251,9 @@ describe("POST /schedules/reassign-profile", () => {
       nextRunAt: Date.now() - 60_000,
       inferenceProfile: "cost-optimized",
     });
-    rawRun(
-      "test:setFiredScheduleStatus",
+    await requireMainDb().run(
       "UPDATE cron_jobs SET status = 'fired' WHERE id = ?",
-      fired.id,
+      [fired.id],
     );
 
     // Deleting a profile has to clear every row naming it, including rows that

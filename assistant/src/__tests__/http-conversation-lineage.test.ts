@@ -1,4 +1,12 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 mock.module("../config/env.js", () => ({
   isHttpAuthDisabled: () => true,
@@ -17,13 +25,10 @@ import {
   createConversation,
   updateConversationTitle,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { rawRun } from "../persistence/raw-query.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { RuntimeHttpServer } from "../runtime/http-server.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 type ConversationSummary = {
   id: string;
@@ -37,13 +42,13 @@ type ConversationSummary = {
   };
 };
 
-describe("conversation lineage in HTTP reads", () => {
+describePg("conversation lineage in HTTP reads", () => {
   let server: RuntimeHttpServer | null = null;
 
   beforeEach(async () => {
     await server?.stop();
     server = null;
-    clearTables();
+    await clearTables();
   });
 
   afterAll(async () => {
@@ -52,7 +57,7 @@ describe("conversation lineage in HTTP reads", () => {
   });
 
   test("GET /v1/conversations returns forkParent for surviving parents", async () => {
-    const { child, parent } = seedForkedConversation();
+    const { child, parent } = await seedForkedConversation();
     await startServer();
 
     const response = await fetch(url("/conversations"));
@@ -77,7 +82,7 @@ describe("conversation lineage in HTTP reads", () => {
   });
 
   test("GET /v1/conversations/:id returns forkParent for surviving parents", async () => {
-    const { child, parent } = seedForkedConversation();
+    const { child, parent } = await seedForkedConversation();
     await startServer();
 
     const response = await fetch(url(`/conversations/${child.id}`));
@@ -99,8 +104,10 @@ describe("conversation lineage in HTTP reads", () => {
   });
 
   test("GET /v1/conversations/:id includes pin metadata when present", async () => {
-    const conversation = createConversation("Pinned conversation");
-    batchSetConversationPlacement([{ id: conversation.id, isPinned: true }]);
+    const conversation = await createConversation("Pinned conversation");
+    await batchSetConversationPlacement([
+      { id: conversation.id, isPinned: true },
+    ]);
     await startServer();
 
     const response = await fetch(url(`/conversations/${conversation.id}`));
@@ -118,10 +125,10 @@ describe("conversation lineage in HTTP reads", () => {
   });
 
   test("GET /v1/conversations/:id resolves the parent's current title at read time", async () => {
-    const { child, parent } = seedForkedConversation({
+    const { child, parent } = await seedForkedConversation({
       parentTitle: "Original parent title",
     });
-    updateConversationTitle(parent.id, "Renamed parent title", 0);
+    await updateConversationTitle(parent.id, "Renamed parent title", 0);
     await startServer();
 
     const response = await fetch(url(`/conversations/${child.id}`));
@@ -139,12 +146,10 @@ describe("conversation lineage in HTTP reads", () => {
   });
 
   test("deleted parents are omitted from list and detail responses", async () => {
-    const { child, parent } = seedForkedConversation();
-    rawRun(
-      "test:deleteParent",
-      "DELETE FROM conversations WHERE id = ?",
+    const { child, parent } = await seedForkedConversation();
+    await requireMainDb().run("DELETE FROM conversations WHERE id = ?", [
       parent.id,
-    );
+    ]);
     await startServer();
 
     const listResponse = await fetch(url("/conversations"));
@@ -166,31 +171,28 @@ describe("conversation lineage in HTTP reads", () => {
     expect(detailBody.conversation.forkParent).toBeUndefined();
   });
 
-  function clearTables(): void {
-    const db = getDb();
-    db.run("DELETE FROM conversation_assistant_attention_state");
-    db.run("DELETE FROM external_conversation_bindings");
-    db.run("DELETE FROM conversation_keys");
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversations");
+  async function clearTables(): Promise<void> {
+    const db = requireMainDb();
+    await db.run("DELETE FROM conversation_assistant_attention_state");
+    await db.run("DELETE FROM external_conversation_bindings");
+    await db.run("DELETE FROM conversation_keys");
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
   }
 
-  function seedForkedConversation(opts?: { parentTitle?: string }) {
-    const parent = createConversation(
+  async function seedForkedConversation(opts?: { parentTitle?: string }) {
+    const parent = await createConversation(
       opts?.parentTitle ?? "Parent conversation",
     );
-    const child = createConversation("Forked conversation");
+    const child = await createConversation("Forked conversation");
 
-    rawRun(
-      "test:setForkParent",
+    await requireMainDb().run(
       `
         UPDATE conversations
         SET fork_parent_conversation_id = ?, fork_parent_message_id = ?
         WHERE id = ?
       `,
-      parent.id,
-      "parent-msg-1",
-      child.id,
+      [parent.id, "parent-msg-1", child.id],
     );
 
     return { parent, child };

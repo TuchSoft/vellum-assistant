@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { actorAuthorProvenance } from "../daemon/message-provenance.js";
 import type { TrustContext } from "../daemon/trust-context-types.js";
@@ -9,10 +10,8 @@ import {
   parseMessageMetadata,
   provenanceFromTrustContext,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-
-await initializeDb();
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
 const ALICE: TrustContext = {
   sourceChannel: "slack",
@@ -25,17 +24,17 @@ async function persistWith(
   role: "user" | "assistant",
   metadata: Record<string, unknown>,
 ): Promise<ReturnType<typeof parseMessageMetadata>> {
-  const conversation = createConversation("provenance-contact-id");
+  const conversation = await createConversation("provenance-contact-id");
   const row = await addMessage(conversation.id, role, "hello", { metadata });
-  const stored = getMessageById(row.id, conversation.id);
+  const stored = await getMessageById(row.id, conversation.id);
   return parseMessageMetadata(stored?.metadata ?? null);
 }
 
-describe("message provenance contact id", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM messages`);
-    db.run(`DELETE FROM conversations`);
+describePg("message provenance contact id", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM messages`);
+    await db.run(`DELETE FROM conversations`);
   });
 
   test("a person's own row names them as its author", async () => {

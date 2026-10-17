@@ -9,7 +9,15 @@
  * Approval reply interception has parity and is covered by
  * conversation-routes-guardian-reply.test.ts and send-endpoint-busy.test.ts.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 // ────────────────────────────────────────────────────────────────────────────
 // Module mocks — must be set up before any imports that pull in the mocked
@@ -268,7 +276,7 @@ async function sendMessage(
             return conversationObj;
           },
           assistantEventHub: { publish: async () => {} } as any,
-          resolveAttachments: () => [],
+          resolveAttachments: async () => [],
         },
       }),
     makeRequest(content, extra, options.headers ?? {}),
@@ -749,7 +757,7 @@ describe("HTTP POST /v1/messages trust context from the gateway binding", () => 
           sendMessageDeps: {
             getOrCreateConversation: async () => conversation,
             assistantEventHub: { publish: async () => {} } as any,
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       requestAs(principalId, sourceChannel),
@@ -837,7 +845,7 @@ describe("HTTP POST /v1/messages trust context from the gateway binding", () => 
           sendMessageDeps: {
             getOrCreateConversation: async () => conversation,
             assistantEventHub: { publish: async () => {} } as any,
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       new Request("http://localhost/v1/messages", {
@@ -880,7 +888,7 @@ describe("HTTP POST /v1/messages trust context from the gateway binding", () => 
           sendMessageDeps: {
             getOrCreateConversation: async () => conversation,
             assistantEventHub: { publish: async () => {} } as any,
-            resolveAttachments: () => [],
+            resolveAttachments: async () => [],
           },
         }),
       new Request("http://localhost/v1/messages", {

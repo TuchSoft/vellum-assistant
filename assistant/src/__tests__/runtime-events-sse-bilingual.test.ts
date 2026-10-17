@@ -13,34 +13,35 @@
  * `?conversationKey=` happy/error path.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { getOrCreateConversation } from "../persistence/conversation-key-store.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { buildAssistantEvent } from "../runtime/assistant-event.js";
 import { AssistantEventHub } from "../runtime/assistant-event-hub.js";
 import { BadRequestError, NotFoundError } from "../runtime/routes/errors.js";
 import { handleSubscribeAssistantEvents } from "../runtime/routes/events-routes.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-describe("GET /v1/events — bilingual scope query params", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM conversation_keys");
-    db.run("DELETE FROM conversations");
+describePg("GET /v1/events — bilingual scope query params", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM conversation_keys");
+    await db.run("DELETE FROM conversations");
   });
 
   test("?conversationId=<existing-id> scopes the stream to that conversation", async () => {
     // Materialise a conversation via the key path, then subscribe to it
     // directly by its internal id.
-    const { conversationId } = getOrCreateConversation("sse-id-scope-source");
+    const { conversationId } = await getOrCreateConversation(
+      "sse-id-scope-source",
+    );
 
     const ac = new AbortController();
     const testHub = new AssistantEventHub();
 
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationId },
         abortSignal: ac.signal,
@@ -67,27 +68,28 @@ describe("GET /v1/events — bilingual scope query params", () => {
     expect(frame).toContain(`"conversationId":"${conversationId}"`);
   });
 
-  test("?conversationId=<non-existent-id> throws NotFoundError", () => {
-    expect(() =>
+  test("?conversationId=<non-existent-id> throws NotFoundError", async () => {
+    await expect(
       handleSubscribeAssistantEvents({
         queryParams: { conversationId: "does-not-exist" },
         abortSignal: new AbortController().signal,
       }),
-    ).toThrow(NotFoundError);
+    ).rejects.toThrow(NotFoundError);
   });
 
   test("?conversationId is honored and ?conversationKey is ignored when both are present", async () => {
     // Materialise two distinct conversations: one we'll subscribe to by id,
     // one we'll publish to via the ignored key.
-    const { conversationId: idConv } = getOrCreateConversation("sse-id-wins");
+    const { conversationId: idConv } =
+      await getOrCreateConversation("sse-id-wins");
     const { conversationId: keyConv } =
-      getOrCreateConversation("sse-key-ignored");
+      await getOrCreateConversation("sse-key-ignored");
     expect(idConv).not.toBe(keyConv);
 
     const ac = new AbortController();
     const testHub = new AssistantEventHub();
 
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         queryParams: {
           conversationId: idConv,
@@ -118,21 +120,21 @@ describe("GET /v1/events — bilingual scope query params", () => {
     expect(frame).not.toContain(`"conversationId":"${keyConv}"`);
   });
 
-  test("empty conversationId is rejected with BadRequestError", () => {
-    expect(() =>
+  test("empty conversationId is rejected with BadRequestError", async () => {
+    await expect(
       handleSubscribeAssistantEvents({
         queryParams: { conversationId: "" },
         abortSignal: new AbortController().signal,
       }),
-    ).toThrow(BadRequestError);
+    ).rejects.toThrow(BadRequestError);
   });
 
-  test("empty conversationKey is still rejected (legacy parity)", () => {
-    expect(() =>
+  test("empty conversationKey is still rejected (legacy parity)", async () => {
+    await expect(
       handleSubscribeAssistantEvents({
         queryParams: { conversationKey: "" },
         abortSignal: new AbortController().signal,
       }),
-    ).toThrow(BadRequestError);
+    ).rejects.toThrow(BadRequestError);
   });
 });

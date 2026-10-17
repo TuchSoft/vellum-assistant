@@ -2,7 +2,6 @@ import {
   afterAll,
   afterEach,
   beforeEach,
-  describe,
   expect,
   mock,
   setDefaultTimeout,
@@ -33,11 +32,8 @@ import {
 } from "../persistence/attachments-store.js";
 import * as conversationStore from "../persistence/conversation-crud.js";
 import { getOrCreateConversation } from "../persistence/conversation-key-store.js";
-import { getDb } from "../persistence/db-connection.js";
 import { requireMainDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
 import * as deliveryChannels from "../persistence/delivery-channels.js";
-import { resetTestTables } from "../persistence/raw-query.js";
 import { RuntimeHttpServer } from "../runtime/http-server.js";
 import * as pendingInteractions from "../runtime/pending-interactions.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
@@ -46,6 +42,7 @@ import {
   seedContactChannel,
 } from "./helpers/channel-test-adapter.js";
 import { setConfig } from "./helpers/set-config.js";
+import { describePg } from "./pg-test-db.js";
 
 // Tests call addMessage without skipIndexing — keep memory indexing off so no
 // background memory work runs against the test DB.
@@ -54,8 +51,6 @@ import { setConfig } from "./helpers/set-config.js";
 setDefaultTimeout(30_000);
 
 setConfig("memory", { enabled: false, v2: { enabled: false } });
-
-await initializeDb();
 
 afterAll(() => {
   resetDbForTesting();
@@ -66,18 +61,11 @@ afterAll(() => {
 // verified against the signing key, which these tests do not set up.
 const AUTH_HEADERS: Record<string, string> = {};
 
-describe("Runtime attachment metadata", () => {
+describePg("Runtime attachment metadata", () => {
   let server: RuntimeHttpServer;
   let port: number;
 
   beforeEach(async () => {
-    const db = getDb();
-    db.run("DELETE FROM message_attachments");
-    db.run("DELETE FROM attachments");
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversations");
-    db.run("DELETE FROM conversation_keys");
-
     await requireMainDb().exec(
       [
         "DELETE FROM message_attachments",
@@ -106,7 +94,7 @@ describe("Runtime attachment metadata", () => {
     const conversationKey = "test-conv-1";
 
     // Set up conversation and messages using "self" as the assistantId
-    const mapping = getOrCreateConversation(conversationKey);
+    const mapping = await getOrCreateConversation(conversationKey);
     await conversationStore.addMessage(mapping.conversationId, "user", "Hello");
     const assistantMsg = await conversationStore.addMessage(
       mapping.conversationId,
@@ -116,7 +104,7 @@ describe("Runtime attachment metadata", () => {
 
     // Upload and link an attachment using "self" as the assistantId
     const stored = await uploadAttachment("chart.png", "image/png", "iVBORw==");
-    linkAttachmentToMessage(assistantMsg.id, stored.id, 0);
+    await linkAttachmentToMessage(assistantMsg.id, stored.id, 0);
 
     const res = await fetch(
       `http://127.0.0.1:${port}/v1/messages?conversationKey=${conversationKey}`,
@@ -157,7 +145,7 @@ describe("Runtime attachment metadata", () => {
   test("GET /messages returns empty attachments when none linked", async () => {
     const conversationKey = "test-conv-2";
 
-    const mapping = getOrCreateConversation(conversationKey);
+    const mapping = await getOrCreateConversation(conversationKey);
     await conversationStore.addMessage(mapping.conversationId, "user", "Hello");
     await conversationStore.addMessage(
       mapping.conversationId,
@@ -240,23 +228,12 @@ describe("Runtime attachment metadata", () => {
   });
 });
 
-describe("WhatsApp channel ingress attachment resolution", () => {
+describePg("WhatsApp channel ingress attachment resolution", () => {
   const WHATSAPP_USER_ID = "whatsapp-user-123";
   let ingressServer: RuntimeHttpServer;
   let ingressPort: number;
 
   async function resetIngressTables(): Promise<void> {
-    resetTestTables(
-      "message_attachments",
-      "attachments",
-      "channel_inbound_events",
-      "message_runs",
-      "messages",
-      "conversations",
-      "conversation_keys",
-      "contact_channels",
-      "contacts",
-    );
     await requireMainDb().exec(
       [
         "DELETE FROM message_attachments",

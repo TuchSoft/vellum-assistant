@@ -4,7 +4,8 @@
  * Covers: setInferenceProfileSession, closeInferenceProfileSession,
  * and listInferenceProfileSessionsWithRemaining.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 // ---------------------------------------------------------------------------
 // Mocks — must be declared before importing the module under test
@@ -67,9 +68,11 @@ import {
   getConversation,
 } from "../persistence/conversation-crud.js";
 import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { providerConnections } from "../persistence/schema/inference.js";
 import { setConfig } from "./helpers/set-config.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
@@ -96,10 +99,10 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function resetDb() {
-  const db = getDb();
-  db.run(`DELETE FROM messages`);
-  db.run(`DELETE FROM conversations`);
+async function resetDb(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM messages`);
+  await db.run(`DELETE FROM conversations`);
 }
 
 /**
@@ -137,15 +140,15 @@ function makeLiveConversationStub(conversationId: string): Conversation {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("setInferenceProfileSession", () => {
-  beforeEach(() => {
-    resetDb();
+describePg("setInferenceProfileSession", () => {
+  beforeEach(async () => {
+    await resetDb();
     publishMock.mockClear();
     broadcastMessageMock.mockClear();
   });
 
   test("open with ttlSeconds=600 — returns UUID sessionId and expiresAt ≈ now + 600_000", async () => {
-    const conv = createConversation("sess-handler-ttl-600");
+    const conv = await createConversation("sess-handler-ttl-600");
     const before = Date.now();
 
     const result = await setInferenceProfileSession({
@@ -170,7 +173,7 @@ describe("setInferenceProfileSession", () => {
   });
 
   test("open without ttlSeconds — sessionId=null, expiresAt=null (sticky)", async () => {
-    const conv = createConversation("sess-handler-no-ttl");
+    const conv = await createConversation("sess-handler-no-ttl");
 
     const result = await setInferenceProfileSession({
       conversationId: conv.id,
@@ -186,7 +189,7 @@ describe("setInferenceProfileSession", () => {
   });
 
   test("open with ttlSeconds=99_999_999 — clamped to maxTtlSeconds (43200)", async () => {
-    const conv = createConversation("sess-handler-clamp");
+    const conv = await createConversation("sess-handler-clamp");
     const before = Date.now();
 
     const result = await setInferenceProfileSession({
@@ -204,7 +207,7 @@ describe("setInferenceProfileSession", () => {
   });
 
   test("open over active session — replaced carries prior session info", async () => {
-    const conv = createConversation("sess-handler-replace");
+    const conv = await createConversation("sess-handler-replace");
 
     // Open first session
     const first = await setInferenceProfileSession({
@@ -230,7 +233,7 @@ describe("setInferenceProfileSession", () => {
 
   test("mirrors the session state onto the live in-memory Conversation on open", async () => {
     // GIVEN a conversation with a live in-memory instance registered for it
-    const conv = createConversation("sess-handler-live-sync-open");
+    const conv = await createConversation("sess-handler-live-sync-open");
     const liveConversation = makeLiveConversationStub(conv.id);
     setConversation(conv.id, liveConversation);
 
@@ -252,7 +255,7 @@ describe("setInferenceProfileSession", () => {
 
   test("clears the live in-memory Conversation state on clear", async () => {
     // GIVEN a conversation with a live in-memory instance registered for it
-    const conv = createConversation("sess-handler-live-sync-clear");
+    const conv = await createConversation("sess-handler-live-sync-clear");
     const liveConversation = makeLiveConversationStub(conv.id);
     setConversation(conv.id, liveConversation);
 
@@ -279,7 +282,7 @@ describe("setInferenceProfileSession", () => {
   });
 
   test("open with profile=null — all three cleared; replaced set if prior existed", async () => {
-    const conv = createConversation("sess-handler-clear");
+    const conv = await createConversation("sess-handler-clear");
 
     // Set up an active session first
     const opened = await setInferenceProfileSession({
@@ -302,17 +305,17 @@ describe("setInferenceProfileSession", () => {
     expect(cleared.replaced!.sessionId).toBe(opened.sessionId);
 
     // DB should reflect cleared state
-    const row = getConversation(conv.id);
+    const row = await getConversation(conv.id);
     expect(row?.inferenceProfile).toBeNull();
     expect(row?.inferenceProfileSessionId).toBeNull();
     expect(row?.inferenceProfileExpiresAt).toBeNull();
   });
 
   test("clear is idempotent — repeated clears on already-empty row do not write or publish", async () => {
-    const conv = createConversation("sess-handler-clear-noop");
+    const conv = await createConversation("sess-handler-clear-noop");
 
     // Sanity: the freshly-created row is fully clear.
-    const before = getConversation(conv.id);
+    const before = await getConversation(conv.id);
     expect(before?.inferenceProfile).toBeNull();
     expect(before?.inferenceProfileSessionId).toBeNull();
     expect(before?.inferenceProfileExpiresAt).toBeNull();
@@ -336,12 +339,12 @@ describe("setInferenceProfileSession", () => {
     expect(broadcastMessageMock).not.toHaveBeenCalled();
 
     // No DB write occurred — `updatedAt` is unchanged.
-    const after = getConversation(conv.id);
+    const after = await getConversation(conv.id);
     expect(after?.updatedAt).toBe(updatedAtBefore as number);
   });
 
   test("clear after sticky non-session override — still writes and publishes", async () => {
-    const conv = createConversation("sess-handler-clear-sticky");
+    const conv = await createConversation("sess-handler-clear-sticky");
 
     // Open a sticky (no-TTL) override — sessionId stays null, expiresAt stays null,
     // but inferenceProfile is set. This is NOT the noop case.
@@ -365,12 +368,12 @@ describe("setInferenceProfileSession", () => {
 
     // The clear DID happen — DB row reflects it and legacy+sync events were published.
     expect(broadcastMessageMock).toHaveBeenCalledTimes(2);
-    const row = getConversation(conv.id);
+    const row = await getConversation(conv.id);
     expect(row?.inferenceProfile).toBeNull();
   });
 
   test("open with unknown profile — throws BadRequestError", async () => {
-    const conv = createConversation("sess-handler-unknown-profile");
+    const conv = await createConversation("sess-handler-unknown-profile");
 
     await expect(
       setInferenceProfileSession({
@@ -384,7 +387,7 @@ describe("setInferenceProfileSession", () => {
   });
 
   test("open with a non-text catalog model — refuses the pin", async () => {
-    const conv = createConversation("sess-handler-jev-profile");
+    const conv = await createConversation("sess-handler-jev-profile");
     setConfig("llm", {
       profiles: {
         jev: {
@@ -403,14 +406,14 @@ describe("setInferenceProfileSession", () => {
       await expect(promise).rejects.toThrow(
         /structured answers rather than chat text/,
       );
-      expect(getConversation(conv.id)?.inferenceProfile).toBeNull();
+      expect((await getConversation(conv.id))?.inferenceProfile).toBeNull();
     } finally {
       setConfig("llm", {});
     }
   });
 
   test("open with an unavailable profile — refuses the pin and names the fix", async () => {
-    const conv = createConversation("sess-handler-unavailable-profile");
+    const conv = await createConversation("sess-handler-unavailable-profile");
     managedProxyEnabled = false;
     try {
       const promise = setInferenceProfileSession({
@@ -423,14 +426,14 @@ describe("setInferenceProfileSession", () => {
         /assistant inference send --profile balanced "Reply with OK"/,
       );
       // Nothing was pinned.
-      expect(getConversation(conv.id)?.inferenceProfile).toBeNull();
+      expect((await getConversation(conv.id))?.inferenceProfile).toBeNull();
     } finally {
       managedProxyEnabled = true;
     }
   });
 
   test("BYOK default provider — pins a managed preset without a Vellum sign-in", async () => {
-    const conv = createConversation("sess-handler-byok-preset");
+    const conv = await createConversation("sess-handler-byok-preset");
     // Signed out of Vellum, but llm.defaultProvider points the managed
     // presets at the user's own anthropic connection — the pin must judge
     // that body, not the Vellum column.
@@ -466,7 +469,7 @@ describe("setInferenceProfileSession", () => {
   });
 
   test("open with ttlSeconds=null — expiresAt=null, sessionId=null, profile kept", async () => {
-    const conv = createConversation("sess-handler-null-ttl");
+    const conv = await createConversation("sess-handler-null-ttl");
 
     const result = await setInferenceProfileSession({
       conversationId: conv.id,
@@ -491,7 +494,7 @@ describe("setInferenceProfileSession", () => {
   });
 
   test("caller-supplied sessionId is used when ttlSeconds is provided", async () => {
-    const conv = createConversation("sess-handler-caller-session-id");
+    const conv = await createConversation("sess-handler-caller-session-id");
     const callerSessionId = "my-custom-session-id";
 
     const result = await setInferenceProfileSession({
@@ -505,13 +508,13 @@ describe("setInferenceProfileSession", () => {
   });
 });
 
-describe("closeInferenceProfileSession", () => {
-  beforeEach(() => {
-    resetDb();
+describePg("closeInferenceProfileSession", () => {
+  beforeEach(async () => {
+    await resetDb();
   });
 
   test("close — returns closed with profile and sessionId, noop=false", async () => {
-    const conv = createConversation("sess-handler-close");
+    const conv = await createConversation("sess-handler-close");
 
     const opened = await setInferenceProfileSession({
       conversationId: conv.id,
@@ -529,7 +532,7 @@ describe("closeInferenceProfileSession", () => {
   });
 
   test("close with no active session — closed=null, noop=true", async () => {
-    const conv = createConversation("sess-handler-close-noop");
+    const conv = await createConversation("sess-handler-close-noop");
 
     const result = await closeInferenceProfileSession(conv.id);
 
@@ -539,7 +542,7 @@ describe("closeInferenceProfileSession", () => {
   });
 
   test("close with sticky override (no sessionId) — noop=true, sticky override preserved", async () => {
-    const conv = createConversation("sess-handler-close-sticky");
+    const conv = await createConversation("sess-handler-close-sticky");
 
     // Set a sticky override (no ttlSeconds → sessionId=null)
     await setInferenceProfileSession({
@@ -547,24 +550,26 @@ describe("closeInferenceProfileSession", () => {
       profile: "balanced",
     });
 
-    expect(getConversation(conv.id)?.inferenceProfileSessionId).toBeNull();
+    expect(
+      (await getConversation(conv.id))?.inferenceProfileSessionId,
+    ).toBeNull();
 
     const result = await closeInferenceProfileSession(conv.id);
 
     expect(result.noop).toBe(true);
     expect(result.closed).toBeNull();
     // Sticky override must remain untouched
-    expect(getConversation(conv.id)?.inferenceProfile).toBe("balanced");
+    expect((await getConversation(conv.id))?.inferenceProfile).toBe("balanced");
   });
 });
 
-describe("listInferenceProfileSessionsWithRemaining", () => {
-  beforeEach(() => {
-    resetDb();
+describePg("listInferenceProfileSessionsWithRemaining", () => {
+  beforeEach(async () => {
+    await resetDb();
   });
 
   test("lists active sessions with remainingSeconds > 0", async () => {
-    const conv = createConversation("sess-handler-list");
+    const conv = await createConversation("sess-handler-list");
 
     await setInferenceProfileSession({
       conversationId: conv.id,
@@ -572,7 +577,7 @@ describe("listInferenceProfileSessionsWithRemaining", () => {
       ttlSeconds: 600,
     });
 
-    const sessions = listInferenceProfileSessionsWithRemaining(conv.id);
+    const sessions = await listInferenceProfileSessionsWithRemaining(conv.id);
 
     expect(sessions).toHaveLength(1);
     expect(sessions[0].conversationId).toBe(conv.id);
@@ -582,9 +587,9 @@ describe("listInferenceProfileSessionsWithRemaining", () => {
   });
 
   test("returns empty list when no active session exists", async () => {
-    const conv = createConversation("sess-handler-list-empty");
+    const conv = await createConversation("sess-handler-list-empty");
 
-    const sessions = listInferenceProfileSessionsWithRemaining(conv.id);
+    const sessions = await listInferenceProfileSessionsWithRemaining(conv.id);
 
     expect(sessions).toHaveLength(0);
   });

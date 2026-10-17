@@ -10,18 +10,23 @@
  *   - dedup against live events that race in mid-replay
  *   - malformed `lastSeenSeq` query param rejected with 400
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 import { getOrCreateConversation } from "../persistence/conversation-key-store.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { buildAssistantEvent } from "../runtime/assistant-event.js";
 import {
   _resetStreamStateForTesting,
   stampAndBuffer,
 } from "../runtime/assistant-stream-state.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 const decoder = new TextDecoder();
 
@@ -33,11 +38,11 @@ async function readFrame(
   return decoder.decode(value);
 }
 
-describe("SSE reconnect replay (B7.2)", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM conversation_keys");
-    db.run("DELETE FROM conversations");
+describePg("SSE reconnect replay (B7.2)", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM conversation_keys");
+    await db.run("DELETE FROM conversations");
     _resetStreamStateForTesting();
   });
 
@@ -46,7 +51,8 @@ describe("SSE reconnect replay (B7.2)", () => {
   });
 
   test("replays buffered events with seq > lastSeenSeq before the first heartbeat", async () => {
-    const { conversationId } = getOrCreateConversation("reconnect-replay");
+    const { conversationId } =
+      await getOrCreateConversation("reconnect-replay");
 
     // Stamp three events into the ring as if they had already been
     // broadcast prior to the client's reconnect. Seqs start at 1, so
@@ -63,7 +69,7 @@ describe("SSE reconnect replay (B7.2)", () => {
     const ac = new AbortController();
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
-    const stream = handleSubscribeAssistantEvents({
+    const stream = await handleSubscribeAssistantEvents({
       queryParams: {
         conversationKey: "reconnect-replay",
         lastSeenSeq: "1",
@@ -95,8 +101,10 @@ describe("SSE reconnect replay (B7.2)", () => {
     // one global counter, a single `lastSeenSeq` resumes the whole
     // stream -- replay must return the missed events from BOTH
     // conversations, interleaved in global seq order.
-    const { conversationId: convA } = getOrCreateConversation("multi-conv-a");
-    const { conversationId: convB } = getOrCreateConversation("multi-conv-b");
+    const { conversationId: convA } =
+      await getOrCreateConversation("multi-conv-a");
+    const { conversationId: convB } =
+      await getOrCreateConversation("multi-conv-b");
 
     stampAndBuffer(buildAssistantEvent({ type: "message_complete" }, convA)); // seq 1
     stampAndBuffer(buildAssistantEvent({ type: "message_complete" }, convB)); // seq 2
@@ -107,7 +115,7 @@ describe("SSE reconnect replay (B7.2)", () => {
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
     // No conversation scope -> unfiltered connection.
-    const stream = handleSubscribeAssistantEvents({
+    const stream = await handleSubscribeAssistantEvents({
       queryParams: { lastSeenSeq: "1" },
       abortSignal: ac.signal,
     });
@@ -139,7 +147,7 @@ describe("SSE reconnect replay (B7.2)", () => {
     // wire -- the connection just goes live. The client is expected to
     // detect the gap from the seq jump on its first live event and
     // refetch via the existing messages API.
-    const { conversationId } = getOrCreateConversation(
+    const { conversationId } = await getOrCreateConversation(
       "reconnect-out-of-window",
     );
 
@@ -160,7 +168,7 @@ describe("SSE reconnect replay (B7.2)", () => {
     const ac = new AbortController();
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
-    const stream = handleSubscribeAssistantEvents({
+    const stream = await handleSubscribeAssistantEvents({
       queryParams: {
         conversationKey: "reconnect-out-of-window",
         lastSeenSeq: "0",
@@ -179,7 +187,8 @@ describe("SSE reconnect replay (B7.2)", () => {
   });
 
   test("omitting lastSeenSeq skips replay entirely (legacy live-only behavior)", async () => {
-    const { conversationId } = getOrCreateConversation("reconnect-noparam");
+    const { conversationId } =
+      await getOrCreateConversation("reconnect-noparam");
 
     // Pre-fill the ring -- without the cursor, these MUST NOT be replayed.
     stampAndBuffer(
@@ -192,7 +201,7 @@ describe("SSE reconnect replay (B7.2)", () => {
     const ac = new AbortController();
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
-    const stream = handleSubscribeAssistantEvents({
+    const stream = await handleSubscribeAssistantEvents({
       queryParams: { conversationKey: "reconnect-noparam" },
       abortSignal: ac.signal,
     });
@@ -207,7 +216,7 @@ describe("SSE reconnect replay (B7.2)", () => {
   });
 
   test("dedupes a buffered event when it also races through the live callback", async () => {
-    const { conversationId } = getOrCreateConversation("reconnect-dedup");
+    const { conversationId } = await getOrCreateConversation("reconnect-dedup");
 
     // Stamp two events. Seqs start at 1, so eventA=1 and eventB=2.
     const eventA = buildAssistantEvent(
@@ -227,7 +236,7 @@ describe("SSE reconnect replay (B7.2)", () => {
     const testHub = new AssistantEventHub();
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         queryParams: {
           conversationKey: "reconnect-dedup",
@@ -273,7 +282,8 @@ describe("SSE reconnect replay (B7.2)", () => {
     // does NOT match capability targeting (matchesTargeting requires
     // type=client + matching capability), so the replay filters out
     // seq 2. The subscriber receives seq 1 and 3.
-    const { conversationId } = getOrCreateConversation("replay-targeting");
+    const { conversationId } =
+      await getOrCreateConversation("replay-targeting");
 
     stampAndBuffer(
       buildAssistantEvent({ type: "message_complete" }, conversationId),
@@ -291,7 +301,7 @@ describe("SSE reconnect replay (B7.2)", () => {
     const ac = new AbortController();
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
-    const stream = handleSubscribeAssistantEvents({
+    const stream = await handleSubscribeAssistantEvents({
       queryParams: {
         conversationKey: "replay-targeting",
         lastSeenSeq: "0",
@@ -316,7 +326,7 @@ describe("SSE reconnect replay (B7.2)", () => {
   });
 
   test("live callback stamps seq on conversation-scoped events", async () => {
-    const { conversationId } = getOrCreateConversation("live-seq");
+    const { conversationId } = await getOrCreateConversation("live-seq");
 
     const ac = new AbortController();
     const { AssistantEventHub } =
@@ -324,7 +334,7 @@ describe("SSE reconnect replay (B7.2)", () => {
     const testHub = new AssistantEventHub();
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationKey: "live-seq" },
         abortSignal: ac.signal,
@@ -364,39 +374,39 @@ describe("SSE reconnect replay (B7.2)", () => {
   test("rejects empty lastSeenSeq", async () => {
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
-    expect(() =>
+    await expect(
       handleSubscribeAssistantEvents({
         queryParams: {
           conversationKey: "reconnect-empty",
           lastSeenSeq: "",
         },
       }),
-    ).toThrow(/lastSeenSeq must not be empty/);
+    ).rejects.toThrow(/lastSeenSeq must not be empty/);
   });
 
   test("rejects non-integer lastSeenSeq", async () => {
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
-    expect(() =>
+    await expect(
       handleSubscribeAssistantEvents({
         queryParams: {
           conversationKey: "reconnect-float",
           lastSeenSeq: "1.5",
         },
       }),
-    ).toThrow(/non-negative integer/);
+    ).rejects.toThrow(/non-negative integer/);
   });
 
   test("rejects negative lastSeenSeq", async () => {
     const { handleSubscribeAssistantEvents } =
       await import("../runtime/routes/events-routes.js");
-    expect(() =>
+    await expect(
       handleSubscribeAssistantEvents({
         queryParams: {
           conversationKey: "reconnect-neg",
           lastSeenSeq: "-1",
         },
       }),
-    ).toThrow(/non-negative integer/);
+    ).rejects.toThrow(/non-negative integer/);
   });
 });

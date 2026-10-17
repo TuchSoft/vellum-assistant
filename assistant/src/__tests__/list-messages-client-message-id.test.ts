@@ -6,7 +6,8 @@
  * the confirmed server row by identity instead of matching message text.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { MESSAGE_KEYS } from "../i18n/index.js";
 import { setConfig } from "./helpers/set-config.js";
@@ -18,16 +19,14 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 interface MessagePayload {
@@ -36,12 +35,14 @@ interface MessagePayload {
   clientMessageId?: string;
 }
 
-describe("handleListMessages clientMessageId", () => {
-  beforeEach(resetTables);
+describePg("handleListMessages clientMessageId", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("echoes the persisted clientMessageId onto the user row", async () => {
     // GIVEN a user message persisted with a client-generated idempotency nonce
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -62,7 +63,7 @@ describe("handleListMessages clientMessageId", () => {
   });
 
   test("localizes persisted assistant keys without rewriting legacy text", async () => {
-    const localizedConv = createConversation();
+    const localizedConv = await createConversation();
     await addMessage(
       localizedConv.id,
       "assistant",
@@ -84,7 +85,7 @@ describe("handleListMessages clientMessageId", () => {
       "Me detuve después de varias llamadas de herramienta con formato incorrecto para evitar que esta conversación creciera indefinidamente. Inténtalo de nuevo o cambia de modelo si el problema continúa.",
     ]);
 
-    const legacyConv = createConversation();
+    const legacyConv = await createConversation();
     const legacy =
       "I stopped after repeated malformed tool calls to keep this conversation from growing indefinitely. Please try again, or switch models if the problem continues.";
     await addMessage(
@@ -104,7 +105,7 @@ describe("handleListMessages clientMessageId", () => {
 
   test("omits clientMessageId when the row was persisted without one", async () => {
     // GIVEN a user message persisted without a client nonce (e.g. a channel send)
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",

@@ -8,7 +8,8 @@
  * web can rebuild a terminal inline card after a daemon restart.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -20,18 +21,16 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 interface ProjectedMessage {
@@ -40,11 +39,13 @@ interface ProjectedMessage {
   backgroundToolCompletion?: Record<string, unknown>;
 }
 
-describe("handleListMessages background-tool completion projection", () => {
-  beforeEach(resetTables);
+describePg("handleListMessages background-tool completion projection", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("projects backgroundToolCompletion from the wake row metadata", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -103,7 +104,7 @@ describe("handleListMessages background-tool completion projection", () => {
   });
 
   test("omits backgroundToolCompletion when the row carries no completion metadata", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",

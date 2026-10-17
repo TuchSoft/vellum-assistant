@@ -9,7 +9,14 @@
  *   decode HEIF); undecodable content falls back to the stored bytes
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -26,20 +33,17 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { rawRun } from "../persistence/raw-query.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
 import { fakeHeifHeaderBytes, makeHeicFixtureBytes } from "./heic-fixture.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 function createTestArgs(conversationId: string) {
@@ -61,27 +65,28 @@ interface AttachmentPayload {
  * normalization — simulates rows stored before normalization existed (or
  * where conversion was unavailable).
  */
-function insertLegacyAttachmentRow(
+async function insertLegacyAttachmentRow(
   messageId: string,
   filename: string,
   mimeType: string,
   dataBase64: string,
   kind = "image",
-): string {
+): Promise<string> {
   const id = randomUUID();
-  rawRun(
-    "test:insertAttachment",
+  await requireMainDb().run(
     `INSERT INTO attachments (id, original_filename, mime_type, size_bytes, kind, data_base64, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    id,
-    filename,
-    mimeType,
-    Buffer.from(dataBase64, "base64").length,
-    kind,
-    dataBase64,
-    Date.now(),
+    [
+      id,
+      filename,
+      mimeType,
+      Buffer.from(dataBase64, "base64").length,
+      kind,
+      dataBase64,
+      Date.now(),
+    ],
   );
-  linkAttachmentToMessage(messageId, id, 0);
+  await linkAttachmentToMessage(messageId, id, 0);
   return id;
 }
 
@@ -93,11 +98,13 @@ const IMAGE_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk";
 const DOC_BASE64 = "JVBERi0xLjQKMSAwIG9iago8PAovVHlwZSAvQ2F0YWxvZwo";
 
-describe("handleListMessages attachments", () => {
-  beforeEach(resetTables);
+describePg("handleListMessages attachments", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("user message image attachments include base64 data", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msg = await addMessage(
       conv.id,
       "user",
@@ -108,7 +115,7 @@ describe("handleListMessages attachments", () => {
       "image/png",
       IMAGE_BASE64,
     );
-    linkAttachmentToMessage(msg.id, stored.id, 0);
+    await linkAttachmentToMessage(msg.id, stored.id, 0);
 
     const response = await handleListMessages(createTestArgs(conv.id));
     const body = response as { messages: MessagePayload[] };
@@ -122,7 +129,7 @@ describe("handleListMessages attachments", () => {
   });
 
   test("user message non-image attachments stay metadata-only", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msg = await addMessage(
       conv.id,
       "user",
@@ -133,7 +140,7 @@ describe("handleListMessages attachments", () => {
       "application/pdf",
       DOC_BASE64,
     );
-    linkAttachmentToMessage(msg.id, stored.id, 0);
+    await linkAttachmentToMessage(msg.id, stored.id, 0);
 
     const response = await handleListMessages(createTestArgs(conv.id));
     const body = response as { messages: MessagePayload[] };
@@ -148,7 +155,7 @@ describe("handleListMessages attachments", () => {
   });
 
   test("assistant message image attachments include base64 data", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msg = await addMessage(
       conv.id,
       "assistant",
@@ -159,7 +166,7 @@ describe("handleListMessages attachments", () => {
       "image/png",
       IMAGE_BASE64,
     );
-    linkAttachmentToMessage(msg.id, stored.id, 0);
+    await linkAttachmentToMessage(msg.id, stored.id, 0);
 
     const response = await handleListMessages(createTestArgs(conv.id));
     const body = response as { messages: MessagePayload[] };
@@ -174,7 +181,7 @@ describe("handleListMessages attachments", () => {
   });
 
   test("user message with mixed attachments only inlines images", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msg = await addMessage(
       conv.id,
       "user",
@@ -190,8 +197,8 @@ describe("handleListMessages attachments", () => {
       "application/pdf",
       DOC_BASE64,
     );
-    linkAttachmentToMessage(msg.id, imgStored.id, 0);
-    linkAttachmentToMessage(msg.id, docStored.id, 1);
+    await linkAttachmentToMessage(msg.id, imgStored.id, 0);
+    await linkAttachmentToMessage(msg.id, docStored.id, 1);
 
     const response = await handleListMessages(createTestArgs(conv.id));
     const body = response as { messages: MessagePayload[] };
@@ -211,7 +218,7 @@ describe("handleListMessages attachments", () => {
     // that block must reference the row by id without repeating its base64:
     // duplicating it doubles every image in the response and in client
     // memory.
-    const conv = createConversation();
+    const conv = await createConversation();
     const stored = await uploadAttachment(
       "photo.png",
       "image/png",
@@ -230,7 +237,7 @@ describe("handleListMessages attachments", () => {
         },
       ]),
     );
-    linkAttachmentToMessage(msg.id, stored.id, 0);
+    await linkAttachmentToMessage(msg.id, stored.id, 0);
 
     const response = await handleListMessages(createTestArgs(conv.id));
     const body = response as {
@@ -267,7 +274,7 @@ describe("handleListMessages attachments", () => {
   test("synthesized attachment blocks are metadata-only references", async () => {
     // Directive attachments take the appendix path (no file-block ref), which
     // must strip the payload the same way the inline path does.
-    const conv = createConversation();
+    const conv = await createConversation();
     const msg = await addMessage(
       conv.id,
       "assistant",
@@ -278,7 +285,7 @@ describe("handleListMessages attachments", () => {
       "image/png",
       IMAGE_BASE64,
     );
-    linkAttachmentToMessage(msg.id, stored.id, 0);
+    await linkAttachmentToMessage(msg.id, stored.id, 0);
 
     const response = await handleListMessages(createTestArgs(conv.id));
     const body = response as {
@@ -306,7 +313,7 @@ describe("handleListMessages attachments", () => {
     // drops the empty text block → contentBlocks is []. The serializer must
     // synthesize attachment blocks from msgAttachments so the client has a
     // block to anchor the attachment chip.
-    const conv = createConversation();
+    const conv = await createConversation();
     // Persist the post-strip content: an empty text block (what
     // cleanAssistantContent leaves after stripping the directive tag).
     const msg = await addMessage(
@@ -319,7 +326,7 @@ describe("handleListMessages attachments", () => {
       "image/png",
       IMAGE_BASE64,
     );
-    linkAttachmentToMessage(msg.id, stored.id, 0);
+    await linkAttachmentToMessage(msg.id, stored.id, 0);
 
     const response = await handleListMessages(createTestArgs(conv.id));
     const body = response as {
@@ -346,18 +353,25 @@ describe("handleListMessages attachments", () => {
   });
 });
 
-describe("handleListMessages HEIC display normalization", () => {
-  beforeEach(resetTables);
+describePg("handleListMessages HEIC display normalization", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("undecodable HEIC data is served unchanged (conversion fallback)", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msg = await addMessage(
       conv.id,
       "user",
       JSON.stringify([{ type: "text", text: "photo" }]),
     );
     const heicB64 = fakeHeifHeaderBytes().toString("base64");
-    insertLegacyAttachmentRow(msg.id, "IMG_1.HEIC", "image/heic", heicB64);
+    await insertLegacyAttachmentRow(
+      msg.id,
+      "IMG_1.HEIC",
+      "image/heic",
+      heicB64,
+    );
 
     const response = await handleListMessages(createTestArgs(conv.id));
     const body = response as { messages: MessagePayload[] };
@@ -369,7 +383,7 @@ describe("handleListMessages HEIC display normalization", () => {
   });
 
   test("octet-stream HEIC stays metadata-only when conversion is unavailable", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msg = await addMessage(
       conv.id,
       "user",
@@ -380,7 +394,7 @@ describe("handleListMessages HEIC display normalization", () => {
     // never convert, so the row must stay metadata-only rather than ship
     // unrenderable bytes as display data.
     const heicB64 = fakeHeifHeaderBytes().toString("base64");
-    insertLegacyAttachmentRow(
+    await insertLegacyAttachmentRow(
       msg.id,
       "IMG_3.HEIC",
       "application/octet-stream",
@@ -405,13 +419,13 @@ describe("handleListMessages HEIC display normalization", () => {
         const heic = makeHeicFixtureBytes();
         expect(heic).not.toBeNull();
 
-        const conv = createConversation();
+        const conv = await createConversation();
         const msg = await addMessage(
           conv.id,
           "user",
           JSON.stringify([{ type: "text", text: "photo" }]),
         );
-        insertLegacyAttachmentRow(
+        await insertLegacyAttachmentRow(
           msg.id,
           "IMG_2.HEIC",
           "image/heic",
@@ -435,7 +449,7 @@ describe("handleListMessages HEIC display normalization", () => {
         const heic = makeHeicFixtureBytes();
         expect(heic).not.toBeNull();
 
-        const conv = createConversation();
+        const conv = await createConversation();
         const msg = await addMessage(
           conv.id,
           "user",
@@ -444,7 +458,7 @@ describe("handleListMessages HEIC display normalization", () => {
         // Real HEIC bytes stored under application/octet-stream (empty
         // File.type fallback) and classified as a document — the row is
         // detected by its filename extension and converted for display.
-        insertLegacyAttachmentRow(
+        await insertLegacyAttachmentRow(
           msg.id,
           "IMG_4.HEIC",
           "application/octet-stream",
@@ -468,11 +482,13 @@ describe("handleListMessages HEIC display normalization", () => {
   );
 });
 
-describe("handleListMessages no_response filtering", () => {
-  beforeEach(resetTables);
+describePg("handleListMessages no_response filtering", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("strips <no_response/> from assistant message content", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "assistant",
@@ -490,7 +506,7 @@ describe("handleListMessages no_response filtering", () => {
   });
 
   test("strips <no_response/> but keeps other text segments", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "assistant",
@@ -510,7 +526,7 @@ describe("handleListMessages no_response filtering", () => {
   });
 
   test("remaps contentOrder when <no_response/> segment is removed", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     // Simulate: text("<no_response/>") -> tool_use -> tool_result -> text("Answer")
     await addMessage(
       conv.id,
@@ -544,7 +560,7 @@ describe("handleListMessages no_response filtering", () => {
   });
 
   test("does not strip <no_response/> from user messages", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -605,11 +621,13 @@ async function insertMessages(
   return msgs;
 }
 
-describe("handleListMessages pagination", () => {
-  beforeEach(resetTables);
+describePg("handleListMessages pagination", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("no params → all messages, no hasMore field", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await insertMessages(conv.id, 5);
 
     const response = await handleListMessages(createTestArgs(conv.id));
@@ -622,7 +640,7 @@ describe("handleListMessages pagination", () => {
   });
 
   test("limit only (no beforeTimestamp) → all messages, no hasMore", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await insertMessages(conv.id, 5);
 
     const args = createPaginatedArgs(conv.id, { limit: "3" });
@@ -635,7 +653,7 @@ describe("handleListMessages pagination", () => {
   });
 
   test("beforeTimestamp + limit → correct page with hasMore: true", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msgs = await insertMessages(conv.id, 10);
 
     // Cursor is message[7]'s timestamp; limit=3 → should return messages [4,5,6]
@@ -656,7 +674,7 @@ describe("handleListMessages pagination", () => {
   });
 
   test("beforeTimestamp is strictly exclusive", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msgs = await insertMessages(conv.id, 3);
 
     // Use message[1]'s exact timestamp as cursor — message[1] should NOT appear
@@ -674,7 +692,7 @@ describe("handleListMessages pagination", () => {
   });
 
   test("hasMore: false when all older messages fit", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msgs = await insertMessages(conv.id, 5);
 
     // beforeTimestamp beyond the last message, limit larger than total count
@@ -690,7 +708,7 @@ describe("handleListMessages pagination", () => {
   });
 
   test("oldestTimestamp and oldestMessageId match oldest returned message", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msgs = await insertMessages(conv.id, 5);
 
     // Fetch last 3 messages before a cursor past the end
@@ -719,7 +737,7 @@ describe("handleListMessages pagination", () => {
   });
 
   test("invalid limit (NaN) → 400", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const args = createPaginatedArgs(conv.id, { limit: "abc" });
 
     await expect(handleListMessages(args)).rejects.toThrow(
@@ -728,7 +746,7 @@ describe("handleListMessages pagination", () => {
   });
 
   test("invalid beforeTimestamp (NaN) → 400", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const args = createPaginatedArgs(conv.id, { beforeTimestamp: "abc" });
 
     await expect(handleListMessages(args)).rejects.toThrow(

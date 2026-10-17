@@ -5,26 +5,24 @@
  * `interruptedPriorTurn` in the row's metadata is what rebuilds the identical
  * block on every later load.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { reinjectInterruptTurnNote } from "../daemon/conversation-lifecycle.js";
 import type { MessagingConversationContext } from "../daemon/conversation-messaging.js";
 import { persistQueuedMessageBody } from "../daemon/conversation-messaging.js";
 import { createConversation } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { rawGet } from "../persistence/raw-query.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import type { ContentBlock } from "../providers/types.js";
 import { INTERRUPTED_TURN_NOTE_TEXT } from "../util/abort-reasons.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 function makeCtx(conversationId: string): MessagingConversationContext {
@@ -42,19 +40,22 @@ function makeCtx(conversationId: string): MessagingConversationContext {
   } as unknown as MessagingConversationContext;
 }
 
-function messageRow(id: string): { content: string; metadata: string | null } {
-  return rawGet<{ content: string; metadata: string | null }>(
-    "test:interruptNoteMessage",
-    "SELECT content, metadata FROM messages WHERE id = ?",
-    id,
-  )!;
+async function messageRow(
+  id: string,
+): Promise<{ content: string; metadata: string | null }> {
+  return (await requireMainDb().get<{
+    content: string;
+    metadata: string | null;
+  }>("SELECT content, metadata FROM messages WHERE id = ?", [id]))!;
 }
 
-describe("interrupted-turn note on the interrupting message", () => {
-  beforeEach(resetTables);
+describePg("interrupted-turn note on the interrupting message", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("rides on the LLM-facing content while the persisted row stays clean", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const ctx = makeCtx(conv.id);
     ctx.pendingInterruptNote = true;
 
@@ -72,7 +73,7 @@ describe("interrupted-turn note on the interrupting message", () => {
       text: "wait, quick one first: what is 31 times 12?",
     });
 
-    const row = messageRow(persisted.id);
+    const row = await messageRow(persisted.id);
     expect(row.content).not.toContain("interrupted_turn");
     expect(JSON.parse(row.content)).toEqual([
       { type: "text", text: "wait, quick one first: what is 31 times 12?" },
@@ -81,7 +82,7 @@ describe("interrupted-turn note on the interrupting message", () => {
   });
 
   test("history reload rebuilds the identical block", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const ctx = makeCtx(conv.id);
     ctx.pendingInterruptNote = true;
 
@@ -93,7 +94,7 @@ describe("interrupted-turn note on the interrupting message", () => {
       text: string;
     };
 
-    const row = messageRow(persisted.id);
+    const row = await messageRow(persisted.id);
     const rebuilt = reinjectInterruptTurnNote(
       JSON.parse(row.content) as ContentBlock[],
       "user",
@@ -105,7 +106,7 @@ describe("interrupted-turn note on the interrupting message", () => {
   });
 
   test("an ordinary send carries no note", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const ctx = makeCtx(conv.id);
 
     const persisted = await persistQueuedMessageBody(ctx, {
@@ -115,7 +116,7 @@ describe("interrupted-turn note on the interrupting message", () => {
     const llmContent = ctx.messages[0].content as ContentBlock[];
     expect(llmContent).toHaveLength(1);
 
-    const row = messageRow(persisted.id);
+    const row = await messageRow(persisted.id);
     expect(
       JSON.parse(row.metadata ?? "{}").interruptedPriorTurn,
     ).toBeUndefined();
@@ -129,7 +130,7 @@ describe("interrupted-turn note on the interrupting message", () => {
   });
 
   test("the flag is consumed once, so the next message is untouched", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const ctx = makeCtx(conv.id);
     ctx.pendingInterruptNote = true;
 
@@ -142,7 +143,7 @@ describe("interrupted-turn note on the interrupting message", () => {
   });
 
   test("the note sits after the attachment annotations, live and reloaded", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const ctx = makeCtx(conv.id);
     ctx.pendingInterruptNote = true;
 
@@ -160,7 +161,7 @@ describe("interrupted-turn note on the interrupting message", () => {
     expect(note.text).toBe(INTERRUPTED_TURN_NOTE_TEXT);
     expect(annotation.text).toContain("is stored at:");
 
-    const row = messageRow(persisted.id);
+    const row = await messageRow(persisted.id);
     expect(row.content).not.toContain("interrupted_turn");
     expect(JSON.parse(row.metadata!).interruptedPriorTurn).toBe(true);
   });

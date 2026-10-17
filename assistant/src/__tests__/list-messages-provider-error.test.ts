@@ -10,7 +10,8 @@
  * field carried only on the intermediate object is silently dropped.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -23,18 +24,16 @@ import {
   createConversation,
   PROVIDER_ERROR_MESSAGE_KIND,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 interface ProjectedMessage {
@@ -42,11 +41,13 @@ interface ProjectedMessage {
   providerError?: { code?: string; category?: string };
 }
 
-describe("handleListMessages provider-error projection", () => {
-  beforeEach(resetTables);
+describePg("handleListMessages provider-error projection", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("surfaces providerError on tagged rows in the final payload", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -92,7 +93,7 @@ describe("handleListMessages provider-error projection", () => {
   });
 
   test("coerces non-string code/category to absent fields", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "assistant",
@@ -118,7 +119,7 @@ describe("handleListMessages provider-error projection", () => {
   });
 
   test("omits providerError on untagged rows", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",

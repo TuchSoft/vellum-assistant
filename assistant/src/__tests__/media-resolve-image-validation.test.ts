@@ -1,4 +1,11 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 import {
   unsendableImageCardText,
@@ -9,8 +16,7 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   isUnsendableImageSource,
   mediaSourceDescriptor,
@@ -18,15 +24,14 @@ import {
   UNSENDABLE_IMAGE_FORMAT_NOTE,
 } from "../providers/media-resolve.js";
 import type { ContentBlock, Message } from "../providers/types.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 /** A 1x1 PNG: a real signature plus enough body to be a decodable image. */
@@ -63,7 +68,7 @@ async function storedImageRef(
   mimeType: string,
   dataBase64: string,
 ): Promise<ContentBlock> {
-  const conv = createConversation();
+  const conv = await createConversation();
   const stored = await createInlineAttachment(
     conv.id,
     conv.createdAt,
@@ -83,8 +88,10 @@ async function storedImageRef(
   };
 }
 
-describe("resolveMediaReferences image validation", () => {
-  beforeEach(resetTables);
+describePg("resolveMediaReferences image validation", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("sends a valid inline image untouched", async () => {
     // GIVEN a message carrying an inline PNG whose bytes match its declaration
@@ -222,14 +229,16 @@ describe("resolveMediaReferences image validation", () => {
   });
 });
 
-describe("resolveMediaReferences attachment id", () => {
-  beforeEach(resetTables);
+describePg("resolveMediaReferences attachment id", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("carries a file block's attachment id across reference resolution", async () => {
     // Resolving a reference rebuilds the block around freshly read bytes. The
     // id is the block's only remaining link to its attachment row, so it has to
     // survive the rebuild.
-    const conv = createConversation();
+    const conv = await createConversation();
     const stored = await createInlineAttachment(
       conv.id,
       conv.createdAt,
@@ -262,7 +271,7 @@ describe("resolveMediaReferences attachment id", () => {
   });
 
   test("omits the field when the source block carries no id", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const stored = await createInlineAttachment(
       conv.id,
       conv.createdAt,
@@ -327,8 +336,10 @@ describe("mediaSourceDescriptor", () => {
   });
 });
 
-describe("isUnsendableImageSource", () => {
-  beforeEach(resetTables);
+describePg("isUnsendableImageSource", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("reports a stored attachment the send boundary will drop", async () => {
     // GIVEN one attachment holding a real PNG and one holding HEIC bytes
@@ -361,12 +372,14 @@ describe("isUnsendableImageSource", () => {
   });
 });
 
-describe("unsendable-image notice", () => {
-  beforeEach(resetTables);
+describePg("unsendable-image notice", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("names only the attachments the model cannot see", async () => {
     // GIVEN a message whose attachments are one valid PNG and one HEIC-as-PNG
-    const msgConv = createConversation();
+    const msgConv = await createConversation();
     await addMessage(msgConv.id, "user", "look at these");
     const good = await storedImageRef("holiday.png", "image/png", PNG_B64);
     const bad = await storedImageRef("beach.png", "image/png", HEIC_B64);
@@ -415,11 +428,13 @@ describe("unsendable-image notice", () => {
   });
 });
 
-describe("resolveMediaReferences file workspace_ref stay-on-disk", () => {
-  beforeEach(resetTables);
+describePg("resolveMediaReferences file workspace_ref stay-on-disk", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("does not inline over-cap text or extracted_text", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const stored = await createInlineAttachment(
       conv.id,
       conv.createdAt,
@@ -451,12 +466,14 @@ describe("resolveMediaReferences file workspace_ref stay-on-disk", () => {
     }
     expect(block.source.type).toBe("workspace_ref");
     expect(block.extracted_text).toBeUndefined();
-    expect(JSON.stringify(resolved)).not.toContain("this dump must not be resent");
+    expect(JSON.stringify(resolved)).not.toContain(
+      "this dump must not be resent",
+    );
     expect(JSON.stringify(resolved)).not.toContain("hello-over-cap");
   });
 
   test("does not inline video bytes or extracted_text", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const stored = await createInlineAttachment(
       conv.id,
       conv.createdAt,

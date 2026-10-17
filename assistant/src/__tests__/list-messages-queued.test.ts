@@ -9,7 +9,8 @@
  * `message_queued` SSE events would otherwise be the only source of.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import type { Conversation } from "../daemon/conversation.js";
 import type { QueuedMessage } from "../daemon/conversation-queue-manager.js";
@@ -21,16 +22,14 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
   clearConversations();
 }
 
@@ -69,12 +68,14 @@ function makeQueued(overrides: Partial<QueuedMessage>): QueuedMessage {
   } as QueuedMessage;
 }
 
-describe("handleListMessages in-memory queue", () => {
-  beforeEach(resetTables);
+describePg("handleListMessages in-memory queue", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("appends queued rows in FIFO order with 1-based queuePosition", async () => {
     // GIVEN a persisted user turn and two messages still waiting in the queue
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -119,7 +120,7 @@ describe("handleListMessages in-memory queue", () => {
   });
 
   test("prefers displayContent over the model-facing content", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     registerLiveConversation(conv.id, [
       makeQueued({
         requestId: "req-display",
@@ -141,7 +142,7 @@ describe("handleListMessages in-memory queue", () => {
   });
 
   test("renders queued attachments with a derived kind", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     registerLiveConversation(conv.id, [
       makeQueued({
         requestId: "req-att",
@@ -171,7 +172,7 @@ describe("handleListMessages in-memory queue", () => {
     // A hidden send (e.g. the channel-setup wizard-close marker) that queued
     // behind an in-flight turn must not surface as a queued bubble on a
     // reload/reconnect fetch; visible siblings keep 1-based positions.
-    const conv = createConversation();
+    const conv = await createConversation();
     registerLiveConversation(conv.id, [
       makeQueued({
         requestId: "req-hidden",
@@ -197,7 +198,7 @@ describe("handleListMessages in-memory queue", () => {
     // any other turn, but it is scaffolding the user follows through the
     // subagent card — never a queued bubble they could steer or cancel. Same
     // for ACP run outcomes and wake triggers.
-    const conv = createConversation();
+    const conv = await createConversation();
     registerLiveConversation(conv.id, [
       makeQueued({
         requestId: "req-subagent",
@@ -237,7 +238,7 @@ describe("handleListMessages in-memory queue", () => {
 
   test("does not append queued messages to an older-history page", async () => {
     // GIVEN history requested with beforeTimestamp (older page)
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -261,7 +262,7 @@ describe("handleListMessages in-memory queue", () => {
 
   test("returns only persisted rows when the conversation is not live", async () => {
     // GIVEN a conversation with no live in-memory instance (cold / aged out)
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",

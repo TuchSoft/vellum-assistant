@@ -8,7 +8,8 @@
  * instead of assistant-persona speech after a reload.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -22,18 +23,16 @@ import {
   NO_RESPONSE_MESSAGE_KIND,
   SYSTEM_CARD_MESSAGE_KIND,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 interface ProjectedMessage {
@@ -43,11 +42,13 @@ interface ProjectedMessage {
   noResponse?: boolean;
 }
 
-describe("handleListMessages system-card projection", () => {
-  beforeEach(resetTables);
+describePg("handleListMessages system-card projection", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("projects systemCard from the persisted card row metadata", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -77,7 +78,7 @@ describe("handleListMessages system-card projection", () => {
   });
 
   test("projects noResponse from the deliberate-silence marker", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -105,7 +106,7 @@ describe("handleListMessages system-card projection", () => {
   });
 
   test("projects a reaction's typed emoji fields to the response", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const row = await addMessage(
       conv.id,
       "user",
@@ -157,7 +158,7 @@ describe("handleListMessages system-card projection", () => {
   });
 
   test("projects the reaction fact from a reaction row's envelope", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const row = await addMessage(
       conv.id,
       "assistant",
@@ -199,7 +200,7 @@ describe("handleListMessages system-card projection", () => {
   test("projects deletedAt from a row deleted on its channel", async () => {
     // Mirror the delete propagation stamp: the row keeps its content and the
     // envelope carries the marker, in either shape the daemon writes.
-    const conv = createConversation();
+    const conv = await createConversation();
     const discordRow = await addMessage(
       conv.id,
       "user",
@@ -248,7 +249,7 @@ describe("handleListMessages system-card projection", () => {
   });
 
   test("omits systemCard on ordinary user and assistant rows", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",

@@ -1,6 +1,13 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 import { mock } from "bun:test";
 
 // Stub the background-wake publisher so these store-level unit tests stay
@@ -21,8 +28,7 @@ import {
   setConversationInferenceProfile,
   setConversationInferenceProfileSession,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { isPluginDirActivated } from "../plugins/mtime-cache.js";
 import { assistantEventHub } from "../runtime/assistant-event-hub.js";
 import {
@@ -53,14 +59,7 @@ import {
 } from "../schedule/schedule-store.js";
 import { UserError } from "../util/errors.js";
 import { getWorkspacePluginsDir } from "../util/platform.js";
-
-await initializeDb();
-
-/** Access the underlying bun:sqlite Database for raw parameterized queries. */
-function getRawDb(): import("bun:sqlite").Database {
-  return (getDb() as unknown as { $client: import("bun:sqlite").Database })
-    .$client;
-}
+import { describePg } from "./pg-test-db.js";
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   // Event delivery is async (serialized through the hub's broadcast chain),
@@ -99,11 +98,11 @@ async function expectScheduleSyncEvent(
   received.length = 0;
 }
 
-describe("schedule sync invalidation", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("schedule sync invalidation", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("store-level schedule mutations emit schedule sync invalidation", async () => {
@@ -127,10 +126,10 @@ describe("schedule sync invalidation", () => {
       await updateSchedule(job.id, { name: "Updated sync test" });
       await expectScheduleSyncEvent(received);
 
-      getRawDb().run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [
-        Date.now() - 1000,
-        job.id,
-      ]);
+      await requireMainDb().run(
+        "UPDATE cron_jobs SET next_run_at = ? WHERE id = ?",
+        [Date.now() - 1000, job.id],
+      );
       expect(await claimDueSchedules(Date.now())).toHaveLength(1);
       await expectScheduleSyncEvent(received);
 
@@ -158,11 +157,11 @@ describe("schedule sync invalidation", () => {
 
 // ── Cron schedules ──────────────────────────────────────────────────
 
-describe("createSchedule (cron)", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("createSchedule (cron)", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("creates a cron schedule using only cronExpression", async () => {
@@ -209,9 +208,10 @@ describe("createSchedule (cron)", () => {
 
     expect(job.description).toBe("Daily executive summary");
 
-    const raw = getRawDb()
-      .query("SELECT description FROM cron_jobs WHERE id = ?")
-      .get(job.id) as { description: string };
+    const raw = (await requireMainDb().get(
+      "SELECT description FROM cron_jobs WHERE id = ?",
+      [job.id],
+    )) as { description: string };
     expect(raw.description).toBe("Daily executive summary");
 
     const updated = await updateSchedule(job.id, {
@@ -238,9 +238,10 @@ describe("createSchedule (cron)", () => {
     expect(job.createdFromConversationId).toBeNull();
     expect((await getSchedule(job.id))!.createdFromConversationId).toBeNull();
 
-    const raw = getRawDb()
-      .query("SELECT created_from_conversation_id FROM cron_jobs WHERE id = ?")
-      .get(job.id) as { created_from_conversation_id: string | null };
+    const raw = (await requireMainDb().get(
+      "SELECT created_from_conversation_id FROM cron_jobs WHERE id = ?",
+      [job.id],
+    )) as { created_from_conversation_id: string | null };
     expect(raw.created_from_conversation_id).toBeNull();
   });
 
@@ -273,11 +274,12 @@ describe("createSchedule (cron)", () => {
       syntax: "cron",
     });
 
-    const raw = getRawDb()
-      .query("SELECT schedule_syntax FROM cron_jobs WHERE id = ?")
-      .get(job.id) as { schedule_syntax: string } | null;
+    const raw = (await requireMainDb().get<{ schedule_syntax: string }>(
+      "SELECT schedule_syntax FROM cron_jobs WHERE id = ?",
+      [job.id],
+    ))!;
     expect(raw).not.toBeNull();
-    expect(raw!.schedule_syntax).toBe("cron");
+    expect(raw.schedule_syntax).toBe("cron");
   });
 
   test("rejects invalid cron expression", async () => {
@@ -294,11 +296,11 @@ describe("createSchedule (cron)", () => {
 
 // ── RRULE schedule creation ──────────────────────────────────────────
 
-describe("createSchedule (RRULE)", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("createSchedule (RRULE)", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("creates an RRULE schedule with syntax + expression", async () => {
@@ -327,17 +329,15 @@ describe("createSchedule (RRULE)", () => {
       expression: rrule,
     });
 
-    const raw = getRawDb()
-      .query(
-        "SELECT schedule_syntax, cron_expression FROM cron_jobs WHERE id = ?",
-      )
-      .get(job.id) as {
+    const raw = (await requireMainDb().get<{
       schedule_syntax: string;
       cron_expression: string;
-    } | null;
+    }>("SELECT schedule_syntax, cron_expression FROM cron_jobs WHERE id = ?", [
+      job.id,
+    ]))!;
     expect(raw).not.toBeNull();
-    expect(raw!.schedule_syntax).toBe("rrule");
-    expect(raw!.cron_expression).toBe(rrule);
+    expect(raw.schedule_syntax).toBe("rrule");
+    expect(raw.cron_expression).toBe(rrule);
   });
 
   test("rejects RRULE without DTSTART", async () => {
@@ -355,11 +355,11 @@ describe("createSchedule (RRULE)", () => {
 
 // ── RRULE set expressions (RDATE, EXDATE, multi-RRULE) ──────────────
 
-describe("createSchedule (RRULE set)", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("createSchedule (RRULE set)", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("creates schedule with RRULE + EXDATE set expression", async () => {
@@ -417,9 +417,10 @@ describe("createSchedule (RRULE set)", () => {
       expression,
     });
 
-    const raw = getRawDb()
-      .query("SELECT cron_expression FROM cron_jobs WHERE id = ?")
-      .get(job.id) as { cron_expression: string };
+    const raw = (await requireMainDb().get(
+      "SELECT cron_expression FROM cron_jobs WHERE id = ?",
+      [job.id],
+    )) as { cron_expression: string };
     // The full expression including all EXDATE lines should be stored
     expect(raw.cron_expression).toContain("EXDATE:20250102T090000Z");
     expect(raw.cron_expression).toContain("EXDATE:20250103T090000Z");
@@ -450,11 +451,11 @@ describe("createSchedule (RRULE set)", () => {
 
 // ── claimDueSchedules with RRULE sets ────────────────────────────────
 
-describe("claimDueSchedules (RRULE set)", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("claimDueSchedules (RRULE set)", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("claims RRULE set schedule and correctly advances nextRunAt past exclusions", async () => {
@@ -489,10 +490,10 @@ describe("claimDueSchedules (RRULE set)", () => {
     });
 
     // Force due
-    getRawDb().run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [
-      Date.now() - 1000,
-      job.id,
-    ]);
+    await requireMainDb().run(
+      "UPDATE cron_jobs SET next_run_at = ? WHERE id = ?",
+      [Date.now() - 1000, job.id],
+    );
 
     const now = Date.now();
     const claimed = await claimDueSchedules(now);
@@ -505,11 +506,11 @@ describe("claimDueSchedules (RRULE set)", () => {
 
 // ── updateSchedule with syntax/expression ────────────────────────────
 
-describe("updateSchedule", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("updateSchedule", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("updating cronExpression (legacy path) still works", async () => {
@@ -552,10 +553,11 @@ describe("updateSchedule", () => {
     expect(updated!.nextRunAt).toBeGreaterThan(0);
 
     // Confirm DB has the right syntax
-    const raw = getRawDb()
-      .query("SELECT schedule_syntax FROM cron_jobs WHERE id = ?")
-      .get(job.id) as { schedule_syntax: string } | null;
-    expect(raw!.schedule_syntax).toBe("rrule");
+    const raw = (await requireMainDb().get<{ schedule_syntax: string }>(
+      "SELECT schedule_syntax FROM cron_jobs WHERE id = ?",
+      [job.id],
+    ))!;
+    expect(raw.schedule_syntax).toBe("rrule");
   });
 
   test("updating to RRULE set expression preserves full text", async () => {
@@ -603,11 +605,11 @@ describe("updateSchedule", () => {
 
 // ── claimDueSchedules ────────────────────────────────────────────────
 
-describe("claimDueSchedules", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("claimDueSchedules", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("claims due cron schedules and advances nextRunAt", async () => {
@@ -619,10 +621,10 @@ describe("claimDueSchedules", () => {
     });
 
     // Force the schedule to be due
-    getRawDb().run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [
-      Date.now() - 1000,
-      job.id,
-    ]);
+    await requireMainDb().run(
+      "UPDATE cron_jobs SET next_run_at = ? WHERE id = ?",
+      [Date.now() - 1000, job.id],
+    );
 
     const claimed = await claimDueSchedules(Date.now());
     expect(claimed.length).toBe(1);
@@ -652,10 +654,10 @@ describe("claimDueSchedules", () => {
 
     // Force the schedule to be due
     const pastTs = Date.now() - 60_000;
-    getRawDb().run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [
-      pastTs,
-      job.id,
-    ]);
+    await requireMainDb().run(
+      "UPDATE cron_jobs SET next_run_at = ? WHERE id = ?",
+      [pastTs, job.id],
+    );
 
     const now = Date.now();
     const claimed = await claimDueSchedules(now);
@@ -691,13 +693,13 @@ describe("claimDueSchedules", () => {
     const rrule = `DTSTART:${dtstart}\nRRULE:FREQ=DAILY;COUNT=1`;
     const id = "exhausted-rrule-test";
     const now = Date.now();
-    getRawDb().run(
+    await requireMainDb().run(
       `INSERT INTO cron_jobs (id, name, enabled, cron_expression, schedule_syntax, message, next_run_at, retry_count, created_by, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         "Finite RRULE",
-        1,
+        true,
         rrule,
         "rrule",
         "one-shot",
@@ -732,10 +734,10 @@ describe("claimDueSchedules", () => {
       syntax: "cron",
     });
 
-    getRawDb().run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [
-      Date.now() - 1000,
-      job.id,
-    ]);
+    await requireMainDb().run(
+      "UPDATE cron_jobs SET next_run_at = ? WHERE id = ?",
+      [Date.now() - 1000, job.id],
+    );
 
     const first = await claimDueSchedules(Date.now());
     expect(first.length).toBe(1);
@@ -748,11 +750,11 @@ describe("claimDueSchedules", () => {
 
 // ── One-shot schedules ──────────────────────────────────────────────
 
-describe("createSchedule (one-shot)", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("createSchedule (one-shot)", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("creates a one-shot schedule with no expression", async () => {
@@ -827,11 +829,11 @@ describe("createSchedule (one-shot)", () => {
 
 // ── One-shot claiming ───────────────────────────────────────────────
 
-describe("claimDueSchedules (one-shot)", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("claimDueSchedules (one-shot)", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("claims one-shot schedules whose nextRunAt <= now", async () => {
@@ -881,10 +883,10 @@ describe("claimDueSchedules (one-shot)", () => {
       message: "recurring",
       syntax: "cron",
     });
-    getRawDb().run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [
-      Date.now() - 1000,
-      recurring.id,
-    ]);
+    await requireMainDb().run(
+      "UPDATE cron_jobs SET next_run_at = ? WHERE id = ?",
+      [Date.now() - 1000, recurring.id],
+    );
 
     await createSchedule({
       name: "One-shot",
@@ -902,11 +904,11 @@ describe("claimDueSchedules (one-shot)", () => {
 
 // ── One-shot lifecycle (complete, fail, cancel) ─────────────────────
 
-describe("completeOneShot", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("completeOneShot", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("transitions firing -> fired", async () => {
@@ -941,11 +943,11 @@ describe("completeOneShot", () => {
   });
 });
 
-describe("failOneShot", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("failOneShot", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("transitions firing -> active for retry", async () => {
@@ -982,11 +984,11 @@ describe("failOneShot", () => {
   });
 });
 
-describe("cancelSchedule", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("cancelSchedule", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("cancels an active one-shot schedule", async () => {
@@ -1035,11 +1037,11 @@ describe("cancelSchedule", () => {
 
 // ── Routing and mode round-trip ─────────────────────────────────────
 
-describe("routing and mode fields", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("routing and mode fields", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("recurring schedule defaults to execute mode and all_channels", async () => {
@@ -1084,21 +1086,20 @@ describe("routing and mode fields", () => {
       routingHints: hints,
     });
 
-    const raw = getRawDb()
-      .query(
-        "SELECT mode, routing_intent, routing_hints_json, status FROM cron_jobs WHERE id = ?",
-      )
-      .get(job.id) as {
+    const raw = (await requireMainDb().get<{
       mode: string;
       routing_intent: string;
       routing_hints_json: string;
       status: string;
-    } | null;
+    }>(
+      "SELECT mode, routing_intent, routing_hints_json, status FROM cron_jobs WHERE id = ?",
+      [job.id],
+    ))!;
     expect(raw).not.toBeNull();
-    expect(raw!.mode).toBe("execute");
-    expect(raw!.routing_intent).toBe("single_channel");
-    expect(JSON.parse(raw!.routing_hints_json)).toEqual(hints);
-    expect(raw!.status).toBe("active");
+    expect(raw.mode).toBe("execute");
+    expect(raw.routing_intent).toBe("single_channel");
+    expect(JSON.parse(raw.routing_hints_json)).toEqual(hints);
+    expect(raw.status).toBe("active");
   });
 
   test("updateSchedule updates mode and routing fields", async () => {
@@ -1124,11 +1125,11 @@ describe("routing and mode fields", () => {
 
 // ── Script timeout override ─────────────────────────────────────────
 
-describe("script timeout override", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("script timeout override", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("defaults timeoutMs to null when not provided", async () => {
@@ -1191,11 +1192,11 @@ describe("script timeout override", () => {
 
 // ── Capability manifest ─────────────────────────────────────────────
 
-describe("capability manifest", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("capability manifest", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   const manifest = {
@@ -1251,11 +1252,11 @@ describe("capability manifest", () => {
 
 // ── listSchedules filters ───────────────────────────────────────────
 
-describe("listSchedules filters", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("listSchedules filters", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("oneShotOnly filter returns only one-shot schedules", async () => {
@@ -1299,11 +1300,11 @@ describe("listSchedules filters", () => {
 
 // ── Wake mode ───────────────────────────────────────────────────────
 
-describe("createSchedule (wake mode)", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("createSchedule (wake mode)", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("creates a wake schedule with wakeConversationId", async () => {
@@ -1338,11 +1339,11 @@ describe("createSchedule (wake mode)", () => {
 
 // ── listSchedules new filters ───────────────────────────────────────
 
-describe("listSchedules new filters", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run("DELETE FROM cron_runs");
-    db.run("DELETE FROM cron_jobs");
+describePg("listSchedules new filters", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   test("mode filter returns only schedules with matching mode", async () => {
@@ -1463,10 +1464,10 @@ describe("describeCronExpression", () => {
 
 // ── Owner-defer provenance is durable ────────────────────────────────────
 
-describe("owner-defer provenance", () => {
-  beforeEach(() => {
-    getDb().run("DELETE FROM cron_runs");
-    getDb().run("DELETE FROM cron_jobs");
+describePg("owner-defer provenance", () => {
+  beforeEach(async () => {
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   async function trustedDefer() {
@@ -1567,16 +1568,16 @@ describe("owner-defer provenance", () => {
 
 // ── Plugin-declared schedules ───────────────────────────────────────
 
-describe("declared schedules", () => {
+describePg("declared schedules", () => {
   const SOURCE_KEY = "plugin:example/daily";
   const examplePluginDir = () => join(getWorkspacePluginsDir(), "example");
 
   // setUserEnabled's enable path probes the declaration's on-disk presence
   // and its plugin's manifest, so the suite keeps a declaration directory and
   // a valid package.json in place for SOURCE_KEY; ghost-row tests remove them.
-  beforeEach(() => {
-    getDb().run("DELETE FROM cron_runs");
-    getDb().run("DELETE FROM cron_jobs");
+  beforeEach(async () => {
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
     rmSync(examplePluginDir(), { recursive: true, force: true });
     const declarationDir = join(examplePluginDir(), "schedules", "daily");
     mkdirSync(declarationDir, { recursive: true });
@@ -1607,10 +1608,11 @@ describe("declared schedules", () => {
     };
   }
 
-  function rawJob(id: string): Record<string, unknown> {
-    return getRawDb()
-      .query("SELECT * FROM cron_jobs WHERE id = ?")
-      .get(id) as Record<string, unknown>;
+  async function rawJob(id: string): Promise<Record<string, unknown>> {
+    return (await requireMainDb().get<Record<string, unknown>>(
+      "SELECT * FROM cron_jobs WHERE id = ?",
+      [id],
+    ))!;
   }
 
   test("upsert inserts a sourced row with declared enabled state", async () => {
@@ -1643,12 +1645,12 @@ describe("declared schedules", () => {
 
   test("upsert with an unchanged hash is a no-op", async () => {
     const created = await upsertDeclaredSchedule(SOURCE_KEY, makeDefinition());
-    const before = rawJob(created.id);
+    const before = await rawJob(created.id);
 
     const again = await upsertDeclaredSchedule(SOURCE_KEY, makeDefinition());
 
     expect(again.id).toBe(created.id);
-    expect(rawJob(created.id)).toEqual(before);
+    expect(await rawJob(created.id)).toEqual(before);
   });
 
   test("upsert with a changed hash updates definition columns without moving nextRunAt", async () => {
@@ -1685,18 +1687,18 @@ describe("declared schedules", () => {
     const created = await upsertDeclaredSchedule(SOURCE_KEY, makeDefinition());
     // Recurrence exhaustion latch: the claim path disables the row, zeroes
     // nextRunAt, and stamps lastRunAt in one write.
-    getRawDb().run(
-      "UPDATE cron_jobs SET enabled = 0, next_run_at = 0, last_run_at = ? WHERE id = ?",
+    await requireMainDb().run(
+      "UPDATE cron_jobs SET enabled = false, next_run_at = 0, last_run_at = ? WHERE id = ?",
       [Date.now(), created.id],
     );
-    const latched = rawJob(created.id);
+    const latched = await rawJob(created.id);
 
     await upsertDeclaredSchedule(
       SOURCE_KEY,
       makeDefinition({ definitionHash: "hash-2" }),
     );
 
-    expect(rawJob(created.id)).toEqual(latched);
+    expect(await rawJob(created.id)).toEqual(latched);
   });
 
   test("a declaration shipped disabled inserts disarmed and is not treated as latched", async () => {
@@ -1725,9 +1727,10 @@ describe("declared schedules", () => {
 
     const disarmed = await getSchedule(created.id);
     expect(disarmed!.enabled).toBe(false);
-    const runs = getRawDb()
-      .query("SELECT COUNT(*) AS n FROM cron_runs WHERE job_id = ?")
-      .get(created.id) as { n: number };
+    const runs = (await requireMainDb().get(
+      "SELECT COUNT(*) AS n FROM cron_runs WHERE job_id = ?",
+      [created.id],
+    )) as { n: number };
     expect(runs.n).toBe(1);
 
     // Same declaration back in the desired set (e.g. plugin re-enabled):
@@ -1822,13 +1825,13 @@ describe("declared schedules", () => {
 
   test("cancelSchedule refuses sourced rows", async () => {
     const created = await upsertDeclaredSchedule(SOURCE_KEY, makeDefinition());
-    const before = rawJob(created.id);
+    const before = await rawJob(created.id);
 
     await expect(cancelSchedule(created.id)).rejects.toThrow(UserError);
     await expect(cancelSchedule(created.id)).rejects.toThrow(
       /managed by a plugin/,
     );
-    expect(rawJob(created.id)).toEqual(before);
+    expect(await rawJob(created.id)).toEqual(before);
   });
 
   test("enabling a row whose declaration is gone records the override without re-arming", async () => {
@@ -1900,7 +1903,7 @@ describe("declared schedules", () => {
 
   test("updateSchedule refuses sourced rows", async () => {
     const created = await upsertDeclaredSchedule(SOURCE_KEY, makeDefinition());
-    const before = rawJob(created.id);
+    const before = await rawJob(created.id);
 
     await expect(
       updateSchedule(created.id, { name: "renamed" }),
@@ -1908,7 +1911,7 @@ describe("declared schedules", () => {
     await expect(
       updateSchedule(created.id, { name: "renamed" }),
     ).rejects.toThrow(/managed by a plugin/);
-    expect(rawJob(created.id)).toEqual(before);
+    expect(await rawJob(created.id)).toEqual(before);
   });
 
   test("deleteSchedule refuses sourced rows and keeps runs", async () => {
@@ -1922,9 +1925,10 @@ describe("declared schedules", () => {
     );
 
     expect(await getSchedule(created.id)).not.toBeNull();
-    const runs = getRawDb()
-      .query("SELECT COUNT(*) AS n FROM cron_runs WHERE job_id = ?")
-      .get(created.id) as { n: number };
+    const runs = (await requireMainDb().get(
+      "SELECT COUNT(*) AS n FROM cron_runs WHERE job_id = ?",
+      [created.id],
+    )) as { n: number };
     expect(runs.n).toBe(1);
   });
 
@@ -1952,11 +1956,11 @@ describe("declared schedules", () => {
  * whatever the default resolves to at write time) instead of freezing this
  * workspace's shipped profile catalog.
  */
-describe("inference-profile pinning", () => {
-  beforeEach(() => {
-    getDb().run("DELETE FROM cron_runs");
-    getDb().run("DELETE FROM cron_jobs");
-    getDb().run("DELETE FROM conversations");
+describePg("inference-profile pinning", () => {
+  beforeEach(async () => {
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM conversations");
   });
 
   test("creation with no profile pins the resolved default", async () => {
@@ -2002,8 +2006,8 @@ describe("inference-profile pinning", () => {
   });
 
   test("a defer seeds the source conversation's pinned profile", async () => {
-    const conversation = createConversation({ id: "conv-pinned" });
-    setConversationInferenceProfile(conversation.id, "cost-optimized");
+    const conversation = await createConversation({ id: "conv-pinned" });
+    await setConversationInferenceProfile(conversation.id, "cost-optimized");
     expect(resolveDefaultScheduleInferenceProfile()).not.toBe("cost-optimized");
 
     const job = await createOwnerDeferredWake({
@@ -2019,8 +2023,8 @@ describe("inference-profile pinning", () => {
   });
 
   test("a defer does not freeze the source conversation's profile session", async () => {
-    const conversation = createConversation({ id: "conv-session" });
-    setConversationInferenceProfileSession(
+    const conversation = await createConversation({ id: "conv-session" });
+    await setConversationInferenceProfileSession(
       conversation.id,
       "cost-optimized",
       "session-1",
@@ -2042,7 +2046,7 @@ describe("inference-profile pinning", () => {
   });
 
   test("a defer from an unpinned conversation seeds the default", async () => {
-    const conversation = createConversation({ id: "conv-unpinned" });
+    const conversation = await createConversation({ id: "conv-unpinned" });
 
     const job = await createOwnerDeferredWake({
       conversationId: conversation.id,
@@ -2056,8 +2060,8 @@ describe("inference-profile pinning", () => {
   });
 
   test("any wake row seeds its target's pin, not just a defer", async () => {
-    const conversation = createConversation({ id: "conv-wake-target" });
-    setConversationInferenceProfile(conversation.id, "cost-optimized");
+    const conversation = await createConversation({ id: "conv-wake-target" });
+    await setConversationInferenceProfile(conversation.id, "cost-optimized");
     expect(resolveDefaultScheduleInferenceProfile()).not.toBe("cost-optimized");
 
     // Seeding is keyed on `mode: "wake"` at the insert chokepoint rather than

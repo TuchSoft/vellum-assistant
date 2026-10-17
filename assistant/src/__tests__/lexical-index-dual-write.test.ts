@@ -17,13 +17,12 @@ import {
   afterEach,
   beforeAll,
   beforeEach,
-  describe,
   expect,
   mock,
+  setDefaultTimeout,
   test,
 } from "bun:test";
-
-import { eq } from "drizzle-orm";
+setDefaultTimeout(30_000);
 
 // Stub the segment indexer so the persist path's memory indexing runs cheaply.
 // The lexical enqueue is a separate call on the persist path and still fires.
@@ -64,16 +63,13 @@ import {
   getMessages,
   updateMessageContent,
 } from "../persistence/conversation-crud.js";
-import { getMemoryDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { enqueueLexicalIndexForMessage } from "../persistence/job-handlers/message-lexical.js";
 import type { MemoryJobType } from "../persistence/jobs-store.js";
 import { enqueueMemoryJob } from "../persistence/jobs-store.js";
-import { memoryJobs } from "../persistence/schema/index.js";
 import memoryConversationDeleted from "../plugins/defaults/memory/hooks/conversation-deleted.js";
 import type { PluginHooks } from "../plugins/types.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 // Register the memory plugin's `conversation-deleted` hook the way boot does,
 // so the delete primitives' dispatch reaches the plugin's job sweep.
@@ -83,12 +79,12 @@ registerPluginHooks("default-memory", {
 
 /** Poll until `read()` returns a defined value or the timeout elapses. */
 async function waitFor<T>(
-  read: () => T | undefined,
+  read: () => T | Promise<T | undefined> | undefined,
   timeoutMs = 2000,
 ): Promise<T | undefined> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const value = read();
+    const value = await read();
     if (value !== undefined || Date.now() > deadline) {
       return value;
     }
@@ -96,12 +92,20 @@ async function waitFor<T>(
   }
 }
 
-function countJobs(type: MemoryJobType, conversationId?: string): number {
-  const rows = getMemoryDb()!
-    .select({ payload: memoryJobs.payload })
-    .from(memoryJobs)
-    .where(eq(memoryJobs.type, type))
-    .all();
+async function rowsOfType(
+  type: MemoryJobType,
+): Promise<Array<{ payload: string }>> {
+  return requireMainDb().all<{ payload: string }>(
+    "SELECT payload FROM memory_jobs WHERE type = ?",
+    [type],
+  );
+}
+
+async function countJobs(
+  type: MemoryJobType,
+  conversationId?: string,
+): Promise<number> {
+  const rows = await rowsOfType(type);
   if (conversationId == null) {
     return rows.length;
   }
@@ -117,25 +121,18 @@ function countJobs(type: MemoryJobType, conversationId?: string): number {
   }).length;
 }
 
-function lexicalJobMessageIds(): string[] {
-  return getMemoryDb()!
-    .select({ payload: memoryJobs.payload })
-    .from(memoryJobs)
-    .where(eq(memoryJobs.type, "index_message_lexical"))
-    .all()
-    .map((r) => {
-      try {
-        return (
-          (JSON.parse(r.payload) as { messageId?: string }).messageId ?? ""
-        );
-      } catch {
-        return "";
-      }
-    });
+async function lexicalJobMessageIds(): Promise<string[]> {
+  return (await rowsOfType("index_message_lexical")).map((r) => {
+    try {
+      return (JSON.parse(r.payload) as { messageId?: string }).messageId ?? "";
+    } catch {
+      return "";
+    }
+  });
 }
 
-function resetMemoryJobs(): void {
-  getMemoryDb()!.delete(memoryJobs).run();
+async function resetMemoryJobs(): Promise<void> {
+  await requireMainDb().run("DELETE FROM memory_jobs");
 }
 
 function setMemoryEnabled(enabled: boolean): void {
@@ -148,9 +145,9 @@ function setMemoryEnabled(enabled: boolean): void {
   invalidateConfigCache();
 }
 
-describe("messages lexical-index dual-write", () => {
-  beforeEach(() => {
-    resetMemoryJobs();
+describePg("messages lexical-index dual-write", () => {
+  beforeEach(async () => {
+    await resetMemoryJobs();
   });
 
   afterEach(() => {
@@ -161,10 +158,10 @@ describe("messages lexical-index dual-write", () => {
   });
 
   test("addMessage enqueues one index_message_lexical job for the persisted message", async () => {
-    const conv = createConversation("Lexical persist thread");
+    const conv = await createConversation("Lexical persist thread");
     const message = await addMessage(conv.id, "user", "hello lexical world");
 
-    const ids = lexicalJobMessageIds();
+    const ids = await lexicalJobMessageIds();
     expect(ids).toContain(message.id);
     expect(ids.filter((id) => id === message.id)).toHaveLength(1);
   });
@@ -175,54 +172,54 @@ describe("messages lexical-index dual-write", () => {
     // from the lexical index. `addMessage` catches the indexing throw as
     // non-fatal.
     throwFromIndex = true;
-    const conv = createConversation("Segment failure thread");
+    const conv = await createConversation("Segment failure thread");
     const message = await addMessage(
       conv.id,
       "user",
       "index me despite failure",
     );
 
-    expect(lexicalJobMessageIds()).toContain(message.id);
+    expect(await lexicalJobMessageIds()).toContain(message.id);
   });
 
   test("addMessage still enqueues an index_message_lexical job when memory is disabled", async () => {
     setMemoryEnabled(false);
-    const conv = createConversation("Disabled memory thread");
+    const conv = await createConversation("Disabled memory thread");
     const message = await addMessage(
       conv.id,
       "user",
       "lexically indexed regardless of memory state",
     );
 
-    expect(lexicalJobMessageIds()).toContain(message.id);
+    expect(await lexicalJobMessageIds()).toContain(message.id);
   });
 
-  test("enqueueLexicalIndexForMessage no-ops on an empty message id", () => {
+  test("enqueueLexicalIndexForMessage no-ops on an empty message id", async () => {
     enqueueLexicalIndexForMessage("");
-    expect(countJobs("index_message_lexical")).toBe(0);
+    expect(await countJobs("index_message_lexical")).toBe(0);
   });
 
   test("forking a conversation enqueues ZERO index_message_lexical jobs", async () => {
-    const source = createConversation("Fork exclusion thread");
+    const source = await createConversation("Fork exclusion thread");
     // Persist source messages through the real path so each enqueues a lexical
     // job — this makes the "fork adds none" assertion meaningful.
     await addMessage(source.id, "user", "Draft a launch plan");
     await addMessage(source.id, "assistant", "Here is a first pass.");
     await addMessage(source.id, "user", "Fork from here");
 
-    const beforeFork = countJobs("index_message_lexical");
+    const beforeFork = await countJobs("index_message_lexical");
     expect(beforeFork).toBe(3);
 
     // The fork copies every source row directly, bypassing the addMessage
     // persist path (and its lexical enqueue).
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
     expect(fork.id).not.toBe(source.id);
 
     // No new lexical index jobs were enqueued for the copied fork rows.
-    expect(countJobs("index_message_lexical")).toBe(beforeFork);
+    expect(await countJobs("index_message_lexical")).toBe(beforeFork);
     // ...and specifically none of the fork's own message ids were enqueued.
-    const enqueuedMessageIds = new Set(lexicalJobMessageIds());
-    for (const forkMessage of getMessages(fork.id)) {
+    const enqueuedMessageIds = new Set(await lexicalJobMessageIds());
+    for (const forkMessage of await getMessages(fork.id)) {
       expect(enqueuedMessageIds.has(forkMessage.id)).toBe(false);
     }
   });
@@ -230,94 +227,93 @@ describe("messages lexical-index dual-write", () => {
   test("deleteConversation (direct, no route) enqueues a purge for the conversation", async () => {
     // Retrospective startup cleanup calls deleteConversation directly, bypassing
     // the HTTP route — the purge must still fire from the shared primitive.
-    const conv = createConversation("Direct delete thread");
+    const conv = await createConversation("Direct delete thread");
     await addMessage(conv.id, "user", "index me then delete me");
 
-    resetMemoryJobs();
-    deleteConversation(conv.id);
+    await resetMemoryJobs();
+    await deleteConversation(conv.id);
 
-    expect(countJobs("purge_conversation_lexical", conv.id)).toBe(1);
+    expect(await countJobs("purge_conversation_lexical", conv.id)).toBe(1);
   });
 
   test("deleteConversation fails its pending memory jobs but leaves host jobs runnable", async () => {
-    const conv = createConversation("Cancel pending jobs thread");
+    const conv = await createConversation("Cancel pending jobs thread");
     await addMessage(conv.id, "user", "index me then delete me");
 
-    resetMemoryJobs();
+    await resetMemoryJobs();
     // One memory-plugin job type, one host-owned job type — both keyed by the
     // conversation id.
     enqueueMemoryJob("graph_extract", { conversationId: conv.id });
     enqueueMemoryJob("media_processing", { conversationId: conv.id });
 
-    deleteConversation(conv.id);
+    await deleteConversation(conv.id);
 
-    const jobStatus = (type: MemoryJobType): string | undefined =>
-      getMemoryDb()!
-        .select({ status: memoryJobs.status, payload: memoryJobs.payload })
-        .from(memoryJobs)
-        .where(eq(memoryJobs.type, type))
-        .all()
-        .find((r) => {
-          try {
-            return (
-              (JSON.parse(r.payload) as { conversationId?: string })
-                .conversationId === conv.id
-            );
-          } catch {
-            return false;
-          }
-        })?.status;
+    const jobStatus = async (
+      type: MemoryJobType,
+    ): Promise<string | undefined> => {
+      const rows = await requireMainDb().all<{
+        status: string;
+        payload: string;
+      }>("SELECT status, payload FROM memory_jobs WHERE type = ?", [type]);
+      return rows.find((r) => {
+        try {
+          return (
+            (JSON.parse(r.payload) as { conversationId?: string })
+              .conversationId === conv.id
+          );
+        } catch {
+          return false;
+        }
+      })?.status;
+    };
 
     // The hook dispatch is fire-and-forget, so wait for the plugin's sweep to
     // land before asserting.
-    const graphExtractStatus = await waitFor(() =>
-      jobStatus("graph_extract") === "failed" ? "failed" : undefined,
+    const graphExtractStatus = await waitFor(async () =>
+      (await jobStatus("graph_extract")) === "failed" ? "failed" : undefined,
     );
     expect(graphExtractStatus).toBe("failed");
     // The sweep is scoped to the plugin's own job types: host-owned jobs —
     // including the purge the delete primitive itself enqueued — stay
     // runnable.
-    expect(jobStatus("media_processing")).toBe("pending");
-    expect(jobStatus("purge_conversation_lexical")).toBe("pending");
+    expect(await jobStatus("media_processing")).toBe("pending");
+    expect(await jobStatus("purge_conversation_lexical")).toBe("pending");
   });
 
   test("deleteConversationGently (retrospective GC) enqueues a purge for the conversation", async () => {
-    const conv = createConversation("Gentle delete thread");
+    const conv = await createConversation("Gentle delete thread");
     await addMessage(conv.id, "user", "index me then gently delete me");
 
-    resetMemoryJobs();
+    await resetMemoryJobs();
     await deleteConversationGently(conv.id);
 
-    expect(countJobs("purge_conversation_lexical", conv.id)).toBe(1);
+    expect(await countJobs("purge_conversation_lexical", conv.id)).toBe(1);
   });
 
   test("deleteMessageById enqueues a delete_message_lexical job for the removed message", async () => {
-    const conv = createConversation("Single delete thread");
+    const conv = await createConversation("Single delete thread");
     const message = await addMessage(conv.id, "user", "delete just me");
 
-    resetMemoryJobs();
-    deleteMessageById(message.id);
+    await resetMemoryJobs();
+    await deleteMessageById(message.id);
 
-    const ids = getMemoryDb()!
-      .select({ payload: memoryJobs.payload })
-      .from(memoryJobs)
-      .where(eq(memoryJobs.type, "delete_message_lexical"))
-      .all()
-      .map((r) => (JSON.parse(r.payload) as { messageId?: string }).messageId);
+    const ids = (await rowsOfType("delete_message_lexical")).map(
+      (r) => (JSON.parse(r.payload) as { messageId?: string }).messageId,
+    );
     expect(ids).toEqual([message.id]);
   });
 
-  test("deleteMessageById for a nonexistent message enqueues nothing", () => {
-    resetMemoryJobs();
-    deleteMessageById("does-not-exist");
-    expect(countJobs("delete_message_lexical")).toBe(0);
+  test("deleteMessageById for a nonexistent message enqueues nothing", async () => {
+    await resetMemoryJobs();
+    await deleteMessageById("does-not-exist");
+    expect(await countJobs("delete_message_lexical")).toBe(0);
   });
 
   test("deleteLastExchange enqueues delete_message_lexical for every removed message", async () => {
     // Undo bulk-deletes the last user turn + everything after it via a single
     // `tx.delete(messages)`, bypassing `deleteMessageById`. It must still purge
     // each removed message's lexical point.
-    const conv = createConversation("Undo thread");
+    const conv = await createConversation("Undo thread");
     await addMessage(conv.id, "user", "first user turn");
     await addMessage(conv.id, "assistant", "first assistant reply");
     const lastUser = await addMessage(conv.id, "user", "undo this turn");
@@ -327,16 +323,13 @@ describe("messages lexical-index dual-write", () => {
       "and this reply",
     );
 
-    resetMemoryJobs();
-    const removed = deleteLastExchange(conv.id);
+    await resetMemoryJobs();
+    const removed = await deleteLastExchange(conv.id);
     expect(removed).toBe(2);
 
-    const deletedIds = getMemoryDb()!
-      .select({ payload: memoryJobs.payload })
-      .from(memoryJobs)
-      .where(eq(memoryJobs.type, "delete_message_lexical"))
-      .all()
-      .map((r) => (JSON.parse(r.payload) as { messageId?: string }).messageId);
+    const deletedIds = (await rowsOfType("delete_message_lexical")).map(
+      (r) => (JSON.parse(r.payload) as { messageId?: string }).messageId,
+    );
     expect(new Set(deletedIds)).toEqual(
       new Set([lastUser.id, lastAssistant.id]),
     );
@@ -346,20 +339,20 @@ describe("messages lexical-index dual-write", () => {
     // The reindex is owned by the semantic seams (streaming finalize, edits,
     // consolidation), NOT the low-level primitive — this keeps mid-stream
     // partial flushes and tool-timing stamps from spamming reindex jobs.
-    const conv = createConversation("Raw update thread");
+    const conv = await createConversation("Raw update thread");
     const message = await addMessage(conv.id, "user", "original text");
 
-    resetMemoryJobs();
-    updateMessageContent(
+    await resetMemoryJobs();
+    await updateMessageContent(
       message.id,
       JSON.stringify([{ type: "text", text: "edited text" }]),
     );
 
-    expect(countJobs("index_message_lexical")).toBe(0);
+    expect(await countJobs("index_message_lexical")).toBe(0);
   });
 
   test("consolidation reindexes the retained message and purges the merged-away rows", async () => {
-    const conv = createConversation("Consolidation thread");
+    const conv = await createConversation("Consolidation thread");
     const userMsg = await addMessage(conv.id, "user", "do a multi-step task");
     const retained = await addMessage(
       conv.id,
@@ -372,19 +365,19 @@ describe("messages lexical-index dual-write", () => {
       JSON.stringify([{ type: "text", text: "second assistant segment" }]),
     );
 
-    resetMemoryJobs();
-    const didConsolidate = consolidateAssistantMessages(conv.id, userMsg.id);
+    await resetMemoryJobs();
+    const didConsolidate = await consolidateAssistantMessages(
+      conv.id,
+      userMsg.id,
+    );
     expect(didConsolidate).toBe(true);
 
     // The retained (first) assistant row is reindexed with the merged content.
-    expect(lexicalJobMessageIds()).toContain(retained.id);
+    expect(await lexicalJobMessageIds()).toContain(retained.id);
     // The merged-away row's point is removed via delete_message_lexical.
-    const deletedIds = getMemoryDb()!
-      .select({ payload: memoryJobs.payload })
-      .from(memoryJobs)
-      .where(eq(memoryJobs.type, "delete_message_lexical"))
-      .all()
-      .map((r) => (JSON.parse(r.payload) as { messageId?: string }).messageId);
+    const deletedIds = (await rowsOfType("delete_message_lexical")).map(
+      (r) => (JSON.parse(r.payload) as { messageId?: string }).messageId,
+    );
     expect(deletedIds).toContain(mergedAway.id);
     // The retained row is not itself scheduled for deletion.
     expect(deletedIds).not.toContain(retained.id);
@@ -395,7 +388,7 @@ describe("messages lexical-index dual-write", () => {
 // from the shared `deleteConversation`/`deleteConversationGently` primitive
 // (covering every caller, not just the HTTP route). Captured through a
 // registered test hook — the same chain a user plugin would subscribe on.
-describe("delete paths dispatch the conversation-deleted hook", () => {
+describePg("delete paths dispatch the conversation-deleted hook", () => {
   const deletedConversations: string[] = [];
 
   beforeAll(() => {
@@ -410,16 +403,16 @@ describe("delete paths dispatch the conversation-deleted hook", () => {
     unregisterPluginHooks("test-conversation-deleted-capture");
   });
 
-  beforeEach(() => {
-    resetMemoryJobs();
+  beforeEach(async () => {
+    await resetMemoryJobs();
     deletedConversations.length = 0;
   });
 
   test("deleteConversation dispatches conversation-deleted (covers all callers, not just the route)", async () => {
-    const conv = createConversation("Hook conversation delete");
+    const conv = await createConversation("Hook conversation delete");
     await addMessage(conv.id, "user", "hello");
 
-    deleteConversation(conv.id);
+    await deleteConversation(conv.id);
 
     // The dispatch is fire-and-forget; wait for the chain to land.
     const seen = await waitFor(() =>
@@ -429,7 +422,7 @@ describe("delete paths dispatch the conversation-deleted hook", () => {
   });
 
   test("deleteConversationGently dispatches conversation-deleted (the retrospective-GC path)", async () => {
-    const conv = createConversation("Hook gentle delete");
+    const conv = await createConversation("Hook gentle delete");
     await addMessage(conv.id, "user", "hello");
 
     await deleteConversationGently(conv.id);

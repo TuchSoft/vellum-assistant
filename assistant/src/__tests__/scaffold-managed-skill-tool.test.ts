@@ -6,7 +6,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+setDefaultTimeout(30_000);
 
 import type { SkillSource } from "../config/skills.js";
 
@@ -1231,7 +1240,7 @@ describe("scaffold_managed_skill tool", () => {
       },
       makeRetrospectiveContext({ conversationId: "retro-run-conv" }),
       {
-        getConversation: (id) =>
+        getConversation: async (id) =>
           id === "retro-run-conv"
             ? { forkParentConversationId: "source-conv" }
             : null,
@@ -1246,7 +1255,9 @@ describe("scaffold_managed_skill tool", () => {
   });
 
   test("user scaffold records no conversation lineage and never looks up the conversation", async () => {
-    const lookup = mock(() => ({ forkParentConversationId: "source-conv" }));
+    const lookup = mock(async () => ({
+      forkParentConversationId: "source-conv",
+    }));
     const result = await executeScaffoldManagedSkill(
       {
         skill_id: "user-no-lineage",
@@ -1271,10 +1282,10 @@ describe("scaffold_managed_skill tool", () => {
     // Two unresolvable shapes: the conversation row is gone entirely, or it
     // exists but is not a fork (null parent).
     const cases = [
-      { skillId: "orphan-no-row", lookup: () => null },
+      { skillId: "orphan-no-row", lookup: async () => null },
       {
         skillId: "orphan-no-parent",
-        lookup: () => ({ forkParentConversationId: null }),
+        lookup: async () => ({ forkParentConversationId: null }),
       },
     ];
 
@@ -1311,7 +1322,7 @@ describe("scaffold_managed_skill tool", () => {
       },
       makeRetrospectiveContext({ conversationId: "retro-run-conv" }),
       {
-        getConversation: () => {
+        getConversation: async () => {
           throw new Error("db unavailable");
         },
       },
@@ -1325,7 +1336,9 @@ describe("scaffold_managed_skill tool", () => {
   });
 
   test("retrospective scaffold with no conversationId on the context omits all lineage", async () => {
-    const lookup = mock(() => ({ forkParentConversationId: "source-conv" }));
+    const lookup = mock(async () => ({
+      forkParentConversationId: "source-conv",
+    }));
     const context = makeRetrospectiveContext();
     // Some runtime callers construct a partial context without a conversation.
     delete (context as { conversationId?: string }).conversationId;
@@ -1509,7 +1522,7 @@ describe("scaffold_managed_skill tool", () => {
   /** Lineage seam resolving the fork parent of the retrospective run. */
   function lineageSeam() {
     return {
-      getConversation: (id: string) =>
+      getConversation: async (id: string) =>
         id === "retro-run-conv"
           ? { forkParentConversationId: "source-conv" }
           : null,
@@ -1577,16 +1590,18 @@ describe("scaffold_managed_skill tool", () => {
     // and the lineage lookup throws.
     const cases: Array<{
       skillId: string;
-      lookup: () => { forkParentConversationId: string | null } | null;
+      lookup: () => Promise<{
+        forkParentConversationId: string | null;
+      } | null>;
     }> = [
-      { skillId: "no-card-no-row", lookup: () => null },
+      { skillId: "no-card-no-row", lookup: async () => null },
       {
         skillId: "no-card-no-parent",
-        lookup: () => ({ forkParentConversationId: null }),
+        lookup: async () => ({ forkParentConversationId: null }),
       },
       {
         skillId: "no-card-throwing-lookup",
-        lookup: () => {
+        lookup: async () => {
           throw new Error("db unavailable");
         },
       },
@@ -1775,7 +1790,7 @@ describe("background skill update notification", () => {
   }
 
   const lineage = () => ({
-    getConversation: (id: string) =>
+    getConversation: async (id: string) =>
       id === "retro-run-conv"
         ? { forkParentConversationId: "source-conv" }
         : null,
@@ -2108,7 +2123,7 @@ describe("background skill update notification", () => {
         change_summary: "Refined the steps.",
       },
       makeRetrospectiveContext({ conversationId: "retro-run-conv" }),
-      { getConversation: () => null },
+      { getConversation: async () => null },
     );
 
     // The run is an ephemeral fork; naming it as the source would have the

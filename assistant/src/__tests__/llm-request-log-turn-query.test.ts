@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { sql } from "drizzle-orm";
 
@@ -7,7 +8,8 @@ import {
   createConversation,
   forkConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb, getLogsDb } from "../persistence/db-connection.js";
+import { getLogsDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import {
   backfillMessageIdOnLogs,
@@ -16,10 +18,8 @@ import {
   recordRequestLog,
   relinkLlmRequestLogs,
 } from "../persistence/llm-request-log-store.js";
-import {
-  llmRequestLogs,
-  toolInvocations,
-} from "../persistence/schema/index.js";
+import { llmRequestLogs } from "../persistence/schema/index.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
@@ -28,14 +28,27 @@ function logsDb() {
   return getLogsDb()!;
 }
 
-function resetTables(): void {
-  const db = getDb();
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
   logsDb().delete(llmRequestLogs).run();
-  db.delete(toolInvocations).run();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+  await db.run("DELETE FROM tool_invocations");
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
+}
+
+async function insertMessage(
+  id: string,
+  conversationId: string,
+  role: string,
+  content: string,
+  createdAt: number,
+): Promise<void> {
+  await requireMainDb().run(
+    "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+    [id, conversationId, role, content, createdAt],
+  );
 }
 
 function toolResultContent(toolUseIds: string[]): string {
@@ -49,13 +62,13 @@ function toolResultContent(toolUseIds: string[]): string {
   );
 }
 
-describe("getRequestLogsByMessageId — turn-aware query", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("getRequestLogsByMessageId — turn-aware query", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
   test("single message, single log: backward compat — returns 1 log", async () => {
-    const conv = createConversation("single-msg");
+    const conv = await createConversation("single-msg");
     await addMessage(conv.id, "user", "Hello", {
       skipIndexing: true,
     });
@@ -67,14 +80,14 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
     recordRequestLog(conv.id, '{"prompt":"hi"}', '{"result":"hello"}');
     backfillMessageIdOnLogs(conv.id, a1.id);
 
-    const logs = getRequestLogsByMessageId(a1.id);
+    const logs = await getRequestLogsByMessageId(a1.id);
     expect(logs).toHaveLength(1);
     expect(logs[0]?.messageId).toBe(a1.id);
     expect(logs[0]?.conversationId).toBe(conv.id);
   });
 
   test("multi-step turn: returns logs from all assistant messages in the turn", async () => {
-    const conv = createConversation("multi-step");
+    const conv = await createConversation("multi-step");
 
     // user → A1 (+ log1) → tool_result → A2 (+ log2)
     await addMessage(conv.id, "user", "Do the task", {
@@ -101,7 +114,7 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
     backfillMessageIdOnLogs(conv.id, a2.id);
 
     // Query from A2 (the last message in the turn) → should return both logs
-    const logs = getRequestLogsByMessageId(a2.id);
+    const logs = await getRequestLogsByMessageId(a2.id);
     expect(logs).toHaveLength(2);
     expect(logs[0]?.messageId).toBe(a1.id);
     expect(logs[1]?.messageId).toBe(a2.id);
@@ -110,7 +123,7 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
   });
 
   test("fork fallback still works: forked message with no logs, source has turn logs", async () => {
-    const source = createConversation("source-conv");
+    const source = await createConversation("source-conv");
 
     // Build a multi-step turn in the source conversation
     await addMessage(source.id, "user", "Original task", {
@@ -134,8 +147,8 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
     backfillMessageIdOnLogs(source.id, a2.id);
 
     // Fork the conversation
-    const fork = forkConversation({ conversationId: source.id });
-    const forkMessages = (
+    const fork = await forkConversation({ conversationId: source.id });
+    const forkMessages = await (
       await import("../persistence/conversation-crud.js")
     ).getMessages(fork.id);
     const forkLastAssistant = forkMessages
@@ -144,14 +157,14 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
     expect(forkLastAssistant).toBeDefined();
 
     // The fork has no LLM logs of its own — should fall back to source turn's logs
-    const logs = getRequestLogsByMessageId(forkLastAssistant!.id);
+    const logs = await getRequestLogsByMessageId(forkLastAssistant!.id);
     expect(logs).toHaveLength(2);
     expect(logs[0]?.conversationId).toBe(source.id);
     expect(logs[1]?.conversationId).toBe(source.id);
   });
 
   test("logs from different turns don't bleed", async () => {
-    const conv = createConversation("two-turns");
+    const conv = await createConversation("two-turns");
 
     // First turn: user → A1 (+ log1)
     await addMessage(conv.id, "user", "First question", {
@@ -184,31 +197,26 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
     backfillMessageIdOnLogs(conv.id, a3.id);
 
     // Query second turn → should only return logs for A2 and A3, NOT A1
-    const secondTurnLogs = getRequestLogsByMessageId(a3.id);
+    const secondTurnLogs = await getRequestLogsByMessageId(a3.id);
     expect(secondTurnLogs).toHaveLength(2);
     expect(secondTurnLogs[0]?.messageId).toBe(a2.id);
     expect(secondTurnLogs[1]?.messageId).toBe(a3.id);
 
     // Query first turn → should only return log for A1
-    const firstTurnLogs = getRequestLogsByMessageId(a1.id);
+    const firstTurnLogs = await getRequestLogsByMessageId(a1.id);
     expect(firstTurnLogs).toHaveLength(1);
     expect(firstTurnLogs[0]?.messageId).toBe(a1.id);
   });
 
-  test("recovers orphaned logs from deleted intermediate messages", () => {
+  test("recovers orphaned logs from deleted intermediate messages", async () => {
     // Simulate a turn where intermediate messages were deleted but logs remain.
     // Use explicit timestamps via raw SQL to avoid timing-dependent flakes.
     const T = 1_700_000_000_000;
-    const db = getDb();
-    const conv = createConversation("orphan-test");
+    const conv = await createConversation("orphan-test");
 
     // Insert messages with controlled timestamps via raw SQL.
-    db.run(
-      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1-o', ${conv.id}, 'user', '"Do the task"', ${T})`,
-    );
-    db.run(
-      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a3-o', ${conv.id}, 'assistant', '"Done!"', ${T + 30000})`,
-    );
+    await insertMessage("u1-o", conv.id, "user", '"Do the task"', T);
+    await insertMessage("a3-o", conv.id, "assistant", '"Done!"', T + 30000);
 
     // Orphaned log 1: message_id points to a deleted message
     logsDb()
@@ -253,25 +261,20 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
       .run();
 
     // Query from the surviving assistant message → should find all 3 logs
-    const logs = getRequestLogsByMessageId("a3-o");
+    const logs = await getRequestLogsByMessageId("a3-o");
     expect(logs).toHaveLength(3);
     expect(logs[0]?.id).toBe("log-orphan-1");
     expect(logs[1]?.id).toBe("log-orphan-2");
     expect(logs[2]?.id).toBe("log-surviving");
   });
 
-  test("recovers unlinked logs (messageId IS NULL) within the turn time range", () => {
+  test("recovers unlinked logs (messageId IS NULL) within the turn time range", async () => {
     // Simulate the race: logs recorded with NULL messageId, backfill hasn't run yet.
     const T = 1_700_000_000_000;
-    const db = getDb();
-    const conv = createConversation("unlinked-test");
+    const conv = await createConversation("unlinked-test");
 
-    db.run(
-      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1-ul', ${conv.id}, 'user', '"Do the task"', ${T})`,
-    );
-    db.run(
-      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a1-ul', ${conv.id}, 'assistant', '"Done!"', ${T + 30000})`,
-    );
+    await insertMessage("u1-ul", conv.id, "user", '"Do the task"', T);
+    await insertMessage("a1-ul", conv.id, "assistant", '"Done!"', T + 30000);
 
     // Unlinked log: messageId is NULL (backfill hasn't run yet)
     logsDb()
@@ -301,7 +304,7 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
       })
       .run();
 
-    const logs = getRequestLogsByMessageId("a1-ul");
+    const logs = await getRequestLogsByMessageId("a1-ul");
     expect(logs).toHaveLength(2);
     expect(logs[0]?.id).toBe("log-unlinked-1");
     expect(logs[1]?.id).toBe("log-linked-1");
@@ -315,19 +318,14 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
     expect(backfilledLog?.messageId).toBe("a1-ul");
   });
 
-  test("unlinked logs from different conversations don't bleed", () => {
+  test("unlinked logs from different conversations don't bleed", async () => {
     const T = 1_700_000_000_000;
-    const db = getDb();
-    const convA = createConversation("conv-a");
-    const convB = createConversation("conv-b");
+    const convA = await createConversation("conv-a");
+    const convB = await createConversation("conv-b");
 
     // Conversation A: user + assistant + unlinked log
-    db.run(
-      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1-a', ${convA.id}, 'user', '"Hello A"', ${T})`,
-    );
-    db.run(
-      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a1-a', ${convA.id}, 'assistant', '"Hi A"', ${T + 10000})`,
-    );
+    await insertMessage("u1-a", convA.id, "user", '"Hello A"', T);
+    await insertMessage("a1-a", convA.id, "assistant", '"Hi A"', T + 10000);
     logsDb()
       .insert(llmRequestLogs)
       .values({
@@ -342,12 +340,8 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
       .run();
 
     // Conversation B: user + assistant + unlinked log (overlapping timestamps)
-    db.run(
-      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1-b', ${convB.id}, 'user', '"Hello B"', ${T})`,
-    );
-    db.run(
-      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a1-b', ${convB.id}, 'assistant', '"Hi B"', ${T + 10000})`,
-    );
+    await insertMessage("u1-b", convB.id, "user", '"Hello B"', T);
+    await insertMessage("a1-b", convB.id, "assistant", '"Hi B"', T + 10000);
     logsDb()
       .insert(llmRequestLogs)
       .values({
@@ -362,28 +356,23 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
       .run();
 
     // Query from conv A → should only find conv A's log
-    const logsA = getRequestLogsByMessageId("a1-a");
+    const logsA = await getRequestLogsByMessageId("a1-a");
     expect(logsA).toHaveLength(1);
     expect(logsA[0]?.id).toBe("log-conv-a");
 
     // Query from conv B → should only find conv B's log
-    const logsB = getRequestLogsByMessageId("a1-b");
+    const logsB = await getRequestLogsByMessageId("a1-b");
     expect(logsB).toHaveLength(1);
     expect(logsB[0]?.id).toBe("log-conv-b");
   });
 
-  test("unlinked logs from different turns don't bleed", () => {
+  test("unlinked logs from different turns don't bleed", async () => {
     const T = 1_700_000_000_000;
-    const db = getDb();
-    const conv = createConversation("two-turn-unlinked");
+    const conv = await createConversation("two-turn-unlinked");
 
     // Turn 1: user → assistant (with linked log)
-    db.run(
-      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1-t', ${conv.id}, 'user', '"Turn 1"', ${T})`,
-    );
-    db.run(
-      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a1-t', ${conv.id}, 'assistant', '"Answer 1"', ${T + 10000})`,
-    );
+    await insertMessage("u1-t", conv.id, "user", '"Turn 1"', T);
+    await insertMessage("a1-t", conv.id, "assistant", '"Answer 1"', T + 10000);
     logsDb()
       .insert(llmRequestLogs)
       .values({
@@ -398,12 +387,8 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
       .run();
 
     // Turn 2: user → assistant (with unlinked log)
-    db.run(
-      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u2-t', ${conv.id}, 'user', '"Turn 2"', ${T + 60000})`,
-    );
-    db.run(
-      sql`INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a2-t', ${conv.id}, 'assistant', '"Answer 2"', ${T + 70000})`,
-    );
+    await insertMessage("u2-t", conv.id, "user", '"Turn 2"', T + 60000);
+    await insertMessage("a2-t", conv.id, "assistant", '"Answer 2"', T + 70000);
     logsDb()
       .insert(llmRequestLogs)
       .values({
@@ -418,18 +403,18 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
       .run();
 
     // Query turn 2 → should only find turn 2's unlinked log
-    const turn2Logs = getRequestLogsByMessageId("a2-t");
+    const turn2Logs = await getRequestLogsByMessageId("a2-t");
     expect(turn2Logs).toHaveLength(1);
     expect(turn2Logs[0]?.id).toBe("log-turn2-unlinked");
 
     // Query turn 1 → should only find turn 1's unlinked log
-    const turn1Logs = getRequestLogsByMessageId("a1-t");
+    const turn1Logs = await getRequestLogsByMessageId("a1-t");
     expect(turn1Logs).toHaveLength(1);
     expect(turn1Logs[0]?.id).toBe("log-turn1-unlinked");
   });
 
   test("relinkLlmRequestLogs moves logs from deleted messages to consolidated message", async () => {
-    const conv = createConversation("relink-test");
+    const conv = await createConversation("relink-test");
 
     // Simulate multi-step turn: user → A1 (+ log1) → tool_result → A2 (+ log2)
     await addMessage(conv.id, "user", "Do the task", {
@@ -459,20 +444,20 @@ describe("getRequestLogsByMessageId — turn-aware query", () => {
     relinkLlmRequestLogs([a2.id], a1.id);
 
     // Both logs should now be findable via A1
-    const logs = getRequestLogsByMessageId(a1.id);
+    const logs = await getRequestLogsByMessageId(a1.id);
     expect(logs).toHaveLength(2);
     expect(logs[0]?.messageId).toBe(a1.id);
     expect(logs[1]?.messageId).toBe(a1.id);
   });
 });
 
-describe("compaction-call attribution", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("compaction-call attribution", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
   test("fork: an unlinked compactionAgent row does not eclipse the source turn's calls", async () => {
-    const source = createConversation("eclipse-source");
+    const source = await createConversation("eclipse-source");
     await addMessage(source.id, "user", "Original question", {
       skipIndexing: true,
     });
@@ -482,8 +467,8 @@ describe("compaction-call attribution", () => {
     });
     backfillMessageIdOnLogs(source.id, reply.id);
 
-    const fork = forkConversation({ conversationId: source.id });
-    const forkMessages = (
+    const fork = await forkConversation({ conversationId: source.id });
+    const forkMessages = await (
       await import("../persistence/conversation-crud.js")
     ).getMessages(fork.id);
     const forkReply = forkMessages.filter((m) => m.role === "assistant").at(-1);
@@ -500,7 +485,7 @@ describe("compaction-call attribution", () => {
       "compactionAgent",
     );
 
-    const logs = getRequestLogsByMessageId(forkReply!.id);
+    const logs = await getRequestLogsByMessageId(forkReply!.id);
     const callSites = logs.map((l) => l.callSite);
     // The recovery may claim the companion row into the window, but the
     // fork-source fallback must still surface the turn's real call.
@@ -509,7 +494,7 @@ describe("compaction-call attribution", () => {
   });
 
   test("a linked compaction row belongs to the card's own group, not the prior turn", async () => {
-    const conv = createConversation("card-group");
+    const conv = await createConversation("card-group");
     await addMessage(conv.id, "user", "Chat away", { skipIndexing: true });
     recordRequestLog(conv.id, '{"turn":"main"}', '{"answer":"sure"}');
     const reply = await addMessage(conv.id, "assistant", "Sure!", {
@@ -538,19 +523,19 @@ describe("compaction-call attribution", () => {
     linkRequestLogsToMessage([compactionLogId!], card.id);
 
     // The prior turn keeps only its own call…
-    const turnLogs = getRequestLogsByMessageId(reply.id);
+    const turnLogs = await getRequestLogsByMessageId(reply.id);
     expect(turnLogs).toHaveLength(1);
     expect(turnLogs[0]?.messageId).toBe(reply.id);
 
     // …and the card's group holds exactly the compaction call.
-    const cardLogs = getRequestLogsByMessageId(card.id);
+    const cardLogs = await getRequestLogsByMessageId(card.id);
     expect(cardLogs).toHaveLength(1);
     expect(cardLogs[0]?.id).toBe(compactionLogId!);
     expect(cardLogs[0]?.messageId).toBe(card.id);
   });
 
   test("a card that is a user message's only reply is that turn's group (/compact shape)", async () => {
-    const conv = createConversation("compact-turn");
+    const conv = await createConversation("compact-turn");
     const userMsg = await addMessage(conv.id, "user", "/compact", {
       skipIndexing: true,
     });
@@ -568,13 +553,13 @@ describe("compaction-call attribution", () => {
     });
     linkRequestLogsToMessage([compactionLogId!], card.id);
 
-    const logs = getRequestLogsByMessageId(userMsg.id);
+    const logs = await getRequestLogsByMessageId(userMsg.id);
     expect(logs).toHaveLength(1);
     expect(logs[0]?.id).toBe(compactionLogId!);
   });
 
   test("recovery on the prior turn cannot defeat the deliberate card link", async () => {
-    const conv = createConversation("link-race");
+    const conv = await createConversation("link-race");
     await addMessage(conv.id, "user", "Chat away", { skipIndexing: true });
     recordRequestLog(conv.id, '{"turn":"main"}', '{"answer":"sure"}');
     const reply = await addMessage(conv.id, "assistant", "Sure!", {
@@ -597,7 +582,7 @@ describe("compaction-call attribution", () => {
     // compaction call and the card link. Recovery may sweep the unlinked
     // compaction row into the view, but it must NOT durably stamp it onto this
     // turn — otherwise the IS-NULL-guarded link below would no-op.
-    getRequestLogsByMessageId(reply.id);
+    await getRequestLogsByMessageId(reply.id);
     const afterRecovery = logsDb()
       .select({ messageId: llmRequestLogs.messageId })
       .from(llmRequestLogs)
@@ -613,13 +598,13 @@ describe("compaction-call attribution", () => {
     linkRequestLogsToMessage([compactionLogId!], card.id);
 
     // The deliberate link wins: the compaction call belongs to the card…
-    const cardLogs = getRequestLogsByMessageId(card.id);
+    const cardLogs = await getRequestLogsByMessageId(card.id);
     expect(cardLogs).toHaveLength(1);
     expect(cardLogs[0]?.id).toBe(compactionLogId!);
     expect(cardLogs[0]?.messageId).toBe(card.id);
 
     // …and the prior turn keeps only its own mainAgent call.
-    const turnLogs = getRequestLogsByMessageId(reply.id);
+    const turnLogs = await getRequestLogsByMessageId(reply.id);
     expect(turnLogs).toHaveLength(1);
     expect(turnLogs[0]?.messageId).toBe(reply.id);
   });

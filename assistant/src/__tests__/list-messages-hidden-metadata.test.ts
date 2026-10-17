@@ -6,7 +6,8 @@
  * UI history list while remaining visible to the LLM-side history loader.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
 import { setConfig } from "./helpers/set-config.js";
 
@@ -19,23 +20,20 @@ import {
   createConversation,
   getMessages,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { messages } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   MEMORY_RETROSPECTIVE_FORK_SOURCE,
   MEMORY_RETROSPECTIVE_INSTRUCTION_KIND,
 } from "../plugins/defaults/memory/memory-retrospective-constants.js";
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables() {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 interface MessagePayload {
@@ -48,11 +46,13 @@ function plainText(message: MessagePayload): string {
   return (message.textSegments ?? []).join("");
 }
 
-describe("handleListMessages metadata.hidden filtering", () => {
-  beforeEach(resetTables);
+describePg("handleListMessages metadata.hidden filtering", () => {
+  beforeEach(async () => {
+    await resetTables();
+  });
 
   test("UI serializer omits hidden messages but LLM-side getMessages includes them", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -83,7 +83,7 @@ describe("handleListMessages metadata.hidden filtering", () => {
     ).toBe(false);
 
     // LLM-side loader must include the hidden row so agent context is intact.
-    const llmRows = getMessages(conv.id);
+    const llmRows = await getMessages(conv.id);
     expect(llmRows).toHaveLength(3);
     expect(llmRows[1].metadata).toContain('"hidden":true');
   });
@@ -91,7 +91,7 @@ describe("handleListMessages metadata.hidden filtering", () => {
   test("UI serializer omits system rows but LLM-side getMessages includes them", async () => {
     // GIVEN a conversation with a system row sandwiched between two
     // renderable turns (e.g. a skill-authored context message)
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -121,13 +121,13 @@ describe("handleListMessages metadata.hidden filtering", () => {
     ).toBe(false);
 
     // AND the LLM-side loader still includes the system row for agent context
-    const llmRows = getMessages(conv.id);
+    const llmRows = await getMessages(conv.id);
     expect(llmRows).toHaveLength(3);
     expect(llmRows[1].role).toBe("system");
   });
 
   test("messages without metadata or with hidden=false are returned", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",
@@ -149,7 +149,7 @@ describe("handleListMessages metadata.hidden filtering", () => {
   });
 
   test("pagination skips hidden rows so hasMore and oldest cursor reflect visible rows", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     // 4 visible older rows, then a block of 3 hidden rows, then 2 visible newer.
     // With limit=2 and page=latest we should get the 2 newest visible rows,
     // hasMore=true (older visible rows exist), and a cursor pointing at the
@@ -224,37 +224,33 @@ describe("handleListMessages metadata.hidden filtering", () => {
     const SCAN_CAP = 100;
     _setPaginationScanCapForTesting(SCAN_CAP);
     try {
-      const conv = createConversation();
-      const db = getDb();
+      const conv = await createConversation();
+      const db = requireMainDb();
       const HIDDEN_COUNT = SCAN_CAP + 20; // > scan cap
       const VISIBLE_COUNT = 2;
       let createdAt = 0;
       // Older visible rows first (lowest createdAt), then the hidden block.
-      db.transaction((tx) => {
+      await db.transaction(async (tx) => {
         for (let i = 0; i < VISIBLE_COUNT; i++) {
           createdAt += 1;
-          tx.insert(messages)
-            .values({
-              id: `visible-${i}`,
-              conversationId: conv.id,
-              role: "user",
-              content: JSON.stringify([{ type: "text", text: `visible ${i}` }]),
-              createdAt,
-            })
-            .run();
+          await tx.orm.insert(tx.schema.messages).values({
+            id: `visible-${i}`,
+            conversationId: conv.id,
+            role: "user",
+            content: JSON.stringify([{ type: "text", text: `visible ${i}` }]),
+            createdAt,
+          });
         }
         for (let i = 0; i < HIDDEN_COUNT; i++) {
           createdAt += 1;
-          tx.insert(messages)
-            .values({
-              id: `hidden-${i}`,
-              conversationId: conv.id,
-              role: "assistant",
-              content: JSON.stringify([{ type: "text", text: `hidden ${i}` }]),
-              createdAt,
-              metadata: JSON.stringify({ hidden: true }),
-            })
-            .run();
+          await tx.orm.insert(tx.schema.messages).values({
+            id: `hidden-${i}`,
+            conversationId: conv.id,
+            role: "assistant",
+            content: JSON.stringify([{ type: "text", text: `hidden ${i}` }]),
+            createdAt,
+            metadata: JSON.stringify({ hidden: true }),
+          });
         }
       });
 
@@ -290,7 +286,7 @@ describe("handleListMessages metadata.hidden filtering", () => {
   });
 
   test("pagination drains DB when every row in a page is hidden", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     // 5 hidden rows then 2 visible older rows. With limit=2, the naive
     // implementation fetches 3 newest (all hidden), filters to 0 visible, and
     // returns hasMore=true with no cursor. We expect the loop to keep going
@@ -328,7 +324,7 @@ describe("handleListMessages metadata.hidden filtering", () => {
   });
 
   test("fork retrospective conversations expose the hidden instruction and keep the review as its own turn", async () => {
-    const conv = createConversation({
+    const conv = await createConversation({
       source: MEMORY_RETROSPECTIVE_FORK_SOURCE,
     });
     await addMessage(
@@ -378,7 +374,7 @@ describe("handleListMessages metadata.hidden filtering", () => {
   });
 
   test("non-fork conversations still hide the retrospective instruction (relaxation is fork-scoped)", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addMessage(
       conv.id,
       "user",

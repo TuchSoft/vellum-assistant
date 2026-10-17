@@ -1,6 +1,6 @@
 /**
  * Regression: `recordConversationPersistedSeq` must not throw on transient
- * SQLite write contention.
+ * write contention.
  *
  * The persisted-seq anchor is written from the agent loop as fire-and-forget
  * bookkeeping (`flushAccumulatedContent`, `handleMessageComplete`, tool
@@ -16,28 +16,41 @@
  *     advance) and self-heals on the next successful record.
  *  2. A non-retryable error (a genuine bug) still propagates.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, setDefaultTimeout, test } from "bun:test";
+setDefaultTimeout(30_000);
 
-// Wrap the real raw-query module so the persisted-seq UPDATE can be made to
+// Wrap the real db facade so only the persisted-seq UPDATE can be made to
 // throw on demand while every other DB call (createConversation, the read-back
-// via `rawGet`) keeps hitting the real database.
-//
-// Destructure the real exports into stable locals BEFORE registering the mock:
-// `mock.module` mutates the live module namespace in place, so reading
-// `actualRawQuery.rawRun` from inside the factory would re-resolve to the mock
-// and recurse forever. The captured `realRawRun` const is immune to that swap.
-const actualRawQuery = await import("../persistence/raw-query.js");
-const realRawRun = actualRawQuery.rawRun;
+// via `getConversationPersistedSeq`) keeps hitting the real database.
+const actualFacade = await import("../persistence/db-facade.js");
+// Capture the real accessor before registering the mock: `mock.module` mutates
+// the live module namespace in place, so reading it from the factory would
+// re-resolve to the mock and recurse forever.
+const realRequireMainDb = actualFacade.requireMainDb;
 
 let injectedRecordError: Error | null = null;
 
-mock.module("../persistence/raw-query.js", () => ({
-  ...actualRawQuery,
-  rawRun: (label: string, sql: string, ...params: unknown[]): number => {
-    if (label === "conversation:recordPersistedSeq" && injectedRecordError) {
-      throw injectedRecordError;
-    }
-    return (realRawRun as (...a: unknown[]) => number)(label, sql, ...params);
+mock.module("../persistence/db-facade.js", () => ({
+  ...actualFacade,
+  requireMainDb: () => {
+    const db = realRequireMainDb();
+    return new Proxy(db, {
+      get(target, prop) {
+        if (prop === "run") {
+          return (sql: string, params?: readonly unknown[]) => {
+            if (
+              sql.includes("UPDATE conversations SET seq") &&
+              injectedRecordError
+            ) {
+              return Promise.reject(injectedRecordError);
+            }
+            return target.run(sql, params as never);
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
   },
 }));
 
@@ -46,49 +59,51 @@ import {
   getConversationPersistedSeq,
   recordConversationPersistedSeq,
 } from "../persistence/conversation-crud.js";
-import { initializeDb } from "../persistence/db-init.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 function sqliteError(code: string): Error {
   return Object.assign(new Error("database is locked"), { code });
 }
 
-describe("recordConversationPersistedSeq write-contention resilience", () => {
+describePg("recordConversationPersistedSeq write-contention resilience", () => {
   beforeEach(() => {
     injectedRecordError = null;
   });
 
-  test("swallows a transient SQLITE_BUSY and self-heals on the next record", () => {
+  test("swallows a transient SQLITE_BUSY and self-heals on the next record", async () => {
     // GIVEN a conversation with a recorded baseline anchor
-    const conv = createConversation();
-    recordConversationPersistedSeq(conv.id, 10);
-    expect(getConversationPersistedSeq(conv.id)).toBe(10);
+    const conv = await createConversation();
+    await recordConversationPersistedSeq(conv.id, 10);
+    expect(await getConversationPersistedSeq(conv.id)).toBe(10);
 
     // WHEN the anchor-advancing write loses the write-lock race
     injectedRecordError = sqliteError("SQLITE_BUSY");
-    expect(() => recordConversationPersistedSeq(conv.id, 20)).not.toThrow();
+    await expect(
+      recordConversationPersistedSeq(conv.id, 20),
+    ).resolves.toBeUndefined();
 
     // THEN the anchor is simply left un-advanced (no crash, no regression) ...
-    expect(getConversationPersistedSeq(conv.id)).toBe(10);
+    expect(await getConversationPersistedSeq(conv.id)).toBe(10);
 
     // ... and the next contention-free record advances it (self-healing).
     injectedRecordError = null;
-    recordConversationPersistedSeq(conv.id, 20);
-    expect(getConversationPersistedSeq(conv.id)).toBe(20);
+    await recordConversationPersistedSeq(conv.id, 20);
+    expect(await getConversationPersistedSeq(conv.id)).toBe(20);
   });
 
-  test("swallows the extended-result-code SQLITE_BUSY_SNAPSHOT too", () => {
-    const conv = createConversation();
+  test("swallows the extended-result-code SQLITE_BUSY_SNAPSHOT too", async () => {
+    const conv = await createConversation();
     injectedRecordError = sqliteError("SQLITE_BUSY_SNAPSHOT");
-    expect(() => recordConversationPersistedSeq(conv.id, 5)).not.toThrow();
-    expect(getConversationPersistedSeq(conv.id)).toBeNull();
+    await expect(
+      recordConversationPersistedSeq(conv.id, 5),
+    ).resolves.toBeUndefined();
+    expect(await getConversationPersistedSeq(conv.id)).toBeNull();
   });
 
-  test("rethrows a non-retryable SQLite error (a genuine bug)", () => {
-    const conv = createConversation();
+  test("rethrows a non-retryable SQLite error (a genuine bug)", async () => {
+    const conv = await createConversation();
     injectedRecordError = sqliteError("SQLITE_ERROR");
-    expect(() => recordConversationPersistedSeq(conv.id, 5)).toThrow(
+    await expect(recordConversationPersistedSeq(conv.id, 5)).rejects.toThrow(
       "database is locked",
     );
   });

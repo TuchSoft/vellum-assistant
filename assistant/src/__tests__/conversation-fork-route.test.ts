@@ -1,4 +1,11 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
 mock.module("../config/env.js", () => ({
   isHttpAuthDisabled: () => false,
@@ -16,7 +23,7 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { ROUTES } from "../runtime/routes/index.js";
 
@@ -30,6 +37,7 @@ function routePolicy(endpoint: string, method?: string) {
 import { mintToken } from "../runtime/auth/token-service.js";
 import { RuntimeHttpServer } from "../runtime/http-server.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
@@ -66,13 +74,13 @@ type ConversationSummary = {
   };
 };
 
-describe("POST /v1/conversations/fork", () => {
+describePg("POST /v1/conversations/fork", () => {
   let server: RuntimeHttpServer | null = null;
 
   beforeEach(async () => {
     await server?.stop();
     server = null;
-    clearTables();
+    await clearTables();
   });
 
   afterAll(async () => {
@@ -81,7 +89,7 @@ describe("POST /v1/conversations/fork", () => {
   });
 
   test("returns the same conversation summary shape as GET /v1/conversations/:id", async () => {
-    const source = createConversation("Roadmap draft");
+    const source = await createConversation("Roadmap draft");
     await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -132,7 +140,7 @@ describe("POST /v1/conversations/fork", () => {
   });
 
   test("rejects empty source conversations", async () => {
-    const source = createConversation("Empty source");
+    const source = await createConversation("Empty source");
 
     await startServer();
 
@@ -170,11 +178,11 @@ describe("POST /v1/conversations/fork", () => {
   });
 
   test("rejects nonexistent and cross-conversation branch point message IDs", async () => {
-    const source = createConversation("Source");
+    const source = await createConversation("Source");
     await addMessage(source.id, "user", "Source message", {
       skipIndexing: true,
     });
-    const otherConversation = createConversation("Other");
+    const otherConversation = await createConversation("Other");
     const otherMessage = await addMessage(
       otherConversation.id,
       "assistant",
@@ -220,7 +228,7 @@ describe("POST /v1/conversations/fork", () => {
   });
 
   test("requires chat.write scope", async () => {
-    const source = createConversation("Auth gated");
+    const source = await createConversation("Auth gated");
 
     await startServer();
 
@@ -248,13 +256,13 @@ describe("POST /v1/conversations/fork", () => {
     await server.start();
   }
 
-  function clearTables(): void {
-    const db = getDb();
-    db.run("DELETE FROM conversation_assistant_attention_state");
-    db.run("DELETE FROM external_conversation_bindings");
-    db.run("DELETE FROM conversation_keys");
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversations");
+  async function clearTables(): Promise<void> {
+    const db = requireMainDb();
+    await db.run("DELETE FROM conversation_assistant_attention_state");
+    await db.run("DELETE FROM external_conversation_bindings");
+    await db.run("DELETE FROM conversation_keys");
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
   }
 
   function url(pathname: string): string {
@@ -264,3 +272,5 @@ describe("POST /v1/conversations/fork", () => {
     return `http://127.0.0.1:${server.actualPort}/v1${pathname}`;
   }
 });
+
+setDefaultTimeout(30_000);

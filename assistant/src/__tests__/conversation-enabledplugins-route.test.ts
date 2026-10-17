@@ -1,16 +1,23 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
 import {
   createConversation,
   getConversation,
   setConversationEnabledPlugins,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { ROUTES } from "../runtime/routes/conversation-management-routes.js";
 import { BadRequestError, NotFoundError } from "../runtime/routes/errors.js";
 import { buildConversationDetailResponse } from "../runtime/services/conversation-serializer.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
@@ -18,18 +25,18 @@ const pluginsRoute = ROUTES.find(
   (r) => r.operationId === "conversations_by_id_enabledplugins_put",
 )!;
 
-function clearTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM conversation_assistant_attention_state");
-  db.run("DELETE FROM external_conversation_bindings");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function clearTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM conversation_assistant_attention_state");
+  await db.run("DELETE FROM external_conversation_bindings");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
-describe("PUT /v1/conversations/:id/enabledplugins", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("PUT /v1/conversations/:id/enabledplugins", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   afterAll(() => {
@@ -37,7 +44,7 @@ describe("PUT /v1/conversations/:id/enabledplugins", () => {
   });
 
   test("persists a string[] scope and reflects it on the conversation", async () => {
-    const conversation = createConversation("enabledplugins-route");
+    const conversation = await createConversation("enabledplugins-route");
 
     const result = await pluginsRoute.handler({
       pathParams: { id: conversation.id },
@@ -49,14 +56,14 @@ describe("PUT /v1/conversations/:id/enabledplugins", () => {
       conversationId: conversation.id,
       enabledPlugins: ["plugin-a", "plugin-b"],
     });
-    expect(getConversation(conversation.id)?.enabledPlugins).toEqual([
+    expect((await getConversation(conversation.id))?.enabledPlugins).toEqual([
       "plugin-a",
       "plugin-b",
     ]);
 
     // The HTTP conversation-detail response (what the web `conversationsByIdGet`
     // reads) must also carry the scope, not just the internal DB getter.
-    const detail = buildConversationDetailResponse(conversation.id);
+    const detail = await buildConversationDetailResponse(conversation.id);
     expect(detail?.conversation.enabledPlugins).toEqual([
       "plugin-a",
       "plugin-b",
@@ -64,12 +71,14 @@ describe("PUT /v1/conversations/:id/enabledplugins", () => {
   });
 
   test("detail response omits enabledPlugins by default and preserves an explicit []", async () => {
-    const conversation = createConversation("enabledplugins-detail-shape");
+    const conversation = await createConversation(
+      "enabledplugins-detail-shape",
+    );
 
     // Default (no per-chat restriction): the field is omitted from the wire.
     expect(
       "enabledPlugins" in
-        buildConversationDetailResponse(conversation.id)!.conversation,
+        (await buildConversationDetailResponse(conversation.id))!.conversation,
     ).toBe(false);
 
     // Explicit empty scope (user cleared all optional plugins): preserved as [].
@@ -79,20 +88,20 @@ describe("PUT /v1/conversations/:id/enabledplugins", () => {
       headers: {},
     });
     expect(
-      buildConversationDetailResponse(conversation.id)?.conversation
+      (await buildConversationDetailResponse(conversation.id))?.conversation
         .enabledPlugins,
     ).toEqual([]);
   });
 
   test("clears the scope to default when enabledPlugins is null", async () => {
-    const conversation = createConversation("enabledplugins-clear");
+    const conversation = await createConversation("enabledplugins-clear");
 
     await pluginsRoute.handler({
       pathParams: { id: conversation.id },
       body: { enabledPlugins: ["plugin-x"] },
       headers: {},
     });
-    expect(getConversation(conversation.id)?.enabledPlugins).toEqual([
+    expect((await getConversation(conversation.id))?.enabledPlugins).toEqual([
       "plugin-x",
     ]);
 
@@ -106,11 +115,11 @@ describe("PUT /v1/conversations/:id/enabledplugins", () => {
       conversationId: conversation.id,
       enabledPlugins: null,
     });
-    expect(getConversation(conversation.id)?.enabledPlugins).toBeNull();
+    expect((await getConversation(conversation.id))?.enabledPlugins).toBeNull();
   });
 
   test("rejects a non-array, non-null body with BadRequestError", async () => {
-    const conversation = createConversation("enabledplugins-bad");
+    const conversation = await createConversation("enabledplugins-bad");
 
     await expect(
       pluginsRoute.handler({
@@ -119,11 +128,11 @@ describe("PUT /v1/conversations/:id/enabledplugins", () => {
         headers: {},
       }),
     ).rejects.toThrow(BadRequestError);
-    expect(getConversation(conversation.id)?.enabledPlugins).toBeNull();
+    expect((await getConversation(conversation.id))?.enabledPlugins).toBeNull();
   });
 
   test("rejects an array containing a non-string with BadRequestError", async () => {
-    const conversation = createConversation("enabledplugins-bad-element");
+    const conversation = await createConversation("enabledplugins-bad-element");
 
     await expect(
       pluginsRoute.handler({
@@ -132,11 +141,11 @@ describe("PUT /v1/conversations/:id/enabledplugins", () => {
         headers: {},
       }),
     ).rejects.toThrow(BadRequestError);
-    expect(getConversation(conversation.id)?.enabledPlugins).toBeNull();
+    expect((await getConversation(conversation.id))?.enabledPlugins).toBeNull();
   });
 
   test("rejects a missing enabledPlugins field without clearing the scope", async () => {
-    const conversation = createConversation("enabledplugins-missing");
+    const conversation = await createConversation("enabledplugins-missing");
     // Seed an explicit scope, then send a body with no `enabledPlugins`.
     setConversationEnabledPlugins(conversation.id, ["plugin-a"]);
 
@@ -149,7 +158,7 @@ describe("PUT /v1/conversations/:id/enabledplugins", () => {
     ).rejects.toThrow(BadRequestError);
     // The existing scope must survive a malformed request (null is the only
     // explicit clear signal).
-    expect(getConversation(conversation.id)?.enabledPlugins).toEqual([
+    expect((await getConversation(conversation.id))?.enabledPlugins).toEqual([
       "plugin-a",
     ]);
   });
@@ -164,3 +173,5 @@ describe("PUT /v1/conversations/:id/enabledplugins", () => {
     ).rejects.toThrow(NotFoundError);
   });
 });
+
+setDefaultTimeout(30_000);

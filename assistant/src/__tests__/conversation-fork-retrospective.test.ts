@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
 import { eq } from "drizzle-orm";
 
@@ -19,26 +19,28 @@ import {
 } from "../persistence/conversation-crud.js";
 import { getConversationDirPath } from "../persistence/conversation-disk-view.js";
 import {
-  getDb,
   getLogsDb,
   getMemoryDb,
   getMemorySqlite,
   getSqlite,
 } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import {
-  activationState,
   channelInboundEvents,
   conversationAssistantAttentionState,
   conversationCompactionEvents,
-  conversationGraphMemoryState,
   conversations,
   externalConversationBindings,
+  messages,
+  toolInvocations,
+} from "../persistence/pg-schema/index.js";
+import {
+  activationState,
+  conversationGraphMemoryState,
   llmRequestLogs,
   memoryJobs,
   memoryRetrospectiveState,
-  messages,
-  toolInvocations,
 } from "../persistence/schema/index.js";
 import {
   loadGraphMemoryState,
@@ -53,40 +55,42 @@ import {
   loadRetrospectiveRunMessages,
 } from "../plugins/defaults/memory/memory-retrospective-fork-boundary.js";
 import { ensureMemoryV3InjectedSectionsSchema } from "../plugins/defaults/memory/v3/plugin-schema.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
 async function resetTables(): Promise<void> {
-  const db = getDb();
-  db.delete(channelInboundEvents).run();
-  db.delete(externalConversationBindings).run();
-  db.delete(conversationAssistantAttentionState).run();
+  const db = requireMainDb();
+  await db.orm.delete(channelInboundEvents);
+  await db.orm.delete(externalConversationBindings);
+  await db.orm.delete(conversationAssistantAttentionState);
   // activation_state, conversation_graph_memory_state, and
   // memory_retrospective_state all live on the memory connection now.
   getMemoryDb()!.delete(activationState).run();
   getMemoryDb()!.delete(conversationGraphMemoryState).run();
   getMemoryDb()!.delete(memoryRetrospectiveState).run();
   getLogsDb()!.delete(llmRequestLogs).run();
-  db.delete(toolInvocations).run();
+  await db.orm.delete(toolInvocations);
   getMemoryDb()!.delete(memoryJobs).run();
   // The plugin creates this table itself (init hook, or a store's first use);
   // the reset runs before either, so stand it up here.
   await ensureMemoryV3InjectedSectionsSchema(getMemorySqlite()!);
   getMemorySqlite()!.exec("DELETE FROM memory_v3_injected_sections");
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM conversation_compaction_events");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM conversation_compaction_events");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 /** Rows physically stored on a conversation, ignoring anything inherited. */
-function ownedRowCount(conversationId: string): number {
-  return getDb()
-    .select()
-    .from(messages)
-    .where(eq(messages.conversationId, conversationId))
-    .all().length;
+async function ownedRowCount(conversationId: string): Promise<number> {
+  return (
+    await requireMainDb()
+      .orm.select()
+      .from(messages)
+      .where(eq(messages.conversationId, conversationId))
+  ).length;
 }
 
 function contentOf(m: { role: string; content: unknown; createdAt: number }) {
@@ -102,7 +106,7 @@ function renderWindow(
 }
 
 async function seedSource(title: string): Promise<{ id: string }> {
-  const source = createConversation(title);
+  const source = await createConversation(title);
   await addMessage(source.id, "user", "draft a launch plan", {
     metadata: { branch: 1 },
     skipIndexing: true,
@@ -118,7 +122,7 @@ async function seedSource(title: string): Promise<{ id: string }> {
   return source;
 }
 
-describe("forkConversationForRetrospective", () => {
+describePg("forkConversationForRetrospective", () => {
   beforeEach(async () => {
     await resetTables();
   });
@@ -126,7 +130,7 @@ describe("forkConversationForRetrospective", () => {
   test("full fork presents the source window without copying rows", async () => {
     const source = await seedSource("Planning thread");
 
-    const syncFork = forkConversation({
+    const syncFork = await forkConversation({
       conversationId: source.id,
       conversationType: "background",
       source: "memory-retrospective-fork",
@@ -138,24 +142,24 @@ describe("forkConversationForRetrospective", () => {
     });
 
     expect(asyncFork.forkStrategy).toBe("reference");
-    expect(ownedRowCount(asyncFork.id)).toBe(0);
-    expect(getMessages(asyncFork.id).map(contentOf)).toEqual(
-      getMessages(source.id).map(contentOf),
+    expect(await ownedRowCount(asyncFork.id)).toBe(0);
+    expect((await getMessages(asyncFork.id)).map(contentOf)).toEqual(
+      (await getMessages(source.id)).map(contentOf),
     );
     expect(asyncFork.forkParentConversationId).toBe(source.id);
     expect(asyncFork.forkParentMessageId).toBe(syncFork.forkParentMessageId);
-    const sourceIds = new Set(getMessages(source.id).map((m) => m.id));
-    expect(getMessages(asyncFork.id).every((m) => sourceIds.has(m.id))).toBe(
-      true,
-    );
+    const sourceIds = new Set((await getMessages(source.id)).map((m) => m.id));
+    expect(
+      (await getMessages(asyncFork.id)).every((m) => sourceIds.has(m.id)),
+    ).toBe(true);
   });
 
   test("through-cutoff (truncated) fork bounds the inherited window", async () => {
     const source = await seedSource("Truncated thread");
-    const sourceMessages = getMessages(source.id);
+    const sourceMessages = await getMessages(source.id);
     const cutoff = sourceMessages[1]!.id;
 
-    const syncFork = forkConversation({
+    const syncFork = await forkConversation({
       conversationId: source.id,
       throughMessageId: cutoff,
       conversationType: "background",
@@ -169,8 +173,8 @@ describe("forkConversationForRetrospective", () => {
     });
 
     expect(asyncFork.forkStrategy).toBe("reference");
-    expect(ownedRowCount(asyncFork.id)).toBe(0);
-    expect(getMessages(asyncFork.id).map(contentOf)).toEqual(
+    expect(await ownedRowCount(asyncFork.id)).toBe(0);
+    expect((await getMessages(asyncFork.id)).map(contentOf)).toEqual(
       sourceMessages.slice(0, 2).map(contentOf),
     );
     expect(asyncFork.forkParentMessageId).toBe(syncFork.forkParentMessageId);
@@ -179,7 +183,7 @@ describe("forkConversationForRetrospective", () => {
   test("skips the disk-view projection (throwaway fork)", async () => {
     const source = await seedSource("Disk-view thread");
 
-    const syncFork = forkConversation({ conversationId: source.id });
+    const syncFork = await forkConversation({ conversationId: source.id });
     const asyncFork = await forkConversationForRetrospective({
       conversationId: source.id,
     });
@@ -205,7 +209,7 @@ describe("forkConversationForRetrospective", () => {
   });
 
   test("resolves attachments through source message ids", async () => {
-    const source = createConversation("Attachment thread");
+    const source = await createConversation("Attachment thread");
     const assistant = await addMessage(source.id, "assistant", "see mockup", {
       skipIndexing: true,
     });
@@ -214,34 +218,34 @@ describe("forkConversationForRetrospective", () => {
       "image/png",
       "iVBORw0K",
     );
-    linkAttachmentToMessage(assistant.id, uploaded.id, 0);
+    await linkAttachmentToMessage(assistant.id, uploaded.id, 0);
 
     const asyncFork = await forkConversationForRetrospective({
       conversationId: source.id,
     });
-    const forkAssistant = getMessages(asyncFork.id).find(
+    const forkAssistant = (await getMessages(asyncFork.id)).find(
       (m) => m.role === "assistant",
     );
     expect(forkAssistant).toBeDefined();
     expect(forkAssistant!.id).toBe(assistant.id);
-    expect(ownedRowCount(asyncFork.id)).toBe(0);
-    const forkAttachments = getAttachmentsForMessage(forkAssistant!.id);
+    expect(await ownedRowCount(asyncFork.id)).toBe(0);
+    const forkAttachments = await getAttachmentsForMessage(forkAssistant!.id);
     expect(forkAttachments).toHaveLength(1);
     expect(forkAttachments[0]?.id).toBe(
-      getAttachmentsForMessage(assistant.id)[0]?.id,
+      await getAttachmentsForMessage(assistant.id)[0]?.id,
     );
   });
 
   test("carries the parent graph-memory state on a full fork", async () => {
     const source = await seedSource("Graph-state thread");
     const snapshot = JSON.stringify({ inContext: ["node-a"], currentTurn: 3 });
-    saveGraphMemoryState(source.id, snapshot);
+    await saveGraphMemoryState(source.id, snapshot);
 
     const asyncFork = await forkConversationForRetrospective({
       conversationId: source.id,
     });
-    expect(loadGraphMemoryState(asyncFork.id)).toBe(snapshot);
-    expect(loadGraphMemoryState(source.id)).toBe(snapshot);
+    expect(await loadGraphMemoryState(asyncFork.id)).toBe(snapshot);
+    expect(await loadGraphMemoryState(source.id)).toBe(snapshot);
   });
 
   test("rejects an unknown throughMessageId without creating a fork", async () => {
@@ -255,7 +259,7 @@ describe("forkConversationForRetrospective", () => {
     const before = countConversations();
 
     await expect(
-      forkConversationForRetrospective({
+      await forkConversationForRetrospective({
         conversationId: source.id,
         throughMessageId: "does-not-exist",
       }),
@@ -266,7 +270,7 @@ describe("forkConversationForRetrospective", () => {
   });
 });
 
-describe("forkConversationForRetrospective — compacted source", () => {
+describePg("forkConversationForRetrospective — compacted source", () => {
   beforeEach(async () => {
     await resetTables();
   });
@@ -285,7 +289,7 @@ describe("forkConversationForRetrospective — compacted source", () => {
    * row 4 and row 5.
    */
   async function seedCompactedSource(): Promise<CompactedSource> {
-    const source = createConversation("Compacted retro thread");
+    const source = await createConversation("Compacted retro thread");
     const rows = [
       await addMessage(source.id, "user", "old question", {
         skipIndexing: true,
@@ -306,26 +310,26 @@ describe("forkConversationForRetrospective — compacted source", () => {
         skipIndexing: true,
       }),
     ];
-    const db = getDb();
+    const db = requireMainDb();
     const base = Date.now();
     rows.forEach((row, index) => {
       const createdAt = index < 4 ? base + index : base + index + 10;
-      db.update(messages)
+      await db.orm
+        .update(messages)
         .set({ createdAt })
-        .where(eq(messages.id, row.id))
-        .run();
+        .where(eq(messages.id, row.id));
     });
     const compactedAt = base + 5;
     const summary = "Summary of the old exchange";
-    db.update(conversations)
+    await db.orm
+      .update(conversations)
       .set({
         contextSummary: summary,
         contextCompactedMessageCount: 4,
         contextCompactedAt: compactedAt,
       })
-      .where(eq(conversations.id, source.id))
-      .run();
-    appendCompactionEvent(source.id, {
+      .where(eq(conversations.id, source.id));
+    await appendCompactionEvent(source.id, {
       compactedAt,
       summary,
       compactedMessageCount: 4,
@@ -335,7 +339,7 @@ describe("forkConversationForRetrospective — compacted source", () => {
 
   test("copies no rows and renders identically to the source", async () => {
     const source = await seedCompactedSource();
-    const sourceRows = getMessages(source.id);
+    const sourceRows = await getMessages(source.id);
     const tip = sourceRows.at(-1)!;
 
     const fork = await forkConversationForRetrospective({
@@ -346,8 +350,8 @@ describe("forkConversationForRetrospective — compacted source", () => {
     });
 
     expect(fork.forkStrategy).toBe("reference");
-    expect(ownedRowCount(fork.id)).toBe(0);
-    const forkRows = getMessages(fork.id);
+    expect(await ownedRowCount(fork.id)).toBe(0);
+    const forkRows = await getMessages(fork.id);
     expect(forkRows.map((m) => m.id)).toEqual(sourceRows.map((m) => m.id));
 
     expect(fork.contextSummary).toBe(source.summary);
@@ -364,18 +368,18 @@ describe("forkConversationForRetrospective — compacted source", () => {
     ).toEqual(renderWindow(source.summary, sourceRows, source.compactedCount));
 
     // The synchronous user fork keeps the full physical history.
-    const syncFork = forkConversation({
+    const syncFork = await forkConversation({
       conversationId: source.id,
       throughMessageId: tip.id,
     });
-    expect(getMessages(syncFork.id)).toHaveLength(6);
+    expect(await getMessages(syncFork.id)).toHaveLength(6);
     expect(syncFork.contextCompactedMessageCount).toBe(4);
   });
 
   test("carries per-conversation memory state wholesale on a tip fork", async () => {
     const source = await seedCompactedSource();
     const snapshot = JSON.stringify({ inContext: ["node-a"], currentTurn: 7 });
-    saveGraphMemoryState(source.id, snapshot);
+    await saveGraphMemoryState(source.id, snapshot);
     const everInjected = JSON.stringify([{ slug: "page-a", turn: 1 }]);
     getMemoryDb()!
       .insert(activationState)
@@ -395,7 +399,7 @@ describe("forkConversationForRetrospective — compacted source", () => {
       )
       .run(source.id, Date.now());
 
-    const tip = getMessages(source.id).at(-1)!;
+    const tip = (await getMessages(source.id)).at(-1)!;
     const fork = await forkConversationForRetrospective({
       conversationId: source.id,
       throughMessageId: tip.id,
@@ -405,7 +409,7 @@ describe("forkConversationForRetrospective — compacted source", () => {
 
     // The fork's rendered window equals the source's, so activation,
     // ever-injected, and graph state are carried as-is.
-    expect(loadGraphMemoryState(fork.id)).toBe(snapshot);
+    expect(await loadGraphMemoryState(fork.id)).toBe(snapshot);
     const forkActivation = getMemoryDb()!
       .select()
       .from(activationState)
@@ -422,27 +426,27 @@ describe("forkConversationForRetrospective — compacted source", () => {
 
   test("re-derives memory seeding from the copied tail on a truncated cutoff", async () => {
     const source = await seedCompactedSource();
-    const db = getDb();
-    const sourceRows = getMessages(source.id);
+    const db = requireMainDb();
+    const sourceRows = await getMessages(source.id);
     // Injection blocks: one behind the summary, one on a visible tail row.
-    db.update(messages)
+    await db.orm
+      .update(messages)
       .set({
         metadata: JSON.stringify({
           memoryInjectedBlock: "# memory/concepts/prefix-slug.md",
         }),
       })
-      .where(eq(messages.id, sourceRows[0]!.id))
-      .run();
-    db.update(messages)
+      .where(eq(messages.id, sourceRows[0]!.id));
+    await db.orm
+      .update(messages)
       .set({
         metadata: JSON.stringify({
           memoryInjectedBlock: "# memory/concepts/tail-slug.md",
         }),
       })
-      .where(eq(messages.id, sourceRows[4]!.id))
-      .run();
+      .where(eq(messages.id, sourceRows[4]!.id));
     const snapshot = JSON.stringify({ inContext: ["node-a"], currentTurn: 7 });
-    saveGraphMemoryState(source.id, snapshot);
+    await saveGraphMemoryState(source.id, snapshot);
 
     // Cut off before the tip (a user row, so no display-turn extension): the
     // fork is truncated and takes the derived-seeding branch.
@@ -455,8 +459,8 @@ describe("forkConversationForRetrospective — compacted source", () => {
 
     // Lineage includes the cutoff window; the inherited count hides the
     // compacted prefix so the rendered tail is source row 5 only.
-    const forkRows = getMessages(fork.id);
-    expect(ownedRowCount(fork.id)).toBe(0);
+    const forkRows = await getMessages(fork.id);
+    expect(await ownedRowCount(fork.id)).toBe(0);
     expect(fork.contextCompactedMessageCount).toBe(4);
     expect(forkRows.map((m) => m.id)).toEqual(
       sourceRows.slice(0, 5).map((m) => m.id),
@@ -480,19 +484,19 @@ describe("forkConversationForRetrospective — compacted source", () => {
     expect(forkActivation?.everInjectedJson).toBe(
       JSON.stringify([{ slug: "tail-slug", turn: 0 }]),
     );
-    expect(loadGraphMemoryState(fork.id)).toBeNull();
+    expect(await loadGraphMemoryState(fork.id)).toBeNull();
   });
 
   test("seeds a single count-adjusted ledger event instead of copying the source ledger", async () => {
     const source = await seedCompactedSource();
     // An older superseded event on the source; it must not be copied either.
-    appendCompactionEvent(source.id, {
+    await appendCompactionEvent(source.id, {
       compactedAt: source.base + 1,
       summary: "Older summary",
       compactedMessageCount: 2,
     });
 
-    const tip = getMessages(source.id).at(-1)!;
+    const tip = (await getMessages(source.id)).at(-1)!;
     const fork = await forkConversationForRetrospective({
       conversationId: source.id,
       throughMessageId: tip.id,
@@ -500,11 +504,10 @@ describe("forkConversationForRetrospective — compacted source", () => {
       source: MEMORY_RETROSPECTIVE_FORK_SOURCE,
     });
 
-    const forkEvents = getDb()
-      .select()
+    const forkEvents = await requireMainDb()
+      .orm.select()
       .from(conversationCompactionEvents)
-      .where(eq(conversationCompactionEvents.conversationId, fork.id))
-      .all();
+      .where(eq(conversationCompactionEvents.conversationId, fork.id));
     expect(forkEvents).toHaveLength(1);
     expect(forkEvents[0]).toMatchObject({
       compactedAt: source.compactedAt,
@@ -514,21 +517,21 @@ describe("forkConversationForRetrospective — compacted source", () => {
 
     // A user fork of the retrospective fork at its tip inherits the same
     // summary and hidden-prefix count.
-    const forkTip = getMessages(fork.id).at(-1)!;
-    const grandchild = forkConversation({
+    const forkTip = (await getMessages(fork.id)).at(-1)!;
+    const grandchild = await forkConversation({
       conversationId: fork.id,
       throughMessageId: forkTip.id,
     });
     expect(grandchild.contextSummary).toBe(source.summary);
     expect(grandchild.contextCompactedMessageCount).toBe(4);
-    expect(getMessages(grandchild.id)).toHaveLength(
-      getMessages(fork.id).length,
+    expect(await getMessages(grandchild.id)).toHaveLength(
+      (await getMessages(fork.id)).length,
     );
   });
 
   test("post-fork tail extraction attributes only owned rows", async () => {
     const source = await seedCompactedSource();
-    const tip = getMessages(source.id).at(-1)!;
+    const tip = (await getMessages(source.id)).at(-1)!;
     const fork = await forkConversationForRetrospective({
       conversationId: source.id,
       throughMessageId: tip.id,
@@ -538,16 +541,17 @@ describe("forkConversationForRetrospective — compacted source", () => {
 
     // Referential forks stamp no copied-row metadata. The boundary helper
     // returns null; ownership is what scopes the run.
-    expect(findForkBoundaryCreatedAt(getMessages(fork.id))).toBeNull();
+    expect(
+      await findForkBoundaryCreatedAt(await getMessages(fork.id)),
+    ).toBeNull();
 
     const runMessage = await addMessage(fork.id, "user", "retro instruction", {
       skipIndexing: true,
     });
-    getDb()
-      .update(messages)
+    await requireMainDb()
+      .orm.update(messages)
       .set({ createdAt: tip.createdAt + 100 })
-      .where(eq(messages.id, runMessage.id))
-      .run();
+      .where(eq(messages.id, runMessage.id));
     const runRows = await loadRetrospectiveRunMessages(
       fork.id,
       MEMORY_RETROSPECTIVE_FORK_SOURCE,
@@ -558,19 +562,19 @@ describe("forkConversationForRetrospective — compacted source", () => {
 
   test("succeeds with an empty tail when the compaction covers the whole cutoff range", async () => {
     const source = await seedCompactedSource();
-    const db = getDb();
-    const sourceRows = getMessages(source.id);
+    const db = requireMainDb();
+    const sourceRows = await getMessages(source.id);
     const tip = sourceRows.at(-1)!;
     // A later compaction covering every row, timestamped exactly at the tip.
-    db.update(conversations)
+    await db.orm
+      .update(conversations)
       .set({
         contextSummary: "Everything summarized",
         contextCompactedMessageCount: sourceRows.length,
         contextCompactedAt: tip.createdAt,
       })
-      .where(eq(conversations.id, source.id))
-      .run();
-    appendCompactionEvent(source.id, {
+      .where(eq(conversations.id, source.id));
+    await appendCompactionEvent(source.id, {
       compactedAt: tip.createdAt,
       summary: "Everything summarized",
       compactedMessageCount: sourceRows.length,
@@ -583,8 +587,8 @@ describe("forkConversationForRetrospective — compacted source", () => {
       source: MEMORY_RETROSPECTIVE_FORK_SOURCE,
     });
 
-    expect(ownedRowCount(fork.id)).toBe(0);
-    expect(getMessages(fork.id)).toHaveLength(sourceRows.length);
+    expect(await ownedRowCount(fork.id)).toBe(0);
+    expect(await getMessages(fork.id)).toHaveLength(sourceRows.length);
     expect(fork.contextSummary).toBe("Everything summarized");
     expect(fork.contextCompactedMessageCount).toBe(sourceRows.length);
     expect(fork.contextCompactedAt).toBe(tip.createdAt);
@@ -592,7 +596,7 @@ describe("forkConversationForRetrospective — compacted source", () => {
     expect(
       renderWindow(
         fork.contextSummary,
-        getMessages(fork.id),
+        await getMessages(fork.id),
         fork.contextCompactedMessageCount,
       ),
     ).toEqual(["Everything summarized"]);
@@ -617,7 +621,7 @@ describe("forkConversationForRetrospective — compacted source", () => {
   });
 
   test("drops the render-hidden rows on createdAt ties, not the re-sort prefix", async () => {
-    const source = createConversation("Tie-boundary thread");
+    const source = await createConversation("Tie-boundary thread");
     const first = await addMessage(source.id, "user", "hidden by compaction", {
       skipIndexing: true,
     });
@@ -633,30 +637,30 @@ describe("forkConversationForRetrospective — compacted source", () => {
     // order. The compaction hides exactly one row: in render order that is
     // `first`; a positional slice of the re-sorted array would drop `second`
     // instead.
-    const db = getDb();
+    const db = requireMainDb();
     const base = Date.now();
-    db.update(messages)
+    await db.orm
+      .update(messages)
       .set({ id: "zz-tie-first", createdAt: base })
-      .where(eq(messages.id, first.id))
-      .run();
-    db.update(messages)
+      .where(eq(messages.id, first.id));
+    await db.orm
+      .update(messages)
       .set({ id: "aa-tie-second", createdAt: base })
-      .where(eq(messages.id, second.id))
-      .run();
-    db.update(messages)
+      .where(eq(messages.id, second.id));
+    await db.orm
+      .update(messages)
       .set({ createdAt: base + 10 })
-      .where(eq(messages.id, tail.id))
-      .run();
+      .where(eq(messages.id, tail.id));
     const compactedAt = base + 5;
-    db.update(conversations)
+    await db.orm
+      .update(conversations)
       .set({
         contextSummary: "Tie summary",
         contextCompactedMessageCount: 1,
         contextCompactedAt: compactedAt,
       })
-      .where(eq(conversations.id, source.id))
-      .run();
-    appendCompactionEvent(source.id, {
+      .where(eq(conversations.id, source.id));
+    await appendCompactionEvent(source.id, {
       compactedAt,
       summary: "Tie summary",
       compactedMessageCount: 1,
@@ -671,10 +675,10 @@ describe("forkConversationForRetrospective — compacted source", () => {
 
     // The source renders ["still visible", "fresh tail"] after its slice;
     // the fork must render the same window.
-    expect(ownedRowCount(fork.id)).toBe(0);
+    expect(await ownedRowCount(fork.id)).toBe(0);
     expect(fork.contextCompactedMessageCount).toBe(1);
     expect(
-      getMessages(fork.id)
+      (await getMessages(fork.id))
         .slice(fork.contextCompactedMessageCount)
         .map((m) => m.content),
     ).toEqual([
@@ -684,7 +688,7 @@ describe("forkConversationForRetrospective — compacted source", () => {
   });
 
   test("seeds the fork-local ledger event even when the hidden prefix falls outside the cutoff", async () => {
-    const source = createConversation("Tie-cutoff thread");
+    const source = await createConversation("Tie-cutoff thread");
     const hidden = await addMessage(source.id, "user", "hidden by compaction", {
       skipIndexing: true,
     });
@@ -697,25 +701,25 @@ describe("forkConversationForRetrospective — compacted source", () => {
     // cutoff range then contains no hidden row, so nothing is dropped, but
     // the fork still inherits the compaction and must not copy the source's
     // count-1 ledger event (a fork of this fork would hide a visible row).
-    const db = getDb();
+    const db = requireMainDb();
     const base = Date.now();
-    db.update(messages)
+    await db.orm
+      .update(messages)
       .set({ id: "zz-tie-hidden", createdAt: base })
-      .where(eq(messages.id, hidden.id))
-      .run();
-    db.update(messages)
+      .where(eq(messages.id, hidden.id));
+    await db.orm
+      .update(messages)
       .set({ id: "aa-tie-requested", createdAt: base })
-      .where(eq(messages.id, requested.id))
-      .run();
-    db.update(conversations)
+      .where(eq(messages.id, requested.id));
+    await db.orm
+      .update(conversations)
       .set({
         contextSummary: "Tie summary",
         contextCompactedMessageCount: 1,
         contextCompactedAt: base,
       })
-      .where(eq(conversations.id, source.id))
-      .run();
-    appendCompactionEvent(source.id, {
+      .where(eq(conversations.id, source.id));
+    await appendCompactionEvent(source.id, {
       compactedAt: base,
       summary: "Tie summary",
       compactedMessageCount: 1,
@@ -728,19 +732,18 @@ describe("forkConversationForRetrospective — compacted source", () => {
       source: MEMORY_RETROSPECTIVE_FORK_SOURCE,
     });
 
-    expect(ownedRowCount(fork.id)).toBe(0);
+    expect(await ownedRowCount(fork.id)).toBe(0);
     expect(
-      getMessages(fork.id)
+      (await getMessages(fork.id))
         .slice(fork.contextCompactedMessageCount)
         .map((m) => m.content),
     ).toEqual([[{ type: "text", text: "visible" }]]);
     expect(fork.contextSummary).toBe("Tie summary");
     expect(fork.contextCompactedMessageCount).toBe(0);
-    const forkEvents = getDb()
-      .select()
+    const forkEvents = await requireMainDb()
+      .orm.select()
       .from(conversationCompactionEvents)
-      .where(eq(conversationCompactionEvents.conversationId, fork.id))
-      .all();
+      .where(eq(conversationCompactionEvents.conversationId, fork.id));
     expect(forkEvents).toHaveLength(1);
     expect(forkEvents[0]).toMatchObject({
       compactedAt: base,
@@ -750,27 +753,29 @@ describe("forkConversationForRetrospective — compacted source", () => {
   });
 });
 
-describe("forkConversationForRetrospective with unfinalized rows", () => {
+describePg("forkConversationForRetrospective with unfinalized rows", () => {
   beforeEach(async () => {
     await resetTables();
   });
 
   test("skips the unfinalized tail and anchors at the last finalized message", async () => {
     const source = await seedSource("Mid-turn retro");
-    const tail = getMessages(source.id).at(-1)!;
-    const db = getDb();
-    db.run(`UPDATE messages SET finalized = 0 WHERE id = '${tail.id}'`);
+    const tail = (await getMessages(source.id)).at(-1)!;
+    const db = requireMainDb();
+    await db.run(`UPDATE messages SET finalized = 0 WHERE id = '${tail.id}'`);
 
     const fork = await forkConversationForRetrospective({
       conversationId: source.id,
     });
-    const forkMessages = getMessages(fork.id);
+    const forkMessages = await getMessages(fork.id);
 
     // Lineage excludes the ancestor's in-flight row; the anchor is a
     // finalized row the inherited window actually holds.
-    expect(ownedRowCount(fork.id)).toBe(0);
+    expect(await ownedRowCount(fork.id)).toBe(0);
     expect(forkMessages).toHaveLength(3);
     expect(forkMessages.every((row) => row.finalized === 1)).toBe(true);
     expect(fork.forkParentMessageId).not.toBe(tail.id);
   });
 });
+
+setDefaultTimeout(30_000);

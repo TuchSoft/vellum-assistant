@@ -7,7 +7,14 @@
  * pill renders "Default" for every conversation after an app restart, even
  * when the DB has a pinned profile.
  */
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
 mock.module("../config/env.js", () => ({
   isHttpAuthDisabled: () => true,
@@ -25,10 +32,11 @@ import {
   createConversation,
   setConversationInferenceProfile,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { RuntimeHttpServer } from "../runtime/http-server.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
@@ -38,13 +46,13 @@ type ConversationSummary = {
   inferenceProfile?: string;
 };
 
-describe("conversation HTTP responses include inferenceProfile", () => {
+describePg("conversation HTTP responses include inferenceProfile", () => {
   let server: RuntimeHttpServer | null = null;
 
   beforeEach(async () => {
     await server?.stop();
     server = null;
-    clearTables();
+    await clearTables();
   });
 
   afterAll(async () => {
@@ -53,8 +61,8 @@ describe("conversation HTTP responses include inferenceProfile", () => {
   });
 
   test("GET /v1/conversations includes inferenceProfile for pinned conversations and omits it when unset", async () => {
-    const pinned = createConversation("Pinned-profile conversation");
-    const unset = createConversation("Default-profile conversation");
+    const pinned = await createConversation("Pinned-profile conversation");
+    const unset = await createConversation("Default-profile conversation");
     await setConversationInferenceProfile(pinned.id, "quality-optimized");
 
     await startServer();
@@ -74,7 +82,7 @@ describe("conversation HTTP responses include inferenceProfile", () => {
   });
 
   test("GET /v1/conversations/:id includes inferenceProfile in the detail response", async () => {
-    const conv = createConversation("Detail-profile conversation");
+    const conv = await createConversation("Detail-profile conversation");
     await setConversationInferenceProfile(conv.id, "balanced");
 
     await startServer();
@@ -89,13 +97,13 @@ describe("conversation HTTP responses include inferenceProfile", () => {
     expect(body.conversation.inferenceProfile).toBe("balanced");
   });
 
-  function clearTables(): void {
-    const db = getDb();
-    db.run("DELETE FROM conversation_assistant_attention_state");
-    db.run("DELETE FROM external_conversation_bindings");
-    db.run("DELETE FROM conversation_keys");
-    db.run("DELETE FROM messages");
-    db.run("DELETE FROM conversations");
+  async function clearTables(): Promise<void> {
+    const db = requireMainDb();
+    await db.run("DELETE FROM conversation_assistant_attention_state");
+    await db.run("DELETE FROM external_conversation_bindings");
+    await db.run("DELETE FROM conversation_keys");
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
   }
 
   async function startServer(): Promise<void> {
@@ -112,3 +120,5 @@ describe("conversation HTTP responses include inferenceProfile", () => {
     return `http://127.0.0.1:${server.actualPort}/v1${pathname}`;
   }
 });
+
+setDefaultTimeout(30_000);

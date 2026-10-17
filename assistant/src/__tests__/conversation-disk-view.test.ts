@@ -8,7 +8,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
 const workspaceDir = process.env.VELLUM_WORKSPACE_DIR!;
 const conversationsDir = join(workspaceDir, "conversations");
@@ -36,17 +42,16 @@ import {
   syncMessageToDisk,
   updateMetaFile,
 } from "../persistence/conversation-disk-view.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { rawRun } from "../persistence/raw-query.js";
-await initializeDb();
+import { requireMainDb } from "../persistence/db-facade.js";
+import { rawRunAsync } from "../persistence/raw-query.js";
+import { describePg } from "./pg-test-db.js";
 
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 function getLegacyConversationDirName(id: string, createdAtMs: number): string {
@@ -58,7 +63,7 @@ function getLegacyConversationDirName(id: string, createdAtMs: number): string {
 // ---------------------------------------------------------------------------
 
 describe("getConversationDirName", () => {
-  test("produces filesystem-safe name with colons replaced by hyphens", () => {
+  test("produces filesystem-safe name with colons replaced by hyphens", async () => {
     // 2026-03-18T14:23:00.000Z
     const ts = new Date("2026-03-18T14:23:00.000Z").getTime();
     const name = getConversationDirName("abc123", ts);
@@ -67,7 +72,7 @@ describe("getConversationDirName", () => {
     expect(name).not.toContain(":");
   });
 
-  test("handles epoch zero", () => {
+  test("handles epoch zero", async () => {
     const name = getConversationDirName("conv0", 0);
     expect(name).toBe("1970-01-01T00-00-00.000Z_conv0");
   });
@@ -78,7 +83,7 @@ describe("getConversationDirName", () => {
 // ---------------------------------------------------------------------------
 
 describe("getConversationDirPath", () => {
-  test("returns absolute path under conversations dir", () => {
+  test("returns absolute path under conversations dir", async () => {
     const ts = Date.now();
     const dirPath = getConversationDirPath("test-id", ts);
     expect(dirPath.startsWith(conversationsDir)).toBe(true);
@@ -90,10 +95,10 @@ describe("getConversationDirPath", () => {
 // initConversationDir
 // ---------------------------------------------------------------------------
 
-describe("initConversationDir", () => {
+describePg("initConversationDir", () => {
   beforeEach(resetTables);
 
-  test("creates directory and writes valid meta.json", () => {
+  test("creates directory and writes valid meta.json", async () => {
     const now = Date.now();
     initConversationDir({
       id: "conv-init-1",
@@ -121,7 +126,7 @@ describe("initConversationDir", () => {
     rmSync(dirPath, { recursive: true, force: true });
   });
 
-  test("handles null title and null originChannel", () => {
+  test("handles null title and null originChannel", async () => {
     const now = Date.now();
     initConversationDir({
       id: "conv-init-null",
@@ -145,10 +150,10 @@ describe("initConversationDir", () => {
 // updateMetaFile
 // ---------------------------------------------------------------------------
 
-describe("updateMetaFile", () => {
+describePg("updateMetaFile", () => {
   beforeEach(resetTables);
 
-  test("rewrites meta.json with updated fields", () => {
+  test("rewrites meta.json with updated fields", async () => {
     const created = Date.now();
     const updated = created + 5000;
 
@@ -178,7 +183,7 @@ describe("updateMetaFile", () => {
     rmSync(dirPath, { recursive: true, force: true });
   });
 
-  test("reuses legacy directory names when the new directory does not exist", () => {
+  test("reuses legacy directory names when the new directory does not exist", async () => {
     const created = Date.now();
     const legacyDirName = getLegacyConversationDirName("conv-legacy", created);
     const legacyDirPath = join(conversationsDir, legacyDirName);
@@ -201,7 +206,7 @@ describe("updateMetaFile", () => {
     rmSync(legacyDirPath, { recursive: true, force: true });
   });
 
-  test("recreates a missing directory before rewriting meta.json", () => {
+  test("recreates a missing directory before rewriting meta.json", async () => {
     const created = Date.now();
     const updated = created + 2500;
     initConversationDir({
@@ -241,7 +246,7 @@ describe("updateMetaFile", () => {
 // ---------------------------------------------------------------------------
 
 describe("flattenContentBlocks", () => {
-  test("extracts text from text blocks", () => {
+  test("extracts text from text blocks", async () => {
     const blocks = JSON.stringify([
       { type: "text", text: "Hello" },
       { type: "text", text: "World" },
@@ -252,7 +257,7 @@ describe("flattenContentBlocks", () => {
     expect(result.toolResults).toEqual([]);
   });
 
-  test("extracts tool_use blocks", () => {
+  test("extracts tool_use blocks", async () => {
     const blocks = JSON.stringify([
       { type: "tool_use", name: "image_resize", input: { width: 800 } },
     ]);
@@ -262,13 +267,13 @@ describe("flattenContentBlocks", () => {
     ]);
   });
 
-  test("extracts tool_result blocks", () => {
+  test("extracts tool_result blocks", async () => {
     const blocks = JSON.stringify([{ type: "tool_result", content: "Done!" }]);
     const result = flattenContentBlocks(blocks);
     expect(result.toolResults).toEqual([{ content: "Done!" }]);
   });
 
-  test("skips image and file blocks", () => {
+  test("skips image and file blocks", async () => {
     const blocks = JSON.stringify([
       { type: "text", text: "Here is an image" },
       { type: "image", source: { data: "base64..." } },
@@ -280,19 +285,19 @@ describe("flattenContentBlocks", () => {
     expect(result.toolResults).toEqual([]);
   });
 
-  test("handles plain text (non-JSON) content", () => {
+  test("handles plain text (non-JSON) content", async () => {
     const result = flattenContentBlocks("Just a string message");
     expect(result.content).toBe("Just a string message");
   });
 
-  test("handles non-array JSON gracefully", () => {
+  test("handles non-array JSON gracefully", async () => {
     const result = flattenContentBlocks(
       JSON.stringify({ text: "not an array" }),
     );
     expect(result.content).toBe(JSON.stringify({ text: "not an array" }));
   });
 
-  test("handles mixed block types", () => {
+  test("handles mixed block types", async () => {
     const blocks = JSON.stringify([
       { type: "text", text: "Can you resize this?" },
       { type: "image", source: { data: "abc" } },
@@ -312,13 +317,13 @@ describe("flattenContentBlocks", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveUniqueFilename", () => {
-  test("returns original filename when no collision", () => {
+  test("returns original filename when no collision", async () => {
     const dir = mkdtempSync(join(tmpdir(), "unique-fn-"));
     expect(resolveUniqueFilename(dir, "photo.png")).toBe("photo.png");
     rmSync(dir, { recursive: true });
   });
 
-  test("appends -2, -3 on collision", () => {
+  test("appends -2, -3 on collision", async () => {
     const dir = mkdtempSync(join(tmpdir(), "unique-fn-"));
     writeFileSync(join(dir, "photo.png"), "");
     expect(resolveUniqueFilename(dir, "photo.png")).toBe("photo-2.png");
@@ -329,14 +334,14 @@ describe("resolveUniqueFilename", () => {
     rmSync(dir, { recursive: true });
   });
 
-  test("handles files without extension", () => {
+  test("handles files without extension", async () => {
     const dir = mkdtempSync(join(tmpdir(), "unique-fn-"));
     writeFileSync(join(dir, "README"), "");
     expect(resolveUniqueFilename(dir, "README")).toBe("README-2");
     rmSync(dir, { recursive: true });
   });
 
-  test("strips path traversal sequences from filename", () => {
+  test("strips path traversal sequences from filename", async () => {
     const dir = mkdtempSync(join(tmpdir(), "unique-fn-"));
     expect(resolveUniqueFilename(dir, "../../evil.txt")).toBe("evil.txt");
     expect(resolveUniqueFilename(dir, "../secret.png")).toBe("secret.png");
@@ -349,11 +354,11 @@ describe("resolveUniqueFilename", () => {
 // syncMessageToDisk
 // ---------------------------------------------------------------------------
 
-describe("syncMessageToDisk", () => {
+describePg("syncMessageToDisk", () => {
   beforeEach(resetTables);
 
   test("appends correct JSONL for text-only message", async () => {
-    const conv = createConversation("Test");
+    const conv = await createConversation("Test");
     initConversationDir({
       id: conv.id,
       title: conv.title,
@@ -386,7 +391,7 @@ describe("syncMessageToDisk", () => {
   });
 
   test("appends correct JSONL for message with tool calls", async () => {
-    const conv = createConversation("Tool Test");
+    const conv = await createConversation("Tool Test");
     initConversationDir({
       id: conv.id,
       title: conv.title,
@@ -420,7 +425,7 @@ describe("syncMessageToDisk", () => {
   });
 
   test("copies attachments and includes filenames in JSONL", async () => {
-    const conv = createConversation("Attach Test");
+    const conv = await createConversation("Attach Test");
     initConversationDir({
       id: conv.id,
       title: conv.title,
@@ -435,7 +440,7 @@ describe("syncMessageToDisk", () => {
 
     // Upload an attachment and link to the message
     const att = await uploadAttachment("photo.png", "image/png", "iVBORw0K");
-    linkAttachmentToMessage(msg.id, att.id, 0);
+    await linkAttachmentToMessage(msg.id, att.id, 0);
 
     syncMessageToDisk(conv.id, msg.id, conv.createdAt);
 
@@ -453,7 +458,7 @@ describe("syncMessageToDisk", () => {
   });
 
   test("appends multiple messages sequentially", async () => {
-    const conv = createConversation("Multi");
+    const conv = await createConversation("Multi");
     initConversationDir({
       id: conv.id,
       title: conv.title,
@@ -484,7 +489,7 @@ describe("syncMessageToDisk", () => {
   });
 
   test("appends to a legacy directory when that is the only existing path", async () => {
-    const conv = createConversation("Legacy Attach Test");
+    const conv = await createConversation("Legacy Attach Test");
     const createdAt = conv.createdAt;
     const newDirPath = getConversationDirPath(conv.id, createdAt);
     rmSync(newDirPath, { recursive: true, force: true });
@@ -499,7 +504,7 @@ describe("syncMessageToDisk", () => {
     });
 
     const att = await uploadAttachment("legacy.png", "image/png", "iVBORw0K");
-    linkAttachmentToMessage(msg.id, att.id, 0);
+    await linkAttachmentToMessage(msg.id, att.id, 0);
 
     syncMessageToDisk(conv.id, msg.id, createdAt);
 
@@ -513,7 +518,7 @@ describe("syncMessageToDisk", () => {
   });
 
   test("recreates a missing directory before appending messages and attachments", async () => {
-    const conv = createConversation("Recreate Sync");
+    const conv = await createConversation("Recreate Sync");
     initConversationDir({
       id: conv.id,
       title: conv.title,
@@ -526,7 +531,7 @@ describe("syncMessageToDisk", () => {
       skipIndexing: true,
     });
     const att = await uploadAttachment("repair.png", "image/png", "iVBORw0K");
-    rawRun(
+    await rawRunAsync(
       "test:linkAttachment",
       `INSERT INTO message_attachments (id, message_id, attachment_id, position, created_at)
        VALUES (?, ?, ?, ?, ?)`,
@@ -566,11 +571,11 @@ describe("syncMessageToDisk", () => {
   });
 });
 
-describe("rebuildConversationDiskViewFromDbState", () => {
+describePg("rebuildConversationDiskViewFromDbState", () => {
   beforeEach(resetTables);
 
   test("rewrites stale pre-consolidation disk view with final DB state", async () => {
-    const conv = createConversation("Consolidation Repair");
+    const conv = await createConversation("Consolidation Repair");
     initConversationDir({
       id: conv.id,
       title: conv.title,
@@ -604,7 +609,7 @@ describe("rebuildConversationDiskViewFromDbState", () => {
     );
 
     const att = await uploadAttachment("result.txt", "text/plain", "ok");
-    linkAttachmentToMessage(assistantPart2.id, att.id, 0);
+    await linkAttachmentToMessage(assistantPart2.id, att.id, 0);
 
     // Simulate stale disk view generated before consolidation.
     syncMessageToDisk(conv.id, userMsg.id, conv.createdAt);
@@ -613,7 +618,7 @@ describe("rebuildConversationDiskViewFromDbState", () => {
     syncMessageToDisk(conv.id, assistantPart2.id, conv.createdAt);
 
     // Simulate DB mutations performed by consolidation.
-    updateMessageContent(
+    await updateMessageContent(
       assistantPart1.id,
       JSON.stringify([
         { type: "text", text: "Searching..." },
@@ -621,9 +626,9 @@ describe("rebuildConversationDiskViewFromDbState", () => {
         { type: "text", text: "Found it." },
       ]),
     );
-    relinkAttachments([assistantPart2.id], assistantPart1.id);
-    deleteMessageById(internalToolResult.id);
-    deleteMessageById(assistantPart2.id);
+    await relinkAttachments([assistantPart2.id], assistantPart1.id);
+    await deleteMessageById(internalToolResult.id);
+    await deleteMessageById(assistantPart2.id);
 
     rebuildConversationDiskViewFromDbState(conv.id);
 
@@ -655,7 +660,7 @@ describe("rebuildConversationDiskViewFromDbState", () => {
 // ---------------------------------------------------------------------------
 
 describe("removeConversationDir", () => {
-  test("removes the directory and its contents", () => {
+  test("removes the directory and its contents", async () => {
     const now = Date.now();
     initConversationDir({
       id: "conv-remove",
@@ -672,12 +677,12 @@ describe("removeConversationDir", () => {
     expect(existsSync(dirPath)).toBe(false);
   });
 
-  test("handles non-existent directory gracefully", () => {
+  test("handles non-existent directory gracefully", async () => {
     // Should not throw
     removeConversationDir("nonexistent", Date.now());
   });
 
-  test("removes both new-format and legacy directories when both exist", () => {
+  test("removes both new-format and legacy directories when both exist", async () => {
     const created = Date.now();
     const newDirPath = getConversationDirPath("conv-both", created);
     const legacyDirPath = join(
@@ -699,7 +704,7 @@ describe("removeConversationDir", () => {
 // ---------------------------------------------------------------------------
 
 describe("error resilience", () => {
-  test("initConversationDir does not throw on write failure", () => {
+  test("initConversationDir does not throw on write failure", async () => {
     // Create a file at the path where a directory would be created, so
     // mkdirSync fails with EEXIST. This triggers the try/catch in
     // initConversationDir. The function should swallow the error.
@@ -726,7 +731,7 @@ describe("error resilience", () => {
     }
   });
 
-  test("updateMetaFile does not throw when directory does not exist", () => {
+  test("updateMetaFile does not throw when directory does not exist", async () => {
     expect(() => {
       updateMetaFile({
         id: "nonexistent",
@@ -739,16 +744,18 @@ describe("error resilience", () => {
     }).not.toThrow();
   });
 
-  test("syncMessageToDisk does not throw when message is not found", () => {
+  test("syncMessageToDisk does not throw when message is not found", async () => {
     // Should not throw — logs a warning instead
     expect(() => {
       syncMessageToDisk("missing-conv", "missing-msg", Date.now());
     }).not.toThrow();
   });
 
-  test("removeConversationDir does not throw on missing directory", () => {
+  test("removeConversationDir does not throw on missing directory", async () => {
     expect(() => {
       removeConversationDir("nonexistent-id", 0);
     }).not.toThrow();
   });
 });
+
+setDefaultTimeout(30_000);

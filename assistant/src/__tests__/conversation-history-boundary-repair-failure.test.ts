@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, expect, mock, setDefaultTimeout, test } from "bun:test";
 
 mock.module("../plugins/defaults/memory/indexer.js", () => ({
   MIN_SEGMENT_CHARS: 50,
@@ -20,6 +20,7 @@ import {
 } from "../persistence/conversation-mode-sessions.js";
 import { getDb } from "../persistence/db-connection.js";
 import { initializeDb } from "../persistence/db-init.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
@@ -39,9 +40,11 @@ afterEach(() => {
   getDb().run(`DROP TRIGGER IF EXISTS ${FAIL_REPAIR_TRIGGER}`);
 });
 
-describe("message deletion mode-session boundary repair failures", () => {
+describePg("message deletion mode-session boundary repair failures", () => {
   test("consolidation deletes every donor without duplicating copied content", async () => {
-    const conversation = createConversation("Boundary repair consolidation");
+    const conversation = await createConversation(
+      "Boundary repair consolidation",
+    );
     const sessionId = `session-${conversation.id}`;
     const owner = { id: sessionId, mode: "browser" as const };
     const sourceStartedAt = Date.now() - 10_000;
@@ -93,7 +96,7 @@ describe("message deletion mode-session boundary repair failures", () => {
     installFailingBoundaryRepairTrigger();
 
     expect(consolidateAssistantMessages(conversation.id, user.id)).toBe(true);
-    const rows = getMessages(conversation.id);
+    const rows = await getMessages(conversation.id);
     expect(rows.map((row) => row.id)).toEqual([user.id, retained.id]);
     const retainedContent = rows[1]!.content;
     expect(retainedContent).toEqual([
@@ -103,17 +106,23 @@ describe("message deletion mode-session boundary repair failures", () => {
     ]);
 
     expect(consolidateAssistantMessages(conversation.id, user.id)).toBe(false);
-    expect(getMessages(conversation.id)[1]!.content).toEqual(retainedContent);
+    expect((await getMessages(conversation.id))[1]!.content).toEqual(
+      retainedContent,
+    );
     expect(
-      getMessages(conversation.id).some((row) => row.id === donor.id),
+      (await getMessages(conversation.id)).some((row) => row.id === donor.id),
     ).toBe(false);
     expect(
-      getMessages(conversation.id).some((row) => row.id === toolResult.id),
+      (await getMessages(conversation.id)).some(
+        (row) => row.id === toolResult.id,
+      ),
     ).toBe(false);
   });
 
   test("tail deletion returns its committed count when boundary repair fails", async () => {
-    const conversation = createConversation("Boundary repair tail delete");
+    const conversation = await createConversation(
+      "Boundary repair tail delete",
+    );
     const sessionId = `session-${conversation.id}`;
     const owner = { id: sessionId, mode: "browser" as const };
     expect(
@@ -158,17 +167,21 @@ describe("message deletion mode-session boundary repair failures", () => {
     installFailingBoundaryRepairTrigger();
 
     expect(deleteLastExchange(conversation.id)).toBe(2);
-    expect(getMessages(conversation.id).map((row) => row.id)).toEqual([
+    expect((await getMessages(conversation.id)).map((row) => row.id)).toEqual([
       keptUser.id,
       keptAssistant.id,
     ]);
     expect(
-      getMessages(conversation.id).some((row) => row.id === deletedUser.id),
+      (await getMessages(conversation.id)).some(
+        (row) => row.id === deletedUser.id,
+      ),
     ).toBe(false);
     expect(
-      getMessages(conversation.id).some(
+      (await getMessages(conversation.id)).some(
         (row) => row.id === deletedAssistant.id,
       ),
     ).toBe(false);
   });
 });
+
+setDefaultTimeout(30_000);

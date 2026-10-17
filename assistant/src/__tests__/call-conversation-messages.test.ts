@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
 import {
   buildCallCompletionMessage,
@@ -10,33 +10,26 @@ import {
   updateCallSession,
 } from "../calls/call-store.js";
 import { addMessage, getMessages } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { contentBlockArraySchema } from "../providers/content-block-schema.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function ensureConversation(id: string): void {
-  const db = getDb();
+async function ensureConversation(id: string): Promise<void> {
+  const db = requireMainDb();
   const now = Date.now();
-  db.insert(conversations)
-    .values({
-      id,
-      title: `Conversation ${id}`,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  await db.run(
+    "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    [id, `Conversation ${id}`, now, now],
+  );
 }
 
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM call_events");
-  db.run("DELETE FROM call_pending_questions");
-  db.run("DELETE FROM call_sessions");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM call_events");
+  await db.run("DELETE FROM call_pending_questions");
+  await db.run("DELETE FROM call_sessions");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 type PersistedBlock = {
@@ -55,8 +48,10 @@ type PersistedBlock = {
  * assertions independent of rows other test files leave in the shared
  * workspace DB when the suite runs as one process.
  */
-function getLatestAssistantBlocks(conversationId: string): PersistedBlock[] {
-  const rows = getMessages(conversationId).filter((m) => {
+async function getLatestAssistantBlocks(
+  conversationId: string,
+): Promise<PersistedBlock[]> {
+  const rows = (await getMessages(conversationId)).filter((m) => {
     if (m.role !== "assistant") {
       return false;
     }
@@ -78,8 +73,8 @@ function getLatestAssistantBlocks(conversationId: string): PersistedBlock[] {
  * the card is read only for legacy rows that predate the fallback sibling —
  * concatenating both would double the summary.
  */
-function getLatestAssistantText(conversationId: string): string {
-  const parsed = getLatestAssistantBlocks(conversationId);
+async function getLatestAssistantText(conversationId: string): Promise<string> {
+  const parsed = await getLatestAssistantBlocks(conversationId);
   const text = parsed
     .filter((b) => b.type === "text")
     .map((b) => b.text ?? "")
@@ -93,14 +88,14 @@ function getLatestAssistantText(conversationId: string): string {
     .join("");
 }
 
-describe("call-conversation-messages", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("call-conversation-messages", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
-  test("buildCallCompletionMessage labels failed calls correctly", () => {
+  test("buildCallCompletionMessage labels failed calls correctly", async () => {
     const conversationId = "conv-call-msg-failed";
-    ensureConversation(conversationId);
+    await ensureConversation(conversationId);
     const session = createCallSession({
       direction: "inbound",
       conversationId,
@@ -119,9 +114,9 @@ describe("call-conversation-messages", () => {
     );
   });
 
-  test("buildCallCompletionMessage labels cancelled calls correctly", () => {
+  test("buildCallCompletionMessage labels cancelled calls correctly", async () => {
     const conversationId = "conv-call-msg-cancelled";
-    ensureConversation(conversationId);
+    await ensureConversation(conversationId);
     const session = createCallSession({
       direction: "inbound",
       conversationId,
@@ -142,7 +137,7 @@ describe("call-conversation-messages", () => {
 
   test("persistCallCompletionMessage keeps completed label when status is completed", async () => {
     const conversationId = "conv-call-msg-completed";
-    ensureConversation(conversationId);
+    await ensureConversation(conversationId);
     const session = createCallSession({
       direction: "inbound",
       conversationId,
@@ -159,7 +154,7 @@ describe("call-conversation-messages", () => {
       session.id,
     );
     expect(summary).toBe("**Call completed**. 1 event(s) recorded.");
-    expect(getLatestAssistantText(conversationId)).toBe(
+    expect(await getLatestAssistantText(conversationId)).toBe(
       "**Call completed**. 1 event(s) recorded.",
     );
   });
@@ -172,7 +167,7 @@ describe("call-conversation-messages", () => {
     // search indexing, CLI display, and channel replies; its flag keeps
     // surface-capable clients from rendering the card AND a duplicate line.
     const conversationId = "conv-call-msg-fallback";
-    ensureConversation(conversationId);
+    await ensureConversation(conversationId);
     const session = createCallSession({
       direction: "inbound",
       conversationId,
@@ -189,7 +184,7 @@ describe("call-conversation-messages", () => {
       conversationId,
       session.id,
     );
-    const blocks = getLatestAssistantBlocks(conversationId);
+    const blocks = await getLatestAssistantBlocks(conversationId);
 
     expect(blocks).toHaveLength(2);
     const [surface, fallback] = blocks;
@@ -210,7 +205,7 @@ describe("call-conversation-messages", () => {
     // not validate, every read of the row would pay the per-block repair —
     // the read-path noise that spiked with voice GA (LUM-2869).
     const conversationId = "conv-call-msg-schema";
-    ensureConversation(conversationId);
+    await ensureConversation(conversationId);
     const session = createCallSession({
       direction: "inbound",
       conversationId,
@@ -222,7 +217,7 @@ describe("call-conversation-messages", () => {
     recordCallEvent(session.id, "call_ended");
     await persistCallCompletionMessage(conversationId, session.id);
 
-    const blocks = getLatestAssistantBlocks(conversationId);
+    const blocks = await getLatestAssistantBlocks(conversationId);
     expect(contentBlockArraySchema.safeParse(blocks).success).toBe(true);
   });
 
@@ -232,7 +227,7 @@ describe("call-conversation-messages", () => {
     // own suite instead of silently shipping turns the model cannot see.
     // (In production the same condition only warns — never-block posture.)
     const conversationId = "conv-card-only-guard";
-    ensureConversation(conversationId);
+    await ensureConversation(conversationId);
     await expect(
       addMessage(
         conversationId,
@@ -249,3 +244,5 @@ describe("call-conversation-messages", () => {
     ).rejects.toThrow(/only content is ui_surface/);
   });
 });
+
+setDefaultTimeout(30_000);

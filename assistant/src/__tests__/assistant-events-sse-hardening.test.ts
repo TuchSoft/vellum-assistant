@@ -8,28 +8,32 @@
  *   - Subscription cleanup on request abort.
  *   - Subscription cleanup on reader cancel.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { AssistantEventHub } from "../runtime/assistant-event-hub.js";
 import { ServiceUnavailableError } from "../runtime/routes/errors.js";
 import { handleSubscribeAssistantEvents } from "../runtime/routes/events-routes.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function clearTables() {
-  const db = getDb();
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM conversations");
+async function clearTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM conversations");
 }
 
 // ── Hub subscriber cap — eviction ─────────────────────────────────────────────
 
 describe("AssistantEventHub — subscriber cap", () => {
-  test("evicts oldest subscriber when cap is reached", () => {
+  test("evicts oldest subscriber when cap is reached", async () => {
     const hub = new AssistantEventHub({ maxSubscribers: 1 });
     const evicted: string[] = [];
 
@@ -56,7 +60,7 @@ describe("AssistantEventHub — subscriber cap", () => {
     sub2.dispose();
   });
 
-  test("evicts in FIFO order across multiple overflows", () => {
+  test("evicts in FIFO order across multiple overflows", async () => {
     const hub = new AssistantEventHub({ maxSubscribers: 2 });
     const evicted: number[] = [];
 
@@ -96,7 +100,7 @@ describe("AssistantEventHub — subscriber cap", () => {
     sub4.dispose();
   });
 
-  test("maxSubscribers: 0 throws RangeError (nothing to evict)", () => {
+  test("maxSubscribers: 0 throws RangeError (nothing to evict)", async () => {
     const hub = new AssistantEventHub({ maxSubscribers: 0 });
     expect(() =>
       hub.subscribe({
@@ -106,7 +110,7 @@ describe("AssistantEventHub — subscriber cap", () => {
     ).toThrow(RangeError);
   });
 
-  test("subscribe succeeds after disposal frees a slot", () => {
+  test("subscribe succeeds after disposal frees a slot", async () => {
     const hub = new AssistantEventHub({ maxSubscribers: 1 });
     const sub = hub.subscribe({
       type: "process",
@@ -123,7 +127,7 @@ describe("AssistantEventHub — subscriber cap", () => {
     ).not.toThrow();
   });
 
-  test("default hub accepts many subscribers without eviction", () => {
+  test("default hub accepts many subscribers without eviction", async () => {
     const hub = new AssistantEventHub();
     const N = 50;
     const subs = Array.from({ length: N }, () =>
@@ -140,7 +144,7 @@ describe("AssistantEventHub — subscriber cap", () => {
 
 // ── SSE route — eviction on capacity overflow ──────────────────────────────────
 
-describe("SSE route — capacity limit", () => {
+describePg("SSE route — capacity limit", () => {
   beforeEach(clearTables);
 
   test("new connection evicts oldest and returns stream", async () => {
@@ -148,7 +152,7 @@ describe("SSE route — capacity limit", () => {
     const opts = { hub, heartbeatIntervalMs: 60_000 };
 
     const ac1 = new AbortController();
-    const stream1 = handleSubscribeAssistantEvents(
+    const stream1 = await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationKey: "evict-a" },
         abortSignal: ac1.signal,
@@ -162,7 +166,7 @@ describe("SSE route — capacity limit", () => {
 
     // Second connection evicts first.
     const ac2 = new AbortController();
-    const stream2 = handleSubscribeAssistantEvents(
+    const stream2 = await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationKey: "evict-b" },
         abortSignal: ac2.signal,
@@ -185,10 +189,10 @@ describe("SSE route — capacity limit", () => {
     ac2.abort();
   });
 
-  test("throws ServiceUnavailableError when maxSubscribers is 0", () => {
+  test("throws ServiceUnavailableError when maxSubscribers is 0", async () => {
     const hub = new AssistantEventHub({ maxSubscribers: 0 });
 
-    expect(() =>
+    await expect(
       handleSubscribeAssistantEvents(
         {
           queryParams: { conversationKey: "cap-zero-test" },
@@ -196,14 +200,14 @@ describe("SSE route — capacity limit", () => {
         },
         { hub },
       ),
-    ).toThrow(ServiceUnavailableError);
+    ).rejects.toThrow(ServiceUnavailableError);
   });
 
-  test("returns stream when hub has remaining capacity", () => {
+  test("returns stream when hub has remaining capacity", async () => {
     const hub = new AssistantEventHub({ maxSubscribers: 2 });
     const ac = new AbortController();
 
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationKey: "cap-ok-test" },
         abortSignal: ac.signal,
@@ -218,14 +222,14 @@ describe("SSE route — capacity limit", () => {
 
 // ── SSE route — heartbeat ────────────────────────────────────────────────────
 
-describe("SSE route — heartbeat", () => {
+describePg("SSE route — heartbeat", () => {
   beforeEach(clearTables);
 
   test("emits SSE comment frames on the configured interval", async () => {
     const hub = new AssistantEventHub();
     const ac = new AbortController();
 
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationKey: "hb-emit-test" },
         abortSignal: ac.signal,
@@ -249,7 +253,7 @@ describe("SSE route — heartbeat", () => {
     const hub = new AssistantEventHub();
     const ac = new AbortController();
 
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationKey: "hb-multi-test" },
         abortSignal: ac.signal,
@@ -286,14 +290,14 @@ describe("SSE route — heartbeat", () => {
 
 // ── SSE route — disconnect cleanup ───────────────────────────────────────────
 
-describe("SSE route — disconnect cleanup", () => {
+describePg("SSE route — disconnect cleanup", () => {
   beforeEach(clearTables);
 
   test("aborting the request disposes the subscription", async () => {
     const hub = new AssistantEventHub();
     const ac = new AbortController();
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationKey: "abort-cleanup-test" },
         abortSignal: ac.signal,
@@ -315,7 +319,7 @@ describe("SSE route — disconnect cleanup", () => {
     const hub = new AssistantEventHub();
     const ac = new AbortController();
 
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationKey: "cancel-cleanup-test" },
         abortSignal: ac.signal,
@@ -334,3 +338,5 @@ describe("SSE route — disconnect cleanup", () => {
     ac.abort();
   });
 });
+
+setDefaultTimeout(30_000);

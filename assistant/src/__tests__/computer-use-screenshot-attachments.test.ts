@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
 import { collectImageManifest } from "../context/compactor.js";
 import { resolveAssistantAttachments } from "../daemon/conversation-attachments.js";
@@ -22,33 +22,32 @@ import {
   syncMessageToDisk,
 } from "../persistence/conversation-disk-view.js";
 import { computerUseScreenshotAttachmentIdsFromMetadata } from "../persistence/conversation-types.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { rawGet } from "../persistence/raw-query.js";
+import { requireMainDb } from "../persistence/db-facade.js";
+import { rawGetAsync } from "../persistence/raw-query.js";
 import type { ImageContent } from "../providers/types.js";
 import { getLogger } from "../util/logger.js";
 import { recoverConversationsFromDiskViewMigration } from "../workspace/migrations/028-recover-conversations-from-disk-view.js";
 import { setConfig } from "./helpers/set-config.js";
+import { describePg } from "./pg-test-db.js";
 
 setConfig("memory", { enabled: false });
-await initializeDb();
 
 const SCREENSHOT_BASE64 = Buffer.from("screenshot").toString("base64");
 const rlog = getLogger("computer-use-screenshot-attachments-test");
 
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
-describe("computer-use screenshot reply placement", () => {
+describePg("computer-use screenshot reply placement", () => {
   beforeEach(resetTables);
 
   test("links only the final canonical screenshot and reuses it on retry", async () => {
-    const conversation = createConversation();
+    const conversation = await createConversation();
     const earlierToolRow = await addMessage(
       conversation.id,
       "user",
@@ -74,8 +73,8 @@ describe("computer-use screenshot reply placement", () => {
       "image/png",
       SCREENSHOT_BASE64,
     );
-    linkAttachmentToMessage(earlierToolRow.id, earlier.id, 0);
-    linkAttachmentToMessage(finalToolRow.id, final.id, 0);
+    await linkAttachmentToMessage(earlierToolRow.id, earlier.id, 0);
+    await linkAttachmentToMessage(finalToolRow.id, final.id, 0);
     const finalBlock: ImageContent = {
       type: "image",
       source: {
@@ -102,14 +101,14 @@ describe("computer-use screenshot reply placement", () => {
     const retry = await resolve();
 
     expect(
-      getAttachmentsForMessage(earlierToolRow.id).map((a) => a.id),
+      (await getAttachmentsForMessage(earlierToolRow.id)).map((a) => a.id),
     ).toEqual([earlier.id]);
-    expect(getAttachmentsForMessage(finalToolRow.id).map((a) => a.id)).toEqual([
-      final.id,
-    ]);
-    expect(getAttachmentsForMessage(reply.id).map((a) => a.id)).toEqual([
-      final.id,
-    ]);
+    expect(
+      (await getAttachmentsForMessage(finalToolRow.id)).map((a) => a.id),
+    ).toEqual([final.id]);
+    expect((await getAttachmentsForMessage(reply.id)).map((a) => a.id)).toEqual(
+      [final.id],
+    );
     expect(first.emittedAttachments).toEqual([
       expect.objectContaining({
         id: final.id,
@@ -126,18 +125,20 @@ describe("computer-use screenshot reply placement", () => {
     expect(retry.linkedAttachmentIds).toEqual([final.id]);
     expect(
       computerUseScreenshotAttachmentIdsFromMetadata(
-        parseMessageMetadata(getMessageById(reply.id)?.metadata ?? null),
+        parseMessageMetadata(
+          (await getMessageById(reply.id))?.metadata ?? null,
+        ),
       ),
     ).toEqual([final.id]);
-    const physicalCount = rawGet<{ count: number }>(
+    const physicalCount = await rawGetAsync<{ count: number }>(
       "test:countComputerUseAttachments",
       "SELECT COUNT(*) AS count FROM attachments",
     );
     expect(physicalCount?.count).toBe(2);
 
-    const manifestIds = collectImageManifest(conversation.id, "guardian").map(
-      (entry) => entry.attachmentId,
-    );
+    const manifestIds = (
+      await collectImageManifest(conversation.id, "guardian")
+    ).map((entry) => entry.attachmentId);
     expect(manifestIds).toEqual([earlier.id, final.id, final.id]);
     expect(new Set(manifestIds)).toEqual(new Set([earlier.id, final.id]));
 
@@ -163,7 +164,7 @@ describe("computer-use screenshot reply placement", () => {
   });
 
   test("keeps explicit attachment intent unflagged when content matches", async () => {
-    const conversation = createConversation();
+    const conversation = await createConversation();
     const toolRow = await addMessage(conversation.id, "user", "tool result");
     const reply = await addMessage(conversation.id, "assistant", "Done.");
     const canonical = await createInlineAttachment(
@@ -173,7 +174,7 @@ describe("computer-use screenshot reply placement", () => {
       "image/png",
       SCREENSHOT_BASE64,
     );
-    linkAttachmentToMessage(toolRow.id, canonical.id, 0);
+    await linkAttachmentToMessage(toolRow.id, canonical.id, 0);
     const workingDir = mkdtempSync(join(tmpdir(), "vellum-cu-explicit-"));
     writeFileSync(join(workingDir, "selected.png"), "screenshot");
 
@@ -208,7 +209,7 @@ describe("computer-use screenshot reply placement", () => {
         },
       );
 
-      const replyAttachments = getAttachmentsForMessage(reply.id);
+      const replyAttachments = await getAttachmentsForMessage(reply.id);
       expect(replyAttachments).toHaveLength(1);
       expect(replyAttachments[0]?.id).not.toBe(canonical.id);
       expect(
@@ -217,7 +218,9 @@ describe("computer-use screenshot reply placement", () => {
       expect(result.linkedAttachmentIds).toEqual([replyAttachments[0]!.id]);
       expect(
         computerUseScreenshotAttachmentIdsFromMetadata(
-          parseMessageMetadata(getMessageById(reply.id)?.metadata ?? null),
+          parseMessageMetadata(
+            (await getMessageById(reply.id))?.metadata ?? null,
+          ),
         ),
       ).toEqual([]);
     } finally {
@@ -226,7 +229,7 @@ describe("computer-use screenshot reply placement", () => {
   });
 
   test("keeps unresolved inline fallback visible and unflagged", async () => {
-    const conversation = createConversation();
+    const conversation = await createConversation();
     const reply = await addMessage(conversation.id, "assistant", "Done.");
     const result = await resolveAssistantAttachments(
       [],
@@ -255,11 +258,11 @@ describe("computer-use screenshot reply placement", () => {
     expect(result.linkedAttachmentIds).toEqual([
       result.emittedAttachments[0]!.id!,
     ]);
-    expect(getAttachmentsForMessage(reply.id)).toHaveLength(1);
+    expect(await getAttachmentsForMessage(reply.id)).toHaveLength(1);
   });
 
   test("reports an ordinary tool attachment only after linking it", async () => {
-    const conversation = createConversation();
+    const conversation = await createConversation();
     const reply = await addMessage(conversation.id, "assistant", "Done.");
     const result = await resolveAssistantAttachments(
       [],
@@ -284,11 +287,11 @@ describe("computer-use screenshot reply placement", () => {
     expect(result.linkedAttachmentIds).toEqual([
       result.emittedAttachments[0]!.id!,
     ]);
-    expect(getAttachmentsForMessage(reply.id)).toHaveLength(1);
+    expect(await getAttachmentsForMessage(reply.id)).toHaveLength(1);
   });
 
   test("reports no linked attachments when resolution has no drafts", async () => {
-    const conversation = createConversation();
+    const conversation = await createConversation();
     const reply = await addMessage(conversation.id, "assistant", "Done.");
     const result = await resolveAssistantAttachments(
       [],
@@ -301,11 +304,11 @@ describe("computer-use screenshot reply placement", () => {
 
     expect(result.assistantAttachments).toEqual([]);
     expect(result.linkedAttachmentIds).toEqual([]);
-    expect(getAttachmentsForMessage(reply.id)).toEqual([]);
+    expect(await getAttachmentsForMessage(reply.id)).toEqual([]);
   });
 
   test("exports and recovers the final screenshot reply once", async () => {
-    const conversation = createConversation();
+    const conversation = await createConversation();
     const reply = await addMessage(conversation.id, "assistant", "Done.");
     const diskDir = getConversationDirPath(
       conversation.id,
@@ -332,7 +335,7 @@ describe("computer-use screenshot reply placement", () => {
       recoverConversationsFromDiskViewMigration.run(
         process.env.VELLUM_WORKSPACE_DIR!,
       );
-      const recovered = rawGet<{ count: number }>(
+      const recovered = await rawGetAsync<{ count: number }>(
         "test:countRecoveredFinalScreenshotReplies",
         "SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ? AND role = 'assistant'",
         conversation.id,
@@ -344,7 +347,7 @@ describe("computer-use screenshot reply placement", () => {
   });
 
   test("exports and recovers an earlier delivered reply and final private row once each", async () => {
-    const conversation = createConversation();
+    const conversation = await createConversation();
     const deliveredReply = await addMessage(
       conversation.id,
       "assistant",
@@ -362,7 +365,7 @@ describe("computer-use screenshot reply placement", () => {
       "image/png",
       SCREENSHOT_BASE64,
     );
-    linkAttachmentToMessage(deliveredReply.id, screenshot.id, 0);
+    await linkAttachmentToMessage(deliveredReply.id, screenshot.id, 0);
     const diskDir = getConversationDirPath(
       conversation.id,
       conversation.createdAt,
@@ -398,7 +401,7 @@ describe("computer-use screenshot reply placement", () => {
       recoverConversationsFromDiskViewMigration.run(
         process.env.VELLUM_WORKSPACE_DIR!,
       );
-      const recovered = rawGet<{ count: number }>(
+      const recovered = await rawGetAsync<{ count: number }>(
         "test:countRecoveredDeliveredAndPrivateRows",
         "SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ? AND role = 'assistant'",
         conversation.id,
@@ -409,3 +412,5 @@ describe("computer-use screenshot reply placement", () => {
     }
   });
 });
+
+setDefaultTimeout(30_000);

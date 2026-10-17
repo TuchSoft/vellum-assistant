@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
 import { eq, like } from "drizzle-orm";
 
@@ -30,27 +30,29 @@ import {
   computerUseScreenshotAttachmentIdsFromMetadata,
 } from "../persistence/conversation-types.js";
 import {
-  getDb,
   getLogsDb,
   getMemoryDb,
   getMemorySqlite,
 } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { getRequestLogsByMessageId } from "../persistence/llm-request-log-store.js";
 import { stringifyMessageContent } from "../persistence/message-content.js";
-import { rawGet, rawRun } from "../persistence/raw-query.js";
 import {
-  activationState,
   channelInboundEvents,
   conversationAssistantAttentionState,
   conversationCompactionEvents,
-  conversationGraphMemoryState,
   conversations,
   externalConversationBindings,
+  toolInvocations,
+} from "../persistence/pg-schema/index.js";
+import { rawGetAsync, rawRunAsync } from "../persistence/raw-query.js";
+import {
+  activationState,
+  conversationGraphMemoryState,
   llmRequestLogs,
   memoryJobs,
   memoryRetrospectiveState,
-  toolInvocations,
 } from "../persistence/schema/index.js";
 import {
   loadGraphMemoryState,
@@ -72,44 +74,45 @@ import {
 } from "../plugins/defaults/memory/v3/ever-injected-store.js";
 import { ensureMemoryV3InjectedSectionsSchema } from "../plugins/defaults/memory/v3/plugin-schema.js";
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
 async function resetTables(): Promise<void> {
-  const db = getDb();
-  db.delete(channelInboundEvents).run();
-  db.delete(externalConversationBindings).run();
-  db.delete(conversationAssistantAttentionState).run();
+  const db = requireMainDb();
+  await db.orm.delete(channelInboundEvents);
+  await db.orm.delete(externalConversationBindings);
+  await db.orm.delete(conversationAssistantAttentionState);
   getMemoryDb()!.delete(activationState).run();
-  db.delete(conversationCompactionEvents).run();
+  await db.orm.delete(conversationCompactionEvents);
   // conversation_graph_memory_state, memory_retrospective_state, and
   // memory_v3_injected_sections all live on the memory connection.
   getMemoryDb()!.delete(conversationGraphMemoryState).run();
   getMemoryDb()!.delete(memoryRetrospectiveState).run();
   getLogsDb()!.delete(llmRequestLogs).run();
-  db.delete(toolInvocations).run();
+  await db.orm.delete(toolInvocations);
   getMemoryDb()!.delete(memoryJobs).run();
   // The plugin creates this table itself (init hook, or a store's first use);
   // the reset runs before either, so stand it up here.
   await ensureMemoryV3InjectedSectionsSchema(getMemorySqlite()!);
   getMemorySqlite()!.exec("DELETE FROM memory_v3_injected_sections");
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 function parseMetadata(metadata: string | null): unknown {
   return metadata == null ? null : JSON.parse(metadata);
 }
 
-describe("forkConversation", () => {
+describePg("forkConversation", () => {
   beforeEach(async () => {
     await resetTables();
   });
 
   test("forks a full transcript with copied history and lineage", async () => {
-    const source = createConversation("Planning thread");
+    const source = await createConversation("Planning thread");
     await addMessage(source.id, "user", "Can you draft a launch plan?", {
       metadata: { branch: 1, source: "user" },
       skipIndexing: true,
@@ -127,9 +130,9 @@ describe("forkConversation", () => {
       { metadata: { nested: { keep: true } }, skipIndexing: true },
     );
 
-    const sourceMessages = getMessages(source.id);
-    const fork = forkConversation({ conversationId: source.id });
-    const forkMessages = getMessages(fork.id);
+    const sourceMessages = await getMessages(source.id);
+    const fork = await forkConversation({ conversationId: source.id });
+    const forkMessages = await getMessages(fork.id);
 
     expect(fork.id).not.toBe(source.id);
     expect(fork.title).toBe("Planning thread (Fork)");
@@ -165,21 +168,21 @@ describe("forkConversation", () => {
     ).toBe(true);
   });
 
-  test("preserves source order when source messages share a timestamp", () => {
-    const source = createConversation("Equal timestamp thread");
-    const db = getDb();
+  test("preserves source order when source messages share a timestamp", async () => {
+    const source = await createConversation("Equal timestamp thread");
+    const db = requireMainDb();
     const createdAt = Date.now();
 
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('z-source-message', '${source.id}', 'user', 'first', ${createdAt})`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('a-source-message', '${source.id}', 'assistant', 'second', ${createdAt})`,
     );
 
-    const sourceMessages = getMessages(source.id);
-    const fork = forkConversation({ conversationId: source.id });
-    const forkMessages = getMessages(fork.id);
+    const sourceMessages = await getMessages(source.id);
+    const fork = await forkConversation({ conversationId: source.id });
+    const forkMessages = await getMessages(fork.id);
 
     expect(
       sourceMessages.map((message) => stringifyMessageContent(message.content)),
@@ -193,7 +196,7 @@ describe("forkConversation", () => {
   });
 
   test("forks only through the requested branch point", async () => {
-    const source = createConversation("Branchable thread");
+    const source = await createConversation("Branchable thread");
     await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -207,7 +210,7 @@ describe("forkConversation", () => {
       skipIndexing: true,
     });
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: branchPoint.id,
     });
@@ -215,27 +218,27 @@ describe("forkConversation", () => {
     expect(fork.forkParentConversationId).toBe(source.id);
     expect(fork.forkParentMessageId).toBe(branchPoint.id);
     expect(
-      getMessages(fork.id).map((message) =>
+      (await getMessages(fork.id)).map((message) =>
         stringifyMessageContent(message.content),
       ),
     ).toEqual(["Message 1", "Message 2"]);
   });
 
-  test("pinned fork through a (createdAt, id) cutoff matches the cursor slice for same-timestamp rows", () => {
+  test("pinned fork through a (createdAt, id) cutoff matches the cursor slice for same-timestamp rows", async () => {
     // Regression for the memory-retrospective cutoff/fork divergence: the job
     // picks its cutoff from `getMessagesAfter`, which orders by `(createdAt,
     // id)`. `forkConversation` must slice on the same order so same-millisecond
     // siblings aren't skipped forever or reprocessed. Insert rows whose
     // insertion order is the reverse of their `(createdAt, id)` order to expose
     // the divergence: a `createdAt`-only slice would pick the wrong prefix.
-    const source = createConversation("Same-timestamp cutoff thread");
-    const db = getDb();
+    const source = await createConversation("Same-timestamp cutoff thread");
+    const db = requireMainDb();
     const createdAt = Date.now();
     // Insert d, c, b, a so SQLite's createdAt-only tie order (≈ rowid /
     // insertion order) is the opposite of the (createdAt, id) cursor order
     // (a, b, c, d). All are plain user rows so no display-turn extension fires.
     for (const id of ["msg-d", "msg-c", "msg-b", "msg-a"]) {
-      db.run(
+      await db.run(
         `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('${id}', '${source.id}', 'user', '${id}', ${createdAt})`,
       );
     }
@@ -243,13 +246,13 @@ describe("forkConversation", () => {
     // Cutoff = "msg-c": the cursor treats {msg-a, msg-b, msg-c} as processed
     // and {msg-d} as still-after-the-cutoff. The fork must contain exactly the
     // first three in `(createdAt, id)` order.
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: "msg-c",
     });
 
     expect(
-      getMessages(fork.id).map((message) =>
+      (await getMessages(fork.id)).map((message) =>
         stringifyMessageContent(message.content),
       ),
     ).toEqual(["msg-a", "msg-b", "msg-c"]);
@@ -259,7 +262,7 @@ describe("forkConversation", () => {
     // When the read-path merges consecutive assistant DB rows into a single
     // display row, the client only addresses the anchor id. Forking through
     // the anchor must still include the merged tail rows that follow.
-    const source = createConversation("Multi-row turn thread");
+    const source = await createConversation("Multi-row turn thread");
     await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -282,7 +285,7 @@ describe("forkConversation", () => {
       skipIndexing: true,
     });
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: anchor.id,
     });
@@ -290,7 +293,7 @@ describe("forkConversation", () => {
     // Boundary advances past the entire consecutive-assistant cluster, so the
     // full turn is preserved in the fork — not just the anchor row.
     expect(
-      getMessages(fork.id).map((message) =>
+      (await getMessages(fork.id)).map((message) =>
         stringifyMessageContent(message.content),
       ),
     ).toEqual([
@@ -311,7 +314,7 @@ describe("forkConversation", () => {
     // both halves of the assistant turn plus the suppressed user row in
     // between — otherwise the fork loses tool_use ↔ tool_result pairing
     // and produces an invalid LLM history.
-    const source = createConversation("Tool-result gap thread");
+    const source = await createConversation("Tool-result gap thread");
     await addMessage(source.id, "user", "Find the latest sales numbers", {
       skipIndexing: true,
     });
@@ -342,14 +345,14 @@ describe("forkConversation", () => {
       skipIndexing: true,
     });
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: anchor.id,
     });
 
     // All three DB rows of the assistant display turn — including the
     // suppressed tool-result user row in the middle — land in the fork.
-    const forkedContent = getMessages(fork.id).map((m) =>
+    const forkedContent = (await getMessages(fork.id)).map((m) =>
       JSON.stringify(m.content),
     );
     expect(forkedContent).toHaveLength(4);
@@ -362,7 +365,7 @@ describe("forkConversation", () => {
   });
 
   test("inherits the most recent compaction at-or-before the forked-from message", async () => {
-    const source = createConversation("Compacted thread");
+    const source = await createConversation("Compacted thread");
     const m1 = await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -378,28 +381,30 @@ describe("forkConversation", () => {
 
     // Pin timestamps so the compaction event sits strictly between M2 and M3:
     // it covers M1+M2 and ran before M3 was sent.
-    const db = getDb();
+    const db = requireMainDb();
     const base = Date.now();
-    db.run(`UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`);
-    db.run(
+    await db.run(
+      `UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`,
+    );
+    await db.run(
       `UPDATE messages SET created_at = ${base + 1} WHERE id = '${m2.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 3} WHERE id = '${branchPoint.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 4} WHERE id = '${m4.id}'`,
     );
     const compactedAt = base + 2;
-    db.update(conversations)
+    await db.orm
+      .update(conversations)
       .set({
         contextSummary: "Compacted summary",
         contextCompactedMessageCount: 2,
         contextCompactedAt: compactedAt,
       })
-      .where(eq(conversations.id, source.id))
-      .run();
-    appendCompactionEvent(source.id, {
+      .where(eq(conversations.id, source.id));
+    await appendCompactionEvent(source.id, {
       compactedAt,
       summary: "Compacted summary",
       compactedMessageCount: 2,
@@ -407,7 +412,7 @@ describe("forkConversation", () => {
 
     // M3 was sent after the compaction, so forking through it reproduces the
     // compacted working context.
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: branchPoint.id,
     });
@@ -420,7 +425,7 @@ describe("forkConversation", () => {
   });
 
   test("does not inherit a compaction that ran after the forked-from message", async () => {
-    const source = createConversation("Compacted thread");
+    const source = await createConversation("Compacted thread");
     const m1 = await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -435,28 +440,30 @@ describe("forkConversation", () => {
     });
 
     // `/compact` ran after M4 — the compaction postdates every message.
-    const db = getDb();
+    const db = requireMainDb();
     const base = Date.now();
-    db.run(`UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`);
-    db.run(
+    await db.run(
+      `UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`,
+    );
+    await db.run(
       `UPDATE messages SET created_at = ${base + 1} WHERE id = '${m2.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 2} WHERE id = '${m3.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 3} WHERE id = '${m4.id}'`,
     );
     const compactedAt = base + 10;
-    db.update(conversations)
+    await db.orm
+      .update(conversations)
       .set({
         contextSummary: "Compacted summary",
         contextCompactedMessageCount: 2,
         contextCompactedAt: compactedAt,
       })
-      .where(eq(conversations.id, source.id))
-      .run();
-    appendCompactionEvent(source.id, {
+      .where(eq(conversations.id, source.id));
+    await appendCompactionEvent(source.id, {
       compactedAt,
       summary: "Compacted summary",
       compactedMessageCount: 2,
@@ -464,7 +471,7 @@ describe("forkConversation", () => {
 
     // Forking through the final message yields the full uncompacted history:
     // the compaction did not exist when M4 was the latest turn.
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: m4.id,
     });
@@ -473,14 +480,14 @@ describe("forkConversation", () => {
     expect(fork.contextCompactedMessageCount).toBe(0);
     expect(fork.contextCompactedAt).toBeNull();
     expect(
-      getMessages(fork.id).map((message) =>
+      (await getMessages(fork.id)).map((message) =>
         stringifyMessageContent(message.content),
       ),
     ).toEqual(["Message 1", "Message 2", "Message 3", "Message 4"]);
   });
 
   test("forks from the compacted-away prefix without inheriting source compaction state", async () => {
-    const source = createConversation("Compacted thread");
+    const source = await createConversation("Compacted thread");
     const compactedBranchPoint = await addMessage(
       source.id,
       "user",
@@ -497,33 +504,33 @@ describe("forkConversation", () => {
     // Pin timestamps so the compaction event sits strictly after every
     // message — same-millisecond inserts would otherwise make the event
     // "at-or-before" the branch point and inherit.
-    const db = getDb();
+    const db = requireMainDb();
     const base = Date.now() - 10_000;
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base} WHERE id = '${compactedBranchPoint.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 1} WHERE id = '${m2.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 2} WHERE id = '${m3.id}'`,
     );
     const compactedAt = base + 3;
-    db.update(conversations)
+    await db.orm
+      .update(conversations)
       .set({
         contextSummary: "Compacted summary",
         contextCompactedMessageCount: 2,
         contextCompactedAt: compactedAt,
       })
-      .where(eq(conversations.id, source.id))
-      .run();
-    appendCompactionEvent(source.id, {
+      .where(eq(conversations.id, source.id));
+    await appendCompactionEvent(source.id, {
       compactedAt,
       summary: "Compacted summary",
       compactedMessageCount: 2,
     });
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: compactedBranchPoint.id,
     });
@@ -534,14 +541,14 @@ describe("forkConversation", () => {
     expect(fork.forkParentConversationId).toBe(source.id);
     expect(fork.forkParentMessageId).toBe(compactedBranchPoint.id);
     expect(
-      getMessages(fork.id).map((message) =>
+      (await getMessages(fork.id)).map((message) =>
         stringifyMessageContent(message.content),
       ),
     ).toEqual(["Message 1"]);
   });
 
   test("inherits historyStrippedAt when forking past the clean event", async () => {
-    const source = createConversation("Clean thread");
+    const source = await createConversation("Clean thread");
     await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -550,18 +557,17 @@ describe("forkConversation", () => {
     });
 
     const historyStrippedAt = preClean.createdAt + 1;
-    getDb()
-      .update(conversations)
+    requireMainDb()
+      .orm.update(conversations)
       .set({ historyStrippedAt })
-      .where(eq(conversations.id, source.id))
-      .run();
+      .where(eq(conversations.id, source.id));
 
     const postClean = await addMessage(source.id, "user", "Message 3", {
       skipIndexing: true,
     });
     expect(postClean.createdAt).toBeGreaterThanOrEqual(historyStrippedAt);
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: postClean.id,
     });
@@ -570,7 +576,7 @@ describe("forkConversation", () => {
   });
 
   test("does not inherit historyStrippedAt when forking before the clean event", async () => {
-    const source = createConversation("Clean thread");
+    const source = await createConversation("Clean thread");
     await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -579,17 +585,16 @@ describe("forkConversation", () => {
     });
 
     const historyStrippedAt = preClean.createdAt + 1;
-    getDb()
-      .update(conversations)
+    requireMainDb()
+      .orm.update(conversations)
       .set({ historyStrippedAt })
-      .where(eq(conversations.id, source.id))
-      .run();
+      .where(eq(conversations.id, source.id));
 
     await addMessage(source.id, "user", "Message 3", {
       skipIndexing: true,
     });
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: preClean.id,
     });
@@ -598,7 +603,7 @@ describe("forkConversation", () => {
   });
 
   test("inherits historyStrippedAt on a full-history fork", async () => {
-    const source = createConversation("Clean thread");
+    const source = await createConversation("Clean thread");
     await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -607,19 +612,18 @@ describe("forkConversation", () => {
     });
 
     const historyStrippedAt = last.createdAt - 1;
-    getDb()
-      .update(conversations)
+    requireMainDb()
+      .orm.update(conversations)
       .set({ historyStrippedAt })
-      .where(eq(conversations.id, source.id))
-      .run();
+      .where(eq(conversations.id, source.id));
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
 
     expect(fork.historyStrippedAt).toBe(historyStrippedAt);
   });
 
   test("leaves historyStrippedAt null when the source has no clean event", async () => {
-    const source = createConversation("Unclean thread");
+    const source = await createConversation("Unclean thread");
     await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -627,13 +631,13 @@ describe("forkConversation", () => {
       skipIndexing: true,
     });
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
 
     expect(fork.historyStrippedAt).toBeNull();
   });
 
   test("fork from a pre-compaction message preserves historical injection metadata", async () => {
-    const source = createConversation("Compacted thread");
+    const source = await createConversation("Compacted thread");
     const m1 = await addMessage(source.id, "user", "Historical question", {
       metadata: {
         pkbContextBlock: "<knowledge_base>\nstale\n</knowledge_base>",
@@ -654,28 +658,29 @@ describe("forkConversation", () => {
     // pinned fork uses, that would let `m1`'s slice reorder relative to its
     // siblings. Distinct timestamps keep this test focused on its intent —
     // pre-compaction metadata + compaction-state inheritance.
-    const db = getDb();
+    const db = requireMainDb();
     const base = Date.now();
-    db.run(`UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`);
-    db.run(
+    await db.run(
+      `UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`,
+    );
+    await db.run(
       `UPDATE messages SET created_at = ${base + 1} WHERE id = '${reply1.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 2} WHERE id = '${tail.id}'`,
     );
     const compactedAt = base + 3;
-    getDb()
-      .update(conversations)
+    requireMainDb()
+      .orm.update(conversations)
       .set({
         contextSummary: "summary",
         contextCompactedMessageCount: 2,
         contextCompactedAt: compactedAt,
         historyStrippedAt: compactedAt,
       })
-      .where(eq(conversations.id, source.id))
-      .run();
+      .where(eq(conversations.id, source.id));
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: m1.id,
     });
@@ -684,7 +689,7 @@ describe("forkConversation", () => {
     expect(fork.contextSummary).toBeNull();
     expect(fork.contextCompactedMessageCount).toBe(0);
 
-    const forkedMessages = getMessages(fork.id);
+    const forkedMessages = await getMessages(fork.id);
     expect(forkedMessages).toHaveLength(1);
     const meta = parseMetadata(forkedMessages[0].metadata) as Record<
       string,
@@ -698,16 +703,18 @@ describe("forkConversation", () => {
     );
   });
 
-  test("rejects forks when the source conversation has no persisted messages", () => {
-    const source = createConversation("Empty thread");
+  test("rejects forks when the source conversation has no persisted messages", async () => {
+    const source = await createConversation("Empty thread");
 
-    expect(() => forkConversation({ conversationId: source.id })).toThrow(
+    await expect(
+      forkConversation({ conversationId: source.id }),
+    ).rejects.toThrow(
       `Conversation ${source.id} has no persisted messages to fork`,
     );
   });
 
   test("relinks copied attachments into the fork and syncs disk view", async () => {
-    const source = createConversation("Attachment thread");
+    const source = await createConversation("Attachment thread");
     await addMessage(source.id, "user", "Please review this image", {
       skipIndexing: true,
     });
@@ -722,11 +729,13 @@ describe("forkConversation", () => {
       "image/png",
       "iVBORw0K",
     );
-    linkAttachmentToMessage(sourceAssistant.id, uploaded.id, 0);
+    await linkAttachmentToMessage(sourceAssistant.id, uploaded.id, 0);
 
-    const sourceAttachments = getAttachmentsForMessage(sourceAssistant.id);
-    const fork = forkConversation({ conversationId: source.id });
-    const forkAssistant = getMessages(fork.id).find(
+    const sourceAttachments = await getAttachmentsForMessage(
+      sourceAssistant.id,
+    );
+    const fork = await forkConversation({ conversationId: source.id });
+    const forkAssistant = (await getMessages(fork.id)).find(
       (message) => message.role === "assistant",
     );
     const forkJsonl = readFileSync(
@@ -738,7 +747,7 @@ describe("forkConversation", () => {
       .map((line) => JSON.parse(line) as Record<string, unknown>);
 
     expect(forkAssistant).toBeDefined();
-    const forkAttachments = getAttachmentsForMessage(forkAssistant!.id);
+    const forkAttachments = await getAttachmentsForMessage(forkAssistant!.id);
     expect(sourceAttachments).toHaveLength(1);
     expect(forkAttachments).toHaveLength(1);
     expect(forkAttachments[0]?.id).not.toBe(sourceAttachments[0]?.id);
@@ -752,7 +761,7 @@ describe("forkConversation", () => {
       ),
     ).toBe(true);
     expect(forkJsonl[1]?.attachments).toEqual(["wireframe.png"]);
-    expect(getAttachmentsForMessage(sourceAssistant.id)[0]?.id).toBe(
+    expect(await getAttachmentsForMessage(sourceAssistant.id)[0]?.id).toBe(
       sourceAttachments[0]?.id,
     );
   });
@@ -760,7 +769,7 @@ describe("forkConversation", () => {
   test("remaps automatic screenshot refs and widens fork provenance", async () => {
     const screenshotBase64 =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
-    const source = createConversation("Computer use thread");
+    const source = await createConversation("Computer use thread");
     await addMessage(source.id, "user", "Open the example", {
       skipIndexing: true,
     });
@@ -805,7 +814,7 @@ describe("forkConversation", () => {
       ]),
       { skipIndexing: true },
     );
-    linkAttachmentToMessage(toolResult.id, screenshot.id, 0);
+    await linkAttachmentToMessage(toolResult.id, screenshot.id, 0);
 
     const reply = await addMessage(
       source.id,
@@ -813,19 +822,19 @@ describe("forkConversation", () => {
       JSON.stringify([{ type: "text", text: "Done." }]),
       { skipIndexing: true },
     );
-    linkAttachmentToMessage(reply.id, screenshot.id, 0);
+    await linkAttachmentToMessage(reply.id, screenshot.id, 0);
     const explicit = await uploadAttachment(
       "report.pdf",
       "application/pdf",
       "JVBERg==",
     );
-    linkAttachmentToMessage(reply.id, explicit.id, 1);
-    updateMessageMetadata(reply.id, {
+    await linkAttachmentToMessage(reply.id, explicit.id, 1);
+    await updateMessageMetadata(reply.id, {
       [COMPUTER_USE_SCREENSHOT_ATTACHMENT_IDS_KEY]: [screenshot.id],
     });
 
-    const fork = forkConversation({ conversationId: source.id });
-    const forkRows = getMessages(fork.id);
+    const fork = await forkConversation({ conversationId: source.id });
+    const forkRows = await getMessages(fork.id);
     const forkToolResult = forkRows.find(
       (row) =>
         row.role === "user" &&
@@ -839,7 +848,7 @@ describe("forkConversation", () => {
     expect(forkToolResult).toBeDefined();
     expect(forkReply).toBeDefined();
 
-    const forkReplyAttachments = getAttachmentsForMessage(forkReply!.id);
+    const forkReplyAttachments = await getAttachmentsForMessage(forkReply!.id);
     const clonedScreenshot = forkReplyAttachments.find(
       (attachment) => attachment.originalFilename === "computer-use-click.png",
     );
@@ -855,7 +864,7 @@ describe("forkConversation", () => {
     expect(JSON.stringify(forkToolResult!.content)).not.toContain(
       `"attachmentId":"${screenshot.id}"`,
     );
-    const persistedSourceToolResult = getMessages(source.id).find(
+    const persistedSourceToolResult = (await getMessages(source.id)).find(
       (row) => row.id === toolResult.id,
     );
     expect(JSON.stringify(persistedSourceToolResult?.content)).toContain(
@@ -865,7 +874,7 @@ describe("forkConversation", () => {
       `"attachmentId":"${clonedScreenshot!.id}"`,
     );
     expect(
-      getAttachmentsForMessage(forkToolResult!.id).map(
+      (await getAttachmentsForMessage(forkToolResult!.id)).map(
         (attachment) => attachment.id,
       ),
     ).toEqual([clonedScreenshot!.id]);
@@ -912,16 +921,16 @@ describe("forkConversation", () => {
       .find((attachment) => attachment.id === clonedExplicit!.id);
     expect(hydratedScreenshot?.computerUseScreenshot).toBe(true);
     expect(hydratedExplicit?.computerUseScreenshot).toBeUndefined();
-    expect(getAttachmentContent(screenshot.id)).toBeNull();
-    expect(getAttachmentContent(clonedScreenshot!.id)?.toString("base64")).toBe(
-      screenshotBase64,
-    );
+    expect(await getAttachmentContent(screenshot.id)).toBeNull();
+    expect(
+      (await getAttachmentContent(clonedScreenshot!.id))?.toString("base64"),
+    ).toBe(screenshotBase64);
 
-    const firstFilesPage = listConversationAttachments(fork.id, {
+    const firstFilesPage = await listConversationAttachments(fork.id, {
       limit: 1,
       offset: 0,
     });
-    const secondFilesPage = listConversationAttachments(fork.id, {
+    const secondFilesPage = await listConversationAttachments(fork.id, {
       limit: 1,
       offset: 1,
     });
@@ -940,34 +949,33 @@ describe("forkConversation", () => {
   });
 
   test("inherits the source conversation's inference profile", async () => {
-    const source = createConversation("Pinned profile thread");
+    const source = await createConversation("Pinned profile thread");
     await addMessage(source.id, "user", "Use the balanced profile", {
       skipIndexing: true,
     });
-    getDb()
-      .update(conversations)
+    requireMainDb()
+      .orm.update(conversations)
       .set({ inferenceProfile: "balanced" })
-      .where(eq(conversations.id, source.id))
-      .run();
+      .where(eq(conversations.id, source.id));
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
 
     expect(fork.inferenceProfile).toBe("balanced");
   });
 
   test("leaves inference profile null when source has no override", async () => {
-    const source = createConversation("Default profile thread");
+    const source = await createConversation("Default profile thread");
     await addMessage(source.id, "user", "No pinned profile", {
       skipIndexing: true,
     });
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
 
     expect(fork.inferenceProfile).toBeNull();
   });
 
   test("marks copied assistant history as seen and excludes request logs, queued work, and inbound events", async () => {
-    const source = createConversation("Support thread");
+    const source = await createConversation("Support thread");
     const sourceUser = await addMessage(
       source.id,
       "user",
@@ -980,9 +988,9 @@ describe("forkConversation", () => {
       "I found the failing migration.",
       { skipIndexing: true },
     );
-    markConversationUnread(source.id);
+    await markConversationUnread(source.id);
 
-    const db = getDb();
+    const db = requireMainDb();
     const now = Date.now();
     getLogsDb()!
       .insert(llmRequestLogs)
@@ -995,19 +1003,17 @@ describe("forkConversation", () => {
         createdAt: now,
       })
       .run();
-    db.insert(toolInvocations)
-      .values({
-        id: "tool-invocation-1",
-        conversationId: source.id,
-        toolName: "bash",
-        input: '{"command":"bun test"}',
-        result: '{"ok":true}',
-        decision: "allow",
-        riskLevel: "medium",
-        durationMs: 42,
-        createdAt: now,
-      })
-      .run();
+    await db.orm.insert(toolInvocations).values({
+      id: "tool-invocation-1",
+      conversationId: source.id,
+      toolName: "bash",
+      input: '{"command":"bun test"}',
+      result: '{"ok":true}',
+      decision: "allow",
+      riskLevel: "medium",
+      durationMs: 42,
+      createdAt: now,
+    });
     getMemoryDb()!
       .insert(memoryJobs)
       .values({
@@ -1024,32 +1030,30 @@ describe("forkConversation", () => {
         updatedAt: now,
       })
       .run();
-    db.insert(channelInboundEvents)
-      .values({
-        id: "inbound-event-1",
-        sourceChannel: "telegram",
-        externalChatId: "chat-1",
-        externalMessageId: "message-1",
-        sourceMessageId: "source-message-1",
-        conversationId: source.id,
-        messageId: sourceUser.id,
-        deliveryStatus: "pending",
-        processingStatus: "pending",
-        processingAttempts: 0,
-        lastProcessingError: null,
-        retryAfter: null,
-        rawPayload: "{}",
-        deliveredSegmentCount: 0,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+    await db.orm.insert(channelInboundEvents).values({
+      id: "inbound-event-1",
+      sourceChannel: "telegram",
+      externalChatId: "chat-1",
+      externalMessageId: "message-1",
+      sourceMessageId: "source-message-1",
+      conversationId: source.id,
+      messageId: sourceUser.id,
+      deliveryStatus: "pending",
+      processingStatus: "pending",
+      processingAttempts: 0,
+      lastProcessingError: null,
+      retryAfter: null,
+      rawPayload: "{}",
+      deliveredSegmentCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
 
-    const sourceState = getAttentionStateByConversationIds([source.id]).get(
-      source.id,
-    );
-    const fork = forkConversation({ conversationId: source.id });
-    const forkAssistant = getMessages(fork.id).find(
+    const sourceState = (
+      await getAttentionStateByConversationIds([source.id])
+    ).get(source.id);
+    const fork = await forkConversation({ conversationId: source.id });
+    const forkAssistant = (await getMessages(fork.id)).find(
       (message) => message.role === "assistant",
     );
     const forkAssistantMetadata = forkAssistant?.metadata
@@ -1060,7 +1064,7 @@ describe("forkConversation", () => {
     const forkRequestLogs = forkAssistant
       ? getRequestLogsByMessageId(forkAssistant.id)
       : [];
-    const forkState = getAttentionStateByConversationIds([fork.id]).get(
+    const forkState = (await getAttentionStateByConversationIds([fork.id])).get(
       fork.id,
     );
     const forkRequestLogCount = getLogsDb()!
@@ -1104,7 +1108,7 @@ describe("forkConversation", () => {
   });
 
   test("copies the parent's v2 activation state into the fork", async () => {
-    const source = createConversation("Activation thread");
+    const source = await createConversation("Activation thread");
     const sourceMessage = await addMessage(
       source.id,
       "user",
@@ -1130,7 +1134,7 @@ describe("forkConversation", () => {
       })
       .run();
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
 
     const childState = await hydrateActivationState(fork.id);
     expect(childState).toEqual({
@@ -1153,7 +1157,7 @@ describe("forkConversation", () => {
   });
 
   test("copies the parent's v1 graph memory state into the fork", async () => {
-    const source = createConversation("Graph tracker thread");
+    const source = await createConversation("Graph tracker thread");
     await addMessage(source.id, "user", "Look up alice's preferences", {
       skipIndexing: true,
     });
@@ -1168,29 +1172,29 @@ describe("forkConversation", () => {
       ],
       currentTurn: 3,
     });
-    saveGraphMemoryState(source.id, trackerSnapshot);
+    await saveGraphMemoryState(source.id, trackerSnapshot);
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
 
-    expect(loadGraphMemoryState(fork.id)).toBe(trackerSnapshot);
+    expect(await loadGraphMemoryState(fork.id)).toBe(trackerSnapshot);
     // Parent row is untouched.
-    expect(loadGraphMemoryState(source.id)).toBe(trackerSnapshot);
+    expect(await loadGraphMemoryState(source.id)).toBe(trackerSnapshot);
   });
 
   test("leaves both memory state tables empty when the parent has none", async () => {
-    const source = createConversation("Pristine thread");
+    const source = await createConversation("Pristine thread");
     await addMessage(source.id, "user", "first message", {
       skipIndexing: true,
     });
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
 
     expect(await hydrateActivationState(fork.id)).toBeNull();
-    expect(loadGraphMemoryState(fork.id)).toBeNull();
+    expect(await loadGraphMemoryState(fork.id)).toBeNull();
   });
 
   test("does not copy memory state when the fork is truncated mid-history", async () => {
-    const source = createConversation("Truncated thread");
+    const source = await createConversation("Truncated thread");
     const firstMessage = await addMessage(source.id, "user", "first turn", {
       skipIndexing: true,
     });
@@ -1212,7 +1216,7 @@ describe("forkConversation", () => {
         updatedAt: 1_700_000_000_000,
       })
       .run();
-    saveGraphMemoryState(
+    await saveGraphMemoryState(
       source.id,
       JSON.stringify({
         initialized: true,
@@ -1223,17 +1227,17 @@ describe("forkConversation", () => {
       }),
     );
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: firstMessage.id,
     });
 
     expect(await hydrateActivationState(fork.id)).toBeNull();
-    expect(loadGraphMemoryState(fork.id)).toBeNull();
+    expect(await loadGraphMemoryState(fork.id)).toBeNull();
   });
 
   test("truncated fork seeds everInjected from inherited memory attachments", async () => {
-    const source = createConversation("Truncated seed thread");
+    const source = await createConversation("Truncated seed thread");
     await addMessage(source.id, "user", "first turn", {
       metadata: {
         memoryInjectedBlock:
@@ -1278,7 +1282,7 @@ describe("forkConversation", () => {
       })
       .run();
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: boundaryMessage.id,
     });
@@ -1300,7 +1304,7 @@ describe("forkConversation", () => {
   });
 
   test("truncated fork ignores attachments behind an inherited compaction boundary", async () => {
-    const source = createConversation("Compacted truncated thread");
+    const source = await createConversation("Compacted truncated thread");
     const compactedTurn = await addMessage(
       source.id,
       "user",
@@ -1334,39 +1338,39 @@ describe("forkConversation", () => {
     // First two messages sit behind a compaction that ran before the live
     // turn: their injected blocks are not rendered, so the fork must not
     // claim them.
-    const db = getDb();
+    const db = requireMainDb();
     const base = Date.now();
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base} WHERE id = '${compactedTurn.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 1} WHERE id = '${compactedReply.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 3} WHERE id = '${boundaryMessage.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 4} WHERE id = '${liveReply.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 5} WHERE id = '${pastBoundary.id}'`,
     );
     const compactedAt = base + 2;
-    db.update(conversations)
+    await db.orm
+      .update(conversations)
       .set({
         contextSummary: "Compacted summary",
         contextCompactedMessageCount: 2,
         contextCompactedAt: compactedAt,
       })
-      .where(eq(conversations.id, source.id))
-      .run();
-    appendCompactionEvent(source.id, {
+      .where(eq(conversations.id, source.id));
+    await appendCompactionEvent(source.id, {
       compactedAt,
       summary: "Compacted summary",
       compactedMessageCount: 2,
     });
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: boundaryMessage.id,
     });
@@ -1378,7 +1382,7 @@ describe("forkConversation", () => {
   });
 
   test("copies the parent's memory-v3 section record into a full fork", async () => {
-    const source = createConversation("V3 carry thread");
+    const source = await createConversation("V3 carry thread");
     await addMessage(source.id, "user", "first turn", { skipIndexing: true });
 
     recordV3Injected(
@@ -1396,7 +1400,7 @@ describe("forkConversation", () => {
       1_700_000_001_000,
     );
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
 
     // Full-row copy, pruned state included.
     expect(getV3Injected(fork.id)).toEqual([
@@ -1430,18 +1434,18 @@ describe("forkConversation", () => {
   });
 
   test("leaves the fork's memory-v3 record empty when the parent has none", async () => {
-    const source = createConversation("V3 pristine thread");
+    const source = await createConversation("V3 pristine thread");
     await addMessage(source.id, "user", "first message", {
       skipIndexing: true,
     });
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
 
     expect(getV3Injected(fork.id)).toEqual([]);
   });
 
   test("truncated fork seeds the memory-v3 record from inherited v3 section blocks", async () => {
-    const source = createConversation("V3 truncated seed thread");
+    const source = await createConversation("V3 truncated seed thread");
     // A lead (bare page header) and a heading section of one page, plus
     // another page's lead.
     const leadA = "# memory/concepts/topics/page-a.md\nLead A";
@@ -1489,7 +1493,7 @@ describe("forkConversation", () => {
       1_700_000_000_000,
     );
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: boundaryMessage.id,
     });
@@ -1537,7 +1541,7 @@ describe("forkConversation", () => {
     // Pruning never rewrites the persisted metadata block, so the fork scan
     // sees pruned sections too, the seed must tombstone them, or the child's
     // rehydration would resurrect sections the parent's live view lost.
-    const source = createConversation("V3 truncated pruned thread");
+    const source = await createConversation("V3 truncated pruned thread");
     const leadA = "# memory/concepts/topics/page-a.md\nLead A";
     const notesB = "# memory/concepts/topics/page-b.md § Notes\nNotes B";
     await addMessage(source.id, "user", "first turn", {
@@ -1572,7 +1576,7 @@ describe("forkConversation", () => {
       1_700_000_005_000,
     );
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: boundaryMessage.id,
     });
@@ -1601,24 +1605,25 @@ describe("forkConversation", () => {
   });
 
   test("defaults conversationType to standard and inherits the parent's group", async () => {
-    const source = createConversation("Default inheritance thread");
+    const source = await createConversation("Default inheritance thread");
     await addMessage(source.id, "user", "first message", {
       skipIndexing: true,
     });
-    rawRun(
+    await rawRunAsync(
       "test:setGroupId",
       "UPDATE conversations SET group_id = ? WHERE id = ?",
       "system:pinned",
       source.id,
     );
 
-    const fork = forkConversation({ conversationId: source.id });
-    const row = getDb()
-      .select()
-      .from(conversations)
-      .where(eq(conversations.id, fork.id))
-      .get();
-    const groupIdRow = rawGet<{ group_id: string | null }>(
+    const fork = await forkConversation({ conversationId: source.id });
+    const row = (
+      await requireMainDb()
+        .orm.select()
+        .from(conversations)
+        .where(eq(conversations.id, fork.id))
+    )[0];
+    const groupIdRow = await rawGetAsync<{ group_id: string | null }>(
       "test:fetchForkGroupId",
       "SELECT group_id FROM conversations WHERE id = ?",
       fork.id,
@@ -1629,23 +1634,24 @@ describe("forkConversation", () => {
   });
 
   test("honors conversationType and groupId overrides on the fork", async () => {
-    const source = createConversation("Override thread");
+    const source = await createConversation("Override thread");
     await addMessage(source.id, "user", "first message", {
       skipIndexing: true,
     });
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       conversationType: "background",
       groupId: "system:background",
     });
 
-    const row = getDb()
-      .select()
-      .from(conversations)
-      .where(eq(conversations.id, fork.id))
-      .get();
-    const groupIdRow = rawGet<{ group_id: string | null }>(
+    const row = (
+      await requireMainDb()
+        .orm.select()
+        .from(conversations)
+        .where(eq(conversations.id, fork.id))
+    )[0];
+    const groupIdRow = await rawGetAsync<{ group_id: string | null }>(
       "test:fetchForkGroupId",
       "SELECT group_id FROM conversations WHERE id = ?",
       fork.id,
@@ -1656,7 +1662,7 @@ describe("forkConversation", () => {
   });
 
   test("copies memory state when throughMessageId points at the last message", async () => {
-    const source = createConversation("Through-last thread");
+    const source = await createConversation("Through-last thread");
     const lastMessage = await addMessage(source.id, "user", "only turn", {
       skipIndexing: true,
     });
@@ -1673,7 +1679,7 @@ describe("forkConversation", () => {
       })
       .run();
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: lastMessage.id,
     });
@@ -1687,7 +1693,7 @@ describe("forkConversation", () => {
     // last assistant). The batched insert must map every source row to a
     // distinct forked row and track the latest *assistant* message — not the
     // trailing user row — for the attention pointer.
-    const source = createConversation("Batch fork thread");
+    const source = await createConversation("Batch fork thread");
     await addMessage(source.id, "user", "Question 1", { skipIndexing: true });
     await addMessage(source.id, "assistant", "Answer 1", {
       skipIndexing: true,
@@ -1700,9 +1706,9 @@ describe("forkConversation", () => {
       skipIndexing: true,
     });
 
-    const sourceMessages = getMessages(source.id);
-    const fork = forkConversation({ conversationId: source.id });
-    const forkMessages = getMessages(fork.id);
+    const sourceMessages = await getMessages(source.id);
+    const fork = await forkConversation({ conversationId: source.id });
+    const forkMessages = await getMessages(fork.id);
 
     // Same count, roles, content, and ordering as the source.
     expect(forkMessages).toHaveLength(sourceMessages.length);
@@ -1737,7 +1743,7 @@ describe("forkConversation", () => {
 
     // The attention pointer (driven by latestForkedAssistant) targets the
     // forked copy of the last assistant row, not the trailing user message.
-    const forkState = getAttentionStateByConversationIds([fork.id]).get(
+    const forkState = (await getAttentionStateByConversationIds([fork.id])).get(
       fork.id,
     );
     expect(forkState?.lastSeenAssistantMessageId).toBe(
@@ -1747,24 +1753,24 @@ describe("forkConversation", () => {
   });
 });
 
-describe("forkConversation + memory_retrospective_state", () => {
+describePg("forkConversation + memory_retrospective_state", () => {
   beforeEach(async () => {
     await resetTables();
   });
 
   test("does not seed state when the source has none", async () => {
-    const source = createConversation("Untouched thread");
+    const source = await createConversation("Untouched thread");
     await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
 
     expect(getRetrospectiveState(fork.id)).toBeNull();
   });
 
   test("maps the source pointer when it falls within the copied range", async () => {
-    const source = createConversation("In-range thread");
+    const source = await createConversation("In-range thread");
     await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -1784,9 +1790,9 @@ describe("forkConversation + memory_retrospective_state", () => {
       lastRunAt: 1_700_000_000_000,
     });
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
     const forkState = getRetrospectiveState(fork.id);
-    const forkMessages = getMessages(fork.id);
+    const forkMessages = await getMessages(fork.id);
     const mappedProcessedId = forkMessages.find((m) => {
       const md = parseMetadata(m.metadata) as {
         forkSourceMessageId?: string;
@@ -1801,7 +1807,7 @@ describe("forkConversation + memory_retrospective_state", () => {
   });
 
   test("clamps to the last copied message when the source pointer is past the fork boundary", async () => {
-    const source = createConversation("Past-boundary thread");
+    const source = await createConversation("Past-boundary thread");
     await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -1824,12 +1830,12 @@ describe("forkConversation + memory_retrospective_state", () => {
       lastRunAt: 1_700_000_000_000,
     });
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: branchPoint.id,
     });
     const forkState = getRetrospectiveState(fork.id);
-    const forkMessages = getMessages(fork.id);
+    const forkMessages = await getMessages(fork.id);
     const lastForkedMessageId = forkMessages.at(-1)?.id;
 
     expect(forkMessages).toHaveLength(2);
@@ -1838,13 +1844,13 @@ describe("forkConversation + memory_retrospective_state", () => {
   });
 
   test("preserves the empty-string sentinel from a failure-only source", async () => {
-    const source = createConversation("Failure-only thread");
+    const source = await createConversation("Failure-only thread");
     await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
     bumpRetrospectiveLastRunAt(source.id, 1_700_000_000_000);
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
     const forkState = getRetrospectiveState(fork.id);
 
     expect(forkState?.lastProcessedMessageId).toBe("");
@@ -1852,7 +1858,7 @@ describe("forkConversation + memory_retrospective_state", () => {
   });
 
   test("copies lastRunAt so the cooldown gate inherits from the source", async () => {
-    const source = createConversation("Cooldown thread");
+    const source = await createConversation("Cooldown thread");
     const message = await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -1862,13 +1868,13 @@ describe("forkConversation + memory_retrospective_state", () => {
       lastRunAt: 1_700_000_000_000,
     });
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
 
     expect(getRetrospectiveState(fork.id)?.lastRunAt).toBe(1_700_000_000_000);
   });
 
   test("inherits the earlier of two compactions when forking between them", async () => {
-    const source = createConversation("Twice-compacted thread");
+    const source = await createConversation("Twice-compacted thread");
     const m1 = await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -1882,25 +1888,27 @@ describe("forkConversation + memory_retrospective_state", () => {
       skipIndexing: true,
     });
 
-    const db = getDb();
+    const db = requireMainDb();
     const base = Date.now();
-    db.run(`UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`);
-    db.run(
+    await db.run(
+      `UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`,
+    );
+    await db.run(
       `UPDATE messages SET created_at = ${base + 2} WHERE id = '${m2.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 4} WHERE id = '${m3.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 6} WHERE id = '${m4.id}'`,
     );
     // C1 ran after M1 (covers 1 message); C2 ran after M3 (covers 3).
-    appendCompactionEvent(source.id, {
+    await appendCompactionEvent(source.id, {
       compactedAt: base + 1,
       summary: "Summary 1",
       compactedMessageCount: 1,
     });
-    appendCompactionEvent(source.id, {
+    await appendCompactionEvent(source.id, {
       compactedAt: base + 5,
       summary: "Summary 2",
       compactedMessageCount: 3,
@@ -1908,7 +1916,7 @@ describe("forkConversation + memory_retrospective_state", () => {
 
     // Forking through M3 lands between the two compactions, so it inherits the
     // earlier one — the capability a single stored pointer cannot provide.
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: m3.id,
     });
@@ -1918,7 +1926,7 @@ describe("forkConversation + memory_retrospective_state", () => {
   });
 
   test("carries a ledger into the fork so re-forks resolve compaction", async () => {
-    const source = createConversation("Re-fork thread");
+    const source = await createConversation("Re-fork thread");
     const m1 = await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -1929,42 +1937,44 @@ describe("forkConversation + memory_retrospective_state", () => {
       skipIndexing: true,
     });
 
-    const db = getDb();
+    const db = requireMainDb();
     const base = Date.now();
-    db.run(`UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`);
-    db.run(
+    await db.run(
+      `UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`,
+    );
+    await db.run(
       `UPDATE messages SET created_at = ${base + 1} WHERE id = '${m2.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 3} WHERE id = '${m3.id}'`,
     );
     const compactedAt = base + 2; // covers M1+M2, before M3
-    db.update(conversations)
+    await db.orm
+      .update(conversations)
       .set({
         contextSummary: "Compacted summary",
         contextCompactedMessageCount: 2,
         contextCompactedAt: compactedAt,
       })
-      .where(eq(conversations.id, source.id))
-      .run();
-    appendCompactionEvent(source.id, {
+      .where(eq(conversations.id, source.id));
+    await appendCompactionEvent(source.id, {
       compactedAt,
       summary: "Compacted summary",
       compactedMessageCount: 2,
     });
 
-    const fork = forkConversation({ conversationId: source.id });
+    const fork = await forkConversation({ conversationId: source.id });
     expect(fork.contextCompactedMessageCount).toBe(2);
 
     // The fork owns a copy of the ledger, so a re-fork resolves the inherited
     // compaction without walking back to the original source.
-    const reFork = forkConversation({ conversationId: fork.id });
+    const reFork = await forkConversation({ conversationId: fork.id });
     expect(reFork.contextSummary).toBe("Compacted summary");
     expect(reFork.contextCompactedMessageCount).toBe(2);
   });
 
   test("drops the stale Slack watermark when forking inherits an older compaction", async () => {
-    const source = createConversation("Slack twice-compacted thread");
+    const source = await createConversation("Slack twice-compacted thread");
     const m1 = await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -1978,30 +1988,33 @@ describe("forkConversation + memory_retrospective_state", () => {
       skipIndexing: true,
     });
 
-    const db = getDb();
+    const db = requireMainDb();
     const base = Date.now();
-    db.run(`UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`);
-    db.run(
+    await db.run(
+      `UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`,
+    );
+    await db.run(
       `UPDATE messages SET created_at = ${base + 2} WHERE id = '${m2.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 4} WHERE id = '${m3.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 6} WHERE id = '${m4.id}'`,
     );
-    appendCompactionEvent(source.id, {
+    await appendCompactionEvent(source.id, {
       compactedAt: base + 1,
       summary: "Summary 1",
       compactedMessageCount: 1,
     });
-    appendCompactionEvent(source.id, {
+    await appendCompactionEvent(source.id, {
       compactedAt: base + 5,
       summary: "Summary 2",
       compactedMessageCount: 3,
     });
     // The source's single-valued watermark reflects only the latest compaction.
-    db.update(conversations)
+    await db.orm
+      .update(conversations)
       .set({
         contextSummary: "Summary 2",
         contextCompactedMessageCount: 3,
@@ -2009,13 +2022,12 @@ describe("forkConversation + memory_retrospective_state", () => {
         slackContextCompactionWatermarkTs: "ts-latest",
         slackContextCompactionWatermarkAt: base + 5,
       })
-      .where(eq(conversations.id, source.id))
-      .run();
+      .where(eq(conversations.id, source.id));
 
     // Forking through M3 inherits the OLDER compaction (Summary 1); the latest
     // watermark must not ride along, or it would hide Slack messages the older
     // summary does not cover.
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: m3.id,
     });
@@ -2026,7 +2038,7 @@ describe("forkConversation + memory_retrospective_state", () => {
   });
 
   test("carries the Slack watermark when forking inherits the latest compaction", async () => {
-    const source = createConversation("Slack compacted thread");
+    const source = await createConversation("Slack compacted thread");
     const m1 = await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
@@ -2037,22 +2049,25 @@ describe("forkConversation + memory_retrospective_state", () => {
       skipIndexing: true,
     });
 
-    const db = getDb();
+    const db = requireMainDb();
     const base = Date.now();
-    db.run(`UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`);
-    db.run(
+    await db.run(
+      `UPDATE messages SET created_at = ${base} WHERE id = '${m1.id}'`,
+    );
+    await db.run(
       `UPDATE messages SET created_at = ${base + 1} WHERE id = '${m2.id}'`,
     );
-    db.run(
+    await db.run(
       `UPDATE messages SET created_at = ${base + 3} WHERE id = '${m3.id}'`,
     );
     const compactedAt = base + 2; // latest (and only) compaction, covers M1+M2
-    appendCompactionEvent(source.id, {
+    await appendCompactionEvent(source.id, {
       compactedAt,
       summary: "Compacted summary",
       compactedMessageCount: 2,
     });
-    db.update(conversations)
+    await db.orm
+      .update(conversations)
       .set({
         contextSummary: "Compacted summary",
         contextCompactedMessageCount: 2,
@@ -2060,10 +2075,9 @@ describe("forkConversation + memory_retrospective_state", () => {
         slackContextCompactionWatermarkTs: "ts-latest",
         slackContextCompactionWatermarkAt: compactedAt,
       })
-      .where(eq(conversations.id, source.id))
-      .run();
+      .where(eq(conversations.id, source.id));
 
-    const fork = forkConversation({
+    const fork = await forkConversation({
       conversationId: source.id,
       throughMessageId: m3.id,
     });
@@ -2073,13 +2087,13 @@ describe("forkConversation + memory_retrospective_state", () => {
   });
 });
 
-describe("forkConversation with unfinalized rows", () => {
+describePg("forkConversation with unfinalized rows", () => {
   beforeEach(async () => {
     await resetTables();
   });
 
   test("skips unfinalized rows and anchors the fork at the last finalized message", async () => {
-    const source = createConversation("Mid-turn fork");
+    const source = await createConversation("Mid-turn fork");
     await addMessage(source.id, "user", "question", { skipIndexing: true });
     const lastFinalized = await addMessage(
       source.id,
@@ -2093,14 +2107,14 @@ describe("forkConversation with unfinalized rows", () => {
       "partial reply still being written",
       { skipIndexing: true },
     );
-    rawRun(
+    await rawRunAsync(
       "test:markUnfinalized",
       "UPDATE messages SET finalized = 0 WHERE id = ?",
       streaming.id,
     );
 
-    const fork = forkConversation({ conversationId: source.id });
-    const forkMessages = getMessages(fork.id);
+    const fork = await forkConversation({ conversationId: source.id });
+    const forkMessages = await getMessages(fork.id);
 
     // The invariant, not mere presence: exactly the finalized rows were
     // copied, every copy reads as finalized, no copy descends from the
@@ -2116,11 +2130,11 @@ describe("forkConversation with unfinalized rows", () => {
     expect(forkedFromIds).not.toContain(streaming.id);
     expect(fork.forkParentMessageId).toBe(lastFinalized.id);
     // The source still owns its in-flight row untouched.
-    expect(getMessages(source.id)).toHaveLength(3);
+    expect(await getMessages(source.id)).toHaveLength(3);
   });
 
   test("a stale mid-history unfinalized row is skipped without shifting the anchor", async () => {
-    const source = createConversation("Stale row fork");
+    const source = await createConversation("Stale row fork");
     await addMessage(source.id, "user", "first", { skipIndexing: true });
     const stale = await addMessage(source.id, "assistant", "orphaned partial", {
       skipIndexing: true,
@@ -2128,16 +2142,18 @@ describe("forkConversation with unfinalized rows", () => {
     const tail = await addMessage(source.id, "user", "latest", {
       skipIndexing: true,
     });
-    rawRun(
+    await rawRunAsync(
       "test:markUnfinalized",
       "UPDATE messages SET finalized = 0 WHERE id = ?",
       stale.id,
     );
 
-    const fork = forkConversation({ conversationId: source.id });
-    const forkMessages = getMessages(fork.id);
+    const fork = await forkConversation({ conversationId: source.id });
+    const forkMessages = await getMessages(fork.id);
 
     expect(forkMessages).toHaveLength(2);
     expect(fork.forkParentMessageId).toBe(tail.id);
   });
 });
+
+setDefaultTimeout(30_000);

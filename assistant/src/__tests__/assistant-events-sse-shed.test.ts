@@ -8,10 +8,15 @@
  * (slow subscriber with no published events). The healthy path asserts
  * no shed report fires.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { buildAssistantEvent } from "../runtime/assistant-event.js";
 import { AssistantEventHub } from "../runtime/assistant-event-hub.js";
 import {
@@ -20,13 +25,12 @@ import {
   type SseShedReason,
   type SseSubscriberInstrumentation,
 } from "../runtime/routes/events-routes.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function clearTables() {
-  const db = getDb();
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM conversations");
+async function clearTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM conversations");
 }
 
 interface ShedReport {
@@ -64,7 +68,7 @@ function makeReporterCaptor(): {
 
 const SSE_HIGH_WATER_MARK = 16;
 
-describe("SSE route — backpressure shed observability", () => {
+describePg("SSE route — backpressure shed observability", () => {
   beforeEach(clearTables);
 
   test("invokes shedReporter with reason=callback_backpressure when publishes saturate the queue", async () => {
@@ -72,7 +76,7 @@ describe("SSE route — backpressure shed observability", () => {
     const { reports, reporter } = makeReporterCaptor();
     const ac = new AbortController();
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationKey: "shed-cb-test" },
         abortSignal: ac.signal,
@@ -107,7 +111,7 @@ describe("SSE route — backpressure shed observability", () => {
     const { reports, reporter } = makeReporterCaptor();
     const ac = new AbortController();
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationKey: "shed-hb-test" },
         abortSignal: ac.signal,
@@ -137,7 +141,7 @@ describe("SSE route — backpressure shed observability", () => {
     const { reports, reporter } = makeReporterCaptor();
     const ac = new AbortController();
 
-    const stream = handleSubscribeAssistantEvents(
+    const stream = await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationKey: "shed-healthy-test" },
         abortSignal: ac.signal,
@@ -164,7 +168,7 @@ describe("SSE route — backpressure shed observability", () => {
     const { reports, reporter } = makeReporterCaptor();
     const ac = new AbortController();
 
-    handleSubscribeAssistantEvents(
+    await handleSubscribeAssistantEvents(
       {
         queryParams: { conversationKey: "shed-client-test" },
         headers: {
@@ -205,7 +209,7 @@ describe("buildSseShedSentryContext", () => {
   };
   const elDelay = { mean_ms: 1.2, p99_ms: 3.4, max_ms: 5.6 };
 
-  test("omits conversation_key so Sentry contexts do not leak PII", () => {
+  test("omits conversation_key so Sentry contexts do not leak PII", async () => {
     const ctx = buildSseShedSentryContext(
       "callback_backpressure",
       inst,
@@ -217,7 +221,7 @@ describe("buildSseShedSentryContext", () => {
     expect(JSON.stringify(ctx)).not.toContain("447123456789");
   });
 
-  test("preserves non-PII per-subscriber and runtime fields", () => {
+  test("preserves non-PII per-subscriber and runtime fields", async () => {
     const ctx = buildSseShedSentryContext(
       "heartbeat_backpressure",
       inst,
@@ -238,3 +242,5 @@ describe("buildSseShedSentryContext", () => {
     });
   });
 });
+
+setDefaultTimeout(30_000);

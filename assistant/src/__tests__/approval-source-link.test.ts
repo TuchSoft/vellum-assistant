@@ -1,44 +1,44 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { recordInbound } from "../persistence/delivery-crud.js";
 import { upsertBinding } from "../persistence/external-conversation-store.js";
 import { resolveApprovalSourceReference } from "../runtime/approval-source-link.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM channel_inbound_events");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM external_conversation_bindings");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM channel_inbound_events");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM external_conversation_bindings");
+  await db.run("DELETE FROM conversations");
 }
 
-describe("resolveApprovalSourceReference", () => {
+describePg("resolveApprovalSourceReference", () => {
   beforeEach(resetTables);
 
-  test("returns null for channels without a registered resolver", () => {
-    const result = recordInbound("telegram", "12345", "evt-1", {
+  test("returns null for channels without a registered resolver", async () => {
+    const result = await recordInbound("telegram", "12345", "evt-1", {
       sourceMessageId: "678",
     });
     expect(
-      resolveApprovalSourceReference("telegram", result.conversationId),
+      await resolveApprovalSourceReference("telegram", result.conversationId),
     ).toBeNull();
   });
 
-  test("returns null for a conversation with no Slack provenance", () => {
-    expect(resolveApprovalSourceReference("slack", "conv-none")).toBeNull();
+  test("returns null for a conversation with no Slack provenance", async () => {
+    expect(
+      await resolveApprovalSourceReference("slack", "conv-none"),
+    ).toBeNull();
   });
 
-  test("resolves chat id and message permalink from the latest inbound event (DM)", () => {
-    const result = recordInbound("slack", "D01XYZ", "evt-1", {
+  test("resolves chat id and message permalink from the latest inbound event (DM)", async () => {
+    const result = await recordInbound("slack", "D01XYZ", "evt-1", {
       sourceMessageId: "1700000000.000100",
     });
 
     expect(
-      resolveApprovalSourceReference("slack", result.conversationId),
+      await resolveApprovalSourceReference("slack", result.conversationId),
     ).toEqual({
       sourceChatId: "D01XYZ",
       sourceLink: {
@@ -47,16 +47,16 @@ describe("resolveApprovalSourceReference", () => {
     });
   });
 
-  test("uses the most recent inbound event when several exist", () => {
-    const first = recordInbound("slack", "D01XYZ", "evt-1", {
+  test("uses the most recent inbound event when several exist", async () => {
+    const first = await recordInbound("slack", "D01XYZ", "evt-1", {
       sourceMessageId: "1699999900.000001",
     });
-    recordInbound("slack", "D01XYZ", "evt-2", {
+    await recordInbound("slack", "D01XYZ", "evt-2", {
       sourceMessageId: "1700000000.000100",
     });
 
     expect(
-      resolveApprovalSourceReference("slack", first.conversationId),
+      await resolveApprovalSourceReference("slack", first.conversationId),
     ).toEqual({
       sourceChatId: "D01XYZ",
       sourceLink: {
@@ -65,12 +65,12 @@ describe("resolveApprovalSourceReference", () => {
     });
   });
 
-  test("threaded conversations link the message inside its thread", () => {
-    const result = recordInbound("slack", "C01ABC", "evt-1", {
+  test("threaded conversations link the message inside its thread", async () => {
+    const result = await recordInbound("slack", "C01ABC", "evt-1", {
       sourceMessageId: "1700000001.000200",
       sourceThreadId: "1700000000.000100",
     });
-    upsertBinding({
+    await upsertBinding({
       conversationId: result.conversationId,
       sourceChannel: "slack",
       externalChatId: "C01ABC",
@@ -78,7 +78,7 @@ describe("resolveApprovalSourceReference", () => {
     });
 
     expect(
-      resolveApprovalSourceReference("slack", result.conversationId),
+      await resolveApprovalSourceReference("slack", result.conversationId),
     ).toEqual({
       sourceChatId: "C01ABC",
       sourceLink: {
@@ -88,12 +88,12 @@ describe("resolveApprovalSourceReference", () => {
     });
   });
 
-  test("a thread-root message carries no thread params", () => {
-    const result = recordInbound("slack", "C01ABC", "evt-1", {
+  test("a thread-root message carries no thread params", async () => {
+    const result = await recordInbound("slack", "C01ABC", "evt-1", {
       sourceMessageId: "1700000000.000100",
       sourceThreadId: "1700000000.000100",
     });
-    upsertBinding({
+    await upsertBinding({
       conversationId: result.conversationId,
       sourceChannel: "slack",
       externalChatId: "C01ABC",
@@ -101,7 +101,7 @@ describe("resolveApprovalSourceReference", () => {
     });
 
     expect(
-      resolveApprovalSourceReference("slack", result.conversationId),
+      await resolveApprovalSourceReference("slack", result.conversationId),
     ).toEqual({
       sourceChatId: "C01ABC",
       sourceLink: {
@@ -110,11 +110,11 @@ describe("resolveApprovalSourceReference", () => {
     });
   });
 
-  test("falls back to a ts-shaped externalMessageId when sourceMessageId is absent", () => {
-    const result = recordInbound("slack", "D01XYZ", "1700000000.000100");
+  test("falls back to a ts-shaped externalMessageId when sourceMessageId is absent", async () => {
+    const result = await recordInbound("slack", "D01XYZ", "1700000000.000100");
 
     expect(
-      resolveApprovalSourceReference("slack", result.conversationId),
+      await resolveApprovalSourceReference("slack", result.conversationId),
     ).toEqual({
       sourceChatId: "D01XYZ",
       sourceLink: {
@@ -123,28 +123,28 @@ describe("resolveApprovalSourceReference", () => {
     });
   });
 
-  test("omits the link when no id is ts-shaped", () => {
-    const result = recordInbound("slack", "D01XYZ", "evt-opaque");
+  test("omits the link when no id is ts-shaped", async () => {
+    const result = await recordInbound("slack", "D01XYZ", "evt-opaque");
 
     expect(
-      resolveApprovalSourceReference("slack", result.conversationId),
+      await resolveApprovalSourceReference("slack", result.conversationId),
     ).toEqual({
       sourceChatId: "D01XYZ",
     });
   });
 
-  test("an ingress-stamped hint identifies the exact message, immune to later inbound rows", () => {
+  test("an ingress-stamped hint identifies the exact message, immune to later inbound rows", async () => {
     // A second message lands while the first message's turn is still
     // escalating — the hint pins the card to the actual triggering message.
-    const result = recordInbound("slack", "D01XYZ", "evt-1", {
+    const result = await recordInbound("slack", "D01XYZ", "evt-1", {
       sourceMessageId: "1699999900.000001",
     });
-    recordInbound("slack", "D01XYZ", "evt-2", {
+    await recordInbound("slack", "D01XYZ", "evt-2", {
       sourceMessageId: "1700000000.000100",
     });
 
     expect(
-      resolveApprovalSourceReference("slack", result.conversationId, {
+      await resolveApprovalSourceReference("slack", result.conversationId, {
         requesterChatId: "D01XYZ",
         sourceMessageId: "1699999900.000001",
       }),
@@ -156,9 +156,9 @@ describe("resolveApprovalSourceReference", () => {
     });
   });
 
-  test("a threaded hint links the message inside its thread without a DB row", () => {
+  test("a threaded hint links the message inside its thread without a DB row", async () => {
     expect(
-      resolveApprovalSourceReference("slack", "conv-unpersisted", {
+      await resolveApprovalSourceReference("slack", "conv-unpersisted", {
         requesterChatId: "C01ABC",
         sourceMessageId: "1700000001.000200",
         sourceThreadId: "1700000000.000100",
@@ -172,13 +172,13 @@ describe("resolveApprovalSourceReference", () => {
     });
   });
 
-  test("a hint without a ts-shaped message id falls back to persisted reconstruction", () => {
-    const result = recordInbound("slack", "D01XYZ", "evt-1", {
+  test("a hint without a ts-shaped message id falls back to persisted reconstruction", async () => {
+    const result = await recordInbound("slack", "D01XYZ", "evt-1", {
       sourceMessageId: "1700000000.000100",
     });
 
     expect(
-      resolveApprovalSourceReference("slack", result.conversationId, {
+      await resolveApprovalSourceReference("slack", result.conversationId, {
         requesterChatId: "D01XYZ",
         sourceMessageId: "not-a-ts",
       }),
@@ -190,9 +190,9 @@ describe("resolveApprovalSourceReference", () => {
     });
   });
 
-  test("ignores bindings from other channels", () => {
-    const result = recordInbound("slack", "D01XYZ", "evt-opaque");
-    upsertBinding({
+  test("ignores bindings from other channels", async () => {
+    const result = await recordInbound("slack", "D01XYZ", "evt-opaque");
+    await upsertBinding({
       conversationId: result.conversationId,
       sourceChannel: "telegram",
       externalChatId: "12345",
@@ -200,9 +200,11 @@ describe("resolveApprovalSourceReference", () => {
     });
 
     expect(
-      resolveApprovalSourceReference("slack", result.conversationId),
+      await resolveApprovalSourceReference("slack", result.conversationId),
     ).toEqual({
       sourceChatId: "D01XYZ",
     });
   });
 });
+
+setDefaultTimeout(30_000);

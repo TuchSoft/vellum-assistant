@@ -2,30 +2,20 @@ import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import { addMessage, getMessages } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations } from "../persistence/schema.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 
-await initializeDb();
-
-function ensureConversation(id: string): void {
-  const db = getDb();
+async function ensureConversation(id: string): Promise<void> {
+  const db = requireMainDb();
   const now = Date.now();
-  db.insert(conversations)
-    .values({
-      id,
-      title: "test",
-      createdAt: now,
-      updatedAt: now,
-      lastMessageAt: now,
-    })
-    .onConflictDoNothing()
-    .run();
+  await db.run(
+    "INSERT INTO conversations (id, title, created_at, updated_at, last_message_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING",
+    [id, "test", now, now, now],
+  );
 }
 
 describe("addMessage pre-assigned id", () => {
-  beforeEach(() => {
-    ensureConversation("conv-preassigned-id");
+  beforeEach(async () => {
+    await ensureConversation("conv-preassigned-id");
   });
 
   test("uses the provided id as the persisted row id", async () => {
@@ -37,7 +27,7 @@ describe("addMessage pre-assigned id", () => {
     expect(result.id).toBe(customId);
     expect(result.deduplicated).toBe(false);
 
-    const msgs = getMessages("conv-preassigned-id");
+    const msgs = await getMessages("conv-preassigned-id");
     const found = msgs.find((m) => m.id === customId);
     expect(found).toBeDefined();
     expect(found?.content).toEqual([{ type: "text", text: "hello" }]);

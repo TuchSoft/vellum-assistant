@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, setDefaultTimeout, test } from "bun:test";
 
 // Stub out video thumbnail generation (requires ffmpeg)
 mock.module("../daemon/video-thumbnail.js", () => ({
@@ -36,16 +36,15 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-await initializeDb();
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 /**
@@ -92,15 +91,15 @@ function toolImageFilename(
 // resolveAssistantAttachments — all attachments are now file-backed
 // ---------------------------------------------------------------------------
 
-describe("resolveAssistantAttachments", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("resolveAssistantAttachments", () => {
+  beforeEach(async () => {
+    await resetTables();
     checkSpy.mockClear();
     addRuleSpy.mockClear();
   });
 
   test("small attachments are stored on disk via uploadAttachment", async () => {
-    const conv = createConversation("test-conv");
+    const conv = await createConversation("test-conv");
     const msg = await addMessage(conv.id, "assistant", "hello");
 
     const smallSize = 2 * 1024 * 1024; // 2 MB
@@ -154,7 +153,7 @@ describe("resolveAssistantAttachments", () => {
     expect(result.linkedAttachmentIds).toEqual([emitted.id!]);
 
     // All attachments are file-backed and have a file on disk
-    const filePath = getFilePathForAttachment(emitted.id!);
+    const filePath = await getFilePathForAttachment(emitted.id!);
     expect(filePath).not.toBeNull();
     expect(existsSync(filePath!)).toBe(true);
 
@@ -163,7 +162,7 @@ describe("resolveAssistantAttachments", () => {
   });
 
   test("large attachments are stored on disk with file path", async () => {
-    const conv = createConversation("test-conv-large");
+    const conv = await createConversation("test-conv-large");
     const msg = await addMessage(conv.id, "assistant", "hello");
 
     const largeSize = 10 * 1024 * 1024; // 10 MB
@@ -215,7 +214,7 @@ describe("resolveAssistantAttachments", () => {
     expect(emitted.id).toBeDefined();
 
     // Verify the file exists on disk at the expected path
-    const filePath = getFilePathForAttachment(emitted.id!);
+    const filePath = await getFilePathForAttachment(emitted.id!);
     expect(filePath).not.toBeNull();
     expect(filePath!).toContain("attachments");
     expect(filePath!).toContain("big-video.mov");
@@ -226,7 +225,7 @@ describe("resolveAssistantAttachments", () => {
   });
 
   test("persistedFiles carries only directives that resolved and persisted", async () => {
-    const conv = createConversation("test-conv-persisted");
+    const conv = await createConversation("test-conv-persisted");
     const msg = await addMessage(conv.id, "assistant", "hello");
 
     const accepted: AssistantAttachmentDraft = {
@@ -377,7 +376,7 @@ describe("resolveAssistantAttachments", () => {
   });
 
   test("reports only successful links when a later upload is skipped", async () => {
-    const conv = createConversation("test-conv-partial-upload");
+    const conv = await createConversation("test-conv-partial-upload");
     const msg = await addMessage(conv.id, "assistant", "hello");
     const valid: AssistantAttachmentDraft = {
       sourceType: "sandbox_file",
@@ -437,15 +436,15 @@ describe("resolveAssistantAttachments", () => {
   });
 });
 
-describe("approveHostAttachmentRead", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("approveHostAttachmentRead", () => {
+  beforeEach(async () => {
+    await resetTables();
     checkSpy.mockClear();
     addRuleSpy.mockClear();
   });
 
   test("prompts and allows on allow decision", async () => {
-    const conversation = createConversation("attachment-host-gate");
+    const conversation = await createConversation("attachment-host-gate");
     const promptSpy = mock(() =>
       Promise.resolve({ decision: "allow" as const }),
     );
@@ -471,7 +470,7 @@ describe("approveHostAttachmentRead", () => {
   });
 
   test("denies when hasNoClient is true without prompting", async () => {
-    const conversation = createConversation("attachment-no-client");
+    const conversation = await createConversation("attachment-no-client");
     const promptSpy = mock(() =>
       Promise.resolve({ decision: "allow" as const }),
     );
@@ -491,3 +490,5 @@ describe("approveHostAttachmentRead", () => {
     expect(promptSpy).not.toHaveBeenCalled();
   });
 });
+
+setDefaultTimeout(30_000);

@@ -3,7 +3,7 @@
  * deletes the schedule, preventing orphaned scheduled automations.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, setDefaultTimeout, test } from "bun:test";
 
 mock.module("../config/env.js", () => ({
   isHttpAuthDisabled: () => true,
@@ -17,42 +17,38 @@ mock.module("../daemon/handlers/conversations.js", () => ({
   undoLastMessage: async () => null,
 }));
 
-import type { Database } from "bun:sqlite";
-
 import {
   createConversation,
   getConversation,
 } from "../persistence/conversation-crud.js";
 import {
-  getDb,
   getLogsSqlite,
   getMemorySqlite,
 } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { ROUTES } from "../runtime/routes/conversation-management-routes.js";
 import { createSchedule, getSchedule } from "../schedule/schedule-store.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
-function getRawDb(): Database {
-  return (getDb() as unknown as { $client: Database }).$client;
-}
-
 const deleteRoute = ROUTES.find((r) => r.operationId === "deleteConversation")!;
 
-describe("DELETE /conversations/:id — schedule cleanup", () => {
-  beforeEach(() => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+describePg("DELETE /conversations/:id — schedule cleanup", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM cron_runs");
+    await db.run("DELETE FROM cron_jobs");
     getMemorySqlite()!.run("DELETE FROM memory_graph_nodes");
     getMemorySqlite()!.run("DELETE FROM memory_segments");
     getMemorySqlite()!.run("DELETE FROM memory_summaries");
     getMemorySqlite()!.run("DELETE FROM memory_embeddings");
     getMemorySqlite()!.run("DELETE FROM memory_jobs");
-    getRawDb().run("DELETE FROM tool_invocations");
+    await db.run("DELETE FROM tool_invocations");
     getLogsSqlite()!.run("DELETE FROM llm_request_logs");
-    getRawDb().run("DELETE FROM messages");
-    getRawDb().run("DELETE FROM conversations");
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
   });
 
   test("deleting a conversation with a scheduleJobId removes the schedule", async () => {
@@ -62,7 +58,7 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
       message: "Time for standup!",
     });
 
-    const conv = createConversation({
+    const conv = await createConversation({
       source: "schedule",
       scheduleJobId: schedule.id,
     });
@@ -76,7 +72,7 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
     });
 
     expect(await getSchedule(schedule.id)).toBeNull();
-    expect(getConversation(conv.id)).toBeNull();
+    expect(await getConversation(conv.id)).toBeNull();
   });
 
   test("deleting a conversation without a scheduleJobId does not affect schedules", async () => {
@@ -86,7 +82,7 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
       message: "Noon check",
     });
 
-    const conv = createConversation("no-schedule-conv");
+    const conv = await createConversation("no-schedule-conv");
 
     await deleteRoute.handler({
       pathParams: { id: conv.id },
@@ -95,7 +91,7 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
     });
 
     expect(await getSchedule(schedule.id)).not.toBeNull();
-    expect(getConversation(conv.id)).toBeNull();
+    expect(await getConversation(conv.id)).toBeNull();
   });
 
   test("deleting a conversation with a schedule also removes its cron_runs", async () => {
@@ -105,22 +101,22 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
       message: "Daily task",
     });
 
-    const conv = createConversation({
+    const conv = await createConversation({
       source: "schedule",
       scheduleJobId: schedule.id,
     });
 
     const now = Date.now();
-    getRawDb()
-      .query(
-        `INSERT INTO cron_runs (id, job_id, conversation_id, status, started_at, created_at)
-         VALUES ('run-1', ?, ?, 'ok', ?, ?)`,
-      )
-      .run(schedule.id, conv.id, now, now);
+    const db = requireMainDb();
+    await db.run(
+      `INSERT INTO cron_runs (id, job_id, conversation_id, status, started_at, created_at)
+       VALUES ('run-1', ?, ?, 'ok', ?, ?)`,
+      [schedule.id, conv.id, now, now],
+    );
 
-    const runBefore = getRawDb()
-      .query("SELECT * FROM cron_runs WHERE id = 'run-1'")
-      .get();
+    const runBefore = await db.get(
+      "SELECT * FROM cron_runs WHERE id = 'run-1'",
+    );
     expect(runBefore).not.toBeNull();
 
     await deleteRoute.handler({
@@ -130,9 +126,7 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
     });
 
     expect(await getSchedule(schedule.id)).toBeNull();
-    const runAfter = getRawDb()
-      .query("SELECT * FROM cron_runs WHERE id = 'run-1'")
-      .get();
+    const runAfter = await db.get("SELECT * FROM cron_runs WHERE id = 'run-1'");
     expect(runAfter).toBeNull();
   });
 
@@ -143,11 +137,11 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
       message: "Daily task",
     });
 
-    const conv1 = createConversation({
+    const conv1 = await createConversation({
       source: "schedule",
       scheduleJobId: schedule.id,
     });
-    createConversation({
+    await createConversation({
       source: "schedule",
       scheduleJobId: schedule.id,
     });
@@ -173,11 +167,11 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
       message: "Task B",
     });
 
-    const convA = createConversation({
+    const convA = await createConversation({
       source: "schedule",
       scheduleJobId: scheduleA.id,
     });
-    createConversation({
+    await createConversation({
       source: "schedule",
       scheduleJobId: scheduleB.id,
     });
@@ -192,3 +186,5 @@ describe("DELETE /conversations/:id — schedule cleanup", () => {
     expect(await getSchedule(scheduleB.id)).not.toBeNull();
   });
 });
+
+setDefaultTimeout(30_000);

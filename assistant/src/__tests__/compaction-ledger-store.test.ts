@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
 import { eq } from "drizzle-orm";
 
@@ -7,116 +7,117 @@ import {
   forkCompactionLedger,
   getLatestCompactionEventAtOrBefore,
 } from "../persistence/compaction-ledger-store.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   conversationCompactionEvents,
   conversations,
-} from "../persistence/schema/index.js";
+} from "../persistence/pg-schema/index.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function reset(): void {
-  const db = getDb();
-  db.delete(conversationCompactionEvents).run();
-  db.delete(conversations).run();
+async function reset(): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.delete(conversationCompactionEvents);
+  await db.orm.delete(conversations);
 }
 
-function makeConversation(id: string): void {
+async function makeConversation(id: string): Promise<void> {
   const now = Date.now();
-  getDb()
-    .insert(conversations)
-    .values({ id, title: id, createdAt: now, updatedAt: now })
-    .run();
+  await requireMainDb()
+    .orm.insert(conversations)
+    .values({ id, title: id, createdAt: now, updatedAt: now });
 }
 
-function forkEventsFor(conversationId: string) {
-  return getDb()
-    .select()
+async function forkEventsFor(conversationId: string) {
+  return requireMainDb()
+    .orm.select()
     .from(conversationCompactionEvents)
-    .where(eq(conversationCompactionEvents.conversationId, conversationId))
-    .all();
+    .where(eq(conversationCompactionEvents.conversationId, conversationId));
 }
 
-describe("compaction-ledger-store", () => {
+describePg("compaction-ledger-store", () => {
   beforeEach(reset);
 
-  test("getLatestCompactionEventAtOrBefore returns the newest event at-or-before the cutoff", () => {
-    makeConversation("conv");
-    appendCompactionEvent("conv", {
+  test("getLatestCompactionEventAtOrBefore returns the newest event at-or-before the cutoff", async () => {
+    await makeConversation("conv");
+    await appendCompactionEvent("conv", {
       compactedAt: 100,
       summary: "s100",
       compactedMessageCount: 1,
     });
-    appendCompactionEvent("conv", {
+    await appendCompactionEvent("conv", {
       compactedAt: 200,
       summary: "s200",
       compactedMessageCount: 3,
     });
-    appendCompactionEvent("conv", {
+    await appendCompactionEvent("conv", {
       compactedAt: 300,
       summary: "s300",
       compactedMessageCount: 5,
     });
 
-    expect(getLatestCompactionEventAtOrBefore("conv", 50)).toBeNull();
+    expect(await getLatestCompactionEventAtOrBefore("conv", 50)).toBeNull();
     expect(
-      getLatestCompactionEventAtOrBefore("conv", 100)?.compactedMessageCount,
+      (await getLatestCompactionEventAtOrBefore("conv", 100))
+        ?.compactedMessageCount,
     ).toBe(1);
     expect(
-      getLatestCompactionEventAtOrBefore("conv", 250)?.compactedMessageCount,
+      (await getLatestCompactionEventAtOrBefore("conv", 250))
+        ?.compactedMessageCount,
     ).toBe(3);
     expect(
-      getLatestCompactionEventAtOrBefore("conv", 999)?.compactedMessageCount,
+      (await getLatestCompactionEventAtOrBefore("conv", 999))
+        ?.compactedMessageCount,
     ).toBe(5);
-    expect(getLatestCompactionEventAtOrBefore("conv", null)).toBeNull();
+    expect(await getLatestCompactionEventAtOrBefore("conv", null)).toBeNull();
   });
 
-  test("getLatestCompactionEventAtOrBefore is scoped per conversation", () => {
-    makeConversation("a");
-    makeConversation("b");
-    appendCompactionEvent("a", {
+  test("getLatestCompactionEventAtOrBefore is scoped per conversation", async () => {
+    await makeConversation("a");
+    await makeConversation("b");
+    await appendCompactionEvent("a", {
       compactedAt: 100,
       summary: "a",
       compactedMessageCount: 1,
     });
 
-    expect(getLatestCompactionEventAtOrBefore("b", 999)).toBeNull();
+    expect(await getLatestCompactionEventAtOrBefore("b", 999)).toBeNull();
   });
 
-  test("forkCompactionLedger copies only events at-or-before the boundary", () => {
-    makeConversation("src");
-    makeConversation("fork");
-    appendCompactionEvent("src", {
+  test("forkCompactionLedger copies only events at-or-before the boundary", async () => {
+    await makeConversation("src");
+    await makeConversation("fork");
+    await appendCompactionEvent("src", {
       compactedAt: 100,
       summary: "s100",
       compactedMessageCount: 1,
     });
-    appendCompactionEvent("src", {
+    await appendCompactionEvent("src", {
       compactedAt: 300,
       summary: "s300",
       compactedMessageCount: 5,
     });
 
-    forkCompactionLedger(getDb(), "src", "fork", 200);
+    await forkCompactionLedger(requireMainDb(), "src", "fork", 200);
 
-    const copied = forkEventsFor("fork");
+    const copied = await forkEventsFor("fork");
     expect(copied).toHaveLength(1);
     expect(copied[0]?.compactedAt).toBe(100);
     expect(copied[0]?.summary).toBe("s100");
   });
 
-  test("forkCompactionLedger with a null boundary copies nothing", () => {
-    makeConversation("src");
-    makeConversation("fork");
-    appendCompactionEvent("src", {
+  test("forkCompactionLedger with a null boundary copies nothing", async () => {
+    await makeConversation("src");
+    await makeConversation("fork");
+    await appendCompactionEvent("src", {
       compactedAt: 100,
       summary: "s100",
       compactedMessageCount: 1,
     });
 
-    forkCompactionLedger(getDb(), "src", "fork", null);
+    await forkCompactionLedger(requireMainDb(), "src", "fork", null);
 
-    expect(forkEventsFor("fork")).toHaveLength(0);
+    expect(await forkEventsFor("fork")).toHaveLength(0);
   });
 });
+
+setDefaultTimeout(30_000);

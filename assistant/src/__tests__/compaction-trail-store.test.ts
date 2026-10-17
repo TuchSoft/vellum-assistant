@@ -8,12 +8,13 @@
  * asserts the right subset comes back.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
 import { eq } from "drizzle-orm";
 
 import { createConversation } from "../persistence/conversation-crud.js";
 import { getDb, getLogsDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import {
   getCompactionLogsBetween,
@@ -21,15 +22,19 @@ import {
   recordRequestLog,
 } from "../persistence/llm-request-log-store.js";
 import { llmRequestLogs } from "../persistence/schema/index.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
-function resetTables(): void {
+async function resetTables(): Promise<void> {
   const db = getDb();
   // llm_request_logs lives in the dedicated logs connection.
   getLogsDb()!.delete(llmRequestLogs).run();
   db.run("DELETE FROM messages");
   db.run("DELETE FROM conversations");
+  const pg = requireMainDb();
+  await pg.run("DELETE FROM messages");
+  await pg.run("DELETE FROM conversations");
 }
 
 /**
@@ -64,13 +69,13 @@ function insertLogAt(
   return id;
 }
 
-describe("getCompactionLogsBetween", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("getCompactionLogsBetween", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
-  test("returns only compactionAgent rows in the conversation, in the (after, before) window", () => {
-    const conv = createConversation("test-conv");
+  test("returns only compactionAgent rows in the conversation, in the (after, before) window", async () => {
+    const conv = await createConversation("test-conv");
 
     // Timeline (createdAt in ms):
     //   100 → compactionAgent  ← excluded (before the floor — would belong to an earlier turn)
@@ -93,8 +98,8 @@ describe("getCompactionLogsBetween", () => {
     expect(result[0]!.conversationId).toBe(conv.id);
   });
 
-  test("null floor matches all compactions before the ceiling (first-real-call case)", () => {
-    const conv = createConversation("null-floor");
+  test("null floor matches all compactions before the ceiling (first-real-call case)", async () => {
+    const conv = await createConversation("null-floor");
 
     insertLogAt(conv.id, 100, "compactionAgent");
     insertLogAt(conv.id, 200, "compactionAgent");
@@ -105,8 +110,8 @@ describe("getCompactionLogsBetween", () => {
     expect(result.map((r) => r.createdAt)).toEqual([100, 200, 300]);
   });
 
-  test("uses strict < at the ceiling (a row exactly at the cutoff is excluded)", () => {
-    const conv = createConversation("strict-ceiling");
+  test("uses strict < at the ceiling (a row exactly at the cutoff is excluded)", async () => {
+    const conv = await createConversation("strict-ceiling");
 
     insertLogAt(conv.id, 100, "compactionAgent");
     insertLogAt(conv.id, 500, "compactionAgent"); // exactly at the ceiling
@@ -116,8 +121,8 @@ describe("getCompactionLogsBetween", () => {
     expect(result[0]!.createdAt).toBe(100);
   });
 
-  test("uses strict > at the floor (a row exactly at the floor is excluded)", () => {
-    const conv = createConversation("strict-floor");
+  test("uses strict > at the floor (a row exactly at the floor is excluded)", async () => {
+    const conv = await createConversation("strict-floor");
 
     insertLogAt(conv.id, 150, "compactionAgent"); // exactly at the floor
     insertLogAt(conv.id, 200, "compactionAgent");
@@ -127,9 +132,9 @@ describe("getCompactionLogsBetween", () => {
     expect(result[0]!.createdAt).toBe(200);
   });
 
-  test("scopes by conversation_id (other conversations are invisible)", () => {
-    const a = createConversation("conv-a");
-    const b = createConversation("conv-b");
+  test("scopes by conversation_id (other conversations are invisible)", async () => {
+    const a = await createConversation("conv-a");
+    const b = await createConversation("conv-b");
 
     insertLogAt(a.id, 100, "compactionAgent");
     insertLogAt(b.id, 150, "compactionAgent");
@@ -142,8 +147,8 @@ describe("getCompactionLogsBetween", () => {
     }
   });
 
-  test("returns rows in chronological order by createdAt then id", () => {
-    const conv = createConversation("ordered");
+  test("returns rows in chronological order by createdAt then id", async () => {
+    const conv = await createConversation("ordered");
 
     // Insert out of order to verify the ORDER BY clause does the work.
     insertLogAt(conv.id, 300, "compactionAgent");
@@ -154,8 +159,8 @@ describe("getCompactionLogsBetween", () => {
     expect(result.map((r) => r.createdAt)).toEqual([100, 200, 300]);
   });
 
-  test("returns an empty array when no compaction rows fall in the window", () => {
-    const conv = createConversation("empty");
+  test("returns an empty array when no compaction rows fall in the window", async () => {
+    const conv = await createConversation("empty");
 
     // mainAgent (wrong site) + compactionAgent after the ceiling.
     insertLogAt(conv.id, 100, "mainAgent");
@@ -165,16 +170,16 @@ describe("getCompactionLogsBetween", () => {
     expect(result).toEqual([]);
   });
 
-  test("returns an empty array for an unknown conversation_id", () => {
+  test("returns an empty array for an unknown conversation_id", async () => {
     const result = getCompactionLogsBetween("nonexistent-conv", null, 500);
     expect(result).toEqual([]);
   });
 
-  test("computes requestMessageCount in SQL without returning the request payload", () => {
+  test("computes requestMessageCount in SQL without returning the request payload", async () => {
     // GIVEN compaction rows whose request payloads use each provider
     // shape (Anthropic/OpenAI `messages`, Gemini `contents`, OpenAI
     // Responses `input`), plus rows where the count can't be derived
-    const conv = createConversation("msg-count");
+    const conv = await createConversation("msg-count");
     insertLogAt(
       conv.id,
       100,
@@ -215,14 +220,14 @@ describe("getCompactionLogsBetween", () => {
   });
 });
 
-describe("getRequestLogMetaById", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("getRequestLogMetaById", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
-  test("returns the row's metadata without either payload column", () => {
+  test("returns the row's metadata without either payload column", async () => {
     // GIVEN a stored log row
-    const conv = createConversation("meta-lookup");
+    const conv = await createConversation("meta-lookup");
     const id = insertLogAt(conv.id, 100, "compactionAgent", '{"big":true}');
 
     // WHEN looking it up by id
@@ -237,7 +242,9 @@ describe("getRequestLogMetaById", () => {
     expect("responsePayload" in row!).toBe(false);
   });
 
-  test("returns null for an unknown id", () => {
+  test("returns null for an unknown id", async () => {
     expect(getRequestLogMetaById("nonexistent")).toBeNull();
   });
 });
+
+setDefaultTimeout(30_000);

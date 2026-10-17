@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
 import {
   addMessage,
@@ -8,47 +8,57 @@ import {
   getConversationEnabledPlugins,
   setConversationEnabledPlugins,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-await initializeDb();
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
-describe("getConversationEnabledPlugins / setConversationEnabledPlugins", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM messages`);
-    db.run(`DELETE FROM conversations`);
-  });
+setDefaultTimeout(30_000);
 
-  test("defaults to null on a fresh conversation", () => {
-    const conv = createConversation("enabled-plugins-default");
-    expect(getConversationEnabledPlugins(conv.id)).toBeNull();
-    expect(getConversation(conv.id)?.enabledPlugins).toBeNull();
-  });
+describePg(
+  "getConversationEnabledPlugins / setConversationEnabledPlugins",
+  () => {
+    beforeEach(async () => {
+      const db = requireMainDb();
+      await db.run(`DELETE FROM messages`);
+      await db.run(`DELETE FROM conversations`);
+    });
 
-  test("round-trips a plugin list and clears it with null", () => {
-    const conv = createConversation("enabled-plugins-roundtrip");
+    test("defaults to null on a fresh conversation", async () => {
+      const conv = await createConversation("enabled-plugins-default");
+      expect(await getConversationEnabledPlugins(conv.id)).toBeNull();
+      expect((await getConversation(conv.id))?.enabledPlugins).toBeNull();
+    });
 
-    setConversationEnabledPlugins(conv.id, ["a", "b"]);
-    expect(getConversationEnabledPlugins(conv.id)).toEqual(["a", "b"]);
-    expect(getConversation(conv.id)?.enabledPlugins).toEqual(["a", "b"]);
+    test("round-trips a plugin list and clears it with null", async () => {
+      const conv = await createConversation("enabled-plugins-roundtrip");
 
-    setConversationEnabledPlugins(conv.id, null);
-    expect(getConversationEnabledPlugins(conv.id)).toBeNull();
-    expect(getConversation(conv.id)?.enabledPlugins).toBeNull();
-  });
+      await setConversationEnabledPlugins(conv.id, ["a", "b"]);
+      expect(await getConversationEnabledPlugins(conv.id)).toEqual(["a", "b"]);
+      expect((await getConversation(conv.id))?.enabledPlugins).toEqual([
+        "a",
+        "b",
+      ]);
 
-  test("stores an empty list distinctly from null", () => {
-    const conv = createConversation("enabled-plugins-empty");
-    setConversationEnabledPlugins(conv.id, []);
-    expect(getConversationEnabledPlugins(conv.id)).toEqual([]);
-  });
+      await setConversationEnabledPlugins(conv.id, null);
+      expect(await getConversationEnabledPlugins(conv.id)).toBeNull();
+      expect((await getConversation(conv.id))?.enabledPlugins).toBeNull();
+    });
 
-  test("a forked conversation carries the plugin selection", async () => {
-    const conv = createConversation("enabled-plugins-fork-source");
-    setConversationEnabledPlugins(conv.id, ["x", "y"]);
-    await addMessage(conv.id, "user", "hi");
+    test("stores an empty list distinctly from null", async () => {
+      const conv = await createConversation("enabled-plugins-empty");
+      await setConversationEnabledPlugins(conv.id, []);
+      expect(await getConversationEnabledPlugins(conv.id)).toEqual([]);
+    });
 
-    const forked = forkConversation({ conversationId: conv.id });
-    expect(getConversationEnabledPlugins(forked.id)).toEqual(["x", "y"]);
-  });
-});
+    test("a forked conversation carries the plugin selection", async () => {
+      const conv = await createConversation("enabled-plugins-fork-source");
+      await setConversationEnabledPlugins(conv.id, ["x", "y"]);
+      await addMessage(conv.id, "user", "hi");
+
+      const forked = await forkConversation({ conversationId: conv.id });
+      expect(await getConversationEnabledPlugins(forked.id)).toEqual([
+        "x",
+        "y",
+      ]);
+    });
+  },
+);

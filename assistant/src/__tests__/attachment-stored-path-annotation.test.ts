@@ -9,25 +9,23 @@
  */
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
 import { reinjectAttachmentPathAnnotations } from "../daemon/conversation-lifecycle.js";
 import type { MessagingConversationContext } from "../daemon/conversation-messaging.js";
 import { persistQueuedMessageBody } from "../daemon/conversation-messaging.js";
 import { createConversation } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { rawGet } from "../persistence/raw-query.js";
+import { requireMainDb } from "../persistence/db-facade.js";
+import { rawGetAsync } from "../persistence/raw-query.js";
 import type { ContentBlock } from "../providers/types.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 function makeCtx(conversationId: string): MessagingConversationContext {
@@ -55,11 +53,11 @@ function lastAnnotationBlock(ctx: MessagingConversationContext): {
   };
 }
 
-describe("persistQueuedMessageBody stored path annotations", () => {
+describePg("persistQueuedMessageBody stored path annotations", () => {
   beforeEach(resetTables);
 
   test("same-named re-upload annotates the resolved -2 path", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const ctx = makeCtx(conv.id);
 
     // "aGVsbG8=" = "hello", "d29ybGQ=" = "world"
@@ -77,7 +75,7 @@ describe("persistQueuedMessageBody stored path annotations", () => {
     });
 
     // Second turn's persisted metadata records the collision-suffixed copy.
-    const row = rawGet<{ metadata: string }>(
+    const row = await rawGetAsync<{ metadata: string }>(
       "test:secondMessageMetadata",
       "SELECT metadata FROM messages WHERE id = ?",
       second.id,
@@ -97,7 +95,7 @@ describe("persistQueuedMessageBody stored path annotations", () => {
     );
 
     // The first turn's annotation still points at the unsuffixed original.
-    const firstRow = rawGet<{ metadata: string }>(
+    const firstRow = await rawGetAsync<{ metadata: string }>(
       "test:firstMessageMetadata",
       "SELECT metadata FROM messages WHERE id = ?",
       first.id,
@@ -121,13 +119,13 @@ describe("persistQueuedMessageBody stored path annotations", () => {
   });
 
   test("offloaded oversized text records its stored path for history reload", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const ctx = makeCtx(conv.id);
     const original = "x".repeat(8_000_001);
 
     await persistQueuedMessageBody(ctx, { content: original });
 
-    const row = rawGet<{ metadata: string; content: string }>(
+    const row = await rawGetAsync<{ metadata: string; content: string }>(
       "test:offloadMessage",
       "SELECT metadata, content FROM messages ORDER BY created_at DESC LIMIT 1",
     );
@@ -157,7 +155,7 @@ describe("persistQueuedMessageBody stored path annotations", () => {
   });
 
   test("two oversized messages in one conversation get distinct filenames", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const ctx = makeCtx(conv.id);
 
     await persistQueuedMessageBody(ctx, { content: "a".repeat(8_000_001) });
@@ -175,7 +173,7 @@ describe("persistQueuedMessageBody stored path annotations", () => {
   });
 
   test("display-only offload is not named on the model-facing list", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const ctx = makeCtx(conv.id);
     const display = "y".repeat(8_000_001);
 
@@ -189,7 +187,7 @@ describe("persistQueuedMessageBody stored path annotations", () => {
     expect(JSON.stringify(llmContent)).toContain("fenced model copy");
     expect(JSON.stringify(llmContent)).not.toContain(display);
 
-    const row = rawGet<{ metadata: string }>(
+    const row = await rawGetAsync<{ metadata: string }>(
       "test:displayOnlyOffloadMetadata",
       "SELECT metadata FROM messages ORDER BY created_at DESC LIMIT 1",
     );
@@ -200,7 +198,7 @@ describe("persistQueuedMessageBody stored path annotations", () => {
   });
 
   test("messages without attachments get no annotation block", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const ctx = makeCtx(conv.id);
 
     await persistQueuedMessageBody(ctx, { content: "just text" });
@@ -211,3 +209,5 @@ describe("persistQueuedMessageBody stored path annotations", () => {
     expect(content[0].type).toBe("text");
   });
 });
+
+setDefaultTimeout(30_000);

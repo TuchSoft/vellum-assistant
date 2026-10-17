@@ -7,7 +7,14 @@
  * - Voice-ingress preflight blocks doomed outbound calls before Twilio dialing.
  * - Pointer messages are written on successful call start and on failure.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
 // Track whether the Twilio provider's initiateCall should succeed or throw
 let twilioInitiateCallBehavior: "success" | "error" = "success";
@@ -98,10 +105,9 @@ import {
 } from "../calls/call-domain.js";
 import type { AssistantConfig } from "../config/types.js";
 import { getMessages } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { callSessions, conversations } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { setConfig } from "./helpers/set-config.js";
+import { describePg } from "./pg-test-db.js";
 
 /** Seed the ingress block startCall's preflight reads for real. */
 function seedIngress(enabled: boolean): void {
@@ -114,10 +120,8 @@ function seedIngress(enabled: boolean): void {
 // Disable memory so pointer-message writes skip background indexing.
 setConfig("memory", { enabled: false });
 
-await initializeDb();
-
-beforeEach(() => {
-  resetTables();
+beforeEach(async () => {
+  await resetTables();
   clearActiveCallLeases();
   twilioInitiateCallBehavior = "success";
   twilioInitiateCallCount = 0;
@@ -128,44 +132,40 @@ beforeEach(() => {
 });
 
 let ensuredConvIds = new Set<string>();
-function ensureConversation(id: string): void {
+async function ensureConversation(id: string): Promise<void> {
   if (ensuredConvIds.has(id)) {
     return;
   }
-  const db = getDb();
+  const db = requireMainDb();
   const now = Date.now();
-  db.insert(conversations)
-    .values({
-      id,
-      title: `Test conversation ${id}`,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  await db.run(
+    "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    [id, `Test conversation ${id}`, now, now],
+  );
   ensuredConvIds.add(id);
 }
 
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM external_conversation_bindings");
-  db.run("DELETE FROM call_sessions");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM external_conversation_bindings");
+  await db.run("DELETE FROM call_sessions");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
   ensuredConvIds = new Set();
 }
 
-function listCallSessions(): Array<{ status: string; endedAt: number | null }> {
-  return getDb()
-    .select({
-      status: callSessions.status,
-      endedAt: callSessions.endedAt,
-    })
-    .from(callSessions)
-    .all();
+async function listCallSessions(): Promise<
+  Array<{ status: string; endedAt: number | null }>
+> {
+  return requireMainDb().all<{ status: string; endedAt: number | null }>(
+    'SELECT status, ended_at AS "endedAt" FROM call_sessions',
+  );
 }
 
-function getLatestAssistantText(conversationId: string): string | null {
-  const msgs = getMessages(conversationId).filter(
+async function getLatestAssistantText(
+  conversationId: string,
+): Promise<string | null> {
+  const msgs = (await getMessages(conversationId)).filter(
     (m) => m.role === "assistant",
   );
   if (msgs.length === 0) {
@@ -300,10 +300,10 @@ describe("resolveCallerIdentity — strict implicit-default policy", () => {
 
 // ── Pointer message regression tests ──────────────────────────────
 
-describe("startCall — pointer message regression", () => {
+describePg("startCall — pointer message regression", () => {
   test("successful call writes a started pointer to the initiating conversation", async () => {
     const convId = "conv-domain-ptr-start";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     const result = await startCall({
       phoneNumber: "+15559876543",
@@ -333,7 +333,7 @@ describe("startCall — pointer message regression", () => {
     // Allow async pointer write to flush
     await new Promise((r) => setTimeout(r, 50));
 
-    const text = getLatestAssistantText(convId);
+    const text = await getLatestAssistantText(convId);
     expect(text).not.toBeNull();
     expect(text!).toContain("+15559876543");
     expect(text!).toContain("started");
@@ -341,7 +341,7 @@ describe("startCall — pointer message regression", () => {
 
   test("fails fast when ingress is disabled and never reaches Twilio dialing", async () => {
     const convId = "conv-domain-ingress-disabled";
-    ensureConversation(convId);
+    await ensureConversation(convId);
     seedIngress(false);
 
     const result = await startCall({
@@ -359,7 +359,7 @@ describe("startCall — pointer message regression", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    const text = getLatestAssistantText(convId);
+    const text = await getLatestAssistantText(convId);
     expect(text).not.toBeNull();
     expect(text!).toContain("+15559876543");
     expect(text!).toContain("failed");
@@ -367,7 +367,7 @@ describe("startCall — pointer message regression", () => {
 
   test("fails fast when telephony credentials are not ready and never reaches Twilio dialing", async () => {
     const convId = "conv-domain-creds-not-ready";
-    ensureConversation(convId);
+    await ensureConversation(convId);
     mockCredentialReadiness = {
       status: "not-ready",
       missing: [
@@ -399,7 +399,7 @@ describe("startCall — pointer message regression", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    const text = getLatestAssistantText(convId);
+    const text = await getLatestAssistantText(convId);
     expect(text).not.toBeNull();
     expect(text!).toContain("+15559876543");
     expect(text!).toContain("failed");
@@ -407,7 +407,7 @@ describe("startCall — pointer message regression", () => {
 
   test("failed call writes a failed pointer to the initiating conversation", async () => {
     const convId = "conv-domain-ptr-fail";
-    ensureConversation(convId);
+    await ensureConversation(convId);
     twilioInitiateCallBehavior = "error";
 
     const result = await startCall({
@@ -422,7 +422,7 @@ describe("startCall — pointer message regression", () => {
     // Allow async pointer write to flush
     await new Promise((r) => setTimeout(r, 50));
 
-    const text = getLatestAssistantText(convId);
+    const text = await getLatestAssistantText(convId);
     expect(text).not.toBeNull();
     expect(text!).toContain("+15559876543");
     expect(text!).toContain("failed");
@@ -430,7 +430,7 @@ describe("startCall — pointer message regression", () => {
 
   test("canceling an active call releases its persisted keepalive lease", async () => {
     const convId = "conv-domain-cancel-releases-lease";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     const startResult = await startCall({
       phoneNumber: "+15559876543",
@@ -455,10 +455,10 @@ describe("startCall — pointer message regression", () => {
   });
 });
 
-describe("startCall: a stopped turn never dials", () => {
+describePg("startCall: a stopped turn never dials", () => {
   test("an already-cancelled turn creates no session and places no call", async () => {
     const convId = "conv-domain-abort-before-setup";
-    ensureConversation(convId);
+    await ensureConversation(convId);
     const controller = new AbortController();
     controller.abort();
 
@@ -473,12 +473,12 @@ describe("startCall: a stopped turn never dials", () => {
 
     expect(twilioInitiateCallCount).toBe(0);
     expect(listActiveCallLeases()).toHaveLength(0);
-    expect(listCallSessions()).toHaveLength(0);
+    expect(await listCallSessions()).toHaveLength(0);
   });
 
   test("a cancel during setup releases the session it already created", async () => {
     const convId = "conv-domain-abort-during-setup";
-    ensureConversation(convId);
+    await ensureConversation(convId);
     const controller = new AbortController();
     // The callback-URL lookups run after the session, its voice conversation
     // and its lease exist, so this is the window the late recheck guards.
@@ -496,13 +496,15 @@ describe("startCall: a stopped turn never dials", () => {
     expect(twilioInitiateCallCount).toBe(0);
     expect(listActiveCallLeases()).toHaveLength(0);
 
-    const sessions = listCallSessions();
+    const sessions = await listCallSessions();
     expect(sessions).toHaveLength(1);
     expect(sessions[0].status).toBe("cancelled");
     expect(sessions[0].endedAt).toEqual(expect.any(Number));
 
     // No failure pointer: the user stopped the turn, nothing went wrong.
     await new Promise((r) => setTimeout(r, 50));
-    expect(getLatestAssistantText(convId)).toBeNull();
+    expect(await getLatestAssistantText(convId)).toBeNull();
   });
 });
+
+setDefaultTimeout(30_000);

@@ -9,7 +9,7 @@
  * - telemetry_events contains the `conversations_clear_all` audit entry after clear
  */
 
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 
 // Auth is NOT disabled — we need enforcePolicy to actually check scopes.
 let authDisabled = false;
@@ -39,6 +39,7 @@ import { initializeDb } from "../persistence/db-init.js";
 import { enforcePolicy } from "../runtime/auth/route-policy.js";
 import type { AuthContext, Scope } from "../runtime/auth/types.js";
 import { ROUTES } from "../runtime/routes/conversation-management-routes.js";
+import { describePg } from "./pg-test-db.js";
 
 /** Look up a route's policy by endpoint+method on the route module's ROUTES. */
 function routePolicy(endpoint: string, method?: string) {
@@ -79,14 +80,14 @@ function buildAuthContext(overrides?: {
 // ---------------------------------------------------------------------------
 
 describe("DELETE /v1/conversations — route policy", () => {
-  test("DELETE /conversations requires settings.write scope", () => {
+  test("DELETE /conversations requires settings.write scope", async () => {
     authDisabled = false;
     const policy = routePolicy("conversations", "DELETE");
     expect(policy).not.toBeNull();
     expect(policy!.requiredScopes).toContain("settings.write");
   });
 
-  test("chat.write-only token is rejected with 403 for clear-all", () => {
+  test("chat.write-only token is rejected with 403 for clear-all", async () => {
     authDisabled = false;
     const policy = routePolicy("conversations", "DELETE");
     const ctx = buildAuthContext({
@@ -97,7 +98,7 @@ describe("DELETE /v1/conversations — route policy", () => {
     expect(result!.status).toBe(403);
   });
 
-  test("settings.write token is allowed through clear-all policy", () => {
+  test("settings.write token is allowed through clear-all policy", async () => {
     authDisabled = false;
     const policy = routePolicy("conversations", "DELETE");
     const ctx = buildAuthContext({
@@ -107,7 +108,7 @@ describe("DELETE /v1/conversations — route policy", () => {
     expect(result).toBeNull();
   });
 
-  test("single-conversation DELETE only requires chat.write", () => {
+  test("single-conversation DELETE only requires chat.write", async () => {
     authDisabled = false;
     const policy = routePolicy("conversations/:id", "DELETE");
     expect(policy).not.toBeNull();
@@ -126,7 +127,7 @@ describe("DELETE /v1/conversations — route policy", () => {
 // Route handler tests (header check + happy path)
 // ---------------------------------------------------------------------------
 
-describe("DELETE /v1/conversations — route handler", () => {
+describePg("DELETE /v1/conversations — route handler", () => {
   const clearRoute = ROUTES.find(
     (r) => r.operationId === "clearAllConversations",
   )!;
@@ -156,9 +157,9 @@ describe("DELETE /v1/conversations — route handler", () => {
   });
 
   test("correct header clears data", async () => {
-    const conv = createConversation("safety-test-conv");
+    const conv = await createConversation("safety-test-conv");
     await addMessage(conv.id, "user", "hello from safety test");
-    expect(getConversation(conv.id)).not.toBeNull();
+    expect(await getConversation(conv.id)).not.toBeNull();
 
     const result = await clearRoute.handler({
       pathParams: {},
@@ -167,7 +168,7 @@ describe("DELETE /v1/conversations — route handler", () => {
     });
     expect(result).toBeUndefined();
 
-    expect(getConversation(conv.id)).toBeNull();
+    expect(await getConversation(conv.id)).toBeNull();
   });
 
   test("telemetry_events contains conversations_clear_all after successful clear", async () => {
@@ -198,3 +199,5 @@ describe("DELETE /v1/conversations — route handler", () => {
     });
   });
 });
+
+setDefaultTimeout(30_000);

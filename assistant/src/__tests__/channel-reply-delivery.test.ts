@@ -288,7 +288,7 @@ describe("channel-reply-delivery", () => {
     };
   });
 
-  it("finds the assistant reply in the linked user turn", () => {
+  it("finds the assistant reply in the linked user turn", async () => {
     conversationMessages.push(
       {
         id: "user-target",
@@ -326,12 +326,12 @@ describe("channel-reply-delivery", () => {
       thinkingSegments: [],
     });
 
-    expect(findAssistantReplyMessageIdForTurn("conv-1", "user-target")).toBe(
-      "assistant-target",
-    );
+    expect(
+      await findAssistantReplyMessageIdForTurn("conv-1", "user-target"),
+    ).toBe("assistant-target");
   });
 
-  it("resolves the reply row past a trailing row that renders empty", () => {
+  it("resolves the reply row past a trailing row that renders empty", async () => {
     // The shape a tool-gated turn ends in: the reply is on the row carrying
     // the `send_user_message` call, and the turn's LAST row is private wrap-up
     // text that projects to nothing. The push preview and the attachment link
@@ -364,20 +364,24 @@ describe("channel-reply-delivery", () => {
     );
 
     expect(
-      resolveTurnReplyMessageId("conv-1", "user-target", "assistant-private"),
+      await resolveTurnReplyMessageId(
+        "conv-1",
+        "user-target",
+        "assistant-private",
+      ),
     ).toBe("assistant-reply");
   });
 
-  it("falls back to the caller's row when the turn has no resolvable reply", () => {
-    expect(resolveTurnReplyMessageId("conv-1", undefined, "assistant-x")).toBe(
-      "assistant-x",
-    );
+  it("falls back to the caller's row when the turn has no resolvable reply", async () => {
     expect(
-      resolveTurnReplyMessageId("conv-1", "missing-user", "assistant-x"),
+      await resolveTurnReplyMessageId("conv-1", undefined, "assistant-x"),
+    ).toBe("assistant-x");
+    expect(
+      await resolveTurnReplyMessageId("conv-1", "missing-user", "assistant-x"),
     ).toBe("assistant-x");
   });
 
-  it("renders a candidate reply with the row's own visibility metadata", () => {
+  it("renders a candidate reply with the row's own visibility metadata", async () => {
     // A fallback turn marks its row `visible`, so its raw text has to render
     // and deliver like any reply. Delivery cannot know that without handing
     // the row's metadata to the renderer.
@@ -400,9 +404,9 @@ describe("channel-reply-delivery", () => {
       thinkingSegments: [],
     });
 
-    expect(findAssistantReplyMessageIdForTurn("conv-1", "user-target")).toBe(
-      "assistant-fallback",
-    );
+    expect(
+      await findAssistantReplyMessageIdForTurn("conv-1", "user-target"),
+    ).toBe("assistant-fallback");
     expect(renderMetadataCalls).toContain(
       JSON.stringify({ assistantTextVisibility: "visible" }),
     );
@@ -446,7 +450,7 @@ describe("channel-reply-delivery", () => {
       renderedHistoryContent = stubFor(text);
     };
 
-    it("resolves a reaction-only turn to its silence marker, not the sentinel row", () => {
+    it("resolves a reaction-only turn to its silence marker, not the sentinel row", async () => {
       conversationMessages.push(
         { id: "user-target", role: "user", content: "target" },
         {
@@ -460,9 +464,9 @@ describe("channel-reply-delivery", () => {
       );
       renderAs("<no_response/>");
 
-      expect(findAssistantReplyMessageIdForTurn("conv-1", "user-target")).toBe(
-        "assistant-silence",
-      );
+      expect(
+        await findAssistantReplyMessageIdForTurn("conv-1", "user-target"),
+      ).toBe("assistant-silence");
     });
 
     it("posts nothing at all for a reaction-only turn", async () => {
@@ -2061,7 +2065,7 @@ describe("resuming after a stream that delivered every segment", () => {
     renderedHistoryContentByContent.clear();
   });
 
-  it("posts nothing when the stream already carried the whole reply", () => {
+  it("posts nothing when the stream already carried the whole reply", async () => {
     // One segment rendered, one segment reported delivered: nothing is owed.
     renderedHistoryContentByContent.set("two-calls", {
       text: "Looking now.\n\nTwo meetings today.",
@@ -2098,7 +2102,7 @@ describe("resuming after a stream that delivered every segment", () => {
     });
   });
 
-  it("still posts the tail when the stream stopped short", () => {
+  it("still posts the tail when the stream stopped short", async () => {
     // Two segments rendered, one delivered: the second is genuinely owed.
     renderedHistoryContentByContent.set("partial", {
       text: "First. Second.",

@@ -6,9 +6,7 @@ import {
   getConversationByKey,
   setConversationKey,
 } from "../persistence/conversation-key-store.js";
-import { getDb } from "../persistence/db-connection.js";
 import { requireMainDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
 import {
   clearPayload,
   findMessageByProviderMessageId,
@@ -36,11 +34,10 @@ import {
 } from "../persistence/external-conversation-store.js";
 import { RETRY_MAX_ATTEMPTS } from "../persistence/job-utils.js";
 import {
-  channelInboundEvents,
   conversations,
   externalConversationBindings,
   messages,
-} from "../persistence/schema/index.js";
+} from "../persistence/pg-schema/index.js";
 import { buildConversationDetailResponse } from "../runtime/services/conversation-serializer.js";
 import { handleDeleteConversation } from "./helpers/channel-test-adapter.js";
 import { setConfig } from "./helpers/set-config.js";
@@ -54,17 +51,7 @@ setConfig("slack", { teamId: "T123", teamUrl: "https://example.slack.com/" });
 // and pool teardown to finish beyond the default per-test budget.
 setDefaultTimeout(30_000);
 
-await initializeDb();
-
 async function resetTables(): Promise<void> {
-  const db = getDb();
-  db.run("DELETE FROM channel_inbound_events");
-  db.run("DELETE FROM channel_outbound_posts");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM external_conversation_bindings");
-  db.run("DELETE FROM conversations");
-
   const pg = requireMainDb();
   await pg.run("DELETE FROM channel_inbound_events");
   await pg.run("DELETE FROM channel_outbound_posts");
@@ -72,39 +59,6 @@ async function resetTables(): Promise<void> {
   await pg.run("DELETE FROM conversation_keys");
   await pg.run("DELETE FROM external_conversation_bindings");
   await pg.run("DELETE FROM conversations");
-}
-
-/**
- * Record an inbound event through the SQLite crud path and mirror the same
- * conversation and event ids into the Postgres facade. The delivery-status
- * store reads Postgres, so its fixture needs the row there too.
- */
-async function recordInboundForPg(
-  ...args: Parameters<typeof recordInbound>
-): Promise<ReturnType<typeof recordInbound>> {
-  const result = recordInbound(...args);
-  const pg = requireMainDb();
-  const now = Date.now();
-  await pg.orm
-    .insert(pg.schema.conversations)
-    .values({ id: result.conversationId, createdAt: now, updatedAt: now })
-    .onConflictDoNothing();
-  const options = args[3];
-  await pg.orm
-    .insert(pg.schema.channelInboundEvents)
-    .values({
-      id: result.eventId,
-      sourceChannel: args[0],
-      externalChatId: args[1],
-      externalMessageId: args[2],
-      sourceMessageId: options?.sourceMessageId ?? null,
-      conversationId: result.conversationId,
-      deliveryStatus: "pending",
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoNothing();
-  return result;
 }
 
 async function selectPgInboundEvent(where: {
@@ -122,22 +76,20 @@ async function selectPgInboundEvent(where: {
 }
 
 /** Insert a message row so FK constraints on channel_inbound_events.message_id pass. */
-function insertMessage(
+async function insertMessage(
   id: string,
   conversationId: string,
   metadata?: Record<string, unknown>,
-): void {
-  const db = getDb();
-  db.insert(messages)
-    .values({
-      id,
-      conversationId,
-      role: "user",
-      content: "test message",
-      createdAt: Date.now(),
-      metadata: metadata ? JSON.stringify(metadata) : null,
-    })
-    .run();
+): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.insert(messages).values({
+    id,
+    conversationId,
+    role: "user",
+    content: "test message",
+    createdAt: Date.now(),
+    metadata: metadata ? JSON.stringify(metadata) : null,
+  });
 }
 
 describePg("channel-delivery-store", () => {
@@ -147,20 +99,15 @@ describePg("channel-delivery-store", () => {
 
   // ── Recording inbound events ──────────────────────────────────────
 
-  test("records an inbound event and creates a conversation", () => {
-    const result = recordInbound("telegram", "chat-1", "msg-1");
+  test("records an inbound event and creates a conversation", async () => {
+    const result = await recordInbound("telegram", "chat-1", "msg-1");
 
     expect(result.accepted).toBe(true);
     expect(result.duplicate).toBe(false);
     expect(result.eventId).toBeDefined();
     expect(result.conversationId).toBeDefined();
 
-    const db = getDb();
-    const row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    const row = await selectPgInboundEvent({ id: result.eventId });
 
     expect(row).toBeDefined();
     expect(row!.sourceChannel).toBe("telegram");
@@ -171,26 +118,21 @@ describePg("channel-delivery-store", () => {
     expect(row!.processingAttempts).toBe(0);
   });
 
-  test("records inbound with sourceMessageId option", () => {
-    const result = recordInbound("telegram", "chat-1", "msg-1", {
+  test("records inbound with sourceMessageId option", async () => {
+    const result = await recordInbound("telegram", "chat-1", "msg-1", {
       sourceMessageId: "src-42",
     });
 
-    const db = getDb();
-    const row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    const row = await selectPgInboundEvent({ id: result.eventId });
 
     expect(row!.sourceMessageId).toBe("src-42");
   });
 
-  test("resolves an assistant post by its provider id on a non-Slack channel", () => {
+  test("resolves an assistant post by its provider id on a non-Slack channel", async () => {
     const chatId = "999000111222333444";
-    const minted = recordInbound("discord", chatId, "evt-seed");
-    const db = getDb();
-    db.insert(messages)
+    const minted = await recordInbound("discord", chatId, "evt-seed");
+    await requireMainDb()
+      .orm.insert(messages)
       .values({
         id: "assistant-post-1",
         conversationId: minted.conversationId,
@@ -206,11 +148,14 @@ describePg("channel-delivery-store", () => {
             eventKind: "message",
           }),
         }),
-      })
-      .run();
+      });
 
     expect(
-      findMessageByProviderMessageId("discord", chatId, "1234567890123456789"),
+      await findMessageByProviderMessageId(
+        "discord",
+        chatId,
+        "1234567890123456789",
+      ),
     ).toEqual({
       messageId: "assistant-post-1",
       conversationId: minted.conversationId,
@@ -218,7 +163,11 @@ describePg("channel-delivery-store", () => {
     // A split reply posts several provider messages from one row; any of
     // their ids resolves it.
     expect(
-      findMessageByProviderMessageId("discord", chatId, "2234567890123456789"),
+      await findMessageByProviderMessageId(
+        "discord",
+        chatId,
+        "2234567890123456789",
+      ),
     ).toEqual({
       messageId: "assistant-post-1",
       conversationId: minted.conversationId,
@@ -226,10 +175,14 @@ describePg("channel-delivery-store", () => {
     // The scan is scoped to the reaction's own channel address: the same id
     // is invisible from another channel's or another chat's key space.
     expect(
-      findMessageByProviderMessageId("telegram", chatId, "1234567890123456789"),
+      await findMessageByProviderMessageId(
+        "telegram",
+        chatId,
+        "1234567890123456789",
+      ),
     ).toBeNull();
     expect(
-      findMessageByProviderMessageId(
+      await findMessageByProviderMessageId(
         "discord",
         "other-chat",
         "1234567890123456789",
@@ -237,9 +190,9 @@ describePg("channel-delivery-store", () => {
     ).toBeNull();
   });
 
-  test("linked inbound rows are excluded from the provider-id scan; crash-window rows resolve", () => {
+  test("linked inbound rows are excluded from the provider-id scan; crash-window rows resolve", async () => {
     const chatId = "chat-scan-budget";
-    const minted = recordInbound("telegram", chatId, "evt-linked", {
+    const minted = await recordInbound("telegram", chatId, "evt-linked", {
       sourceMessageId: "tg-linked-1",
     });
     const envelope = (messageId: string) =>
@@ -255,27 +208,25 @@ describePg("channel-delivery-store", () => {
     // A normally-ingested inbound row: linked to its event, so the
     // inbound-event index owns its resolution and the fallback scan must
     // not spend budget on it.
-    insertMessage("linked-user-row", minted.conversationId, {});
-    getDb()
-      .update(messages)
+    await insertMessage("linked-user-row", minted.conversationId, {});
+    await requireMainDb()
+      .orm.update(messages)
       .set({ metadata: envelope("tg-linked-1") })
-      .where(eq(messages.id, "linked-user-row"))
-      .run();
-    linkMessage(minted.eventId, "linked-user-row");
+      .where(eq(messages.id, "linked-user-row"));
+    await linkMessage(minted.eventId, "linked-user-row");
     expect(
-      findMessageByProviderMessageId("telegram", chatId, "tg-linked-1"),
+      await findMessageByProviderMessageId("telegram", chatId, "tg-linked-1"),
     ).toBeNull();
 
     // A crash-window row: persisted with its envelope but its event link
     // never landed. The fallback is the only path that can resolve it.
-    insertMessage("orphan-user-row", minted.conversationId, {});
-    getDb()
-      .update(messages)
+    await insertMessage("orphan-user-row", minted.conversationId, {});
+    await requireMainDb()
+      .orm.update(messages)
       .set({ metadata: envelope("tg-orphan-1") })
-      .where(eq(messages.id, "orphan-user-row"))
-      .run();
+      .where(eq(messages.id, "orphan-user-row"));
     expect(
-      findMessageByProviderMessageId("telegram", chatId, "tg-orphan-1"),
+      await findMessageByProviderMessageId("telegram", chatId, "tg-orphan-1"),
     ).toEqual({
       messageId: "orphan-user-row",
       conversationId: minted.conversationId,
@@ -284,40 +235,36 @@ describePg("channel-delivery-store", () => {
     // A legacy linked row whose event carries no source_message_id:
     // findMessageBySourceId matches only that column, so the fallback must
     // still admit the row or reactions to it become unresolvable.
-    const legacy = recordInbound("telegram", chatId, "evt-legacy");
-    insertMessage("legacy-user-row", legacy.conversationId, {});
-    getDb()
-      .update(messages)
+    const legacy = await recordInbound("telegram", chatId, "evt-legacy");
+    await insertMessage("legacy-user-row", legacy.conversationId, {});
+    await requireMainDb()
+      .orm.update(messages)
       .set({ metadata: envelope("tg-legacy-1") })
-      .where(eq(messages.id, "legacy-user-row"))
-      .run();
-    linkMessage(legacy.eventId, "legacy-user-row");
+      .where(eq(messages.id, "legacy-user-row"));
+    await linkMessage(legacy.eventId, "legacy-user-row");
     expect(
-      findMessageByProviderMessageId("telegram", chatId, "tg-legacy-1"),
+      await findMessageByProviderMessageId("telegram", chatId, "tg-legacy-1"),
     ).toEqual({
       messageId: "legacy-user-row",
       conversationId: legacy.conversationId,
     });
   });
 
-  test("the outbound-posts index resolves a post exactly, at any age", () => {
+  test("the outbound-posts index resolves a post exactly, at any age", async () => {
     const chatId = "999000111222333444";
-    const minted = recordInbound("discord", chatId, "evt-index-seed");
-    const db = getDb();
+    const minted = await recordInbound("discord", chatId, "evt-index-seed");
     // The row's envelope names nothing: resolution comes from the index
     // alone, proving the table is the contract rather than a cache in
     // front of the scan.
-    db.insert(messages)
-      .values({
-        id: "assistant-indexed-post",
-        conversationId: minted.conversationId,
-        role: "assistant",
-        content: "indexed reply",
-        createdAt: Date.now(),
-        metadata: null,
-      })
-      .run();
-    recordOutboundPost({
+    await requireMainDb().orm.insert(messages).values({
+      id: "assistant-indexed-post",
+      conversationId: minted.conversationId,
+      role: "assistant",
+      content: "indexed reply",
+      createdAt: Date.now(),
+      metadata: null,
+    });
+    await recordOutboundPost({
       sourceChannel: "discord",
       externalChatId: chatId,
       providerMessageId: "555666777888999000",
@@ -325,7 +272,7 @@ describePg("channel-delivery-store", () => {
       conversationId: minted.conversationId,
     });
     // Idempotent on redelivery.
-    recordOutboundPost({
+    await recordOutboundPost({
       sourceChannel: "discord",
       externalChatId: chatId,
       providerMessageId: "555666777888999000",
@@ -334,17 +281,25 @@ describePg("channel-delivery-store", () => {
     });
 
     expect(
-      findMessageByProviderMessageId("discord", chatId, "555666777888999000"),
+      await findMessageByProviderMessageId(
+        "discord",
+        chatId,
+        "555666777888999000",
+      ),
     ).toEqual({
       messageId: "assistant-indexed-post",
       conversationId: minted.conversationId,
     });
     // Channel and chat scoping hold on the index path too.
     expect(
-      findMessageByProviderMessageId("telegram", chatId, "555666777888999000"),
+      await findMessageByProviderMessageId(
+        "telegram",
+        chatId,
+        "555666777888999000",
+      ),
     ).toBeNull();
     expect(
-      findMessageByProviderMessageId(
+      await findMessageByProviderMessageId(
         "discord",
         "other-chat",
         "555666777888999000",
@@ -352,29 +307,29 @@ describePg("channel-delivery-store", () => {
     ).toBeNull();
   });
 
-  test("same chat on same channel reuses the same conversation", () => {
-    const r1 = recordInbound("telegram", "chat-1", "msg-1");
-    const r2 = recordInbound("telegram", "chat-1", "msg-2");
+  test("same chat on same channel reuses the same conversation", async () => {
+    const r1 = await recordInbound("telegram", "chat-1", "msg-1");
+    const r2 = await recordInbound("telegram", "chat-1", "msg-2");
 
     expect(r1.conversationId).toBe(r2.conversationId);
   });
 
-  test("same Slack channel and thread reuses the same conversation", () => {
-    const r1 = recordInbound("slack", "C0123ABCDEF", "msg-1", {
+  test("same Slack channel and thread reuses the same conversation", async () => {
+    const r1 = await recordInbound("slack", "C0123ABCDEF", "msg-1", {
       sourceThreadId: "1710000000.000100",
     });
-    const r2 = recordInbound("slack", "C0123ABCDEF", "msg-2", {
+    const r2 = await recordInbound("slack", "C0123ABCDEF", "msg-2", {
       sourceThreadId: "1710000000.000100",
     });
 
     expect(r1.conversationId).toBe(r2.conversationId);
   });
 
-  test("different Slack threads in one channel get different conversations", () => {
-    const r1 = recordInbound("slack", "C0123ABCDEF", "msg-1", {
+  test("different Slack threads in one channel get different conversations", async () => {
+    const r1 = await recordInbound("slack", "C0123ABCDEF", "msg-1", {
       sourceThreadId: "1710000000.000100",
     });
-    const r2 = recordInbound("slack", "C0123ABCDEF", "msg-2", {
+    const r2 = await recordInbound("slack", "C0123ABCDEF", "msg-2", {
       sourceThreadId: "1710000000.000200",
     });
 
@@ -383,52 +338,52 @@ describePg("channel-delivery-store", () => {
 
   // ── Telegram private-chat topics ──────────────────────────────────
 
-  test("same Telegram topic reuses the same conversation", () => {
-    const r1 = recordInbound("telegram", "chat-9", "msg-1", {
+  test("same Telegram topic reuses the same conversation", async () => {
+    const r1 = await recordInbound("telegram", "chat-9", "msg-1", {
       sourceThreadId: "777",
     });
-    const r2 = recordInbound("telegram", "chat-9", "msg-2", {
+    const r2 = await recordInbound("telegram", "chat-9", "msg-2", {
       sourceThreadId: "777",
     });
 
     expect(r1.conversationId).toBe(r2.conversationId);
     expect(
-      getConversationByKey("asst:self:telegram:chat-9:thread:777")
+      (await getConversationByKey("asst:self:telegram:chat-9:thread:777"))
         ?.conversationId,
     ).toBe(r1.conversationId);
   });
 
-  test("different Telegram topics in one chat get different conversations", () => {
-    const r1 = recordInbound("telegram", "chat-9", "msg-1", {
+  test("different Telegram topics in one chat get different conversations", async () => {
+    const r1 = await recordInbound("telegram", "chat-9", "msg-1", {
       sourceThreadId: "777",
     });
-    const r2 = recordInbound("telegram", "chat-9", "msg-2", {
+    const r2 = await recordInbound("telegram", "chat-9", "msg-2", {
       sourceThreadId: "888",
     });
 
     expect(r1.conversationId).not.toBe(r2.conversationId);
   });
 
-  test("a Telegram message without a topic keeps the chat-level base key", () => {
-    const result = recordInbound("telegram", "chat-9", "msg-1");
+  test("a Telegram message without a topic keeps the chat-level base key", async () => {
+    const result = await recordInbound("telegram", "chat-9", "msg-1");
 
     expect(
-      getConversationByKey("asst:self:telegram:chat-9")?.conversationId,
+      (await getConversationByKey("asst:self:telegram:chat-9"))?.conversationId,
     ).toBe(result.conversationId);
   });
 
-  test("a Telegram topic starts a fresh conversation; the chat's main conversation stays on the base key", () => {
-    const main = recordInbound("telegram", "chat-9", "msg-1");
-    const topic = recordInbound("telegram", "chat-9", "msg-2", {
+  test("a Telegram topic starts a fresh conversation; the chat's main conversation stays on the base key", async () => {
+    const main = await recordInbound("telegram", "chat-9", "msg-1");
+    const topic = await recordInbound("telegram", "chat-9", "msg-2", {
       sourceThreadId: "777",
     });
 
     expect(topic.conversationId).not.toBe(main.conversationId);
     expect(
-      getConversationByKey("asst:self:telegram:chat-9")?.conversationId,
+      (await getConversationByKey("asst:self:telegram:chat-9"))?.conversationId,
     ).toBe(main.conversationId);
     expect(
-      getConversationByKey("asst:self:telegram:chat-9:thread:777")
+      (await getConversationByKey("asst:self:telegram:chat-9:thread:777"))
         ?.conversationId,
     ).toBe(topic.conversationId);
   });
@@ -436,19 +391,19 @@ describePg("channel-delivery-store", () => {
   test("thread-less Slack reset clears only the channel-level binding, keeping thread bindings", async () => {
     // Pins the channel-agnostic reset contract for Slack: a channel-root
     // /new must not unbind the channel's thread conversations.
-    const db = getDb();
+    const db = requireMainDb();
     const now = Date.now();
     for (const id of ["conv-slack-root", "conv-slack-thread"]) {
-      db.insert(conversations)
-        .values({ id, title: "test", createdAt: now, updatedAt: now })
-        .run();
+      await db.orm
+        .insert(conversations)
+        .values({ id, title: "test", createdAt: now, updatedAt: now });
     }
-    upsertBinding({
+    await upsertBinding({
       conversationId: "conv-slack-root",
       sourceChannel: "slack",
       externalChatId: "C0123ABCDEF",
     });
-    upsertBinding({
+    await upsertBinding({
       conversationId: "conv-slack-thread",
       sourceChannel: "slack",
       externalChatId: "C0123ABCDEF",
@@ -466,30 +421,38 @@ describePg("channel-delivery-store", () => {
     const res = await handleDeleteConversation(req);
     expect(res.status).toBe(200);
 
-    expect(getBindingByChannelChat("slack", "C0123ABCDEF")).toBeNull();
+    expect(await getBindingByChannelChat("slack", "C0123ABCDEF")).toBeNull();
     expect(
-      getBindingByChannelChatThread("slack", "C0123ABCDEF", "1710000000.000100")
-        ?.conversationId,
+      (
+        await getBindingByChannelChatThread(
+          "slack",
+          "C0123ABCDEF",
+          "1710000000.000100",
+        )
+      )?.conversationId,
     ).toBe("conv-slack-thread");
   });
 
   test("thread-less Telegram reset clears only the main-chat binding, keeping topic bindings", async () => {
-    const db = getDb();
+    const db = requireMainDb();
     const now = Date.now();
     for (const id of ["conv-main", "conv-topic"]) {
-      db.insert(conversations)
-        .values({ id, title: "test", createdAt: now, updatedAt: now })
-        .run();
+      await db.orm
+        .insert(conversations)
+        .values({ id, title: "test", createdAt: now, updatedAt: now });
     }
-    setConversationKey("asst:self:telegram:chat-9", "conv-main");
-    setConversationKey("telegram:chat-9", "conv-main");
-    setConversationKey("asst:self:telegram:chat-9:thread:777", "conv-topic");
-    upsertBinding({
+    await setConversationKey("asst:self:telegram:chat-9", "conv-main");
+    await setConversationKey("telegram:chat-9", "conv-main");
+    await setConversationKey(
+      "asst:self:telegram:chat-9:thread:777",
+      "conv-topic",
+    );
+    await upsertBinding({
       conversationId: "conv-main",
       sourceChannel: "telegram",
       externalChatId: "chat-9",
     });
-    upsertBinding({
+    await upsertBinding({
       conversationId: "conv-topic",
       sourceChannel: "telegram",
       externalChatId: "chat-9",
@@ -508,46 +471,49 @@ describePg("channel-delivery-store", () => {
     expect(res.status).toBe(200);
 
     // The main-chat keys and binding are gone…
-    expect(getConversationByKey("asst:self:telegram:chat-9")).toBeNull();
-    expect(getConversationByKey("telegram:chat-9")).toBeNull();
-    expect(getBindingByChannelChat("telegram", "chat-9")).toBeNull();
+    expect(await getConversationByKey("asst:self:telegram:chat-9")).toBeNull();
+    expect(await getConversationByKey("telegram:chat-9")).toBeNull();
+    expect(await getBindingByChannelChat("telegram", "chat-9")).toBeNull();
     // …while the topic conversation keeps its key and binding.
     expect(
-      getConversationByKey("asst:self:telegram:chat-9:thread:777")
+      (await getConversationByKey("asst:self:telegram:chat-9:thread:777"))
         ?.conversationId,
     ).toBe("conv-topic");
     expect(
-      getBindingByChannelChatThread("telegram", "chat-9", "777")
+      (await getBindingByChannelChatThread("telegram", "chat-9", "777"))
         ?.conversationId,
     ).toBe("conv-topic");
   });
 
-  test("legacy Slack channel key with matching inbound root ts gets aliased to the threaded key", () => {
+  test("legacy Slack channel key with matching inbound root ts gets aliased to the threaded key", async () => {
     const channelId = "C0123ABCDEF";
     const threadTs = "1710000000.000100";
-    const legacy = recordInbound("slack", channelId, "legacy-event", {
+    const legacy = await recordInbound("slack", channelId, "legacy-event", {
       sourceMessageId: threadTs,
     });
 
-    const threaded = recordInbound("slack", channelId, "thread-reply", {
+    const threaded = await recordInbound("slack", channelId, "thread-reply", {
       sourceThreadId: threadTs,
       sourceMessageId: "1710000001.000100",
     });
 
     expect(threaded.conversationId).toBe(legacy.conversationId);
     expect(
-      getConversationByKey(`asst:self:slack:${channelId}:thread:${threadTs}`)
-        ?.conversationId,
+      (
+        await getConversationByKey(
+          `asst:self:slack:${channelId}:thread:${threadTs}`,
+        )
+      )?.conversationId,
     ).toBe(legacy.conversationId);
   });
 
-  test("legacy Slack channel key with matching slackMeta.threadTs evidence gets aliased to the threaded key", () => {
+  test("legacy Slack channel key with matching slackMeta.threadTs evidence gets aliased to the threaded key", async () => {
     const channelId = "C0123ABCDEF";
     const threadTs = "1710000000.000200";
-    const legacy = recordInbound("slack", channelId, "legacy-event", {
+    const legacy = await recordInbound("slack", channelId, "legacy-event", {
       sourceMessageId: "1710000000.999999",
     });
-    insertMessage("legacy-thread-message", legacy.conversationId, {
+    await insertMessage("legacy-thread-message", legacy.conversationId, {
       slackMeta: JSON.stringify({
         source: "slack",
         channelId,
@@ -557,25 +523,28 @@ describePg("channel-delivery-store", () => {
       }),
     });
 
-    const threaded = recordInbound("slack", channelId, "thread-reply", {
+    const threaded = await recordInbound("slack", channelId, "thread-reply", {
       sourceThreadId: threadTs,
       sourceMessageId: "1710000002.000200",
     });
 
     expect(threaded.conversationId).toBe(legacy.conversationId);
     expect(
-      getConversationByKey(`asst:self:slack:${channelId}:thread:${threadTs}`)
-        ?.conversationId,
+      (
+        await getConversationByKey(
+          `asst:self:slack:${channelId}:thread:${threadTs}`,
+        )
+      )?.conversationId,
     ).toBe(legacy.conversationId);
   });
 
-  test("legacy Slack thread evidence scan is bounded when metadata does not prove the thread", () => {
+  test("legacy Slack thread evidence scan is bounded when metadata does not prove the thread", async () => {
     const channelId = "C0123ABCDEF";
-    const legacy = recordInbound("slack", channelId, "legacy-event", {
+    const legacy = await recordInbound("slack", channelId, "legacy-event", {
       sourceMessageId: "1710000000.000100",
     });
     for (let i = 0; i < 550; i++) {
-      insertMessage(`legacy-thread-message-${i}`, legacy.conversationId, {
+      await insertMessage(`legacy-thread-message-${i}`, legacy.conversationId, {
         slackMeta: JSON.stringify({
           source: "slack",
           channelId,
@@ -585,7 +554,7 @@ describePg("channel-delivery-store", () => {
         }),
       });
     }
-    insertMessage("legacy-thread-message-target", legacy.conversationId, {
+    await insertMessage("legacy-thread-message-target", legacy.conversationId, {
       slackMeta: JSON.stringify({
         source: "slack",
         channelId,
@@ -595,7 +564,7 @@ describePg("channel-delivery-store", () => {
       }),
     });
 
-    const threaded = recordInbound("slack", channelId, "thread-reply", {
+    const threaded = await recordInbound("slack", channelId, "thread-reply", {
       sourceThreadId: "1710000000.000600",
       sourceMessageId: "1710000003.000600",
     });
@@ -603,12 +572,12 @@ describePg("channel-delivery-store", () => {
     expect(threaded.conversationId).not.toBe(legacy.conversationId);
   });
 
-  test("legacy Slack channel key without evidence for the requested thread is not reused", () => {
+  test("legacy Slack channel key without evidence for the requested thread is not reused", async () => {
     const channelId = "C0123ABCDEF";
-    const legacy = recordInbound("slack", channelId, "legacy-event", {
+    const legacy = await recordInbound("slack", channelId, "legacy-event", {
       sourceMessageId: "1710000000.000100",
     });
-    insertMessage("legacy-other-thread-message", legacy.conversationId, {
+    await insertMessage("legacy-other-thread-message", legacy.conversationId, {
       slackMeta: JSON.stringify({
         source: "slack",
         channelId,
@@ -618,35 +587,52 @@ describePg("channel-delivery-store", () => {
       }),
     });
 
-    const threaded = recordInbound("slack", channelId, "new-thread-reply", {
-      sourceThreadId: "1710000000.000300",
-      sourceMessageId: "1710000001.000300",
-    });
+    const threaded = await recordInbound(
+      "slack",
+      channelId,
+      "new-thread-reply",
+      {
+        sourceThreadId: "1710000000.000300",
+        sourceMessageId: "1710000001.000300",
+      },
+    );
 
     expect(threaded.conversationId).not.toBe(legacy.conversationId);
     expect(
-      getConversationByKey(
-        `asst:self:slack:${channelId}:thread:1710000000.000300`,
+      (
+        await getConversationByKey(
+          `asst:self:slack:${channelId}:thread:1710000000.000300`,
+        )
       )?.conversationId,
     ).toBe(threaded.conversationId);
   });
 
-  test("aliasing a proven legacy Slack thread does not collapse different thread IDs", () => {
+  test("aliasing a proven legacy Slack thread does not collapse different thread IDs", async () => {
     const channelId = "C0123ABCDEF";
     const legacyThreadTs = "1710000000.000100";
     const newThreadTs = "1710000000.000200";
-    const legacy = recordInbound("slack", channelId, "legacy-event", {
+    const legacy = await recordInbound("slack", channelId, "legacy-event", {
       sourceMessageId: legacyThreadTs,
     });
 
-    const aliased = recordInbound("slack", channelId, "legacy-thread-reply", {
-      sourceThreadId: legacyThreadTs,
-      sourceMessageId: "1710000001.000100",
-    });
-    const separate = recordInbound("slack", channelId, "new-thread-reply", {
-      sourceThreadId: newThreadTs,
-      sourceMessageId: "1710000001.000200",
-    });
+    const aliased = await recordInbound(
+      "slack",
+      channelId,
+      "legacy-thread-reply",
+      {
+        sourceThreadId: legacyThreadTs,
+        sourceMessageId: "1710000001.000100",
+      },
+    );
+    const separate = await recordInbound(
+      "slack",
+      channelId,
+      "new-thread-reply",
+      {
+        sourceThreadId: newThreadTs,
+        sourceMessageId: "1710000001.000200",
+      },
+    );
 
     expect(aliased.conversationId).toBe(legacy.conversationId);
     expect(separate.conversationId).not.toBe(legacy.conversationId);
@@ -656,13 +642,18 @@ describePg("channel-delivery-store", () => {
   test("reset legacy-aliased Slack thread does not reattach to old legacy conversation", async () => {
     const channelId = "C0123ABCDEF";
     const threadTs = "1710000000.000100";
-    const legacy = recordInbound("slack", channelId, "legacy-event", {
+    const legacy = await recordInbound("slack", channelId, "legacy-event", {
       sourceMessageId: threadTs,
     });
-    const aliased = recordInbound("slack", channelId, "legacy-thread-reply", {
-      sourceThreadId: threadTs,
-      sourceMessageId: "1710000001.000100",
-    });
+    const aliased = await recordInbound(
+      "slack",
+      channelId,
+      "legacy-thread-reply",
+      {
+        sourceThreadId: threadTs,
+        sourceMessageId: "1710000001.000100",
+      },
+    );
     expect(aliased.conversationId).toBe(legacy.conversationId);
 
     const req = new Request("http://localhost/channels/conversation", {
@@ -677,22 +668,30 @@ describePg("channel-delivery-store", () => {
     const res = await handleDeleteConversation(req);
     expect(res.status).toBe(200);
 
-    const afterReset = recordInbound("slack", channelId, "after-reset-reply", {
-      sourceThreadId: threadTs,
-      sourceMessageId: "1710000002.000100",
-    });
+    const afterReset = await recordInbound(
+      "slack",
+      channelId,
+      "after-reset-reply",
+      {
+        sourceThreadId: threadTs,
+        sourceMessageId: "1710000002.000100",
+      },
+    );
 
     expect(afterReset.conversationId).not.toBe(legacy.conversationId);
     expect(
-      getConversationByKey(`asst:self:slack:${channelId}:thread:${threadTs}`)
-        ?.conversationId,
+      (
+        await getConversationByKey(
+          `asst:self:slack:${channelId}:thread:${threadTs}`,
+        )
+      )?.conversationId,
     ).toBe(afterReset.conversationId);
   });
 
   test("reset legacy Slack thread before alias exists does not reattach to old legacy conversation", async () => {
     const channelId = "C0123ABCDEF";
     const threadTs = "1710000000.000100";
-    const legacy = recordInbound("slack", channelId, "legacy-event", {
+    const legacy = await recordInbound("slack", channelId, "legacy-event", {
       sourceMessageId: threadTs,
     });
 
@@ -708,66 +707,78 @@ describePg("channel-delivery-store", () => {
     const res = await handleDeleteConversation(req);
     expect(res.status).toBe(200);
 
-    const afterReset = recordInbound("slack", channelId, "after-reset-reply", {
-      sourceThreadId: threadTs,
-      sourceMessageId: "1710000002.000100",
-    });
+    const afterReset = await recordInbound(
+      "slack",
+      channelId,
+      "after-reset-reply",
+      {
+        sourceThreadId: threadTs,
+        sourceMessageId: "1710000002.000100",
+      },
+    );
 
     expect(afterReset.conversationId).not.toBe(legacy.conversationId);
     expect(
-      getConversationByKey(`asst:self:slack:${channelId}:thread:${threadTs}`)
-        ?.conversationId,
+      (
+        await getConversationByKey(
+          `asst:self:slack:${channelId}:thread:${threadTs}`,
+        )
+      )?.conversationId,
     ).toBe(afterReset.conversationId);
   });
 
-  test("different chats get different conversations", () => {
-    const r1 = recordInbound("telegram", "chat-1", "msg-1");
-    const r2 = recordInbound("telegram", "chat-2", "msg-1");
+  test("different chats get different conversations", async () => {
+    const r1 = await recordInbound("telegram", "chat-1", "msg-1");
+    const r2 = await recordInbound("telegram", "chat-2", "msg-1");
 
     expect(r1.conversationId).not.toBe(r2.conversationId);
   });
 
-  test("different channels get different conversations", () => {
-    const r1 = recordInbound("telegram", "chat-1", "msg-1");
-    const r2 = recordInbound("slack", "chat-1", "msg-1");
+  test("different channels get different conversations", async () => {
+    const r1 = await recordInbound("telegram", "chat-1", "msg-1");
+    const r2 = await recordInbound("slack", "chat-1", "msg-1");
 
     expect(r1.conversationId).not.toBe(r2.conversationId);
   });
 
-  test("the same chat keeps the same conversation", () => {
-    const r1 = recordInbound("telegram", "chat-1", "msg-1");
-    const r2 = recordInbound("telegram", "chat-1", "msg-2");
+  test("the same chat keeps the same conversation", async () => {
+    const r1 = await recordInbound("telegram", "chat-1", "msg-1");
+    const r2 = await recordInbound("telegram", "chat-1", "msg-2");
 
     expect(r1.conversationId).toBe(r2.conversationId);
   });
 
-  test("binds under the self-scoped key", () => {
+  test("binds under the self-scoped key", async () => {
     // The prefix is a stored format, not an internal detail. It reads like a
     // leftover of the assistant id that used to be interpolated into it, so
     // pin it: rows already written under `asst:self:` stop resolving if a
     // later tidy-up drops it.
-    const { conversationId } = recordInbound("telegram", "chat-1", "msg-1");
+    const { conversationId } = await recordInbound(
+      "telegram",
+      "chat-1",
+      "msg-1",
+    );
 
     expect(
-      getConversationByKey("asst:self:telegram:chat-1")?.conversationId,
+      (await getConversationByKey("asst:self:telegram:chat-1"))?.conversationId,
     ).toBe(conversationId);
   });
 
-  test("external bindings allow multiple Slack thread anchors per channel", () => {
-    const r1 = recordInbound("slack", "C0123ABCDEF", "msg-1", {
+  test("external bindings allow multiple Slack thread anchors per channel", async () => {
+    const r1 = await recordInbound("slack", "C0123ABCDEF", "msg-1", {
       sourceThreadId: "1710000000.000100",
     });
-    const r2 = recordInbound("slack", "C0123ABCDEF", "msg-2", {
+    const r2 = await recordInbound("slack", "C0123ABCDEF", "msg-2", {
       sourceThreadId: "1710000000.000200",
     });
 
-    upsertBinding({
+    await upsertBinding({
       conversationId: r1.conversationId,
       sourceChannel: "slack",
       externalChatId: "C0123ABCDEF",
       externalThreadId: "1710000000.000100",
     });
-    upsertBinding({
+    await upsertBinding({
       conversationId: r2.conversationId,
       sourceChannel: "slack",
       externalChatId: "C0123ABCDEF",
@@ -775,22 +786,32 @@ describePg("channel-delivery-store", () => {
     });
 
     expect(
-      getBindingByChannelChatThread("slack", "C0123ABCDEF", "1710000000.000100")
-        ?.conversationId,
+      (
+        await getBindingByChannelChatThread(
+          "slack",
+          "C0123ABCDEF",
+          "1710000000.000100",
+        )
+      )?.conversationId,
     ).toBe(r1.conversationId);
     expect(
-      getBindingByChannelChatThread("slack", "C0123ABCDEF", "1710000000.000200")
-        ?.conversationId,
+      (
+        await getBindingByChannelChatThread(
+          "slack",
+          "C0123ABCDEF",
+          "1710000000.000200",
+        )
+      )?.conversationId,
     ).toBe(r2.conversationId);
-    expect(getBindingByChannelChat("slack", "C0123ABCDEF")).toBeNull();
+    expect(await getBindingByChannelChat("slack", "C0123ABCDEF")).toBeNull();
   });
 
-  test("conversation detail exposes Slack thread anchor from binding", () => {
-    const result = recordInbound("slack", "C0123ABCDEF", "msg-1", {
+  test("conversation detail exposes Slack thread anchor from binding", async () => {
+    const result = await recordInbound("slack", "C0123ABCDEF", "msg-1", {
       sourceThreadId: "1710000000.000100",
     });
 
-    upsertBinding({
+    await upsertBinding({
       conversationId: result.conversationId,
       sourceChannel: "slack",
       externalChatId: "C0123ABCDEF",
@@ -798,7 +819,7 @@ describePg("channel-delivery-store", () => {
       externalThreadId: "1710000000.000100",
     });
 
-    const detail = buildConversationDetailResponse(result.conversationId);
+    const detail = await buildConversationDetailResponse(result.conversationId);
 
     expect(detail?.conversation.channelBinding).toMatchObject({
       sourceChannel: "slack",
@@ -825,19 +846,19 @@ describePg("channel-delivery-store", () => {
     });
   });
 
-  test("conversation detail exposes Slack channel id fallback without stored channel name", () => {
-    const result = recordInbound("slack", "C0123ABCDEF", "msg-1", {
+  test("conversation detail exposes Slack channel id fallback without stored channel name", async () => {
+    const result = await recordInbound("slack", "C0123ABCDEF", "msg-1", {
       sourceThreadId: "1710000000.000100",
     });
 
-    upsertBinding({
+    await upsertBinding({
       conversationId: result.conversationId,
       sourceChannel: "slack",
       externalChatId: "C0123ABCDEF",
       externalThreadId: "1710000000.000100",
     });
 
-    const detail = buildConversationDetailResponse(result.conversationId);
+    const detail = await buildConversationDetailResponse(result.conversationId);
 
     expect(detail?.conversation.channelBinding).toMatchObject({
       sourceChannel: "slack",
@@ -853,12 +874,12 @@ describePg("channel-delivery-store", () => {
     });
   });
 
-  test("conversation detail omits Slack metadata for non-Slack channels", () => {
-    const result = recordInbound("telegram", "tg-chat-1", "msg-1", {
+  test("conversation detail omits Slack metadata for non-Slack channels", async () => {
+    const result = await recordInbound("telegram", "tg-chat-1", "msg-1", {
       sourceThreadId: "9001",
     });
 
-    upsertBinding({
+    await upsertBinding({
       conversationId: result.conversationId,
       sourceChannel: "telegram",
       externalChatId: "tg-chat-1",
@@ -866,7 +887,7 @@ describePg("channel-delivery-store", () => {
       externalThreadId: "9001",
     });
 
-    const detail = buildConversationDetailResponse(result.conversationId);
+    const detail = await buildConversationDetailResponse(result.conversationId);
     const binding = detail?.conversation.channelBinding;
 
     // The channel-neutral fields pass through for any source channel...
@@ -881,19 +902,19 @@ describePg("channel-delivery-store", () => {
     expect(binding).not.toHaveProperty("slackChannel");
   });
 
-  test("binding upsert preserves existing chat name when incoming name is missing", () => {
-    const result = recordInbound("slack", "C0123ABCDEF", "msg-1", {
+  test("binding upsert preserves existing chat name when incoming name is missing", async () => {
+    const result = await recordInbound("slack", "C0123ABCDEF", "msg-1", {
       sourceThreadId: "1710000000.000100",
     });
 
-    upsertBinding({
+    await upsertBinding({
       conversationId: result.conversationId,
       sourceChannel: "slack",
       externalChatId: "C0123ABCDEF",
       externalChatName: "engineering",
       externalThreadId: "1710000000.000100",
     });
-    upsertBinding({
+    await upsertBinding({
       conversationId: result.conversationId,
       sourceChannel: "slack",
       externalChatId: "C0123ABCDEF",
@@ -901,24 +922,29 @@ describePg("channel-delivery-store", () => {
     });
 
     expect(
-      getBindingByChannelChatThread("slack", "C0123ABCDEF", "1710000000.000100")
-        ?.externalChatName,
+      (
+        await getBindingByChannelChatThread(
+          "slack",
+          "C0123ABCDEF",
+          "1710000000.000100",
+        )
+      )?.externalChatName,
     ).toBe("engineering");
   });
 
-  test("binding upsert preserves existing chat name when incoming name is blank", () => {
-    const result = recordInbound("slack", "C0123ABCDEF", "msg-1", {
+  test("binding upsert preserves existing chat name when incoming name is blank", async () => {
+    const result = await recordInbound("slack", "C0123ABCDEF", "msg-1", {
       sourceThreadId: "1710000000.000100",
     });
 
-    upsertBinding({
+    await upsertBinding({
       conversationId: result.conversationId,
       sourceChannel: "slack",
       externalChatId: "C0123ABCDEF",
       externalChatName: "engineering",
       externalThreadId: "1710000000.000100",
     });
-    upsertBinding({
+    await upsertBinding({
       conversationId: result.conversationId,
       sourceChannel: "slack",
       externalChatId: "C0123ABCDEF",
@@ -927,16 +953,21 @@ describePg("channel-delivery-store", () => {
     });
 
     expect(
-      getBindingByChannelChatThread("slack", "C0123ABCDEF", "1710000000.000100")
-        ?.externalChatName,
+      (
+        await getBindingByChannelChatThread(
+          "slack",
+          "C0123ABCDEF",
+          "1710000000.000100",
+        )
+      )?.externalChatName,
     ).toBe("engineering");
   });
 
   // ── Deduplication ─────────────────────────────────────────────────
 
-  test("duplicate inbound returns duplicate: true with same eventId", () => {
-    const first = recordInbound("telegram", "chat-1", "msg-1");
-    const second = recordInbound("telegram", "chat-1", "msg-1");
+  test("duplicate inbound returns duplicate: true with same eventId", async () => {
+    const first = await recordInbound("telegram", "chat-1", "msg-1");
+    const second = await recordInbound("telegram", "chat-1", "msg-1");
 
     expect(second.duplicate).toBe(true);
     expect(second.accepted).toBe(true);
@@ -944,9 +975,9 @@ describePg("channel-delivery-store", () => {
     expect(second.conversationId).toBe(first.conversationId);
   });
 
-  test("same message ID on different chats is not a duplicate", () => {
-    const r1 = recordInbound("telegram", "chat-1", "msg-1");
-    const r2 = recordInbound("telegram", "chat-2", "msg-1");
+  test("same message ID on different chats is not a duplicate", async () => {
+    const r1 = await recordInbound("telegram", "chat-1", "msg-1");
+    const r2 = await recordInbound("telegram", "chat-2", "msg-1");
 
     expect(r1.duplicate).toBe(false);
     expect(r2.duplicate).toBe(false);
@@ -955,39 +986,43 @@ describePg("channel-delivery-store", () => {
 
   // ── linkMessage + findMessageBySourceId ───────────────────────────
 
-  test("linkMessage sets messageId and findMessageBySourceId retrieves it", () => {
-    const result = recordInbound("telegram", "chat-1", "msg-1", {
+  test("linkMessage sets messageId and findMessageBySourceId retrieves it", async () => {
+    const result = await recordInbound("telegram", "chat-1", "msg-1", {
       sourceMessageId: "src-100",
     });
 
     const msgId = "internal-msg-abc";
-    insertMessage(msgId, result.conversationId);
-    linkMessage(result.eventId, msgId);
+    await insertMessage(msgId, result.conversationId);
+    await linkMessage(result.eventId, msgId);
 
-    const found = findMessageBySourceId("telegram", "chat-1", "src-100");
+    const found = await findMessageBySourceId("telegram", "chat-1", "src-100");
     expect(found).not.toBeNull();
     expect(found!.messageId).toBe(msgId);
     expect(found!.conversationId).toBe(result.conversationId);
   });
 
-  test("findMessageBySourceId returns null when no match", () => {
-    const found = findMessageBySourceId("telegram", "chat-1", "nonexistent");
+  test("findMessageBySourceId returns null when no match", async () => {
+    const found = await findMessageBySourceId(
+      "telegram",
+      "chat-1",
+      "nonexistent",
+    );
     expect(found).toBeNull();
   });
 
-  test("findMessageBySourceId returns null when messageId is not linked", () => {
-    recordInbound("telegram", "chat-1", "msg-1", {
+  test("findMessageBySourceId returns null when messageId is not linked", async () => {
+    await recordInbound("telegram", "chat-1", "msg-1", {
       sourceMessageId: "src-200",
     });
     // Not calling linkMessage — messageId stays null
-    const found = findMessageBySourceId("telegram", "chat-1", "src-200");
+    const found = await findMessageBySourceId("telegram", "chat-1", "src-200");
     expect(found).toBeNull();
   });
 
   // ── Delivery status transitions ───────────────────────────────────
 
   test("acknowledgeDelivery transitions from pending to delivered", async () => {
-    await recordInboundForPg("telegram", "chat-1", "msg-1");
+    await recordInbound("telegram", "chat-1", "msg-1");
 
     const ack = await acknowledgeDelivery("telegram", "chat-1", "msg-1");
     expect(ack).toBe(true);
@@ -997,7 +1032,7 @@ describePg("channel-delivery-store", () => {
   });
 
   test("acknowledgeDelivery accepts late acks after retryable delivery failure", async () => {
-    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    const result = await recordInbound("telegram", "chat-1", "msg-1");
     await markProcessed(result.eventId);
     await recordDeliveryFailure(result.eventId, new Error("fetch failed"));
 
@@ -1015,7 +1050,7 @@ describePg("channel-delivery-store", () => {
   });
 
   test("delivery failures are retryable without changing processing status", async () => {
-    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    const result = await recordInbound("telegram", "chat-1", "msg-1");
     await markProcessed(result.eventId);
 
     await recordDeliveryFailure(result.eventId, new Error("fetch failed"));
@@ -1054,7 +1089,7 @@ describePg("channel-delivery-store", () => {
   });
 
   test("delivery dead letters are listed and replayed as delivery retries", async () => {
-    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    const result = await recordInbound("telegram", "chat-1", "msg-1");
     await markProcessed(result.eventId);
 
     await recordDeliveryFailure(result.eventId, {
@@ -1080,7 +1115,7 @@ describePg("channel-delivery-store", () => {
   // ── Processing status transitions ─────────────────────────────────
 
   test("markProcessed sets processingStatus to processed", async () => {
-    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    const result = await recordInbound("telegram", "chat-1", "msg-1");
     await markProcessed(result.eventId);
 
     const row = await selectPgInboundEvent({ id: result.eventId });
@@ -1088,7 +1123,7 @@ describePg("channel-delivery-store", () => {
   });
 
   test("recordProcessingFailure with retryable error sets status to failed", async () => {
-    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    const result = await recordInbound("telegram", "chat-1", "msg-1");
 
     // A timeout error is classified as retryable
     const err = new Error("request timeout");
@@ -1103,7 +1138,7 @@ describePg("channel-delivery-store", () => {
   });
 
   test("recordProcessingFailure with fatal error sets status to dead_letter", async () => {
-    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    const result = await recordInbound("telegram", "chat-1", "msg-1");
 
     // A 400-status error is classified as fatal
     const err = { status: 400, message: "Bad Request" };
@@ -1117,7 +1152,7 @@ describePg("channel-delivery-store", () => {
   });
 
   test("recordProcessingFailure dead-letters after max attempts", async () => {
-    const result = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    const result = await recordInbound("telegram", "chat-1", "msg-1");
 
     // Exhaust all retry attempts with retryable errors
     const err = new Error("request timeout");
@@ -1133,36 +1168,27 @@ describePg("channel-delivery-store", () => {
 
   // ── Payload storage ───────────────────────────────────────────────
 
-  test("storePayload persists raw payload and clearPayload removes it", () => {
-    const result = recordInbound("telegram", "chat-1", "msg-1");
+  test("storePayload persists raw payload and clearPayload removes it", async () => {
+    const result = await recordInbound("telegram", "chat-1", "msg-1");
     const payload = { update_id: 123, message: { text: "hello" } };
 
-    storePayload(result.eventId, payload);
+    await storePayload(result.eventId, payload);
 
-    const db = getDb();
-    let row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    let row = await selectPgInboundEvent({ id: result.eventId });
     expect(row!.rawPayload).toBe(JSON.stringify(payload));
 
-    clearPayload(result.eventId);
+    await clearPayload(result.eventId);
 
-    row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    row = await selectPgInboundEvent({ id: result.eventId });
     expect(row!.rawPayload).toBeNull();
   });
 
   // ── Retryable events query ────────────────────────────────────────
 
   test("getRetryableEvents returns failed events past their backoff", async () => {
-    const r1 = await recordInboundForPg("telegram", "chat-1", "msg-1");
-    const r2 = await recordInboundForPg("telegram", "chat-1", "msg-2");
-    const _r3 = await recordInboundForPg("telegram", "chat-1", "msg-3");
+    const r1 = await recordInbound("telegram", "chat-1", "msg-1");
+    const r2 = await recordInbound("telegram", "chat-1", "msg-2");
+    const _r3 = await recordInbound("telegram", "chat-1", "msg-3");
 
     // r1: failed with past retry_after
     const err = new Error("request timeout");
@@ -1196,7 +1222,7 @@ describePg("channel-delivery-store", () => {
     const ids: string[] = [];
 
     for (let i = 0; i < 5; i++) {
-      const r = await recordInboundForPg("telegram", "chat-1", `msg-${i}`);
+      const r = await recordInbound("telegram", "chat-1", `msg-${i}`);
       ids.push(r.eventId);
       await recordProcessingFailure(r.eventId, err);
       await pg.orm
@@ -1212,8 +1238,8 @@ describePg("channel-delivery-store", () => {
   // ── Dead-letter queue ─────────────────────────────────────────────
 
   test("getDeadLetterEvents returns dead-lettered events", async () => {
-    const r1 = await recordInboundForPg("telegram", "chat-1", "msg-1");
-    const _r2 = await recordInboundForPg("telegram", "chat-1", "msg-2");
+    const r1 = await recordInbound("telegram", "chat-1", "msg-1");
+    const _r2 = await recordInbound("telegram", "chat-1", "msg-2");
 
     // r1: dead-letter via fatal error
     await recordProcessingFailure(r1.eventId, {
@@ -1231,8 +1257,8 @@ describePg("channel-delivery-store", () => {
   });
 
   test("replayDeadLetters resets dead-lettered events to failed for retry", async () => {
-    const r1 = await recordInboundForPg("telegram", "chat-1", "msg-1");
-    const r2 = await recordInboundForPg("telegram", "chat-1", "msg-2");
+    const r1 = await recordInbound("telegram", "chat-1", "msg-1");
+    const r2 = await recordInbound("telegram", "chat-1", "msg-2");
 
     // Dead-letter both
     await recordProcessingFailure(r1.eventId, {
@@ -1260,7 +1286,7 @@ describePg("channel-delivery-store", () => {
   });
 
   test("replayDeadLetters skips non-dead-lettered events", async () => {
-    const r1 = await recordInboundForPg("telegram", "chat-1", "msg-1");
+    const r1 = await recordInbound("telegram", "chat-1", "msg-1");
 
     // r1 is still pending, not dead-lettered
     const count = await replayDeadLetters([r1.eventId]);
@@ -1275,30 +1301,25 @@ describePg("channel-delivery-store", () => {
   // ── Full lifecycle ────────────────────────────────────────────────
 
   test("full lifecycle: inbound -> link -> acknowledge -> processed", async () => {
-    const result = await recordInboundForPg("telegram", "chat-1", "msg-1", {
+    const result = await recordInbound("telegram", "chat-1", "msg-1", {
       sourceMessageId: "src-1",
     });
     expect(result.duplicate).toBe(false);
 
     const msgId = "internal-msg-1";
-    insertMessage(msgId, result.conversationId);
-    linkMessage(result.eventId, msgId);
+    await insertMessage(msgId, result.conversationId);
+    await linkMessage(result.eventId, msgId);
     await acknowledgeDelivery("telegram", "chat-1", "msg-1");
     await markProcessed(result.eventId);
 
-    const db = getDb();
-    const linkRow = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, result.eventId))
-      .get();
+    const linkRow = await selectPgInboundEvent({ id: result.eventId });
     expect(linkRow!.messageId).toBe(msgId);
 
     const row = await selectPgInboundEvent({ id: result.eventId });
     expect(row!.deliveryStatus).toBe("delivered");
     expect(row!.processingStatus).toBe("processed");
 
-    const found = findMessageBySourceId("telegram", "chat-1", "src-1");
+    const found = await findMessageBySourceId("telegram", "chat-1", "src-1");
     expect(found!.messageId).toBe(msgId);
   });
 
@@ -1313,30 +1334,26 @@ describePg("channel-delivery-store", () => {
 
     // Insert a conversation row so FK constraints are satisfied
     const now = Date.now();
-    const db = getDb();
-    db.insert(conversations)
-      .values({
-        id: convId,
-        title: "test",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    setConversationKey(scopedKey, convId);
-    setConversationKey(legacyKey, convId);
-    db.insert(externalConversationBindings)
-      .values({
-        conversationId: convId,
-        sourceChannel: "telegram",
-        externalChatId: "chat-del",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+    const db = requireMainDb();
+    await db.orm.insert(conversations).values({
+      id: convId,
+      title: "test",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await setConversationKey(scopedKey, convId);
+    await setConversationKey(legacyKey, convId);
+    await db.orm.insert(externalConversationBindings).values({
+      conversationId: convId,
+      sourceChannel: "telegram",
+      externalChatId: "chat-del",
+      createdAt: now,
+      updatedAt: now,
+    });
 
     // Verify both keys exist
-    expect(getConversationByKey(scopedKey)).not.toBeNull();
-    expect(getConversationByKey(legacyKey)).not.toBeNull();
+    expect(await getConversationByKey(scopedKey)).not.toBeNull();
+    expect(await getConversationByKey(legacyKey)).not.toBeNull();
 
     // Call handleDeleteConversation with assistantId as a parameter (not in body)
     const req = new Request("http://localhost/channels/conversation", {
@@ -1356,14 +1373,15 @@ describePg("channel-delivery-store", () => {
     expect(json.ok).toBe(true);
 
     // Self delete removes both scoped key and legacy key.
-    expect(getConversationByKey(scopedKey)).toBeNull();
-    expect(getConversationByKey(legacyKey)).toBeNull();
+    expect(await getConversationByKey(scopedKey)).toBeNull();
+    expect(await getConversationByKey(legacyKey)).toBeNull();
     // Self delete also removes external bindings.
-    const remainingBinding = db
-      .select()
-      .from(externalConversationBindings)
-      .where(eq(externalConversationBindings.conversationId, convId))
-      .get();
+    const remainingBinding = (
+      await db.orm
+        .select()
+        .from(externalConversationBindings)
+        .where(eq(externalConversationBindings.conversationId, convId))
+    )[0];
     expect(remainingBinding).toBeUndefined();
   });
 
@@ -1373,26 +1391,22 @@ describePg("channel-delivery-store", () => {
     const legacyKey = "telegram:chat-def";
 
     const now = Date.now();
-    const db = getDb();
-    db.insert(conversations)
-      .values({
-        id: convId,
-        title: "test",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    setConversationKey(scopedKey, convId);
-    setConversationKey(legacyKey, convId);
-    db.insert(externalConversationBindings)
-      .values({
-        conversationId: convId,
-        sourceChannel: "telegram",
-        externalChatId: "chat-def",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+    const db = requireMainDb();
+    await db.orm.insert(conversations).values({
+      id: convId,
+      title: "test",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await setConversationKey(scopedKey, convId);
+    await setConversationKey(legacyKey, convId);
+    await db.orm.insert(externalConversationBindings).values({
+      conversationId: convId,
+      sourceChannel: "telegram",
+      externalChatId: "chat-def",
+      createdAt: now,
+      updatedAt: now,
+    });
 
     const req = new Request("http://localhost/channels/conversation", {
       method: "DELETE",
@@ -1407,14 +1421,15 @@ describePg("channel-delivery-store", () => {
     const res = await handleDeleteConversation(req);
     expect(res.status).toBe(200);
 
-    expect(getConversationByKey(scopedKey)).toBeNull();
-    expect(getConversationByKey(legacyKey)).toBeNull();
+    expect(await getConversationByKey(scopedKey)).toBeNull();
+    expect(await getConversationByKey(legacyKey)).toBeNull();
     // Self delete should keep external bindings in sync for the canonical route.
-    const remainingBinding = db
-      .select()
-      .from(externalConversationBindings)
-      .where(eq(externalConversationBindings.conversationId, convId))
-      .get();
+    const remainingBinding = (
+      await db.orm
+        .select()
+        .from(externalConversationBindings)
+        .where(eq(externalConversationBindings.conversationId, convId))
+    )[0];
     expect(remainingBinding).toBeUndefined();
   });
 });

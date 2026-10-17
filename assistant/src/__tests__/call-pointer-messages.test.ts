@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
 // Stand in for the daemon conversation-turn path so these tests can drive its
 // behavior (success / throw) without pulling in the real conversation pipeline.
@@ -36,39 +44,29 @@ import {
   formatDuration,
 } from "../calls/call-pointer-messages.js";
 import { addMessage, getMessages } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function ensureConversation(
+async function ensureConversation(
   id: string,
   options?: { originChannel?: string },
-): void {
-  const db = getDb();
+): Promise<void> {
+  const db = requireMainDb();
   const now = Date.now();
-  db.insert(conversations)
-    .values({
-      id,
-      title: `Conversation ${id}`,
-      createdAt: now,
-      updatedAt: now,
-      ...(options?.originChannel
-        ? { originChannel: options.originChannel }
-        : {}),
-    })
-    .run();
+  await db.run(
+    "INSERT INTO conversations (id, title, created_at, updated_at, origin_channel) VALUES (?, ?, ?, ?, ?)",
+    [id, `Conversation ${id}`, now, now, options?.originChannel ?? null],
+  );
 }
 
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
-function getLatestAssistantText(conversationId: string): string {
-  const rows = getMessages(conversationId).filter(
+async function getLatestAssistantText(conversationId: string): Promise<string> {
+  const rows = (await getMessages(conversationId)).filter(
     (m) => m.role === "assistant",
   );
   expect(rows.length).toBeGreaterThan(0);
@@ -84,57 +82,57 @@ function getLatestAssistantText(conversationId: string): string {
 }
 
 describe("formatDuration", () => {
-  test("formats seconds-only durations", () => {
+  test("formats seconds-only durations", async () => {
     expect(formatDuration(5000)).toBe("5s");
     expect(formatDuration(30000)).toBe("30s");
     expect(formatDuration(59000)).toBe("59s");
   });
 
-  test("formats minutes-only durations", () => {
+  test("formats minutes-only durations", async () => {
     expect(formatDuration(60000)).toBe("1m");
     expect(formatDuration(120000)).toBe("2m");
     expect(formatDuration(300000)).toBe("5m");
   });
 
-  test("formats minutes and seconds", () => {
+  test("formats minutes and seconds", async () => {
     expect(formatDuration(65000)).toBe("1m 5s");
     expect(formatDuration(90000)).toBe("1m 30s");
     expect(formatDuration(125000)).toBe("2m 5s");
   });
 
-  test("rounds sub-second durations", () => {
+  test("rounds sub-second durations", async () => {
     expect(formatDuration(500)).toBe("1s");
     expect(formatDuration(1499)).toBe("1s");
     expect(formatDuration(1500)).toBe("2s");
   });
 
-  test("handles zero duration", () => {
+  test("handles zero duration", async () => {
     expect(formatDuration(0)).toBe("0s");
   });
 });
 
-describe("addPointerMessage", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("addPointerMessage", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
   afterEach(() => {
     resetProcessor();
   });
 
-  test("adds a started pointer message", () => {
+  test("adds a started pointer message", async () => {
     const convId = "conv-ptr-started";
-    ensureConversation(convId);
-    addPointerMessage(convId, "started", "+15551234567");
-    const text = getLatestAssistantText(convId);
+    await ensureConversation(convId);
+    await addPointerMessage(convId, "started", "+15551234567");
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("Call to +15551234567 started");
     expect(text).not.toContain("See voice thread");
   });
 
-  test("started pointer message does not set userMessageChannel metadata", () => {
+  test("started pointer message does not set userMessageChannel metadata", async () => {
     const convId = "conv-ptr-no-channel";
-    ensureConversation(convId);
-    addPointerMessage(convId, "started", "+15551234567");
+    await ensureConversation(convId);
+    await addPointerMessage(convId, "started", "+15551234567");
     const rows = getMessages(convId).filter((m) => m.role === "assistant");
     expect(rows.length).toBe(1);
     const metadata = rows[0].metadata ? JSON.parse(rows[0].metadata) : null;
@@ -142,125 +140,125 @@ describe("addPointerMessage", () => {
     expect(metadata?.userMessageChannel).toBeUndefined();
   });
 
-  test("adds a started pointer message with verification code", () => {
+  test("adds a started pointer message with verification code", async () => {
     const convId = "conv-ptr-started-vc";
-    ensureConversation(convId);
-    addPointerMessage(convId, "started", "+15551234567", {
+    await ensureConversation(convId);
+    await addPointerMessage(convId, "started", "+15551234567", {
       verificationCode: "42",
     });
-    const text = getLatestAssistantText(convId);
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("Verification code: 42");
   });
 
-  test("adds a completed pointer message without duration", () => {
+  test("adds a completed pointer message without duration", async () => {
     const convId = "conv-ptr-completed";
-    ensureConversation(convId);
-    addPointerMessage(convId, "completed", "+15559876543");
-    const text = getLatestAssistantText(convId);
+    await ensureConversation(convId);
+    await addPointerMessage(convId, "completed", "+15559876543");
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("Call to +15559876543 completed");
     expect(text).not.toContain("(");
   });
 
-  test("adds a completed pointer message with duration", () => {
+  test("adds a completed pointer message with duration", async () => {
     const convId = "conv-ptr-completed-d";
-    ensureConversation(convId);
-    addPointerMessage(convId, "completed", "+15559876543", {
+    await ensureConversation(convId);
+    await addPointerMessage(convId, "completed", "+15559876543", {
       duration: "2m 30s",
     });
-    const text = getLatestAssistantText(convId);
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("completed (2m 30s)");
   });
 
-  test("adds a failed pointer message without reason", () => {
+  test("adds a failed pointer message without reason", async () => {
     const convId = "conv-ptr-failed";
-    ensureConversation(convId);
-    addPointerMessage(convId, "failed", "+15559876543");
-    const text = getLatestAssistantText(convId);
+    await ensureConversation(convId);
+    await addPointerMessage(convId, "failed", "+15559876543");
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("Call to +15559876543 failed");
   });
 
-  test("adds a failed pointer message with reason", () => {
+  test("adds a failed pointer message with reason", async () => {
     const convId = "conv-ptr-failed-r";
-    ensureConversation(convId);
-    addPointerMessage(convId, "failed", "+15559876543", {
+    await ensureConversation(convId);
+    await addPointerMessage(convId, "failed", "+15559876543", {
       reason: "no answer",
     });
-    const text = getLatestAssistantText(convId);
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("failed: no answer");
   });
 
-  test("adds a verification_succeeded pointer message", () => {
+  test("adds a verification_succeeded pointer message", async () => {
     const convId = "conv-ptr-gv-success";
-    ensureConversation(convId);
-    addPointerMessage(convId, "verification_succeeded", "+15559876543");
-    const text = getLatestAssistantText(convId);
+    await ensureConversation(convId);
+    await addPointerMessage(convId, "verification_succeeded", "+15559876543");
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("Guardian verification");
     expect(text).toContain("+15559876543");
     expect(text).toContain("succeeded");
   });
 
-  test("adds a verification_failed pointer message without reason", () => {
+  test("adds a verification_failed pointer message without reason", async () => {
     const convId = "conv-ptr-gv-fail";
-    ensureConversation(convId);
-    addPointerMessage(convId, "verification_failed", "+15559876543");
-    const text = getLatestAssistantText(convId);
+    await ensureConversation(convId);
+    await addPointerMessage(convId, "verification_failed", "+15559876543");
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("Guardian verification");
     expect(text).toContain("+15559876543");
     expect(text).toContain("failed");
   });
 
-  test("adds a verification_failed pointer message with reason", () => {
+  test("adds a verification_failed pointer message with reason", async () => {
     const convId = "conv-ptr-gv-fail-r";
-    ensureConversation(convId);
-    addPointerMessage(convId, "verification_failed", "+15559876543", {
+    await ensureConversation(convId);
+    await addPointerMessage(convId, "verification_failed", "+15559876543", {
       reason: "Max attempts exceeded",
     });
-    const text = getLatestAssistantText(convId);
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("failed: Max attempts exceeded");
   });
 
   // Trust-aware tests
 
-  test("untrusted audience uses deterministic fallback even with processor set", () => {
+  test("untrusted audience uses deterministic fallback even with processor set", async () => {
     const convId = "conv-ptr-untrusted";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     const processorCalled = { value: false };
     setProcessor(async () => {
       processorCalled.value = true;
     });
 
-    addPointerMessage(convId, "started", "+15551234567");
-    const text = getLatestAssistantText(convId);
+    await addPointerMessage(convId, "started", "+15551234567");
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("Call to +15551234567 started");
     // processor not called because no trusted provenance or origin is present
     expect(processorCalled.value).toBe(false);
   });
 
-  test("explicit untrusted audience mode skips processor", () => {
+  test("explicit untrusted audience mode skips processor", async () => {
     const convId = "conv-ptr-explicit-untrusted";
-    ensureConversation(convId, { originChannel: "vellum" });
+    await ensureConversation(convId, { originChannel: "vellum" });
 
     const processorCalled = { value: false };
     setProcessor(async () => {
       processorCalled.value = true;
     });
 
-    addPointerMessage(
+    await addPointerMessage(
       convId,
       "started",
       "+15551234567",
       undefined,
       "untrusted",
     );
-    const text = getLatestAssistantText(convId);
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("Call to +15551234567 started");
     expect(processorCalled.value).toBe(false);
   });
 
   test("trusted audience routes through daemon processor with required facts", async () => {
     const convId = "conv-ptr-trusted";
-    ensureConversation(convId, { originChannel: "vellum" });
+    await ensureConversation(convId, { originChannel: "vellum" });
 
     let capturedInstruction = "";
     let capturedFacts: string[] = [];
@@ -285,7 +283,7 @@ describe("addPointerMessage", () => {
 
   test("trusted audience falls back to deterministic on processor failure", async () => {
     const convId = "conv-ptr-processor-fail";
-    ensureConversation(convId, { originChannel: "vellum" });
+    await ensureConversation(convId, { originChannel: "vellum" });
 
     setProcessor(async () => {
       throw new Error("Daemon unavailable");
@@ -295,13 +293,13 @@ describe("addPointerMessage", () => {
       reason: "busy",
     });
     // Falls back to deterministic — written directly to conversation store
-    const text = getLatestAssistantText(convId);
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("failed: busy");
   });
 
   test("vellum origin channel is detected as trusted audience", async () => {
     const convId = "conv-ptr-vellum";
-    ensureConversation(convId, { originChannel: "vellum" });
+    await ensureConversation(convId, { originChannel: "vellum" });
 
     let processorCalled = false;
     setProcessor(async () => {
@@ -314,17 +312,17 @@ describe("addPointerMessage", () => {
     expect(processorCalled).toBe(true);
   });
 
-  test("missing conversation defaults to untrusted", () => {
+  test("missing conversation defaults to untrusted", async () => {
     const convId = "conv-ptr-no-signals";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     const processorCalled = { value: false };
     setProcessor(async () => {
       processorCalled.value = true;
     });
 
-    addPointerMessage(convId, "started", "+15551234567");
-    const text = getLatestAssistantText(convId);
+    await addPointerMessage(convId, "started", "+15551234567");
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("Call to +15551234567 started");
     expect(processorCalled.value).toBe(false);
   });
@@ -333,7 +331,7 @@ describe("addPointerMessage", () => {
 
   test("guardian provenance trust class is detected as trusted audience", async () => {
     const convId = "conv-ptr-guardian-provenance";
-    ensureConversation(convId);
+    await ensureConversation(convId);
     // Add a user message with guardian provenance metadata
     await addMessage(convId, "user", "hello", {
       metadata: { provenanceTrustClass: "guardian" },
@@ -350,7 +348,7 @@ describe("addPointerMessage", () => {
 
   test("trusted_contact provenance uses the deterministic fallback, not the daemon turn", async () => {
     const convId = "conv-ptr-tc-provenance";
-    ensureConversation(convId);
+    await ensureConversation(convId);
     // Add a user message with trusted_contact provenance metadata
     await addMessage(convId, "user", "hello", {
       metadata: { provenanceTrustClass: "trusted_contact" },
@@ -366,7 +364,7 @@ describe("addPointerMessage", () => {
     // run it under the internal guardian context and leak guardian-only history
     // into the contact's conversation, so the deterministic fallback is used.
     expect(processorCalled).toBe(false);
-    const text = getLatestAssistantText(convId);
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("Call to +15559876543 completed");
   });
 
@@ -375,7 +373,7 @@ describe("addPointerMessage", () => {
     // downstream consumers (e.g. memory write gate, pointer audience resolution)
     // see the durable trust snapshot rather than a silently-dropped undefined.
     const convId = "conv-ptr-uvc-provenance";
-    ensureConversation(convId);
+    await ensureConversation(convId);
     await addMessage(convId, "user", "hello", {
       metadata: { provenanceTrustClass: "unverified_contact" },
     });
@@ -383,7 +381,7 @@ describe("addPointerMessage", () => {
     // Confirm the durable snapshot round-trips through the schema parser.
     const { getConversationRecentProvenanceTrustClass } =
       await import("../persistence/conversation-crud.js");
-    expect(getConversationRecentProvenanceTrustClass(convId)).toBe(
+    expect(await getConversationRecentProvenanceTrustClass(convId)).toBe(
       "unverified_contact",
     );
 
@@ -397,14 +395,14 @@ describe("addPointerMessage", () => {
 
     await addPointerMessage(convId, "completed", "+15559876543");
     expect(processorCalled).toBe(false);
-    const text = getLatestAssistantText(convId);
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("Call to +15559876543 completed");
   });
 
-  test("unknown provenance trust class does not grant trusted audience", () => {
+  test("unknown provenance trust class does not grant trusted audience", async () => {
     const convId = "conv-ptr-unknown-provenance";
-    ensureConversation(convId);
-    addMessage(convId, "user", "hello", {
+    await ensureConversation(convId);
+    await addMessage(convId, "user", "hello", {
       metadata: { provenanceTrustClass: "unknown" },
     });
 
@@ -413,9 +411,11 @@ describe("addPointerMessage", () => {
       processorCalled.value = true;
     });
 
-    addPointerMessage(convId, "started", "+15551234567");
-    const text = getLatestAssistantText(convId);
+    await addPointerMessage(convId, "started", "+15551234567");
+    const text = await getLatestAssistantText(convId);
     expect(text).toContain("Call to +15551234567 started");
     expect(processorCalled.value).toBe(false);
   });
 });
+
+setDefaultTimeout(30_000);

@@ -6,7 +6,7 @@
  * from the daemon's internal ID), fails to find the conversation, and
  * silently ignores the cancel — leaving the stream running.
  */
-import { describe, expect, mock, test } from "bun:test";
+import { expect, mock, setDefaultTimeout, test } from "bun:test";
 
 mock.module("../config/env.js", () => ({ isHttpAuthDisabled: () => true }));
 
@@ -22,26 +22,24 @@ mock.module("../daemon/handlers/conversations.js", () => ({
 }));
 
 import { getOrCreateConversation } from "../persistence/conversation-key-store.js";
-import { initializeDb } from "../persistence/db-init.js";
 import { ROUTES } from "../runtime/routes/conversation-management-routes.js";
 import { routeDefinitionsToHTTPRoutes } from "../runtime/routes/http-adapter.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-describe("POST /v1/conversations/:id/cancel", () => {
+describePg("POST /v1/conversations/:id/cancel", () => {
   const cancelRoute = ROUTES.find(
     (r) => r.operationId === "cancelConversationGeneration",
   )!;
 
-  test("resolves conversation key to internal ID before cancelling", () => {
+  test("resolves conversation key to internal ID before cancelling", async () => {
     cancelledId = undefined;
     const conversationKey = "client-local-uuid-abc123";
-    const mapping = getOrCreateConversation(conversationKey);
+    const mapping = await getOrCreateConversation(conversationKey);
     const internalId = mapping.conversationId;
 
     expect(internalId).not.toBe(conversationKey);
 
-    const result = cancelRoute.handler({
+    const result = await cancelRoute.handler({
       pathParams: { id: conversationKey },
       body: {},
       headers: {},
@@ -55,11 +53,11 @@ describe("POST /v1/conversations/:id/cancel", () => {
     });
   });
 
-  test("falls back to raw ID when key is not in the mapping", () => {
+  test("falls back to raw ID when key is not in the mapping", async () => {
     cancelledId = undefined;
     const directId = "direct-conversation-id";
 
-    const result = cancelRoute.handler({
+    const result = await cancelRoute.handler({
       pathParams: { id: directId },
       body: {},
       headers: {},
@@ -100,8 +98,10 @@ describe("POST /v1/conversations/:id/cancel", () => {
     expect(cancelledId!).toBe(directId);
   });
 
-  test("route definition advertises the cancellation response body", () => {
+  test("route definition advertises the cancellation response body", async () => {
     expect(cancelRoute.responseStatus).toBe("202");
     expect(cancelRoute.responseBody).toBeDefined();
   });
 });
+
+setDefaultTimeout(30_000);

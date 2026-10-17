@@ -10,7 +10,7 @@
  * `conversations` is emptied: an append that beat it is a row it deletes, and
  * one that follows it has no conversation to key itself to.
  */
-import { describe, expect, mock, test } from "bun:test";
+import { expect, mock, setDefaultTimeout, test } from "bun:test";
 
 // Keep the rest of the module real; only the Qdrant collection drop is
 // replaced, so `clearAll` does not reach for a lexical index that is not
@@ -62,9 +62,9 @@ import {
   deleteConversation,
   deleteConversationGently,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
-import { attachments } from "../persistence/schema/conversations.js";
+import { attachments } from "../persistence/pg-schema/index.js";
 import type { WatchAppendResult } from "../watch/watch-timeline.js";
 import {
   appendNarration,
@@ -72,6 +72,7 @@ import {
   readWatchScreenshot,
   renderWatchTimeline,
 } from "../watch/watch-timeline.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
@@ -86,8 +87,10 @@ interface WatchedConversation {
 }
 
 /** A conversation with one narration and one screenshot-carrying observation. */
-function seedWatchedConversation(title: string): WatchedConversation {
-  const conversation = createConversation(title);
+async function seedWatchedConversation(
+  title: string,
+): Promise<WatchedConversation> {
+  const conversation = await createConversation(title);
   const sessionId = `watch-${conversation.id}`;
 
   appendObservation(sessionId, {
@@ -111,49 +114,51 @@ function seedWatchedConversation(title: string): WatchedConversation {
   return { conversationId: conversation.id, sessionId, entryId: entryId ?? "" };
 }
 
-function expectPurged(watched: WatchedConversation): void {
+async function expectPurged(watched: WatchedConversation): Promise<void> {
   expect(renderWatchTimeline(watched.sessionId).totalEntries).toBe(0);
   expect(readWatchScreenshot(watched.entryId)).toBeNull();
 }
 
 /** Every attachment row in the store. */
-function attachmentCount(): number {
-  return getDb().select({ id: attachments.id }).from(attachments).all().length;
+async function attachmentCount(): Promise<number> {
+  return (
+    await requireMainDb().orm.select({ id: attachments.id }).from(attachments)
+  ).length;
 }
 
-describe("deleteConversation purges the watch timeline", () => {
-  test("takes the entries and the frames they carry", () => {
-    const watched = seedWatchedConversation("watched-sync");
-    const other = seedWatchedConversation("watched-sync-other");
+describePg("deleteConversation purges the watch timeline", () => {
+  test("takes the entries and the frames they carry", async () => {
+    const watched = await seedWatchedConversation("watched-sync");
+    const other = await seedWatchedConversation("watched-sync-other");
 
     // A timeline keeps its screenshots in its own rows, so watching a session
     // stages nothing in the attachment store for a delete to chase.
-    expect(attachmentCount()).toBe(0);
+    expect(await attachmentCount()).toBe(0);
 
-    deleteConversation(watched.conversationId);
+    await deleteConversation(watched.conversationId);
 
-    expectPurged(watched);
+    await expectPurged(watched);
     // Scoped to the conversation being deleted, not the whole store.
     expect(renderWatchTimeline(other.sessionId).totalEntries).toBe(2);
     expect(readWatchScreenshot(other.entryId)).not.toBeNull();
   });
 });
 
-describe("deleteConversationGently purges the watch timeline", () => {
+describePg("deleteConversationGently purges the watch timeline", () => {
   test("the off-loop path clears the same state as the synchronous one", async () => {
-    const watched = seedWatchedConversation("watched-gentle");
+    const watched = await seedWatchedConversation("watched-gentle");
 
     await deleteConversationGently(watched.conversationId);
 
-    expectPurged(watched);
+    await expectPurged(watched);
   });
 });
 
-describe("an append that lands after the delete", () => {
-  test("is refused and leaves no row", () => {
-    const watched = seedWatchedConversation("watched-late-append");
+describePg("an append that lands after the delete", () => {
+  test("is refused and leaves no row", async () => {
+    const watched = await seedWatchedConversation("watched-late-append");
 
-    deleteConversation(watched.conversationId);
+    await deleteConversation(watched.conversationId);
     const result = appendObservation(watched.sessionId, {
       conversationId: watched.conversationId,
       atMs: 3_000,
@@ -166,21 +171,21 @@ describe("an append that lands after the delete", () => {
   });
 });
 
-describe("clearAll purges every watch timeline", () => {
+describePg("clearAll purges every watch timeline", () => {
   test("wipes the entries and the frames they carry", async () => {
-    const first = seedWatchedConversation("watched-clear-all-a");
-    const second = seedWatchedConversation("watched-clear-all-b");
+    const first = await seedWatchedConversation("watched-clear-all-a");
+    const second = await seedWatchedConversation("watched-clear-all-b");
 
     await clearAll();
 
-    expectPurged(first);
-    expectPurged(second);
+    await expectPurged(first);
+    await expectPurged(second);
   });
 });
 
-describe("an append that lands inside a clear-all", () => {
+describePg("an append that lands inside a clear-all", () => {
   test("does not outlive the wipe that overtook it", async () => {
-    const watched = seedWatchedConversation("watched-clear-all-race");
+    const watched = await seedWatchedConversation("watched-clear-all-race");
 
     // The append runs where the wipe is most exposed: mid-sequence, with
     // `conversations` still populated so its existence check has nothing to
@@ -214,9 +219,9 @@ describe("an append that lands inside a clear-all", () => {
   });
 });
 
-describe("an append that arrives once the clear-all is done", () => {
+describePg("an append that arrives once the clear-all is done", () => {
   test("is refused, because there is no conversation left to key it to", async () => {
-    const watched = seedWatchedConversation("watched-clear-all-after");
+    const watched = await seedWatchedConversation("watched-clear-all-after");
 
     await clearAll();
     const result = appendNarration(watched.sessionId, {
@@ -229,3 +234,5 @@ describe("an append that arrives once the clear-all is done", () => {
     expect(renderWatchTimeline(watched.sessionId).totalEntries).toBe(0);
   });
 });
+
+setDefaultTimeout(30_000);

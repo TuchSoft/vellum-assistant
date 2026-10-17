@@ -13,7 +13,7 @@ import {
   rmSync,
 } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
 const workspaceDir = process.env.VELLUM_WORKSPACE_DIR!;
 const conversationsDir = join(workspaceDir, "conversations");
@@ -34,16 +34,15 @@ import {
   getConversationDirPath,
   syncMessageToDisk,
 } from "../persistence/conversation-disk-view.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-await initializeDb();
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 function resetConversationsDir() {
@@ -55,14 +54,14 @@ function resetConversationsDir() {
 // Lifecycle integration: createConversation
 // ---------------------------------------------------------------------------
 
-describe("createConversation → disk view", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("createConversation → disk view", () => {
+  beforeEach(async () => {
+    await resetTables();
     resetConversationsDir();
   });
 
-  test("creates directory and meta.json on createConversation", () => {
-    const conv = createConversation("My Conversation");
+  test("creates directory and meta.json on createConversation", async () => {
+    const conv = await createConversation("My Conversation");
 
     const dirPath = getConversationDirPath(conv.id, conv.createdAt);
     expect(existsSync(dirPath)).toBe(true);
@@ -80,8 +79,8 @@ describe("createConversation → disk view", () => {
     expect(meta.createdAt).toBe(new Date(conv.createdAt).toISOString());
   });
 
-  test("handles null title in createConversation", () => {
-    const conv = createConversation();
+  test("handles null title in createConversation", async () => {
+    const conv = await createConversation();
 
     const dirPath = getConversationDirPath(conv.id, conv.createdAt);
     const meta = JSON.parse(readFileSync(join(dirPath, "meta.json"), "utf-8"));
@@ -93,14 +92,14 @@ describe("createConversation → disk view", () => {
 // Lifecycle integration: addMessage + syncMessageToDisk
 // ---------------------------------------------------------------------------
 
-describe("addMessage + syncMessageToDisk → disk view", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("addMessage + syncMessageToDisk → disk view", () => {
+  beforeEach(async () => {
+    await resetTables();
     resetConversationsDir();
   });
 
   test("appends JSONL line for a text message", async () => {
-    const conv = createConversation("Msg Test");
+    const conv = await createConversation("Msg Test");
 
     const msg = await addMessage(conv.id, "user", "Hello world", {
       skipIndexing: true,
@@ -122,7 +121,7 @@ describe("addMessage + syncMessageToDisk → disk view", () => {
   });
 
   test("message with attachment copies file and includes in JSONL", async () => {
-    const conv = createConversation("Attach Test");
+    const conv = await createConversation("Attach Test");
 
     const msg = await addMessage(conv.id, "user", "See attached", {
       skipIndexing: true,
@@ -133,7 +132,7 @@ describe("addMessage + syncMessageToDisk → disk view", () => {
       "image/png",
       "iVBORw0K",
     );
-    linkAttachmentToMessage(msg.id, att.id, 0);
+    await linkAttachmentToMessage(msg.id, att.id, 0);
 
     syncMessageToDisk(conv.id, msg.id, conv.createdAt);
 
@@ -156,14 +155,14 @@ describe("addMessage + syncMessageToDisk → disk view", () => {
 // Lifecycle integration: updateConversationTitle
 // ---------------------------------------------------------------------------
 
-describe("updateConversationTitle → disk view", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("updateConversationTitle → disk view", () => {
+  beforeEach(async () => {
+    await resetTables();
     resetConversationsDir();
   });
 
-  test("rewrites meta.json with new title", () => {
-    const conv = createConversation("Original Title");
+  test("rewrites meta.json with new title", async () => {
+    const conv = await createConversation("Original Title");
     const dirPath = getConversationDirPath(conv.id, conv.createdAt);
 
     // Verify original
@@ -171,7 +170,7 @@ describe("updateConversationTitle → disk view", () => {
     expect(meta.title).toBe("Original Title");
 
     // Update
-    updateConversationTitle(conv.id, "New Title");
+    await updateConversationTitle(conv.id, "New Title");
 
     // Verify updated
     meta = JSON.parse(readFileSync(join(dirPath, "meta.json"), "utf-8"));
@@ -183,18 +182,18 @@ describe("updateConversationTitle → disk view", () => {
 // Lifecycle integration: deleteConversation
 // ---------------------------------------------------------------------------
 
-describe("deleteConversation → disk view", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("deleteConversation → disk view", () => {
+  beforeEach(async () => {
+    await resetTables();
     resetConversationsDir();
   });
 
-  test("removes conversation directory on delete", () => {
-    const conv = createConversation("To Delete");
+  test("removes conversation directory on delete", async () => {
+    const conv = await createConversation("To Delete");
     const dirPath = getConversationDirPath(conv.id, conv.createdAt);
     expect(existsSync(dirPath)).toBe(true);
 
-    deleteConversation(conv.id);
+    await deleteConversation(conv.id);
 
     expect(existsSync(dirPath)).toBe(false);
   });
@@ -204,16 +203,16 @@ describe("deleteConversation → disk view", () => {
 // Lifecycle integration: clearAll
 // ---------------------------------------------------------------------------
 
-describe("clearAll → disk view", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("clearAll → disk view", () => {
+  beforeEach(async () => {
+    await resetTables();
     resetConversationsDir();
   });
 
   test("empties the conversations directory", async () => {
     // Create two conversations
-    createConversation("Conv A");
-    createConversation("Conv B");
+    await createConversation("Conv A");
+    await createConversation("Conv B");
 
     // Verify directories exist
     const entries = readdirSync(conversationsDir);
@@ -228,3 +227,5 @@ describe("clearAll → disk view", () => {
     expect(afterEntries.length).toBe(0);
   });
 });
+
+setDefaultTimeout(30_000);

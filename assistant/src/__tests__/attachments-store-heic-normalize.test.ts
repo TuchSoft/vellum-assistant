@@ -9,7 +9,7 @@
  * these cases in this file.
  */
 
-import { beforeAll, describe, expect, mock, test } from "bun:test";
+import { expect, mock, setDefaultTimeout, test } from "bun:test";
 
 mock.module("../config/env.js", () => ({
   isHttpAuthDisabled: () => true,
@@ -69,7 +69,6 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { initializeDb } from "../persistence/db-init.js";
 import {
   attachmentMetadataSchema,
   ROUTES,
@@ -77,6 +76,7 @@ import {
 import type { RouteHandlerArgs } from "../runtime/routes/types.js";
 import { getWorkspaceDir } from "../util/platform.js";
 import { fakeHeifHeaderBytes, PNG_1PX_BYTES } from "./heic-fixture.js";
+import { describePg } from "./pg-test-db.js";
 
 const uploadRoute = ROUTES.find((r) => r.operationId === "attachment_upload")!;
 const registerRoute = ROUTES.find(
@@ -95,11 +95,7 @@ function jsonUploadArgs(body: Record<string, unknown>): RouteHandlerArgs {
   };
 }
 
-describe("HEIC upload normalization wiring", () => {
-  beforeAll(async () => {
-    await initializeDb();
-  }, 30_000);
-
+describePg("HEIC upload normalization wiring", () => {
   test("uploadAttachmentFromBytes stores a JPEG master for HEIC", async () => {
     const stored = await uploadAttachmentFromBytes(
       "IMG_5487.HEIC",
@@ -110,7 +106,7 @@ describe("HEIC upload normalization wiring", () => {
     expect(stored.originalFilename).toBe("IMG_5487.jpg");
     expect(stored.mimeType).toBe("image/jpeg");
     expect(stored.sizeBytes).toBe(FAKE_JPEG.length);
-    const stagedPath = getFilePathForAttachment(stored.id);
+    const stagedPath = await getFilePathForAttachment(stored.id);
     expect(stagedPath).not.toBeNull();
     expect(readFileSync(stagedPath!).equals(FAKE_JPEG)).toBe(true);
   });
@@ -133,7 +129,7 @@ describe("HEIC upload normalization wiring", () => {
     expect(stored.originalFilename).toBe("IMG_1.jpg");
     expect(stored.mimeType).toBe("image/jpeg");
     expect(stored.sizeBytes).toBe(FAKE_JPEG.length);
-    const row = getAttachmentById(stored.id);
+    const row = await getAttachmentById(stored.id);
     expect(row?.dataBase64).toBe(FAKE_JPEG_B64);
   });
 
@@ -155,12 +151,12 @@ describe("HEIC upload normalization wiring", () => {
     // Corrected MIME is stored; filename and payload stay verbatim.
     expect(stored.originalFilename).toBe("photo.png");
     expect(stored.mimeType).toBe("image/png");
-    const row = getAttachmentById(stored.id);
+    const row = await getAttachmentById(stored.id);
     expect(row?.dataBase64).toBe(HEIC_B64);
   });
 
   test("attachInlineAttachmentToMessage normalizes only when opted in", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     const msg = await addMessage(
       conv.id,
       "user",
@@ -212,7 +208,7 @@ describe("HEIC upload normalization wiring", () => {
     // The caller's source file is never mutated.
     expect(readFileSync(sourcePath).equals(HEIC_BYTES)).toBe(true);
     // The staged raw copy is replaced by the converted one.
-    const stagedPath = getFilePathForAttachment(result.id);
+    const stagedPath = await getFilePathForAttachment(result.id);
     expect(stagedPath).not.toBeNull();
     expect(stagedPath!.endsWith(".jpg")).toBe(true);
     expect(readFileSync(stagedPath!).equals(FAKE_JPEG)).toBe(true);
@@ -260,8 +256,10 @@ describe("HEIC upload normalization wiring", () => {
     )) as { id: string; mimeType: string };
 
     expect(result.mimeType).toBe("image/png");
-    expect(getAttachmentById(result.id)?.mimeType).toBe("image/png");
+    expect((await getAttachmentById(result.id))?.mimeType).toBe("image/png");
     // Only the label is corrected — the registered file is left in place.
     expect(readFileSync(registeredPath).equals(PNG_1PX_BYTES)).toBe(true);
   });
 });
+
+setDefaultTimeout(30_000);

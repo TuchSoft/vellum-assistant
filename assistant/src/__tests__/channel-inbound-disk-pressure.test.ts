@@ -52,10 +52,12 @@ mock.module("../daemon/disk-pressure-guard.js", () => ({
     diskPressureStatusSequence?.shift() ?? diskPressureStatus,
 }));
 
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import * as deliveryCrud from "../persistence/delivery-crud.js";
-import { channelInboundEvents, messages } from "../persistence/schema/index.js";
+import {
+  channelInboundEvents,
+  messages,
+} from "../persistence/pg-schema/index.js";
 import { sweepFailedEvents } from "../runtime/channel-retry-sweep.js";
 import {
   handleChannelInbound,
@@ -65,18 +67,16 @@ import {
 import { createGuardianBinding } from "./helpers/create-guardian-binding.js";
 import { bridgeState } from "./helpers/gateway-guardian-requests-store-bridge.js";
 
-await initializeDb();
-
-function resetTables(): void {
+async function resetTables(): Promise<void> {
   bridgeState.reset();
-  const db = getDb();
-  db.run("DELETE FROM channel_inbound_events");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
-  db.run("DELETE FROM external_conversation_bindings");
-  db.run("DELETE FROM contact_channels");
-  db.run("DELETE FROM contacts");
+  const db = requireMainDb();
+  await db.run("DELETE FROM channel_inbound_events");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
+  await db.run("DELETE FROM external_conversation_bindings");
+  await db.run("DELETE FROM contact_channels");
+  await db.run("DELETE FROM contacts");
 }
 
 async function seedTrustedContact(): Promise<void> {
@@ -113,7 +113,7 @@ function makeInboundRequest(overrides: Record<string, unknown> = {}): Request {
 
 describe("channel inbound disk pressure gate", () => {
   beforeEach(async () => {
-    resetTables();
+    await resetTables();
     await seedTrustedContact();
     setAdapterProcessMessage(undefined);
     deliverChannelReplyMock.mockClear();
@@ -153,21 +153,21 @@ describe("channel inbound disk pressure gate", () => {
       }),
     );
 
-    const db = getDb();
-    const event = db.select().from(channelInboundEvents).get();
+    const db = requireMainDb();
+    const event = (await db.orm.select().from(channelInboundEvents))[0];
     expect(event?.processingStatus).toBe("processed");
     expect(event?.messageId).toBeNull();
     expect(event?.rawPayload).toBeNull();
-    expect(db.select().from(messages).all()).toHaveLength(0);
+    expect(await db.orm.select().from(messages)).toHaveLength(0);
   });
 
   test("preserves retryable duplicate ingress without re-sending block replies", async () => {
-    const inbound = deliveryCrud.recordInbound(
+    const inbound = await deliveryCrud.recordInbound(
       "telegram",
       "chat-123",
       "msg-duplicate-blocked",
     );
-    deliveryCrud.storePayload(inbound.eventId, {
+    await deliveryCrud.storePayload(inbound.eventId, {
       content: "retry me",
       sourceChannel: "telegram",
       interface: "telegram",
@@ -181,15 +181,15 @@ describe("channel inbound disk pressure gate", () => {
       replyCallbackUrl: "https://gateway.test/deliver/telegram",
     });
 
-    const db = getDb();
-    db.update(channelInboundEvents)
+    const db = requireMainDb();
+    await db.orm
+      .update(channelInboundEvents)
       .set({
         processingStatus: "failed",
         processingAttempts: 1,
         retryAfter: Date.now() - 1,
       })
-      .where(eq(channelInboundEvents.id, inbound.eventId))
-      .run();
+      .where(eq(channelInboundEvents.id, inbound.eventId));
 
     const processMessage = mock(async () => {
       throw new Error("processMessage should not run");
@@ -210,15 +210,16 @@ describe("channel inbound disk pressure gate", () => {
     expect(processMessage).not.toHaveBeenCalled();
     expect(deliverChannelReplyMock).not.toHaveBeenCalled();
 
-    const event = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, inbound.eventId))
-      .get();
+    const event = (
+      await db.orm
+        .select()
+        .from(channelInboundEvents)
+        .where(eq(channelInboundEvents.id, inbound.eventId))
+    )[0];
     expect(event?.processingStatus).toBe("failed");
     expect(event?.messageId).toBeNull();
     expect(event?.rawPayload).not.toBeNull();
-    expect(db.select().from(messages).all()).toHaveLength(0);
+    expect(await db.orm.select().from(messages)).toHaveLength(0);
   });
 
   test("blocks non-guardian Slack reactions silently (no reply) before persistence while locked", async () => {
@@ -261,22 +262,23 @@ describe("channel inbound disk pressure gate", () => {
     // message path, which does reply).
     expect(deliverChannelReplyMock).not.toHaveBeenCalled();
 
-    const db = getDb();
-    const event = db
-      .select()
-      .from(channelInboundEvents)
-      .where(
-        eq(channelInboundEvents.externalMessageId, "slack-reaction-blocked"),
-      )
-      .get();
+    const db = requireMainDb();
+    const event = (
+      await db.orm
+        .select()
+        .from(channelInboundEvents)
+        .where(
+          eq(channelInboundEvents.externalMessageId, "slack-reaction-blocked"),
+        )
+    )[0];
     // A blocked reaction writes nothing at all: it is dropped before the
     // reacted message is resolved, so no event row is opened either.
     expect(event).toBeUndefined();
-    expect(db.select().from(messages).all()).toHaveLength(0);
+    expect(await db.orm.select().from(messages)).toHaveLength(0);
   });
 
   test("blocks trusted-contact ingress without creating guardian requests", async () => {
-    resetTables();
+    await resetTables();
     await createGuardianBinding({
       channel: "telegram",
       guardianExternalUserId: "guardian-user-1",
@@ -302,32 +304,33 @@ describe("channel inbound disk pressure gate", () => {
     });
     expect(processMessage).not.toHaveBeenCalled();
 
-    const db = getDb();
-    const event = db
-      .select()
-      .from(channelInboundEvents)
-      .where(
-        eq(
-          channelInboundEvents.externalMessageId,
-          "msg-guardian-bound-blocked",
-        ),
-      )
-      .get();
+    const db = requireMainDb();
+    const event = (
+      await db.orm
+        .select()
+        .from(channelInboundEvents)
+        .where(
+          eq(
+            channelInboundEvents.externalMessageId,
+            "msg-guardian-bound-blocked",
+          ),
+        )
+    )[0];
     expect(event?.processingStatus).toBe("processed");
     expect(event?.messageId).toBeNull();
     expect(event?.rawPayload).toBeNull();
 
     expect(bridgeState.requests.size).toBe(0);
-    expect(db.select().from(messages).all()).toHaveLength(0);
+    expect(await db.orm.select().from(messages)).toHaveLength(0);
   });
 
   test("marks trusted-contact retry-sweep events processed without replaying", async () => {
-    const inbound = deliveryCrud.recordInbound(
+    const inbound = await deliveryCrud.recordInbound(
       "telegram",
       "chat-retry",
       "msg-retry",
     );
-    deliveryCrud.storePayload(inbound.eventId, {
+    await deliveryCrud.storePayload(inbound.eventId, {
       content: "retry me",
       sourceChannel: "telegram",
       interface: "telegram",
@@ -341,15 +344,15 @@ describe("channel inbound disk pressure gate", () => {
       replyCallbackUrl: "https://gateway.test/deliver/telegram",
     });
 
-    const db = getDb();
-    db.update(channelInboundEvents)
+    const db = requireMainDb();
+    await db.orm
+      .update(channelInboundEvents)
       .set({
         processingStatus: "failed",
         processingAttempts: 1,
         retryAfter: Date.now() - 1,
       })
-      .where(eq(channelInboundEvents.id, inbound.eventId))
-      .run();
+      .where(eq(channelInboundEvents.id, inbound.eventId));
 
     const processMessage = mock(async () => ({ messageId: "msg-should-not" }));
     await sweepFailedEvents(processMessage);
@@ -363,23 +366,24 @@ describe("channel inbound disk pressure gate", () => {
       }),
     );
 
-    const row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, inbound.eventId))
-      .get();
+    const row = (
+      await db.orm
+        .select()
+        .from(channelInboundEvents)
+        .where(eq(channelInboundEvents.id, inbound.eventId))
+    )[0];
     expect(row?.processingStatus).toBe("processed");
     expect(row?.messageId).toBeNull();
     expect(row?.rawPayload).toBeNull();
   });
 
   test("uses ephemeral Slack retry block replies targeted to the requester", async () => {
-    const inbound = deliveryCrud.recordInbound(
+    const inbound = await deliveryCrud.recordInbound(
       "slack",
       "slack-channel-1",
       "slack-msg-retry",
     );
-    deliveryCrud.storePayload(inbound.eventId, {
+    await deliveryCrud.storePayload(inbound.eventId, {
       content: "retry me",
       sourceChannel: "slack",
       interface: "slack",
@@ -394,15 +398,15 @@ describe("channel inbound disk pressure gate", () => {
       assistantId: "self",
     });
 
-    const db = getDb();
-    db.update(channelInboundEvents)
+    const db = requireMainDb();
+    await db.orm
+      .update(channelInboundEvents)
       .set({
         processingStatus: "failed",
         processingAttempts: 1,
         retryAfter: Date.now() - 1,
       })
-      .where(eq(channelInboundEvents.id, inbound.eventId))
-      .run();
+      .where(eq(channelInboundEvents.id, inbound.eventId));
 
     const processMessage = mock(async () => ({ messageId: "msg-should-not" }));
     await sweepFailedEvents(processMessage);
@@ -420,23 +424,24 @@ describe("channel inbound disk pressure gate", () => {
       ],
     ]);
 
-    const row = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.id, inbound.eventId))
-      .get();
+    const row = (
+      await db.orm
+        .select()
+        .from(channelInboundEvents)
+        .where(eq(channelInboundEvents.id, inbound.eventId))
+    )[0];
     expect(row?.processingStatus).toBe("processed");
     expect(row?.messageId).toBeNull();
     expect(row?.rawPayload).toBeNull();
   });
 
   test("rechecks disk pressure between retry-sweep events", async () => {
-    const blocked = deliveryCrud.recordInbound(
+    const blocked = await deliveryCrud.recordInbound(
       "telegram",
       "chat-retry-blocked",
       "msg-retry-blocked",
     );
-    deliveryCrud.storePayload(blocked.eventId, {
+    await deliveryCrud.storePayload(blocked.eventId, {
       content: "retry while locked",
       sourceChannel: "telegram",
       interface: "telegram",
@@ -450,12 +455,12 @@ describe("channel inbound disk pressure gate", () => {
       replyCallbackUrl: "https://gateway.test/deliver/telegram",
     });
 
-    const replayed = deliveryCrud.recordInbound(
+    const replayed = await deliveryCrud.recordInbound(
       "telegram",
       "chat-retry-replayed",
       "msg-retry-replayed",
     );
-    deliveryCrud.storePayload(replayed.eventId, {
+    await deliveryCrud.storePayload(replayed.eventId, {
       content: "retry after unlock",
       sourceChannel: "telegram",
       interface: "telegram",
@@ -469,16 +474,16 @@ describe("channel inbound disk pressure gate", () => {
       replyCallbackUrl: "https://gateway.test/deliver/telegram",
     });
 
-    const db = getDb();
+    const db = requireMainDb();
     for (const eventId of [blocked.eventId, replayed.eventId]) {
-      db.update(channelInboundEvents)
+      await db.orm
+        .update(channelInboundEvents)
         .set({
           processingStatus: "failed",
           processingAttempts: 1,
           retryAfter: Date.now() - 1,
         })
-        .where(eq(channelInboundEvents.id, eventId))
-        .run();
+        .where(eq(channelInboundEvents.id, eventId));
     }
 
     diskPressureStatusSequence = [
@@ -487,15 +492,13 @@ describe("channel inbound disk pressure gate", () => {
     ];
     const processMessage = mock(
       async (conversationId: string, content: string) => {
-        db.insert(messages)
-          .values({
-            id: "msg-replayed",
-            conversationId,
-            role: "user",
-            content: JSON.stringify([{ type: "text", text: content }]),
-            createdAt: Date.now(),
-          })
-          .run();
+        await db.orm.insert(messages).values({
+          id: "msg-replayed",
+          conversationId,
+          role: "user",
+          content: JSON.stringify([{ type: "text", text: content }]),
+          createdAt: Date.now(),
+        });
         return { messageId: "msg-replayed" };
       },
     );
@@ -504,7 +507,7 @@ describe("channel inbound disk pressure gate", () => {
 
     expect(processMessage).toHaveBeenCalledTimes(1);
     expect(deliverChannelReplyMock).toHaveBeenCalledTimes(1);
-    const rows = db.select().from(channelInboundEvents).all();
+    const rows = await db.orm.select().from(channelInboundEvents);
     expect(rows.filter((row) => row.rawPayload === null)).toHaveLength(1);
     expect(rows.filter((row) => row.messageId === "msg-replayed")).toHaveLength(
       1,

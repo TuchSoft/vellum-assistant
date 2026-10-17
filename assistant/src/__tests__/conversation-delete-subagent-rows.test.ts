@@ -4,7 +4,7 @@
  * delete that fails has to leave them addressable: the conversation they
  * describe survives too, intact for a retried delete.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, setDefaultTimeout, test } from "bun:test";
 
 mock.module("../config/env.js", () => ({
   isHttpAuthDisabled: () => true,
@@ -20,6 +20,7 @@ mock.module("../daemon/handlers/conversations.js", () => ({
 }));
 
 import { getDb, getSqlite } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { migrateCreateSubagentsTable } from "../persistence/migrations/311-create-subagents-table.js";
 import { migrateAddSubagentParentToolUseId } from "../persistence/migrations/356-add-subagent-parent-tool-use-id.js";
@@ -32,6 +33,7 @@ import {
   type SubagentRecord,
   upsertSubagentRecord,
 } from "../persistence/subagent-store.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
@@ -95,7 +97,7 @@ function deleteConversationViaRoute(id: string): Promise<unknown> {
   } as Parameters<typeof deleteRoute.handler>[0]) as Promise<unknown>;
 }
 
-describe("DELETE /conversations/:id - subagent row purge order", () => {
+describePg("DELETE /conversations/:id - subagent row purge order", () => {
   beforeEach(() => {
     migrateCreateSubagentsTable();
     migrateAddSubagentParentToolUseId(getDb());
@@ -105,22 +107,22 @@ describe("DELETE /conversations/:id - subagent row purge order", () => {
   });
 
   test("purges the parent's rows once the delete commits", async () => {
-    const conv = createConversation("subagent-parent");
-    const other = createConversation("unrelated-parent");
+    const conv = await createConversation("subagent-parent");
+    const other = await createConversation("unrelated-parent");
     seedRow("child-a", conv.id);
     seedRow("child-b", conv.id);
     seedRow("child-other", other.id);
 
     await deleteConversationViaRoute(conv.id);
 
-    expect(getConversation(conv.id)).toBeNull();
+    expect(await getConversation(conv.id)).toBeNull();
     expect(getSubagentRecordById("child-a")).toBeUndefined();
     expect(getSubagentRecordById("child-b")).toBeUndefined();
     expect(getSubagentRecordById("child-other")).toBeDefined();
   });
 
   test("keeps the rows when the conversation delete throws", async () => {
-    const conv = createConversation("failing-parent");
+    const conv = await createConversation("failing-parent");
     seedRow("child-kept", conv.id);
     failNextDelete = true;
 
@@ -130,12 +132,12 @@ describe("DELETE /conversations/:id - subagent row purge order", () => {
 
     // The conversation is still there for a retried delete, so its children's
     // only durable metadata has to still be there too.
-    expect(getConversation(conv.id)).not.toBeNull();
+    expect(await getConversation(conv.id)).not.toBeNull();
     expect(getSubagentRecordById("child-kept")).toBeDefined();
   });
 });
 
-describe("deleteConversation purges subagent rows transactionally", () => {
+describePg("deleteConversation purges subagent rows transactionally", () => {
   beforeEach(() => {
     migrateCreateSubagentsTable();
     migrateAddSubagentParentToolUseId(getDb());
@@ -144,47 +146,52 @@ describe("deleteConversation purges subagent rows transactionally", () => {
     failNextDelete = false;
   });
 
-  test("the persistence primitive purges the parent's rows on its own", () => {
-    const conv = createConversation("primitive-parent");
-    const other = createConversation("primitive-unrelated-parent");
+  test("the persistence primitive purges the parent's rows on its own", async () => {
+    const conv = await createConversation("primitive-parent");
+    const other = await createConversation("primitive-unrelated-parent");
     seedRow("child-primitive", conv.id);
     seedRow("child-primitive-other", other.id);
 
-    realDeleteConversation(conv.id);
+    await realDeleteConversation(conv.id);
 
-    expect(getConversation(conv.id)).toBeNull();
+    expect(await getConversation(conv.id)).toBeNull();
     expect(getSubagentRecordById("child-primitive")).toBeUndefined();
     expect(getSubagentRecordById("child-primitive-other")).toBeDefined();
   });
 
-  test("a mid-transaction failure rolls the purge back with the delete", () => {
-    const conv = createConversation("rollback-parent");
+  test("a mid-transaction failure rolls the purge back with the delete", async () => {
+    const conv = await createConversation("rollback-parent");
     seedRow("child-rollback", conv.id);
 
     // Abort the transaction after it has begun and after the row purge has
     // already run, so only a shared transaction can undo the purge.
-    getSqlite().exec(
-      "CREATE TRIGGER t_fail BEFORE DELETE ON conversations BEGIN SELECT RAISE(ABORT, 'boom'); END",
+    const db = requireMainDb();
+    await db.run(
+      "CREATE OR REPLACE FUNCTION t_fail_fn() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'boom'; END; $$ LANGUAGE plpgsql",
+    );
+    await db.run(
+      "CREATE TRIGGER t_fail BEFORE DELETE ON conversations FOR EACH ROW EXECUTE FUNCTION t_fail_fn()",
     );
     try {
-      expect(() => realDeleteConversation(conv.id)).toThrow();
+      await expect(realDeleteConversation(conv.id)).rejects.toThrow();
     } finally {
-      getSqlite().exec("DROP TRIGGER t_fail");
+      await db.run("DROP TRIGGER IF EXISTS t_fail ON conversations");
+      await db.run("DROP FUNCTION IF EXISTS t_fail_fn()");
     }
 
     // Both survive, so a retried delete still resolves the conversation and
     // still finds its children's durable metadata.
-    expect(getConversation(conv.id)).not.toBeNull();
+    expect(await getConversation(conv.id)).not.toBeNull();
     expect(getSubagentRecordById("child-rollback")).toBeDefined();
 
-    realDeleteConversation(conv.id);
+    await realDeleteConversation(conv.id);
 
-    expect(getConversation(conv.id)).toBeNull();
+    expect(await getConversation(conv.id)).toBeNull();
     expect(getSubagentRecordById("child-rollback")).toBeUndefined();
   });
 
-  test("a failed row purge takes the conversation delete down with it", () => {
-    const conv = createConversation("purge-failure-parent");
+  test("a failed row purge takes the conversation delete down with it", async () => {
+    const conv = await createConversation("purge-failure-parent");
     seedRow("child-purge-failure", conv.id);
 
     // The purge is the failing statement here, so a conversation row that
@@ -193,17 +200,17 @@ describe("deleteConversation purges subagent rows transactionally", () => {
       "CREATE TRIGGER t_purge_fail BEFORE DELETE ON subagents BEGIN SELECT RAISE(ABORT, 'boom'); END",
     );
     try {
-      expect(() => realDeleteConversation(conv.id)).toThrow();
+      await expect(realDeleteConversation(conv.id)).rejects.toThrow();
     } finally {
       getSqlite().exec("DROP TRIGGER t_purge_fail");
     }
 
-    expect(getConversation(conv.id)).not.toBeNull();
+    expect(await getConversation(conv.id)).not.toBeNull();
     expect(getSubagentRecordById("child-purge-failure")).toBeDefined();
   });
 });
 
-describe("deleteConversationGently purges subagent rows too", () => {
+describePg("deleteConversationGently purges subagent rows too", () => {
   beforeEach(() => {
     migrateCreateSubagentsTable();
     migrateAddSubagentParentToolUseId(getDb());
@@ -215,65 +222,73 @@ describe("deleteConversationGently purges subagent rows too", () => {
     // The memory plugin deletes retrospective forks and orphans through this
     // path. Rows it left behind outlive their parent conversation forever and
     // are rehydrated on every restart.
-    const conv = createConversation("gentle-parent");
-    const other = createConversation("gentle-unrelated-parent");
+    const conv = await createConversation("gentle-parent");
+    const other = await createConversation("gentle-unrelated-parent");
     seedRow("child-gentle", conv.id);
     seedRow("child-gentle-other", other.id);
 
     await realDeleteConversationGently(conv.id);
 
-    expect(getConversation(conv.id)).toBeNull();
+    expect(await getConversation(conv.id)).toBeNull();
     expect(getSubagentRecordById("child-gentle")).toBeUndefined();
     expect(getSubagentRecordById("child-gentle-other")).toBeDefined();
   });
 });
 
-describe("playground delete leaves the rows to the conversation transaction", () => {
+describePg(
+  "playground delete leaves the rows to the conversation transaction",
+  () => {
+    beforeEach(() => {
+      migrateCreateSubagentsTable();
+      migrateAddSubagentParentToolUseId(getDb());
+      migrateAddSubagentBudgetStopReason(getDb());
+      resetTestTables("subagents");
+      failNextDelete = false;
+    });
+
+    test("a failed delete keeps the conversation and its rows for a retry", async () => {
+      const conv = await createConversation("playground-parent");
+      const other = await createConversation("playground-unrelated-parent");
+      seedRow("child-playground", conv.id);
+      seedRow("child-playground-other", other.id);
+
+      // Abort the conversation transaction, so an in-memory teardown that
+      // deleted the rows eagerly would have committed that delete already.
+      const db = requireMainDb();
+      await db.run(
+        "CREATE OR REPLACE FUNCTION t_pg_fail_fn() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'boom'; END; $$ LANGUAGE plpgsql",
+      );
+      await db.run(
+        "CREATE TRIGGER t_pg_fail BEFORE DELETE ON conversations FOR EACH ROW EXECUTE FUNCTION t_pg_fail_fn()",
+      );
+      try {
+        await expect(deleteConversationById(conv.id)).rejects.toThrow();
+      } finally {
+        await db.run("DROP TRIGGER IF EXISTS t_pg_fail ON conversations");
+        await db.run("DROP FUNCTION IF EXISTS t_pg_fail_fn()");
+      }
+
+      expect(await getConversation(conv.id)).not.toBeNull();
+      expect(getSubagentRecordById("child-playground")).toBeDefined();
+
+      expect(await deleteConversationById(conv.id)).toBe(true);
+
+      expect(await getConversation(conv.id)).toBeNull();
+      expect(getSubagentRecordById("child-playground")).toBeUndefined();
+      expect(getSubagentRecordById("child-playground-other")).toBeDefined();
+    });
+  },
+);
+
+describePg("clear-all defers subagent-row deletion to the DB wipe", () => {
   beforeEach(() => {
     migrateCreateSubagentsTable();
     migrateAddSubagentParentToolUseId(getDb());
     migrateAddSubagentBudgetStopReason(getDb());
     resetTestTables("subagents");
-    failNextDelete = false;
   });
 
-  test("a failed delete keeps the conversation and its rows for a retry", () => {
-    const conv = createConversation("playground-parent");
-    const other = createConversation("playground-unrelated-parent");
-    seedRow("child-playground", conv.id);
-    seedRow("child-playground-other", other.id);
-
-    // Abort the conversation transaction, so an in-memory teardown that
-    // deleted the rows eagerly would have committed that delete already.
-    getSqlite().exec(
-      "CREATE TRIGGER t_pg_fail BEFORE DELETE ON conversations BEGIN SELECT RAISE(ABORT, 'boom'); END",
-    );
-    try {
-      expect(() => deleteConversationById(conv.id)).toThrow();
-    } finally {
-      getSqlite().exec("DROP TRIGGER t_pg_fail");
-    }
-
-    expect(getConversation(conv.id)).not.toBeNull();
-    expect(getSubagentRecordById("child-playground")).toBeDefined();
-
-    expect(deleteConversationById(conv.id)).toBe(true);
-
-    expect(getConversation(conv.id)).toBeNull();
-    expect(getSubagentRecordById("child-playground")).toBeUndefined();
-    expect(getSubagentRecordById("child-playground-other")).toBeDefined();
-  });
-});
-
-describe("clear-all defers subagent-row deletion to the DB wipe", () => {
-  beforeEach(() => {
-    migrateCreateSubagentsTable();
-    migrateAddSubagentParentToolUseId(getDb());
-    migrateAddSubagentBudgetStopReason(getDb());
-    resetTestTables("subagents");
-  });
-
-  test("keepRecords teardown leaves the rows for the ordered DB wipe", () => {
+  test("keepRecords teardown leaves the rows for the ordered DB wipe", async () => {
     // clear-all tears the manager down in memory first, then `clearAll()` wipes
     // the DB in retry-safe order (conversations, then subagents). If the
     // in-memory teardown deleted the rows eagerly, a `clearAll()` that threw
@@ -294,7 +309,7 @@ describe("clear-all defers subagent-row deletion to the DB wipe", () => {
     expect(getSubagentRecordById("child-c")).toBeDefined();
   });
 
-  test("the deferred DB wipe still removes the rows", () => {
+  test("the deferred DB wipe still removes the rows", async () => {
     // Happy path: once the teardown has kept the rows, the `clearAll()` DB wipe
     // (its `DELETE FROM subagents`) is what actually clears them.
     seedRow("child-a", "parent-1");
@@ -307,3 +322,5 @@ describe("clear-all defers subagent-row deletion to the DB wipe", () => {
     expect(loadAllSubagentRecords()).toHaveLength(0);
   });
 });
+
+setDefaultTimeout(30_000);

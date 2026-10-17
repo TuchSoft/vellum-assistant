@@ -18,7 +18,14 @@
  */
 
 import { existsSync } from "node:fs";
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
 mock.module("../config/env.js", () => ({
   isHttpAuthDisabled: () => true,
@@ -34,17 +41,18 @@ import {
   getConversation,
 } from "../persistence/conversation-crud.js";
 import {
-  getDb,
   getLogsDb,
   getLogsSqlite,
   getTelemetryDb,
   getTelemetrySqlite,
 } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { getLogsDbPath } from "../util/logs-db-path.js";
 import { getTelemetryDbPath } from "../util/telemetry-db-path.js";
 import { removeTestDbFiles } from "./assert-not-live-db.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
@@ -65,10 +73,6 @@ function captureSchemaDdl(db: Database): string[] {
 
 const logsSchemaDdl = captureSchemaDdl(getLogsSqlite()!);
 const telemetrySchemaDdl = captureSchemaDdl(getTelemetrySqlite()!);
-
-function getRawDb(): Database {
-  return (getDb() as unknown as { $client: Database }).$client;
-}
 
 /**
  * Simulate the pre-migration race: close every connection and remove the logs
@@ -92,9 +96,10 @@ function createTableLessDedicatedShells(): void {
   getTelemetryDb();
 }
 
-beforeEach(() => {
-  getRawDb().run("DELETE FROM messages");
-  getRawDb().run("DELETE FROM conversations");
+beforeEach(async () => {
+  const db = requireMainDb();
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 });
 
 // Rebuild the logs/telemetry files (which these tests delete) with their
@@ -111,88 +116,96 @@ afterAll(() => {
   }
 });
 
-describe("synchronous deleteConversation with a missing logs/telemetry DB", () => {
-  test("does not throw and deletes the conversation when the logs file is absent", () => {
-    const conv = createConversation("orphan-retrospective");
-    dropDedicatedLogFiles();
+setDefaultTimeout(30_000);
 
-    expect(() => deleteConversation(conv.id)).not.toThrow();
-    expect(getConversation(conv.id)).toBeNull();
-  });
+describePg(
+  "synchronous deleteConversation with a missing logs/telemetry DB",
+  () => {
+    test("does not throw and deletes the conversation when the logs file is absent", async () => {
+      const conv = await createConversation("orphan-retrospective");
+      dropDedicatedLogFiles();
 
-  test("does not fabricate an empty logs or telemetry file on delete", () => {
-    const conv = createConversation("orphan-retrospective");
-    dropDedicatedLogFiles();
+      await expect(deleteConversation(conv.id)).resolves.toBeDefined();
+      expect(await getConversation(conv.id)).toBeNull();
+    });
 
-    deleteConversation(conv.id);
+    test("does not fabricate an empty logs or telemetry file on delete", async () => {
+      const conv = await createConversation("orphan-retrospective");
+      dropDedicatedLogFiles();
 
-    // The delete must not have re-created either dedicated file — recreating it
-    // empty (no tables) is exactly what produced the `no such table` storm.
-    expect(existsSync(getLogsDbPath())).toBe(false);
-    expect(existsSync(getTelemetryDbPath())).toBe(false);
-  });
+      await deleteConversation(conv.id);
 
-  test("does not throw when the files exist without their tables", () => {
-    const conv = createConversation("orphan-retrospective");
-    createTableLessDedicatedShells();
+      // The delete must not have re-created either dedicated file — recreating it
+      // empty (no tables) is exactly what produced the `no such table` storm.
+      expect(existsSync(getLogsDbPath())).toBe(false);
+      expect(existsSync(getTelemetryDbPath())).toBe(false);
+    });
 
-    // The files exist (create-on-open shells), but the tables were never
-    // migrated in — a file-existence guard alone would still run the DELETE and
-    // throw `no such table`. The table-existence guard skips it.
-    expect(existsSync(getLogsDbPath())).toBe(true);
-    expect(existsSync(getTelemetryDbPath())).toBe(true);
+    test("does not throw when the files exist without their tables", async () => {
+      const conv = await createConversation("orphan-retrospective");
+      createTableLessDedicatedShells();
 
-    expect(() => deleteConversation(conv.id)).not.toThrow();
-    expect(getConversation(conv.id)).toBeNull();
-  });
+      // The files exist (create-on-open shells), but the tables were never
+      // migrated in — a file-existence guard alone would still run the DELETE and
+      // throw `no such table`. The table-existence guard skips it.
+      expect(existsSync(getLogsDbPath())).toBe(true);
+      expect(existsSync(getTelemetryDbPath())).toBe(true);
 
-  test("getLogsDb/getTelemetryDb return null for a missing file without creating it", () => {
-    dropDedicatedLogFiles();
+      await expect(deleteConversation(conv.id)).resolves.toBeDefined();
+      expect(await getConversation(conv.id)).toBeNull();
+    });
 
-    expect(getLogsDb({ createIfMissing: false })).toBeNull();
-    expect(getTelemetryDb({ createIfMissing: false })).toBeNull();
-    expect(existsSync(getLogsDbPath())).toBe(false);
-    expect(existsSync(getTelemetryDbPath())).toBe(false);
+    test("getLogsDb/getTelemetryDb return null for a missing file without creating it", async () => {
+      dropDedicatedLogFiles();
 
-    // The default (open-or-create) path still creates the file — the migration
-    // runner and write path depend on it.
-    expect(getLogsDb()).not.toBeNull();
-    expect(existsSync(getLogsDbPath())).toBe(true);
-  });
-});
+      expect(getLogsDb({ createIfMissing: false })).toBeNull();
+      expect(getTelemetryDb({ createIfMissing: false })).toBeNull();
+      expect(existsSync(getLogsDbPath())).toBe(false);
+      expect(existsSync(getTelemetryDbPath())).toBe(false);
 
-describe("deleteConversationGently (sweep path) with a missing logs/telemetry DB", () => {
-  test("does not throw and deletes the conversation when the logs file is absent", async () => {
-    const conv = createConversation("orphan-retrospective");
-    dropDedicatedLogFiles();
+      // The default (open-or-create) path still creates the file — the migration
+      // runner and write path depend on it.
+      expect(getLogsDb()).not.toBeNull();
+      expect(existsSync(getLogsDbPath())).toBe(true);
+    });
+  },
+);
 
-    await expect(deleteConversationGently(conv.id)).resolves.toBeDefined();
-    expect(getConversation(conv.id)).toBeNull();
-  });
+describePg(
+  "deleteConversationGently (sweep path) with a missing logs/telemetry DB",
+  () => {
+    test("does not throw and deletes the conversation when the logs file is absent", async () => {
+      const conv = await createConversation("orphan-retrospective");
+      dropDedicatedLogFiles();
 
-  test("does not fabricate an empty logs or telemetry file on delete", async () => {
-    const conv = createConversation("orphan-retrospective");
-    dropDedicatedLogFiles();
+      await expect(deleteConversationGently(conv.id)).resolves.toBeDefined();
+      expect(await getConversation(conv.id)).toBeNull();
+    });
 
-    await deleteConversationGently(conv.id);
+    test("does not fabricate an empty logs or telemetry file on delete", async () => {
+      const conv = await createConversation("orphan-retrospective");
+      dropDedicatedLogFiles();
 
-    // The batched logs drain (and the telemetry delete) must be skipped, not
-    // run against a freshly-created empty file — the `no such table` storm was
-    // the batch subprocess creating the file and then failing on it.
-    expect(existsSync(getLogsDbPath())).toBe(false);
-    expect(existsSync(getTelemetryDbPath())).toBe(false);
-  });
+      await deleteConversationGently(conv.id);
 
-  test("does not throw when the files exist without their tables", async () => {
-    const conv = createConversation("orphan-retrospective");
-    createTableLessDedicatedShells();
+      // The batched logs drain (and the telemetry delete) must be skipped, not
+      // run against a freshly-created empty file — the `no such table` storm was
+      // the batch subprocess creating the file and then failing on it.
+      expect(existsSync(getLogsDbPath())).toBe(false);
+      expect(existsSync(getTelemetryDbPath())).toBe(false);
+    });
 
-    // File-present-but-table-absent: the batched logs drain must be skipped on
-    // the table-existence check, not run against the shell and fail.
-    expect(existsSync(getLogsDbPath())).toBe(true);
-    expect(existsSync(getTelemetryDbPath())).toBe(true);
+    test("does not throw when the files exist without their tables", async () => {
+      const conv = await createConversation("orphan-retrospective");
+      createTableLessDedicatedShells();
 
-    await expect(deleteConversationGently(conv.id)).resolves.toBeDefined();
-    expect(getConversation(conv.id)).toBeNull();
-  });
-});
+      // File-present-but-table-absent: the batched logs drain must be skipped on
+      // the table-existence check, not run against the shell and fail.
+      expect(existsSync(getLogsDbPath())).toBe(true);
+      expect(existsSync(getTelemetryDbPath())).toBe(true);
+
+      await expect(deleteConversationGently(conv.id)).resolves.toBeDefined();
+      expect(await getConversation(conv.id)).toBeNull();
+    });
+  },
+);

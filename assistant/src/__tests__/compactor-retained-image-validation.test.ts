@@ -8,7 +8,7 @@
  * until the block is manually removed. `buildRetainedImageBlocks` drops such
  * payloads instead.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
 import {
   buildRetainedImageBlocks,
@@ -19,10 +19,8 @@ import {
   addMessage,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-
-await initializeDb();
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
 // 1x1 transparent PNG.
 const PNG_1X1_BASE64 =
@@ -34,12 +32,12 @@ const GARBAGE_BASE64 = Buffer.from("definitely not an image").toString(
   "base64",
 );
 
-function resetTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM message_attachments");
-  db.run("DELETE FROM attachments");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM message_attachments");
+  await db.run("DELETE FROM attachments");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 async function addImageMessage(
@@ -65,13 +63,13 @@ async function addImageMessage(
   );
 }
 
-describe("buildRetainedImageBlocks corrupt-bytes gate", () => {
+describePg("buildRetainedImageBlocks corrupt-bytes gate", () => {
   beforeEach(resetTables);
 
   test("valid image bytes are retained", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addImageMessage(conv.id, "good.png", PNG_1X1_BASE64);
-    const manifest = collectImageManifest(conv.id, "guardian");
+    const manifest = await collectImageManifest(conv.id, "guardian");
 
     const { blocks, resolved, missing } = await buildRetainedImageBlocks(
       ["good.png"],
@@ -85,10 +83,10 @@ describe("buildRetainedImageBlocks corrupt-bytes gate", () => {
   });
 
   test("bytes that do not parse as an image are dropped, not embedded", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addImageMessage(conv.id, "corrupt.png", GARBAGE_BASE64);
     await addImageMessage(conv.id, "good.png", PNG_1X1_BASE64);
-    const manifest = collectImageManifest(conv.id, "guardian");
+    const manifest = await collectImageManifest(conv.id, "guardian");
 
     const { blocks, resolved, missing } = await buildRetainedImageBlocks(
       ["corrupt.png", "good.png"],
@@ -111,9 +109,9 @@ describe("buildRetainedImageBlocks corrupt-bytes gate", () => {
       Buffer.from("JFIF\0"),
       Buffer.alloc(64),
     ]).toString("base64");
-    const conv = createConversation();
+    const conv = await createConversation();
     await addImageMessage(conv.id, "torn.jpg", tornJpeg);
-    const manifest = collectImageManifest(conv.id, "guardian");
+    const manifest = await collectImageManifest(conv.id, "guardian");
 
     const { blocks, resolved, missing } = await buildRetainedImageBlocks(
       ["torn.jpg"],
@@ -129,9 +127,9 @@ describe("buildRetainedImageBlocks corrupt-bytes gate", () => {
     // The rebuilt block is inline bytes, so this id is the only handle left on
     // the row it came from. Camera-frame retention matches on it: without it a
     // frame compaction chose to keep would be invisible to every later pass.
-    const conv = createConversation();
+    const conv = await createConversation();
     await addImageMessage(conv.id, "good.png", PNG_1X1_BASE64);
-    const manifest = collectImageManifest(conv.id, "guardian");
+    const manifest = await collectImageManifest(conv.id, "guardian");
 
     const { blocks } = await buildRetainedImageBlocks(["good.png"], manifest);
 
@@ -141,9 +139,9 @@ describe("buildRetainedImageBlocks corrupt-bytes gate", () => {
   });
 
   test("unresolvable filenames still land in missing", async () => {
-    const conv = createConversation();
+    const conv = await createConversation();
     await addImageMessage(conv.id, "good.png", PNG_1X1_BASE64);
-    const manifest = collectImageManifest(conv.id, "guardian");
+    const manifest = await collectImageManifest(conv.id, "guardian");
 
     const { blocks, resolved, missing } = await buildRetainedImageBlocks(
       ["never-uploaded.png", "good.png"],
@@ -155,3 +153,5 @@ describe("buildRetainedImageBlocks corrupt-bytes gate", () => {
     expect(blocks).toHaveLength(1);
   });
 });
+
+setDefaultTimeout(30_000);

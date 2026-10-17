@@ -10,7 +10,7 @@
  * best-effort like the rest of the post-transaction cleanup: these tests wait
  * for it rather than awaiting it.
  */
-import { describe, expect, mock, test } from "bun:test";
+import { expect, mock, setDefaultTimeout, test } from "bun:test";
 
 // Keep the rest of the module real; only the Qdrant collection drop is
 // replaced, so `clearAll` does not reach for a lexical index that is not
@@ -35,6 +35,7 @@ import {
   deleteConversationGently,
 } from "../persistence/conversation-crud.js";
 import { initializeDb } from "../persistence/db-init.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
@@ -55,7 +56,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 
 /** A conversation with a `started` checklist task pointing at it. */
 async function seedStartedTask(taskId: string): Promise<string> {
-  const conversation = createConversation(`activation-${taskId}`);
+  const conversation = await createConversation(`activation-${taskId}`);
   await startActivationTask({ taskId, conversationId: conversation.id });
   expect(taskRecord(taskId)).toMatchObject({
     status: "started",
@@ -77,7 +78,7 @@ async function seedDoneTask(taskId: string): Promise<string> {
   return conversationId;
 }
 
-describe("deleteConversation releases the checklist task", () => {
+describePg("deleteConversation releases the checklist task", () => {
   test("a started task returns to Todo and can be launched again", async () => {
     const taskId = "delete-started";
     const conversationId = await seedStartedTask(taskId);
@@ -93,7 +94,7 @@ describe("deleteConversation releases the checklist task", () => {
     });
 
     // Todo again, so the row is launchable.
-    const relaunched = createConversation("activation-relaunch");
+    const relaunched = await createConversation("activation-relaunch");
     await startActivationTask({ taskId, conversationId: relaunched.id });
     expect(taskRecord(taskId)).toMatchObject({
       status: "started",
@@ -116,7 +117,7 @@ describe("deleteConversation releases the checklist task", () => {
   });
 });
 
-describe("deleteConversationGently releases the checklist task", () => {
+describePg("deleteConversationGently releases the checklist task", () => {
   test("the off-loop path clears the same state as the synchronous one", async () => {
     const taskId = "delete-gently";
     const conversationId = await seedStartedTask(taskId);
@@ -126,7 +127,7 @@ describe("deleteConversationGently releases the checklist task", () => {
   });
 });
 
-describe("clearAll releases every checklist task", () => {
+describePg("clearAll releases every checklist task", () => {
   test("started tasks go, finished ones keep their history", async () => {
     await seedStartedTask("clear-all-started");
     await seedDoneTask("clear-all-done");
@@ -143,3 +144,5 @@ describe("clearAll releases every checklist task", () => {
     });
   });
 });
+
+setDefaultTimeout(30_000);

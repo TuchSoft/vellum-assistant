@@ -1,4 +1,11 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
 // The profiles pinned below are managed presets judged for real by the
 // session handler's availability guard. Stand in for a signed-in platform
@@ -20,7 +27,7 @@ import {
   createConversation,
   getConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { providerConnections } from "../persistence/schema/inference.js";
 import { assistantEventHub } from "../runtime/assistant-event-hub.js";
@@ -28,12 +35,13 @@ import { ROUTES } from "../runtime/routes/conversation-management-routes.js";
 import { BadRequestError, NotFoundError } from "../runtime/routes/errors.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
 import { waitFor } from "./helpers/wait-for.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
 // The Vellum-managed connection row the managed presets resolve to.
-getDb()
-  .insert(providerConnections)
+await requireMainDb()
+  .orm.insert(providerConnections)
   .values({
     name: "vellum",
     provider: "vellum",
@@ -41,25 +49,24 @@ getDb()
     createdAt: Date.now(),
     updatedAt: Date.now(),
   })
-  .onConflictDoNothing()
-  .run();
+  .onConflictDoNothing();
 
 const profileRoute = ROUTES.find(
   (r) => r.operationId === "setConversationInferenceProfile",
 )!;
 
-function clearTables(): void {
-  const db = getDb();
-  db.run("DELETE FROM conversation_assistant_attention_state");
-  db.run("DELETE FROM external_conversation_bindings");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function clearTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM conversation_assistant_attention_state");
+  await db.run("DELETE FROM external_conversation_bindings");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
-describe("PUT /v1/conversations/:id/inference-profile", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("PUT /v1/conversations/:id/inference-profile", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   afterAll(() => {
@@ -67,7 +74,7 @@ describe("PUT /v1/conversations/:id/inference-profile", () => {
   });
 
   test("sets the override and emits a hub event for a known profile", async () => {
-    const conversation = createConversation("inference-profile-route");
+    const conversation = await createConversation("inference-profile-route");
 
     const received: Array<{
       type: string;
@@ -107,7 +114,7 @@ describe("PUT /v1/conversations/:id/inference-profile", () => {
       conversationId: conversation.id,
       profile: "quality-optimized",
     });
-    expect(getConversation(conversation.id)?.inferenceProfile).toBe(
+    expect((await getConversation(conversation.id))?.inferenceProfile).toBe(
       "quality-optimized",
     );
     expect(received).toEqual([
@@ -132,7 +139,7 @@ describe("PUT /v1/conversations/:id/inference-profile", () => {
   });
 
   test("rejects unknown profile names with BadRequestError", async () => {
-    const conversation = createConversation("inference-profile-unknown");
+    const conversation = await createConversation("inference-profile-unknown");
 
     await expect(
       profileRoute.handler({
@@ -141,11 +148,13 @@ describe("PUT /v1/conversations/:id/inference-profile", () => {
         headers: {},
       }),
     ).rejects.toThrow(BadRequestError);
-    expect(getConversation(conversation.id)?.inferenceProfile).toBeNull();
+    expect(
+      (await getConversation(conversation.id))?.inferenceProfile,
+    ).toBeNull();
   });
 
   test("clears the override when profile is null", async () => {
-    const conversation = createConversation("inference-profile-clear");
+    const conversation = await createConversation("inference-profile-clear");
 
     await profileRoute.handler({
       pathParams: { id: conversation.id },
@@ -153,7 +162,9 @@ describe("PUT /v1/conversations/:id/inference-profile", () => {
       headers: {},
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(getConversation(conversation.id)?.inferenceProfile).toBe("balanced");
+    expect((await getConversation(conversation.id))?.inferenceProfile).toBe(
+      "balanced",
+    );
 
     const received: Array<{ profile?: string | null; tags?: string[] }> = [];
     const subscription = assistantEventHub.subscribe({
@@ -181,7 +192,9 @@ describe("PUT /v1/conversations/:id/inference-profile", () => {
       conversationId: conversation.id,
       profile: null,
     });
-    expect(getConversation(conversation.id)?.inferenceProfile).toBeNull();
+    expect(
+      (await getConversation(conversation.id))?.inferenceProfile,
+    ).toBeNull();
     expect(received).toEqual([
       { profile: null },
       {
@@ -196,7 +209,7 @@ describe("PUT /v1/conversations/:id/inference-profile", () => {
   });
 
   test("skips write and event when the profile is unchanged", async () => {
-    const conversation = createConversation("inference-profile-noop");
+    const conversation = await createConversation("inference-profile-noop");
 
     await profileRoute.handler({
       pathParams: { id: conversation.id },
@@ -204,7 +217,8 @@ describe("PUT /v1/conversations/:id/inference-profile", () => {
       headers: {},
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const updatedAtAfterSet = getConversation(conversation.id)?.updatedAt;
+    const updatedAtAfterSet = (await getConversation(conversation.id))
+      ?.updatedAt;
 
     const received: Array<{ profile?: string | null }> = [];
     const subscription = assistantEventHub.subscribe({
@@ -228,7 +242,9 @@ describe("PUT /v1/conversations/:id/inference-profile", () => {
       conversationId: conversation.id,
       profile: "balanced",
     });
-    expect(getConversation(conversation.id)?.updatedAt).toBe(updatedAtAfterSet);
+    expect((await getConversation(conversation.id))?.updatedAt).toBe(
+      updatedAtAfterSet,
+    );
     expect(received).toEqual([]);
 
     subscription.dispose();
@@ -244,3 +260,5 @@ describe("PUT /v1/conversations/:id/inference-profile", () => {
     ).rejects.toThrow(NotFoundError);
   });
 });
+
+setDefaultTimeout(30_000);

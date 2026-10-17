@@ -55,9 +55,10 @@ const HeartbeatConfigResponseSchema = z.object({
   success: z.boolean(),
 });
 
-function heartbeatConfigResponse() {
+async function heartbeatConfigResponse() {
   const heartbeat = getConfig().heartbeat;
   const svc = HeartbeatService.getInstance();
+  const lastRunAt = svc ? await svc.loadLastRunAt() : null;
   return {
     enabled: heartbeat.enabled,
     intervalMs: heartbeat.intervalMs,
@@ -67,7 +68,7 @@ function heartbeatConfigResponse() {
     timezone: heartbeat.timezone ?? null,
     effectiveTimezone: resolveScheduleTimezone(heartbeat.timezone),
     nextRunAt: svc?.nextRunAt ?? null,
-    lastRunAt: svc?.lastRunAt ?? null,
+    lastRunAt,
     success: true,
   };
 }
@@ -76,12 +77,12 @@ function heartbeatConfigResponse() {
 // Handlers (transport-agnostic)
 // ---------------------------------------------------------------------------
 
-function handleListRuns(queryParams: Record<string, string>) {
+async function handleListRuns(queryParams: Record<string, string>) {
   const limit = parseRunsLimit(queryParams, 20);
   const before = parseRunsBeforeCursor(queryParams);
 
   const { rows, nextCursor } = paginateRuns(
-    listHeartbeatRuns(limit + 1, before),
+    await listHeartbeatRuns(limit + 1, before),
     limit,
     (r) => r.scheduledFor,
   );

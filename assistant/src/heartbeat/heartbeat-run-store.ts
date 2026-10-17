@@ -11,9 +11,8 @@ import {
 } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
-import { getDb } from "../persistence/db-connection.js";
-import { rawChanges } from "../persistence/raw-query.js";
-import { heartbeatRuns } from "../persistence/schema/index.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -51,6 +50,8 @@ export interface HeartbeatRunRecord {
   createdAt: number;
 }
 
+type HeartbeatRunRow = SchemaTables["heartbeatRuns"]["$inferSelect"];
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -66,24 +67,25 @@ const STALE_RUNNING_THRESHOLD_MS = 45 * 60 * 1000;
  * Insert a new heartbeat run in `pending` status.
  * Returns the generated run id.
  */
-export function insertPendingHeartbeatRun(scheduledFor: number): string {
-  const db = getDb();
+export async function insertPendingHeartbeatRun(
+  scheduledFor: number,
+): Promise<string> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
   const id = uuid();
   const now = Date.now();
-  db.insert(heartbeatRuns)
-    .values({
-      id,
-      scheduledFor,
-      startedAt: null,
-      finishedAt: null,
-      durationMs: null,
-      status: "pending",
-      skipReason: null,
-      error: null,
-      conversationId: null,
-      createdAt: now,
-    })
-    .run();
+  await db.orm.insert(runs).values({
+    id,
+    scheduledFor,
+    startedAt: null,
+    finishedAt: null,
+    durationMs: null,
+    status: "pending",
+    skipReason: null,
+    error: null,
+    conversationId: null,
+    createdAt: now,
+  });
   return id;
 }
 
@@ -91,16 +93,16 @@ export function insertPendingHeartbeatRun(scheduledFor: number): string {
  * CAS transition from `pending` to `running`. Sets `startedAt` to now.
  * Returns `true` if the transition succeeded.
  */
-export function startHeartbeatRun(runId: string): boolean {
-  const db = getDb();
+export async function startHeartbeatRun(runId: string): Promise<boolean> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
   const now = Date.now();
-  db.update(heartbeatRuns)
+  const updated = await db.orm
+    .update(runs)
     .set({ status: "running", startedAt: now })
-    .where(
-      sql`${heartbeatRuns.id} = ${runId} AND ${heartbeatRuns.status} = 'pending'`,
-    )
-    .run();
-  return rawChanges() > 0;
+    .where(sql`${runs.id} = ${runId} AND ${runs.status} = 'pending'`)
+    .returning({ id: runs.id });
+  return updated.length > 0;
 }
 
 /**
@@ -108,30 +110,31 @@ export function startHeartbeatRun(runId: string): boolean {
  * Computes `durationMs` from the row's `startedAt`. Error text is capped at 2 KB.
  * Returns `true` if the transition succeeded.
  */
-export function completeHeartbeatRun(
+export async function completeHeartbeatRun(
   runId: string,
   result: {
     status: "ok" | "error" | "timeout";
     conversationId?: string;
     error?: string;
   },
-): boolean {
-  const db = getDb();
+): Promise<boolean> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
   const now = Date.now();
 
   // Read the row to get startedAt for durationMs computation.
-  const row = db
-    .select({ startedAt: heartbeatRuns.startedAt })
-    .from(heartbeatRuns)
-    .where(eq(heartbeatRuns.id, runId))
-    .get();
+  const [row] = await db.orm
+    .select({ startedAt: runs.startedAt })
+    .from(runs)
+    .where(eq(runs.id, runId));
   if (!row) {
     return false;
   }
 
   const durationMs = row.startedAt != null ? now - row.startedAt : null;
 
-  db.update(heartbeatRuns)
+  const updated = await db.orm
+    .update(runs)
     .set({
       status: result.status,
       finishedAt: now,
@@ -139,117 +142,115 @@ export function completeHeartbeatRun(
       error: result.error?.slice(0, 2000) ?? null,
       conversationId: result.conversationId ?? null,
     })
-    .where(
-      sql`${heartbeatRuns.id} = ${runId} AND ${heartbeatRuns.status} = 'running'`,
-    )
-    .run();
-  return rawChanges() > 0;
+    .where(sql`${runs.id} = ${runId} AND ${runs.status} = 'running'`)
+    .returning({ id: runs.id });
+  return updated.length > 0;
 }
 
 /**
  * CAS transition from `pending` to `skipped` with the given reason.
  * Returns `true` if the transition succeeded.
  */
-export function skipHeartbeatRun(
+export async function skipHeartbeatRun(
   runId: string,
   skipReason: HeartbeatSkipReason,
-): boolean {
-  const db = getDb();
-  db.update(heartbeatRuns)
+): Promise<boolean> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
+  const updated = await db.orm
+    .update(runs)
     .set({ status: "skipped", skipReason })
-    .where(
-      sql`${heartbeatRuns.id} = ${runId} AND ${heartbeatRuns.status} = 'pending'`,
-    )
-    .run();
-  return rawChanges() > 0;
+    .where(sql`${runs.id} = ${runId} AND ${runs.status} = 'pending'`)
+    .returning({ id: runs.id });
+  return updated.length > 0;
 }
 
 /**
  * CAS transition from `pending` to `superseded`.
  * Returns `true` if the transition succeeded.
  */
-export function supersedePendingRun(runId: string): boolean {
-  const db = getDb();
-  db.update(heartbeatRuns)
+export async function supersedePendingRun(runId: string): Promise<boolean> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
+  const updated = await db.orm
+    .update(runs)
     .set({ status: "superseded" })
-    .where(
-      sql`${heartbeatRuns.id} = ${runId} AND ${heartbeatRuns.status} = 'pending'`,
-    )
-    .run();
-  return rawChanges() > 0;
+    .where(sql`${runs.id} = ${runId} AND ${runs.status} = 'pending'`)
+    .returning({ id: runs.id });
+  return updated.length > 0;
 }
 
 /**
  * Mark all `pending` rows older than the threshold as `missed`.
  * Handles the crash-before-run scenario. Returns the number of rows affected.
  */
-export function markStaleRunsAsMissed(
+export async function markStaleRunsAsMissed(
   thresholdMs: number = 5 * 60 * 1000,
-): number {
-  const db = getDb();
+): Promise<number> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
   const cutoff = Date.now() - thresholdMs;
-  db.update(heartbeatRuns)
+  const updated = await db.orm
+    .update(runs)
     .set({ status: "missed" })
-    .where(
-      sql`${heartbeatRuns.status} = 'pending' AND ${heartbeatRuns.scheduledFor} < ${cutoff}`,
-    )
-    .run();
-  return rawChanges();
+    .where(sql`${runs.status} = 'pending' AND ${runs.scheduledFor} < ${cutoff}`)
+    .returning({ id: runs.id });
+  return updated.length;
 }
 
 /**
  * Mark all `running` rows older than the threshold as `error`.
  * Handles the crash-during-run scenario. Returns the number of rows affected.
  */
-export function markStaleRunningAsError(
+export async function markStaleRunningAsError(
   thresholdMs: number = STALE_RUNNING_THRESHOLD_MS,
-): number {
-  const db = getDb();
+): Promise<number> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
   const cutoff = Date.now() - thresholdMs;
-  db.update(heartbeatRuns)
+  const updated = await db.orm
+    .update(runs)
     .set({
       status: "error",
       error: "Process crashed or restarted during execution",
     })
-    .where(
-      sql`${heartbeatRuns.status} = 'running' AND ${heartbeatRuns.startedAt} < ${cutoff}`,
-    )
-    .run();
-  return rawChanges();
+    .where(sql`${runs.status} = 'running' AND ${runs.startedAt} < ${cutoff}`)
+    .returning({ id: runs.id });
+  return updated.length;
 }
 
 /**
  * Count the number of heartbeat runs that completed with status `ok`.
  */
-export function countCompletedHeartbeatRuns(): number {
-  const db = getDb();
-  const row = db
+export async function countCompletedHeartbeatRuns(): Promise<number> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
+  const [row] = await db.orm
     .select({ count: sql<number>`count(*)` })
-    .from(heartbeatRuns)
-    .where(eq(heartbeatRuns.status, "ok"))
-    .get();
-  return row?.count ?? 0;
+    .from(runs)
+    .where(eq(runs.status, "ok"));
+  return Number(row?.count ?? 0);
 }
 
 /**
  * Count heartbeat runs that completed with status `ok` today (local midnight).
  */
-export function countCompletedRunsToday(): number {
-  const db = getDb();
+export async function countCompletedRunsToday(): Promise<number> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
   const now = new Date();
   const startOfDay = new Date(
     now.getFullYear(),
     now.getMonth(),
     now.getDate(),
   ).getTime();
-  const row = db
+  const [row] = await db.orm
     .select({ count: sql<number>`count(*)` })
-    .from(heartbeatRuns)
+    .from(runs)
     .where(
-      sql`${heartbeatRuns.status} = 'ok' AND ${heartbeatRuns.scheduledFor} >= ${startOfDay}`,
-    )
-    .get();
-  return row?.count ?? 0;
+      sql`${runs.status} = 'ok' AND ${runs.scheduledFor} >= ${startOfDay}`,
+    );
+  return Number(row?.count ?? 0);
 }
 
 /**
@@ -261,14 +262,16 @@ export function countCompletedRunsToday(): number {
  *
  * Used to restore the in-memory consecutive-run counter on startup.
  */
-export function countRecentConsecutiveRuns(maxToCheck: number): number {
-  const db = getDb();
-  const rows = db
-    .select({ status: heartbeatRuns.status })
-    .from(heartbeatRuns)
-    .orderBy(desc(heartbeatRuns.scheduledFor))
-    .limit(maxToCheck + 5)
-    .all();
+export async function countRecentConsecutiveRuns(
+  maxToCheck: number,
+): Promise<number> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
+  const rows = await db.orm
+    .select({ status: runs.status })
+    .from(runs)
+    .orderBy(desc(runs.scheduledFor))
+    .limit(maxToCheck + 5);
 
   let count = 0;
   for (const row of rows) {
@@ -287,36 +290,36 @@ export function countRecentConsecutiveRuns(maxToCheck: number): number {
  * Statuses excluded from run history: scheduler bookkeeping rows, not runs.
  * `pending` is the not-yet-fired next scheduled run (surfaced separately as
  * "next run"), and `superseded` rows are pending rows replaced by a timer
- * reset — a guardian message resets the heartbeat timer, so an active chat
+ * reset, a guardian message resets the heartbeat timer, so an active chat
  * day leaves dozens of them behind without a single heartbeat firing.
  */
 const BOOKKEEPING_STATUSES: HeartbeatRunStatus[] = ["pending", "superseded"];
 
 /**
  * List heartbeat run history ordered by `scheduledFor` descending.
- * Bookkeeping rows ({@link BOOKKEEPING_STATUSES}) are excluded — every
+ * Bookkeeping rows ({@link BOOKKEEPING_STATUSES}) are excluded. Every
  * returned row is a run that executed, was skipped by a guard (with its
  * `skipReason`), or was missed while the daemon was down.
  * When `before` is set, only runs with `scheduledFor` strictly older than it
  * are returned (cursor for paginating into history).
  */
-export function listHeartbeatRuns(
+export async function listHeartbeatRuns(
   limit = 20,
   before?: number,
-): HeartbeatRunRecord[] {
-  const db = getDb();
-  const historyOnly = notInArray(heartbeatRuns.status, BOOKKEEPING_STATUSES);
-  const rows = db
+): Promise<HeartbeatRunRecord[]> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
+  const historyOnly = notInArray(runs.status, BOOKKEEPING_STATUSES);
+  const rows = await db.orm
     .select()
-    .from(heartbeatRuns)
+    .from(runs)
     .where(
       before != null
-        ? and(lt(heartbeatRuns.scheduledFor, before), historyOnly)
+        ? and(lt(runs.scheduledFor, before), historyOnly)
         : historyOnly,
     )
-    .orderBy(desc(heartbeatRuns.scheduledFor))
-    .limit(limit)
-    .all();
+    .orderBy(desc(runs.scheduledFor))
+    .limit(limit);
   return rows.map(parseRow);
 }
 
@@ -329,18 +332,18 @@ const EXECUTED_STATUSES: HeartbeatRunStatus[] = ["ok", "error", "timeout"];
  * `finishedAt`, falling back to `startedAt` for rows finalized by a crash
  * sweep without one.
  */
-export function getLastHeartbeatRunAt(): number | null {
-  const db = getDb();
-  const row = db
+export async function getLastHeartbeatRunAt(): Promise<number | null> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
+  const [row] = await db.orm
     .select({
       lastRunAt: sql<
         number | null
-      >`max(coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}))`,
+      >`max(coalesce(${runs.finishedAt}, ${runs.startedAt}))`,
     })
-    .from(heartbeatRuns)
-    .where(inArray(heartbeatRuns.status, EXECUTED_STATUSES))
-    .get();
-  return row?.lastRunAt ?? null;
+    .from(runs)
+    .where(inArray(runs.status, EXECUTED_STATUSES));
+  return row?.lastRunAt != null ? Number(row.lastRunAt) : null;
 }
 
 /**
@@ -349,31 +352,31 @@ export function getLastHeartbeatRunAt(): number | null {
  * `running` status until a later boot's stale sweep relabels it, and an
  * unbounded read would let that phantom row hold a drain open indefinitely.
  */
-export function listRunningHeartbeatRuns(
+export async function listRunningHeartbeatRuns(
   maxAgeMs: number,
-): Array<{ runId: string; startedAt: number }> {
-  const db = getDb();
+): Promise<Array<{ runId: string; startedAt: number }>> {
+  const db = requireMainDb();
+  const runs = db.schema.heartbeatRuns;
   const cutoff = Date.now() - maxAgeMs;
-  return db
-    .select({ runId: heartbeatRuns.id, startedAt: heartbeatRuns.startedAt })
-    .from(heartbeatRuns)
+  return (await db.orm
+    .select({ runId: runs.id, startedAt: runs.startedAt })
+    .from(runs)
     .where(
       and(
-        eq(heartbeatRuns.status, "running"),
-        isNotNull(heartbeatRuns.startedAt),
-        gt(heartbeatRuns.startedAt, cutoff),
+        eq(runs.status, "running"),
+        isNotNull(runs.startedAt),
+        gt(runs.startedAt, cutoff),
       ),
     )
-    .orderBy(desc(heartbeatRuns.startedAt))
-    .limit(20)
-    .all() as Array<{ runId: string; startedAt: number }>;
+    .orderBy(desc(runs.startedAt))
+    .limit(20)) as Array<{ runId: string; startedAt: number }>;
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function parseRow(row: typeof heartbeatRuns.$inferSelect): HeartbeatRunRecord {
+function parseRow(row: HeartbeatRunRow): HeartbeatRunRecord {
   return {
     id: row.id,
     scheduledFor: row.scheduledFor,

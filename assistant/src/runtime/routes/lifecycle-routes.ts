@@ -179,7 +179,9 @@ export const ROUTES: RouteDefinition[] = [
       // A beat between startHeartbeatRun() and its background conversation
       // existing (e.g. mid credential-health check) has a running row but no
       // processing conversation yet.
-      const heartbeatRuns = listRunningHeartbeatRuns(HEARTBEAT_RUN_MAX_AGE_MS);
+      const heartbeatRuns = await listRunningHeartbeatRuns(
+        HEARTBEAT_RUN_MAX_AGE_MS,
+      );
       return {
         quiescedUntil: await getLifecycleQuiesceUntil(),
         idle:

@@ -164,9 +164,8 @@ export class HeartbeatService {
 
   private readonly deps: HeartbeatDeps;
   private timer:
-    | ReturnType<typeof setInterval>
-    | ReturnType<typeof setTimeout>
-    | null = null;
+    ReturnType<typeof setInterval> | ReturnType<typeof setTimeout> | null =
+    null;
   private activeRun: Promise<void> | null = null;
   private _lastRunAt: number | null = null;
   private _nextRunAt: number | null = null;
@@ -191,18 +190,26 @@ export class HeartbeatService {
   }
 
   /**
-   * Epoch-ms timestamp of the last completed heartbeat run. The in-memory
-   * field only covers runs completed in this process's lifetime, so when it
-   * is unset the value is rehydrated from run history — a daemon restart
-   * must not blank "last run" while completed runs exist in the database.
+   * Epoch-ms timestamp of the last completed heartbeat run, from the
+   * in-memory cache. Call {@link loadLastRunAt} to rehydrate it from run
+   * history first.
    */
   get lastRunAt(): number | null {
+    return this._lastRunAt;
+  }
+
+  /**
+   * Rehydrate `lastRunAt` from run history when the in-memory cache is empty.
+   * A daemon restart must not blank "last run" while completed runs exist in
+   * the database. Read failures report unknown and leave the cache empty so a
+   * later call retries.
+   */
+  async loadLastRunAt(): Promise<number | null> {
     if (this._lastRunAt == null) {
       try {
-        this._lastRunAt = getLastHeartbeatRunAt();
+        this._lastRunAt = await getLastHeartbeatRunAt();
       } catch (err) {
-        // DB unavailable (e.g. migrations still settling) — report unknown
-        // and retry on the next read.
+        // DB unavailable (e.g. migrations still settling).
         log.debug({ err }, "Failed to read last heartbeat run from history");
         return null;
       }
@@ -216,24 +223,24 @@ export class HeartbeatService {
   }
 
   /** Whether the consecutive-run cap has been reached. */
-  get isConsecutiveRunCapReached(): boolean {
+  async isConsecutiveRunCapReached(): Promise<boolean> {
     const config = getConfig().heartbeat;
     if (config.maxConsecutiveRuns == null) {
       return false;
     }
     return (
-      countRecentConsecutiveRuns(config.maxConsecutiveRuns) >=
+      (await countRecentConsecutiveRuns(config.maxConsecutiveRuns)) >=
       config.maxConsecutiveRuns
     );
   }
 
   /** Whether the daily run cap has been reached. */
-  get isDailyCapReached(): boolean {
+  async isDailyCapReached(): Promise<boolean> {
     const config = getConfig().heartbeat;
     if (config.maxDailyRuns == null) {
       return false;
     }
-    return countCompletedRunsToday() >= config.maxDailyRuns;
+    return (await countCompletedRunsToday()) >= config.maxDailyRuns;
   }
 
   async runManagedWakeIfDue(
@@ -250,11 +257,11 @@ export class HeartbeatService {
 
     if (!dueByLocalTimer) {
       if (this._pendingRunId) {
-        supersedePendingRun(this._pendingRunId);
+        await supersedePendingRun(this._pendingRunId);
         this._pendingRunId = null;
       }
       this._nextRunAt = options.scheduledFor ?? now;
-      this._pendingRunId = insertPendingHeartbeatRun(this._nextRunAt);
+      this._pendingRunId = await insertPendingHeartbeatRun(this._nextRunAt);
     }
 
     const completed = await this.runOnce({ force: false });
@@ -272,6 +279,9 @@ export class HeartbeatService {
 
   start(): void {
     this.stopped = false;
+    void this.loadLastRunAt().catch((err) => {
+      log.debug({ err }, "Failed to load last heartbeat run at startup");
+    });
     const config = getConfig().heartbeat;
     if (!config.enabled) {
       log.info("Heartbeat disabled by config");
@@ -285,55 +295,9 @@ export class HeartbeatService {
 
     if (!this._hasRunStartupRecovery) {
       this._hasRunStartupRecovery = true;
-      try {
-        this._startupMissedCount = markStaleRunsAsMissed();
-        this._startupCrashedCount = markStaleRunningAsError();
-      } catch (err) {
+      void this.recoverStaleRuns().catch((err) => {
         log.error({ err }, "Failed to recover stale heartbeat runs on startup");
-      }
-      if (this._startupMissedCount > 0 || this._startupCrashedCount > 0) {
-        log.info(
-          {
-            missedCount: this._startupMissedCount,
-            crashedCount: this._startupCrashedCount,
-          },
-          "Recovered stale heartbeat runs on startup",
-        );
-
-        if (!isDiskPressureBackgroundLocked("heartbeat-startup")) {
-          const total = this._startupMissedCount + this._startupCrashedCount;
-          const today = new Date().toISOString().split("T")[0];
-          void emitNotificationSignal({
-            sourceChannel: "scheduler",
-            sourceContextId: "heartbeat",
-            sourceEventName: "activity.failed",
-            dedupeKey: `activity-failed:heartbeat-missed:${today}`,
-            contextPayload: {
-              jobName: "heartbeat",
-              errorMessage: `${total} heartbeat run${
-                total > 1 ? "s were" : " was"
-              } missed while the assistant was offline.`,
-              errorKind: "exception",
-            },
-            attentionHints: {
-              requiresAction: false,
-              urgency: "medium",
-              isAsyncBackground: true,
-              visibleInSourceNow: false,
-            },
-            conversationMetadata: {
-              source: "heartbeat",
-              groupId: "system:background",
-              conversationType: "background",
-            },
-          }).catch((err) => {
-            log.warn(
-              { err },
-              "Failed to emit missed-heartbeat activity.failed notification",
-            );
-          });
-        }
-      }
+      });
     }
 
     if (config.cronExpression != null) {
@@ -341,6 +305,58 @@ export class HeartbeatService {
       this.scheduleNextCronRun(config);
     } else {
       this.startIntervalMode(config);
+    }
+  }
+
+  private async recoverStaleRuns(): Promise<void> {
+    try {
+      this._startupMissedCount = await markStaleRunsAsMissed();
+      this._startupCrashedCount = await markStaleRunningAsError();
+    } catch (err) {
+      log.error({ err }, "Failed to recover stale heartbeat runs on startup");
+    }
+    if (this._startupMissedCount > 0 || this._startupCrashedCount > 0) {
+      log.info(
+        {
+          missedCount: this._startupMissedCount,
+          crashedCount: this._startupCrashedCount,
+        },
+        "Recovered stale heartbeat runs on startup",
+      );
+
+      if (!isDiskPressureBackgroundLocked("heartbeat-startup")) {
+        const total = this._startupMissedCount + this._startupCrashedCount;
+        const today = new Date().toISOString().split("T")[0];
+        void emitNotificationSignal({
+          sourceChannel: "scheduler",
+          sourceContextId: "heartbeat",
+          sourceEventName: "activity.failed",
+          dedupeKey: `activity-failed:heartbeat-missed:${today}`,
+          contextPayload: {
+            jobName: "heartbeat",
+            errorMessage: `${total} heartbeat run${
+              total > 1 ? "s were" : " was"
+            } missed while the assistant was offline.`,
+            errorKind: "exception",
+          },
+          attentionHints: {
+            requiresAction: false,
+            urgency: "medium",
+            isAsyncBackground: true,
+            visibleInSourceNow: false,
+          },
+          conversationMetadata: {
+            source: "heartbeat",
+            groupId: "system:background",
+            conversationType: "background",
+          },
+        }).catch((err) => {
+          log.warn(
+            { err },
+            "Failed to emit missed-heartbeat activity.failed notification",
+          );
+        });
+      }
     }
   }
 
@@ -421,8 +437,11 @@ export class HeartbeatService {
     this._resetGeneration++;
     this.configEpoch++;
     if (this._pendingRunId) {
-      supersedePendingRun(this._pendingRunId);
+      const pendingRunId = this._pendingRunId;
       this._pendingRunId = null;
+      void supersedePendingRun(pendingRunId).catch((err) => {
+        log.warn({ err }, "Failed to supersede pending heartbeat run");
+      });
     }
     if (this.timer) {
       clearTimeout(this.timer as ReturnType<typeof setTimeout>);
@@ -446,8 +465,11 @@ export class HeartbeatService {
     this._consecutiveRuns = 0;
     this._resetGeneration++;
     if (this._pendingRunId) {
-      supersedePendingRun(this._pendingRunId);
+      const pendingRunId = this._pendingRunId;
       this._pendingRunId = null;
+      void supersedePendingRun(pendingRunId).catch((err) => {
+        log.warn({ err }, "Failed to supersede pending heartbeat run");
+      });
     }
     refreshBackgroundWakeIntentSoon("heartbeat-counter-reset");
     if (!this.timer) {
@@ -480,8 +502,9 @@ export class HeartbeatService {
       this.timer = null;
     }
     if (this._pendingRunId) {
-      supersedePendingRun(this._pendingRunId);
+      const pendingRunId = this._pendingRunId;
       this._pendingRunId = null;
+      await supersedePendingRun(pendingRunId);
     }
     this._nextRunAt = null;
     if (this.activeRun) {
@@ -508,7 +531,7 @@ export class HeartbeatService {
     let scheduledFor: number;
     if (force) {
       scheduledFor = Date.now();
-      runId = insertPendingHeartbeatRun(scheduledFor);
+      runId = await insertPendingHeartbeatRun(scheduledFor);
     } else {
       runId = this._pendingRunId;
       scheduledFor = this._nextRunAt ?? Date.now();
@@ -517,7 +540,7 @@ export class HeartbeatService {
 
     if (!force && !config.enabled) {
       if (runId) {
-        skipHeartbeatRun(runId, "disabled");
+        await skipHeartbeatRun(runId, "disabled");
       }
       refreshBackgroundWakeIntentSoon("heartbeat-disabled");
       return false;
@@ -529,7 +552,7 @@ export class HeartbeatService {
     if (!force && (await isLifecycleQuiesced())) {
       log.info("Heartbeat skipped — quiesce lease active");
       if (runId) {
-        skipHeartbeatRun(runId, "quiesced");
+        await skipHeartbeatRun(runId, "quiesced");
       }
       if (!this.cronMode) {
         this.scheduleNextRun(config.intervalMs);
@@ -553,7 +576,7 @@ export class HeartbeatService {
         "Heartbeat skipped — daemon has not received a first user message yet",
       );
       if (runId) {
-        skipHeartbeatRun(runId, "pre_first_user_message");
+        await skipHeartbeatRun(runId, "pre_first_user_message");
       }
       if (!this.cronMode) {
         this.scheduleNextRun(config.intervalMs);
@@ -589,7 +612,7 @@ export class HeartbeatService {
           "Outside active hours, skipping",
         );
         if (runId) {
-          skipHeartbeatRun(runId, "outside_active_hours");
+          await skipHeartbeatRun(runId, "outside_active_hours");
         }
         if (!this.cronMode) {
           this.scheduleNextRun(config.intervalMs);
@@ -614,7 +637,7 @@ export class HeartbeatService {
         "Max consecutive runs reached, skipping",
       );
       if (runId) {
-        skipHeartbeatRun(runId, "max_consecutive_runs");
+        await skipHeartbeatRun(runId, "max_consecutive_runs");
       }
       if (!this.cronMode) {
         this.scheduleNextRun(config.intervalMs);
@@ -627,14 +650,14 @@ export class HeartbeatService {
     if (
       !force &&
       config.maxDailyRuns != null &&
-      countCompletedRunsToday() >= config.maxDailyRuns
+      (await countCompletedRunsToday()) >= config.maxDailyRuns
     ) {
       log.debug(
         { maxDailyRuns: config.maxDailyRuns },
         "Daily run cap reached, skipping",
       );
       if (runId) {
-        skipHeartbeatRun(runId, "max_daily_runs");
+        await skipHeartbeatRun(runId, "max_daily_runs");
       }
       if (!this.cronMode) {
         this.scheduleNextRun(config.intervalMs);
@@ -646,7 +669,7 @@ export class HeartbeatService {
     if (this.activeRun) {
       log.debug("Previous heartbeat run still active, skipping");
       if (runId) {
-        skipHeartbeatRun(runId, "overlap");
+        await skipHeartbeatRun(runId, "overlap");
       }
       return false;
     }
@@ -656,7 +679,7 @@ export class HeartbeatService {
     // from spawning concurrent heartbeat work; the runner's timeout is
     // what actually unblocks the in-flight run.
     if (!runId) {
-      runId = insertPendingHeartbeatRun(scheduledFor);
+      runId = await insertPendingHeartbeatRun(scheduledFor);
     }
     const run = this.executeRun(runId, scheduledFor);
     this.activeRun = run;
@@ -687,10 +710,21 @@ export class HeartbeatService {
 
   private scheduleNextRun(intervalMs: number): void {
     if (this._pendingRunId) {
-      supersedePendingRun(this._pendingRunId);
+      const pendingRunId = this._pendingRunId;
+      this._pendingRunId = null;
+      void supersedePendingRun(pendingRunId).catch((err) => {
+        log.warn({ err }, "Failed to supersede pending heartbeat run");
+      });
     }
-    this._nextRunAt = Date.now() + intervalMs;
-    this._pendingRunId = insertPendingHeartbeatRun(this._nextRunAt);
+    const nextRunAt = Date.now() + intervalMs;
+    this._nextRunAt = nextRunAt;
+    void insertPendingHeartbeatRun(nextRunAt)
+      .then((runId) => {
+        this._pendingRunId = runId;
+      })
+      .catch((err) => {
+        log.warn({ err }, "Failed to schedule next heartbeat run");
+      });
     refreshBackgroundWakeIntentSoon("heartbeat-interval-scheduled");
   }
 
@@ -806,7 +840,7 @@ export class HeartbeatService {
   private async executeRun(runId: string, scheduledFor: number): Promise<void> {
     log.info("Running heartbeat");
 
-    startHeartbeatRun(runId);
+    await startHeartbeatRun(runId);
 
     const latenessMs = Date.now() - scheduledFor;
     const LATE_THRESHOLD_MS = 5 * 60 * 1000;
@@ -817,7 +851,7 @@ export class HeartbeatService {
     const unhealthyProviders = await this.runCredentialHealthCheck();
 
     const checklist = this.readChecklist();
-    const completedRunCount = countCompletedHeartbeatRuns();
+    const completedRunCount = await countCompletedHeartbeatRuns();
     // Warm both guardian-delivery cache keys (vellum + unfiltered) so
     // buildPrompt's sync guardian persona read (isShallowProfile →
     // resolveGuardianPersona), including its any-channel fallback, hits fresh
@@ -875,7 +909,7 @@ export class HeartbeatService {
       // `activity.failed`; any user-facing alert the model decided to
       // raise was emitted in-band via the `notifications` skill during
       // the turn itself.
-      const transitioned = completeHeartbeatRun(runId, {
+      const transitioned = await completeHeartbeatRun(runId, {
         status: "ok",
         conversationId: result.conversationId,
       });
@@ -905,7 +939,7 @@ export class HeartbeatService {
     // classification onto the run-store's status enum so the run history
     // preserves the timeout / error distinction.
     const runStatus = result.errorKind === "timeout" ? "timeout" : "error";
-    completeHeartbeatRun(runId, {
+    await completeHeartbeatRun(runId, {
       status: runStatus,
       conversationId: conversationId ?? result.conversationId,
       error: result.error?.message ?? "Unknown error",

@@ -10,10 +10,10 @@ import { getRecentInvocations } from "../../telemetry/tool-usage-store.js";
 import { LOCAL_PRINCIPALS } from "../auth/route-policy.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
 
-function handleAuditList({ queryParams }: RouteHandlerArgs) {
+async function handleAuditList({ queryParams }: RouteHandlerArgs) {
   const limitRaw = queryParams?.limit;
   const limit = limitRaw !== undefined ? parseInt(limitRaw, 10) : 20;
-  const invocations = getRecentInvocations(
+  const invocations = await getRecentInvocations(
     Number.isFinite(limit) && limit > 0 ? limit : 20,
   );
   return { invocations };

@@ -258,7 +258,12 @@ function logToolFailure(entry: ErrorAuditEntry): void {
 
 function safeRecord(record: ToolInvocationRecord): void {
   try {
-    recordToolInvocation(record);
+    void Promise.resolve(recordToolInvocation(record)).catch((err) => {
+      log.warn(
+        { err, toolName: record.toolName },
+        "Failed to record tool invocation",
+      );
+    });
   } catch (err) {
     log.warn(
       { err, toolName: record.toolName },

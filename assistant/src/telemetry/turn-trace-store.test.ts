@@ -11,7 +11,7 @@
  * traces fail-closed.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 // Control the live-conversation lookup so `isTurnSettled` can be exercised
 // without a running agent loop. Returns `undefined` (no live conversation) by
@@ -31,10 +31,10 @@ mock.module("../daemon/conversation-registry.js", () => ({
   findConversation: () => mockLiveConversation,
 }));
 
-import { createConversation } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { messages, toolInvocations } from "../persistence/schema/index.js";
+import { v4 as uuid } from "uuid";
+
+import { describePg } from "../__tests__/pg-test-db.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   assembleBoundedTurnTrace,
   assembleTurnTrace,
@@ -43,17 +43,37 @@ import {
   type TurnTraceBoundary,
 } from "./turn-trace-store.js";
 
-await initializeDb();
-
-function purge(): void {
-  const db = getDb();
-  db.run("DELETE FROM tool_invocations");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+function db() {
+  return requireMainDb();
 }
 
-beforeEach(() => {
-  purge();
+async function purge(): Promise<void> {
+  await db().run("DELETE FROM tool_invocations");
+  await db().run("DELETE FROM messages");
+  await db().run("DELETE FROM conversations");
+}
+
+async function createConversation(
+  opts: {
+    conversationType?: string;
+  } = {},
+): Promise<{ id: string }> {
+  const id = `conv-${uuid()}`;
+  const now = Date.now();
+  await db()
+    .orm.insert(db().schema.conversations)
+    .values({
+      id,
+      title: "test",
+      conversationType: opts.conversationType ?? "standard",
+      createdAt: now,
+      updatedAt: now,
+    });
+  return { id };
+}
+
+beforeEach(async () => {
+  await purge();
   mockLiveConversation = undefined;
 });
 
@@ -66,9 +86,12 @@ interface MessageSeed {
   metadata?: Record<string, unknown>;
 }
 
-function insertMessage(conversationId: string, seed: MessageSeed): void {
-  getDb()
-    .insert(messages)
+async function insertMessage(
+  conversationId: string,
+  seed: MessageSeed,
+): Promise<void> {
+  await db()
+    .orm.insert(db().schema.messages)
     .values({
       id: seed.id,
       conversationId,
@@ -79,8 +102,7 @@ function insertMessage(conversationId: string, seed: MessageSeed): void {
           : JSON.stringify(seed.content),
       createdAt: seed.createdAt,
       metadata: seed.metadata ? JSON.stringify(seed.metadata) : null,
-    })
-    .run();
+    });
 }
 
 interface ToolSeed {
@@ -93,9 +115,12 @@ interface ToolSeed {
   createdAt: number;
 }
 
-function insertTool(conversationId: string, seed: ToolSeed): void {
-  getDb()
-    .insert(toolInvocations)
+async function insertTool(
+  conversationId: string,
+  seed: ToolSeed,
+): Promise<void> {
+  await db()
+    .orm.insert(db().schema.toolInvocations)
     .values({
       id: seed.id,
       conversationId,
@@ -106,8 +131,7 @@ function insertTool(conversationId: string, seed: ToolSeed): void {
       riskLevel: "low",
       durationMs: seed.durationMs ?? 5,
       createdAt: seed.createdAt,
-    })
-    .run();
+    });
 }
 
 function boundary(
@@ -118,19 +142,19 @@ function boundary(
   return { conversationId, userMessageId, userMessageCreatedAt: createdAt };
 }
 
-describe("assembleTurnTrace", () => {
-  test("gathers user message, assistant responses, tool-result rows, and tool calls for a multi-message turn", () => {
-    const conv = createConversation({ conversationType: "standard" });
+describePg("assembleTurnTrace", () => {
+  test("gathers user message, assistant responses, tool-result rows, and tool calls for a multi-message turn", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
 
     // Turn 1: user asks, assistant calls a tool, tool result lands as a
     // role="user" row, assistant replies.
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "what's on my calendar?" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-asst-1a",
       role: "assistant",
       content: [
@@ -144,7 +168,7 @@ describe("assembleTurnTrace", () => {
       createdAt: 1100,
       metadata: { model: "claude-fable-5" },
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-toolresult-1",
       role: "user",
       content: [
@@ -152,14 +176,14 @@ describe("assembleTurnTrace", () => {
       ],
       createdAt: 1200,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-asst-1b",
       role: "assistant",
       content: [{ type: "text", text: "You have 2 events today." }],
       createdAt: 1300,
       metadata: { model: "claude-fable-5" },
     });
-    insertTool(conv.id, {
+    await insertTool(conv.id, {
       id: "ti-1",
       toolName: "calendar_list_events",
       input: JSON.stringify({ range: "today" }),
@@ -168,13 +192,13 @@ describe("assembleTurnTrace", () => {
     });
 
     // Turn 2: next real user turn — must NOT be in turn 1's trace.
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-2",
       role: "user",
       content: [{ type: "text", text: "thanks" }],
       createdAt: 2000,
     });
-    insertTool(conv.id, {
+    await insertTool(conv.id, {
       id: "ti-2",
       toolName: "noop",
       input: "{}",
@@ -182,7 +206,7 @@ describe("assembleTurnTrace", () => {
       createdAt: 2100,
     });
 
-    const trace = assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
 
     expect(trace.schema_version).toBe(3);
     // Window stops before turn 2: only turn-1 message rows, oldest-first.
@@ -219,31 +243,31 @@ describe("assembleTurnTrace", () => {
     expect(trace.tool_calls[0].result).toBe(JSON.stringify({ events: 2 }));
   });
 
-  test("attributes each assistant row to the model that served it when a hook reroutes mid-turn", () => {
+  test("attributes each assistant row to the model that served it when a hook reroutes mid-turn", async () => {
     // A pre-model-call hook reroutes the SECOND call in the turn, so the two
     // assistant rows carry different served models — attribution stays faithful
     // per message.
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "hello" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-asst-1a",
       role: "assistant",
       content: [{ type: "tool_use", id: "tu-1", name: "noop", input: {} }],
       createdAt: 1100,
       metadata: { model: "claude-fable-5" },
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-toolresult-1",
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "tu-1", content: "ok" }],
       createdAt: 1200,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-asst-1b",
       role: "assistant",
       content: [{ type: "text", text: "done" }],
@@ -251,7 +275,7 @@ describe("assembleTurnTrace", () => {
       metadata: { model: "claude-opus-4-8" },
     });
 
-    const trace = assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
 
     expect(trace.messages.map((m) => [m.id, m.model])).toEqual([
       ["m-user-1", null],
@@ -261,23 +285,23 @@ describe("assembleTurnTrace", () => {
     ]);
   });
 
-  test("per-message model is null for rows with no stamped model (historical / missing metadata)", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+  test("per-message model is null for rows with no stamped model (historical / missing metadata)", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "hello" }],
       createdAt: 1000,
     });
     // Assistant row with no metadata at all (historical row before stamping).
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-asst-1",
       role: "assistant",
       content: [{ type: "text", text: "hi" }],
       createdAt: 1100,
     });
     // Assistant row whose metadata bag omits `model`.
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-asst-2",
       role: "assistant",
       content: [{ type: "text", text: "again" }],
@@ -285,20 +309,20 @@ describe("assembleTurnTrace", () => {
       metadata: { provenanceTrustClass: "unknown" },
     });
 
-    const trace = assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
 
     expect(trace.messages.map((m) => m.model)).toEqual([null, null, null]);
   });
 
-  test("includes system_prompt and tool_definitions from the live conversation", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+  test("includes system_prompt and tool_definitions from the live conversation", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "hello" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-asst-1",
       role: "assistant",
       content: [{ type: "text", text: "hi" }],
@@ -317,7 +341,7 @@ describe("assembleTurnTrace", () => {
       ],
     };
 
-    const trace = assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
 
     expect(trace.system_prompt).toBe("You are a helpful assistant.");
     expect(trace.tool_definitions).toEqual([
@@ -327,15 +351,15 @@ describe("assembleTurnTrace", () => {
     ]);
   });
 
-  test("system_prompt is null and tool_definitions is empty when conversation is evicted", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+  test("system_prompt is null and tool_definitions is empty when conversation is evicted", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "hello" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-asst-1",
       role: "assistant",
       content: [{ type: "text", text: "hi" }],
@@ -343,33 +367,33 @@ describe("assembleTurnTrace", () => {
     });
 
     // No mockLiveConversation set — simulates evicted conversation.
-    const trace = assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
 
     expect(trace.system_prompt).toBeNull();
     expect(trace.tool_definitions).toEqual([]);
   });
 
-  test("the final turn's window runs to the end of the conversation", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+  test("the final turn's window runs to the end of the conversation", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "first" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-2",
       role: "user",
       content: [{ type: "text", text: "second (latest)" }],
       createdAt: 2000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-asst-2",
       role: "assistant",
       content: [{ type: "text", text: "reply to second" }],
       createdAt: 2100,
     });
-    insertTool(conv.id, {
+    await insertTool(conv.id, {
       id: "ti-late",
       toolName: "noop",
       input: "{}",
@@ -377,41 +401,41 @@ describe("assembleTurnTrace", () => {
       createdAt: 2200,
     });
 
-    const trace = assembleTurnTrace(boundary(conv.id, "m-user-2", 2000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "m-user-2", 2000));
     expect(trace.messages.map((m) => m.id)).toEqual(["m-user-2", "m-asst-2"]);
     expect(trace.tool_calls.map((t) => t.id)).toEqual(["ti-late"]);
   });
 
-  test("two real user turns sharing created_at: the first turn's trace is not truncated and excludes the second turn", () => {
+  test("two real user turns sharing created_at: the first turn's trace is not truncated and excludes the second turn", async () => {
     // Forked conversations preserve the source `created_at` with fresh ids, so
     // two real user messages can share a millisecond. A timestamp-only upper
     // bound would equal the current turn's own `created_at` and empty the
     // window — the compound `(created_at, id)` bound must keep this turn's rows
     // (which sort by id at the shared millisecond) while excluding the next.
-    const conv = createConversation({ conversationType: "standard" });
+    const conv = await createConversation({ conversationType: "standard" });
 
     // Turn 1 (id "m-user-1") and turn 2 (id "m-user-2") share created_at=1000.
     // Turn 1's assistant reply, tool-result row, and tool call also land at
     // 1000 — the worst case for a timestamp-only bound.
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "first (same ms)" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-1-asst",
       role: "assistant",
       content: [{ type: "text", text: "reply to first" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-1-toolresult",
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "tu-1", content: "ok" }],
       createdAt: 1000,
     });
-    insertTool(conv.id, {
+    await insertTool(conv.id, {
       id: "ti-turn1",
       toolName: "noop",
       input: "{}",
@@ -420,20 +444,20 @@ describe("assembleTurnTrace", () => {
     });
 
     // Turn 2 user message + its content, same created_at=1000 (higher id).
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-2",
       role: "user",
       content: [{ type: "text", text: "second (same ms)" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-2-asst",
       role: "assistant",
       content: [{ type: "text", text: "reply to second" }],
       createdAt: 1000,
     });
 
-    const trace = assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
 
     // Turn 1's rows (ids < "m-user-2" at ms 1000) are present; the trace is
     // NOT truncated/emptied. The second user turn and its reply are excluded.
@@ -446,45 +470,45 @@ describe("assembleTurnTrace", () => {
     expect(trace.tool_calls.map((t) => t.id)).toEqual(["ti-turn1"]);
   });
 
-  test("the SECOND of two same-created_at turns captures its own trace to end of conversation", () => {
+  test("the SECOND of two same-created_at turns captures its own trace to end of conversation", async () => {
     // Complement of the previous test: assembling the trace for the later of
     // two same-millisecond user turns must include only that turn's rows.
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "first (same ms)" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-1-asst",
       role: "assistant",
       content: [{ type: "text", text: "reply to first" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-2",
       role: "user",
       content: [{ type: "text", text: "second (same ms, latest)" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-2-asst",
       role: "assistant",
       content: [{ type: "text", text: "reply to second" }],
       createdAt: 1100,
     });
 
-    const trace = assembleTurnTrace(boundary(conv.id, "m-user-2", 1000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "m-user-2", 1000));
     expect(trace.messages.map((m) => m.id)).toEqual([
       "m-user-2",
       "m-user-2-asst",
     ]);
   });
 
-  test("a tool-result role=user row does NOT truncate the turn it belongs to", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+  test("a tool-result role=user row does NOT truncate the turn it belongs to", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "do a thing" }],
@@ -492,20 +516,20 @@ describe("assembleTurnTrace", () => {
     });
     // Tool-result row persisted as role="user" — must be treated as part of
     // the turn, not as the next user turn.
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-toolresult",
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "tu-x", content: "done" }],
       createdAt: 1100,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-asst-after-result",
       role: "assistant",
       content: [{ type: "text", text: "all done" }],
       createdAt: 1200,
     });
 
-    const trace = assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
     // All three rows belong to the single turn — the tool-result row did not
     // close the window early.
     expect(trace.messages.map((m) => m.id)).toEqual([
@@ -515,12 +539,12 @@ describe("assembleTurnTrace", () => {
     ]);
   });
 
-  test("captures tool inputs verbatim — no field-level redaction, even for credential-shaped keys", () => {
+  test("captures tool inputs verbatim — no field-level redaction, even for credential-shaped keys", async () => {
     // The consented trace is full-fidelity. Keys that look sensitive
     // (access_token, api_key) are NOT redacted — the protections are the
     // consent gate, the PII-segregated table, and its TTL, not redaction.
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "use my token" }],
@@ -531,7 +555,7 @@ describe("assembleTurnTrace", () => {
       access_token: "super-secret-value",
       nested: { api_key: "also-secret" },
     };
-    insertTool(conv.id, {
+    await insertTool(conv.id, {
       id: "ti-secret",
       toolName: "http_request",
       input: JSON.stringify(rawInput),
@@ -539,7 +563,7 @@ describe("assembleTurnTrace", () => {
       createdAt: 1100,
     });
 
-    const trace = assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
     const call = trace.tool_calls[0];
     // Parsed input matches the raw stored input exactly — including the
     // credential-shaped values, which are present verbatim (not redacted).
@@ -554,15 +578,15 @@ describe("assembleTurnTrace", () => {
     expect(call.result).toBe(JSON.stringify({ status: 200 }));
   });
 
-  test("non-JSON tool input is forwarded as a raw string", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+  test("non-JSON tool input is forwarded as a raw string", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "hi" }],
       createdAt: 1000,
     });
-    insertTool(conv.id, {
+    await insertTool(conv.id, {
       id: "ti-raw",
       toolName: "bash",
       input: "ls -la /tmp",
@@ -570,41 +594,41 @@ describe("assembleTurnTrace", () => {
       createdAt: 1100,
     });
 
-    const trace = assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
     expect(trace.tool_calls[0].input).toBe("ls -la /tmp");
   });
 
-  test("legacy plain-string message content is forwarded as a string", () => {
-    const conv = createConversation({ conversationType: "standard" });
+  test("legacy plain-string message content is forwarded as a string", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
     // A legacy row stored the content as a bare (JSON) string, not a block
     // array. JSON.parse of a quoted string yields a string; an unquoted
     // legacy value falls back to the raw string.
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: "plain legacy text",
       createdAt: 1000,
     });
-    const trace = assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "m-user-1", 1000));
     expect(trace.messages[0].content).toBe("plain legacy text");
   });
 
-  test("scopes the trace to a single conversation", () => {
-    const a = createConversation({ conversationType: "standard" });
-    const b = createConversation({ conversationType: "standard" });
-    insertMessage(a.id, {
+  test("scopes the trace to a single conversation", async () => {
+    const a = await createConversation({ conversationType: "standard" });
+    const b = await createConversation({ conversationType: "standard" });
+    await insertMessage(a.id, {
       id: "m-a-user",
       role: "user",
       content: [{ type: "text", text: "in A" }],
       createdAt: 1000,
     });
-    insertMessage(b.id, {
+    await insertMessage(b.id, {
       id: "m-b-user",
       role: "user",
       content: [{ type: "text", text: "in B" }],
       createdAt: 1050,
     });
-    insertTool(b.id, {
+    await insertTool(b.id, {
       id: "ti-b",
       toolName: "noop",
       input: "{}",
@@ -612,14 +636,14 @@ describe("assembleTurnTrace", () => {
       createdAt: 1060,
     });
 
-    const trace = assembleTurnTrace(boundary(a.id, "m-a-user", 1000));
+    const trace = await assembleTurnTrace(boundary(a.id, "m-a-user", 1000));
     expect(trace.messages.map((m) => m.id)).toEqual(["m-a-user"]);
     // Tool calls from conversation B never leak into A's trace.
     expect(trace.tool_calls).toEqual([]);
   });
 });
 
-describe("assembleTurnTrace — coalesced-batch natural windows", () => {
+describePg("assembleTurnTrace — coalesced-batch natural windows", () => {
   // The daemon coalesces queued user messages: drainBatch persists every
   // batched user row, then runs ONE shared response attributed to the LAST
   // batched user row. On disk: [u1][u2][u3][assistant + tools][u4][assistant2].
@@ -627,27 +651,27 @@ describe("assembleTurnTrace — coalesced-batch natural windows", () => {
   // stored messages, and a batch head is indistinguishable from a turn that
   // failed/cancelled before responding). Each turn just traces its natural
   // window, which is faithful.
-  function seedThreeMessageBatch(convId: string): void {
-    insertMessage(convId, {
+  async function seedThreeMessageBatch(convId: string): Promise<void> {
+    await insertMessage(convId, {
       id: "u1",
       role: "user",
       content: [{ type: "text", text: "first batched" }],
       createdAt: 1000,
     });
-    insertMessage(convId, {
+    await insertMessage(convId, {
       id: "u2",
       role: "user",
       content: [{ type: "text", text: "second batched" }],
       createdAt: 1010,
     });
-    insertMessage(convId, {
+    await insertMessage(convId, {
       id: "u3",
       role: "user",
       content: [{ type: "text", text: "third batched (final)" }],
       createdAt: 1020,
     });
     // Shared response written AFTER the last batched user row, with a tool call.
-    insertMessage(convId, {
+    await insertMessage(convId, {
       id: "a-shared",
       role: "assistant",
       content: [
@@ -656,13 +680,13 @@ describe("assembleTurnTrace — coalesced-batch natural windows", () => {
       ],
       createdAt: 1030,
     });
-    insertMessage(convId, {
+    await insertMessage(convId, {
       id: "a-shared-toolresult",
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "tu-1", content: "ok" }],
       createdAt: 1040,
     });
-    insertTool(convId, {
+    await insertTool(convId, {
       id: "ti-shared",
       toolName: "calendar",
       input: "{}",
@@ -671,11 +695,11 @@ describe("assembleTurnTrace — coalesced-batch natural windows", () => {
     });
   }
 
-  test("a batched HEAD turn's trace contains only its own user row (faithful, no batch field)", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    seedThreeMessageBatch(conv.id);
+  test("a batched HEAD turn's trace contains only its own user row (faithful, no batch field)", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await seedThreeMessageBatch(conv.id);
 
-    const trace = assembleTurnTrace(boundary(conv.id, "u1", 1000));
+    const trace = await assembleTurnTrace(boundary(conv.id, "u1", 1000));
     // Natural window: just the head's own user row. Its window genuinely has no
     // assistant response (the shared response is on the final batched turn).
     expect(trace.messages.map((m) => m.id)).toEqual(["u1"]);
@@ -686,23 +710,23 @@ describe("assembleTurnTrace — coalesced-batch natural windows", () => {
     expect("batch" in trace).toBe(false);
   });
 
-  test("a batched MIDDLE turn's trace also contains only its own user row", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    seedThreeMessageBatch(conv.id);
+  test("a batched MIDDLE turn's trace also contains only its own user row", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await seedThreeMessageBatch(conv.id);
 
-    const trace = assembleTurnTrace(boundary(conv.id, "u2", 1010));
+    const trace = await assembleTurnTrace(boundary(conv.id, "u2", 1010));
     expect(trace.messages.map((m) => m.id)).toEqual(["u2"]);
     expect(trace.tool_calls).toEqual([]);
     expect("batch" in trace).toBe(false);
   });
 
-  test("the FINAL batched turn's trace contains the shared assistant response + tools", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    seedThreeMessageBatch(conv.id);
+  test("the FINAL batched turn's trace contains the shared assistant response + tools", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await seedThreeMessageBatch(conv.id);
 
     // The shared response is attributed by the daemon to the last batched user
     // row (lastUserMessageId == u3); u3's natural window includes it.
-    const trace = assembleTurnTrace(boundary(conv.id, "u3", 1020));
+    const trace = await assembleTurnTrace(boundary(conv.id, "u3", 1020));
     expect(trace.messages.map((m) => m.id)).toEqual([
       "u3",
       "a-shared",
@@ -713,30 +737,32 @@ describe("assembleTurnTrace — coalesced-batch natural windows", () => {
   });
 });
 
-describe("assembleBoundedTurnTrace", () => {
-  test("returns the trace when under the size cap", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+describePg("assembleBoundedTurnTrace", () => {
+  test("returns the trace when under the size cap", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "small" }],
       createdAt: 1000,
     });
-    const trace = assembleBoundedTurnTrace(boundary(conv.id, "m-user-1", 1000));
+    const trace = await assembleBoundedTurnTrace(
+      boundary(conv.id, "m-user-1", 1000),
+    );
     expect(trace).not.toBeNull();
     expect(trace?.messages.map((m) => m.id)).toEqual(["m-user-1"]);
   });
 
-  test("omits (returns null) when the serialized trace exceeds the cap", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+  test("omits (returns null) when the serialized trace exceeds the cap", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "huge" }],
       createdAt: 1000,
     });
     // A single oversized tool result pushes the trace past the cap.
-    insertTool(conv.id, {
+    await insertTool(conv.id, {
       id: "ti-huge",
       toolName: "dump",
       input: "{}",
@@ -744,26 +770,28 @@ describe("assembleBoundedTurnTrace", () => {
       createdAt: 1100,
     });
 
-    const trace = assembleBoundedTurnTrace(boundary(conv.id, "m-user-1", 1000));
+    const trace = await assembleBoundedTurnTrace(
+      boundary(conv.id, "m-user-1", 1000),
+    );
     expect(trace).toBeNull();
   });
 });
 
-describe("isTurnSettled", () => {
-  test("batched head with a later real user row is NOT settled while the conversation is processing", () => {
+describePg("isTurnSettled", () => {
+  test("batched head with a later real user row is NOT settled while the conversation is processing", async () => {
     // Batched-message path: drainBatch persists the head user row AND the tail
     // user row(s) up front, then runs ONE shared response. So the head has a
     // later real user turn while the shared response is still in flight — it
     // must NOT be treated as settled (the old "successor exists" shortcut would
     // have shipped a partial trace for the head).
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "head of batch" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-2",
       role: "user",
       content: [{ type: "text", text: "tail of batch" }],
@@ -776,15 +804,15 @@ describe("isTurnSettled", () => {
     expect(isTurnSettled(boundary(conv.id, "m-user-2", 2000))).toBe(false);
   });
 
-  test("the batched head settles once the shared response completes (conversation idle)", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+  test("the batched head settles once the shared response completes (conversation idle)", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "head of batch" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-2",
       role: "user",
       content: [{ type: "text", text: "tail of batch" }],
@@ -796,18 +824,18 @@ describe("isTurnSettled", () => {
     expect(isTurnSettled(boundary(conv.id, "m-user-2", 2000))).toBe(true);
   });
 
-  test("a completed earlier turn defers while a later turn's response is in flight, then settles when idle", () => {
+  test("a completed earlier turn defers while a later turn's response is in flight, then settles when idle", async () => {
     // Serialized (non-batch) path: T1 finished, T2 now generating. Gating on
     // isProcessing() defers T1 until the conversation goes idle. This is a
     // latency cost, not data loss — T1 traces completely once T2 finishes.
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "first (done)" }],
       createdAt: 1000,
     });
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-user-2",
       role: "user",
       content: [{ type: "text", text: "second (generating)" }],
@@ -821,16 +849,16 @@ describe("isTurnSettled", () => {
     expect(isTurnSettled(boundary(conv.id, "m-user-1", 1000))).toBe(true);
   });
 
-  test("settledness follows the conversation's processing state regardless of intervening tool-result rows", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+  test("settledness follows the conversation's processing state regardless of intervening tool-result rows", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "do a thing" }],
       createdAt: 1000,
     });
     // Tool-result row persisted as role="user" — part of this turn's response.
-    insertMessage(conv.id, {
+    await insertMessage(conv.id, {
       id: "m-toolresult",
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "tu-x", content: "done" }],
@@ -844,9 +872,9 @@ describe("isTurnSettled", () => {
     expect(isTurnSettled(boundary(conv.id, "m-user-1", 1000))).toBe(true);
   });
 
-  test("NOT settled when this is the latest real user turn and the conversation is processing", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+  test("NOT settled when this is the latest real user turn and the conversation is processing", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "still generating" }],
@@ -857,9 +885,9 @@ describe("isTurnSettled", () => {
     expect(isTurnSettled(boundary(conv.id, "m-user-1", 1000))).toBe(false);
   });
 
-  test("settled when this is the latest real user turn but the conversation is idle (final turn)", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+  test("settled when this is the latest real user turn but the conversation is idle (final turn)", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "final turn" }],
@@ -869,9 +897,9 @@ describe("isTurnSettled", () => {
     expect(isTurnSettled(boundary(conv.id, "m-user-1", 1000))).toBe(true);
   });
 
-  test("settled when the conversation is not in the live registry (evicted / not loaded)", () => {
-    const conv = createConversation({ conversationType: "standard" });
-    insertMessage(conv.id, {
+  test("settled when the conversation is not in the live registry (evicted / not loaded)", async () => {
+    const conv = await createConversation({ conversationType: "standard" });
+    await insertMessage(conv.id, {
       id: "m-user-1",
       role: "user",
       content: [{ type: "text", text: "from an evicted conversation" }],

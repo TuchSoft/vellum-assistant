@@ -1,9 +1,8 @@
 import { and, asc, eq, gt, lt, lte, or, sql } from "drizzle-orm";
 
 import { findConversation } from "../daemon/conversation-registry.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { realUserTurnContentFilter } from "../persistence/real-user-turn-filter.js";
-import { messages, toolInvocations } from "../persistence/schema/index.js";
 import { getLogger } from "../util/logger.js";
 import type {
   TurnTrace,
@@ -85,11 +84,12 @@ interface NextTurnBoundary {
  * whose results land as role="user" rows — is not truncated at its own tool
  * results.
  */
-function nextRealUserTurn(
+async function nextRealUserTurn(
   boundary: TurnTraceBoundary,
-): NextTurnBoundary | null {
-  const db = getDb();
-  const row = db
+): Promise<NextTurnBoundary | null> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  const [row] = await db.orm
     .select({ createdAt: messages.createdAt, id: messages.id })
     .from(messages)
     .where(
@@ -107,8 +107,7 @@ function nextRealUserTurn(
       ),
     )
     .orderBy(asc(messages.createdAt), asc(messages.id))
-    .limit(1)
-    .get();
+    .limit(1);
   return row ?? null;
 }
 
@@ -152,11 +151,12 @@ export function isTurnSettled(boundary: TurnTraceBoundary): boolean {
 }
 
 /** Message rows belonging to the turn window, oldest-first. */
-function queryTurnMessages(
+async function queryTurnMessages(
   boundary: TurnTraceBoundary,
   nextTurn: NextTurnBoundary | null,
-): TurnTraceMessage[] {
-  const db = getDb();
+): Promise<TurnTraceMessage[]> {
+  const db = requireMainDb();
+  const messages = db.schema.messages;
   // Lower bound: the user message itself (inclusive), using the same
   // `(createdAt, id)` lex-comparison as the cursor so a row sharing the
   // user message's millisecond isn't dropped.
@@ -181,7 +181,7 @@ function queryTurnMessages(
           ),
         );
 
-  const rows = db
+  const rows = await db.orm
     .select({
       id: messages.id,
       role: messages.role,
@@ -197,8 +197,7 @@ function queryTurnMessages(
         ...(upperBound ? [upperBound] : []),
       ),
     )
-    .orderBy(asc(messages.createdAt), asc(messages.id))
-    .all();
+    .orderBy(asc(messages.createdAt), asc(messages.id));
 
   return rows.map((r) => ({
     id: r.id,
@@ -244,11 +243,12 @@ function parseToolInput(raw: string): unknown {
  * rows at that millisecond) and is the conservative choice for a diagnostic
  * trace.
  */
-function queryTurnToolCalls(
+async function queryTurnToolCalls(
   boundary: TurnTraceBoundary,
   nextTurn: NextTurnBoundary | null,
-): TurnTraceToolCall[] {
-  const db = getDb();
+): Promise<TurnTraceToolCall[]> {
+  const db = requireMainDb();
+  const toolInvocations = db.schema.toolInvocations;
   let upperBound;
   if (nextTurn == null) {
     upperBound = undefined;
@@ -261,7 +261,7 @@ function queryTurnToolCalls(
     upperBound = lt(toolInvocations.createdAt, nextTurn.createdAt);
   }
 
-  const rows = db
+  const rows = await db.orm
     .select({
       id: toolInvocations.id,
       toolName: toolInvocations.toolName,
@@ -279,8 +279,7 @@ function queryTurnToolCalls(
         ...(upperBound ? [upperBound] : []),
       ),
     )
-    .orderBy(asc(toolInvocations.createdAt), asc(toolInvocations.id))
-    .all();
+    .orderBy(asc(toolInvocations.createdAt), asc(toolInvocations.id));
 
   return rows.map((r) => ({
     id: r.id,
@@ -315,8 +314,10 @@ function queryTurnToolCalls(
  * serialized-size cap — this function always returns a faithful trace for the
  * window.
  */
-export function assembleTurnTrace(boundary: TurnTraceBoundary): TurnTrace {
-  const nextTurn = nextRealUserTurn(boundary);
+export async function assembleTurnTrace(
+  boundary: TurnTraceBoundary,
+): Promise<TurnTrace> {
+  const nextTurn = await nextRealUserTurn(boundary);
   const conversation = findConversation(boundary.conversationId);
 
   // System prompt and tool definitions are read from the live conversation's
@@ -337,8 +338,8 @@ export function assembleTurnTrace(boundary: TurnTraceBoundary): TurnTrace {
 
   return {
     schema_version: 3,
-    messages: queryTurnMessages(boundary, nextTurn),
-    tool_calls: queryTurnToolCalls(boundary, nextTurn),
+    messages: await queryTurnMessages(boundary, nextTurn),
+    tool_calls: await queryTurnToolCalls(boundary, nextTurn),
     system_prompt: systemPrompt,
     tool_definitions: toolDefinitions,
   };
@@ -358,12 +359,12 @@ export const MAX_TRACE_SERIALIZED_BYTES = 256 * 1024;
  * trace) when assembly fails or the trace is too large — both fail-closed so a
  * single oversized/broken turn never blocks the turn event from flushing.
  */
-export function assembleBoundedTurnTrace(
+export async function assembleBoundedTurnTrace(
   boundary: TurnTraceBoundary,
-): TurnTrace | null {
+): Promise<TurnTrace | null> {
   let trace: TurnTrace;
   try {
-    trace = assembleTurnTrace(boundary);
+    trace = await assembleTurnTrace(boundary);
   } catch (err) {
     log.warn(
       { err, conversationId: boundary.conversationId },

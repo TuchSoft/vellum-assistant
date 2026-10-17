@@ -6,31 +6,65 @@
  * downstream (DAU) can filter out background/scheduled prompts.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import {
-  addMessage,
-  createConversation,
-} from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { messages } from "../persistence/schema/index.js";
+import { eq } from "drizzle-orm";
+import { v4 as uuid } from "uuid";
+
+import { requireMainDb } from "../persistence/db-facade.js";
 import { queryUnreportedTurnEvents } from "../telemetry/turn-events-store.js";
 import { stampTurnOutcome } from "../telemetry/turn-outcome.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function purge(): void {
-  const db = getDb();
-  // Wipe messages then conversations to keep tests independent. FK cascade
-  // also removes any dependent rows.
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+function db() {
+  return requireMainDb();
 }
 
-beforeEach(() => {
-  purge();
-});
+async function purge(): Promise<void> {
+  // Wipe messages then conversations to keep tests independent. FK cascade
+  // also removes any dependent rows.
+  await db().run("DELETE FROM messages");
+  await db().run("DELETE FROM conversations");
+}
+
+async function createConversation(
+  opts: {
+    conversationType?: string;
+  } = {},
+): Promise<{ id: string }> {
+  const id = `conv-${uuid()}`;
+  const now = Date.now();
+  await db()
+    .orm.insert(db().schema.conversations)
+    .values({
+      id,
+      title: "test",
+      conversationType: opts.conversationType ?? "standard",
+      createdAt: now,
+      updatedAt: now,
+    });
+  return { id };
+}
+
+async function addMessage(
+  conversationId: string,
+  role: string,
+  content: string,
+  opts: { metadata?: Record<string, unknown>; createdAt?: number } = {},
+): Promise<{ id: string }> {
+  const id = `msg-${uuid()}`;
+  await db()
+    .orm.insert(db().schema.messages)
+    .values({
+      id,
+      conversationId,
+      role,
+      content,
+      createdAt: opts.createdAt ?? Date.now(),
+      metadata: opts.metadata ? JSON.stringify(opts.metadata) : null,
+    });
+  return { id };
+}
 
 /**
  * Insert a user message at a specific epoch-millis timestamp so we can
@@ -41,22 +75,46 @@ async function insertUserMessageAt(
   content: string,
   createdAt: number,
 ): Promise<string> {
-  const message = await addMessage(conversationId, "user", content);
-  // addMessage stamps createdAt to monotonic now(); rewrite for
-  // deterministic ordering in the test.
-  const db = getDb();
-  db.run(
-    `UPDATE messages SET created_at = ${createdAt} WHERE id = '${message.id}'`,
-  );
+  const message = await addMessage(conversationId, "user", content, {
+    createdAt,
+  });
   return message.id;
 }
 
-describe("queryUnreportedTurnEvents", () => {
+async function stampOutcomeOnPg(
+  userMessageId: string,
+  outcome: string,
+  extras: { batchedInto?: string; failureCode?: string } = {},
+): Promise<void> {
+  const messages = db().schema.messages;
+  const [row] = await db()
+    .orm.select({ metadata: messages.metadata })
+    .from(messages)
+    .where(eq(messages.id, userMessageId));
+  const metadata = row?.metadata ? JSON.parse(row.metadata) : {};
+  await db()
+    .orm.update(messages)
+    .set({
+      metadata: JSON.stringify({
+        ...metadata,
+        turnOutcome: outcome,
+        ...(extras.batchedInto ? { turnBatchedInto: extras.batchedInto } : {}),
+        ...(extras.failureCode ? { turnFailureCode: extras.failureCode } : {}),
+      }),
+    })
+    .where(eq(messages.id, userMessageId));
+}
+
+beforeEach(async () => {
+  await purge();
+});
+
+describePg("queryUnreportedTurnEvents", () => {
   test("attaches conversationId, conversationType, and turnIndex for a standard conversation", async () => {
-    const conv = createConversation({ conversationType: "standard" });
+    const conv = await createConversation({ conversationType: "standard" });
     await insertUserMessageAt(conv.id, "hello", 1000);
 
-    const events = queryUnreportedTurnEvents(0, undefined, 100);
+    const events = await queryUnreportedTurnEvents(0, undefined, 100);
     expect(events.length).toBe(1);
     expect(events[0].conversationId).toBe(conv.id);
     expect(events[0].conversationType).toBe("standard");
@@ -65,15 +123,15 @@ describe("queryUnreportedTurnEvents", () => {
   });
 
   test("attaches conversationType for background and scheduled conversations", async () => {
-    const bg = createConversation({ conversationType: "background" });
-    const sched = createConversation({ conversationType: "scheduled" });
-    const std = createConversation({ conversationType: "standard" });
+    const bg = await createConversation({ conversationType: "background" });
+    const sched = await createConversation({ conversationType: "scheduled" });
+    const std = await createConversation({ conversationType: "standard" });
 
     const bgMsg = await insertUserMessageAt(bg.id, "bg prompt", 1000);
     const schedMsg = await insertUserMessageAt(sched.id, "sched prompt", 2000);
     const stdMsg = await insertUserMessageAt(std.id, "user typed this", 3000);
 
-    const events = queryUnreportedTurnEvents(0, undefined, 100);
+    const events = await queryUnreportedTurnEvents(0, undefined, 100);
     const byId = Object.fromEntries(events.map((e) => [e.id, e]));
 
     expect(byId[bgMsg].conversationType).toBe("background");
@@ -82,14 +140,15 @@ describe("queryUnreportedTurnEvents", () => {
   });
 
   test("excludes tool_result and web_search_tool_result content patterns", async () => {
-    const conv = createConversation({ conversationType: "standard" });
+    const conv = await createConversation({ conversationType: "standard" });
 
     // Real user turn
     const realId = await insertUserMessageAt(conv.id, "real user text", 1000);
 
     // Synthetic "user" rows that wrap tool results: these should be filtered
-    const db = getDb();
-    db.insert(messages)
+    const messages = db().schema.messages;
+    await db()
+      .orm.insert(messages)
       .values({
         id: "tool-result-id",
         conversationId: conv.id,
@@ -98,9 +157,9 @@ describe("queryUnreportedTurnEvents", () => {
           { type: "tool_result", tool_use_id: "x", content: "" },
         ]),
         createdAt: 2000,
-      })
-      .run();
-    db.insert(messages)
+      });
+    await db()
+      .orm.insert(messages)
       .values({
         id: "web-search-tool-result-id",
         conversationId: conv.id,
@@ -109,10 +168,9 @@ describe("queryUnreportedTurnEvents", () => {
           { type: "web_search_tool_result", tool_use_id: "y", content: "" },
         ]),
         createdAt: 3000,
-      })
-      .run();
+      });
 
-    const events = queryUnreportedTurnEvents(0, undefined, 100);
+    const events = await queryUnreportedTurnEvents(0, undefined, 100);
     expect(events.length).toBe(1);
     expect(events[0].id).toBe(realId);
     expect(events[0].conversationType).toBe("standard");
@@ -123,12 +181,12 @@ describe("queryUnreportedTurnEvents", () => {
   });
 
   test("turnIndex counts real user turns in (createdAt, id) order within a conversation", async () => {
-    const conv = createConversation({ conversationType: "standard" });
+    const conv = await createConversation({ conversationType: "standard" });
     const m1 = await insertUserMessageAt(conv.id, "first", 1000);
     const m2 = await insertUserMessageAt(conv.id, "second", 2000);
     const m3 = await insertUserMessageAt(conv.id, "third", 3000);
 
-    const events = queryUnreportedTurnEvents(0, undefined, 100);
+    const events = await queryUnreportedTurnEvents(0, undefined, 100);
     const byId = Object.fromEntries(events.map((e) => [e.id, e]));
     expect(byId[m1].turnIndex).toBe(1);
     expect(byId[m2].turnIndex).toBe(2);
@@ -136,13 +194,13 @@ describe("queryUnreportedTurnEvents", () => {
   });
 
   test("turnIndex resets across conversations", async () => {
-    const a = createConversation({ conversationType: "standard" });
-    const b = createConversation({ conversationType: "standard" });
+    const a = await createConversation({ conversationType: "standard" });
+    const b = await createConversation({ conversationType: "standard" });
     const a1 = await insertUserMessageAt(a.id, "a first", 1000);
     const b1 = await insertUserMessageAt(b.id, "b first", 1500);
     const a2 = await insertUserMessageAt(a.id, "a second", 2000);
 
-    const events = queryUnreportedTurnEvents(0, undefined, 100);
+    const events = await queryUnreportedTurnEvents(0, undefined, 100);
     const byId = Object.fromEntries(events.map((e) => [e.id, e]));
     // Conversation A: 1, 2. Conversation B: 1 (independent of A).
     expect(byId[a1].turnIndex).toBe(1);
@@ -154,14 +212,15 @@ describe("queryUnreportedTurnEvents", () => {
   });
 
   test("turnIndex skips tool_result rows even when they're interleaved", async () => {
-    const conv = createConversation({ conversationType: "standard" });
+    const conv = await createConversation({ conversationType: "standard" });
     const real1 = await insertUserMessageAt(conv.id, "first real", 1000);
 
     // Inject a tool_result row between the two real turns. The
     // correlated subquery must use the same content filter as the
     // outer query, otherwise turn_index would jump by 2 instead of 1.
-    const db = getDb();
-    db.insert(messages)
+    const messages = db().schema.messages;
+    await db()
+      .orm.insert(messages)
       .values({
         id: "interleaved-tool-result",
         conversationId: conv.id,
@@ -170,12 +229,11 @@ describe("queryUnreportedTurnEvents", () => {
           { type: "tool_result", tool_use_id: "x", content: "" },
         ]),
         createdAt: 1500,
-      })
-      .run();
+      });
 
     const real2 = await insertUserMessageAt(conv.id, "second real", 2000);
 
-    const events = queryUnreportedTurnEvents(0, undefined, 100);
+    const events = await queryUnreportedTurnEvents(0, undefined, 100);
     const byId = Object.fromEntries(events.map((e) => [e.id, e]));
     expect(events.length).toBe(2);
     expect(byId[real1].turnIndex).toBe(1);
@@ -183,17 +241,17 @@ describe("queryUnreportedTurnEvents", () => {
   });
 
   test("respects the cursor and returns events in (createdAt, id) order", async () => {
-    const conv = createConversation({ conversationType: "standard" });
+    const conv = await createConversation({ conversationType: "standard" });
     const m1 = await insertUserMessageAt(conv.id, "first", 1000);
     const m2 = await insertUserMessageAt(conv.id, "second", 2000);
     const m3 = await insertUserMessageAt(conv.id, "third", 3000);
 
     // Cursor at (1500, undefined) should skip m1 and return m2, m3 in order.
-    const after = queryUnreportedTurnEvents(1500, undefined, 100);
+    const after = await queryUnreportedTurnEvents(1500, undefined, 100);
     expect(after.map((e) => e.id)).toEqual([m2, m3]);
 
     // Sanity: pulling from the start returns all three with correct types.
-    const all = queryUnreportedTurnEvents(0, undefined, 100);
+    const all = await queryUnreportedTurnEvents(0, undefined, 100);
     expect(all.map((e) => e.id)).toEqual([m1, m2, m3]);
     for (const e of all) {
       expect(e.conversationType).toBe("standard");
@@ -208,7 +266,7 @@ describe("queryUnreportedTurnEvents", () => {
     //  - Channel inbound: Slack surface, no client headers (channel
     //    inbound paths don't carry browser context).
     //  - Legacy: a message persisted before metadata threading existed.
-    const conv = createConversation({ conversationType: "standard" });
+    const conv = await createConversation({ conversationType: "standard" });
 
     const macOsMsg = await addMessage(conv.id, "user", "hi from desktop", {
       metadata: {
@@ -228,7 +286,7 @@ describe("queryUnreportedTurnEvents", () => {
     });
     const legacyMsg = await addMessage(conv.id, "user", "hi from the past");
 
-    const events = queryUnreportedTurnEvents(0, undefined, 100);
+    const events = await queryUnreportedTurnEvents(0, undefined, 100);
     const byId = Object.fromEntries(events.map((e) => [e.id, e]));
 
     expect(byId[macOsMsg.id]).toBeDefined();
@@ -257,7 +315,7 @@ describe("queryUnreportedTurnEvents", () => {
   });
 
   test("projects turn-outcome stamps from messages.metadata", async () => {
-    const conv = createConversation({ conversationType: "standard" });
+    const conv = await createConversation({ conversationType: "standard" });
     const head = await addMessage(conv.id, "user", "first of a burst", {
       metadata: { userMessageInterface: "web", userMessageChannel: "vellum" },
     });
@@ -266,13 +324,13 @@ describe("queryUnreportedTurnEvents", () => {
     const cancelled = await addMessage(conv.id, "user", "stopped turn");
     const normal = await addMessage(conv.id, "user", "replied turn");
 
-    stampTurnOutcome(head.id, "batched", { batchedInto: final.id });
-    stampTurnOutcome(failed.id, "failed", {
+    await stampOutcomeOnPg(head.id, "batched", { batchedInto: final.id });
+    await stampOutcomeOnPg(failed.id, "failed", {
       failureCode: "PROVIDER_RATE_LIMIT",
     });
-    stampTurnOutcome(cancelled.id, "cancelled");
+    await stampOutcomeOnPg(cancelled.id, "cancelled");
 
-    const events = queryUnreportedTurnEvents(0, undefined, 100);
+    const events = await queryUnreportedTurnEvents(0, undefined, 100);
     const byId = Object.fromEntries(events.map((e) => [e.id, e]));
 
     expect(byId[head.id].outcome).toBe("batched");
@@ -302,7 +360,7 @@ describe("queryUnreportedTurnEvents", () => {
   });
 
   test("projects the scripted flag, keeping false distinct from unknown", async () => {
-    const conv = createConversation({ conversationType: "standard" });
+    const conv = await createConversation({ conversationType: "standard" });
     const scripted = await addMessage(conv.id, "user", "auto-sent kickoff", {
       metadata: { scripted: true },
     });
@@ -311,7 +369,7 @@ describe("queryUnreportedTurnEvents", () => {
     });
     const legacy = await addMessage(conv.id, "user", "row predating the flag");
 
-    const events = queryUnreportedTurnEvents(0, undefined, 100);
+    const events = await queryUnreportedTurnEvents(0, undefined, 100);
     const byId = Object.fromEntries(events.map((e) => [e.id, e]));
 
     // sqlite's json_extract yields 1/0 for JSON booleans, so these must come
@@ -332,9 +390,9 @@ describe("queryUnreportedTurnEvents", () => {
   });
 });
 
-describe("unfinalized rows and turn accounting", () => {
+describePg("unfinalized rows and turn accounting", () => {
   test("an in-flight grouped tool-result row is not a real user turn", async () => {
-    const conv = createConversation({ conversationType: "standard" });
+    const conv = await createConversation({ conversationType: "standard" });
     const first = await insertUserMessageAt(conv.id, "real question", 1000);
     // The grouped tool-result row: user-role, reserved unfinalized while
     // tool output streams, content a { ref } that does not contain the
@@ -345,10 +403,12 @@ describe("unfinalized rows and turn accounting", () => {
       JSON.stringify({ ref: "conversations/conv/inflight/x.jsonl" }),
       2000,
     );
-    getDb().run(`UPDATE messages SET finalized = 0 WHERE id = '${inflight}'`);
+    await db().run("UPDATE messages SET finalized = 0 WHERE id = ?", [
+      inflight,
+    ]);
     const second = await insertUserMessageAt(conv.id, "second question", 3000);
 
-    const events = queryUnreportedTurnEvents(0, undefined, 100);
+    const events = await queryUnreportedTurnEvents(0, undefined, 100);
     const ids = events
       .filter((e) => e.conversationId === conv.id)
       .map((e) => e.id);
@@ -360,13 +420,13 @@ describe("unfinalized rows and turn accounting", () => {
   });
 
   test("a persisted empty-display user row still counts as a turn", async () => {
-    const conv = createConversation({ conversationType: "standard" });
+    const conv = await createConversation({ conversationType: "standard" });
     const real = await insertUserMessageAt(conv.id, "real question", 1000);
     // A hidden send persists its user row with [] content (displayContent "")
     // and still runs a turn, so [] rows must stay in turn accounting.
     const hidden = await insertUserMessageAt(conv.id, "[]", 2000);
 
-    const events = queryUnreportedTurnEvents(0, undefined, 100);
+    const events = await queryUnreportedTurnEvents(0, undefined, 100);
     const ids = events
       .filter((e) => e.conversationId === conv.id)
       .map((e) => e.id);

@@ -1,8 +1,7 @@
 import { and, asc, eq, gt, or, sql } from "drizzle-orm";
 
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { realUserTurnContentFilter } from "../persistence/real-user-turn-filter.js";
-import { conversations, messages } from "../persistence/schema/index.js";
 
 export interface TurnEvent {
   id: string;
@@ -115,13 +114,14 @@ export interface TurnEvent {
  * `turnIndex` is computed via a correlated subquery counting the real
  * user turns in the same conversation up to and including this row.
  */
-export function queryUnreportedTurnEvents(
+export async function queryUnreportedTurnEvents(
   afterCreatedAt: number,
   afterId: string | undefined,
   limit: number,
-): TurnEvent[] {
-  const db = getDb();
-  const rows = db
+): Promise<TurnEvent[]> {
+  const db = requireMainDb();
+  const { conversations, messages } = db.schema;
+  const rows = await db.orm
     .select({
       id: messages.id,
       createdAt: messages.createdAt,
@@ -145,44 +145,39 @@ export function queryUnreportedTurnEvents(
       // insert by every `persistUserMessage` path that flows through
       // `TurnChannelContext`. `client` is the flexible namespace for
       // browser/os/version metadata attached by HTTP header middleware.
-      // `json_extract` returns SQL NULL when the JSON path is absent —
-      // exactly the null semantics we want on the wire.
+      // `->>` returns SQL NULL when the JSON path is absent, exactly the
+      // null semantics we want on the wire.
       interfaceId: sql<
         string | null
-      >`json_extract(${messages.metadata}, '$.userMessageInterface')`.as(
+      >`(${messages.metadata}::jsonb ->> 'userMessageInterface')`.as(
         "interface_id",
       ),
       channelId: sql<
         string | null
-      >`json_extract(${messages.metadata}, '$.userMessageChannel')`.as(
+      >`(${messages.metadata}::jsonb ->> 'userMessageChannel')`.as(
         "channel_id",
       ),
       clientMetadata: sql<
         string | null
-      >`json_extract(${messages.metadata}, '$.client')`.as("client_metadata"),
+      >`(${messages.metadata}::jsonb ->> 'client')`.as("client_metadata"),
       // Turn-outcome stamps written at turn end (`stampTurnOutcome`).
-      // `json_extract` returns SQL NULL when the path is absent — rows
-      // predating outcome stamping and normally-replied turns project null.
+      // `->>` returns SQL NULL when the path is absent, so rows predating
+      // outcome stamping and normally-replied turns project null.
       outcome: sql<
         string | null
-      >`json_extract(${messages.metadata}, '$.turnOutcome')`.as("outcome"),
+      >`(${messages.metadata}::jsonb ->> 'turnOutcome')`.as("outcome"),
       batchedInto: sql<
         string | null
-      >`json_extract(${messages.metadata}, '$.turnBatchedInto')`.as(
-        "batched_into",
-      ),
+      >`(${messages.metadata}::jsonb ->> 'turnBatchedInto')`.as("batched_into"),
       failureCode: sql<
         string | null
-      >`json_extract(${messages.metadata}, '$.turnFailureCode')`.as(
-        "failure_code",
-      ),
-      // sqlite's `json_extract` yields 1/0 for JSON booleans, not true/false,
-      // and SQL NULL when the path is absent (rows predating the field). Kept
-      // numeric here and converted below. A raw pass-through would put `1`
-      // on the wire, which the platform's BooleanField would reject.
+      >`(${messages.metadata}::jsonb ->> 'turnFailureCode')`.as("failure_code"),
+      // `->>` returns JSON booleans as the text `'true'` / `'false'` and SQL
+      // NULL when the path is absent (rows predating the field). Converted
+      // below so the wire carries a real boolean.
       scripted: sql<
-        number | null
-      >`json_extract(${messages.metadata}, '$.scripted')`.as("scripted"),
+        string | null
+      >`(${messages.metadata}::jsonb ->> 'scripted')`.as("scripted"),
     })
     .from(messages)
     .innerJoin(conversations, eq(messages.conversationId, conversations.id))
@@ -202,15 +197,15 @@ export function queryUnreportedTurnEvents(
       ),
     )
     .orderBy(asc(messages.createdAt), asc(messages.id))
-    .limit(limit)
-    .all();
-  // Narrow sqlite's 1/0/NULL to boolean/null. Only a literal 1 or 0 is a real
-  // stamp; anything else (SQL NULL from a missing key, or a junk value on a
-  // row written by some other path) reports UNKNOWN rather than being coerced.
-  // Coercing to `false` would assert "the user typed this" on no evidence,
-  // which downstream trusts and cannot fall back from.
+    .limit(limit);
+  // Narrow the text projection to boolean/null. Only `'true'` or `'false'` is
+  // a real stamp; anything else (SQL NULL from a missing key, or a junk value
+  // on a row written by some other path) reports UNKNOWN rather than being
+  // coerced. Coercing to `false` would assert "the user typed this" on no
+  // evidence, which downstream trusts and cannot fall back from.
   return rows.map((row) => ({
     ...row,
-    scripted: row.scripted === 1 ? true : row.scripted === 0 ? false : null,
+    scripted:
+      row.scripted === "true" ? true : row.scripted === "false" ? false : null,
   }));
 }

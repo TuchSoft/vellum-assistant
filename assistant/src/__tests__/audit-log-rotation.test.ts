@@ -1,44 +1,34 @@
 import { randomBytes } from "node:crypto";
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-// ---------------------------------------------------------------------------
-// Test setup — mock modules
-// ---------------------------------------------------------------------------
-import { getSqlite } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   getRecentInvocations,
   rotateToolInvocations,
 } from "../telemetry/tool-usage-store.js";
-import { resetDbForTesting } from "./db-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function addInvocation(ageMs: number): void {
-  // Insert directly with a specific timestamp in the past
-  const db = getSqlite();
-  const id = randomBytes(8).toString("hex");
-  const createdAt = Date.now() - ageMs;
-  db.prepare(
-    `INSERT INTO tool_invocations (id, conversation_id, tool_name, input, result, decision, risk_level, duration_ms, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    "conv-1",
-    "bash",
-    '{"command":"echo hi"}',
-    "hi",
-    "allow",
-    "Low",
-    100,
-    createdAt,
-  );
+async function addInvocation(ageMs: number): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.insert(db.schema.toolInvocations).values({
+    id: randomBytes(8).toString("hex"),
+    conversationId: "conv-1",
+    toolName: "bash",
+    input: '{"command":"echo hi"}',
+    result: "hi",
+    decision: "allow",
+    riskLevel: "Low",
+    durationMs: 100,
+    createdAt: Date.now() - ageMs,
+  });
 }
 
-function clearTable(): void {
-  getSqlite().run("DELETE FROM tool_invocations");
+async function clearTable(): Promise<void> {
+  await requireMainDb().run("DELETE FROM tool_invocations");
 }
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -47,64 +37,63 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("audit log rotation", () => {
-  // initializeDb runs the full migration chain (hundreds of steps); under
-  // parallel CI load it can exceed bun's default 5s hook timeout, so allow more.
-  beforeAll(async () => {
-    resetDbForTesting();
-    await initializeDb();
-    // Insert a conversations row so FK-enforced ORM inserts succeed
-    getSqlite().run(
-      `INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('conv-1', 'test', ${Date.now()}, ${Date.now()})`,
-    );
-  }, 30_000);
-
-  beforeEach(() => {
-    clearTable();
+describePg("audit log rotation", () => {
+  beforeEach(async () => {
+    await clearTable();
+    // Insert a conversations row so FK-enforced ORM inserts succeed.
+    await requireMainDb()
+      .orm.insert(requireMainDb().schema.conversations)
+      .values({
+        id: "conv-1",
+        title: "test",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+      .onConflictDoNothing();
   });
 
   test("returns 0 when retentionDays is 0 (retain forever)", async () => {
-    addInvocation(100 * ONE_DAY_MS); // 100 days old
+    await addInvocation(100 * ONE_DAY_MS); // 100 days old
     const deleted = await rotateToolInvocations(0);
     expect(deleted).toBe(0);
-    expect(getRecentInvocations(100).length).toBe(1);
+    expect((await getRecentInvocations(100)).length).toBe(1);
   });
 
   test("returns 0 when retentionDays is negative", async () => {
-    addInvocation(100 * ONE_DAY_MS);
+    await addInvocation(100 * ONE_DAY_MS);
     const deleted = await rotateToolInvocations(-5);
     expect(deleted).toBe(0);
-    expect(getRecentInvocations(100).length).toBe(1);
+    expect((await getRecentInvocations(100)).length).toBe(1);
   });
 
   test("deletes records older than retentionDays", async () => {
-    addInvocation(10 * ONE_DAY_MS); // 10 days old — should be deleted with 7-day retention
-    addInvocation(3 * ONE_DAY_MS); // 3 days old — should be kept
-    addInvocation(1 * ONE_DAY_MS); // 1 day old — should be kept
+    await addInvocation(10 * ONE_DAY_MS); // 10 days old, deleted with 7-day retention
+    await addInvocation(3 * ONE_DAY_MS); // 3 days old, kept
+    await addInvocation(1 * ONE_DAY_MS); // 1 day old, kept
 
     const deleted = await rotateToolInvocations(7);
     expect(deleted).toBe(1);
-    expect(getRecentInvocations(100).length).toBe(2);
+    expect((await getRecentInvocations(100)).length).toBe(2);
   });
 
   test("keeps all records when none exceed retention", async () => {
-    addInvocation(1 * ONE_DAY_MS);
-    addInvocation(2 * ONE_DAY_MS);
-    addInvocation(3 * ONE_DAY_MS);
+    await addInvocation(1 * ONE_DAY_MS);
+    await addInvocation(2 * ONE_DAY_MS);
+    await addInvocation(3 * ONE_DAY_MS);
 
     const deleted = await rotateToolInvocations(30);
     expect(deleted).toBe(0);
-    expect(getRecentInvocations(100).length).toBe(3);
+    expect((await getRecentInvocations(100)).length).toBe(3);
   });
 
   test("deletes all records when all exceed retention", async () => {
-    addInvocation(60 * ONE_DAY_MS);
-    addInvocation(90 * ONE_DAY_MS);
-    addInvocation(120 * ONE_DAY_MS);
+    await addInvocation(60 * ONE_DAY_MS);
+    await addInvocation(90 * ONE_DAY_MS);
+    await addInvocation(120 * ONE_DAY_MS);
 
     const deleted = await rotateToolInvocations(30);
     expect(deleted).toBe(3);
-    expect(getRecentInvocations(100).length).toBe(0);
+    expect((await getRecentInvocations(100)).length).toBe(0);
   });
 
   test("returns 0 when table is empty", async () => {
@@ -113,58 +102,53 @@ describe("audit log rotation", () => {
   });
 
   test("handles 1-day retention (deletes everything older than 24h)", async () => {
-    addInvocation(2 * ONE_DAY_MS); // 2 days old — delete
-    addInvocation(12 * 60 * 60 * 1000); // 12 hours old — keep
+    await addInvocation(2 * ONE_DAY_MS); // 2 days old, delete
+    await addInvocation(12 * 60 * 60 * 1000); // 12 hours old, keep
 
     const deleted = await rotateToolInvocations(1);
     expect(deleted).toBe(1);
-    expect(getRecentInvocations(100).length).toBe(1);
+    expect((await getRecentInvocations(100)).length).toBe(1);
   });
 
   test("works with recordToolInvocation (via ORM)", async () => {
-    // Use raw SQL to insert (avoids db singleton issues in parallel test runs)
-    // and verify the rotation/query functions work correctly with it
-    addInvocation(0); // just-created record
+    await addInvocation(0); // just-created record
 
     // This record was just created, so it should not be rotated
     const deleted = await rotateToolInvocations(1);
     expect(deleted).toBe(0);
-    expect(getRecentInvocations(100).length).toBe(1);
+    expect((await getRecentInvocations(100)).length).toBe(1);
   });
 
   test("yields to the event loop while the purge is in flight (anti-block)", async () => {
-    // Seed a few thousand rows so the DELETE has measurable
-    // subprocess work behind the scenes.
+    // Seed a few thousand rows so the DELETE has measurable work behind it.
     const ROW_COUNT = 2000;
     const past = 100 * ONE_DAY_MS;
-    const sqlite = getSqlite();
-    sqlite.exec("BEGIN");
-    try {
-      for (let i = 0; i < ROW_COUNT; i++) {
-        addInvocation(past);
-      }
-      sqlite.exec("COMMIT");
-    } catch (err) {
-      sqlite.exec("ROLLBACK");
-      throw err;
-    }
+    const db = requireMainDb();
+    const now = Date.now();
+    const rows = Array.from({ length: ROW_COUNT }, () => ({
+      id: randomBytes(8).toString("hex"),
+      conversationId: "conv-1",
+      toolName: "bash",
+      input: '{"command":"echo hi"}',
+      result: "hi",
+      decision: "allow",
+      riskLevel: "Low",
+      durationMs: 100,
+      createdAt: now - past,
+    }));
+    await db.orm.insert(db.schema.toolInvocations).values(rows);
 
-    // Race the purge against a `setImmediate` ping. The ping
-    // resolves on the very next event-loop iteration after it is
-    // scheduled.
+    // Race the purge against a `setImmediate` ping. The ping resolves on the
+    // very next event-loop iteration after it is scheduled.
     //
-    // If the purge is async (subprocess), `rotateToolInvocations`
-    // returns a pending Promise immediately; the ping wins the race
-    // while the subprocess is still running.
+    // If the purge is async, `rotateToolInvocations` returns a pending Promise
+    // immediately; the ping wins the race while the statement is still running.
     //
     // If the purge is ever regressed back to a synchronous DELETE,
-    // `rotateToolInvocations` blocks the main thread for the full
-    // DELETE duration. `setImmediate` cannot fire until the main
-    // thread releases, so the purge's already-resolved Promise
-    // beats the ping through the microtask queue and "purge" wins.
-    //
-    // The signal is deterministic regardless of how fast the
-    // subprocess is or how busy the event loop is.
+    // `rotateToolInvocations` blocks the main thread for the full DELETE
+    // duration. `setImmediate` cannot fire until the main thread releases, so
+    // the purge's already-resolved Promise beats the ping through the
+    // microtask queue and "purge" wins.
     const ping = new Promise<"ping">((resolve) =>
       setImmediate(() => resolve("ping")),
     );
@@ -176,8 +160,8 @@ describe("audit log rotation", () => {
 
     expect(winner).toBe("ping");
 
-    // Drain the purge so the log + subprocess cleanup complete
-    // before the test exits.
+    // Drain the purge so the log and connection cleanup complete before the
+    // test exits.
     const deleted = await purgePromise;
     expect(deleted).toBe(ROW_COUNT);
   }, 60_000);

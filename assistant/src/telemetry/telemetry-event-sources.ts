@@ -115,7 +115,7 @@ function simpleSource<Row extends { id: string; createdAt: number }>(
     afterCreatedAt: number,
     afterId: string | undefined,
     limit: number,
-  ) => Row[],
+  ) => Promise<Row[]> | Row[],
   toEvent: (row: Row) => TelemetryEvent,
 ): TelemetryEventSource {
   return {
@@ -385,7 +385,8 @@ const turnSource: TelemetryEventSource = {
       }
     }
 
-    const events = reportableTurnEvents.map((e): TelemetryEvent => {
+    const events: TelemetryEvent[] = [];
+    for (const e of reportableTurnEvents) {
       // Per-turn trace collection gate. `traceEligible` (computed above)
       // requires the owner's cached `share_diagnostics` consent AND an
       // eligible accepted consent version. Fail-closed: when either is off
@@ -395,14 +396,14 @@ const turnSource: TelemetryEventSource = {
       // reaching here is settled (the completeness barrier dropped any
       // in-flight turns), so the trace is never a partial mid-turn snapshot.
       const trace = traceEligible
-        ? assembleBoundedTurnTrace({
+        ? await assembleBoundedTurnTrace({
             conversationId: e.conversationId,
             userMessageId: e.id,
             userMessageCreatedAt: e.createdAt,
           })
         : null;
       // `messages.metadata.client` is a nested JSON object extracted
-      // via `json_extract`; sqlite returns it as a text representation.
+      // via `->>`; Postgres returns it as a text representation.
       // Parse defensively — a corrupted blob in the JSON column should
       // not block the whole batch flush.
       let client: TurnTelemetryClientInfo | null = null;
@@ -431,7 +432,7 @@ const turnSource: TelemetryEventSource = {
         e.outcome === "cancelled"
           ? e.outcome
           : null;
-      return {
+      events.push({
         type: "turn",
         daemon_event_id: e.id,
         recorded_at: e.createdAt,
@@ -471,8 +472,8 @@ const turnSource: TelemetryEventSource = {
         // contract that treats present per-event values as winning
         // over the envelope).
         assistant_version: APP_VERSION,
-      };
-    });
+      });
+    }
 
     const last =
       reportableTurnEvents.length > 0

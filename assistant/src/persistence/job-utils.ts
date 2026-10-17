@@ -5,7 +5,7 @@ import { and, eq } from "drizzle-orm";
 import type { AssistantConfig } from "../config/types.js";
 import { BackendUnavailableError } from "../util/errors.js";
 import { getLogger } from "../util/logger.js";
-import { getMemoryDb } from "./db-connection.js";
+import { getMemoryAsyncDb } from "./db-facade.js";
 import {
   durableEmbeddingCacheExtras,
   embedWithBackend,
@@ -19,7 +19,6 @@ import {
 } from "./embeddings/embedding-types.js";
 import { withQdrantBreaker } from "./embeddings/qdrant-circuit-breaker.js";
 import { getQdrantClient } from "./embeddings/qdrant-client.js";
-import { memoryEmbeddings } from "./schema/index.js";
 
 export { BackendUnavailableError };
 
@@ -127,7 +126,7 @@ export function classifyError(err: unknown): ErrorCategory {
     }
   }
 
-  // BackendUnavailableError is transient — the provider or backend may come back online
+  // BackendUnavailableError is transient, the provider or backend may come back online
   if (err instanceof BackendUnavailableError) {
     return "retryable";
   }
@@ -180,12 +179,7 @@ export function requireQdrantClient(): ReturnType<typeof getQdrantClient> {
 export async function embedAndUpsert(
   config: AssistantConfig,
   targetType:
-    | "segment"
-    | "item"
-    | "summary"
-    | "media"
-    | "graph_node"
-    | "pkb_file",
+    "segment" | "item" | "summary" | "media" | "graph_node" | "pkb_file",
   targetId: string,
   input: EmbeddingInput,
   extraPayload?: Record<string, unknown>,
@@ -205,27 +199,31 @@ export async function embedAndUpsert(
   let model = status.model!;
   let vector: number[];
 
-  // Check SQLite embedding cache for a matching content hash (primary provider only).
-  // The cache lives on the memory connection alongside `memory_embeddings`.
-  const mem = getMemoryDb();
+  // Check the embedding cache for a matching content hash (primary provider
+  // only). The cache lives alongside `memory_embeddings` on the memory slot.
+  const mem = getMemoryAsyncDb();
   const expectedDim = config.memory.qdrant.vectorSize;
-  let cachedRow = mem
-    ? mem
-        .select({
-          vectorBlob: memoryEmbeddings.vectorBlob,
-          vectorJson: memoryEmbeddings.vectorJson,
-          dimensions: memoryEmbeddings.dimensions,
-        })
-        .from(memoryEmbeddings)
-        .where(
-          and(
-            eq(memoryEmbeddings.contentHash, contentHash),
-            eq(memoryEmbeddings.provider, provider),
-            eq(memoryEmbeddings.model, model),
-          ),
-        )
-        .get()
-    : undefined;
+  const memoryEmbeddings = mem?.schema.memoryEmbeddings;
+  let cachedRow =
+    mem && memoryEmbeddings
+      ? (
+          await mem.orm
+            .select({
+              vectorBlob: memoryEmbeddings.vectorBlob,
+              vectorJson: memoryEmbeddings.vectorJson,
+              dimensions: memoryEmbeddings.dimensions,
+            })
+            .from(memoryEmbeddings)
+            .where(
+              and(
+                eq(memoryEmbeddings.contentHash, contentHash),
+                eq(memoryEmbeddings.provider, provider),
+                eq(memoryEmbeddings.model, model),
+              ),
+            )
+            .limit(1)
+        )[0]
+      : undefined;
   if (cachedRow && cachedRow.dimensions !== expectedDim) {
     cachedRow = undefined;
   }
@@ -290,45 +288,46 @@ export async function embedAndUpsert(
     throw err;
   }
 
-  // Persist the embedding in SQLite for the cross-restart cache, after the
-  // point is live in Qdrant. Consumers read a row as "this target is indexed"
-  // — the graph-node orphan sweep does — so a row written ahead of the upsert
-  // would mark a missing point as embedded and suppress the re-embed that
-  // would restore it. Best-effort in the other direction: a write failure logs
-  // and leaves the point in place, and the next run re-embeds.
+  // Persist the embedding for the cross-restart cache, after the point is
+  // live in Qdrant. Consumers read a row as "this target is indexed" (the
+  // graph-node orphan sweep does), so a row written ahead of the upsert would
+  // mark a missing point as embedded and suppress the re-embed that would
+  // restore it. Best-effort in the other direction: a write failure logs and
+  // leaves the point in place, and the next run re-embeds.
   try {
     const blobValue = vectorToBlob(vector);
-    mem
-      ?.insert(memoryEmbeddings)
-      .values({
-        id: randomUUID(),
-        targetType,
-        targetId,
-        provider,
-        model,
-        dimensions: vector.length,
-        vectorBlob: blobValue,
-        vectorJson: null,
-        contentHash,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [
-          memoryEmbeddings.targetType,
-          memoryEmbeddings.targetId,
-          memoryEmbeddings.provider,
-          memoryEmbeddings.model,
-        ],
-        set: {
+    if (mem && memoryEmbeddings) {
+      await mem.orm
+        .insert(memoryEmbeddings)
+        .values({
+          id: randomUUID(),
+          targetType,
+          targetId,
+          provider,
+          model,
+          dimensions: vector.length,
           vectorBlob: blobValue,
           vectorJson: null,
-          dimensions: vector.length,
           contentHash,
+          createdAt: now,
           updatedAt: now,
-        },
-      })
-      .run();
+        })
+        .onConflictDoUpdate({
+          target: [
+            memoryEmbeddings.targetType,
+            memoryEmbeddings.targetId,
+            memoryEmbeddings.provider,
+            memoryEmbeddings.model,
+          ],
+          set: {
+            vectorBlob: blobValue,
+            vectorJson: null,
+            dimensions: vector.length,
+            contentHash,
+            updatedAt: now,
+          },
+        });
+    }
   } catch (err) {
     log.warn({ err, targetType, targetId }, "Failed to write embedding cache");
   }

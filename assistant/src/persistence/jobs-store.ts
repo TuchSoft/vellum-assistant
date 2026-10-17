@@ -5,7 +5,8 @@ import { getConfig } from "../config/loader.js";
 import { isMemoryEnabled as isMemoryEnabledForConfig } from "../config/memory-v3-gate.js";
 import { getLogger } from "../util/logger.js";
 import { truncate } from "../util/truncate.js";
-import { type DrizzleDb, getMemoryDb } from "./db-connection.js";
+import type { AsyncDb } from "./db-facade.js";
+import { requireMainDb } from "./db-facade.js";
 import {
   isEmbeddingBillingBreakerOpen,
   shouldAllowBillingProbe,
@@ -15,22 +16,8 @@ import {
   shouldAllowQdrantProbe,
 } from "./embeddings/qdrant-circuit-breaker.js";
 import { isLifecycleQuiesced } from "./lifecycle-quiesce.js";
-import { rawMemoryAll, rawMemoryChanges } from "./raw-query.js";
-import { memoryJobs } from "./schema/index.js";
 
 const log = getLogger("memory-jobs-store");
-
-/**
- * The memory connection (`assistant-memory.db`), where `memory_jobs` lives.
- * Throws if the file cannot be opened — the work queue has no fallback.
- */
-function memoryDb(): DrizzleDb {
-  const db = getMemoryDb();
-  if (!db) {
-    throw new Error("memory database unavailable");
-  }
-  return db;
-}
 
 export type MemoryJobType =
   | "embed_segment"
@@ -156,33 +143,28 @@ export interface MemoryJob<T = Record<string, unknown>> {
   updatedAt: number;
 }
 
-export function enqueueMemoryJob(
+export async function enqueueMemoryJob(
   type: MemoryJobType,
   payload: Record<string, unknown>,
   runAfter = Date.now(),
-  dbOverride?: Parameters<DrizzleDb["transaction"]>[0] extends (
-    tx: infer T,
-  ) => unknown
-    ? T
-    : never,
-): string {
-  const db = dbOverride ?? memoryDb();
+  dbOverride?: AsyncDb,
+): Promise<string> {
+  const db = dbOverride ?? requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
   const id = uuid();
   const now = Date.now();
-  db.insert(memoryJobs)
-    .values({
-      id,
-      type,
-      payload: JSON.stringify(payload),
-      status: "pending",
-      attempts: 0,
-      deferrals: 0,
-      runAfter,
-      lastError: null,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  await db.orm.insert(memoryJobs).values({
+    id,
+    type,
+    payload: JSON.stringify(payload),
+    status: "pending",
+    attempts: 0,
+    deferrals: 0,
+    runAfter,
+    lastError: null,
+    createdAt: now,
+    updatedAt: now,
+  });
   return id;
 }
 
@@ -198,28 +180,27 @@ export function enqueueMemoryJob(
  * Pass a `dbOverride` (transaction handle) to make this call atomic with
  * surrounding writes.
  */
-export function upsertDebouncedJob(
+export async function upsertDebouncedJob(
   type: MemoryJobType,
   payload: { conversationId: string } & Record<string, unknown>,
   runAfter: number,
-  dbOverride?: Parameters<DrizzleDb["transaction"]>[0] extends (
-    tx: infer T,
-  ) => unknown
-    ? T
-    : never,
-): void {
-  const db = dbOverride ?? memoryDb();
-  const existing = db
-    .select()
-    .from(memoryJobs)
-    .where(
-      and(
-        eq(memoryJobs.type, type),
-        eq(memoryJobs.status, "pending"),
-        sql`json_extract(${memoryJobs.payload}, '$.conversationId') = ${payload.conversationId}`,
-      ),
-    )
-    .get();
+  dbOverride?: AsyncDb,
+): Promise<void> {
+  const db = dbOverride ?? requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const existing = (
+    await db.orm
+      .select()
+      .from(memoryJobs)
+      .where(
+        and(
+          eq(memoryJobs.type, type),
+          eq(memoryJobs.status, "pending"),
+          sql`${memoryJobs.payload}::jsonb ->> 'conversationId' = ${payload.conversationId}`,
+        ),
+      )
+      .limit(1)
+  )[0];
   if (existing) {
     let existingPayload: Record<string, unknown> = {};
     try {
@@ -228,16 +209,16 @@ export function upsertDebouncedJob(
       existingPayload = {};
     }
     const mergedPayload = { ...existingPayload, ...payload };
-    db.update(memoryJobs)
+    await db.orm
+      .update(memoryJobs)
       .set({
         payload: JSON.stringify(mergedPayload),
         runAfter,
         updatedAt: Date.now(),
       })
-      .where(eq(memoryJobs.id, existing.id))
-      .run();
+      .where(eq(memoryJobs.id, existing.id));
   } else {
-    enqueueMemoryJob(type, payload, runAfter, dbOverride);
+    await enqueueMemoryJob(type, payload, runAfter, dbOverride);
   }
 }
 
@@ -252,40 +233,39 @@ export function upsertDebouncedJob(
  * minimum). The trigger metadata is intentionally not retained — it is only
  * useful for observability at enqueue time.
  */
-export function upsertMemoryRetrospectiveJob(
+export async function upsertMemoryRetrospectiveJob(
   payload: { conversationId: string },
   runAfter: number = Date.now(),
-  dbOverride?: Parameters<DrizzleDb["transaction"]>[0] extends (
-    tx: infer T,
-  ) => unknown
-    ? T
-    : never,
-): void {
-  const db = dbOverride ?? memoryDb();
-  const existing = db
-    .select()
-    .from(memoryJobs)
-    .where(
-      and(
-        eq(memoryJobs.type, "memory_retrospective"),
-        eq(memoryJobs.status, "pending"),
-        sql`json_extract(${memoryJobs.payload}, '$.conversationId') = ${payload.conversationId}`,
-      ),
-    )
-    .get();
+  dbOverride?: AsyncDb,
+): Promise<void> {
+  const db = dbOverride ?? requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const existing = (
+    await db.orm
+      .select()
+      .from(memoryJobs)
+      .where(
+        and(
+          eq(memoryJobs.type, "memory_retrospective"),
+          eq(memoryJobs.status, "pending"),
+          sql`${memoryJobs.payload}::jsonb ->> 'conversationId' = ${payload.conversationId}`,
+        ),
+      )
+      .limit(1)
+  )[0];
   if (existing) {
     // Take the minimum of the existing and incoming runAfter so the earliest
     // trigger always wins. A later trigger never pushes work further out.
     const nextRunAfter = Math.min(existing.runAfter, runAfter);
     if (nextRunAfter !== existing.runAfter) {
-      db.update(memoryJobs)
+      await db.orm
+        .update(memoryJobs)
         .set({ runAfter: nextRunAfter, updatedAt: Date.now() })
-        .where(eq(memoryJobs.id, existing.id))
-        .run();
+        .where(eq(memoryJobs.id, existing.id));
     }
     return;
   }
-  enqueueMemoryJob("memory_retrospective", payload, runAfter, dbOverride);
+  await enqueueMemoryJob("memory_retrospective", payload, runAfter, dbOverride);
 }
 
 /**
@@ -302,25 +282,28 @@ export function upsertMemoryRetrospectiveJob(
  * `upsertMemoryRetrospectiveJob`; the message-level `clientMessageId` dedup
  * remains the final backstop against a double card.
  */
-export function upsertSkillCardInsertJob(
+export async function upsertSkillCardInsertJob(
   payload: {
     sourceConversationId: string;
     runConversationId: string;
   } & Record<string, unknown>,
   runAfter: number = Date.now(),
-): void {
-  const db = memoryDb();
-  const existing = db
-    .select()
-    .from(memoryJobs)
-    .where(
-      and(
-        eq(memoryJobs.type, "skill_card_insert"),
-        eq(memoryJobs.status, "pending"),
-        sql`json_extract(${memoryJobs.payload}, '$.runConversationId') = ${payload.runConversationId}`,
-      ),
-    )
-    .get();
+): Promise<void> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const existing = (
+    await db.orm
+      .select()
+      .from(memoryJobs)
+      .where(
+        and(
+          eq(memoryJobs.type, "skill_card_insert"),
+          eq(memoryJobs.status, "pending"),
+          sql`${memoryJobs.payload}::jsonb ->> 'runConversationId' = ${payload.runConversationId}`,
+        ),
+      )
+      .limit(1)
+  )[0];
   if (existing) {
     let existingPayload: Record<string, unknown> = {};
     try {
@@ -333,17 +316,17 @@ export function upsertSkillCardInsertJob(
       ...payload,
       skills: mergeSkillCardEntries(existingPayload.skills, payload.skills),
     };
-    db.update(memoryJobs)
+    await db.orm
+      .update(memoryJobs)
       .set({
         payload: JSON.stringify(mergedPayload),
         runAfter: Math.min(existing.runAfter, runAfter),
         updatedAt: Date.now(),
       })
-      .where(eq(memoryJobs.id, existing.id))
-      .run();
+      .where(eq(memoryJobs.id, existing.id));
     return;
   }
-  enqueueMemoryJob("skill_card_insert", payload, runAfter);
+  await enqueueMemoryJob("skill_card_insert", payload, runAfter);
 }
 
 /**
@@ -421,22 +404,25 @@ export interface SkillUpdateReceiptJobPayload {
  * is frozen at claim), so an append during evaluation opens the sibling the
  * handler merges into.
  */
-export function upsertSkillUpdateReceiptJob(
+export async function upsertSkillUpdateReceiptJob(
   payload: SkillUpdateReceiptJobPayload,
   runAfter: number = Date.now(),
-): void {
-  const db = memoryDb();
-  const existing = db
-    .select()
-    .from(memoryJobs)
-    .where(
-      and(
-        eq(memoryJobs.type, "skill_update_receipt"),
-        eq(memoryJobs.status, "pending"),
-      ),
-    )
-    .orderBy(asc(memoryJobs.createdAt))
-    .get();
+): Promise<void> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const existing = (
+    await db.orm
+      .select()
+      .from(memoryJobs)
+      .where(
+        and(
+          eq(memoryJobs.type, "skill_update_receipt"),
+          eq(memoryJobs.status, "pending"),
+        ),
+      )
+      .orderBy(asc(memoryJobs.createdAt))
+      .limit(1)
+  )[0];
   if (existing) {
     const existingPayload = parseSkillUpdateReceiptPayload(existing.payload);
     const merged: SkillUpdateReceiptJobPayload = {
@@ -453,17 +439,17 @@ export function upsertSkillUpdateReceiptJob(
         payload.entries,
       ),
     };
-    db.update(memoryJobs)
+    await db.orm
+      .update(memoryJobs)
       .set({
         payload: JSON.stringify(merged),
         runAfter: Math.min(existing.runAfter, runAfter),
         updatedAt: Date.now(),
       })
-      .where(eq(memoryJobs.id, existing.id))
-      .run();
+      .where(eq(memoryJobs.id, existing.id));
     return;
   }
-  enqueueMemoryJob(
+  await enqueueMemoryJob(
     "skill_update_receipt",
     payload as unknown as Record<string, unknown>,
     runAfter,
@@ -564,11 +550,12 @@ function mergeSkillUpdateReceiptEntries(
  * dropped edge entry neither holds the rest past their quiet window nor
  * caps them early.
  */
-export function removeSkillUpdateReceiptEntriesForConversation(
+export async function removeSkillUpdateReceiptEntriesForConversation(
   conversationId: string,
-): void {
-  const db = memoryDb();
-  const rows = db
+): Promise<void> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const rows = await db.orm
     .select()
     .from(memoryJobs)
     .where(
@@ -576,8 +563,7 @@ export function removeSkillUpdateReceiptEntriesForConversation(
         eq(memoryJobs.type, "skill_update_receipt"),
         eq(memoryJobs.status, "pending"),
       ),
-    )
-    .all();
+    );
   for (const row of rows) {
     const payload = parseSkillUpdateReceiptPayload(row.payload);
     if (!payload) {
@@ -590,11 +576,12 @@ export function removeSkillUpdateReceiptEntriesForConversation(
       continue;
     }
     if (kept.length === 0) {
-      db.delete(memoryJobs).where(eq(memoryJobs.id, row.id)).run();
+      await db.orm.delete(memoryJobs).where(eq(memoryJobs.id, row.id));
       continue;
     }
     const stamps = kept.map((entry) => entry.createdAt);
-    db.update(memoryJobs)
+    await db.orm
+      .update(memoryJobs)
       .set({
         payload: JSON.stringify({
           firstEntryAt: Math.min(...stamps),
@@ -603,8 +590,7 @@ export function removeSkillUpdateReceiptEntriesForConversation(
         } satisfies SkillUpdateReceiptJobPayload),
         updatedAt: Date.now(),
       })
-      .where(eq(memoryJobs.id, row.id))
-      .run();
+      .where(eq(memoryJobs.id, row.id));
   }
 }
 
@@ -618,19 +604,24 @@ export function removeSkillUpdateReceiptEntriesForConversation(
  * to create that follow-up. Mirrors `upsertMemoryRetrospectiveJob`'s
  * pending-only coalescing.
  */
-export function listPendingMemoryRetrospectiveSourceConversationIds(): string[] {
-  return memoryDb()
-    .select({
-      conversationId: sql<string>`json_extract(${memoryJobs.payload}, '$.conversationId')`,
-    })
-    .from(memoryJobs)
-    .where(
-      and(
-        eq(memoryJobs.type, "memory_retrospective"),
-        eq(memoryJobs.status, "pending"),
-      ),
-    )
-    .all()
+export async function listPendingMemoryRetrospectiveSourceConversationIds(): Promise<
+  string[]
+> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  return (
+    await db.orm
+      .select({
+        conversationId: sql<string>`${memoryJobs.payload}::jsonb ->> 'conversationId'`,
+      })
+      .from(memoryJobs)
+      .where(
+        and(
+          eq(memoryJobs.type, "memory_retrospective"),
+          eq(memoryJobs.status, "pending"),
+        ),
+      )
+  )
     .map((row) => row.conversationId)
     .filter((id): id is string => typeof id === "string" && id.length > 0);
 }
@@ -639,10 +630,13 @@ export function listPendingMemoryRetrospectiveSourceConversationIds(): string[] 
  * Check whether a pending or running job of the given type already exists.
  * Used to prevent duplicate enqueues for long-running maintenance jobs.
  */
-export function hasActiveJobOfType(type: MemoryJobType): boolean {
-  const db = memoryDb();
-  return (
-    db
+export async function hasActiveJobOfType(
+  type: MemoryJobType,
+): Promise<boolean> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const row = (
+    await db.orm
       .select({ id: memoryJobs.id })
       .from(memoryJobs)
       .where(
@@ -651,8 +645,9 @@ export function hasActiveJobOfType(type: MemoryJobType): boolean {
           inArray(memoryJobs.status, ["pending", "running"]),
         ),
       )
-      .get() != null
-  );
+      .limit(1)
+  )[0];
+  return row != null;
 }
 
 /**
@@ -664,15 +659,19 @@ export function hasActiveJobOfType(type: MemoryJobType): boolean {
  * `pending` suppresses, leaving at most one pending row queued behind one
  * running job.
  */
-export function hasPendingJobOfType(type: MemoryJobType): boolean {
-  const db = memoryDb();
-  return (
-    db
+export async function hasPendingJobOfType(
+  type: MemoryJobType,
+): Promise<boolean> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const row = (
+    await db.orm
       .select({ id: memoryJobs.id })
       .from(memoryJobs)
       .where(and(eq(memoryJobs.type, type), eq(memoryJobs.status, "pending")))
-      .get() != null
-  );
+      .limit(1)
+  )[0];
+  return row != null;
 }
 
 /**
@@ -695,19 +694,24 @@ export function hasPendingJobOfType(type: MemoryJobType): boolean {
  * `pending`, and a constraint would make those updates throw whenever a
  * duplicate pair exists.
  */
-export function upsertEmbedConceptPageJob(payload: { slug: string }): string {
-  const db = memoryDb();
-  const existing = db
-    .select({ id: memoryJobs.id })
-    .from(memoryJobs)
-    .where(
-      and(
-        eq(memoryJobs.type, "embed_concept_page"),
-        eq(memoryJobs.status, "pending"),
-        sql`json_extract(${memoryJobs.payload}, '$.slug') = ${payload.slug}`,
-      ),
-    )
-    .get();
+export async function upsertEmbedConceptPageJob(payload: {
+  slug: string;
+}): Promise<string> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const existing = (
+    await db.orm
+      .select({ id: memoryJobs.id })
+      .from(memoryJobs)
+      .where(
+        and(
+          eq(memoryJobs.type, "embed_concept_page"),
+          eq(memoryJobs.status, "pending"),
+          sql`${memoryJobs.payload}::jsonb ->> 'slug' = ${payload.slug}`,
+        ),
+      )
+      .limit(1)
+  )[0];
   if (existing) {
     return existing.id;
   }
@@ -725,38 +729,48 @@ export function upsertEmbedConceptPageJob(payload: { slug: string }): string {
  * {@link upsertEmbedConceptPageJob}. Returns the id of the pending row,
  * existing or newly inserted.
  */
-export function upsertEmbedGraphNodeJob(payload: { nodeId: string }): string {
-  const db = memoryDb();
-  const existing = db
-    .select({ id: memoryJobs.id })
-    .from(memoryJobs)
-    .where(
-      and(
-        eq(memoryJobs.type, "embed_graph_node"),
-        eq(memoryJobs.status, "pending"),
-        sql`json_extract(${memoryJobs.payload}, '$.nodeId') = ${payload.nodeId}`,
-      ),
-    )
-    .get();
+export async function upsertEmbedGraphNodeJob(payload: {
+  nodeId: string;
+}): Promise<string> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const existing = (
+    await db.orm
+      .select({ id: memoryJobs.id })
+      .from(memoryJobs)
+      .where(
+        and(
+          eq(memoryJobs.type, "embed_graph_node"),
+          eq(memoryJobs.status, "pending"),
+          sql`${memoryJobs.payload}::jsonb ->> 'nodeId' = ${payload.nodeId}`,
+        ),
+      )
+      .limit(1)
+  )[0];
   if (existing) {
     return existing.id;
   }
   return enqueueMemoryJob("embed_graph_node", { nodeId: payload.nodeId });
 }
 
-export function enqueuePruneOldLlmRequestLogsJob(retentionMs?: number): string {
-  const db = memoryDb();
-  const existing = db
-    .select()
-    .from(memoryJobs)
-    .where(
-      and(
-        eq(memoryJobs.type, "prune_old_llm_request_logs"),
-        inArray(memoryJobs.status, ["pending", "running"]),
-      ),
-    )
-    .orderBy(asc(memoryJobs.createdAt))
-    .get();
+export async function enqueuePruneOldLlmRequestLogsJob(
+  retentionMs?: number,
+): Promise<string> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const existing = (
+    await db.orm
+      .select()
+      .from(memoryJobs)
+      .where(
+        and(
+          eq(memoryJobs.type, "prune_old_llm_request_logs"),
+          inArray(memoryJobs.status, ["pending", "running"]),
+        ),
+      )
+      .orderBy(asc(memoryJobs.createdAt))
+      .limit(1)
+  )[0];
   if (existing) {
     if (
       existing.status === "pending" &&
@@ -771,13 +785,13 @@ export function enqueuePruneOldLlmRequestLogsJob(retentionMs?: number): string {
         payload = {};
       }
       if (payload.retentionMs !== retentionMs) {
-        db.update(memoryJobs)
+        await db.orm
+          .update(memoryJobs)
           .set({
             payload: JSON.stringify({ ...payload, retentionMs }),
             updatedAt: Date.now(),
           })
-          .where(eq(memoryJobs.id, existing.id))
-          .run();
+          .where(eq(memoryJobs.id, existing.id));
       }
     }
     return existing.id;
@@ -791,21 +805,24 @@ export function enqueuePruneOldLlmRequestLogsJob(retentionMs?: number): string {
   return enqueueMemoryJob("prune_old_llm_request_logs", payload);
 }
 
-export function enqueuePruneOldConversationsJob(
+export async function enqueuePruneOldConversationsJob(
   retentionDays?: number,
-): string {
-  const db = memoryDb();
-  const existing = db
-    .select()
-    .from(memoryJobs)
-    .where(
-      and(
-        eq(memoryJobs.type, "prune_old_conversations"),
-        inArray(memoryJobs.status, ["pending", "running"]),
-      ),
-    )
-    .orderBy(asc(memoryJobs.createdAt))
-    .get();
+): Promise<string> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const existing = (
+    await db.orm
+      .select()
+      .from(memoryJobs)
+      .where(
+        and(
+          eq(memoryJobs.type, "prune_old_conversations"),
+          inArray(memoryJobs.status, ["pending", "running"]),
+        ),
+      )
+      .orderBy(asc(memoryJobs.createdAt))
+      .limit(1)
+  )[0];
   if (existing) {
     if (
       existing.status === "pending" &&
@@ -820,13 +837,13 @@ export function enqueuePruneOldConversationsJob(
         payload = {};
       }
       if (payload.retentionDays !== retentionDays) {
-        db.update(memoryJobs)
+        await db.orm
+          .update(memoryJobs)
           .set({
             payload: JSON.stringify({ ...payload, retentionDays }),
             updatedAt: Date.now(),
           })
-          .where(eq(memoryJobs.id, existing.id))
-          .run();
+          .where(eq(memoryJobs.id, existing.id));
       }
     }
     return existing.id;
@@ -840,21 +857,24 @@ export function enqueuePruneOldConversationsJob(
   return enqueueMemoryJob("prune_old_conversations", payload);
 }
 
-export function enqueuePruneOldToolInvocationsJob(
+export async function enqueuePruneOldToolInvocationsJob(
   retentionDays?: number,
-): string {
-  const db = memoryDb();
-  const existing = db
-    .select()
-    .from(memoryJobs)
-    .where(
-      and(
-        eq(memoryJobs.type, "prune_old_tool_invocations"),
-        inArray(memoryJobs.status, ["pending", "running"]),
-      ),
-    )
-    .orderBy(asc(memoryJobs.createdAt))
-    .get();
+): Promise<string> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const existing = (
+    await db.orm
+      .select()
+      .from(memoryJobs)
+      .where(
+        and(
+          eq(memoryJobs.type, "prune_old_tool_invocations"),
+          inArray(memoryJobs.status, ["pending", "running"]),
+        ),
+      )
+      .orderBy(asc(memoryJobs.createdAt))
+      .limit(1)
+  )[0];
   if (existing) {
     if (
       existing.status === "pending" &&
@@ -869,13 +889,13 @@ export function enqueuePruneOldToolInvocationsJob(
         payload = {};
       }
       if (payload.retentionDays !== retentionDays) {
-        db.update(memoryJobs)
+        await db.orm
+          .update(memoryJobs)
           .set({
             payload: JSON.stringify({ ...payload, retentionDays }),
             updatedAt: Date.now(),
           })
-          .where(eq(memoryJobs.id, existing.id))
-          .run();
+          .where(eq(memoryJobs.id, existing.id));
       }
     }
     return existing.id;
@@ -916,7 +936,8 @@ export async function claimMemoryJobs(
     return [];
   }
 
-  const db = memoryDb();
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
   const now = Date.now();
   const restrictFilter = restrictToTypes
     ? inArray(memoryJobs.type, [...restrictToTypes])
@@ -930,7 +951,7 @@ export async function claimMemoryJobs(
   // Slow lane: long-running LLM jobs (graph extract/consolidate, analysis, etc.).
   const slowCandidates =
     limits.slowLlm > 0
-      ? db
+      ? await db.orm
           .select()
           .from(memoryJobs)
           .where(
@@ -938,13 +959,12 @@ export async function claimMemoryJobs(
           )
           .orderBy(asc(memoryJobs.runAfter), asc(memoryJobs.createdAt))
           .limit(limits.slowLlm)
-          .all()
       : [];
 
   // Fast lane: everything that is neither slow-LLM nor embed.
   const fastCandidates =
     limits.fast > 0
-      ? db
+      ? await db.orm
           .select()
           .from(memoryJobs)
           .where(
@@ -956,7 +976,6 @@ export async function claimMemoryJobs(
           )
           .orderBy(asc(memoryJobs.runAfter), asc(memoryJobs.createdAt))
           .limit(limits.fast)
-          .all()
       : [];
 
   // Embed lane: gated by both the Qdrant circuit breaker and the billing
@@ -989,24 +1008,24 @@ export async function claimMemoryJobs(
 
   const embedCandidates =
     embedLimit > 0 && !skipEmbedJobs
-      ? db
+      ? await db.orm
           .select()
           .from(memoryJobs)
           .where(and(pendingFilter, inArray(memoryJobs.type, EMBED_JOB_TYPES)))
           .orderBy(asc(memoryJobs.runAfter), asc(memoryJobs.createdAt))
           .limit(embedLimit)
-          .all()
       : [];
 
   const candidates = [...slowCandidates, ...fastCandidates, ...embedCandidates];
 
   const claimed: MemoryJob[] = [];
   for (const row of candidates) {
-    db.update(memoryJobs)
+    const won = await db.orm
+      .update(memoryJobs)
       .set({ status: "running", startedAt: now, updatedAt: now })
       .where(and(eq(memoryJobs.id, row.id), eq(memoryJobs.status, "pending")))
-      .run();
-    if (rawMemoryChanges() === 0) {
+      .returning({ id: memoryJobs.id });
+    if (won.length === 0) {
       continue;
     }
     claimed.push(
@@ -1021,16 +1040,18 @@ export async function claimMemoryJobs(
   return claimed;
 }
 
-export function completeMemoryJob(id: string): void {
-  const db = memoryDb();
+export async function completeMemoryJob(id: string): Promise<void> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
   // Guarded on `running` so a late return from an abandoned execution cannot
   // overwrite a terminal state another writer already recorded (the stalled-job
   // watchdog's `failed`, or a successor worker's re-claimed row).
-  db.update(memoryJobs)
+  const updated = await db.orm
+    .update(memoryJobs)
     .set({ status: "completed", updatedAt: Date.now(), lastError: null })
     .where(and(eq(memoryJobs.id, id), eq(memoryJobs.status, "running")))
-    .run();
-  if (rawMemoryChanges() === 0) {
+    .returning({ id: memoryJobs.id });
+  if (updated.length === 0) {
     log.warn(
       { jobId: id },
       "completeMemoryJob: row was not running; late completion suppressed",
@@ -1058,7 +1079,7 @@ const DEFER_MAX_DELAY_MS = 5 * 60 * 1000;
  * Returns `'deferred'` if the job was put back, or `'failed'` if max deferrals
  * were exceeded and the job was marked as failed.
  */
-export function deferMemoryJob(
+export async function deferMemoryJob(
   id: string,
   options?: {
     /**
@@ -1068,9 +1089,12 @@ export function deferMemoryJob(
      */
     exhaustedMessage?: string;
   },
-): "deferred" | "failed" {
-  const db = memoryDb();
-  const row = db.select().from(memoryJobs).where(eq(memoryJobs.id, id)).get();
+): Promise<"deferred" | "failed"> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const row = (
+    await db.orm.select().from(memoryJobs).where(eq(memoryJobs.id, id)).limit(1)
+  )[0];
   if (!row) {
     return "failed";
   }
@@ -1083,7 +1107,8 @@ export function deferMemoryJob(
       { jobId: id, type: row.type, deferrals },
       "Job exceeded max deferrals, marking as failed",
     );
-    db.update(memoryJobs)
+    await db.orm
+      .update(memoryJobs)
       .set({
         status: "failed",
         deferrals,
@@ -1092,8 +1117,7 @@ export function deferMemoryJob(
           options?.exhaustedMessage ??
           `Backend unavailable after ${deferrals} deferrals`,
       })
-      .where(and(eq(memoryJobs.id, id), eq(memoryJobs.status, "running")))
-      .run();
+      .where(and(eq(memoryJobs.id, id), eq(memoryJobs.status, "running")));
     return "failed";
   }
 
@@ -1111,15 +1135,15 @@ export function deferMemoryJob(
     DEFER_BASE_DELAY_MS * Math.pow(2, Math.min(deferrals - 1, 10)),
     DEFER_MAX_DELAY_MS,
   );
-  db.update(memoryJobs)
+  await db.orm
+    .update(memoryJobs)
     .set({
       status: "pending",
       deferrals,
       runAfter: now + delay,
       updatedAt: now,
     })
-    .where(and(eq(memoryJobs.id, id), eq(memoryJobs.status, "running")))
-    .run();
+    .where(and(eq(memoryJobs.id, id), eq(memoryJobs.status, "running")));
   return "deferred";
 }
 
@@ -1131,24 +1155,31 @@ export function deferMemoryJob(
  * {@link deferMemoryJob}'s deferral cap may dead-letter it. It simply re-runs
  * once the condition clears.
  */
-export function rescheduleMemoryJob(id: string, delayMs: number): void {
+export async function rescheduleMemoryJob(
+  id: string,
+  delayMs: number,
+): Promise<void> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
   const now = Date.now();
-  memoryDb()
+  await db.orm
     .update(memoryJobs)
     .set({ status: "pending", runAfter: now + delayMs, updatedAt: now })
-    .where(and(eq(memoryJobs.id, id), eq(memoryJobs.status, "running")))
-    .run();
+    .where(and(eq(memoryJobs.id, id), eq(memoryJobs.status, "running")));
 }
 
-export function failMemoryJob(
+export async function failMemoryJob(
   id: string,
   error: string,
   options?: { retryDelayMs?: number; maxAttempts?: number },
-): void {
+): Promise<void> {
   const retryDelayMs = options?.retryDelayMs ?? 30_000;
   const maxAttempts = options?.maxAttempts ?? 5;
-  const db = memoryDb();
-  const row = db.select().from(memoryJobs).where(eq(memoryJobs.id, id)).get();
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const row = (
+    await db.orm.select().from(memoryJobs).where(eq(memoryJobs.id, id)).limit(1)
+  )[0];
   if (!row) {
     return;
   }
@@ -1158,18 +1189,19 @@ export function failMemoryJob(
   // `completeMemoryJob`: a late writer must not overwrite a terminal state
   // recorded by the stalled-job watchdog or a successor worker.
   if (attempts >= maxAttempts) {
-    db.update(memoryJobs)
+    await db.orm
+      .update(memoryJobs)
       .set({
         status: "failed",
         attempts,
         updatedAt: now,
         lastError: truncate(error, 2000, ""),
       })
-      .where(and(eq(memoryJobs.id, id), eq(memoryJobs.status, "running")))
-      .run();
+      .where(and(eq(memoryJobs.id, id), eq(memoryJobs.status, "running")));
     return;
   }
-  db.update(memoryJobs)
+  await db.orm
+    .update(memoryJobs)
     .set({
       status: "pending",
       attempts,
@@ -1177,27 +1209,31 @@ export function failMemoryJob(
       updatedAt: now,
       lastError: truncate(error, 2000, ""),
     })
-    .where(and(eq(memoryJobs.id, id), eq(memoryJobs.status, "running")))
-    .run();
+    .where(and(eq(memoryJobs.id, id), eq(memoryJobs.status, "running")));
 }
 
-export function resetRunningJobsToPending(): number {
-  const db = memoryDb();
-  db.update(memoryJobs)
+export async function resetRunningJobsToPending(): Promise<number> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const reset = await db.orm
+    .update(memoryJobs)
     .set({ status: "pending", updatedAt: Date.now() })
     .where(eq(memoryJobs.status, "running"))
-    .run();
-  return rawMemoryChanges();
+    .returning({ id: memoryJobs.id });
+  return reset.length;
 }
 
 /** Currently-running memory jobs, oldest first — the drain-status view. */
-export function listRunningMemoryJobs(): Array<{
-  id: string;
-  type: string;
-  startedAt: number | null;
-}> {
-  const db = memoryDb();
-  return db
+export async function listRunningMemoryJobs(): Promise<
+  Array<{
+    id: string;
+    type: string;
+    startedAt: number | null;
+  }>
+> {
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  return await db.orm
     .select({
       id: memoryJobs.id,
       type: memoryJobs.type,
@@ -1206,19 +1242,19 @@ export function listRunningMemoryJobs(): Array<{
     .from(memoryJobs)
     .where(eq(memoryJobs.status, "running"))
     .orderBy(asc(memoryJobs.startedAt))
-    .limit(20)
-    .all();
+    .limit(20);
 }
 
 /**
  * Fail running jobs whose `startedAt` is older than `timeoutMs` ago.
  * Returns the number of jobs that were timed out.
  */
-export function failStalledJobs(timeoutMs: number): number {
+export async function failStalledJobs(timeoutMs: number): Promise<number> {
   const now = Date.now();
   const cutoff = now - timeoutMs;
-  const stalled = rawMemoryAll<{ id: string; type: string }>(
-    "jobs:failStalledJobs:select",
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const stalled = await db.all<{ id: string; type: string }>(
     `
     SELECT id, type
     FROM memory_jobs
@@ -1226,15 +1262,15 @@ export function failStalledJobs(timeoutMs: number): number {
       AND started_at IS NOT NULL
       AND started_at < ?
   `,
-    cutoff,
+    [cutoff],
   );
   if (stalled.length === 0) {
     return 0;
   }
 
-  const db = memoryDb();
   for (const row of stalled) {
-    db.update(memoryJobs)
+    await db.orm
+      .update(memoryJobs)
       .set({
         status: "failed",
         updatedAt: now,
@@ -1242,8 +1278,7 @@ export function failStalledJobs(timeoutMs: number): number {
           timeoutMs / 60_000,
         )} minutes`,
       })
-      .where(and(eq(memoryJobs.id, row.id), eq(memoryJobs.status, "running")))
-      .run();
+      .where(and(eq(memoryJobs.id, row.id), eq(memoryJobs.status, "running")));
     log.warn(
       { jobId: row.id, type: row.type, timeoutMs },
       "Failed stalled memory job due to timeout",
@@ -1252,9 +1287,9 @@ export function failStalledJobs(timeoutMs: number): number {
   return stalled.length;
 }
 
-export function getMemoryJobCounts(): Record<string, number> {
-  const rows = rawMemoryAll<{ status: string; c: number }>(
-    "jobs:getMemoryJobCounts",
+export async function getMemoryJobCounts(): Promise<Record<string, number>> {
+  const db = requireMainDb();
+  const rows = await db.all<{ status: string; c: number }>(
     `
     SELECT status, COUNT(*) AS c
     FROM memory_jobs
@@ -1273,7 +1308,9 @@ export function getMemoryJobCounts(): Record<string, number> {
   return counts;
 }
 
-function parseRow(row: typeof memoryJobs.$inferSelect): MemoryJob {
+function parseRow(
+  row: AsyncDb["schema"]["memoryJobs"]["$inferSelect"],
+): MemoryJob {
   let payload: Record<string, unknown> = {};
   try {
     payload = JSON.parse(row.payload) as Record<string, unknown>;

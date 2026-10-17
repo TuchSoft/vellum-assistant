@@ -3,16 +3,12 @@ import { v4 as uuid } from "uuid";
 
 import type { AssistantConfig } from "../../config/types.js";
 import { estimateTextTokens } from "../../context/token-estimator.js";
-import { getMemoryDb } from "../../persistence/db-connection.js";
+import { getMemoryAsyncDb } from "../../persistence/db-facade.js";
 import { asString, truncate } from "../../persistence/job-utils.js";
 import {
   enqueueMemoryJob,
   type MemoryJob,
 } from "../../persistence/jobs-store.js";
-import {
-  memorySegments,
-  memorySummaries,
-} from "../../persistence/schema/index.js";
 import {
   createTimeout,
   extractText,
@@ -42,7 +38,7 @@ const CONVERSATION_SUMMARY_SYSTEM_PROMPT = [
   "## Open Items",
   "Unresolved questions, pending tasks, or follow-ups (omit section if none).",
   "",
-  "Target 400-800 tokens. Be thorough — capture nuance, tone, and relationship dynamics, not just facts.",
+  "Target 400-800 tokens. Be thorough, capture nuance, tone, and relationship dynamics, not just facts.",
 ].join("\n");
 
 export async function buildConversationSummaryJob(
@@ -53,21 +49,25 @@ export async function buildConversationSummaryJob(
   if (!conversationId) {
     return;
   }
-  const db = getMemoryDb();
+  const db = getMemoryAsyncDb();
   if (!db) {
     return;
   }
+  const memorySummaries = db.schema.memorySummaries;
+  const memorySegments = db.schema.memorySegments;
 
-  const existing = db
-    .select()
-    .from(memorySummaries)
-    .where(
-      and(
-        eq(memorySummaries.scope, "conversation"),
-        eq(memorySummaries.scopeKey, conversationId),
-      ),
-    )
-    .get();
+  const existing = (
+    await db.orm
+      .select()
+      .from(memorySummaries)
+      .where(
+        and(
+          eq(memorySummaries.scope, "conversation"),
+          eq(memorySummaries.scopeKey, conversationId),
+        ),
+      )
+      .limit(1)
+  )[0];
 
   // Fetch only segments newer than what the existing summary already covers.
   // For first-time summaries, fetch all segments.
@@ -80,13 +80,12 @@ export async function buildConversationSummaryJob(
     conditions.push(gt(memorySegments.createdAt, lastCoveredAt));
   }
 
-  // memory_segments and memory_summaries both live on the memory connection.
-  const rows = db
+  // memory_segments and memory_summaries both live on the memory slot.
+  const rows = await db.orm
     .select()
     .from(memorySegments)
     .where(and(...conditions))
-    .orderBy(asc(memorySegments.createdAt))
-    .all();
+    .orderBy(asc(memorySegments.createdAt));
   if (rows.length === 0) {
     return;
   }
@@ -113,7 +112,8 @@ export async function buildConversationSummaryJob(
     : rows[0].createdAt;
   const latestCovered = rows[rows.length - 1].createdAt;
 
-  db.insert(memorySummaries)
+  await db.orm
+    .insert(memorySummaries)
     .values({
       id: summaryId,
       scope: "conversation",
@@ -136,23 +136,24 @@ export async function buildConversationSummaryJob(
         endAt: latestCovered,
         updatedAt: now,
       },
-    })
-    .run();
+    });
 
-  // Re-query to get the actual persisted row ID — during a race the ON CONFLICT
+  // Re-query to get the actual persisted row ID, during a race the ON CONFLICT
   // path keeps the winner's ID, not the pre-generated UUID from the loser.
-  const actualRow = db
-    .select({ id: memorySummaries.id })
-    .from(memorySummaries)
-    .where(
-      and(
-        eq(memorySummaries.scope, "conversation"),
-        eq(memorySummaries.scopeKey, conversationId),
-      ),
-    )
-    .get();
+  const actualRow = (
+    await db.orm
+      .select({ id: memorySummaries.id })
+      .from(memorySummaries)
+      .where(
+        and(
+          eq(memorySummaries.scope, "conversation"),
+          eq(memorySummaries.scopeKey, conversationId),
+        ),
+      )
+      .limit(1)
+  )[0];
   if (actualRow) {
-    enqueueMemoryJob("embed_summary", { summaryId: actualRow.id });
+    await enqueueMemoryJob("embed_summary", { summaryId: actualRow.id });
   }
 }
 

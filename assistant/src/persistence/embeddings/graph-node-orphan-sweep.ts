@@ -1,5 +1,4 @@
-import { getMemoryDb } from "../db-connection.js";
-import { memoryGraphNodes } from "../schema/index.js";
+import { getMemoryAsyncDb } from "../db-facade.js";
 import { withQdrantBreaker } from "./qdrant-circuit-breaker.js";
 
 /** Qdrant point-payload `target_type` for memory graph nodes. */
@@ -36,7 +35,7 @@ export interface GraphNodeSweepResult {
  * `memory_graph_nodes` and silently drops rows that are gone).
  *
  * This enumerates the authoritative set of indexed `graph_node` points straight
- * from Qdrant — the only place cacheless points are recorded — and deletes any
+ * from Qdrant, the only place cacheless points are recorded, and deletes any
  * whose `target_id` has no row in `memory_graph_nodes`. Membership is
  * existence-based, matching migration 340: a soft-deleted node keeps its row
  * (`fidelity = 'gone'`) and therefore its point.
@@ -70,18 +69,19 @@ export async function sweepOrphanedGraphNodePoints(
   // A node row of any fidelity (including soft-deleted `gone`) keeps its point;
   // only a fully absent row marks an orphan. Load the id column once and diff in
   // memory rather than issuing one membership query per indexed point. The graph
-  // lives on the memory connection; if it cannot be opened, bail without deleting
-  // — an empty membership set would treat every point as an orphan.
-  const memoryDb = getMemoryDb();
+  // lives on the memory slot; if it cannot be opened, bail without deleting; an
+  // empty membership set would treat every point as an orphan.
+  const memoryDb = getMemoryAsyncDb();
   if (!memoryDb) {
     return { scanned: indexedTargetIds.size, deleted: 0 };
   }
+  const memoryGraphNodes = memoryDb.schema.memoryGraphNodes;
   const liveNodeIds = new Set(
-    memoryDb
-      .select({ id: memoryGraphNodes.id })
-      .from(memoryGraphNodes)
-      .all()
-      .map((row) => row.id),
+    (
+      await memoryDb.orm
+        .select({ id: memoryGraphNodes.id })
+        .from(memoryGraphNodes)
+    ).map((row) => row.id),
   );
 
   let deleted = 0;

@@ -19,10 +19,7 @@
  * `src/__tests__/pg-test-db.ts`.
  */
 
-import type {
-  PgDrizzleDb,
-  PgSchemaTables,
-} from "./db-postgres-facade.js";
+import type { PgDrizzleDb, PgSchemaTables } from "./db-postgres-facade.js";
 import { getPostgresAsyncDb } from "./db-postgres-facade.js";
 
 /** A value bindable as a positional query parameter. */
@@ -131,11 +128,6 @@ function facadeFor(slot: AsyncDbSlot): AsyncDb | null {
     return null;
   }
   return getPostgresAsyncDb(slot, url);
-}
-
-/** Test hook: forget the once-per-slot unavailable warning. */
-export function _resetFacadeWarnings(): void {
-  warnedSlots.clear();
 }
 
 /** The async facade for the main database, or `null` when it is unavailable. */

@@ -6,8 +6,9 @@
  * mocked to simulate the outbound call to the sender's gateway.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import {
   invalidateConfigCache,
   loadRawConfig,
@@ -19,7 +20,7 @@ import {
   getContact,
   searchContacts,
 } from "../../../contacts/contact-store.js";
-import { getSqlite } from "../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import {
   acceptA2AInvite,
@@ -33,12 +34,12 @@ await initializeDb();
 // Helpers
 // ---------------------------------------------------------------------------
 
-function resetTables(): void {
-  const sqlite = getSqlite();
-  sqlite.run("DELETE FROM a2a_invites");
-  sqlite.run("DELETE FROM assistant_contact_metadata");
-  sqlite.run("DELETE FROM contact_channels");
-  sqlite.run("DELETE FROM contacts");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM a2a_invites");
+  await db.run("DELETE FROM assistant_contact_metadata");
+  await db.run("DELETE FROM contact_channels");
+  await db.run("DELETE FROM contacts");
 }
 
 function setConfig(opts: {
@@ -121,12 +122,12 @@ function mockFetchCapture(opts: MockFetchOptions): {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("acceptA2AInvite", () => {
+describePg("acceptA2AInvite", () => {
   let savedFetch: typeof globalThis.fetch;
 
   beforeEach(async () => {
     savedFetch = globalThis.fetch;
-    resetTables();
+    await resetTables();
     setConfig({
       a2aEnabled: true,
       publicBaseUrl: RECEIVER_GATEWAY_URL,

@@ -137,7 +137,7 @@ export async function deliverA2AReply(
 
   let completedTask;
   try {
-    completedTask = taskStore.completeWithArtifacts(taskId, [
+    completedTask = await taskStore.completeWithArtifacts(taskId, [
       { artifact_id: crypto.randomUUID(), parts },
     ]);
   } catch (err) {
@@ -147,7 +147,7 @@ export async function deliverA2AReply(
   }
 
   // Push notification — fire-and-forget
-  const pushUrl = taskStore.getPushUrl(taskId);
+  const pushUrl = await taskStore.getPushUrl(taskId);
   if (pushUrl) {
     pushNotification(pushUrl, completedTask).catch((err) => {
       log.error(

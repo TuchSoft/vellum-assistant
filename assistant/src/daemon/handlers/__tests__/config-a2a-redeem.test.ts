@@ -5,8 +5,9 @@
  * `VELLUM_WORKSPACE_DIR` to a per-file temp directory.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import {
   invalidateConfigCache,
   loadRawConfig,
@@ -17,17 +18,17 @@ import {
   getAssistantContactMetadata,
   getContact,
 } from "../../../contacts/contact-store.js";
-import { getSqlite } from "../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import { getA2AConfig, redeemA2AInvite } from "../config-a2a.js";
 
 await initializeDb();
 
-function resetTables(): void {
-  const sqlite = getSqlite();
-  sqlite.run("DELETE FROM assistant_contact_metadata");
-  sqlite.run("DELETE FROM contact_channels");
-  sqlite.run("DELETE FROM contacts");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM assistant_contact_metadata");
+  await db.run("DELETE FROM contact_channels");
+  await db.run("DELETE FROM contacts");
 }
 
 function setConfig(opts: { a2aEnabled?: boolean }): void {
@@ -45,9 +46,9 @@ const SENDER = {
   gatewayUrl: "https://sender.example.com",
 };
 
-describe("redeemA2AInvite", () => {
+describePg("redeemA2AInvite", () => {
   beforeEach(async () => {
-    resetTables();
+    await resetTables();
     setConfig({ a2aEnabled: false });
   });
 

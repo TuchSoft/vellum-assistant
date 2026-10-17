@@ -5,8 +5,9 @@
  * `VELLUM_WORKSPACE_DIR` to a per-file temp directory.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import {
   invalidateConfigCache,
   loadRawConfig,
@@ -17,18 +18,18 @@ import {
   getAssistantContactMetadata,
   getContact,
 } from "../../../contacts/contact-store.js";
-import { getSqlite } from "../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import { completeA2AInvite, createA2AInvite } from "../config-a2a.js";
 
 await initializeDb();
 
-function resetTables(): void {
-  const sqlite = getSqlite();
-  sqlite.run("DELETE FROM a2a_invites");
-  sqlite.run("DELETE FROM assistant_contact_metadata");
-  sqlite.run("DELETE FROM contact_channels");
-  sqlite.run("DELETE FROM contacts");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM a2a_invites");
+  await db.run("DELETE FROM assistant_contact_metadata");
+  await db.run("DELETE FROM contact_channels");
+  await db.run("DELETE FROM contacts");
 }
 
 interface A2aInviteRow {
@@ -38,10 +39,11 @@ interface A2aInviteRow {
   use_count: number;
 }
 
-function getInviteRow(id: string): A2aInviteRow | null {
-  return getSqlite()
-    .prepare("SELECT * FROM a2a_invites WHERE id = ?")
-    .get(id) as A2aInviteRow | null;
+async function getInviteRow(id: string): Promise<A2aInviteRow | null> {
+  const db = requireMainDb();
+  return await db.get<A2aInviteRow>("SELECT * FROM a2a_invites WHERE id = ?", [
+    id,
+  ]);
 }
 
 function setConfig(opts: {
@@ -69,9 +71,9 @@ const ACCEPTOR = {
   gatewayUrl: "https://acceptor.example.com",
 };
 
-describe("completeA2AInvite", () => {
+describePg("completeA2AInvite", () => {
   beforeEach(async () => {
-    resetTables();
+    await resetTables();
     setConfig({
       a2aEnabled: false,
       publicBaseUrl: "https://sender.example.com",
@@ -97,7 +99,7 @@ describe("completeA2AInvite", () => {
     expect(result.error).toBeUndefined();
 
     // Verify the placeholder contact was promoted
-    const invite = getInviteRow(created.inviteId!);
+    const invite = await getInviteRow(created.inviteId!);
     expect(invite).not.toBeNull();
 
     const contact = await getContact(invite!.contact_id);
@@ -121,7 +123,7 @@ describe("completeA2AInvite", () => {
     });
     expect(result.success).toBe(true);
 
-    const invite = getInviteRow(created.inviteId!);
+    const invite = await getInviteRow(created.inviteId!);
     const contact = await getContact(invite!.contact_id);
     expect(contact!.channels[0]!.address).toBe("upper-case-id-123");
   });
@@ -135,7 +137,7 @@ describe("completeA2AInvite", () => {
     });
     expect(result.success).toBe(true);
 
-    const invite = getInviteRow(created.inviteId!);
+    const invite = await getInviteRow(created.inviteId!);
     const metadata = await getAssistantContactMetadata(invite!.contact_id);
     expect(metadata).not.toBeNull();
     expect(metadata!.species).toBe("vellum");
@@ -163,8 +165,8 @@ describe("completeA2AInvite", () => {
 
     // The invite was just created with 0 hours expiry, so expiresAt ~= now
     // Manually expire it by updating the DB
-    const sqlite = getSqlite();
-    sqlite.run("UPDATE a2a_invites SET expires_at = ? WHERE id = ?", [
+    const db = requireMainDb();
+    await db.run("UPDATE a2a_invites SET expires_at = ? WHERE id = ?", [
       Date.now() - 1000,
       created.inviteId!,
     ]);
@@ -243,7 +245,7 @@ describe("completeA2AInvite", () => {
     expect(result.error).toContain("public base URL");
 
     // Verify the invite was NOT consumed
-    const invite = getInviteRow(created.inviteId!);
+    const invite = await getInviteRow(created.inviteId!);
     expect(invite!.status).toBe("active");
     expect(invite!.use_count).toBe(0);
   });

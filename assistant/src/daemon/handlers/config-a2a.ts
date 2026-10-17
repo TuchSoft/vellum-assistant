@@ -154,7 +154,7 @@ export async function createA2AInvite(params: {
 
   // 4. Create the invite
   const expiresInMs = (params.expiresInHours ?? 72) * 60 * 60 * 1000;
-  const { invite, rawToken } = createA2aInvite({
+  const { invite, rawToken } = await createA2aInvite({
     contactId: contact.id,
     maxUses: 1,
     expiresInMs,
@@ -193,7 +193,7 @@ export async function completeA2AInvite(params: {
     };
   }
 
-  const claimResult = claimA2aInvite({
+  const claimResult = await claimA2aInvite({
     token: params.token,
     redeemedByExternalUserId: params.acceptor.assistantId,
   });

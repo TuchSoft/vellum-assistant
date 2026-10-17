@@ -5,25 +5,26 @@
  * `VELLUM_WORKSPACE_DIR` to a per-file temp directory.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import {
   invalidateConfigCache,
   loadRawConfig,
   saveRawConfig,
   setNestedValue,
 } from "../../../config/loader.js";
-import { getSqlite } from "../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import { clearA2AConfig, getA2AConfig, setA2AConfig } from "../config-a2a.js";
 
 await initializeDb();
 
-function resetTables(): void {
-  const sqlite = getSqlite();
-  sqlite.run("DELETE FROM assistant_contact_metadata");
-  sqlite.run("DELETE FROM contact_channels");
-  sqlite.run("DELETE FROM contacts");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM assistant_contact_metadata");
+  await db.run("DELETE FROM contact_channels");
+  await db.run("DELETE FROM contacts");
 }
 
 function setConfigEnabled(enabled: boolean): void {
@@ -33,9 +34,9 @@ function setConfigEnabled(enabled: boolean): void {
   invalidateConfigCache();
 }
 
-describe("getA2AConfig", () => {
+describePg("getA2AConfig", () => {
   beforeEach(async () => {
-    resetTables();
+    await resetTables();
     setConfigEnabled(false);
   });
 
@@ -54,9 +55,9 @@ describe("getA2AConfig", () => {
   });
 });
 
-describe("setA2AConfig", () => {
+describePg("setA2AConfig", () => {
   beforeEach(async () => {
-    resetTables();
+    await resetTables();
     setConfigEnabled(false);
   });
 
@@ -74,9 +75,9 @@ describe("setA2AConfig", () => {
   });
 });
 
-describe("clearA2AConfig", () => {
+describePg("clearA2AConfig", () => {
   beforeEach(async () => {
-    resetTables();
+    await resetTables();
     setConfigEnabled(true);
   });
 

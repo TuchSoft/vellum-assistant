@@ -1,9 +1,7 @@
 import { eq } from "drizzle-orm";
 
-import type { DrizzleDb } from "../persistence/db-connection.js";
-import { getDb } from "../persistence/db-connection.js";
-import { rawChanges } from "../persistence/raw-query.js";
-import { a2aTasks } from "../persistence/schema/index.js";
+import type { AsyncDb, SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { TERMINAL_TASK_STATES } from "./protocol-constants.js";
 import type {
   A2AMessage,
@@ -15,22 +13,23 @@ import type {
 // ── Internal types ──────────────────────────────────────────────────
 
 /** Raw database row shape for a2a_tasks. */
-type A2ATaskRow = typeof a2aTasks.$inferSelect;
+type A2ATaskRow = SchemaTables["a2aTasks"]["$inferSelect"];
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /** Throw if the task doesn't exist or is in a terminal state. */
-function assertNonTerminal(
-  db: DrizzleDb,
+async function assertNonTerminal(
+  db: AsyncDb,
   taskId: string,
   targetState: TaskState,
-): void {
-  const current = db
+): Promise<void> {
+  const a2aTasks = db.schema.a2aTasks;
+  const rows = await db.orm
     .select({ state: a2aTasks.state })
     .from(a2aTasks)
-    .where(eq(a2aTasks.id, taskId))
-    .get();
+    .where(eq(a2aTasks.id, taskId));
 
+  const current = rows[0];
   if (!current) {
     throw new Error(`A2A task not found: ${taskId}`);
   }
@@ -65,13 +64,14 @@ function rowToTask(row: A2ATaskRow): A2ATask {
 
 // ── Store functions ─────────────────────────────────────────────────
 
-export function createTask(params: {
+export async function createTask(params: {
   contextId?: string;
   senderAssistantId: string;
   requestMessage: A2AMessage;
   pushUrl?: string;
-}): A2ATask {
-  const db = getDb();
+}): Promise<A2ATask> {
+  const db = requireMainDb();
+  const a2aTasks = db.schema.a2aTasks;
   const now = Date.now();
 
   const row: A2ATaskRow = {
@@ -88,81 +88,96 @@ export function createTask(params: {
     updatedAt: now,
   };
 
-  db.insert(a2aTasks).values(row).run();
+  await db.orm.insert(a2aTasks).values(row);
 
   return rowToTask(row);
 }
 
-export function getTask(taskId: string): A2ATask | null {
-  const db = getDb();
-  const row = db.select().from(a2aTasks).where(eq(a2aTasks.id, taskId)).get();
-  return row ? rowToTask(row) : null;
+export async function getTask(taskId: string): Promise<A2ATask | null> {
+  const db = requireMainDb();
+  const a2aTasks = db.schema.a2aTasks;
+  const rows = await db.orm
+    .select()
+    .from(a2aTasks)
+    .where(eq(a2aTasks.id, taskId));
+  return rows[0] ? rowToTask(rows[0]) : null;
 }
 
-export function updateState(
+export async function updateState(
   taskId: string,
   state: TaskState,
   statusMessage?: string,
-): A2ATask {
-  const db = getDb();
-  assertNonTerminal(db, taskId, state);
+): Promise<A2ATask> {
+  const db = requireMainDb();
+  const a2aTasks = db.schema.a2aTasks;
+  await assertNonTerminal(db, taskId, state);
 
-  db.update(a2aTasks)
+  await db.orm
+    .update(a2aTasks)
     .set({
       state,
       statusMessage: statusMessage ?? null,
       updatedAt: Date.now(),
     })
-    .where(eq(a2aTasks.id, taskId))
-    .run();
+    .where(eq(a2aTasks.id, taskId));
 
-  return rowToTask(
-    db.select().from(a2aTasks).where(eq(a2aTasks.id, taskId)).get()!,
-  );
+  const rows = await db.orm
+    .select()
+    .from(a2aTasks)
+    .where(eq(a2aTasks.id, taskId));
+  return rowToTask(rows[0]!);
 }
 
-export function completeWithArtifacts(
+export async function completeWithArtifacts(
   taskId: string,
   artifacts: Artifact[],
-): A2ATask {
-  const db = getDb();
-  assertNonTerminal(db, taskId, "completed");
+): Promise<A2ATask> {
+  const db = requireMainDb();
+  const a2aTasks = db.schema.a2aTasks;
+  await assertNonTerminal(db, taskId, "completed");
 
-  db.update(a2aTasks)
+  await db.orm
+    .update(a2aTasks)
     .set({
       state: "completed",
       statusMessage: null,
       artifactsJson: JSON.stringify(artifacts),
       updatedAt: Date.now(),
     })
-    .where(eq(a2aTasks.id, taskId))
-    .run();
+    .where(eq(a2aTasks.id, taskId));
 
-  return rowToTask(
-    db.select().from(a2aTasks).where(eq(a2aTasks.id, taskId)).get()!,
-  );
+  const rows = await db.orm
+    .select()
+    .from(a2aTasks)
+    .where(eq(a2aTasks.id, taskId));
+  return rowToTask(rows[0]!);
 }
 
-export function linkConversation(taskId: string, conversationId: string): void {
-  const db = getDb();
+export async function linkConversation(
+  taskId: string,
+  conversationId: string,
+): Promise<void> {
+  const db = requireMainDb();
+  const a2aTasks = db.schema.a2aTasks;
   const now = Date.now();
 
-  db.update(a2aTasks)
+  const updated = await db.orm
+    .update(a2aTasks)
     .set({ conversationId, updatedAt: now })
     .where(eq(a2aTasks.id, taskId))
-    .run();
+    .returning({ id: a2aTasks.id });
 
-  if (rawChanges() === 0) {
+  if (updated.length === 0) {
     throw new Error(`A2A task not found: ${taskId}`);
   }
 }
 
-export function getPushUrl(taskId: string): string | null {
-  const db = getDb();
-  const row = db
+export async function getPushUrl(taskId: string): Promise<string | null> {
+  const db = requireMainDb();
+  const a2aTasks = db.schema.a2aTasks;
+  const rows = await db.orm
     .select({ pushUrl: a2aTasks.pushUrl })
     .from(a2aTasks)
-    .where(eq(a2aTasks.id, taskId))
-    .get();
-  return row?.pushUrl ?? null;
+    .where(eq(a2aTasks.id, taskId));
+  return rows[0]?.pushUrl ?? null;
 }

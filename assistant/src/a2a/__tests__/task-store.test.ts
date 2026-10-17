@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { getDb, getSqliteFrom } from "../../persistence/db-connection.js";
+import { describePg } from "../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { initializeDb } from "../../persistence/db-init.js";
 import type { A2AMessage, Artifact } from "../protocol-types.js";
 import {
@@ -23,17 +24,17 @@ function makeRequestMessage(overrides?: Partial<A2AMessage>): A2AMessage {
   };
 }
 
-describe("a2a-task-store", () => {
-  beforeEach(() => {
-    const raw = getSqliteFrom(getDb());
-    raw.run("DELETE FROM a2a_tasks");
+describePg("a2a-task-store", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM a2a_tasks");
   });
 
   // ── State transitions ───────────────────────────────────────────
 
-  test("createTask returns a task in submitted state", () => {
+  test("createTask returns a task in submitted state", async () => {
     const msg = makeRequestMessage();
-    const task = createTask({
+    const task = await createTask({
       senderAssistantId: "assistant-123",
       requestMessage: msg,
     });
@@ -43,73 +44,81 @@ describe("a2a-task-store", () => {
     expect(task.artifacts).toBeUndefined();
   });
 
-  test("submitted -> working -> completed lifecycle", () => {
-    const task = createTask({
+  test("submitted -> working -> completed lifecycle", async () => {
+    const task = await createTask({
       senderAssistantId: "assistant-123",
       requestMessage: makeRequestMessage(),
     });
 
-    const working = updateState(task.id, "working", "Processing...");
+    const working = await updateState(task.id, "working", "Processing...");
     expect(working.status.state).toBe("working");
     expect(working.status.message).toBeDefined();
 
-    const completed = updateState(task.id, "completed");
+    const completed = await updateState(task.id, "completed");
     expect(completed.status.state).toBe("completed");
   });
 
-  test("cannot transition from terminal state (completed -> working)", () => {
-    const task = createTask({
+  test("cannot transition from terminal state (completed -> working)", async () => {
+    const task = await createTask({
       senderAssistantId: "assistant-123",
       requestMessage: makeRequestMessage(),
     });
 
-    updateState(task.id, "completed");
+    await updateState(task.id, "completed");
 
-    expect(() => updateState(task.id, "working")).toThrow(/terminal state/);
+    await expect(updateState(task.id, "working")).rejects.toThrow(
+      /terminal state/,
+    );
   });
 
-  test("cannot transition from failed state", () => {
-    const task = createTask({
+  test("cannot transition from failed state", async () => {
+    const task = await createTask({
       senderAssistantId: "assistant-123",
       requestMessage: makeRequestMessage(),
     });
 
-    updateState(task.id, "failed");
+    await updateState(task.id, "failed");
 
-    expect(() => updateState(task.id, "working")).toThrow(/terminal state/);
+    await expect(updateState(task.id, "working")).rejects.toThrow(
+      /terminal state/,
+    );
   });
 
-  test("cannot transition from canceled state", () => {
-    const task = createTask({
+  test("cannot transition from canceled state", async () => {
+    const task = await createTask({
       senderAssistantId: "assistant-123",
       requestMessage: makeRequestMessage(),
     });
 
-    updateState(task.id, "canceled");
+    await updateState(task.id, "canceled");
 
-    expect(() => updateState(task.id, "submitted")).toThrow(/terminal state/);
+    await expect(updateState(task.id, "submitted")).rejects.toThrow(
+      /terminal state/,
+    );
   });
 
-  test("cannot transition from rejected state", () => {
-    const task = createTask({
+  test("cannot transition from rejected state", async () => {
+    const task = await createTask({
       senderAssistantId: "assistant-123",
       requestMessage: makeRequestMessage(),
     });
 
-    updateState(task.id, "rejected");
+    await updateState(task.id, "rejected");
 
-    expect(() => updateState(task.id, "working")).toThrow(/terminal state/);
+    await expect(updateState(task.id, "working")).rejects.toThrow(
+      /terminal state/,
+    );
   });
 
   // ── Artifact serialization round-trip ─────────────────────────
 
-  test("completeWithArtifacts stores and retrieves artifacts via JSON round-trip", () => {
-    const task = createTask({
+  test("completeWithArtifacts stores and retrieves artifacts via JSON round-trip", async () => {
+    const task = await createTask({
       senderAssistantId: "assistant-123",
       requestMessage: makeRequestMessage(),
     });
 
-    updateState(task.id, "working");
+    await updateState(task.id, "working");
 
     const artifacts: Artifact[] = [
       {
@@ -130,7 +139,7 @@ describe("a2a-task-store", () => {
       },
     ];
 
-    const completed = completeWithArtifacts(task.id, artifacts);
+    const completed = await completeWithArtifacts(task.id, artifacts);
     expect(completed.status.state).toBe("completed");
     expect(completed.artifacts).toHaveLength(2);
     expect(completed.artifacts![0].artifact_id).toBe("art-1");
@@ -138,100 +147,103 @@ describe("a2a-task-store", () => {
     expect(completed.artifacts![1].parts).toHaveLength(2);
 
     // Verify round-trip via fresh getTask
-    const fetched = getTask(task.id);
+    const fetched = await getTask(task.id);
     expect(fetched).not.toBeNull();
     expect(fetched!.artifacts).toEqual(completed.artifacts);
   });
 
-  test("completeWithArtifacts rejects terminal task", () => {
-    const task = createTask({
+  test("completeWithArtifacts rejects terminal task", async () => {
+    const task = await createTask({
       senderAssistantId: "assistant-123",
       requestMessage: makeRequestMessage(),
     });
 
-    updateState(task.id, "completed");
+    await updateState(task.id, "completed");
 
-    expect(() =>
+    await expect(
       completeWithArtifacts(task.id, [
         { artifact_id: "art-1", parts: [{ kind: "text", text: "late" }] },
       ]),
-    ).toThrow(/terminal state/);
+    ).rejects.toThrow(/terminal state/);
   });
 
   // ── Push URL storage and retrieval ────────────────────────────
 
-  test("push URL is stored and retrieved", () => {
-    const task = createTask({
+  test("push URL is stored and retrieved", async () => {
+    const task = await createTask({
       senderAssistantId: "assistant-123",
       requestMessage: makeRequestMessage(),
       pushUrl: "https://example.com/push",
     });
 
-    const url = getPushUrl(task.id);
+    const url = await getPushUrl(task.id);
     expect(url).toBe("https://example.com/push");
   });
 
-  test("getPushUrl returns null when no push URL set", () => {
-    const task = createTask({
+  test("getPushUrl returns null when no push URL set", async () => {
+    const task = await createTask({
       senderAssistantId: "assistant-123",
       requestMessage: makeRequestMessage(),
     });
 
-    const url = getPushUrl(task.id);
+    const url = await getPushUrl(task.id);
     expect(url).toBeNull();
   });
 
-  test("getPushUrl returns null for unknown task ID", () => {
-    const url = getPushUrl("nonexistent-id");
+  test("getPushUrl returns null for unknown task ID", async () => {
+    const url = await getPushUrl("nonexistent-id");
     expect(url).toBeNull();
   });
 
   // ── getTask ───────────────────────────────────────────────────
 
-  test("getTask returns null for unknown ID", () => {
-    const result = getTask("nonexistent-id");
+  test("getTask returns null for unknown ID", async () => {
+    const result = await getTask("nonexistent-id");
     expect(result).toBeNull();
   });
 
-  test("getTask returns task with context_id when provided", () => {
-    const task = createTask({
+  test("getTask returns task with context_id when provided", async () => {
+    const task = await createTask({
       contextId: "ctx-456",
       senderAssistantId: "assistant-123",
       requestMessage: makeRequestMessage(),
     });
 
-    const fetched = getTask(task.id);
+    const fetched = await getTask(task.id);
     expect(fetched).not.toBeNull();
     expect(fetched!.context_id).toBe("ctx-456");
   });
 
   // ── linkConversation ──────────────────────────────────────────
 
-  test("linkConversation associates a conversation ID", () => {
-    const task = createTask({
+  test("linkConversation associates a conversation ID", async () => {
+    const task = await createTask({
       senderAssistantId: "assistant-123",
       requestMessage: makeRequestMessage(),
     });
 
-    linkConversation(task.id, "conv-789");
+    await linkConversation(task.id, "conv-789");
 
     // Verify via raw DB since getTask doesn't expose conversationId
-    const raw = getSqliteFrom(getDb());
-    const row = raw
-      .prepare("SELECT conversation_id FROM a2a_tasks WHERE id = ?")
-      .get(task.id) as { conversation_id: string };
-    expect(row.conversation_id).toBe("conv-789");
+    const db = requireMainDb();
+    const row = await db.get<{ conversation_id: string }>(
+      "SELECT conversation_id FROM a2a_tasks WHERE id = ?",
+      [task.id],
+    );
+    expect(row!.conversation_id).toBe("conv-789");
   });
 
-  test("linkConversation throws for unknown task ID", () => {
-    expect(() => linkConversation("nonexistent-id", "conv-123")).toThrow(
-      /not found/,
-    );
+  test("linkConversation throws for unknown task ID", async () => {
+    await expect(
+      linkConversation("nonexistent-id", "conv-123"),
+    ).rejects.toThrow(/not found/);
   });
 
   // ── updateState error cases ───────────────────────────────────
 
-  test("updateState throws for unknown task ID", () => {
-    expect(() => updateState("nonexistent-id", "working")).toThrow(/not found/);
+  test("updateState throws for unknown task ID", async () => {
+    await expect(updateState("nonexistent-id", "working")).rejects.toThrow(
+      /not found/,
+    );
   });
 });

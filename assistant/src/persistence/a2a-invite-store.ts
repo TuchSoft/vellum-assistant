@@ -3,7 +3,7 @@
  *
  * A2A invites bind a placeholder assistant contact to a shareable token used
  * for link-based peer-assistant connection. Each invite carries a SHA-256
- * hashed token — the raw token is returned exactly once at creation time and
+ * hashed token. The raw token is returned exactly once at creation time and
  * never stored.
  */
 
@@ -12,8 +12,8 @@ import { randomUUID } from "node:crypto";
 import { generateInviteToken, hashInviteToken } from "@vellumai/gateway-client";
 import { and, eq } from "drizzle-orm";
 
-import { getDb } from "./db-connection.js";
-import { a2aInvites } from "./schema/a2a.js";
+import type { SchemaTables } from "./db-facade.js";
+import { requireMainDb } from "./db-facade.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,6 +35,8 @@ export interface A2aInvite {
   updatedAt: number;
 }
 
+type A2aInviteRow = SchemaTables["a2aInvites"]["$inferSelect"];
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -45,31 +47,32 @@ const DEFAULT_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 // Helpers
 // ---------------------------------------------------------------------------
 
-function rowToInvite(row: typeof a2aInvites.$inferSelect): A2aInvite {
+function rowToInvite(row: A2aInviteRow): A2aInvite {
   return { ...row, status: row.status as A2aInviteStatus };
 }
 
-function findByTokenHash(tokenHash: string): A2aInvite | null {
-  const db = getDb();
-  const row = db
+async function findByTokenHash(tokenHash: string): Promise<A2aInvite | null> {
+  const db = requireMainDb();
+  const a2aInvites = db.schema.a2aInvites;
+  const rows = await db.orm
     .select()
     .from(a2aInvites)
-    .where(eq(a2aInvites.tokenHash, tokenHash))
-    .get();
-  return row ? rowToInvite(row) : null;
+    .where(eq(a2aInvites.tokenHash, tokenHash));
+  return rows[0] ? rowToInvite(rows[0]) : null;
 }
 
 /**
  * Transition an invite's status to 'expired' in storage. Safe to call even if
- * the invite is already expired — the WHERE clause scopes the update to
+ * the invite is already expired. The WHERE clause scopes the update to
  * 'active' rows so it becomes a no-op in that case.
  */
-function markExpired(inviteId: string): void {
-  const db = getDb();
-  db.update(a2aInvites)
+async function markExpired(inviteId: string): Promise<void> {
+  const db = requireMainDb();
+  const a2aInvites = db.schema.a2aInvites;
+  await db.orm
+    .update(a2aInvites)
     .set({ status: "expired", updatedAt: Date.now() })
-    .where(and(eq(a2aInvites.id, inviteId), eq(a2aInvites.status, "active")))
-    .run();
+    .where(and(eq(a2aInvites.id, inviteId), eq(a2aInvites.status, "active")));
 }
 
 /**
@@ -78,19 +81,20 @@ function markExpired(inviteId: string): void {
  * revoked/expired (the WHERE clause constrains to `status = 'active'` so a
  * stale write is impossible).
  */
-function recordUse(params: {
+async function recordUse(params: {
   inviteId: string;
   redeemedByExternalUserId: string;
-}): boolean {
-  const db = getDb();
+}): Promise<boolean> {
+  const db = requireMainDb();
+  const a2aInvites = db.schema.a2aInvites;
   const now = Date.now();
 
-  const invite = db
+  const rows = await db.orm
     .select()
     .from(a2aInvites)
-    .where(eq(a2aInvites.id, params.inviteId))
-    .get();
+    .where(eq(a2aInvites.id, params.inviteId));
 
+  const invite = rows[0];
   if (!invite) {
     return false;
   }
@@ -98,7 +102,10 @@ function recordUse(params: {
   const newUseCount = invite.useCount + 1;
   const newStatus = newUseCount >= invite.maxUses ? "redeemed" : "active";
 
-  db.update(a2aInvites)
+  // The WHERE clause constrains to status = 'active', so a concurrent
+  // revoke/expire prevents the update and the returning rows stay empty.
+  const updated = await db.orm
+    .update(a2aInvites)
     .set({
       useCount: newUseCount,
       status: newStatus,
@@ -107,29 +114,22 @@ function recordUse(params: {
       updatedAt: now,
     })
     .where(and(eq(a2aInvites.id, invite.id), eq(a2aInvites.status, "active")))
-    .run();
+    .returning({ id: a2aInvites.id });
 
-  // Re-read to confirm the update took effect (the WHERE clause constrains
-  // to status = 'active', so a concurrent revoke/expire would prevent it).
-  const updated = db
-    .select({ useCount: a2aInvites.useCount })
-    .from(a2aInvites)
-    .where(eq(a2aInvites.id, invite.id))
-    .get();
-
-  return !!updated && updated.useCount === newUseCount;
+  return updated.length > 0;
 }
 
 // ---------------------------------------------------------------------------
 // createA2aInvite
 // ---------------------------------------------------------------------------
 
-export function createA2aInvite(params: {
+export async function createA2aInvite(params: {
   contactId: string;
   maxUses?: number;
   expiresInMs?: number;
-}): { invite: A2aInvite; rawToken: string } {
-  const db = getDb();
+}): Promise<{ invite: A2aInvite; rawToken: string }> {
+  const db = requireMainDb();
+  const a2aInvites = db.schema.a2aInvites;
   const now = Date.now();
   const rawToken = generateInviteToken();
 
@@ -147,7 +147,7 @@ export function createA2aInvite(params: {
     updatedAt: now,
   };
 
-  db.insert(a2aInvites).values(row).run();
+  await db.orm.insert(a2aInvites).values(row);
 
   return { invite: rowToInvite(row), rawToken };
 }
@@ -156,12 +156,12 @@ export function createA2aInvite(params: {
 // claimA2aInvite — validate + consume an A2A invite token
 // ---------------------------------------------------------------------------
 
-export function claimA2aInvite(params: {
+export async function claimA2aInvite(params: {
   token: string;
   redeemedByExternalUserId: string;
-}): { claimed: boolean; invite: A2aInvite | null; error?: string } {
+}): Promise<{ claimed: boolean; invite: A2aInvite | null; error?: string }> {
   const tokenHash = hashInviteToken(params.token);
-  const invite = findByTokenHash(tokenHash);
+  const invite = await findByTokenHash(tokenHash);
 
   if (!invite) {
     return { claimed: false, invite: null, error: "not_found" };
@@ -180,7 +180,7 @@ export function claimA2aInvite(params: {
   }
 
   if (Date.now() >= invite.expiresAt) {
-    markExpired(invite.id);
+    await markExpired(invite.id);
     return { claimed: false, invite, error: "expired" };
   }
 
@@ -188,7 +188,7 @@ export function claimA2aInvite(params: {
     return { claimed: false, invite, error: "already_redeemed" };
   }
 
-  const recorded = recordUse({
+  const recorded = await recordUse({
     inviteId: invite.id,
     redeemedByExternalUserId: params.redeemedByExternalUserId,
   });
@@ -198,5 +198,5 @@ export function claimA2aInvite(params: {
   }
 
   // Re-read to get updated state
-  return { claimed: true, invite: findByTokenHash(tokenHash) };
+  return { claimed: true, invite: await findByTokenHash(tokenHash) };
 }

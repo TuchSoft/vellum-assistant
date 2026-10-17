@@ -1,0 +1,58 @@
+assistant/src/__tests__/conversation-list-recency-ordering.test.ts
+  h_a912520b04f25d 34,48-49,62,84
+assistant/src/__tests__/conversation-placement-promotion.test.ts
+  h_a912520b04f25d 52,57,66,77-78,86-87,97-98,109,122,128,139,159,162
+assistant/src/__tests__/custom-group-listing-visibility.test.ts
+  h_a912520b04f25d 28,32,39,50,61,72,83
+assistant/src/__tests__/schedule-tools.test.ts
+  h_a912520b04f25d 56,235,336,413,520,635,760,863,974,1169,1370,1425,1511,1577,1668,1743,1792,1846,1895,1997,2173,2187,2203,2222,2246,2259-2262,2265-2266
+assistant/src/persistence/__tests__/group-crud-postgres.test.ts
+  h_a912520b04f25d 1-150
+assistant/src/persistence/conversation-display-order-migration.ts
+  h_a912520b04f25d 9,11,14-25,27-31,34-40,42-49,52,55-78,80,84-85,88-89
+assistant/src/persistence/conversation-group-migration.ts
+  h_a912520b04f25d 9-13,17-22,24,28-32,35-39,41-43,47-50,52-162,164,166-168,170-176,181-185,187-188,190-194,196-198,202-205,209,211-219,221,223-225,227,229,231-233,238-239,241-247,249-253,255,257-259,261-269,271-277,279-281,283-306
+assistant/src/persistence/conversation-title-service.ts
+  h_a912520b04f25d 196,233,367,402,441-443,574,578,593,628,633,672,798,805,847
+assistant/src/persistence/group-crud.test.ts
+  h_a912520b04f25d 15-16,19,21,25-26,29,31,35-36,38-40,42,46,48,52-53,55,58
+assistant/src/persistence/group-crud.ts
+  h_a912520b04f25d 4-5,10-12,24-49,54-55,59-63,65,72-77,79,84,93,97,100-106,109-111,128,131-133,163-164,166,180-183,185,187,195,197-199,201,203-207,209,213,222,224,227
+assistant/src/runtime/routes/__tests__/conversation-list-assistant-section.test.ts
+  h_a912520b04f25d 70-71,78-81,141,151,155,161,165,171,175,188,192,197,203,206,213,218,224,228,239,244-246,249,257,263,269-271,274,281,285-287,290,299,303-306,309,313,317,322,327,339-341,344,355
+assistant/src/runtime/routes/__tests__/conversation-list-routes.test.ts
+  h_a912520b04f25d 102,190,253,257,268,309,315,354-355,403,475,522,539,573,658,677,706,716,747,795,813,848,854,868,877,890,1030-1031,1044-1045,1058,1062,1106-1107,1144,1148,1151-1153,1156,1159,1166,1189,1201,1211,1226,1230,1238,1251-1252,1254,1259-1260,1263,1268,1285,1292,1303,1310
+assistant/src/runtime/routes/conversation-list-routes.ts
+  h_a912520b04f25d 253,391,417,420
+assistant/src/runtime/routes/group-routes.ts
+  h_a912520b04f25d 14,59,76-77,81,88,107,113,137,148-151,153,160,167,175,194
+assistant/src/runtime/routes/schedule-routes.ts
+  h_a912520b04f25d 1509
+assistant/src/schedule/schedule-store.ts
+  h_a912520b04f25d 477,479-480
+assistant/src/schedule/scheduler.ts
+  h_a912520b04f25d 821,1208
+assistant/src/tools/conversation-groups/group_create.ts
+  h_a912520b04f25d 43,59
+assistant/src/tools/conversation-groups/group_list.ts
+  h_a912520b04f25d 9
+assistant/src/tools/conversation-groups/group_shared.ts
+  h_a912520b04f25d 12,14-15
+assistant/src/tools/conversation-groups/move_to_group.ts
+  h_a912520b04f25d 48
+assistant/src/tools/schedule/create.ts
+  h_a912520b04f25d 142
+assistant/src/tools/schedule/update.ts
+  h_a912520b04f25d 237
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8b53b66b901804dcf9b7649900d57a68c710bd60",
+  "prompts": {},
+  "humans": {
+    "h_a912520b04f25d": {
+      "author": "Mattia Bonzi <mattia@mattiabonzi.it>"
+    }
+  }
+}

@@ -81,9 +81,6 @@ const acpConfig = await installAcpConfigStub();
 // The registry is retired per conversation by asking whether that conversation
 // still has a marker worth showing, so these cases need a real (empty)
 // database rather than an error path standing in for one.
-const { initializeDb } = await import("../../persistence/db-init.js");
-await initializeDb();
-
 const { claudeTokenDigest, noteClaudeTokenRefused } =
   await import("../acp-auth-marker-store.js");
 const { clearHistory, insertHistoryRow } =
@@ -101,14 +98,8 @@ const {
   forgetAcpClaudeRenewalStateIfUnbound,
   clearAcpClaudeRefreshToken,
   isAcpClaudeTokenExpiring,
+  notifyAcpConnectRetired,
 } = await import("../acp-claude-oauth.js");
-
-/**
- * The card notification is detached from the store so it cannot delay a
- * sign-in, so a test asserting on its effects has to let it run.
- */
-const settleNotification = () =>
-  new Promise((resolve) => setTimeout(resolve, 10));
 
 const ACP_SERVICE = "acp";
 const OAUTH_FIELD = "claude_oauth_token";
@@ -145,7 +136,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("CLAUDE_OAUTH_CONFIG", () => {
-  test("matches the verified endpoints, client id, and scope", () => {
+  test("matches the verified endpoints, client id, and scope", async () => {
     // The single literal pin for the endpoint. Every other test asserts
     // against CLAUDE_OAUTH_CONFIG.authorizeUrl, so an endpoint change edits
     // exactly this one value.
@@ -162,7 +153,7 @@ describe("CLAUDE_OAUTH_CONFIG", () => {
     expect(CLAUDE_OAUTH_CONFIG.scopeSeparator).toBe(" ");
   });
 
-  test("exposes the manual redirect URI", () => {
+  test("exposes the manual redirect URI", async () => {
     expect(CLAUDE_MANUAL_REDIRECT_URI).toBe(
       "https://platform.claude.com/oauth/code/callback",
     );
@@ -174,7 +165,7 @@ describe("CLAUDE_OAUTH_CONFIG", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildClaudeAuthorizeUrl", () => {
-  test("produces a URL that parses back to the expected query params", () => {
+  test("produces a URL that parses back to the expected query params", async () => {
     const redirectUri = "http://localhost:54545/callback";
     const url = buildClaudeAuthorizeUrl(redirectUri, {
       codeChallenge: "challenge-123",
@@ -203,7 +194,7 @@ describe("buildClaudeAuthorizeUrl", () => {
     expect(params.get("code")).toBe("true");
   });
 
-  test("works with the manual redirect URI too", () => {
+  test("works with the manual redirect URI too", async () => {
     const url = buildClaudeAuthorizeUrl(CLAUDE_MANUAL_REDIRECT_URI, {
       codeChallenge: "c",
       state: "s",
@@ -219,14 +210,14 @@ describe("buildClaudeAuthorizeUrl", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseManualClaudeCode", () => {
-  test("round-trips `code#state`", () => {
+  test("round-trips `code#state`", async () => {
     expect(parseManualClaudeCode("abc#xyz")).toEqual({
       code: "abc",
       state: "xyz",
     });
   });
 
-  test("throws on input missing the `#` separator", () => {
+  test("throws on input missing the `#` separator", async () => {
     expect(() => parseManualClaudeCode("nohash")).toThrow();
   });
 });
@@ -563,7 +554,7 @@ describe("forgetAcpClaudeRenewalStateIfUnbound", () => {
 });
 
 describe("storeAcpClaudeToken: retiring the card registry", () => {
-  test("clears the registry after the policy repair, not before it", () => {
+  test("clears the registry after the policy repair, not before it", async () => {
     // The write happens first and the policy repair second, so at the moment
     // the credential seam asks, a token whose `acp_spawn` read is denied is
     // not usable and nothing is retired. The repair on the next line is what
@@ -576,39 +567,35 @@ describe("storeAcpClaudeToken: retiring the card registry", () => {
     markAcpConnectCardRaised("conv-with-card");
     getReturn = "sk-ant-oat-token";
 
-    return storeAcpClaudeToken("sk-ant-oat-token")
-      .then(settleNotification)
-      .then(() => {
-        expect(acpSpawnCredentialDenialReason(OAUTH_FIELD)).toBeUndefined();
-        expect(hasAcpConnectCardRaised("conv-with-card")).toBe(false);
-      });
+    await storeAcpClaudeToken("sk-ant-oat-token");
+    await notifyAcpConnectRetired();
+    expect(acpSpawnCredentialDenialReason(OAUTH_FIELD)).toBeUndefined();
+    expect(hasAcpConnectCardRaised("conv-with-card")).toBe(false);
   });
 
-  test("leaves the registry alone when the stored value is unusable", () => {
+  test("leaves the registry alone when the stored value is unusable", async () => {
     // A bulk restore can land an api-key-shaped value. The marker comparison
     // keeps the card up for that reason, so forgetting the registry would open
     // the second prompt it exists to suppress.
     markAcpConnectCardRaised("conv-keeps-card");
     getReturn = "sk-ant-api-key-shaped";
 
-    return storeAcpClaudeToken("sk-ant-api-key-shaped")
-      .then(settleNotification)
-      .then(() => {
-        expect(hasAcpConnectCardRaised("conv-keeps-card")).toBe(true);
-      });
+    await storeAcpClaudeToken("sk-ant-api-key-shaped");
+    await notifyAcpConnectRetired();
+    expect(hasAcpConnectCardRaised("conv-keeps-card")).toBe(true);
   });
 });
 
 describe("storeAcpClaudeToken: a re-written rejected token retires nothing", () => {
-  test("keeps the registry entry while the marker still stands", () => {
+  test("keeps the registry entry while the marker still stands", async () => {
     // A bulk restore can store the very token Claude rejected. It passes the
     // shape and policy checks, so usability says yes, but nothing about the
     // failure changed: the snapshot goes on serving that marker and the card
     // stays up. Forgetting the entry would open a second prompt beside it.
-    clearHistory();
+    await clearHistory();
     const token = "sk-ant-oat-still-rejected";
     getReturn = token;
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "run-still-rejected",
       parentConversationId: "conv-still-broken",
       status: "failed",
@@ -617,17 +604,15 @@ describe("storeAcpClaudeToken: a re-written rejected token retires nothing", () 
     });
     markAcpConnectCardRaised("conv-still-broken");
 
-    return storeAcpClaudeToken(token)
-      .then(settleNotification)
-      .then(() => {
-        expect(hasAcpConnectCardRaised("conv-still-broken")).toBe(true);
-      });
+    await storeAcpClaudeToken(token);
+    await notifyAcpConnectRetired();
+    expect(hasAcpConnectCardRaised("conv-still-broken")).toBe(true);
   });
 
-  test("drops it once a different token makes the marker stale", () => {
-    clearHistory();
+  test("drops it once a different token makes the marker stale", async () => {
+    await clearHistory();
     getReturn = "sk-ant-oat-replacement";
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "run-repaired",
       parentConversationId: "conv-repaired",
       status: "failed",
@@ -636,20 +621,18 @@ describe("storeAcpClaudeToken: a re-written rejected token retires nothing", () 
     });
     markAcpConnectCardRaised("conv-repaired");
 
-    return storeAcpClaudeToken("sk-ant-oat-replacement")
-      .then(settleNotification)
-      .then(() => {
-        expect(hasAcpConnectCardRaised("conv-repaired")).toBe(false);
-      });
+    await storeAcpClaudeToken("sk-ant-oat-replacement");
+    await notifyAcpConnectRetired();
+    expect(hasAcpConnectCardRaised("conv-repaired")).toBe(false);
   });
 });
 
 describe("acpConnectCardStillWarranted", () => {
-  test("a mid-run card stands while its marker names the credential in use", () => {
-    clearHistory();
+  test("a mid-run card stands while its marker names the credential in use", async () => {
+    await clearHistory();
     const token = "sk-ant-oat-in-use";
     getReturn = token;
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "run-warranted",
       parentConversationId: "conv-warranted",
       status: "failed",
@@ -662,13 +645,13 @@ describe("acpConnectCardStillWarranted", () => {
     });
   });
 
-  test("a mid-run card falls once a different token is stored", () => {
+  test("a mid-run card falls once a different token is stored", async () => {
     // The repair need not be a credential write: editing the agent's
     // configured token moves this answer too, which is why it is asked rather
     // than remembered.
-    clearHistory();
+    await clearHistory();
     getReturn = "sk-ant-oat-replacement";
-    insertHistoryRow({
+    await insertHistoryRow({
       id: "run-repaired",
       parentConversationId: "conv-repaired-warrant",
       status: "failed",
@@ -683,11 +666,11 @@ describe("acpConnectCardStillWarranted", () => {
     );
   });
 
-  test("a pre-spawn card stands while there is no usable token", () => {
+  test("a pre-spawn card stands while there is no usable token", async () => {
     // The missing-token path has no session to record a marker on, so the
     // absence of one says nothing; what keeps its card meaningful is that a
     // spawn still has nothing to authenticate with.
-    clearHistory();
+    await clearHistory();
     getReturn = undefined;
 
     return acpConnectCardStillWarranted("conv-no-token").then((warranted) => {
@@ -695,8 +678,8 @@ describe("acpConnectCardStillWarranted", () => {
     });
   });
 
-  test("a pre-spawn card falls once a usable token exists", () => {
-    clearHistory();
+  test("a pre-spawn card falls once a usable token exists", async () => {
+    await clearHistory();
     getReturn = "sk-ant-oat-now-present";
 
     return acpConnectCardStillWarranted("conv-no-marker").then((warranted) => {
@@ -706,11 +689,11 @@ describe("acpConnectCardStillWarranted", () => {
 });
 
 describe("acpConnectCardStillWarranted: a pre-spawn card and configured tokens", () => {
-  test("falls once the agent's configured token supplies a credential", () => {
+  test("falls once the agent's configured token supplies a credential", async () => {
     // Repairing by setting `acp.agents.<id>.env.CLAUDE_CODE_OAUTH_TOKEN` never
     // touches the vault, so asking the vault would call this card warranted
     // forever even though the next spawn authenticates fine.
-    clearHistory();
+    await clearHistory();
     getReturn = undefined;
     acpConfig.setConfig({
       agents: {
@@ -730,8 +713,8 @@ describe("acpConnectCardStillWarranted: a pre-spawn card and configured tokens",
     );
   });
 
-  test("stands while neither config nor the vault offers one", () => {
-    clearHistory();
+  test("stands while neither config nor the vault offers one", async () => {
+    await clearHistory();
     getReturn = undefined;
     acpConfig.setConfig({ agents: {} });
     markAcpConnectCardRaised("conv-still-nothing", "claude");
@@ -745,12 +728,12 @@ describe("acpConnectCardStillWarranted: a pre-spawn card and configured tokens",
 });
 
 describe("acpConnectCardStillWarranted: a resolved credential Claude already refused", () => {
-  test("stands while the only credential a spawn would pick is the refused one", () => {
+  test("stands while the only credential a spawn would pick is the refused one", async () => {
     // Standing down needs a replacement to stand down *to*. With none stored,
     // the resolver still reports the refused configured token, and the next
     // spawn rejects it exactly as this one did. Reading that as repaired drops
     // the card and lets a second prompt open beside it.
-    clearHistory();
+    await clearHistory();
     const token = "sk-ant-oat-config-refused";
     getReturn = undefined;
     acpConfig.setConfig({
@@ -772,8 +755,8 @@ describe("acpConnectCardStillWarranted: a resolved credential Claude already ref
     );
   });
 
-  test("falls once the resolved credential is one Claude has not refused", () => {
-    clearHistory();
+  test("falls once the resolved credential is one Claude has not refused", async () => {
+    await clearHistory();
     getReturn = undefined;
     acpConfig.setConfig({
       agents: {

@@ -2,12 +2,12 @@
  * Shared test helpers for the `acp_session_history` table.
  *
  * Several suites (session-manager resume/persistence, the ACP route
- * handlers) seed and read history rows directly via SQL; this module
- * consolidates the copy-pasted row shape + insert/read/clear helpers.
- * Tests must run `initializeDb()` themselves before calling these.
+ * handlers) seed and read history rows directly; this module consolidates
+ * the copy-pasted row shape + insert/read/clear helpers. The helpers use the
+ * async Postgres facade, so callers must await them.
  */
 
-import { getSqlite } from "../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 
 /** Raw column snapshot of an `acp_session_history` row. */
 export interface HistoryRow {
@@ -34,8 +34,8 @@ export interface HistoryRow {
   auth_error_credential: string | null;
 }
 
-export function clearHistory(): void {
-  getSqlite().run("DELETE FROM acp_session_history");
+export async function clearHistory(): Promise<void> {
+  await requireMainDb().run("DELETE FROM acp_session_history");
 }
 
 /**
@@ -44,7 +44,7 @@ export function clearHistory(): void {
  * /tmp/proj); pass explicit values to override, including `null` where the
  * column is nullable (e.g. `cwd: null` for legacy rows).
  */
-export function insertHistoryRow(row: {
+export async function insertHistoryRow(row: {
   id: string;
   agentId?: string;
   acpSessionId?: string;
@@ -66,18 +66,16 @@ export function insertHistoryRow(row: {
   outputTokens?: number | null;
   authErrorCode?: string | null;
   authErrorCredential?: string | null;
-}): void {
-  getSqlite()
-    .query(
-      `INSERT INTO acp_session_history (
-         id, agent_id, acp_session_id, parent_conversation_id,
-         started_at, completed_at, status, stop_reason, error,
-         event_log_json, cwd, task, parent_tool_use_id,
-         used_tokens, context_size, cost_amount, cost_currency,
-         input_tokens, output_tokens, auth_error_code, auth_error_credential
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+}): Promise<void> {
+  await requireMainDb().run(
+    `INSERT INTO acp_session_history (
+       id, agent_id, acp_session_id, parent_conversation_id,
+       started_at, completed_at, status, stop_reason, error,
+       event_log_json, cwd, task, parent_tool_use_id,
+       used_tokens, context_size, cost_amount, cost_currency,
+       input_tokens, output_tokens, auth_error_code, auth_error_credential
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
       row.id,
       row.agentId ?? "claude",
       row.acpSessionId ?? "proto-old",
@@ -99,19 +97,19 @@ export function insertHistoryRow(row: {
       row.outputTokens ?? null,
       row.authErrorCode ?? null,
       row.authErrorCredential ?? null,
-    );
+    ],
+  );
 }
 
-export function readHistoryRow(id: string): HistoryRow | null {
-  return getSqlite()
-    .query(
-      `SELECT id, agent_id, acp_session_id, parent_conversation_id,
-              started_at, completed_at, status, stop_reason, error,
-              event_log_json, cwd, task, parent_tool_use_id,
-              used_tokens, context_size, cost_amount, cost_currency,
-              input_tokens, output_tokens, auth_error_code,
-              auth_error_credential
-       FROM acp_session_history WHERE id = ?`,
-    )
-    .get(id) as HistoryRow | null;
+export async function readHistoryRow(id: string): Promise<HistoryRow | null> {
+  return await requireMainDb().get<HistoryRow>(
+    `SELECT id, agent_id, acp_session_id, parent_conversation_id,
+            started_at, completed_at, status, stop_reason, error,
+            event_log_json, cwd, task, parent_tool_use_id,
+            used_tokens, context_size, cost_amount, cost_currency,
+            input_tokens, output_tokens, auth_error_code,
+            auth_error_credential
+     FROM acp_session_history WHERE id = ?`,
+    [id],
+  );
 }

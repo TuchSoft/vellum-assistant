@@ -613,7 +613,7 @@ export async function runAgentLoopImpl(
   // construction otherwise, so a flow that binds trust after construction (a
   // voice call resolves the caller only after `getOrCreateConversation`) would
   // run the whole conversation under the construction-time persona.
-  ctx.syncLoopSystemPrompt();
+  await ctx.syncLoopSystemPrompt();
 
   const abortController = ctx.abortController;
   const reqId = ctx.currentRequestId ?? uuid();
@@ -973,7 +973,7 @@ export async function runAgentLoopImpl(
     // dispatcher cleanup mode withholds) must be re-derived against it.
     // Skipped otherwise: the mode is cleared at the end of every turn, so an
     // ordinary turn already synced under the same answer.
-    ctx.syncLoopSystemPrompt();
+    await ctx.syncLoopSystemPrompt();
   }
   const toolsDisabledForTurn = ctx.toolsDisabledDepth > 0;
 

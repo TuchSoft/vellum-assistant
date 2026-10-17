@@ -390,6 +390,8 @@ async function acquireConversation(
           maxTokens,
           speedOverride: storedOptions?.speed,
           modelOverride: storedOptions?.modelOverride,
+          systemPromptIsOverride:
+            storedOptions?.systemPromptOverride !== undefined,
         },
       );
       // Ensure the conversations row exists before hydrating from DB.

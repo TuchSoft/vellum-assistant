@@ -323,6 +323,13 @@ export interface ConversationConstructorOptions {
    * notifications. Omitted for top-level conversations.
    */
   parentConversationId?: string;
+  /**
+   * Whether the `systemPrompt` passed to the constructor is a caller-supplied
+   * override rather than the default prompt. Defaults to true: every caller
+   * that passes anything other than the freshly resolved default prompt treats
+   * its value as an override.
+   */
+  systemPromptIsOverride?: boolean;
 }
 
 /**
@@ -1011,6 +1018,7 @@ export class Conversation {
     options?: ConversationConstructorOptions,
   ) {
     const { maxTokens, speedOverride, cacheTtl, modelOverride } = options ?? {};
+    const systemPromptIsOverride = options?.systemPromptIsOverride ?? true;
     const enableNativeWebSearch = options?.enableNativeWebSearch ?? false;
     this.conversationId = conversationId;
     this.modeSessions = new ConversationModeSessionCoordinator(conversationId);
@@ -1084,8 +1092,7 @@ export class Conversation {
     const configuredMaxTokens = maxTokens;
     // When a systemPromptOverride was provided, use it as-is; otherwise
     // rebuild the full prompt each turn (picks up any workspace file changes).
-    const hasSystemPromptOverride = systemPrompt !== buildSystemPrompt();
-    this.hasSystemPromptOverride = hasSystemPromptOverride;
+    this.hasSystemPromptOverride = systemPromptIsOverride;
 
     // Store the model override for per-run resolution. The loop receives it
     // as a top-level `model` param on `run()`.
@@ -1216,7 +1223,7 @@ export class Conversation {
    * itself never re-resolves the prompt mid-loop (re-resolving would bust
    * the provider's prefix cache).
    */
-  buildCurrentSystemPrompt(): string {
+  async buildCurrentSystemPrompt(): Promise<string> {
     if (this.hasSystemPromptOverride) {
       this.renderedDelegateIndependentTasks = null;
       return this.systemPrompt;
@@ -1236,7 +1243,7 @@ export class Conversation {
         canSpawnSubagents: canSpawnSubagentsForTurn(this),
         channelCapabilities: this.currentTurnChannelCapabilities,
       });
-    const prompt = buildSystemPrompt({
+    const prompt = await buildSystemPrompt({
       hasNoClient: this.hasNoClient,
       trustContext: this.currentTurnTrustContext,
       channelCapabilities: this.currentTurnChannelCapabilities,
@@ -1272,8 +1279,8 @@ export class Conversation {
    * persona snapshots ({@link currentTurnTrustContext},
    * {@link currentTurnChannelCapabilities}) are set.
    */
-  syncLoopSystemPrompt(): void {
-    const next = this.buildCurrentSystemPrompt();
+  async syncLoopSystemPrompt(): Promise<void> {
+    const next = await this.buildCurrentSystemPrompt();
     if (next === this.systemPrompt) {
       return;
     }
@@ -1315,7 +1322,7 @@ export class Conversation {
         Object.prototype.hasOwnProperty.call(options, "systemPrompt");
       const systemPrompt = hasSystemPrompt
         ? (options.systemPrompt ?? undefined)
-        : this.buildCurrentSystemPrompt();
+        : await this.buildCurrentSystemPrompt();
       const tools =
         options?.tools ?? this.agentLoop.getResolvedTools(this.messages);
       const providerConfig = {

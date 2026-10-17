@@ -7,7 +7,6 @@
 
 import { getLogger } from "../util/logger.js";
 import { requireMainDb } from "./db-facade.js";
-import { rawRun } from "./raw-query.js";
 
 const log = getLogger("conversation-store");
 
@@ -31,27 +30,7 @@ function isDuplicateColumnError(err: unknown): boolean {
   );
 }
 
-let sqliteEnsured = false;
 let asyncEnsured = false;
-
-// TEMPORANEO - bridge sync per codice non ancora portato. NON copiare. Muore nel port di conversations.
-/** Ensure the columns on the SQLite main database (the unported modules). */
-export function ensureDisplayOrderMigration(): void {
-  if (sqliteEnsured) {
-    return;
-  }
-  for (const column of DISPLAY_ORDER_COLUMNS) {
-    try {
-      rawRun(`conversation:migrate:${column.label}`, column.sql);
-    } catch (err) {
-      if (!isDuplicateColumnError(err)) {
-        log.error({ err, column: column.label }, "Failed to add column");
-        throw err;
-      }
-    }
-  }
-  sqliteEnsured = true;
-}
 
 /**
  * Ensure the columns through the async facade. These runtime columns are not
@@ -80,6 +59,5 @@ export async function ensureDisplayOrderMigrationAsync(): Promise<void> {
  * tests that recreate the database mid-process.
  */
 export function _resetDisplayOrderMigrationForTests(): void {
-  sqliteEnsured = false;
   asyncEnsured = false;
 }

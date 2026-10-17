@@ -38,7 +38,9 @@ export async function resolveInitialSystemPrompt(
   storedOptions: ConversationCreateOptions | undefined,
   deps: {
     warm?: () => Promise<void>;
-    build?: (trustContext: TrustContext | undefined) => string;
+    build?: (
+      trustContext: TrustContext | undefined,
+    ) => string | Promise<string>;
   } = {},
 ): Promise<string> {
   if (storedOptions?.systemPromptOverride !== undefined) {
@@ -51,5 +53,5 @@ export async function resolveInitialSystemPrompt(
   const build =
     deps.build ??
     ((tc: TrustContext | undefined) => buildSystemPrompt({ trustContext: tc }));
-  return build(trustContext);
+  return await build(trustContext);
 }

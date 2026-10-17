@@ -224,7 +224,7 @@ export async function getVerificationStatus(
   const bindingDisplayName = guardians
     ? (guardianForChannel(guardians, resolvedChannel)?.displayName ?? undefined)
     : undefined;
-  const guardianDisplayName = resolveGuardianName(bindingDisplayName);
+  const guardianDisplayName = await resolveGuardianName(bindingDisplayName);
 
   // Resolve username from external conversation store.
   let guardianUsername: string | undefined;

@@ -53,8 +53,10 @@ function readPersonaName(filePath: string): string | null {
  * callers in processes that do not otherwise warm it (memory worker) await
  * `getGuardianDelivery` first.
  */
-export function resolveUserName(workspaceDir: string): string | null {
-  const guardianContent = resolveGuardianPersonaStrict();
+export async function resolveUserName(
+  workspaceDir: string,
+): Promise<string | null> {
+  const guardianContent = await resolveGuardianPersonaStrict();
   if (guardianContent) {
     const name = extractPersonaName(guardianContent);
     if (name && name !== DECLINED_BY_USER_SENTINEL) {

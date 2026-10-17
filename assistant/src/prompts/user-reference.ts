@@ -11,8 +11,8 @@ export const DECLINED_BY_USER_SENTINEL = "declined_by_user";
  * is resolvable, the persona file is missing / empty, or the field
  * itself is blank.
  */
-function readPreferredNameFromUserMd(): string | null {
-  const content = resolveGuardianPersonaStrict();
+async function readPreferredNameFromUserMd(): Promise<string | null> {
+  const content = await resolveGuardianPersonaStrict();
   if (content != null) {
     const match = content.match(/Preferred name\/reference:[ \t]*(.*)/);
     if (match && match[1].trim()) {
@@ -30,8 +30,8 @@ function readPreferredNameFromUserMd(): string | null {
  * persona file. Falls back to "my human" when the file is missing,
  * unreadable, or the field is empty.
  */
-export function resolveUserReference(): string {
-  const preferredName = readPreferredNameFromUserMd();
+export async function resolveUserReference(): Promise<string> {
+  const preferredName = await readPreferredNameFromUserMd();
   if (preferredName != null && preferredName !== DECLINED_BY_USER_SENTINEL) {
     return preferredName;
   }
@@ -48,8 +48,8 @@ export function resolveUserReference(): string {
  * Otherwise falls back to the structured `- Pronouns:` field anywhere
  * in the file.
  */
-export function resolveUserPronouns(): string | null {
-  const content = resolveGuardianPersonaStrict();
+export async function resolveUserPronouns(): Promise<string | null> {
+  const content = await resolveGuardianPersonaStrict();
   if (content == null) {
     return null;
   }
@@ -95,10 +95,10 @@ function cleanPronounValue(raw: string): string | null {
  *      Contact.displayName.
  *   3. DEFAULT_USER_REFERENCE ("my human").
  */
-export function resolveGuardianName(
+export async function resolveGuardianName(
   guardianDisplayName?: string | null,
-): string {
-  const preferredName = readPreferredNameFromUserMd();
+): Promise<string> {
+  const preferredName = await readPreferredNameFromUserMd();
   if (preferredName != null && preferredName !== DECLINED_BY_USER_SENTINEL) {
     return preferredName;
   }

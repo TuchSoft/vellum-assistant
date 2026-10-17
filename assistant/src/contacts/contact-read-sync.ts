@@ -1,47 +1,41 @@
 /**
- * Synchronous contact reads for the prompt path.
+ * Contact reads for the prompt path.
  *
- * `buildSystemPrompt` and the persona resolver are synchronous by design (the
- * plugin API exports `resolveUserName` synchronously), so they cannot await the
- * async contact store. This bridge reads the identity mirror from the SQLite
- * main database for that path only.
- *
- * Declared cross-slice edge: while the main slot flips to Postgres, this read
- * keeps using SQLite. It disappears when the prompt path is made async as part
- * of the conversations port.
+ * `buildSystemPrompt` and the persona resolver resolve the actor's contact
+ * identity to choose the per-user persona file. Both read the identity mirror
+ * from the main database through the async facade.
  */
 
 import { and, eq, sql } from "drizzle-orm";
 
 import type { ChannelId } from "../channels/types.js";
-import { getDb } from "../persistence/db-connection.js";
-import { contactChannels, contacts } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { canonicalizeInboundIdentity } from "../util/canonicalize-identity.js";
 
-// TEMPORANEO - bridge sync per codice non ancora portato. NON copiare. Muore nel port di conversations.
 /**
- * Resolve the `user_file` for a channel address, case-insensitively (matching
- * the historical `COLLATE NOCASE` lookup). Returns null when no channel or
- * contact matches.
+ * Resolve the `user_file` for a channel address, case-insensitively (`lower()`
+ * matches the historical `COLLATE NOCASE` lookup). Returns null when no
+ * channel or contact matches.
  */
-export function findContactByAddressSync(
+export async function findContactByAddress(
   type: string,
   address: string,
-): { userFile: string | null } | null {
+): Promise<{ userFile: string | null } | null> {
   const canonical =
     canonicalizeInboundIdentity(type as ChannelId, address) ?? address;
-  const db = getDb();
-  const row = db
+  const db = requireMainDb();
+  const contactChannels = db.schema.contactChannels;
+  const contacts = db.schema.contacts;
+  const [row] = await db.orm
     .select({ userFile: contacts.userFile })
     .from(contactChannels)
     .innerJoin(contacts, eq(contactChannels.contactId, contacts.id))
     .where(
       and(
         eq(contactChannels.type, type),
-        sql`${contactChannels.address} = ${canonical} COLLATE NOCASE`,
+        sql`lower(${contactChannels.address}) = lower(${canonical})`,
       ),
-    )
-    .get();
+    );
   if (!row) {
     return null;
   }

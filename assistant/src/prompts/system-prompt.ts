@@ -459,7 +459,9 @@ export interface BuildSystemPromptOptions {
  * frontmatter `enabled:` predicates, `{{variable}}` interpolation,
  * file-backed bodies, and runtime-computed transforms.
  */
-export function buildSystemPrompt(options?: BuildSystemPromptOptions): string {
+export async function buildSystemPrompt(
+  options?: BuildSystemPromptOptions,
+): Promise<string> {
   // One-shot bootstrap reseed + activation-rail marking. The marking also runs
   // earlier, at `setOnboardingContext`, so the activation session is recorded
   // before the agent loop resolves tools on the first turn; this call is a
@@ -479,7 +481,7 @@ export function buildSystemPrompt(options?: BuildSystemPromptOptions): string {
   // An explicit `personaOverride` slug wins over either derivation.
   const userSlug =
     options?.personaOverride?.userSlug ??
-    resolveUserSlug(options?.trustContext) ??
+    (await resolveUserSlug(options?.trustContext)) ??
     "default";
   const channelSlug =
     options?.personaOverride?.channelSlug ??
@@ -583,7 +585,7 @@ export function readPromptFile(path: string): string | null {
  * by passing `userPersona: resolveGuardianPersona()` — folding it in here
  * removes the duplicated dance at every call site.
  */
-export function buildCoreIdentityContext(): string | null {
+export async function buildCoreIdentityContext(): Promise<string | null> {
   const parts: string[] = [];
   for (const file of PROMPT_FILES) {
     const content = readPromptFile(getWorkspacePromptPath(file));
@@ -598,7 +600,7 @@ export function buildCoreIdentityContext(): string | null {
     }
     parts.push(content);
   }
-  const guardianPersona = resolveGuardianPersona();
+  const guardianPersona = await resolveGuardianPersona();
   if (guardianPersona) {
     parts.push(guardianPersona);
   }

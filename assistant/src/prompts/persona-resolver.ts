@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 
 import type { GuardianDelivery } from "@vellumai/gateway-client";
 
-import { findContactByAddressSync } from "../contacts/contact-read-sync.js";
+import { findContactByAddress } from "../contacts/contact-read-sync.js";
 import {
   anyGuardian,
   guardianForChannel,
@@ -87,9 +87,11 @@ function readPersonaFile(filePath: string): string | null {
  * channel-filtered and unfiltered cache keys. Returns `"guardian.md"` when the
  * resolved guardian has no userFile.
  */
-function resolveGuardianUserFile(trustContext: TrustContext): string | null {
+async function resolveGuardianUserFile(
+  trustContext: TrustContext,
+): Promise<string | null> {
   if (trustContext.guardianExternalUserId) {
-    const guardianContact = findContactByAddressSync(
+    const guardianContact = await findContactByAddress(
       trustContext.sourceChannel,
       trustContext.guardianExternalUserId,
     );
@@ -100,7 +102,7 @@ function resolveGuardianUserFile(trustContext: TrustContext): string | null {
   const guardian =
     peekGuardianForChannel(trustContext.sourceChannel) ?? peekAnyGuardian();
   return guardian
-    ? (guardianDeliveryUserFile(guardian) ?? "guardian.md")
+    ? ((await guardianDeliveryUserFile(guardian)) ?? "guardian.md")
     : null;
 }
 
@@ -110,10 +112,10 @@ function resolveGuardianUserFile(trustContext: TrustContext): string | null {
  * the local contact by the guardian's channel address. Returns `undefined` when
  * no local contact matches.
  */
-function guardianDeliveryUserFile(
+async function guardianDeliveryUserFile(
   guardian: GuardianDelivery,
-): string | undefined {
-  const contact = findContactByAddressSync(
+): Promise<string | undefined> {
+  const contact = await findContactByAddress(
     guardian.channelType,
     guardian.address,
   );
@@ -138,9 +140,9 @@ function peekAnyGuardian(): GuardianDelivery | undefined {
  * Resolve the raw userFile filename for the current actor's contact.
  * Returns the validated filename (e.g. "alice.md") or null.
  */
-function resolveUserFilename(
+async function resolveUserFilename(
   trustContext: TrustContext | undefined,
-): string | null {
+): Promise<string | null> {
   let filename: string | null = null;
 
   try {
@@ -149,11 +151,11 @@ function resolveUserFilename(
       // preferring the vellum-channel guardian, then any guardian.
       const guardian = peekGuardianForChannel("vellum") ?? peekAnyGuardian();
       if (guardian) {
-        filename = guardianDeliveryUserFile(guardian) ?? "guardian.md";
+        filename = (await guardianDeliveryUserFile(guardian)) ?? "guardian.md";
       }
     } else if (trustContext.requesterExternalUserId) {
       // Channel-routed request — look up contact by channel identity
-      const contactWithChannels = findContactByAddressSync(
+      const contactWithChannels = await findContactByAddress(
         trustContext.sourceChannel,
         trustContext.requesterExternalUserId,
       );
@@ -169,7 +171,7 @@ function resolveUserFilename(
         // guardian's user file keyed by the verdict-bound guardian identity so
         // the onboarding profile (written to guardian.md) loads instead of
         // falling through to users/default.md.
-        filename = resolveGuardianUserFile(trustContext);
+        filename = await resolveGuardianUserFile(trustContext);
       }
     } else if (trustContext.trustClass === "guardian") {
       // Guardian-trust turn carrying no requester identity — background and
@@ -177,7 +179,7 @@ function resolveUserFilename(
       // trust class but have no per-actor address to look up. Resolve the
       // guardian's user file so they load the same persona as a foreground
       // guardian turn instead of falling back to users/default.md.
-      filename = resolveGuardianUserFile(trustContext);
+      filename = await resolveGuardianUserFile(trustContext);
     }
   } catch (err) {
     // Contacts table may be absent — happens during early bootstrap
@@ -223,8 +225,8 @@ function resolveUserFilename(
  * path. Callers use it alongside `ensureGuardianPersonaFile` to open
  * or scaffold the file.
  */
-export function resolveGuardianPersonaPath(): string | null {
-  const filename = resolveUserFilename(undefined);
+export async function resolveGuardianPersonaPath(): Promise<string | null> {
+  const filename = await resolveUserFilename(undefined);
   if (!filename) {
     return null;
   }
@@ -236,10 +238,10 @@ export function resolveGuardianPersonaPath(): string | null {
  * their contact's userFile. Used to scope per-user workspace directories
  * (e.g. journal/{slug}/). Returns null when no user is identified.
  */
-export function resolveUserSlug(
+export async function resolveUserSlug(
   trustContext: TrustContext | undefined,
-): string | null {
-  const filename = resolveUserFilename(trustContext);
+): Promise<string | null> {
+  const filename = await resolveUserFilename(trustContext);
   if (!filename) {
     return null;
   }
@@ -260,13 +262,13 @@ export function resolveUserSlug(
  * - Logs a debug warning when a contact's `userFile` is set but the
  *   corresponding file is missing on disk.
  */
-export function resolveUserPersona(
+export async function resolveUserPersona(
   trustContext: TrustContext | undefined,
-): string | null {
+): Promise<string | null> {
   const usersDir = join(getWorkspaceDir(), "users");
   const defaultPath = join(usersDir, "default.md");
 
-  const filename = resolveUserFilename(trustContext);
+  const filename = await resolveUserFilename(trustContext);
   if (filename) {
     const filePath = join(usersDir, filename);
     if (existsSync(filePath)) {
@@ -304,13 +306,13 @@ export function resolveChannelPersona(
 /**
  * Resolve both user and channel persona context in a single call.
  */
-export function resolvePersonaContext(
+export async function resolvePersonaContext(
   trustContext: TrustContext | undefined,
   channelCapabilities: ChannelCapabilities | undefined,
-): PersonaContext {
+): Promise<PersonaContext> {
   return {
-    userPersona: resolveUserPersona(trustContext),
-    userSlug: resolveUserSlug(trustContext),
+    userPersona: await resolveUserPersona(trustContext),
+    userSlug: await resolveUserSlug(trustContext),
     channelPersona: resolveChannelPersona(channelCapabilities),
   };
 }
@@ -324,7 +326,7 @@ export function resolvePersonaContext(
  * the guardian's persona without a full trust context. Passing
  * `undefined` triggers the guardian lookup path in `resolveUserPersona`.
  */
-export function resolveGuardianPersona(): string | null {
+export function resolveGuardianPersona(): Promise<string | null> {
   return resolveUserPersona(undefined);
 }
 
@@ -341,8 +343,8 @@ export function resolveGuardianPersona(): string | null {
  * System-prompt callers that want the default.md fallback should
  * continue to use `resolveGuardianPersona`.
  */
-export function resolveGuardianPersonaStrict(): string | null {
-  const filename = resolveUserFilename(undefined);
+export async function resolveGuardianPersonaStrict(): Promise<string | null> {
+  const filename = await resolveUserFilename(undefined);
   if (!filename) {
     return null;
   }
@@ -463,8 +465,8 @@ function buildOnboardingSection(normalized: NormalizedOnboarding): string {
  * Resolve the write target for the onboarding section using the
  * fallback chain: guardian persona → `users/default.md` → `USER.md`.
  */
-function resolveOnboardingWriteTarget(): string {
-  const guardianPath = resolveGuardianPersonaPath();
+async function resolveOnboardingWriteTarget(): Promise<string> {
+  const guardianPath = await resolveGuardianPersonaPath();
   if (guardianPath) {
     return guardianPath;
   }
@@ -484,9 +486,11 @@ function resolveOnboardingWriteTarget(): string {
  *
  * Never throws — logs a warning on failure (fire-and-forget pattern).
  */
-export function writeOnboardingSection(normalized: NormalizedOnboarding): void {
+export async function writeOnboardingSection(
+  normalized: NormalizedOnboarding,
+): Promise<void> {
   try {
-    const targetPath = resolveOnboardingWriteTarget();
+    const targetPath = await resolveOnboardingWriteTarget();
     const section = buildOnboardingSection(normalized);
 
     let content: string;

@@ -7,22 +7,13 @@
  * display_order and is_pinned are handled via runtime migration rather
  * than the formal migrations/ pipeline.
  *
- * The SQL is defined once and executed by two runners: the synchronous one
- * (raw helpers, SQLite main database) serves the unported conversation
- * modules, and the async one (the `AsyncDb` facade) serves the ported
- * group-crud and runs on whichever backend the main slot selects.
+ * The SQL is defined once and executed through the async `AsyncDb` facade on
+ * the main database.
  */
 
-import { getLogger } from "../util/logger.js";
-import {
-  ensureDisplayOrderMigration,
-  ensureDisplayOrderMigrationAsync,
-} from "./conversation-display-order-migration.js";
+import { ensureDisplayOrderMigrationAsync } from "./conversation-display-order-migration.js";
 import type { AsyncDb, SqlParam } from "./db-facade.js";
 import { requireMainDb } from "./db-facade.js";
-import { rawExec, rawGet, rawRun } from "./raw-query.js";
-
-const log = getLogger("conversation-store");
 
 function isDuplicateColumnError(err: unknown): boolean {
   return (
@@ -154,60 +145,6 @@ function buildMigration(now: number): {
   };
 }
 
-/** Run one statement through the synchronous raw helpers. */
-function runSyncStatement(statement: Statement): void {
-  if (statement.params) {
-    rawRun("group:migrate", statement.sql, ...(statement.params as never[]));
-  } else {
-    rawExec(statement.sql);
-  }
-}
-
-/** Run the migration on the SQLite main database. */
-function runSyncMigration(): void {
-  const migration = buildMigration(Math.floor(Date.now() / 1000));
-
-  for (const statement of migration.ddl) {
-    try {
-      runSyncStatement(statement);
-    } catch (err) {
-      if (statement.ignoreDuplicateColumn && isDuplicateColumnError(err)) {
-        continue;
-      }
-      throw err;
-    }
-  }
-
-  for (const step of migration.steps) {
-    const marker = rawGet<{ id: string }>(
-      "group:migrate:marker",
-      "SELECT id FROM conversation_groups WHERE id = ?",
-      step.markerId,
-    );
-    if (marker) {
-      continue;
-    }
-    // The pinned backfill reads `is_pinned`, a runtime column.
-    if (step.markerId === "_backfill_complete") {
-      ensureDisplayOrderMigration();
-    }
-    rawExec("BEGIN");
-    try {
-      for (const statement of step.statements) {
-        runSyncStatement(statement);
-      }
-      rawExec("COMMIT");
-    } catch (err) {
-      rawExec("ROLLBACK");
-      log.error(
-        { err, step: step.markerId },
-        "Group migration step failed, rolled back",
-      );
-      throw err;
-    }
-  }
-}
-
 /** Run one statement through the async facade. */
 async function runAsyncStatement(
   db: AsyncDb,
@@ -220,7 +157,7 @@ async function runAsyncStatement(
   }
 }
 
-/** Run the migration on the active main backend (Postgres path). */
+/** Run the migration on the main backend. */
 async function runAsyncMigration(db: AsyncDb): Promise<void> {
   const migration = buildMigration(Math.floor(Date.now() / 1000));
 
@@ -254,7 +191,6 @@ async function runAsyncMigration(db: AsyncDb): Promise<void> {
   }
 }
 
-let sqliteMigrated = false;
 let asyncMigrated = false;
 let asyncMigration: Promise<void> | null = null;
 
@@ -263,22 +199,8 @@ let asyncMigration: Promise<void> | null = null;
  * Intended ONLY for tests that recreate the database mid-process.
  */
 export function _resetGroupMigrationForTests(): void {
-  sqliteMigrated = false;
   asyncMigrated = false;
   asyncMigration = null;
-}
-
-// TEMPORANEO - bridge sync per codice non ancora portato. NON copiare. Muore nel port di conversations.
-/**
- * Ensure the schema on the SQLite main database. Serves the unported
- * conversation modules, which still read and write SQLite.
- */
-export function ensureGroupMigration(): void {
-  if (sqliteMigrated) {
-    return;
-  }
-  runSyncMigration();
-  sqliteMigrated = true;
 }
 
 /**

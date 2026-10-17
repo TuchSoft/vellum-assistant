@@ -6,8 +6,7 @@
 
 import { and, sql } from "drizzle-orm";
 
-import { getMemoryDb } from "../persistence/db-connection.js";
-import { memoryGraphNodes } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import type { Playbook } from "./types.js";
 import { parsePlaybookStatement } from "./types.js";
 
@@ -25,26 +24,23 @@ interface PlaybookRow {
   content: string;
 }
 
-export function compilePlaybooks(): CompiledPlaybooks {
-  const db = getMemoryDb();
-  if (!db) {
-    return { text: "", totalCount: 0, includedCount: 0 };
-  }
+export async function compilePlaybooks(): Promise<CompiledPlaybooks> {
+  const db = requireMainDb();
+  const nodes = db.schema.memoryGraphNodes;
 
-  const rows: PlaybookRow[] = db
+  const rows: PlaybookRow[] = await db.orm
     .select({
-      id: memoryGraphNodes.id,
-      content: memoryGraphNodes.content,
+      id: nodes.id,
+      content: nodes.content,
     })
-    .from(memoryGraphNodes)
+    .from(nodes)
     .where(
       and(
-        sql`${memoryGraphNodes.sourceConversations} LIKE '%playbook:%'`,
-        sql`${memoryGraphNodes.fidelity} != 'gone'`,
+        sql`${nodes.sourceConversations} LIKE '%playbook:%'`,
+        sql`${nodes.fidelity} != 'gone'`,
       ),
     )
-    .orderBy(sql`${memoryGraphNodes.significance} DESC`)
-    .all();
+    .orderBy(sql`${nodes.significance} DESC`);
 
   if (rows.length === 0) {
     return { text: "", totalCount: 0, includedCount: 0 };

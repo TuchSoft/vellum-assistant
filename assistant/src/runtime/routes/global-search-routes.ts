@@ -14,13 +14,12 @@ import { getConfig } from "../../config/loader.js";
 import { isSidebarDoneEnabled } from "../../config/sidebar-done-gate.js";
 import { searchContacts } from "../../contacts/contact-store.js";
 import { searchConversations } from "../../persistence/conversation-queries.js";
-import { getMemorySqlite } from "../../persistence/db-connection.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import {
   embedWithBackend,
   getMemoryBackendStatus,
 } from "../../persistence/embeddings/embedding-backend.js";
 import { tokenize } from "../../persistence/embeddings/sparse-tokenize.js";
-import { rawMemoryAll } from "../../persistence/raw-query.js";
 import { semanticSearch } from "../../plugins/defaults/memory/v1/semantic-search.js";
 import { listSchedules } from "../../schedule/schedule-store.js";
 import { getLogger } from "../../util/logger.js";
@@ -171,13 +170,11 @@ function parseSearchQuery(
   return { term: termTokens.join(" "), archived };
 }
 
-function searchMemoryItems(query: string, limit: number): GlobalSearchMemory[] {
-  // The memory graph lives in the dedicated memory database. If it cannot be
-  // opened, degrade this category to empty rather than failing the whole
-  // federated search — conversations, schedules, and contacts still return.
-  if (!getMemorySqlite()) {
-    return [];
-  }
+async function searchMemoryItems(
+  query: string,
+  limit: number,
+): Promise<GlobalSearchMemory[]> {
+  const db = requireMainDb();
 
   const likePattern = `%${query.replace(/%/g, "").replace(/_/g, "")}%`;
 
@@ -189,15 +186,13 @@ function searchMemoryItems(query: string, limit: number): GlobalSearchMemory[] {
     last_accessed: number;
   }
 
-  const rows = rawMemoryAll<MemoryRow>(
-    "globalSearch:searchMemoryItems",
+  const rows = await db.all<MemoryRow>(
     `SELECT id, type, content, confidence, last_accessed
      FROM memory_graph_nodes
      WHERE content LIKE ? AND fidelity != 'gone'
      ORDER BY last_accessed DESC
      LIMIT ?`,
-    likePattern,
-    limit,
+    [likePattern, limit],
   );
 
   return rows.map((r) => {
@@ -339,7 +334,7 @@ async function handleGlobalSearch({
   }
 
   if (categories.has("memories")) {
-    results.memories = searchMemoryItems(term, limit);
+    results.memories = await searchMemoryItems(term, limit);
 
     if (deep) {
       const existingIds = new Set(results.memories.map((m) => m.id));

@@ -28,28 +28,23 @@ import {
   getTurnTimeBounds,
   messageMetadataSchema,
 } from "./conversation-crud.js";
-import { type DrizzleDb, getLogsDb } from "./db-connection.js";
+import { requireMainDb } from "./db-facade.js";
 import { getClickHouseLlmRequestLogSink } from "./llm-request-log-sink-clickhouse.js";
 import type {
   LlmRequestLogWriter,
   LlmRequestLogWriteRow,
 } from "./llm-request-log-writer-types.js";
 import { existingMessageIds } from "./message-reads.js";
-import { llmRequestLogs } from "./schema/index.js";
-import { timeSyncSection } from "./slow-sync-log.js";
 
 /**
- * The logs connection (`assistant-logs.db`), where `llm_request_logs` lives.
- * Throws if the file cannot be opened — the store has no fallback, and a
- * missing logs DB is a genuine failure for these call sites (insert/read of
- * request logs). Callers that must not fail on this already wrap in try/catch.
+ * The logs connection: `llm_request_logs` lives in the shared database, so
+ * every read and write goes through the main facade. Throws when the database
+ * is unavailable — the store has no fallback, and a missing database is a
+ * genuine failure for these call sites. Callers that must not fail on this
+ * already wrap in try/catch.
  */
-function logsDb(): DrizzleDb {
-  const db = getLogsDb();
-  if (!db) {
-    throw new Error("logs database unavailable");
-  }
-  return db;
+function logsDb() {
+  return requireMainDb();
 }
 
 /**
@@ -200,99 +195,89 @@ function parseRawBody(rawBody: string): unknown {
  * to the ClickHouse sink) via {@link resolveLlmRequestLogWriter}.
  */
 class LocalLlmRequestLogWriter implements LlmRequestLogWriter {
-  insertRequestLog(row: LlmRequestLogWriteRow): void {
+  async insertRequestLog(row: LlmRequestLogWriteRow): Promise<void> {
     const db = logsDb();
-    // Synchronous insert of the full request/response payloads (an entire
-    // context window for main-agent calls) into the append-only logs DB, on
-    // the per-LLM-call critical path. Timed so an event-loop freeze the
-    // watchdog detects can be attributed to this write (see slow-sync-log).
-    timeSyncSection(
-      "llm-request-log:write",
-      () =>
-        db
-          .insert(llmRequestLogs)
-          .values({
-            id: row.id,
-            conversationId: row.conversationId,
-            messageId: row.messageId,
-            provider: row.provider,
-            requestPayload: row.requestPayload,
-            responsePayload: row.responsePayload,
-            createdAt: row.createdAt,
-            agentLoopExitReason: row.agentLoopExitReason,
-            callSite: row.callSite,
-            latencyBreakdown: row.latencyBreakdown ?? null,
-          })
-          .run(),
-      () => ({
-        conversationId: row.conversationId,
-        callSite: row.callSite,
-        requestBytes: row.requestPayload.length,
-        responseBytes: row.responsePayload.length,
-      }),
-    );
+    const logs = db.schema.llmRequestLogs;
+    // Insert the full request/response payloads (an entire context window for
+    // main-agent calls) into the append-only table on the per-LLM-call path.
+    await db.orm.insert(logs).values({
+      id: row.id,
+      conversationId: row.conversationId,
+      messageId: row.messageId,
+      provider: row.provider,
+      requestPayload: row.requestPayload,
+      responsePayload: row.responsePayload,
+      createdAt: row.createdAt,
+      agentLoopExitReason: row.agentLoopExitReason,
+      callSite: row.callSite,
+      latencyBreakdown: row.latencyBreakdown ?? null,
+    });
   }
 
-  setAgentLoopExitReasonOnLatestLog(
+  async setAgentLoopExitReasonOnLatestLog(
     conversationId: string,
     reason: string,
-  ): void {
+  ): Promise<void> {
     const db = logsDb();
-    const latest = db
-      .select({ id: llmRequestLogs.id })
-      .from(llmRequestLogs)
+    const logs = db.schema.llmRequestLogs;
+    const [latest] = await db.orm
+      .select({ id: logs.id })
+      .from(logs)
       .where(
         and(
-          eq(llmRequestLogs.conversationId, conversationId),
-          isNull(llmRequestLogs.agentLoopExitReason),
+          eq(logs.conversationId, conversationId),
+          isNull(logs.agentLoopExitReason),
         ),
       )
-      .orderBy(desc(llmRequestLogs.createdAt))
-      .limit(1)
-      .get();
+      .orderBy(desc(logs.createdAt))
+      .limit(1);
     if (!latest) {
       return;
     }
-    db.update(llmRequestLogs)
+    await db.orm
+      .update(logs)
       .set({ agentLoopExitReason: reason })
-      .where(eq(llmRequestLogs.id, latest.id))
-      .run();
+      .where(eq(logs.id, latest.id));
   }
 
-  backfillMessageIdOnLogs(conversationId: string, messageId: string): void {
+  async backfillMessageIdOnLogs(
+    conversationId: string,
+    messageId: string,
+  ): Promise<void> {
     const db = logsDb();
-    db.update(llmRequestLogs)
+    const logs = db.schema.llmRequestLogs;
+    await db.orm
+      .update(logs)
       .set({ messageId })
       .where(
-        and(
-          eq(llmRequestLogs.conversationId, conversationId),
-          isNull(llmRequestLogs.messageId),
-        ),
-      )
-      .run();
+        and(eq(logs.conversationId, conversationId), isNull(logs.messageId)),
+      );
   }
 
-  relinkLlmRequestLogs(fromMessageIds: string[], toMessageId: string): void {
+  async relinkLlmRequestLogs(
+    fromMessageIds: string[],
+    toMessageId: string,
+  ): Promise<void> {
     const db = logsDb();
-    db.update(llmRequestLogs)
+    const logs = db.schema.llmRequestLogs;
+    await db.orm
+      .update(logs)
       .set({ messageId: toMessageId })
-      .where(inArray(llmRequestLogs.messageId, fromMessageIds))
-      .run();
+      .where(inArray(logs.messageId, fromMessageIds));
   }
 
-  backfillMessageIdOnRecoveredLogs(logIds: string[], messageId: string): void {
+  async backfillMessageIdOnRecoveredLogs(
+    logIds: string[],
+    messageId: string,
+  ): Promise<void> {
     const db = logsDb();
+    const logs = db.schema.llmRequestLogs;
     // Guard with isNull so this recovery path never overwrites a messageId
     // already set by an authoritative caller (e.g. watch-notifier).
-    db.update(llmRequestLogs)
+    await db.orm
+      .update(logs)
       .set({ messageId })
-      .where(
-        and(
-          inArray(llmRequestLogs.id, logIds),
-          isNull(llmRequestLogs.messageId),
-        ),
-      )
-      .run();
+      .where(and(inArray(logs.id, logIds), isNull(logs.messageId)));
   }
 }
 
@@ -313,7 +298,7 @@ function resolveLlmRequestLogWriter(): LlmRequestLogWriter {
   return getClickHouseLlmRequestLogSink() ?? LOCAL_LLM_REQUEST_LOG_WRITER;
 }
 
-export function recordRequestLog(
+export async function recordRequestLog(
   conversationId: string,
   requestPayload: string,
   responsePayload: string,
@@ -321,7 +306,7 @@ export function recordRequestLog(
   provider?: string,
   callSite?: LLMCallSite,
   latencyBreakdown?: string,
-): string | null {
+): Promise<string | null> {
   // Master opt-out: when logging is disabled, skip the write entirely so no
   // prompt/completion payload lands on disk. Returns null — there is no row to
   // stamp/backfill later, and no production caller consumes the return value.
@@ -329,7 +314,7 @@ export function recordRequestLog(
     return null;
   }
   const id = uuid();
-  resolveLlmRequestLogWriter().insertRequestLog({
+  await resolveLlmRequestLogWriter().insertRequestLog({
     id,
     conversationId,
     messageId: messageId ?? null,
@@ -382,7 +367,7 @@ export function recordRequestLog(
  * existing "latest LLM call carries the exit reason" invariant that
  * other consumers depend on.
  */
-export function recordSyntheticAgentErrorMessageLog(args: {
+export async function recordSyntheticAgentErrorMessageLog(args: {
   conversationId: string;
   messageId: string;
   exitReason: string;
@@ -395,7 +380,7 @@ export function recordSyntheticAgentErrorMessageLog(args: {
    */
   preparedRequest: unknown | null;
   createdAt: number;
-}): string | null {
+}): Promise<string | null> {
   // Synthetic error rows are `llm_request_logs` rows too — honour the same
   // master opt-out so nothing is written while logging is disabled.
   if (!llmRequestLoggingEnabled()) {
@@ -417,7 +402,7 @@ export function recordSyntheticAgentErrorMessageLog(args: {
   // The exit reason is already known here, so it is carried on the row at
   // insert time — which also makes synthetic rows complete on INSERT-only
   // backends that can never stamp it afterwards.
-  resolveLlmRequestLogWriter().insertRequestLog({
+  await resolveLlmRequestLogWriter().insertRequestLog({
     id,
     conversationId: args.conversationId,
     messageId: args.messageId,
@@ -445,21 +430,21 @@ export function recordSyntheticAgentErrorMessageLog(args: {
  * throws). In those cases the latest row belongs to a prior run and is
  * already stamped — leave it alone.
  */
-export function setAgentLoopExitReasonOnLatestLog(
+export async function setAgentLoopExitReasonOnLatestLog(
   conversationId: string,
   reason: string,
-): void {
-  resolveLlmRequestLogWriter().setAgentLoopExitReasonOnLatestLog(
+): Promise<void> {
+  await resolveLlmRequestLogWriter().setAgentLoopExitReasonOnLatestLog(
     conversationId,
     reason,
   );
 }
 
-export function backfillMessageIdOnLogs(
+export async function backfillMessageIdOnLogs(
   conversationId: string,
   messageId: string,
-): void {
-  resolveLlmRequestLogWriter().backfillMessageIdOnLogs(
+): Promise<void> {
+  await resolveLlmRequestLogWriter().backfillMessageIdOnLogs(
     conversationId,
     messageId,
   );
@@ -471,14 +456,14 @@ export function backfillMessageIdOnLogs(
  * intermediate messages survive and remain queryable via the consolidated
  * message.
  */
-export function relinkLlmRequestLogs(
+export async function relinkLlmRequestLogs(
   fromMessageIds: string[],
   toMessageId: string,
-): void {
+): Promise<void> {
   if (fromMessageIds.length === 0) {
     return;
   }
-  resolveLlmRequestLogWriter().relinkLlmRequestLogs(
+  await resolveLlmRequestLogWriter().relinkLlmRequestLogs(
     fromMessageIds,
     toMessageId,
   );
@@ -489,28 +474,28 @@ export function relinkLlmRequestLogs(
  * given message IDs, ordered by `createdAt ASC`. Uses the existing
  * `idx_llm_request_logs_message_id` index via `inArray`.
  */
-function selectLogsByMessageIds(messageIds: string[]): LogRow[] {
+async function selectLogsByMessageIds(messageIds: string[]): Promise<LogRow[]> {
   if (messageIds.length === 0) {
     return [];
   }
   const db = logsDb();
-  return db
+  const logs = db.schema.llmRequestLogs;
+  return db.orm
     .select({
-      id: llmRequestLogs.id,
-      conversationId: llmRequestLogs.conversationId,
-      messageId: llmRequestLogs.messageId,
-      provider: llmRequestLogs.provider,
-      requestPayload: llmRequestLogs.requestPayload,
-      responsePayload: llmRequestLogs.responsePayload,
-      createdAt: llmRequestLogs.createdAt,
-      agentLoopExitReason: llmRequestLogs.agentLoopExitReason,
-      callSite: llmRequestLogs.callSite,
-      latencyBreakdown: llmRequestLogs.latencyBreakdown,
+      id: logs.id,
+      conversationId: logs.conversationId,
+      messageId: logs.messageId,
+      provider: logs.provider,
+      requestPayload: logs.requestPayload,
+      responsePayload: logs.responsePayload,
+      createdAt: logs.createdAt,
+      agentLoopExitReason: logs.agentLoopExitReason,
+      callSite: logs.callSite,
+      latencyBreakdown: logs.latencyBreakdown,
     })
-    .from(llmRequestLogs)
-    .where(inArray(llmRequestLogs.messageId, messageIds))
-    .orderBy(llmRequestLogs.createdAt)
-    .all();
+    .from(logs)
+    .where(inArray(logs.messageId, messageIds))
+    .orderBy(logs.createdAt);
 }
 
 /**
@@ -519,27 +504,27 @@ function selectLogsByMessageIds(messageIds: string[]): LogRow[] {
  * not apply turn recovery: the `conversation_id` column already includes
  * linked, unlinked, and orphaned rows for the full conversation.
  */
-export function getRequestLogsByConversationId(
+export async function getRequestLogsByConversationId(
   conversationId: string,
-): LogRow[] {
+): Promise<LogRow[]> {
   const db = logsDb();
-  return db
+  const logs = db.schema.llmRequestLogs;
+  return db.orm
     .select({
-      id: llmRequestLogs.id,
-      conversationId: llmRequestLogs.conversationId,
-      messageId: llmRequestLogs.messageId,
-      provider: llmRequestLogs.provider,
-      requestPayload: llmRequestLogs.requestPayload,
-      responsePayload: llmRequestLogs.responsePayload,
-      createdAt: llmRequestLogs.createdAt,
-      agentLoopExitReason: llmRequestLogs.agentLoopExitReason,
-      callSite: llmRequestLogs.callSite,
-      latencyBreakdown: llmRequestLogs.latencyBreakdown,
+      id: logs.id,
+      conversationId: logs.conversationId,
+      messageId: logs.messageId,
+      provider: logs.provider,
+      requestPayload: logs.requestPayload,
+      responsePayload: logs.responsePayload,
+      createdAt: logs.createdAt,
+      agentLoopExitReason: logs.agentLoopExitReason,
+      callSite: logs.callSite,
+      latencyBreakdown: logs.latencyBreakdown,
     })
-    .from(llmRequestLogs)
-    .where(eq(llmRequestLogs.conversationId, conversationId))
-    .orderBy(asc(llmRequestLogs.createdAt), asc(llmRequestLogs.id))
-    .all();
+    .from(logs)
+    .where(eq(logs.conversationId, conversationId))
+    .orderBy(asc(logs.createdAt), asc(logs.id));
 }
 
 /**
@@ -557,36 +542,38 @@ async function selectOrphanedLogsInRange(
   if (endTime <= startTime) {
     return [];
   }
-  // `llm_request_logs` and `messages` live in separate connections now, so the
-  // old LEFT JOIN can't span them. Resolve it in three steps:
-  //   (a) logs conn → candidate rows in [start,end] for the conversation with a
-  //       non-NULL message_id;
-  //   (b) main conn → which of those message_ids still exist in `messages`;
+  // `llm_request_logs` and `messages` share one database, but the lookup still
+  // resolves in three steps so the message-id existence check stays on the
+  // main facade:
+  //   (a) candidate rows in [start,end] for the conversation with a non-NULL
+  //       message_id;
+  //   (b) which of those message_ids still exist in `messages`;
   //   (c) filter to candidates whose message_id is NOT in the existing set.
-  const candidates = logsDb()
+  const db = logsDb();
+  const logs = db.schema.llmRequestLogs;
+  const candidates = await db.orm
     .select({
-      id: llmRequestLogs.id,
-      conversationId: llmRequestLogs.conversationId,
-      messageId: llmRequestLogs.messageId,
-      provider: llmRequestLogs.provider,
-      requestPayload: llmRequestLogs.requestPayload,
-      responsePayload: llmRequestLogs.responsePayload,
-      createdAt: llmRequestLogs.createdAt,
-      agentLoopExitReason: llmRequestLogs.agentLoopExitReason,
-      callSite: llmRequestLogs.callSite,
-      latencyBreakdown: llmRequestLogs.latencyBreakdown,
+      id: logs.id,
+      conversationId: logs.conversationId,
+      messageId: logs.messageId,
+      provider: logs.provider,
+      requestPayload: logs.requestPayload,
+      responsePayload: logs.responsePayload,
+      createdAt: logs.createdAt,
+      agentLoopExitReason: logs.agentLoopExitReason,
+      callSite: logs.callSite,
+      latencyBreakdown: logs.latencyBreakdown,
     })
-    .from(llmRequestLogs)
+    .from(logs)
     .where(
       and(
-        eq(llmRequestLogs.conversationId, conversationId),
-        gte(llmRequestLogs.createdAt, startTime),
-        lte(llmRequestLogs.createdAt, endTime),
-        sql`${llmRequestLogs.messageId} IS NOT NULL`,
+        eq(logs.conversationId, conversationId),
+        gte(logs.createdAt, startTime),
+        lte(logs.createdAt, endTime),
+        sql`${logs.messageId} IS NOT NULL`,
       ),
     )
-    .orderBy(llmRequestLogs.createdAt)
-    .all();
+    .orderBy(logs.createdAt);
   if (candidates.length === 0) {
     return [];
   }
@@ -608,39 +595,39 @@ async function selectOrphanedLogsInRange(
  *
  * Scoped to a single conversation and a time range to avoid cross-turn bleed.
  */
-function selectUnlinkedLogsInRange(
+async function selectUnlinkedLogsInRange(
   conversationId: string,
   startTime: number,
   endTime: number,
-): LogRow[] {
+): Promise<LogRow[]> {
   if (endTime <= startTime) {
     return [];
   }
   const db = logsDb();
-  return db
+  const logs = db.schema.llmRequestLogs;
+  return db.orm
     .select({
-      id: llmRequestLogs.id,
-      conversationId: llmRequestLogs.conversationId,
-      messageId: llmRequestLogs.messageId,
-      provider: llmRequestLogs.provider,
-      requestPayload: llmRequestLogs.requestPayload,
-      responsePayload: llmRequestLogs.responsePayload,
-      createdAt: llmRequestLogs.createdAt,
-      agentLoopExitReason: llmRequestLogs.agentLoopExitReason,
-      callSite: llmRequestLogs.callSite,
-      latencyBreakdown: llmRequestLogs.latencyBreakdown,
+      id: logs.id,
+      conversationId: logs.conversationId,
+      messageId: logs.messageId,
+      provider: logs.provider,
+      requestPayload: logs.requestPayload,
+      responsePayload: logs.responsePayload,
+      createdAt: logs.createdAt,
+      agentLoopExitReason: logs.agentLoopExitReason,
+      callSite: logs.callSite,
+      latencyBreakdown: logs.latencyBreakdown,
     })
-    .from(llmRequestLogs)
+    .from(logs)
     .where(
       and(
-        eq(llmRequestLogs.conversationId, conversationId),
-        gte(llmRequestLogs.createdAt, startTime),
-        lte(llmRequestLogs.createdAt, endTime),
-        isNull(llmRequestLogs.messageId),
+        eq(logs.conversationId, conversationId),
+        gte(logs.createdAt, startTime),
+        lte(logs.createdAt, endTime),
+        isNull(logs.messageId),
       ),
     )
-    .orderBy(llmRequestLogs.createdAt)
-    .all();
+    .orderBy(logs.createdAt);
 }
 
 /**
@@ -656,27 +643,27 @@ function selectUnlinkedLogsInRange(
  * `callSite` rows (pre-migration-264) are treated as real calls — only
  * `compactionAgent` rows are excluded.
  */
-export function getPreviousNonCompactionCallCreatedAt(
+export async function getPreviousNonCompactionCallCreatedAt(
   conversationId: string,
   beforeCreatedAt: number,
-): number | null {
+): Promise<number | null> {
   const db = logsDb();
-  const row = db
-    .select({ createdAt: llmRequestLogs.createdAt })
-    .from(llmRequestLogs)
+  const logs = db.schema.llmRequestLogs;
+  const [row] = await db.orm
+    .select({ createdAt: logs.createdAt })
+    .from(logs)
     .where(
       and(
-        eq(llmRequestLogs.conversationId, conversationId),
-        lt(llmRequestLogs.createdAt, beforeCreatedAt),
+        eq(logs.conversationId, conversationId),
+        lt(logs.createdAt, beforeCreatedAt),
         or(
-          isNull(llmRequestLogs.callSite),
-          ne(llmRequestLogs.callSite, CALL_SITE_COMPACTION_AGENT),
+          isNull(logs.callSite),
+          ne(logs.callSite, CALL_SITE_COMPACTION_AGENT),
         ),
       ),
     )
-    .orderBy(desc(llmRequestLogs.createdAt), desc(llmRequestLogs.id))
-    .limit(1)
-    .get();
+    .orderBy(desc(logs.createdAt), desc(logs.id))
+    .limit(1);
   return row?.createdAt ?? null;
 }
 
@@ -703,46 +690,48 @@ export function getPreviousNonCompactionCallCreatedAt(
  * `callSite = 'compactionAgent'` predicate without a separate IS NOT
  * NULL clause.
  */
-export function getCompactionLogsBetween(
+export async function getCompactionLogsBetween(
   conversationId: string,
   afterCreatedAt: number | null,
   beforeCreatedAt: number,
-): CompactionAgentLogRow[] {
+): Promise<CompactionAgentLogRow[]> {
   const db = logsDb();
+  const logs = db.schema.llmRequestLogs;
   const predicates = [
-    eq(llmRequestLogs.conversationId, conversationId),
-    eq(llmRequestLogs.callSite, CALL_SITE_COMPACTION_AGENT),
-    lt(llmRequestLogs.createdAt, beforeCreatedAt),
+    eq(logs.conversationId, conversationId),
+    eq(logs.callSite, CALL_SITE_COMPACTION_AGENT),
+    lt(logs.createdAt, beforeCreatedAt),
   ];
   if (afterCreatedAt !== null) {
-    predicates.push(gt(llmRequestLogs.createdAt, afterCreatedAt));
+    predicates.push(gt(logs.createdAt, afterCreatedAt));
   }
-  return db
+  return db.orm
     .select({
-      id: llmRequestLogs.id,
-      conversationId: llmRequestLogs.conversationId,
-      messageId: llmRequestLogs.messageId,
-      provider: llmRequestLogs.provider,
-      responsePayload: llmRequestLogs.responsePayload,
+      id: logs.id,
+      conversationId: logs.conversationId,
+      messageId: logs.messageId,
+      provider: logs.provider,
+      responsePayload: logs.responsePayload,
       // Count the request's messages in SQL instead of loading the payload:
       // `messages` (Anthropic / OpenAI chat-completions), `contents`
       // (Gemini), `input` (OpenAI Responses). NULL when the payload is
       // malformed or none of the arrays exist.
-      requestMessageCount: sql<
-        number | null
-      >`CASE WHEN json_valid(${llmRequestLogs.requestPayload}) THEN coalesce(
-          json_array_length(${llmRequestLogs.requestPayload}, '$.messages'),
-          json_array_length(${llmRequestLogs.requestPayload}, '$.contents'),
-          json_array_length(${llmRequestLogs.requestPayload}, '$.input')
+      requestMessageCount: sql<number | null>`CASE
+        WHEN pg_input_is_valid(${logs.requestPayload}, 'jsonb') THEN coalesce(
+          CASE WHEN jsonb_typeof(${logs.requestPayload}::jsonb -> 'messages') = 'array'
+            THEN jsonb_array_length(${logs.requestPayload}::jsonb -> 'messages') END,
+          CASE WHEN jsonb_typeof(${logs.requestPayload}::jsonb -> 'contents') = 'array'
+            THEN jsonb_array_length(${logs.requestPayload}::jsonb -> 'contents') END,
+          CASE WHEN jsonb_typeof(${logs.requestPayload}::jsonb -> 'input') = 'array'
+            THEN jsonb_array_length(${logs.requestPayload}::jsonb -> 'input') END
         ) ELSE NULL END`,
-      createdAt: llmRequestLogs.createdAt,
-      agentLoopExitReason: llmRequestLogs.agentLoopExitReason,
-      callSite: llmRequestLogs.callSite,
+      createdAt: logs.createdAt,
+      agentLoopExitReason: logs.agentLoopExitReason,
+      callSite: logs.callSite,
     })
-    .from(llmRequestLogs)
+    .from(logs)
     .where(and(...predicates))
-    .orderBy(asc(llmRequestLogs.createdAt), asc(llmRequestLogs.id))
-    .all();
+    .orderBy(asc(logs.createdAt), asc(logs.id));
 }
 
 /**
@@ -751,45 +740,45 @@ export function getCompactionLogsBetween(
  * without paying to load its payloads — a single request payload can be a
  * full context window.
  */
-export function getRequestLogMetaById(logId: string): LogMetaRow | null {
+export async function getRequestLogMetaById(
+  logId: string,
+): Promise<LogMetaRow | null> {
   const db = logsDb();
-  return (
-    db
-      .select({
-        id: llmRequestLogs.id,
-        conversationId: llmRequestLogs.conversationId,
-        messageId: llmRequestLogs.messageId,
-        provider: llmRequestLogs.provider,
-        createdAt: llmRequestLogs.createdAt,
-        agentLoopExitReason: llmRequestLogs.agentLoopExitReason,
-        callSite: llmRequestLogs.callSite,
-      })
-      .from(llmRequestLogs)
-      .where(eq(llmRequestLogs.id, logId))
-      .get() ?? null
-  );
+  const logs = db.schema.llmRequestLogs;
+  const [row] = await db.orm
+    .select({
+      id: logs.id,
+      conversationId: logs.conversationId,
+      messageId: logs.messageId,
+      provider: logs.provider,
+      createdAt: logs.createdAt,
+      agentLoopExitReason: logs.agentLoopExitReason,
+      callSite: logs.callSite,
+    })
+    .from(logs)
+    .where(eq(logs.id, logId));
+  return row ?? null;
 }
 
-export function getRequestLogById(logId: string): LogRow | null {
+export async function getRequestLogById(logId: string): Promise<LogRow | null> {
   const db = logsDb();
-  return (
-    db
-      .select({
-        id: llmRequestLogs.id,
-        conversationId: llmRequestLogs.conversationId,
-        messageId: llmRequestLogs.messageId,
-        provider: llmRequestLogs.provider,
-        requestPayload: llmRequestLogs.requestPayload,
-        responsePayload: llmRequestLogs.responsePayload,
-        createdAt: llmRequestLogs.createdAt,
-        agentLoopExitReason: llmRequestLogs.agentLoopExitReason,
-        callSite: llmRequestLogs.callSite,
-        latencyBreakdown: llmRequestLogs.latencyBreakdown,
-      })
-      .from(llmRequestLogs)
-      .where(eq(llmRequestLogs.id, logId))
-      .get() ?? null
-  );
+  const logs = db.schema.llmRequestLogs;
+  const [row] = await db.orm
+    .select({
+      id: logs.id,
+      conversationId: logs.conversationId,
+      messageId: logs.messageId,
+      provider: logs.provider,
+      requestPayload: logs.requestPayload,
+      responsePayload: logs.responsePayload,
+      createdAt: logs.createdAt,
+      agentLoopExitReason: logs.agentLoopExitReason,
+      callSite: logs.callSite,
+      latencyBreakdown: logs.latencyBreakdown,
+    })
+    .from(logs)
+    .where(eq(logs.id, logId));
+  return row ?? null;
 }
 
 /**
@@ -803,15 +792,15 @@ export function getRequestLogById(logId: string): LogRow | null {
  * still NULL when this runs, so the link wins. Non-fatal — an unlinked row
  * degrades to time-window recovery, not data loss.
  */
-export function linkRequestLogsToMessage(
+export async function linkRequestLogsToMessage(
   logIds: string[],
   messageId: string,
-): void {
+): Promise<void> {
   if (logIds.length === 0) {
     return;
   }
   try {
-    resolveLlmRequestLogWriter().backfillMessageIdOnRecoveredLogs(
+    await resolveLlmRequestLogWriter().backfillMessageIdOnRecoveredLogs(
       logIds,
       messageId,
     );
@@ -838,7 +827,7 @@ export async function getRequestLogsByMessageId(
   // Resolve all assistant message IDs in the same turn so the inspector
   // shows every LLM call from the entire agent turn, not just the queried message.
   const turnMessageIds = await getAssistantMessageIdsInTurn(messageId);
-  const turnLogs = selectLogsByMessageIds(turnMessageIds);
+  const turnLogs = await selectLogsByMessageIds(turnMessageIds);
   const seen = new Set(turnLogs.map((l) => l.id));
   const merged = [...turnLogs];
 
@@ -860,7 +849,7 @@ export async function getRequestLogsByMessageId(
         bounds.startTime,
         bounds.endTime,
       );
-      const unlinkedLogs = selectUnlinkedLogsInRange(
+      const unlinkedLogs = await selectUnlinkedLogsInRange(
         message.conversationId,
         bounds.startTime,
         bounds.endTime,
@@ -890,7 +879,7 @@ export async function getRequestLogsByMessageId(
       if (backfillIds.length > 0 && turnMessageIds.length > 0) {
         try {
           const targetMessageId = turnMessageIds[turnMessageIds.length - 1]!;
-          resolveLlmRequestLogWriter().backfillMessageIdOnRecoveredLogs(
+          await resolveLlmRequestLogWriter().backfillMessageIdOnRecoveredLogs(
             backfillIds,
             targetMessageId,
           );
@@ -920,7 +909,7 @@ export async function getRequestLogsByMessageId(
       if (sourceMessageId && sourceMessageId !== messageId) {
         const sourceTurnIds =
           await getAssistantMessageIdsInTurn(sourceMessageId);
-        for (const log of selectLogsByMessageIds(sourceTurnIds)) {
+        for (const log of await selectLogsByMessageIds(sourceTurnIds)) {
           if (!seen.has(log.id)) {
             merged.push(log);
             seen.add(log.id);

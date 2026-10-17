@@ -1,11 +1,10 @@
 import { and, eq, sql } from "drizzle-orm";
 
-import { getMemoryDb } from "../../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import {
   enqueueMemoryJob,
   isMemoryEnabled,
 } from "../../../../persistence/jobs-store.js";
-import { memoryGraphNodes } from "../../../../persistence/schema/index.js";
 import type {
   Playbook,
   PlaybookAutonomyLevel,
@@ -105,22 +104,19 @@ export async function executePlaybookUpdate(
     const content = `${subject}\n${statement}`;
 
     // Check for duplicate content among other playbook nodes
-    const db = getMemoryDb();
-    if (!db) {
-      return { content: "Error: memory database unavailable.", isError: true };
-    }
-    const collision = db
-      .select({ id: memoryGraphNodes.id })
-      .from(memoryGraphNodes)
+    const db = requireMainDb();
+    const nodes = db.schema.memoryGraphNodes;
+    const [collision] = await db.orm
+      .select({ id: nodes.id })
+      .from(nodes)
       .where(
         and(
-          sql`${memoryGraphNodes.sourceConversations} LIKE '%playbook:%'`,
-          eq(memoryGraphNodes.content, content),
-          sql`${memoryGraphNodes.fidelity} != 'gone'`,
-          sql`${memoryGraphNodes.id} != ${existing.id}`,
+          sql`${nodes.sourceConversations} LIKE '%playbook:%'`,
+          eq(nodes.content, content),
+          sql`${nodes.fidelity} != 'gone'`,
+          sql`${nodes.id} != ${existing.id}`,
         ),
-      )
-      .get();
+      );
 
     if (collision) {
       return {

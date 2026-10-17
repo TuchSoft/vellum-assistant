@@ -13,7 +13,7 @@
 import { getConfiguredProvider, safeStringSlice } from "@vellumai/plugin-api";
 
 import type { AssistantConfig } from "../../../../../config/types.js";
-import { getMemoryDb } from "../../../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import {
   createTrigger,
   deduplicateParagraphs,
@@ -534,15 +534,8 @@ async function consolidateChunk(
 
       // Wrap edit recording + node update in a transaction so they are atomic:
       // if updateNode fails, the edit record is rolled back. Both writes land on
-      // the memory connection now the graph cluster lives there, so the
-      // transaction must be opened on that connection to stay atomic.
-      const mdb = getMemoryDb();
-      if (!mdb) {
-        throw new Error(
-          "memory database unavailable — graph consolidation cannot proceed",
-        );
-      }
-      await mdb.transaction(async () => {
+      // the shared database, so the transaction runs on the main facade.
+      await requireMainDb().transaction(async () => {
         if (changes.content) {
           const cleanContent = deduplicateParagraphs(changes.content);
           const node = nodeMap.get(update.id);

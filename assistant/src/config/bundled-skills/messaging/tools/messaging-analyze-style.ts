@@ -2,12 +2,11 @@ import { and, eq, sql } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
 import { extractStylePatterns } from "../../../../messaging/style-analyzer.js";
-import { getMemoryDb } from "../../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import {
   enqueueMemoryJob,
   isMemoryEnabled,
 } from "../../../../persistence/jobs-store.js";
-import { memoryGraphNodes } from "../../../../persistence/schema/index.js";
 import { clampUnitInterval } from "../../../../plugins/defaults/memory/validation.js";
 import {
   isAbortLikeError,
@@ -26,32 +25,25 @@ const KIND_TO_MEMORY_TYPE: Record<string, string> = {
   relationship: "semantic",
 };
 
-function upsertMemoryItem(opts: {
+async function upsertMemoryItem(opts: {
   kind: string;
   subject: string;
   statement: string;
   importance: number;
-}): void {
-  const db = getMemoryDb();
-  if (!db) {
-    return;
-  }
+}): Promise<void> {
+  const db = requireMainDb();
+  const nodes = db.schema.memoryGraphNodes;
   const now = Date.now();
   const content = `${opts.subject}\n${opts.statement}`;
 
-  const existing = db
+  const [existing] = await db.orm
     .select()
-    .from(memoryGraphNodes)
-    .where(
-      and(
-        eq(memoryGraphNodes.content, content),
-        sql`${memoryGraphNodes.fidelity} != 'gone'`,
-      ),
-    )
-    .get();
+    .from(nodes)
+    .where(and(eq(nodes.content, content), sql`${nodes.fidelity} != 'gone'`));
 
   if (existing) {
-    db.update(memoryGraphNodes)
+    await db.orm
+      .update(nodes)
       .set({
         content,
         type: KIND_TO_MEMORY_TYPE[opts.kind] ?? opts.kind,
@@ -62,35 +54,32 @@ function upsertMemoryItem(opts: {
         lastAccessed: now,
         sourceType: existing.sourceType === "direct" ? "direct" : "inferred",
       })
-      .where(eq(memoryGraphNodes.id, existing.id))
-      .run();
+      .where(eq(nodes.id, existing.id));
     if (isMemoryEnabled()) {
       enqueueMemoryJob("embed_graph_node", { nodeId: existing.id });
     }
   } else {
     const id = uuid();
-    db.insert(memoryGraphNodes)
-      .values({
-        id,
-        content,
-        type: KIND_TO_MEMORY_TYPE[opts.kind] ?? opts.kind,
-        created: now,
-        lastAccessed: now,
-        lastConsolidated: now,
-        emotionalCharge:
-          '{"valence":0,"intensity":0.1,"decayCurve":"linear","decayRate":0.05,"originalIntensity":0.1}',
-        fidelity: "vivid",
-        confidence: 0.8,
-        significance: clampUnitInterval(opts.importance),
-        stability: 14,
-        reinforcementCount: 0,
-        lastReinforced: now,
-        sourceConversations: "[]",
-        sourceType: "inferred",
-        narrativeRole: null,
-        partOfStory: null,
-      })
-      .run();
+    await db.orm.insert(nodes).values({
+      id,
+      content,
+      type: KIND_TO_MEMORY_TYPE[opts.kind] ?? opts.kind,
+      created: now,
+      lastAccessed: now,
+      lastConsolidated: now,
+      emotionalCharge:
+        '{"valence":0,"intensity":0.1,"decayCurve":"linear","decayRate":0.05,"originalIntensity":0.1}',
+      fidelity: "vivid",
+      confidence: 0.8,
+      significance: clampUnitInterval(opts.importance),
+      stability: 14,
+      reinforcementCount: 0,
+      lastReinforced: now,
+      sourceConversations: "[]",
+      sourceType: "inferred",
+      narrativeRole: null,
+      partOfStory: null,
+    });
     if (isMemoryEnabled()) {
       enqueueMemoryJob("embed_graph_node", { nodeId: id });
     }
@@ -148,7 +137,7 @@ export async function run(
       const importance = clampUnitInterval(
         Math.min(0.85, Math.max(0.55, pattern.importance ?? 0.65)),
       );
-      upsertMemoryItem({
+      await upsertMemoryItem({
         kind: "style",
         subject,
         statement: pattern.summary,
@@ -162,7 +151,7 @@ export async function run(
         continue;
       }
       const subject = `${provider.id} relationship: ${contact.name}`;
-      upsertMemoryItem({
+      await upsertMemoryItem({
         kind: "relationship",
         subject,
         statement: truncate(

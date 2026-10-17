@@ -3,12 +3,9 @@ import { HOOKS } from "../../plugin-api/constants.js";
 import { runHook } from "../../plugins/pipeline.js";
 import { rotateToolInvocations } from "../../telemetry/tool-usage-store.js";
 import { getLogger } from "../../util/logger.js";
-import { getLogsDbPath } from "../../util/logs-db-path.js";
 import { purgeConversationSegments } from "../conversation-crud.js";
-import { runAsyncSqlite } from "../db-async-query.js";
 import { requireMainDb } from "../db-facade.js";
 import { enqueueMemoryJob, type MemoryJob } from "../jobs-store.js";
-import { rawLogsRun } from "../raw-query.js";
 
 const log = getLogger("memory-jobs-worker");
 
@@ -20,12 +17,10 @@ const PRUNE_LOG_BATCH_LIMIT = 1000;
  * Processes in batches to avoid long DB locks and excessive WAL growth.
  * Re-enqueues itself if more rows remain.
  *
- * The DELETE is dispatched through `runAsyncSqlite` so it runs in a
- * sqlite3 subprocess (when available) and does not block the daemon's
- * main event loop. The two bind parameters (`cutoffMs`, batch limit)
- * are integers — they're inlined directly into the SQL after a
- * `Math.floor` + `Number.isFinite` guard so there is no string
- * interpolation surface.
+ * The DELETE runs on the main database facade and returns the affected row
+ * count. The two bind parameters (`cutoffMs`, batch limit) are integers,
+ * validated by a `Math.floor` + `Number.isFinite` guard, so the SQL has no
+ * string interpolation surface.
  */
 export async function pruneOldLlmRequestLogsJob(
   job: MemoryJob,
@@ -55,32 +50,18 @@ export async function pruneOldLlmRequestLogsJob(
     return;
   }
 
-  // Inline the cutoff and batch limit (both integers, both validated)
-  // and chain `SELECT changes()` so we can read the row count from the
-  // subprocess's stdout. The sqlite3 CLI prints `changes()` as a bare
-  // integer on its own line in default output mode; the in-process
-  // fallback backend in `db-async-query.ts` synthesizes the same shape
-  // by capturing `changes()` atomically after `exec()`. Both backends
-  // end up on the parser path below.
-  // llm_request_logs lives in the dedicated logs database. Point the prune at
-  // that file directly via `dbPath` — both backends open it as their own
-  // database (the subprocess directly, the in-process fallback via a transient
-  // connection), so the DELETE hits the right file.
-  const result = await runAsyncSqlite(
-    `DELETE FROM llm_request_logs WHERE rowid IN (SELECT rowid FROM llm_request_logs WHERE created_at < ${cutoffMs} LIMIT ${PRUNE_LOG_BATCH_LIMIT});
-SELECT changes();`,
-    "cleanup:prune-llm-request-logs",
-    { dbPath: getLogsDbPath() },
+  // Inline the cutoff and batch limit (both integers, both validated) and let
+  // the DELETE return the affected row count.
+  //
+  // `llm_request_logs` lives in the shared database, so the prune runs on the
+  // main facade like every other cleanup target.
+  const db = requireMainDb();
+  const deleted = await db.run(
+    `DELETE FROM llm_request_logs WHERE id IN (
+       SELECT id FROM llm_request_logs WHERE created_at < ? LIMIT ?
+     )`,
+    [cutoffMs, PRUNE_LOG_BATCH_LIMIT],
   );
-  if (!result.ok) {
-    log.warn(
-      { error: result.error, backend: result.backend },
-      "pruneOldLlmRequestLogsJob: DELETE failed",
-    );
-    return;
-  }
-
-  const deleted = parseDeletedCount(result.stdout);
 
   if (deleted >= PRUNE_LOG_BATCH_LIMIT) {
     enqueueMemoryJob("prune_old_llm_request_logs", { retentionMs });
@@ -207,17 +188,15 @@ export async function pruneOldConversationsJob(
         return;
       }
 
-      // Non-cascading tables. llm_request_logs lives on the dedicated logs
-      // connection, so it is deleted there (outside this main-DB
-      // transaction). Both run before the main-DB deletes: a failure leaves
-      // the conversation row in place so the prune retries, and unshipped
-      // telemetry events must never outlive their pruned conversation and
-      // flush later.
-      rawLogsRun(
-        "cleanup:pruneOldConversations:logs",
-        `DELETE FROM llm_request_logs WHERE conversation_id = ?`,
+      // Non-cascading tables. `llm_request_logs`, telemetry events, tool
+      // invocations, and messages all share the main database, so their
+      // deletes run inside this transaction. They all run before the
+      // conversation delete: a failure leaves the conversation row in place
+      // so the prune retries, and unshipped telemetry events must never
+      // outlive their pruned conversation and flush later.
+      await tx.run(`DELETE FROM llm_request_logs WHERE conversation_id = ?`, [
         id,
-      );
+      ]);
       await tx.run(`DELETE FROM telemetry_events WHERE conversation_id = ?`, [
         id,
       ]);

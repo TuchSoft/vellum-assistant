@@ -1,7 +1,6 @@
 import { and, sql } from "drizzle-orm";
 
-import { getMemoryDb } from "../../../../persistence/db-connection.js";
-import { memoryGraphNodes } from "../../../../persistence/schema/index.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { parsePlaybookStatement } from "../../../../playbooks/types.js";
 import type {
   ToolContext,
@@ -18,27 +17,24 @@ export async function executePlaybookList(
     typeof input.category === "string" ? input.category : null;
 
   try {
-    const db = getMemoryDb();
-    if (!db) {
-      return { content: "No playbooks found.", isError: false };
-    }
+    const db = requireMainDb();
+    const nodes = db.schema.memoryGraphNodes;
 
-    const rows = db
+    const rows = await db.orm
       .select({
-        id: memoryGraphNodes.id,
-        content: memoryGraphNodes.content,
-        significance: memoryGraphNodes.significance,
-        lastAccessed: memoryGraphNodes.lastAccessed,
+        id: nodes.id,
+        content: nodes.content,
+        significance: nodes.significance,
+        lastAccessed: nodes.lastAccessed,
       })
-      .from(memoryGraphNodes)
+      .from(nodes)
       .where(
         and(
-          sql`${memoryGraphNodes.sourceConversations} LIKE '%playbook:%'`,
-          sql`${memoryGraphNodes.fidelity} != 'gone'`,
+          sql`${nodes.sourceConversations} LIKE '%playbook:%'`,
+          sql`${nodes.fidelity} != 'gone'`,
         ),
       )
-      .orderBy(sql`${memoryGraphNodes.significance} DESC`)
-      .all();
+      .orderBy(sql`${nodes.significance} DESC`);
 
     if (rows.length === 0) {
       return { content: "No playbooks found.", isError: false };

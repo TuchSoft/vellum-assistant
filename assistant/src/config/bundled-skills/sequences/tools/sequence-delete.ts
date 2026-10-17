@@ -21,12 +21,12 @@ export async function run(
   throwIfCancelled(context);
 
   try {
-    const seq = getSequence(id);
+    const seq = await getSequence(id);
     if (!seq) {
       return err(`Sequence not found: ${id}`);
     }
 
-    deleteSequence(id);
+    await deleteSequence(id);
     return ok(
       `Sequence "${seq.name}" deleted. All active enrollments have been cancelled.`,
     );

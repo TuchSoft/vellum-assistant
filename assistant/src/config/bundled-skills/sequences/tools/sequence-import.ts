@@ -30,7 +30,7 @@ export async function run(
   }
 
   try {
-    const seq = getSequence(sequenceId);
+    const seq = await getSequence(sequenceId);
     if (!seq) {
       return err(`Sequence not found: ${sequenceId}`);
     }
@@ -75,7 +75,7 @@ export async function run(
     }
 
     // Enroll mode
-    const result = bulkEnroll(sequenceId, parsed.contacts);
+    const result = await bulkEnroll(sequenceId, parsed.contacts);
 
     const lines = [
       `Enrollment complete for "${seq.name}":`,

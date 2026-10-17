@@ -317,7 +317,7 @@ export async function runWatchersOnce(
       // Check new events for replies to active sequence enrollments
       if (newPayloads.length > 0) {
         try {
-          const replyMatches = checkForSequenceReplies(newPayloads);
+          const replyMatches = await checkForSequenceReplies(newPayloads);
           for (const match of replyMatches) {
             notify({
               title: `Sequence reply: ${match.sequenceName}`,

@@ -43,7 +43,7 @@ export async function run(
       requireApproval: (s.require_approval as boolean) ?? false,
     }));
 
-    const sequence = createSequence({
+    const sequence = await createSequence({
       name,
       channel,
       steps,

@@ -5,9 +5,10 @@
  * body is rejected with a `BadRequestError` (→ 400) without any DB access. The
  * schemas are `.strict()`, so unknown keys are rejected too.
  *
- * These handlers are synchronous, so `parseBody` throws during the call — hence
- * `expect(() => …).toThrow` rather than the `.rejects` form. The route adapters
- * catch synchronous throws the same way they catch rejected promises.
+ * The database-touching handlers are async now, so `parseBody` throws during
+ * the promise the caller must await, hence `await expect(…).rejects` rather
+ * than the synchronous `.toThrow` form. The route adapters catch rejected
+ * promises the same way they catch synchronous throws.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -24,18 +25,18 @@ const routeFor = (operationId: string) => {
 };
 
 describe("sequence route body validation", () => {
-  test("sequence_get rejects a missing id", () => {
-    expect(() =>
+  test("sequence_get rejects a missing id", async () => {
+    await expect(
       routeFor("sequence_get").handler({ body: {} as Record<string, unknown> }),
-    ).toThrow(BadRequestError);
+    ).rejects.toThrow(BadRequestError);
   });
 
-  test("sequence_list rejects a status outside the enum", () => {
-    expect(() =>
+  test("sequence_list rejects a status outside the enum", async () => {
+    await expect(
       routeFor("sequence_list").handler({
         body: { status: "bogus" } as Record<string, unknown>,
       }),
-    ).toThrow(BadRequestError);
+    ).rejects.toThrow(BadRequestError);
   });
 
   test("sequence_guardrails_set rejects a body missing value", () => {
@@ -46,11 +47,11 @@ describe("sequence route body validation", () => {
     ).toThrow(BadRequestError);
   });
 
-  test("the strict schema rejects unknown keys", () => {
-    expect(() =>
+  test("the strict schema rejects unknown keys", async () => {
+    await expect(
       routeFor("sequence_get").handler({
         body: { id: "seq_1", extra: "nope" } as Record<string, unknown>,
       }),
-    ).toThrow(BadRequestError);
+    ).rejects.toThrow(BadRequestError);
   });
 });

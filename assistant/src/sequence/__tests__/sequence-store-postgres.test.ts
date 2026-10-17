@@ -1,8 +1,26 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+/**
+ * Conformance suite for the `sequence` store on Postgres.
+ *
+ * The store reads and writes only `sequences` / `sequence_enrollments`, which
+ * live on the `main` slot, so the async `AsyncDbFacade` is what lets the
+ * store run unchanged. The suite runs against the process's Postgres test
+ * schema, bootstrapped with the generated baseline by
+ * `src/__tests__/pg-test-db.ts`.
+ *
+ * Gated on `VELLUM_PG_TEST_URL` (throwaway instance); with it unset the suite
+ * skips.
+ */
 
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { sequenceEnrollments, sequences } from "../persistence/schema/index.js";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+
+// Keep the suite hermetic: `claimDueEnrollments` consults the quiescence
+// lease; mock it open so claims always run.
+mock.module("../../persistence/lifecycle-quiesce.js", () => ({
+  isLifecycleQuiesced: async () => false,
+}));
+
+import { describePg } from "../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import {
   advanceEnrollment,
   claimDueEnrollments,
@@ -17,15 +35,14 @@ import {
   listEnrollments,
   listSequences,
   updateSequence,
-} from "../sequence/store.js";
-import type { SequenceStep } from "../sequence/types.js";
+} from "../store.js";
+import type { SequenceStep } from "../types.js";
 
-await initializeDb();
-
-function clearTables() {
-  const db = getDb();
-  db.delete(sequenceEnrollments).run();
-  db.delete(sequences).run();
+/** Delete the slice's rows through the facade. */
+async function clearTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM sequence_enrollments");
+  await db.run("DELETE FROM sequences");
 }
 
 const testSteps: SequenceStep[] = [
@@ -55,16 +72,16 @@ const testSteps: SequenceStep[] = [
   },
 ];
 
-describe("sequence-store", () => {
-  beforeEach(() => {
-    clearTables();
+describePg("sequence-store (postgres)", () => {
+  beforeEach(async () => {
+    await clearTables();
   });
 
   // ── Sequence CRUD ───────────────────────────────────────────────
 
   describe("createSequence", () => {
     test("creates a sequence with correct fields", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Investor outreach",
         description: "Reach out to investors",
         channel: "gmail",
@@ -82,7 +99,7 @@ describe("sequence-store", () => {
     });
 
     test("defaults exitOnReply to true", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
@@ -91,7 +108,7 @@ describe("sequence-store", () => {
     });
 
     test("allows overriding exitOnReply", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
@@ -103,51 +120,55 @@ describe("sequence-store", () => {
 
   describe("getSequence", () => {
     test("returns sequence by id", async () => {
-      const created = createSequence({
+      const created = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      const fetched = getSequence(created.id);
+      const fetched = await getSequence(created.id);
       expect(fetched).toBeDefined();
       expect(fetched!.name).toBe("Test");
       expect(fetched!.steps).toHaveLength(3);
     });
 
     test("returns undefined for non-existent id", async () => {
-      expect(getSequence("non-existent")).toBeUndefined();
+      expect(await getSequence("non-existent")).toBeUndefined();
     });
   });
 
   describe("listSequences", () => {
     test("lists all sequences", async () => {
-      createSequence({ name: "A", channel: "gmail", steps: testSteps });
-      createSequence({ name: "B", channel: "email", steps: testSteps });
-      expect(listSequences()).toHaveLength(2);
+      await createSequence({ name: "A", channel: "gmail", steps: testSteps });
+      await createSequence({ name: "B", channel: "email", steps: testSteps });
+      expect(await listSequences()).toHaveLength(2);
     });
 
     test("filters by status", async () => {
-      createSequence({ name: "Active", channel: "gmail", steps: testSteps });
-      const paused = createSequence({
+      await createSequence({
+        name: "Active",
+        channel: "gmail",
+        steps: testSteps,
+      });
+      const paused = await createSequence({
         name: "Paused",
         channel: "gmail",
         steps: testSteps,
       });
-      updateSequence(paused.id, { status: "paused" });
+      await updateSequence(paused.id, { status: "paused" });
 
-      expect(listSequences({ status: "active" })).toHaveLength(1);
-      expect(listSequences({ status: "paused" })).toHaveLength(1);
+      expect(await listSequences({ status: "active" })).toHaveLength(1);
+      expect(await listSequences({ status: "paused" })).toHaveLength(1);
     });
   });
 
   describe("updateSequence", () => {
     test("updates name and description", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Old",
         channel: "gmail",
         steps: testSteps,
       });
-      const updated = updateSequence(seq.id, {
+      const updated = await updateSequence(seq.id, {
         name: "New",
         description: "Updated",
       });
@@ -156,42 +177,48 @@ describe("sequence-store", () => {
     });
 
     test("updates status", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      const updated = updateSequence(seq.id, { status: "paused" });
+      const updated = await updateSequence(seq.id, { status: "paused" });
       expect(updated!.status).toBe("paused");
     });
 
     test("updates steps", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
       const newSteps = [testSteps[0]];
-      const updated = updateSequence(seq.id, { steps: newSteps });
+      const updated = await updateSequence(seq.id, { steps: newSteps });
       expect(updated!.steps).toHaveLength(1);
     });
   });
 
   describe("deleteSequence", () => {
     test("deletes sequence and cancels active enrollments", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      enrollContact({ sequenceId: seq.id, contactEmail: "a@test.com" });
-      enrollContact({ sequenceId: seq.id, contactEmail: "b@test.com" });
+      await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "a@example.com",
+      });
+      await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "b@example.com",
+      });
 
-      deleteSequence(seq.id);
+      await deleteSequence(seq.id);
 
-      expect(getSequence(seq.id)).toBeUndefined();
+      expect(await getSequence(seq.id)).toBeUndefined();
       // Enrollments should have been cascade-deleted
-      expect(listEnrollments({ sequenceId: seq.id })).toHaveLength(0);
+      expect(await listEnrollments({ sequenceId: seq.id })).toHaveLength(0);
     });
   });
 
@@ -199,12 +226,12 @@ describe("sequence-store", () => {
 
   describe("enrollContact", () => {
     test("creates enrollment with correct fields", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      const enrollment = enrollContact({
+      const enrollment = await enrollContact({
         sequenceId: seq.id,
         contactEmail: "investor@example.com",
         contactName: "Jane Doe",
@@ -222,15 +249,15 @@ describe("sequence-store", () => {
     });
 
     test("computes nextStepAt from first step delay", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
       const before = Date.now();
-      const enrollment = enrollContact({
+      const enrollment = await enrollContact({
         sequenceId: seq.id,
-        contactEmail: "a@test.com",
+        contactEmail: "a@example.com",
       });
       const after = Date.now();
 
@@ -240,70 +267,81 @@ describe("sequence-store", () => {
     });
 
     test("throws for non-existent sequence", async () => {
-      expect(() =>
-        enrollContact({ sequenceId: "fake", contactEmail: "a@test.com" }),
-      ).toThrow("Sequence not found");
+      await expect(
+        enrollContact({ sequenceId: "fake", contactEmail: "a@example.com" }),
+      ).rejects.toThrow("Sequence not found");
     });
 
     test("throws for sequence with no steps", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Empty",
         channel: "gmail",
         steps: [],
       });
       // Steps are empty but stored as []
-      expect(() =>
-        enrollContact({ sequenceId: seq.id, contactEmail: "a@test.com" }),
-      ).toThrow("Sequence has no steps");
+      await expect(
+        enrollContact({ sequenceId: seq.id, contactEmail: "a@example.com" }),
+      ).rejects.toThrow("Sequence has no steps");
     });
   });
 
   describe("listEnrollments", () => {
     test("filters by sequenceId", async () => {
-      const s1 = createSequence({
+      const s1 = await createSequence({
         name: "S1",
         channel: "gmail",
         steps: testSteps,
       });
-      const s2 = createSequence({
+      const s2 = await createSequence({
         name: "S2",
         channel: "gmail",
         steps: testSteps,
       });
-      enrollContact({ sequenceId: s1.id, contactEmail: "a@test.com" });
-      enrollContact({ sequenceId: s2.id, contactEmail: "b@test.com" });
+      await enrollContact({ sequenceId: s1.id, contactEmail: "a@example.com" });
+      await enrollContact({ sequenceId: s2.id, contactEmail: "b@example.com" });
 
-      expect(listEnrollments({ sequenceId: s1.id })).toHaveLength(1);
-      expect(listEnrollments({ sequenceId: s2.id })).toHaveLength(1);
+      expect(await listEnrollments({ sequenceId: s1.id })).toHaveLength(1);
+      expect(await listEnrollments({ sequenceId: s2.id })).toHaveLength(1);
     });
 
     test("filters by status", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      const e1 = enrollContact({
+      const e1 = await enrollContact({
         sequenceId: seq.id,
-        contactEmail: "a@test.com",
+        contactEmail: "a@example.com",
       });
-      enrollContact({ sequenceId: seq.id, contactEmail: "b@test.com" });
-      exitEnrollment(e1.id, "completed");
+      await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "b@example.com",
+      });
+      await exitEnrollment(e1.id, "completed");
 
-      expect(listEnrollments({ status: "active" })).toHaveLength(1);
-      expect(listEnrollments({ status: "completed" })).toHaveLength(1);
+      expect(await listEnrollments({ status: "active" })).toHaveLength(1);
+      expect(await listEnrollments({ status: "completed" })).toHaveLength(1);
     });
 
     test("filters by contactEmail", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      enrollContact({ sequenceId: seq.id, contactEmail: "a@test.com" });
-      enrollContact({ sequenceId: seq.id, contactEmail: "b@test.com" });
+      await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "a@example.com",
+      });
+      await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "b@example.com",
+      });
 
-      expect(listEnrollments({ contactEmail: "a@test.com" })).toHaveLength(1);
+      expect(
+        await listEnrollments({ contactEmail: "a@example.com" }),
+      ).toHaveLength(1);
     });
   });
 
@@ -311,17 +349,20 @@ describe("sequence-store", () => {
 
   describe("claimDueEnrollments", () => {
     test("claims enrollments with nextStepAt <= now", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      enrollContact({ sequenceId: seq.id, contactEmail: "a@test.com" });
+      await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "a@example.com",
+      });
 
       // The first step has delay 0, so nextStepAt is ~now
       const claimed = await claimDueEnrollments(Date.now() + 1000);
       expect(claimed).toHaveLength(1);
-      expect(claimed[0].contactEmail).toBe("a@test.com");
+      expect(claimed[0].contactEmail).toBe("a@example.com");
     });
 
     test("does not claim enrollments not yet due", async () => {
@@ -335,24 +376,30 @@ describe("sequence-store", () => {
           requireApproval: false,
         },
       ];
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Future",
         channel: "gmail",
         steps: futureSteps,
       });
-      enrollContact({ sequenceId: seq.id, contactEmail: "a@test.com" });
+      await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "a@example.com",
+      });
 
       const claimed = await claimDueEnrollments(Date.now());
       expect(claimed).toHaveLength(0);
     });
 
     test("optimistic locking prevents double-claiming", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      enrollContact({ sequenceId: seq.id, contactEmail: "a@test.com" });
+      await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "a@example.com",
+      });
 
       const now = Date.now() + 1000;
       const first = await claimDueEnrollments(now);
@@ -363,30 +410,39 @@ describe("sequence-store", () => {
     });
 
     test("respects limit parameter", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      enrollContact({ sequenceId: seq.id, contactEmail: "a@test.com" });
-      enrollContact({ sequenceId: seq.id, contactEmail: "b@test.com" });
-      enrollContact({ sequenceId: seq.id, contactEmail: "c@test.com" });
+      await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "a@example.com",
+      });
+      await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "b@example.com",
+      });
+      await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "c@example.com",
+      });
 
       const claimed = await claimDueEnrollments(Date.now() + 1000, 2);
       expect(claimed).toHaveLength(2);
     });
 
     test("does not claim paused enrollments", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      const enrollment = enrollContact({
+      const enrollment = await enrollContact({
         sequenceId: seq.id,
-        contactEmail: "a@test.com",
+        contactEmail: "a@example.com",
       });
-      exitEnrollment(enrollment.id, "cancelled");
+      await exitEnrollment(enrollment.id, "cancelled");
 
       const claimed = await claimDueEnrollments(Date.now() + 1000);
       expect(claimed).toHaveLength(0);
@@ -395,17 +451,17 @@ describe("sequence-store", () => {
 
   describe("advanceEnrollment", () => {
     test("increments currentStep", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      const enrollment = enrollContact({
+      const enrollment = await enrollContact({
         sequenceId: seq.id,
-        contactEmail: "a@test.com",
+        contactEmail: "a@example.com",
       });
 
-      const advanced = advanceEnrollment(
+      const advanced = await advanceEnrollment(
         enrollment.id,
         "thread-123",
         Date.now() + 86400000,
@@ -415,45 +471,45 @@ describe("sequence-store", () => {
     });
 
     test("returns undefined for non-existent id", async () => {
-      expect(advanceEnrollment("fake")).toBeUndefined();
+      expect(await advanceEnrollment("fake")).toBeUndefined();
     });
   });
 
   describe("exitEnrollment", () => {
     test("sets status and clears nextStepAt", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      const enrollment = enrollContact({
+      const enrollment = await enrollContact({
         sequenceId: seq.id,
-        contactEmail: "a@test.com",
+        contactEmail: "a@example.com",
       });
 
-      exitEnrollment(enrollment.id, "replied");
+      await exitEnrollment(enrollment.id, "replied");
 
-      const updated = getEnrollment(enrollment.id);
+      const updated = await getEnrollment(enrollment.id);
       expect(updated!.status).toBe("replied");
       expect(updated!.nextStepAt).toBeNull();
     });
 
     test.each(["completed", "replied", "cancelled", "failed"] as const)(
       "supports exit reason: %s",
-      (reason) => {
-        const seq = createSequence({
+      async (reason) => {
+        const seq = await createSequence({
           name: "Test",
           channel: "gmail",
           steps: testSteps,
         });
-        const enrollment = enrollContact({
+        const enrollment = await enrollContact({
           sequenceId: seq.id,
-          contactEmail: `${reason}@test.com`,
+          contactEmail: `${reason}@example.com`,
         });
 
-        exitEnrollment(enrollment.id, reason);
+        await exitEnrollment(enrollment.id, reason);
 
-        const updated = getEnrollment(enrollment.id);
+        const updated = await getEnrollment(enrollment.id);
         expect(updated!.status).toBe(reason);
       },
     );
@@ -463,43 +519,54 @@ describe("sequence-store", () => {
 
   describe("findActiveEnrollmentsByEmail", () => {
     test("finds active enrollments for an email", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      enrollContact({ sequenceId: seq.id, contactEmail: "a@test.com" });
-      const e2 = enrollContact({
+      await enrollContact({
         sequenceId: seq.id,
-        contactEmail: "a@test.com",
+        contactEmail: "a@example.com",
       });
-      exitEnrollment(e2.id, "completed");
+      const e2 = await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "a@example.com",
+      });
+      await exitEnrollment(e2.id, "completed");
 
-      const active = findActiveEnrollmentsByEmail("a@test.com");
+      const active = await findActiveEnrollmentsByEmail("a@example.com");
       expect(active).toHaveLength(1);
     });
 
     test("returns empty for unknown email", async () => {
-      expect(findActiveEnrollmentsByEmail("unknown@test.com")).toHaveLength(0);
+      expect(
+        await findActiveEnrollmentsByEmail("unknown@example.com"),
+      ).toHaveLength(0);
     });
   });
 
   describe("countActiveEnrollments", () => {
     test("counts only active enrollments for a sequence", async () => {
-      const seq = createSequence({
+      const seq = await createSequence({
         name: "Test",
         channel: "gmail",
         steps: testSteps,
       });
-      enrollContact({ sequenceId: seq.id, contactEmail: "a@test.com" });
-      enrollContact({ sequenceId: seq.id, contactEmail: "b@test.com" });
-      const e3 = enrollContact({
+      await enrollContact({
         sequenceId: seq.id,
-        contactEmail: "c@test.com",
+        contactEmail: "a@example.com",
       });
-      exitEnrollment(e3.id, "completed");
+      await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "b@example.com",
+      });
+      const e3 = await enrollContact({
+        sequenceId: seq.id,
+        contactEmail: "c@example.com",
+      });
+      await exitEnrollment(e3.id, "completed");
 
-      expect(countActiveEnrollments(seq.id)).toBe(2);
+      expect(await countActiveEnrollments(seq.id)).toBe(2);
     });
   });
 });

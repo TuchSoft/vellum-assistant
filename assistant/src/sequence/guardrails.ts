@@ -1,5 +1,5 @@
 /**
- * Sequence guardrails — safety checks that run before each send.
+ * Sequence guardrails; safety checks that run before each send.
  *
  * Guardrails cause a send to be deferred (rescheduled for the next tick),
  * not permanently failed. The engine logs the reason so the assistant
@@ -108,8 +108,10 @@ function checkMinDelay(delaySec: number): GuardrailResult {
   return { ok: true };
 }
 
-export function checkEnrollmentCap(sequenceId: string): GuardrailResult {
-  const count = countActiveEnrollments(sequenceId);
+export async function checkEnrollmentCap(
+  sequenceId: string,
+): Promise<GuardrailResult> {
+  const count = await countActiveEnrollments(sequenceId);
   if (count >= config.maxActiveEnrollments) {
     return {
       ok: false,
@@ -120,16 +122,16 @@ export function checkEnrollmentCap(sequenceId: string): GuardrailResult {
   return { ok: true };
 }
 
-export function checkDuplicateEnrollment(
+export async function checkDuplicateEnrollment(
   sequenceId: string,
   email: string,
   excludeEnrollmentId?: string,
-): GuardrailResult {
+): Promise<GuardrailResult> {
   if (!config.duplicateEnrollmentCheck) {
     return { ok: true };
   }
 
-  const existing = listEnrollments({
+  const existing = await listEnrollments({
     sequenceId,
     contactEmail: email,
     status: "active",
@@ -147,16 +149,16 @@ export function checkDuplicateEnrollment(
   return { ok: true };
 }
 
-export function checkCooldown(
+export async function checkCooldown(
   sequenceId: string,
   email: string,
-): GuardrailResult {
+): Promise<GuardrailResult> {
   if (config.cooldownPeriodMs <= 0) {
     return { ok: true };
   }
 
   const cutoff = Date.now() - config.cooldownPeriodMs;
-  const past = listEnrollments({ sequenceId, contactEmail: email });
+  const past = await listEnrollments({ sequenceId, contactEmail: email });
   const recent = past.filter(
     (e) =>
       (e.status === "completed" || e.status === "replied") &&
@@ -180,12 +182,12 @@ export function checkCooldown(
  * Run all pre-send guardrails for an enrollment.
  * Returns the first failing check, or { ok: true } if all pass.
  */
-export function checkAllPreSend(
+export async function checkAllPreSend(
   sequenceId: string,
   enrollment: SequenceEnrollment,
   stepDelaySec: number,
-): GuardrailResult {
-  const checks: GuardrailResult[] = [
+): Promise<GuardrailResult> {
+  const checks: GuardrailResult[] = await Promise.all([
     checkDailyCap(),
     checkHourlyRate(sequenceId),
     checkMinDelay(stepDelaySec),
@@ -196,7 +198,7 @@ export function checkAllPreSend(
       enrollment.id,
     ),
     checkCooldown(sequenceId, enrollment.contactEmail),
-  ];
+  ]);
 
   for (const check of checks) {
     if (!check.ok) {

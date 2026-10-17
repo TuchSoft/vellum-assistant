@@ -1,10 +1,10 @@
 /**
- * Reply matcher — detects incoming messages that are replies to active
+ * Reply matcher; detects incoming messages that are replies to active
  * sequence enrollments and auto-exits them.
  *
  * Called from the watcher engine after new events are stored.
  * Matches by sender email against active enrollment contact_email
- * AND conversationId — both must match for a reply to trigger an exit.
+ * AND conversationId. Both must match for a reply to trigger an exit.
  */
 
 import { getLogger } from "../util/logger.js";
@@ -65,9 +65,9 @@ export interface ReplyMatchResult {
  * Check a batch of watcher event payloads for replies to active
  * sequence enrollments. Returns matched enrollments that were exited.
  */
-export function checkForSequenceReplies(
+export async function checkForSequenceReplies(
   payloads: WatcherEventPayload[],
-): ReplyMatchResult[] {
+): Promise<ReplyMatchResult[]> {
   const results: ReplyMatchResult[] = [];
 
   for (const payload of payloads) {
@@ -76,13 +76,13 @@ export function checkForSequenceReplies(
       continue;
     }
 
-    const enrollments = findActiveEnrollmentsByEmail(senderEmail);
+    const enrollments = await findActiveEnrollmentsByEmail(senderEmail);
     if (enrollments.length === 0) {
       continue;
     }
 
     for (const enrollment of enrollments) {
-      const seq = getSequence(enrollment.sequenceId);
+      const seq = await getSequence(enrollment.sequenceId);
       if (!seq || !seq.exitOnReply) {
         continue;
       }
@@ -90,7 +90,7 @@ export function checkForSequenceReplies(
       // Only match when the enrollment has a conversation ID and it matches
       // the incoming payload's thread ID. Enrollments that haven't sent their
       // first email yet (conversationId is null) are not eligible for
-      // reply-based exit — otherwise any unrelated inbound email from the
+      // reply-based exit, otherwise any unrelated inbound email from the
       // contact would prematurely kill the enrollment.
       // Note: payload.threadId is the external provider's thread identifier
       // (e.g. Gmail API thread ID) which maps to enrollment.conversationId.
@@ -112,7 +112,7 @@ export function checkForSequenceReplies(
           conversationId: payload.threadId,
         },
       );
-      exitEnrollment(enrollment.id, "replied");
+      await exitEnrollment(enrollment.id, "replied");
 
       log.info(
         {

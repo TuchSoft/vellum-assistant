@@ -1,5 +1,5 @@
 /**
- * Sequence analytics — tracks send events and computes metrics.
+ * Sequence analytics; tracks send events and computes metrics.
  *
  * Uses an in-memory event log (will be backed by sequence_events table
  * when the analytics migration is added). Provides per-sequence and
@@ -106,9 +106,9 @@ interface DashboardData {
   recentEvents: SequenceEvent[];
 }
 
-function computeSequenceMetrics(seq: Sequence): SequenceMetrics {
-  const enrollments = listEnrollments({ sequenceId: seq.id });
-  const active = countActiveEnrollments(seq.id);
+async function computeSequenceMetrics(seq: Sequence): Promise<SequenceMetrics> {
+  const enrollments = await listEnrollments({ sequenceId: seq.id });
+  const active = await countActiveEnrollments(seq.id);
 
   const statusCounts = enrollments.reduce(
     (acc, e) => {
@@ -181,15 +181,18 @@ function computeSequenceMetrics(seq: Sequence): SequenceMetrics {
   };
 }
 
-export function getStepMetrics(sequenceId: string): StepMetrics[] {
+export async function getStepMetrics(
+  sequenceId: string,
+): Promise<StepMetrics[]> {
   const seq =
-    listSequences({ status: "active" }).find((s) => s.id === sequenceId) ??
-    listSequences().find((s) => s.id === sequenceId);
+    (await listSequences({ status: "active" })).find(
+      (s) => s.id === sequenceId,
+    ) ?? (await listSequences()).find((s) => s.id === sequenceId);
   if (!seq) {
     return [];
   }
 
-  const enrollments = listEnrollments({ sequenceId });
+  const enrollments = await listEnrollments({ sequenceId });
   const sendEvents = eventLog.filter(
     (e) => e.sequenceId === sequenceId && e.eventType === "send",
   );
@@ -215,11 +218,11 @@ export function getStepMetrics(sequenceId: string): StepMetrics[] {
   });
 }
 
-export function getDashboardData(): DashboardData {
-  const seqs = listSequences();
+export async function getDashboardData(): Promise<DashboardData> {
+  const seqs = await listSequences();
   const activeSeqs = seqs.filter((s) => s.status === "active");
 
-  const sequenceMetrics = seqs.map(computeSequenceMetrics);
+  const sequenceMetrics = await Promise.all(seqs.map(computeSequenceMetrics));
 
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);

@@ -19,13 +19,13 @@ export async function run(
   }
 
   try {
-    const seq = getSequence(id);
+    const seq = await getSequence(id);
     if (!seq) {
       return err(`Sequence not found: ${id}`);
     }
 
-    const activeCount = countActiveEnrollments(id);
-    const allEnrollments = listEnrollments({ sequenceId: id });
+    const activeCount = await countActiveEnrollments(id);
+    const allEnrollments = await listEnrollments({ sequenceId: id });
     const statusCounts = allEnrollments.reduce(
       (acc, e) => {
         acc[e.status] = (acc[e.status] || 0) + 1;

@@ -14,7 +14,7 @@ export async function run(
   const status = input.status as EnrollmentStatus | undefined;
 
   try {
-    const enrollments = listEnrollments({ sequenceId, status });
+    const enrollments = await listEnrollments({ sequenceId, status });
     if (enrollments.length === 0) {
       return ok("No enrollments found.");
     }

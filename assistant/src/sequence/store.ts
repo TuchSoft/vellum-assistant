@@ -1,19 +1,18 @@
 /**
- * SQLite-backed sequence store.
+ * Postgres-backed sequence store.
  *
  * Follows the same patterns as schedule-store.ts:
  * - Flat exported functions (no class)
- * - getDb() called inside each function
+ * - requireMainDb() called inside each function
  * - Optimistic locking for claimDueEnrollments
  */
 
 import { and, asc, eq, lte, sql } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
-import { getDb } from "../persistence/db-connection.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { isLifecycleQuiesced } from "../persistence/lifecycle-quiesce.js";
-import { rawChanges } from "../persistence/raw-query.js";
-import { sequenceEnrollments, sequences } from "../persistence/schema/index.js";
 import { AssistantError, ErrorCode } from "../util/errors.js";
 import {
   cast,
@@ -33,10 +32,11 @@ import type {
   UpdateSequenceInput,
 } from "./types.js";
 
-const parseSequenceRow = createRowMapper<
-  typeof sequences.$inferSelect,
-  Sequence
->({
+type SequenceRow = SchemaTables["sequences"]["$inferSelect"];
+type SequenceEnrollmentRow =
+  SchemaTables["sequenceEnrollments"]["$inferSelect"];
+
+const parseSequenceRow = createRowMapper<SequenceRow, Sequence>({
   id: "id",
   name: "name",
   description: "description",
@@ -49,7 +49,7 @@ const parseSequenceRow = createRowMapper<
 });
 
 const parseEnrollmentRow = createRowMapper<
-  typeof sequenceEnrollments.$inferSelect,
+  SequenceEnrollmentRow,
   SequenceEnrollment
 >({
   id: "id",
@@ -68,8 +68,11 @@ const parseEnrollmentRow = createRowMapper<
   updatedAt: "updatedAt",
 });
 
-export function createSequence(input: CreateSequenceInput): Sequence {
-  const db = getDb();
+export async function createSequence(
+  input: CreateSequenceInput,
+): Promise<Sequence> {
+  const db = requireMainDb();
+  const sequences = db.schema.sequences;
   const now = Date.now();
   const row = {
     id: uuid(),
@@ -82,18 +85,25 @@ export function createSequence(input: CreateSequenceInput): Sequence {
     createdAt: now,
     updatedAt: now,
   };
-  db.insert(sequences).values(row).run();
+  await db.orm.insert(sequences).values(row);
   return parseSequenceRow(row);
 }
 
-export function getSequence(id: string): Sequence | undefined {
-  const db = getDb();
-  const row = db.select().from(sequences).where(eq(sequences.id, id)).get();
-  return row ? parseSequenceRow(row) : undefined;
+export async function getSequence(id: string): Promise<Sequence | undefined> {
+  const db = requireMainDb();
+  const sequences = db.schema.sequences;
+  const rows = await db.orm
+    .select()
+    .from(sequences)
+    .where(eq(sequences.id, id));
+  return rows[0] ? parseSequenceRow(rows[0]) : undefined;
 }
 
-export function listSequences(filter?: ListSequencesFilter): Sequence[] {
-  const db = getDb();
+export async function listSequences(
+  filter?: ListSequencesFilter,
+): Promise<Sequence[]> {
+  const db = requireMainDb();
+  const sequences = db.schema.sequences;
   const conditions = [];
   if (filter?.status) {
     conditions.push(eq(sequences.status, filter.status));
@@ -101,63 +111,68 @@ export function listSequences(filter?: ListSequencesFilter): Sequence[] {
 
   const rows =
     conditions.length > 0
-      ? db
+      ? await db.orm
           .select()
           .from(sequences)
           .where(and(...conditions))
-          .all()
-      : db.select().from(sequences).all();
+      : await db.orm.select().from(sequences);
   return rows.map(parseSequenceRow);
 }
 
-export function updateSequence(
+export async function updateSequence(
   id: string,
   patch: UpdateSequenceInput,
-): Sequence | undefined {
-  const db = getDb();
+): Promise<Sequence | undefined> {
+  const db = requireMainDb();
+  const sequences = db.schema.sequences;
   const now = Date.now();
-  const updates: Record<string, unknown> = { updatedAt: now };
+  const set: Partial<typeof sequences.$inferInsert> = { updatedAt: now };
   if (patch.name !== undefined) {
-    updates.name = patch.name;
+    set.name = patch.name;
   }
   if (patch.description !== undefined) {
-    updates.description = patch.description;
+    set.description = patch.description;
   }
   if (patch.steps !== undefined) {
-    updates.steps = JSON.stringify(patch.steps);
+    set.steps = JSON.stringify(patch.steps);
   }
   if (patch.exitOnReply !== undefined) {
-    updates.exitOnReply = patch.exitOnReply;
+    set.exitOnReply = patch.exitOnReply;
   }
   if (patch.status !== undefined) {
-    updates.status = patch.status;
+    set.status = patch.status;
   }
 
-  db.update(sequences).set(updates).where(eq(sequences.id, id)).run();
-  return getSequence(id);
+  await db.orm.update(sequences).set(set).where(eq(sequences.id, id));
+  return await getSequence(id);
 }
 
-export function deleteSequence(id: string): void {
-  const db = getDb();
+export async function deleteSequence(id: string): Promise<void> {
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
+  const sequences = db.schema.sequences;
   // Cancel all active enrollments first (cascade handles FK, but we want explicit status update)
-  db.update(sequenceEnrollments)
+  await db.orm
+    .update(sequenceEnrollments)
     .set({ status: "cancelled", updatedAt: Date.now() })
     .where(
       and(
         eq(sequenceEnrollments.sequenceId, id),
         eq(sequenceEnrollments.status, "active"),
       ),
-    )
-    .run();
-  db.delete(sequences).where(eq(sequences.id, id)).run();
+    );
+  await db.orm.delete(sequences).where(eq(sequences.id, id));
 }
 
-export function enrollContact(input: EnrollContactInput): SequenceEnrollment {
-  const db = getDb();
+export async function enrollContact(
+  input: EnrollContactInput,
+): Promise<SequenceEnrollment> {
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
   const now = Date.now();
 
   // Look up the sequence to compute initial nextStepAt
-  const seq = getSequence(input.sequenceId);
+  const seq = await getSequence(input.sequenceId);
   if (!seq) {
     throw new AssistantError(
       `Sequence not found: ${input.sequenceId}`,
@@ -184,24 +199,27 @@ export function enrollContact(input: EnrollContactInput): SequenceEnrollment {
     createdAt: now,
     updatedAt: now,
   };
-  db.insert(sequenceEnrollments).values(row).run();
+  await db.orm.insert(sequenceEnrollments).values(row);
   return parseEnrollmentRow(row);
 }
 
-export function getEnrollment(id: string): SequenceEnrollment | undefined {
-  const db = getDb();
-  const row = db
+export async function getEnrollment(
+  id: string,
+): Promise<SequenceEnrollment | undefined> {
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
+  const rows = await db.orm
     .select()
     .from(sequenceEnrollments)
-    .where(eq(sequenceEnrollments.id, id))
-    .get();
-  return row ? parseEnrollmentRow(row) : undefined;
+    .where(eq(sequenceEnrollments.id, id));
+  return rows[0] ? parseEnrollmentRow(rows[0]) : undefined;
 }
 
-export function listEnrollments(
+export async function listEnrollments(
   filter?: ListEnrollmentsFilter,
-): SequenceEnrollment[] {
-  const db = getDb();
+): Promise<SequenceEnrollment[]> {
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
   const conditions = [];
   if (filter?.sequenceId) {
     conditions.push(eq(sequenceEnrollments.sequenceId, filter.sequenceId));
@@ -215,12 +233,11 @@ export function listEnrollments(
 
   const rows =
     conditions.length > 0
-      ? db
+      ? await db.orm
           .select()
           .from(sequenceEnrollments)
           .where(and(...conditions))
-          .all()
-      : db.select().from(sequenceEnrollments).all();
+      : await db.orm.select().from(sequenceEnrollments);
   return rows.map(parseEnrollmentRow);
 }
 
@@ -229,22 +246,23 @@ export function listEnrollments(
  *
  * Uses the same optimistic locking pattern as claimDueSchedules:
  * 1. Query candidates (status=active, nextStepAt <= now)
- * 2. For each, UPDATE with WHERE status='active' — only succeeds if not already claimed
- * 3. Check rawChanges() to confirm the lock was acquired
+ * 2. For each, UPDATE with WHERE status='active'  (only succeeds if not already claimed)
+ * 3. Check the returning rows to confirm the lock was acquired
  */
 export async function claimDueEnrollments(
   now: number,
   limit = 10,
 ): Promise<SequenceEnrollment[]> {
-  // Drain gate: while a quiesce lease is active, claim nothing — a sequence
+  // Drain gate: while a quiesce lease is active, claim nothing; a sequence
   // step's outreach starts before any row the drain snapshot can see.
   // Fail-open via the lease read.
   if (await isLifecycleQuiesced()) {
     return [];
   }
 
-  const db = getDb();
-  const candidates = db
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
+  const candidates = await db.orm
     .select()
     .from(sequenceEnrollments)
     .where(
@@ -254,8 +272,7 @@ export async function claimDueEnrollments(
       ),
     )
     .orderBy(asc(sequenceEnrollments.nextStepAt))
-    .limit(limit)
-    .all();
+    .limit(limit);
 
   const claimed: SequenceEnrollment[] = [];
   for (const row of candidates) {
@@ -263,7 +280,8 @@ export async function claimDueEnrollments(
     // picked up by a concurrent claim. The WHERE on the old nextStepAt value
     // ensures only one claimer wins (same pattern as reminders changing
     // status from 'pending' to 'firing').
-    db.update(sequenceEnrollments)
+    const locked = await db.orm
+      .update(sequenceEnrollments)
       .set({ nextStepAt: null, updatedAt: now })
       .where(
         and(
@@ -272,9 +290,9 @@ export async function claimDueEnrollments(
           sql`${sequenceEnrollments.nextStepAt} = ${row.nextStepAt}`,
         ),
       )
-      .run();
+      .returning({ id: sequenceEnrollments.id });
 
-    if (rawChanges() === 0) {
+    if (locked.length === 0) {
       continue;
     }
 
@@ -285,76 +303,79 @@ export async function claimDueEnrollments(
   return claimed;
 }
 
-export function advanceEnrollment(
+export async function advanceEnrollment(
   id: string,
   conversationId?: string,
   nextStepAt?: number | null,
-): SequenceEnrollment | undefined {
-  const db = getDb();
+): Promise<SequenceEnrollment | undefined> {
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
   const now = Date.now();
-  const updates: Record<string, unknown> = {
-    updatedAt: now,
-    currentStep: db
-      .select({ val: sequenceEnrollments.currentStep })
-      .from(sequenceEnrollments)
-      .where(eq(sequenceEnrollments.id, id))
-      .get()?.val,
-  };
 
   // Load current to increment step
-  const current = getEnrollment(id);
+  const current = await getEnrollment(id);
   if (!current) {
     return undefined;
   }
 
-  updates.currentStep = current.currentStep + 1;
+  const set: Partial<typeof sequenceEnrollments.$inferInsert> = {
+    updatedAt: now,
+    currentStep: current.currentStep + 1,
+  };
   if (conversationId !== undefined) {
-    updates.conversationId = conversationId;
+    set.conversationId = conversationId;
   }
   if (nextStepAt !== undefined) {
-    updates.nextStepAt = nextStepAt;
+    set.nextStepAt = nextStepAt;
   }
 
-  db.update(sequenceEnrollments)
-    .set(updates)
-    .where(eq(sequenceEnrollments.id, id))
-    .run();
+  await db.orm
+    .update(sequenceEnrollments)
+    .set(set)
+    .where(eq(sequenceEnrollments.id, id));
 
-  return getEnrollment(id);
+  return await getEnrollment(id);
 }
 
-export function exitEnrollment(id: string, reason: EnrollmentExitReason): void {
-  const db = getDb();
-  db.update(sequenceEnrollments)
+export async function exitEnrollment(
+  id: string,
+  reason: EnrollmentExitReason,
+): Promise<void> {
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
+  await db.orm
+    .update(sequenceEnrollments)
     .set({ status: reason, nextStepAt: null, updatedAt: Date.now() })
-    .where(eq(sequenceEnrollments.id, id))
-    .run();
+    .where(eq(sequenceEnrollments.id, id));
 }
 
-/** Pause an active enrollment — preserves current step so it can be resumed later. */
-export function pauseEnrollment(id: string): void {
-  const db = getDb();
-  db.update(sequenceEnrollments)
+/** Pause an active enrollment; preserves current step so it can be resumed later. */
+export async function pauseEnrollment(id: string): Promise<void> {
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
+  await db.orm
+    .update(sequenceEnrollments)
     .set({ status: "paused", nextStepAt: null, updatedAt: Date.now() })
-    .where(eq(sequenceEnrollments.id, id))
-    .run();
+    .where(eq(sequenceEnrollments.id, id));
 }
 
-/** Resume a paused enrollment — re-activates it so the scheduler picks it up. */
-export function resumeEnrollment(id: string): void {
-  const db = getDb();
+/** Resume a paused enrollment; re-activates it so the scheduler picks it up. */
+export async function resumeEnrollment(id: string): Promise<void> {
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
   const now = Date.now();
-  db.update(sequenceEnrollments)
+  await db.orm
+    .update(sequenceEnrollments)
     .set({ status: "active", nextStepAt: now, updatedAt: now })
-    .where(eq(sequenceEnrollments.id, id))
-    .run();
+    .where(eq(sequenceEnrollments.id, id));
 }
 
-export function findActiveEnrollmentsByEmail(
+export async function findActiveEnrollmentsByEmail(
   email: string,
-): SequenceEnrollment[] {
-  const db = getDb();
-  const rows = db
+): Promise<SequenceEnrollment[]> {
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
+  const rows = await db.orm
     .select()
     .from(sequenceEnrollments)
     .where(
@@ -362,14 +383,16 @@ export function findActiveEnrollmentsByEmail(
         eq(sequenceEnrollments.contactEmail, email),
         eq(sequenceEnrollments.status, "active"),
       ),
-    )
-    .all();
+    );
   return rows.map(parseEnrollmentRow);
 }
 
-export function countActiveEnrollments(sequenceId: string): number {
-  const db = getDb();
-  const rows = db
+export async function countActiveEnrollments(
+  sequenceId: string,
+): Promise<number> {
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
+  const rows = await db.orm
     .select()
     .from(sequenceEnrollments)
     .where(
@@ -377,28 +400,32 @@ export function countActiveEnrollments(sequenceId: string): number {
         eq(sequenceEnrollments.sequenceId, sequenceId),
         eq(sequenceEnrollments.status, "active"),
       ),
-    )
-    .all();
+    );
   return rows.length;
 }
 
 /** Re-set nextStepAt without advancing the step counter (e.g., when re-scheduling after a pause). */
-export function rescheduleEnrollment(id: string, nextStepAt: number): void {
-  const db = getDb();
-  db.update(sequenceEnrollments)
+export async function rescheduleEnrollment(
+  id: string,
+  nextStepAt: number,
+): Promise<void> {
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
+  await db.orm
+    .update(sequenceEnrollments)
     .set({ nextStepAt, updatedAt: Date.now() })
-    .where(eq(sequenceEnrollments.id, id))
-    .run();
+    .where(eq(sequenceEnrollments.id, id));
 }
 
 /** Persist a conversation ID on an enrollment without advancing the step counter. */
-export function updateEnrollmentConversationId(
+export async function updateEnrollmentConversationId(
   id: string,
   conversationId: string,
-): void {
-  const db = getDb();
-  db.update(sequenceEnrollments)
+): Promise<void> {
+  const db = requireMainDb();
+  const sequenceEnrollments = db.schema.sequenceEnrollments;
+  await db.orm
+    .update(sequenceEnrollments)
     .set({ conversationId, updatedAt: Date.now() })
-    .where(eq(sequenceEnrollments.id, id))
-    .run();
+    .where(eq(sequenceEnrollments.id, id));
 }

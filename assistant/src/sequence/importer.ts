@@ -218,7 +218,7 @@ export function parseContactFile(filePath: string): ParseResult {
     headers = firstRow;
     dataStartIdx = 1;
   } else {
-    // No headers — assume col 1 = email, col 2 = name
+    // No headers, so assume column 1 is email and column 2 is name
     headers = [
       "email",
       "name",
@@ -285,11 +285,11 @@ export function parseContactFile(filePath: string): ParseResult {
 /**
  * Bulk-enroll parsed contacts into a sequence, respecting guardrails.
  */
-export function bulkEnroll(
+export async function bulkEnroll(
   sequenceId: string,
   contacts: ParsedContact[],
-): EnrollResult {
-  const seq = getSequence(sequenceId);
+): Promise<EnrollResult> {
+  const seq = await getSequence(sequenceId);
   if (!seq) {
     throw new Error(`Sequence not found: ${sequenceId}`);
   }
@@ -300,26 +300,26 @@ export function bulkEnroll(
 
   for (const contact of contacts) {
     // Pre-enrollment guardrails
-    const capCheck = checkEnrollmentCap(sequenceId);
+    const capCheck = await checkEnrollmentCap(sequenceId);
     if (!capCheck.ok) {
       skipped.push({ email: contact.email, reason: capCheck.reason });
       continue;
     }
 
-    const dupCheck = checkDuplicateEnrollment(sequenceId, contact.email);
+    const dupCheck = await checkDuplicateEnrollment(sequenceId, contact.email);
     if (!dupCheck.ok) {
       skipped.push({ email: contact.email, reason: dupCheck.reason });
       continue;
     }
 
-    const cooldownCheck = checkCooldown(sequenceId, contact.email);
+    const cooldownCheck = await checkCooldown(sequenceId, contact.email);
     if (!cooldownCheck.ok) {
       skipped.push({ email: contact.email, reason: cooldownCheck.reason });
       continue;
     }
 
     try {
-      enrollContact({
+      await enrollContact({
         sequenceId,
         contactEmail: contact.email,
         contactName: contact.name,

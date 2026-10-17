@@ -14,7 +14,7 @@ export async function run(
 ): Promise<ToolExecutionResult> {
   const sequenceId = input.sequence_id as string | undefined;
 
-  const data = getDashboardData();
+  const data = await getDashboardData();
 
   const lines: string[] = [];
 
@@ -56,7 +56,7 @@ export async function run(
 
   // ── Step funnel (if specific sequence requested) ────────────────
   if (sequenceId) {
-    const steps = getStepMetrics(sequenceId);
+    const steps = await getStepMetrics(sequenceId);
     if (steps.length > 0) {
       lines.push("");
       lines.push("--- Step Funnel ---");

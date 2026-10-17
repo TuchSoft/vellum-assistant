@@ -1,5 +1,5 @@
 /**
- * Sequence engine — processes due enrollments on each scheduler tick.
+ * Sequence engine; processes due enrollments on each scheduler tick.
  *
  * Runs as a phase in the scheduler's 15-second tick loop. Claims due
  * enrollments, generates personalized content via the assistant, and
@@ -53,9 +53,9 @@ export async function runSequencesOnce(): Promise<number> {
       // nextStepAt to prevent concurrent claims; without restoring it the
       // enrollment would be stranded as active with nextStepAt = null forever.
       try {
-        const current = getEnrollment(enrollment.id);
+        const current = await getEnrollment(enrollment.id);
         if (current && current.status === "active") {
-          rescheduleEnrollment(
+          await rescheduleEnrollment(
             enrollment.id,
             Date.now() + ERROR_RETRY_DELAY_MS,
           );
@@ -83,7 +83,7 @@ export async function runSequencesOnce(): Promise<number> {
 async function processEnrollment(
   enrollment: SequenceEnrollment,
 ): Promise<void> {
-  const sequence = getSequence(enrollment.sequenceId);
+  const sequence = await getSequence(enrollment.sequenceId);
   if (!sequence) {
     log.warn(
       { enrollmentId: enrollment.id, sequenceId: enrollment.sequenceId },
@@ -92,7 +92,7 @@ async function processEnrollment(
     recordEvent(enrollment.sequenceId, enrollment.id, "fail", undefined, {
       reason: "sequence_not_found",
     });
-    exitEnrollment(enrollment.id, "failed");
+    await exitEnrollment(enrollment.id, "failed");
     return;
   }
 
@@ -105,7 +105,7 @@ async function processEnrollment(
       },
       "Sequence not active, skipping",
     );
-    rescheduleEnrollment(enrollment.id, Date.now() + 60_000);
+    await rescheduleEnrollment(enrollment.id, Date.now() + 60_000);
     return;
   }
 
@@ -116,12 +116,12 @@ async function processEnrollment(
       "No more steps, marking completed",
     );
     recordEvent(sequence.id, enrollment.id, "complete");
-    exitEnrollment(enrollment.id, "completed");
+    await exitEnrollment(enrollment.id, "completed");
     return;
   }
 
   // Enforce guardrails before allocating resources for the send
-  const guardrailResult = checkAllPreSend(
+  const guardrailResult = await checkAllPreSend(
     sequence.id,
     enrollment,
     step.delaySeconds,
@@ -134,9 +134,12 @@ async function processEnrollment(
         guardrail: guardrailResult.guardrail,
         reason: guardrailResult.reason,
       },
-      "Guardrail blocked sequence step — rescheduling",
+      "Guardrail blocked sequence step; rescheduling",
     );
-    rescheduleEnrollment(enrollment.id, Date.now() + ERROR_RETRY_DELAY_MS);
+    await rescheduleEnrollment(
+      enrollment.id,
+      Date.now() + ERROR_RETRY_DELAY_MS,
+    );
     return;
   }
 
@@ -157,7 +160,7 @@ async function processEnrollment(
     jobName: "sequence-step",
     source: "sequence",
     prompt,
-    systemHint: `Sequence: ${sequence.name} — Step ${step.index + 1}`,
+    systemHint: `Sequence: ${sequence.name} - Step ${step.index + 1}`,
     trustContext: { sourceChannel: "vellum", trustClass: "guardian" },
     callSite: "mainAgent",
     timeoutMs: STEP_TIMEOUT_MS,
@@ -174,12 +177,12 @@ async function processEnrollment(
           sequenceId: sequence.id,
           step: step.index,
         },
-        "Sequence step timed out — exiting enrollment to prevent duplicate outreach",
+        "Sequence step timed out; exiting enrollment to prevent duplicate outreach",
       );
       recordEvent(sequence.id, enrollment.id, "fail", step.index, {
         reason: "step_timeout",
       });
-      exitEnrollment(enrollment.id, "failed");
+      await exitEnrollment(enrollment.id, "failed");
       return;
     }
     throw (
@@ -199,12 +202,15 @@ async function processEnrollment(
   }
 
   // Steps that require approval create a draft instead of sending. Don't
-  // advance the enrollment — leave it at the current step with nextStepAt
+  // advance the enrollment; leave it at the current step with nextStepAt
   // null so it won't be re-claimed. The approval/send flow is responsible
   // for advancing the enrollment once the draft is approved.
   if (step.requireApproval) {
     if (extractedConversationId) {
-      updateEnrollmentConversationId(enrollment.id, extractedConversationId);
+      await updateEnrollmentConversationId(
+        enrollment.id,
+        extractedConversationId,
+      );
     }
     log.info(
       {
@@ -212,14 +218,14 @@ async function processEnrollment(
         sequenceId: sequence.id,
         step: step.index,
       },
-      "Step requires approval — pausing advancement until draft is approved",
+      "Step requires approval; pausing advancement until draft is approved",
     );
     return;
   }
 
   // Track the send for rate-limiting guardrails and analytics.
   // Placed after the requireApproval gate so draft-only steps don't inflate
-  // rate-limit counters — only actual sends are counted.
+  // rate-limit counters; only actual sends are counted.
   recordSend(sequence.id);
   recordEvent(sequence.id, enrollment.id, "send", step.index);
 
@@ -227,9 +233,9 @@ async function processEnrollment(
   const nextStepIndex = enrollment.currentStep + 1;
   if (nextStepIndex >= sequence.steps.length) {
     // This was the final step
-    advanceEnrollment(enrollment.id, extractedConversationId, null);
+    await advanceEnrollment(enrollment.id, extractedConversationId, null);
     recordEvent(sequence.id, enrollment.id, "complete", step.index);
-    exitEnrollment(enrollment.id, "completed");
+    await exitEnrollment(enrollment.id, "completed");
     log.info(
       { enrollmentId: enrollment.id, sequenceId: sequence.id },
       "Sequence completed",
@@ -237,7 +243,7 @@ async function processEnrollment(
   } else {
     const nextStep = sequence.steps[nextStepIndex];
     const nextStepAt = Date.now() + nextStep.delaySeconds * 1000;
-    advanceEnrollment(enrollment.id, extractedConversationId, nextStepAt);
+    await advanceEnrollment(enrollment.id, extractedConversationId, nextStepAt);
     log.info(
       {
         enrollmentId: enrollment.id,
@@ -311,7 +317,7 @@ function extractThreadIdFromConversation(
 ): string | null {
   try {
     const msgs = getMessages(conversationId);
-    // Walk messages in reverse — the thread ID from the most recent tool call
+    // Walk messages in reverse; the thread ID from the most recent tool call
     // is the one we want.
     for (let i = msgs.length - 1; i >= 0; i--) {
       const msg = msgs[i];

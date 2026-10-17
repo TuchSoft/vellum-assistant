@@ -26,7 +26,7 @@ export async function run(
   throwIfCancelled(toolContext);
 
   try {
-    const seq = getSequence(sequenceId);
+    const seq = await getSequence(sequenceId);
     if (!seq) {
       return err(`Sequence not found: ${sequenceId}`);
     }
@@ -47,7 +47,7 @@ export async function run(
     let successCount = 0;
     for (const email of emailList) {
       try {
-        const enrollment = enrollContact({
+        const enrollment = await enrollContact({
           sequenceId,
           contactEmail: email,
           context,

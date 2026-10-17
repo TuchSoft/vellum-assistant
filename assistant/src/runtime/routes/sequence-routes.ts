@@ -7,7 +7,6 @@
 
 import { z } from "zod";
 
-import { getDb } from "../../persistence/db-connection.js";
 import {
   getGuardrailConfig,
   setGuardrailConfig,
@@ -54,29 +53,30 @@ const GuardrailSetParams = z
 
 // ── Handlers ────────────────────────────────────────────────────────
 
-function handleSequenceList({ body = {} }: RouteHandlerArgs) {
+async function handleSequenceList({ body = {} }: RouteHandlerArgs) {
   const { status } = parseBody(SequenceListParams, body);
-  getDb();
   const filter = status ? { status } : undefined;
-  const seqs = listSequences(filter);
+  const seqs = await listSequences(filter);
 
-  const sequences = seqs.map((seq) => ({
-    ...seq,
-    activeEnrollments: countActiveEnrollments(seq.id),
-  }));
+  const sequences = [];
+  for (const seq of seqs) {
+    sequences.push({
+      ...seq,
+      activeEnrollments: await countActiveEnrollments(seq.id),
+    });
+  }
 
   return { ok: true, sequences };
 }
 
-function handleSequenceGet({ body = {} }: RouteHandlerArgs) {
+async function handleSequenceGet({ body = {} }: RouteHandlerArgs) {
   const { id } = parseBody(SequenceIdParams, body);
-  getDb();
-  const seq = getSequence(id);
+  const seq = await getSequence(id);
   if (!seq) {
     throw new NotFoundError(`Sequence not found: ${id}`);
   }
 
-  const enrollments = listEnrollments({ sequenceId: id });
+  const enrollments = await listEnrollments({ sequenceId: id });
   const statusCounts = enrollments.reduce(
     (acc, e) => {
       acc[e.status] = (acc[e.status] || 0) + 1;
@@ -92,46 +92,42 @@ function handleSequenceGet({ body = {} }: RouteHandlerArgs) {
   };
 }
 
-function handleSequencePause({ body = {} }: RouteHandlerArgs) {
+async function handleSequencePause({ body = {} }: RouteHandlerArgs) {
   const { id } = parseBody(SequenceIdParams, body);
-  getDb();
-  const seq = getSequence(id);
+  const seq = await getSequence(id);
   if (!seq) {
     throw new NotFoundError(`Sequence not found: ${id}`);
   }
   if (seq.status === "paused") {
     return { ok: true, message: "Sequence is already paused." };
   }
-  updateSequence(id, { status: "paused" });
+  await updateSequence(id, { status: "paused" });
   return { ok: true, message: `Sequence "${seq.name}" paused.` };
 }
 
-function handleSequenceResume({ body = {} }: RouteHandlerArgs) {
+async function handleSequenceResume({ body = {} }: RouteHandlerArgs) {
   const { id } = parseBody(SequenceIdParams, body);
-  getDb();
-  const seq = getSequence(id);
+  const seq = await getSequence(id);
   if (!seq) {
     throw new NotFoundError(`Sequence not found: ${id}`);
   }
   if (seq.status === "active") {
     return { ok: true, message: "Sequence is already active." };
   }
-  updateSequence(id, { status: "active" });
+  await updateSequence(id, { status: "active" });
   return { ok: true, message: `Sequence "${seq.name}" resumed.` };
 }
 
-function handleCancelEnrollment({ body = {} }: RouteHandlerArgs) {
+async function handleCancelEnrollment({ body = {} }: RouteHandlerArgs) {
   const { enrollmentId } = parseBody(CancelEnrollmentParams, body);
-  getDb();
-  exitEnrollment(enrollmentId, "cancelled");
+  await exitEnrollment(enrollmentId, "cancelled");
   return { ok: true, message: `Enrollment ${enrollmentId} cancelled.` };
 }
 
-function handleSequenceStats() {
-  getDb();
-  const seqs = listSequences();
+async function handleSequenceStats() {
+  const seqs = await listSequences();
   const activeSeqs = seqs.filter((s) => s.status === "active").length;
-  const allEnrollments = listEnrollments();
+  const allEnrollments = await listEnrollments();
   const activeEnrollments = allEnrollments.filter(
     (e) => e.status === "active",
   ).length;

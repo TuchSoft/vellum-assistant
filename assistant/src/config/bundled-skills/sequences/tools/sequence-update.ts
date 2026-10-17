@@ -39,7 +39,7 @@ export async function run(
     }
 
     try {
-      const enrollment = getEnrollment(enrollmentId);
+      const enrollment = await getEnrollment(enrollmentId);
       if (!enrollment) {
         return err(`Enrollment not found: ${enrollmentId}`);
       }
@@ -51,7 +51,7 @@ export async function run(
               `Enrollment is not active (status: ${enrollment.status}).`,
             );
           }
-          pauseEnrollment(enrollmentId);
+          await pauseEnrollment(enrollmentId);
           return ok(
             `Enrollment ${enrollmentId} paused. Resume it later to continue from step ${
               enrollment.currentStep + 1
@@ -65,14 +65,14 @@ export async function run(
             );
           }
           const seq = enrollment.sequenceId
-            ? getSequence(enrollment.sequenceId)
+            ? await getSequence(enrollment.sequenceId)
             : null;
           if (seq && seq.status !== "active") {
             return err(
               `Cannot resume enrollment - parent sequence "${seq.name}" is ${seq.status}. Resume the sequence first.`,
             );
           }
-          resumeEnrollment(enrollmentId);
+          await resumeEnrollment(enrollmentId);
           return ok(`Enrollment ${enrollmentId} resumed.`);
         }
         case "cancel": {
@@ -84,7 +84,7 @@ export async function run(
               `Enrollment already in terminal state: ${enrollment.status}`,
             );
           }
-          exitEnrollment(enrollmentId, "cancelled");
+          await exitEnrollment(enrollmentId, "cancelled");
           return ok(`Enrollment for ${enrollment.contactEmail} cancelled.`);
         }
         default:
@@ -132,7 +132,7 @@ export async function run(
       );
     }
 
-    const updated = updateSequence(id, {
+    const updated = await updateSequence(id, {
       name,
       description,
       status,

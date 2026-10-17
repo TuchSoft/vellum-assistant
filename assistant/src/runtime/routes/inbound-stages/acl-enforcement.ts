@@ -52,7 +52,9 @@ const log = getLogger("runtime-http");
  * needs no independent validation. An absent field (or absent verdict)
  * degrades to the default reference.
  */
-function resolveGuardianLabel(verdict: TrustVerdict | undefined): string {
+async function resolveGuardianLabel(
+  verdict: TrustVerdict | undefined,
+): Promise<string> {
   return resolveGuardianName(verdict?.guardianDisplayName);
 }
 
@@ -68,16 +70,16 @@ function resolveGuardianLabel(verdict: TrustVerdict | undefined): string {
  * - Guardian notified: the standard "I'll let <guardian> know" copy.
  * - Otherwise: the plain not-approved copy.
  */
-export function composeAccessDenialReply(params: {
+export async function composeAccessDenialReply(params: {
   verdict: TrustVerdict | undefined;
   guardianNotified: boolean;
   handshakeInProgress: boolean;
-}): string {
+}): Promise<string> {
   if (params.handshakeInProgress) {
-    return `Your access request was approved! Reply here with the 6-digit verification code to finish connecting — if you don't have it, ask ${resolveGuardianLabel(params.verdict)} for it.`;
+    return `Your access request was approved! Reply here with the 6-digit verification code to finish connecting — if you don't have it, ask ${await resolveGuardianLabel(params.verdict)} for it.`;
   }
   if (params.guardianNotified) {
-    return `Hmm looks like you don't have access to talk to me. I'll let ${resolveGuardianLabel(params.verdict)} know you tried talking to me and get back to you.`;
+    return `Hmm looks like you don't have access to talk to me. I'll let ${await resolveGuardianLabel(params.verdict)} know you tried talking to me and get back to you.`;
   }
   return ACCESS_DENIED_NOT_APPROVED_REPLY;
 }
@@ -485,7 +487,7 @@ export async function enforceIngressAcl(
               try {
                 await deliverChannelReply(dmCallbackUrl, {
                   chatId: senderUserId,
-                  text: `I don't recognize you yet! I've let ${resolveGuardianLabel(verdict)} know you're trying to reach me. They'll need to share a 6-digit verification code with you — ask them directly if you know them. Once you have the code, reply here with it.`,
+                  text: `I don't recognize you yet! I've let ${await resolveGuardianLabel(verdict)} know you're trying to reach me. They'll need to share a 6-digit verification code with you — ask them directly if you know them. Once you have the code, reply here with it.`,
                   assistantId,
                 });
               } catch (err) {
@@ -604,7 +606,7 @@ export async function enforceIngressAcl(
           }
         }
 
-        const replyText = composeAccessDenialReply({
+        const replyText = await composeAccessDenialReply({
           verdict,
           guardianNotified,
           handshakeInProgress,
@@ -784,7 +786,7 @@ export async function enforceIngressAcl(
                 try {
                   await deliverChannelReply(dmCallbackUrl, {
                     chatId: senderUserId,
-                    text: `I don't recognize you yet! I've let ${resolveGuardianLabel(verdict)} know you're trying to reach me. They'll need to share a 6-digit verification code with you — ask them directly if you know them. Once you have the code, reply here with it.`,
+                    text: `I don't recognize you yet! I've let ${await resolveGuardianLabel(verdict)} know you're trying to reach me. They'll need to share a 6-digit verification code with you — ask them directly if you know them. Once you have the code, reply here with it.`,
                     assistantId,
                   });
                 } catch (err) {
@@ -854,7 +856,7 @@ export async function enforceIngressAcl(
             }
           }
 
-          const inactiveReplyText = composeAccessDenialReply({
+          const inactiveReplyText = await composeAccessDenialReply({
             verdict,
             guardianNotified,
             handshakeInProgress,

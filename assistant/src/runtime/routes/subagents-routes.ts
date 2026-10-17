@@ -215,7 +215,9 @@ async function getSubagentDetail(
     { subagentId, eventCount: result.events.length },
     "getSubagentDetail: parsed events",
   );
-  const usage = reportableUsage(getConversationUsageTotals(conversationId));
+  const usage = reportableUsage(
+    await getConversationUsageTotals(conversationId),
+  );
   if (usage) {
     result.usage = usage;
   }
@@ -312,7 +314,7 @@ export const ROUTES: RouteDefinition[] = [
     responseBody: z.object({
       subagents: z.record(z.string(), ReconciledSubagentSchema),
     }),
-    handler: ({ queryParams }) => {
+    handler: async ({ queryParams }) => {
       const parentConversationId = queryParams?.parentConversationId;
       if (!parentConversationId) {
         throw new BadRequestError(
@@ -333,7 +335,7 @@ export const ROUTES: RouteDefinition[] = [
       // window appears in neither pass, so a client settling by absence can
       // still re-mark it `interrupted`. Acceptable: a run that far back is no
       // longer surfaced anywhere else either.
-      const records = getSubagentRecordsByParent(parentConversationId, {
+      const records = await getSubagentRecordsByParent(parentConversationId, {
         terminalStatuses: [...TERMINAL_STATUSES],
         maxTerminal: MAX_RECONCILED_TERMINAL_RECORDS,
       });
@@ -409,7 +411,9 @@ export const ROUTES: RouteDefinition[] = [
       // recently finished terminal subagents, so the row stays the only answer
       // for older ones. It supplies the conversation, label, status and spawn
       // anchor once the live state is gone.
-      const record = state ? undefined : getSubagentRecordById(pathParams!.id);
+      const record = state
+        ? undefined
+        : await getSubagentRecordById(pathParams!.id);
 
       // Prefer the authoritative child-conversation id the daemon holds.
       // Clients recovering from a missed `subagent_spawned` only know the

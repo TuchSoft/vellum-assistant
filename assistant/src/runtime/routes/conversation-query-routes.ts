@@ -1403,10 +1403,10 @@ function assertInvariantProfilesPreserved(
  * profile entries. Entries that do not parse as a `ProfileEntry` are also
  * left untouched; full-config parsing owns their rejection/recovery.
  */
-function completeChangedCustomProfiles(
+async function completeChangedCustomProfiles(
   preWrite: Record<string, unknown>,
   raw: Record<string, unknown>,
-): void {
+): Promise<void> {
   const profiles = asMutablePlainObject(readPlainObject(raw.llm)?.profiles);
   if (!profiles) {
     return;
@@ -1439,7 +1439,7 @@ function completeChangedCustomProfiles(
     // would delete forward-compatible fields whenever the entry is edited.
     profiles[name] = mergePreservingUnknownKeys(
       readPlainObject(entry) ?? {},
-      completeCustomProfile(parsedDefault.data, entryData) as Record<
+      (await completeCustomProfile(parsedDefault.data, entryData)) as Record<
         string,
         unknown
       >,
@@ -1570,7 +1570,7 @@ export async function commitConfigWrite(
   if (!chatSettings.success) {
     throw new BadRequestError(chatSettings.error.message);
   }
-  completeChangedCustomProfiles(preWrite, raw);
+  await completeChangedCustomProfiles(preWrite, raw);
   assertInvariantProfilesPreserved(preWrite, raw);
   assertRoutableIdentityEntries(preWrite, raw);
   assertCodeOwnedFallbackProfiles(raw);

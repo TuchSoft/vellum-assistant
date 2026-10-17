@@ -72,7 +72,7 @@ export async function runBtwSidechain(
     params.systemPrompt ??
     (params.conversation?.hasSystemPromptOverride
       ? params.conversation.systemPrompt
-      : buildSystemPrompt({
+      : await buildSystemPrompt({
           excludeBootstrap: true,
           excludeCustomPrefix: true,
           // `tool_choice: { type: "none" }` below: this turn calls nothing, so

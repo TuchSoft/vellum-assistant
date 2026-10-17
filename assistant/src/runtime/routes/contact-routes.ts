@@ -445,7 +445,7 @@ export async function handleCreateInvite({ body = {} }: RouteHandlerArgs) {
   // The guardian display label on voice invites is daemon-resolved and passed
   // through to the gateway, which stores it and never interprets it.
   const guardianName =
-    sourceChannel === "phone" ? resolveInviteGuardianName() : undefined;
+    sourceChannel === "phone" ? await resolveInviteGuardianName() : undefined;
   let result: { invite: InviteWire; rawToken?: string };
   try {
     result = await createInvite({

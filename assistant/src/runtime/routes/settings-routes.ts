@@ -284,7 +284,7 @@ async function getWorkspaceFiles(): Promise<string[]> {
   // below hits a fresh key instead of falling back to default.md on a cold or
   // TTL-expired cache.
   await getGuardianDelivery({ channelTypes: ["vellum"] });
-  const guardianPath = resolveGuardianPersonaPath();
+  const guardianPath = await resolveGuardianPersonaPath();
   if (guardianPath) {
     files.push(`users/${basename(guardianPath)}`);
   }

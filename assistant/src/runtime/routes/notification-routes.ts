@@ -179,7 +179,7 @@ const NotificationEventSchema = z.object({
   createdAt: z.string(),
 });
 
-function handleListEvents({ body = {} }: RouteHandlerArgs) {
+async function handleListEvents({ body = {} }: RouteHandlerArgs) {
   const parsed = ListNotificationEventsParams.safeParse(body);
   if (!parsed.success) {
     throw new BadRequestError(
@@ -187,7 +187,7 @@ function handleListEvents({ body = {} }: RouteHandlerArgs) {
     );
   }
   const validated = parsed.data;
-  const rows = listEvents({
+  const rows = await listEvents({
     limit: validated.limit,
     sourceEventName: validated.sourceEventName,
   });

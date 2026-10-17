@@ -65,8 +65,8 @@ type IngressResult<T> = { ok: true; data: T } | { ok: false; error: string };
  * The daemon passes it through to the gateway mint, which stores it on the
  * invite row and never interprets it.
  */
-export function resolveInviteGuardianName(): string | undefined {
-  const name = resolveGuardianName();
+export async function resolveInviteGuardianName(): Promise<string | undefined> {
+  const name = await resolveGuardianName();
   if (
     !name ||
     name === DEFAULT_USER_REFERENCE ||
@@ -168,7 +168,8 @@ export async function triggerInviteCall(params: {
   const friendName = params.friendName?.trim() || "";
   // Guardian label is resolved at runtime by the relay; mirror the value
   // into the session so STT hints continue to seed correctly.
-  const guardianName = params.guardianName || resolveGuardianName() || "";
+  const guardianName =
+    params.guardianName || (await resolveGuardianName()) || "";
   const result = await startInviteCall({
     phoneNumber,
     friendName,

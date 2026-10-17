@@ -122,7 +122,7 @@ async function handleGetSurfaceContent({
   // requester filter via the unscoped fast path above — the exposure the
   // filter exists to prevent. Re-scanning per fetch keeps the GET fully
   // side-effect-free; the scan is LIKE-bounded and per-conversation.
-  const persisted = findPersistedSurfaceState(conversationId, surfaceId, {
+  const persisted = await findPersistedSurfaceState(conversationId, surfaceId, {
     // Share the live window's compaction boundary so the scan can never
     // resurrect a surface the compacted-away prefix owned.
     liveHistoryStartRow: conversation.contextCompactedMessageCount,

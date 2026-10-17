@@ -256,7 +256,7 @@ function handleGetRun(id: string) {
   return toWireRun(run);
 }
 
-function handleGetRunJournal(id: string) {
+async function handleGetRunJournal(id: string) {
   const run = deps.getManager().status(id);
   if (!run) {
     throw new NotFoundError(`Workflow run ${id} not found`);
@@ -271,8 +271,7 @@ function handleGetRunJournal(id: string) {
     // agent leaves (nested workflow resolutions never reach it), so the
     // backfilled set must match. `kind: "workflow"` entries carry no label and
     // would render as phantom unlabeled nodes.
-    leaves: deps
-      .getJournal(id)
+    leaves: (await deps.getJournal(id))
       .filter((entry) => entry.kind === "agent")
       .map(toWireLeaf),
   };

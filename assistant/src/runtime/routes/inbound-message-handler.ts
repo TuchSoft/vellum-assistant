@@ -1024,7 +1024,7 @@ export async function handleChannelInbound({
     // Canned reply mirrors the not_a_member surface. §8.2: no upgrade
     // challenge text for `trusted_contacts` / `guardian_only` denials —
     // sender gets the standard "ask the guardian" copy.
-    const replyText = composeAccessDenialReply({
+    const replyText = await composeAccessDenialReply({
       verdict: inboundVerdict,
       guardianNotified,
       handshakeInProgress,

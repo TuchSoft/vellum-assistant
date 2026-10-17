@@ -925,7 +925,7 @@ async function handleListScheduleRuns(
         // runs whose usage predates cron_run_id stamping. The synthetic
         // "script:<jobId>" sentinel never resolves to a conversation, so it
         // drops out here on its own.
-        const runConversationIds = new Set(listRunConversationIds(r.id));
+        const runConversationIds = new Set(await listRunConversationIds(r.id));
         if (r.conversationId && conversation) {
           runConversationIds.add(r.conversationId);
         }

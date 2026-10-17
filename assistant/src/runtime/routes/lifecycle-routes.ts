@@ -168,10 +168,12 @@ export const ROUTES: RouteDefinition[] = [
       // Workflows launched by a schedule outlive their schedule run — the
       // scheduler fires them and completes its own run row immediately — so
       // a running workflow must hold the drain open in its own right.
-      const workflowRuns = listWorkflowRuns({
-        limit: 20,
-        status: "running",
-      }).map((run) => ({
+      const workflowRuns = (
+        await listWorkflowRuns({
+          limit: 20,
+          status: "running",
+        })
+      ).map((run) => ({
         runId: run.id,
         name: run.name,
         startedAt: run.createdAt,

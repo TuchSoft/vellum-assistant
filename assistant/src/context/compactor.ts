@@ -577,12 +577,12 @@ interface ManifestEntry {
  * verbatim and must not be offered for retention. The slice happens before
  * the trust filter because the boundary indexes the full row list.
  */
-export function collectImageManifest(
+export async function collectImageManifest(
   conversationId: string,
   actorTrustClass?: TrustClass,
   endRowIndex?: number,
-): ManifestEntry[] {
-  const allRows = getMessages(conversationId);
+): Promise<ManifestEntry[]> {
+  const allRows = await getMessages(conversationId);
   const boundedRows =
     endRowIndex != null ? allRows.slice(0, endRowIndex) : allRows;
   const rows = !resolveCapabilities(actorTrustClass).canAccessMemory
@@ -590,7 +590,7 @@ export function collectImageManifest(
     : boundedRows;
   const entries: ManifestEntry[] = [];
   for (const row of rows) {
-    const atts = getAttachmentMetadataForMessage(row.id);
+    const atts = await getAttachmentMetadataForMessage(row.id);
     for (const att of atts) {
       if (att.kind !== "image") {
         continue;
@@ -954,7 +954,7 @@ export async function buildRetainedImageBlocks(
       missing.push(name);
       continue;
     }
-    const content = getAttachmentContent(entry.attachmentId);
+    const content = await getAttachmentContent(entry.attachmentId);
     if (!content) {
       missing.push(name);
       continue;
@@ -1350,7 +1350,7 @@ export async function runAssistantDrivenCompaction(
   // Filtered by actor trust so untrusted turns never see guardian-only
   // attachments, and bounded to pre-boundary rows on fixed-boundary runs
   // so kept-tail images are never offered for retention.
-  const manifest = collectImageManifest(
+  const manifest = await collectImageManifest(
     args.conversationId,
     args.actorTrustClass,
     fixedTailStartIndex != null ? args.fixedBoundaryRowIndex : undefined,

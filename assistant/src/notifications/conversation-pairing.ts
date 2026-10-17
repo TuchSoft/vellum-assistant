@@ -138,13 +138,11 @@ export async function pairDeliveryWithConversation(
   options?: PairingOptions,
 ): Promise<PairingResult> {
   try {
+    const assistantInitiatedThread =
+      options?.assistantInitiatedThread ??
+      (await resolveAssistantInitiatedThread(rawSignal));
     const signal =
-      channel === "vellum"
-        ? (
-            options?.assistantInitiatedThread ??
-            resolveAssistantInitiatedThread(rawSignal)
-          ).vellumSignal
-        : rawSignal;
+      channel === "vellum" ? assistantInitiatedThread.vellumSignal : rawSignal;
     const strategy = getConversationStrategy(channel as ChannelId);
 
     if (strategy === "not_deliverable" || strategy === "push_only") {
@@ -223,7 +221,7 @@ export async function pairDeliveryWithConversation(
       hasPersistedCompletionResult(signal)
     ) {
       return {
-        conversationId: resolveSourceConversation(signal)?.id ?? null,
+        conversationId: (await resolveSourceConversation(signal))?.id ?? null,
         messageId: null,
         strategy,
         createdNewConversation: false,
@@ -287,7 +285,7 @@ export async function pairDeliveryWithConversation(
     // Attempt to reuse an existing conversation when the model requests it
     if (conversationAction?.action === "reuse_existing") {
       const targetId = conversationAction.conversationId;
-      const existing = getConversation(targetId);
+      const existing = await getConversation(targetId);
 
       const effectiveSource =
         signal.conversationMetadata?.source ?? "notification";
@@ -303,7 +301,7 @@ export async function pairDeliveryWithConversation(
         // Rebind the destination so subsequent deliveries to the same
         // (sourceChannel, externalChatId) resolve to this conversation.
         if (bindingContext?.sourceChannel && bindingContext?.externalChatId) {
-          upsertOutboundBinding({
+          await upsertOutboundBinding({
             conversationId: existing.id,
             sourceChannel: notificationChannel(bindingContext.sourceChannel),
             externalChatId: bindingContext.externalChatId,
@@ -365,7 +363,7 @@ export async function pairDeliveryWithConversation(
       // Bind the new conversation to the destination so subsequent
       // deliveries reuse it instead of creating yet another conversation.
       if (bindingContext?.sourceChannel && bindingContext?.externalChatId) {
-        upsertOutboundBinding({
+        await upsertOutboundBinding({
           conversationId: conversation.id,
           sourceChannel: notificationChannel(bindingContext.sourceChannel),
           externalChatId: bindingContext.externalChatId,
@@ -408,7 +406,7 @@ export async function pairDeliveryWithConversation(
     // When binding context is available, record the new conversation so
     // subsequent deliveries to the same destination reuse it.
     if (bindingContext?.sourceChannel && bindingContext?.externalChatId) {
-      upsertOutboundBinding({
+      await upsertOutboundBinding({
         conversationId: conversation.id,
         sourceChannel: notificationChannel(bindingContext.sourceChannel),
         externalChatId: bindingContext.externalChatId,
@@ -503,7 +501,7 @@ export async function resolveProactiveHomeConversation(params: {
 
   const threadId = params.threadId?.trim();
   if (threadId) {
-    const existing = findInboundConversationId(
+    const existing = await findInboundConversationId(
       sourceChannel,
       externalChatId,
       threadId,
@@ -511,7 +509,7 @@ export async function resolveProactiveHomeConversation(params: {
     if (existing) {
       return { conversationId: existing, createdNewConversation: false };
     }
-    const minted = resolveInboundConversation(
+    const minted = await resolveInboundConversation(
       sourceChannel,
       externalChatId,
       threadId,
@@ -526,9 +524,14 @@ export async function resolveProactiveHomeConversation(params: {
     };
   }
 
-  const inboundBinding = getBindingByChannelChat(sourceChannel, externalChatId);
+  const inboundBinding = await getBindingByChannelChat(
+    sourceChannel,
+    externalChatId,
+  );
   if (inboundBinding) {
-    const inboundConversation = getConversation(inboundBinding.conversationId);
+    const inboundConversation = await getConversation(
+      inboundBinding.conversationId,
+    );
     if (inboundConversation) {
       return {
         conversationId: inboundConversation.id,
@@ -537,16 +540,16 @@ export async function resolveProactiveHomeConversation(params: {
     }
   }
 
-  const notificationBinding = getBindingByChannelChat(
+  const notificationBinding = await getBindingByChannelChat(
     notificationChannel(sourceChannel),
     externalChatId,
   );
   if (notificationBinding) {
-    const boundConversation = getConversation(
+    const boundConversation = await getConversation(
       notificationBinding.conversationId,
     );
     if (boundConversation && boundConversation.source === params.source) {
-      upsertOutboundBinding({
+      await upsertOutboundBinding({
         conversationId: boundConversation.id,
         sourceChannel: notificationChannel(sourceChannel),
         externalChatId,
@@ -579,7 +582,7 @@ export async function resolveProactiveHomeConversation(params: {
       }),
     { op: "conversationPairing.proactiveHome" },
   );
-  upsertOutboundBinding({
+  await upsertOutboundBinding({
     conversationId: conversation.id,
     sourceChannel: notificationChannel(sourceChannel),
     externalChatId,
@@ -616,10 +619,10 @@ async function resolveChannelDeliveryHome(params: {
 
   if (conversationAction?.action === "reuse_existing") {
     const targetId = conversationAction.conversationId;
-    const existing = getConversation(targetId);
+    const existing = await getConversation(targetId);
     if (existing && existing.source === params.source) {
       if (bindingContext?.sourceChannel && bindingContext?.externalChatId) {
-        upsertOutboundBinding({
+        await upsertOutboundBinding({
           conversationId: existing.id,
           sourceChannel: notificationChannel(bindingContext.sourceChannel),
           externalChatId: bindingContext.externalChatId,
@@ -716,15 +719,15 @@ async function resolveChannelDeliveryHome(params: {
  * Indexing is skipped for parity with the other notification write paths:
  * notification copy is delivery audit, not conversational memory.
  */
-function resolveSourceConversation(
+async function resolveSourceConversation(
   signal: NotificationSignal,
-): { id: string; conversationType?: string } | null {
+): Promise<{ id: string; conversationType?: string } | null> {
   const conversationId = notificationConversationId(signal);
   if (!conversationId) {
     return null;
   }
   try {
-    const row = getConversation(conversationId);
+    const row = await getConversation(conversationId);
     return row ? { id: row.id, conversationType: row.conversationType } : null;
   } catch {
     return null;
@@ -736,7 +739,7 @@ async function appendBodyToSourceConversation(
   channel: NotificationChannel,
   messageContent: string,
 ): Promise<{ conversationId: string; messageId: string } | null> {
-  const source = resolveSourceConversation(signal);
+  const source = await resolveSourceConversation(signal);
   if (!source) {
     return null;
   }

@@ -45,10 +45,7 @@ export interface EditNotificationParams {
 }
 
 export type ChannelEditOutcome =
-  | "updated"
-  | "unsupported"
-  | "skipped"
-  | "failed";
+  "updated" | "unsupported" | "skipped" | "failed";
 
 export interface ChannelEditResult {
   channel: NotificationChannel;
@@ -138,7 +135,7 @@ export async function editNotification(
   // rewrote, so the two never both write. Body edits only: a title-only patch
   // leaves the feed summary alone, and the row holds the body.
   if (params.body !== undefined) {
-    updateFeedItemConversationMessage(
+    await updateFeedItemConversationMessage(
       feedItem,
       params.body,
       rewrittenMessageIds,

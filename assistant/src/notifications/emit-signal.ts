@@ -429,7 +429,8 @@ export async function emitNotificationSignal<TEventName extends string>(
       });
     }
 
-    const assistantInitiatedThread = resolveAssistantInitiatedThread(signal);
+    const assistantInitiatedThread =
+      await resolveAssistantInitiatedThread(signal);
 
     // Step 2: Evaluate the signal through the decision engine
     const connectedChannels = await getConnectedChannels();

@@ -21,9 +21,9 @@ export interface AssistantInitiatedThreadResolution {
 }
 
 /** Background shares need a visible thread because their producer is hidden from the sidebar. */
-export function resolveAssistantInitiatedThread(
+export async function resolveAssistantInitiatedThread(
   signal: NotificationSignal,
-): AssistantInitiatedThreadResolution {
+): Promise<AssistantInitiatedThreadResolution> {
   if (
     signal.sourceEventName !== "assistant.share" ||
     signal.requiresConversation === true ||
@@ -34,7 +34,7 @@ export function resolveAssistantInitiatedThread(
   }
 
   try {
-    const producing = getConversation(signal.sourceContextId);
+    const producing = await getConversation(signal.sourceContextId);
     if (
       producing &&
       producing.conversationType !== "background" &&
@@ -64,15 +64,15 @@ export function resolveAssistantInitiatedThread(
 }
 
 /** A new thread can alert only after its visible destination and seed are durable. */
-export function isPersistedAssistantInitiatedThread(
+export async function isPersistedAssistantInitiatedThread(
   conversationId: string | null,
   messageId: string | null,
-): boolean {
+): Promise<boolean> {
   if (!conversationId || !messageId) {
     return false;
   }
   try {
-    const conversation = getConversation(conversationId);
+    const conversation = await getConversation(conversationId);
     if (
       !conversation ||
       conversation.source !== ASSISTANT_INITIATED_SOURCE ||
@@ -81,15 +81,15 @@ export function isPersistedAssistantInitiatedThread(
     ) {
       return false;
     }
-    const placement = getDisplayMetaForConversations([conversationId]).get(
-      conversationId,
-    );
+    const placement = (
+      await getDisplayMetaForConversations([conversationId])
+    ).get(conversationId);
     return (
       placement !== undefined &&
       !placement.isPinned &&
       (placement.groupId === null ||
         placement.groupId === UNGROUPED_GROUP_ID) &&
-      getMessageById(messageId, conversationId) !== null
+      (await getMessageById(messageId, conversationId)) !== null
     );
   } catch (err) {
     log.warn(

@@ -24,16 +24,17 @@ export interface VellumCardAffinity {
  * originating conversation (callers spread the result:
  * `...(buildVellumCardAffinity(id) ?? {})`).
  */
-export function buildVellumCardAffinity(
+export async function buildVellumCardAffinity(
   destinationConversationId: string | undefined,
-): VellumCardAffinity | undefined {
+): Promise<VellumCardAffinity | undefined> {
   if (!destinationConversationId) {
     return undefined;
   }
   return {
     conversationAffinityHint: { vellum: destinationConversationId },
     conversationMetadata: {
-      source: getConversation(destinationConversationId)?.source ?? "user",
+      source:
+        (await getConversation(destinationConversationId))?.source ?? "user",
     },
   };
 }

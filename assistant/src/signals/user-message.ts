@@ -72,7 +72,9 @@ async function dispatchUserMessage(params: {
     }
   }
 
-  const { conversationId } = getOrCreateConversationKey(params.conversationKey);
+  const { conversationId } = await getOrCreateConversationKey(
+    params.conversationKey,
+  );
   const conversation = await getOrCreateConversation(conversationId);
 
   const attachmentIds: string[] = [];
@@ -89,7 +91,7 @@ async function dispatchUserMessage(params: {
           continue;
         }
         const size = statSync(a.path).size;
-        const stored = uploadFileBackedAttachment(
+        const stored = await uploadFileBackedAttachment(
           a.filename,
           a.mimeType,
           a.path,

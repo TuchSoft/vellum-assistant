@@ -183,7 +183,7 @@ export async function computeRelationshipState(): Promise<RelationshipState> {
     soulContent: soulMd,
     onboarding,
   });
-  const conversationCount = countConversations();
+  const conversationCount = await countConversations();
   const capabilities = resolveCapabilityTiers({ conversationCount });
   const { assistantName: identityName, hatchedDate } =
     parseIdentity(identityPath);
@@ -714,9 +714,9 @@ function resolveConnectedProviders(): Set<string> {
  * so the writer still produces a valid snapshot — per module contract
  * this path must never throw.
  */
-function countConversations(): number {
+async function countConversations(): Promise<number> {
   try {
-    return countConversationsDb();
+    return await countConversationsDb();
   } catch (err) {
     log.warn({ err }, "Failed to count conversations from DB; defaulting to 0");
     return 0;

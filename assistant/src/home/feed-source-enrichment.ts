@@ -43,7 +43,9 @@ interface ConversationSourceRow {
 
 export interface FeedSourceEnrichmentDeps {
   /** Resolve the source columns for a conversation, or null when missing. */
-  getConversationRow?: (id: string) => ConversationSourceRow | null;
+  getConversationRow?: (
+    id: string,
+  ) => ConversationSourceRow | null | Promise<ConversationSourceRow | null>;
   /** Resolve a schedule's display name, or null when missing. */
   getScheduleName?: (id: string) => string | null | Promise<string | null>;
 }
@@ -92,9 +94,11 @@ const STATIC_SOURCE_LABELS: Record<
   other: "Other",
 };
 
-function defaultGetConversationRow(id: string): ConversationSourceRow | null {
+async function defaultGetConversationRow(
+  id: string,
+): Promise<ConversationSourceRow | null> {
   try {
-    const row = getConversation(id);
+    const row = await getConversation(id);
     return row
       ? { source: row.source, scheduleJobId: row.scheduleJobId }
       : null;
@@ -128,12 +132,15 @@ export async function enrichFeedItemsWithSource(
     deps.getConversationRow ?? defaultGetConversationRow;
   const getScheduleName = deps.getScheduleName ?? defaultGetScheduleName;
 
-  const convCache = new Map<string, ConversationSourceRow | null>();
-  const resolveConv = (id: string): ConversationSourceRow | null => {
-    if (!convCache.has(id)) {
-      convCache.set(id, getConversationRow(id));
+  const convCache = new Map<string, Promise<ConversationSourceRow | null>>();
+  const resolveConv = (id: string): Promise<ConversationSourceRow | null> => {
+    const cached = convCache.get(id);
+    if (cached) {
+      return cached;
     }
-    return convCache.get(id) ?? null;
+    const pending = Promise.resolve(getConversationRow(id));
+    convCache.set(id, pending);
+    return pending;
   };
 
   const scheduleNameCache = new Map<string, string | null>();
@@ -146,7 +153,9 @@ export async function enrichFeedItemsWithSource(
 
   return await Promise.all(
     items.map(async (item) => {
-      const row = item.conversationId ? resolveConv(item.conversationId) : null;
+      const row = item.conversationId
+        ? await resolveConv(item.conversationId)
+        : null;
       const sourceType = classifyConversationSource(row?.source);
 
       const metadataScheduleId =

@@ -93,7 +93,7 @@ export async function emitScheduleResultNotification(
       return;
     }
 
-    const latestRow = resolveLatestRunRow(conversationId, runStartedAt);
+    const latestRow = await resolveLatestRunRow(conversationId, runStartedAt);
     if (!latestRow) {
       return;
     }
@@ -101,8 +101,12 @@ export async function emitScheduleResultNotification(
     // The run delivered around the pipeline through the messaging tool, and
     // the call succeeded. The user has the result; a notification reading
     // "posted it" on top would be the duplicate.
-    const runRows = collectRunRows(latestRow, conversationId, runStartedAt);
-    if (deliveredThroughMessagingTool(conversationId, runRows)) {
+    const runRows = await collectRunRows(
+      latestRow,
+      conversationId,
+      runStartedAt,
+    );
+    if (await deliveredThroughMessagingTool(conversationId, runRows)) {
       return;
     }
 

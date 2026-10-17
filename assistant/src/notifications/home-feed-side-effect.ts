@@ -115,7 +115,7 @@ export async function writeHomeFeedItemForSignal(
   vellumDelivery?: NotificationDeliveryResult,
 ): Promise<FeedItem | null> {
   const { mirror, sourceConversationId, sourceScheduleJobId } =
-    resolveHomeFeedMirror(signal, vellumDelivery?.conversationId);
+    await resolveHomeFeedMirror(signal, vellumDelivery?.conversationId);
   if (!mirror) {
     return null;
   }
@@ -404,11 +404,11 @@ async function appendSummaryToFeedTarget(
  * than failing an edit that has already partly applied. Returns whether a row
  * was rewritten.
  */
-export function updateFeedItemConversationMessage(
+export async function updateFeedItemConversationMessage(
   item: FeedItem,
   body: string,
   alreadyRewritten?: ReadonlySet<string>,
-): boolean {
+): Promise<boolean> {
   const messageId = item.metadata?.[CONVERSATION_MESSAGE_ID_KEY];
   if (typeof messageId !== "string" || messageId.length === 0) {
     return false;
@@ -424,7 +424,7 @@ export function updateFeedItemConversationMessage(
     // and the channels.
     if (
       !item.conversationId ||
-      !getMessageById(messageId, item.conversationId)
+      !(await getMessageById(messageId, item.conversationId))
     ) {
       log.warn(
         { feedItemId: item.id, messageId },
@@ -555,14 +555,14 @@ function deriveDetailPanelKind(
  * purpose: the bell is their canonical home whatever conversation they pair
  * with.
  */
-function resolveHomeFeedMirror(
+async function resolveHomeFeedMirror(
   signal: NotificationSignal,
   fallbackConversationId?: string,
-): {
+): Promise<{
   mirror: boolean;
   sourceConversationId?: string;
   sourceScheduleJobId?: string;
-} {
+}> {
   let sourceRow: {
     conversationType?: string;
     scheduleJobId?: string | null;
@@ -570,7 +570,7 @@ function resolveHomeFeedMirror(
   const conversationId = signal.sourceContextId;
   if (conversationId) {
     try {
-      sourceRow = getConversation(conversationId) ?? null;
+      sourceRow = (await getConversation(conversationId)) ?? null;
     } catch {
       sourceRow = null;
     }
@@ -588,7 +588,7 @@ function resolveHomeFeedMirror(
   if (isGuardianRequestSignalEvent(signal.sourceEventName)) {
     return { mirror: true, sourceConversationId, sourceScheduleJobId };
   }
-  if (isAssistantInitiatedThreadDelivery(fallbackConversationId)) {
+  if (await isAssistantInitiatedThreadDelivery(fallbackConversationId)) {
     return { mirror: false };
   }
   if (signalMirrorsToHomeFeed(signal, sourceRow?.conversationType)) {
@@ -606,15 +606,15 @@ function resolveHomeFeedMirror(
  * hiccup degrades to the pre-existing behavior (a bell row) rather than
  * dropping the notification everywhere.
  */
-function isAssistantInitiatedThreadDelivery(
+async function isAssistantInitiatedThreadDelivery(
   deliveryConversationId: string | undefined,
-): boolean {
+): Promise<boolean> {
   if (!deliveryConversationId) {
     return false;
   }
   try {
     return (
-      getConversation(deliveryConversationId)?.source ===
+      (await getConversation(deliveryConversationId))?.source ===
       ASSISTANT_INITIATED_SOURCE
     );
   } catch {

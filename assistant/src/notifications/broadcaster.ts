@@ -372,7 +372,7 @@ export class NotificationBroadcaster {
     );
     const assistantInitiatedThread =
       options?.assistantInitiatedThread?.resolution ??
-      resolveAssistantInitiatedThread(signal);
+      (await resolveAssistantInitiatedThread(signal));
     const presentation: NotificationPresentationContext = {};
     const resolveSilent = () =>
       isLocalNotificationSilent(
@@ -606,10 +606,10 @@ export class NotificationBroadcaster {
                 (existingDelivery.conversationAction === "start_new" ||
                   (existingDelivery.conversationAction === "reuse_existing" &&
                     existingDelivery.conversationFallbackUsed === 1)) &&
-                isPersistedAssistantInitiatedThread(
+                (await isPersistedAssistantInitiatedThread(
                   existingDelivery.conversationId,
                   existingDelivery.messageId,
-                );
+                ));
             }
             log.info(
               {
@@ -656,10 +656,10 @@ export class NotificationBroadcaster {
             assistantInitiatedThread.isCandidate &&
             pairing.createdNewConversation &&
             pairing.strategy === "start_new_conversation" &&
-            isPersistedAssistantInitiatedThread(
+            (await isPersistedAssistantInitiatedThread(
               pairing.conversationId,
               pairing.messageId,
-            );
+            ));
         }
 
         // For the vellum and platform channels, merge the conversationId into
@@ -678,8 +678,10 @@ export class NotificationBroadcaster {
               : pairing;
           const deepLinkConversationId =
             deepLinkPairing.conversationId ??
-            resolveSourceConversationId(notificationConversationId(signal)) ??
-            resolveDeepLinkConversationId(signal.contextPayload);
+            (await resolveSourceConversationId(
+              notificationConversationId(signal),
+            )) ??
+            (await resolveDeepLinkConversationId(signal.contextPayload));
           if (deepLinkConversationId) {
             deepLinkTarget = {
               ...deepLinkTarget,
@@ -1085,14 +1087,16 @@ export class NotificationBroadcaster {
  * `access-req-*` strings) here; those simply return undefined so the deep
  * link omits the conversation target.
  */
-function resolveSourceConversationId(
+async function resolveSourceConversationId(
   sourceContextId: string | undefined,
-): string | undefined {
+): Promise<string | undefined> {
   if (!sourceContextId) {
     return undefined;
   }
   try {
-    return getConversation(sourceContextId) ? sourceContextId : undefined;
+    return (await getConversation(sourceContextId))
+      ? sourceContextId
+      : undefined;
   } catch {
     return undefined;
   }
@@ -1106,15 +1110,15 @@ function resolveSourceConversationId(
  * than the app's default landing. Validates that the id points at a real
  * conversation row before returning it.
  */
-function resolveDeepLinkConversationId(
+async function resolveDeepLinkConversationId(
   contextPayload: Record<string, unknown> | undefined,
-): string | undefined {
+): Promise<string | undefined> {
   const raw = contextPayload?.deepLinkConversationId;
   if (typeof raw !== "string" || raw.length === 0) {
     return undefined;
   }
   try {
-    return getConversation(raw) ? raw : undefined;
+    return (await getConversation(raw)) ? raw : undefined;
   } catch {
     return undefined;
   }

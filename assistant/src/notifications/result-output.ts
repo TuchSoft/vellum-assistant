@@ -23,10 +23,10 @@ const RUN_HISTORY_PAGE_SIZE = 200;
 
 /** A messaging delivery counts only after its matching tool result succeeds.
  * Missing or failed results leave the fallback available. */
-export function deliveredThroughMessagingTool(
+export async function deliveredThroughMessagingTool(
   conversationId: string,
   runRows: readonly MessageRow[],
-): boolean {
+): Promise<boolean> {
   const callIds = new Set<string>();
   for (const row of runRows) {
     for (const block of row.content) {
@@ -39,7 +39,7 @@ export function deliveredThroughMessagingTool(
     return false;
   }
   const [firstRunRow] = runRows;
-  for (const row of getMessagesAfter(conversationId, {
+  for (const row of await getMessagesAfter(conversationId, {
     id: firstRunRow.id,
     createdAt: firstRunRow.createdAt,
   })) {
@@ -63,11 +63,11 @@ export function deliveredThroughMessagingTool(
 }
 
 /** Read the assistant rows of one turn, bounded by the run start. */
-export function collectRunRows(
+export async function collectRunRows(
   latestRow: MessageRow,
   conversationId: string,
   runStartedAt: number,
-): MessageRow[] {
+): Promise<MessageRow[]> {
   if (latestRow.createdAt < runStartedAt) {
     return [];
   }
@@ -77,7 +77,7 @@ export function collectRunRows(
   }
   let beforeMessageId = latestRow.id;
   while (true) {
-    const history = getRecentConversationMessages(
+    const history = await getRecentConversationMessages(
       conversationId,
       RUN_HISTORY_PAGE_SIZE,
       beforeMessageId,
@@ -135,18 +135,18 @@ export function resolveRunOutput(
 }
 
 /** Read the final assistant row only when it belongs to this run. */
-export function resolveLatestRunRow(
+export async function resolveLatestRunRow(
   conversationId: string,
   runStartedAt: number,
-): MessageRow | undefined {
-  const attention = getAttentionStateByConversationIds([conversationId]).get(
-    conversationId,
-  );
+): Promise<MessageRow | undefined> {
+  const attention = (
+    await getAttentionStateByConversationIds([conversationId])
+  ).get(conversationId);
   const assistantMessageId = attention?.latestAssistantMessageId;
   if (!assistantMessageId) {
     return undefined;
   }
-  const row = getMessageById(assistantMessageId, conversationId);
+  const row = await getMessageById(assistantMessageId, conversationId);
   if (!row || row.createdAt < runStartedAt) {
     return undefined;
   }

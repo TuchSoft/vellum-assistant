@@ -103,11 +103,11 @@ function isInternalTurnTrigger(row: MessageRow): boolean {
   return metadata?.automated === true || isEchoSuppressedUserMessage(metadata);
 }
 
-function* completionCandidates(
+async function* completionCandidates(
   conversationId: string,
   trigger: MessageRow,
   result: MessageRow | undefined,
-): Generator<{
+): AsyncGenerator<{
   trigger: MessageRow;
   turnTrigger: MessageRow;
   result: MessageRow;
@@ -122,7 +122,7 @@ function* completionCandidates(
   let previousResult: MessageRow | undefined;
   let sharedTurn: { trigger: MessageRow; result: MessageRow } | undefined;
   while (true) {
-    const history = getRecentConversationMessages(
+    const history = await getRecentConversationMessages(
       conversationId,
       COMPLETION_HISTORY_LIMIT,
       beforeMessageId,
@@ -186,7 +186,7 @@ function* completionCandidates(
   }
 }
 
-function childDeliveredResult(work: CompletedWork): boolean {
+async function childDeliveredResult(work: CompletedWork): Promise<boolean> {
   const childId = work.childConversationId;
   if (!childId) {
     return false;
@@ -196,13 +196,13 @@ function childDeliveredResult(work: CompletedWork): boolean {
   ) {
     return true;
   }
-  const latest = resolveLatestRunRow(childId, work.startedAt);
+  const latest = await resolveLatestRunRow(childId, work.startedAt);
   return (
     latest !== undefined &&
-    deliveredThroughMessagingTool(
+    (await deliveredThroughMessagingTool(
       childId,
-      collectRunRows(latest, childId, work.startedAt),
-    )
+      await collectRunRows(latest, childId, work.startedAt),
+    ))
   );
 }
 
@@ -236,7 +236,7 @@ export async function emitBackgroundResultNotification(params: {
     }
     if (
       !canNotifyConversation(
-        params.conversation ?? getConversation(conversationId),
+        params.conversation ?? (await getConversation(conversationId)),
       )
     ) {
       return;
@@ -252,11 +252,11 @@ export async function emitBackgroundResultNotification(params: {
       logger: rlog,
     });
     // Eligibility reads stay together after all asynchronous lookups.
-    const conversation = getConversation(conversationId);
+    const conversation = await getConversation(conversationId);
     if (!canNotifyConversation(conversation)) {
       return;
     }
-    const trigger = getMessageById(userMessageId, conversationId);
+    const trigger = await getMessageById(userMessageId, conversationId);
     if (!trigger) {
       return;
     }
@@ -264,9 +264,9 @@ export async function emitBackgroundResultNotification(params: {
     if (hasPendingBackgroundWork(conversationId)) {
       return;
     }
-    const attention = getAttentionStateByConversationIds([conversationId]).get(
-      conversationId,
-    );
+    const attention = (
+      await getAttentionStateByConversationIds([conversationId])
+    ).get(conversationId);
     if (
       !hasUnseenLatestAssistantMessage(attention) ||
       (assistantMessageId !== undefined &&
@@ -276,9 +276,9 @@ export async function emitBackgroundResultNotification(params: {
     }
     const latestId = assistantMessageId ?? attention?.latestAssistantMessageId;
     const latestResult = latestId
-      ? (getMessageById(latestId, conversationId) ?? undefined)
+      ? ((await getMessageById(latestId, conversationId)) ?? undefined)
       : undefined;
-    for (const candidate of completionCandidates(
+    for await (const candidate of completionCandidates(
       conversationId,
       trigger,
       params.recoverOnly ? undefined : latestResult,
@@ -310,15 +310,15 @@ export async function emitBackgroundResultNotification(params: {
       ) {
         return;
       }
-      if (childDeliveredResult(work)) {
+      if (await childDeliveredResult(work)) {
         continue;
       }
-      const rows = collectRunRows(
+      const rows = await collectRunRows(
         result,
         conversationId,
         turnTrigger.createdAt,
       );
-      if (deliveredThroughMessagingTool(conversationId, rows)) {
+      if (await deliveredThroughMessagingTool(conversationId, rows)) {
         return;
       }
       const output = resolveRunResult(rows);

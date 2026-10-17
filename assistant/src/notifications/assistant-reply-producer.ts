@@ -51,15 +51,15 @@ import { collectRunRows } from "./result-output.js";
 const ASSISTANT_REPLY_PUSH_FLAG = "assistant-reply-push" as const;
 const REPLY_HISTORY_PAGE_SIZE = 200;
 
-function isCurrentUnseenReply(
+async function isCurrentUnseenReply(
   conversationId: string,
   assistantRow: MessageRow,
   turnBoundaryId: string,
   startedAfter: number,
-): boolean {
-  const attention = getAttentionStateByConversationIds([conversationId]).get(
-    conversationId,
-  );
+): Promise<boolean> {
+  const attention = (
+    await getAttentionStateByConversationIds([conversationId])
+  ).get(conversationId);
   if (
     !hasUnseenLatestAssistantMessage(attention) ||
     assistantRow.createdAt <=
@@ -73,7 +73,7 @@ function isCurrentUnseenReply(
   // A same-turn private wrap-up can own attention while the public reply is earlier.
   // Persisted turn boundaries also supersede replies whose projection is delayed.
   while (true) {
-    const history = getRecentConversationMessages(
+    const history = await getRecentConversationMessages(
       conversationId,
       REPLY_HISTORY_PAGE_SIZE,
       beforeMessageId,
@@ -126,10 +126,13 @@ function flattenTitleWhitespace(value: string): string {
  * Reads attachment metadata only (no base64), and the caller invokes this only
  * once the text preview has come up empty.
  */
-function describeReplyMedia(text: string, assistantMessageId: string): string {
-  const filenames = getAttachmentMetadataForMessage(assistantMessageId).map(
-    (attachment) => attachment.originalFilename,
-  );
+async function describeReplyMedia(
+  text: string,
+  assistantMessageId: string,
+): Promise<string> {
+  const filenames = (
+    await getAttachmentMetadataForMessage(assistantMessageId)
+  ).map((attachment) => attachment.originalFilename);
   const embeds = mediaEmbeds(text);
   const tracked = embeds.filter((embed) => embed.tracked);
 
@@ -196,7 +199,8 @@ export async function emitAssistantReplyNotification(params: {
     if (!userMessageId) {
       return;
     }
-    const conversation = params.conversation ?? getConversation(conversationId);
+    const conversation =
+      params.conversation ?? (await getConversation(conversationId));
     if (!conversation) {
       return;
     }
@@ -209,19 +213,25 @@ export async function emitAssistantReplyNotification(params: {
     if (kind !== "user") {
       return;
     }
-    const attention = getAttentionStateByConversationIds([conversationId]).get(
-      conversationId,
-    );
+    const attention = (
+      await getAttentionStateByConversationIds([conversationId])
+    ).get(conversationId);
     if (!hasUnseenLatestAssistantMessage(attention)) {
       return;
     }
 
-    const assistantRow = getMessageById(assistantMessageId, conversationId);
+    const assistantRow = await getMessageById(
+      assistantMessageId,
+      conversationId,
+    );
     if (!assistantRow) {
       return;
     }
 
-    const initiatingMessage = getMessageById(userMessageId, conversationId);
+    const initiatingMessage = await getMessageById(
+      userMessageId,
+      conversationId,
+    );
     if (!initiatingMessage) {
       return;
     }
@@ -246,10 +256,12 @@ export async function emitAssistantReplyNotification(params: {
       turnBoundaryId = initiatingMetadata.turnBatchedInto;
     }
 
-    const firstAssistantRow = collectRunRows(
-      assistantRow,
-      conversationId,
-      initiatingMessage.createdAt,
+    const firstAssistantRow = (
+      await collectRunRows(
+        assistantRow,
+        conversationId,
+        initiatingMessage.createdAt,
+      )
     )[0];
     const startedAfter = firstAssistantRow?.createdAt ?? assistantRow.createdAt;
     if (hasPendingBackgroundWork(conversationId, { startedAfter })) {
@@ -272,7 +284,9 @@ export async function emitAssistantReplyNotification(params: {
     );
     const preview =
       sanitizeMultilineMessagePreview(stripMarkdownForPreview(text)) ||
-      sanitizeMessagePreview(describeReplyMedia(text, assistantMessageId));
+      sanitizeMessagePreview(
+        await describeReplyMedia(text, assistantMessageId),
+      );
     if (!preview) {
       return;
     }
@@ -296,12 +310,12 @@ export async function emitAssistantReplyNotification(params: {
     });
     if (
       hasPendingBackgroundWork(conversationId, { startedAfter }) ||
-      !isCurrentUnseenReply(
+      !(await isCurrentUnseenReply(
         conversationId,
         assistantRow,
         turnBoundaryId,
         startedAfter,
-      )
+      ))
     ) {
       return;
     }

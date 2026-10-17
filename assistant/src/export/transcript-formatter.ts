@@ -85,10 +85,10 @@ function formatRole(
     : resolveName(options.assistantName, "Assistant");
 }
 
-function formatSubagentMessages(
-  msgs: ReturnType<typeof getMessages>,
+async function formatSubagentMessages(
+  msgs: Awaited<ReturnType<typeof getMessages>>,
   options: TranscriptFormatOptions = {},
-): string {
+): Promise<string> {
   const lines: string[] = [];
   for (const msg of msgs) {
     const role = formatRole(msg.role, options);
@@ -117,7 +117,7 @@ function parseContent(raw: string | unknown[]): ContentBlock[] {
   }
 }
 
-type TranscriptMessage = ReturnType<typeof getMessages>[number];
+type TranscriptMessage = Awaited<ReturnType<typeof getMessages>>[number];
 
 /**
  * Format a slice of messages as a transcript body (no top-of-conversation
@@ -128,13 +128,13 @@ type TranscriptMessage = ReturnType<typeof getMessages>[number];
  * labels honor `TranscriptFormatOptions` so the memory-retrospective prompt
  * can render the conversation under the assistant and user display names.
  */
-export function formatMessageSliceForTranscript(
+export async function formatMessageSliceForTranscript(
   messages: TranscriptMessage[],
   options: TranscriptFormatOptions = {},
-): string {
+): Promise<string> {
   const lines: string[] = [];
   for (const msg of messages) {
-    appendMessageBlock(lines, msg, options);
+    await appendMessageBlock(lines, msg, options);
   }
   return lines.join("\n");
 }
@@ -150,11 +150,11 @@ export function formatMessageSliceForTranscript(
  * the human user's name. An empty options object keeps child transcripts on
  * generic role labels.
  */
-function appendSubagentSection(
+async function appendSubagentSection(
   lines: string[],
   msg: TranscriptMessage,
   subagentOptions: TranscriptFormatOptions = {},
-): void {
+): Promise<void> {
   const notif = parseMessageMetadata(msg.metadata)?.subagentNotification;
   if (
     !notif ||
@@ -165,10 +165,10 @@ function appendSubagentSection(
   ) {
     return;
   }
-  const subMessages = getMessages(notif.conversationId);
+  const subMessages = await getMessages(notif.conversationId);
   lines.push(`### Subagent: ${notif.label} (${notif.status})`);
   lines.push("");
-  lines.push(formatSubagentMessages(subMessages, subagentOptions));
+  lines.push(await formatSubagentMessages(subMessages, subagentOptions));
   lines.push("");
 }
 
@@ -178,11 +178,11 @@ function appendSubagentSection(
  * `options` (display names + time zone); the subagent child transcript inherits
  * only the time zone — see {@link appendSubagentSection}.
  */
-function appendMessageBlock(
+async function appendMessageBlock(
   lines: string[],
   msg: TranscriptMessage,
   options: TranscriptFormatOptions = {},
-): void {
+): Promise<void> {
   const role = formatRole(msg.role, options);
   const time = formatLocalTimestamp(msg.createdAt, options.timeZone);
   const content = parseContent(msg.content);
@@ -192,5 +192,5 @@ function appendMessageBlock(
   lines.push(text);
   lines.push("");
 
-  appendSubagentSection(lines, msg, { timeZone: options.timeZone });
+  await appendSubagentSection(lines, msg, { timeZone: options.timeZone });
 }

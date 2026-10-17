@@ -31,9 +31,10 @@ export function peekAcpSessionManager(): AcpSessionManager | null {
 /**
  * Disposes the singleton AcpSessionManager and nulls the reference.
  */
-export function disposeAcpSessionManager(): void {
+export async function disposeAcpSessionManager(): Promise<void> {
   if (manager) {
-    manager.dispose();
+    const current = manager;
     manager = null;
+    await current.dispose();
   }
 }

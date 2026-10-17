@@ -767,7 +767,7 @@ export async function runDaemon(): Promise<void> {
   // the same shape as schedule recovery above.
   try {
     await reconcilePluginSchedules();
-    reconcileAppPins();
+    await reconcileAppPins();
   } catch (err) {
     log.error({ err }, "Plugin schedule reconcile failed, continuing startup");
   }

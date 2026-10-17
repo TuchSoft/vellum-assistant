@@ -32,7 +32,7 @@ export async function executeAcpAbort(
 
   try {
     const manager = getAcpSessionManager();
-    manager.close(acpSessionId);
+    await manager.close(acpSessionId);
 
     return {
       content: JSON.stringify({

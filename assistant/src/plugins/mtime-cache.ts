@@ -299,7 +299,7 @@ export async function reconcilePluginSourcesNow(): Promise<void> {
     try {
       const { reconcileAppPins } =
         await import("../apps/app-pin-reconciler.js");
-      reconcileAppPins();
+      await reconcileAppPins();
     } catch (err) {
       log.error({ err }, "app pin reconcile failed");
     }

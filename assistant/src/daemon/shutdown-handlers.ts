@@ -127,7 +127,7 @@ async function shutdown(): Promise<void> {
 
   // Abort all running subagents and tear down conversation-related state.
   getSubagentManager().disposeAll();
-  disposeAcpSessionManager();
+  await disposeAcpSessionManager();
   stopConversationEvictor();
   stopConfigWatcher();
   stopCliIpcServer();

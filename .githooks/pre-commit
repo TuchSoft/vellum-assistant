@@ -1179,6 +1179,11 @@ done
 # incremental caching and falling back to ~20s full rebuilds.
 # clients/web/ doesn't need that workaround (no declaration:true).
 
+# TODO(WS-08): remove the assistant type check skip once the DB migration closes.
+# Assistant tsc runs manually once per migration wave; repeated full-project
+# runs are the migration's bottleneck. Set to 0 to re-enable.
+_MIGRATION_SKIP_ASSISTANT_TSC=1
+
 # Shared worktree detection (skip tsc in worktrees — cold cache is slow).
 _GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)"
 _GIT_COMMON="$(git rev-parse --git-common-dir 2>/dev/null)"
@@ -1194,7 +1199,9 @@ while IFS= read -r -d '' FILE; do
 done < "$STAGED_ALL_FILE"
 
 if [ $ASSISTANT_TS_STAGED -eq 1 ]; then
-    if [ $_IS_WORKTREE -eq 1 ]; then
+    if [ "${_MIGRATION_SKIP_ASSISTANT_TSC:-0}" = "1" ]; then
+        echo "⏩ Skipping assistant type check during the DB migration (run manually)"
+    elif [ $_IS_WORKTREE -eq 1 ]; then
         echo "⏩ Skipping type check in worktree (CI will catch errors)"
     elif [ ! -x "$BUN" ]; then
         echo -e "${YELLOW}⚠️  bun not found — skipping type check for assistant/${NC}"

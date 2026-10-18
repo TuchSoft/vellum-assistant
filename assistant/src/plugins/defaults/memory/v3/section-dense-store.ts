@@ -19,7 +19,10 @@
 // shared Qdrant client; the read side (`dense.ts`) reuses that client to query
 // this collection.
 
+import { randomUUID } from "node:crypto";
+
 import { QdrantClient as QdrantRestClient } from "@qdrant/js-client-rest";
+import { and, eq } from "drizzle-orm";
 import { v5 as uuidv5 } from "uuid";
 
 import type { AssistantConfig } from "../../../../config/types.js";
@@ -28,15 +31,16 @@ import {
   getMemoryCheckpoint,
   setMemoryCheckpoint,
 } from "../../../../persistence/checkpoints.js";
+import type { AsyncDb } from "../../../../persistence/db-facade.js";
 import {
   durableEmbeddingCacheExtras,
   getMemoryBackendStatus,
 } from "../../../../persistence/embeddings/embedding-backend.js";
-import {
-  readEmbeddingCache,
-  writeEmbeddingCache,
-} from "../../../../persistence/embeddings/embedding-cache.js";
 import { embeddingContentHashWithExtras } from "../../../../persistence/embeddings/embedding-types.js";
+import {
+  blobToVector,
+  vectorToBlob,
+} from "../../../../persistence/job-utils.js";
 import { embedWithBackend, resolveQdrantUrl } from "../embeddings.js";
 import { getLogger } from "../logging.js";
 import { memoryDbOrNull } from "../memory-db.js";
@@ -509,6 +513,114 @@ export async function recreateSectionCollection(
  */
 const V3_SECTION_TARGET_TYPE = "v3_section";
 
+/** A cached dense vector plus the content hash it was embedded from. */
+interface EmbeddingCacheEntry {
+  dense: number[];
+  contentHash: string;
+}
+
+/**
+ * Look up a cached dense vector keyed on `(targetType, targetId, provider,
+ * model)`. Returns the row only when the persisted dimensions match
+ * `expectedDim` — a stale row from a previous `vectorSize` is treated as a miss
+ * so the caller re-embeds. A row with a null `contentHash` (legacy/corrupt) is
+ * likewise a miss rather than a key the caller could misalign against.
+ */
+async function readEmbeddingCache(
+  db: AsyncDb,
+  key: {
+    targetType: string;
+    targetId: string;
+    provider: string;
+    model: string;
+    expectedDim: number;
+  },
+): Promise<EmbeddingCacheEntry | null> {
+  const table = db.schema.memoryEmbeddings;
+  const rows = await db.orm
+    .select({
+      vectorBlob: table.vectorBlob,
+      vectorJson: table.vectorJson,
+      dimensions: table.dimensions,
+      contentHash: table.contentHash,
+    })
+    .from(table)
+    .where(
+      and(
+        eq(table.targetType, key.targetType),
+        eq(table.targetId, key.targetId),
+        eq(table.provider, key.provider),
+        eq(table.model, key.model),
+      ),
+    );
+  const row = rows[0];
+  if (!row || row.dimensions !== key.expectedDim) {
+    return null;
+  }
+  if (row.contentHash === null) {
+    return null;
+  }
+  const dense = row.vectorBlob
+    ? blobToVector(row.vectorBlob)
+    : (JSON.parse(row.vectorJson!) as number[]);
+  return { dense, contentHash: row.contentHash };
+}
+
+/**
+ * Persist a freshly embedded dense vector, upserting on the
+ * `(targetType, targetId, provider, model)` unique key. Best-effort: a write
+ * failure is logged and swallowed so the caller's downstream write still runs.
+ */
+async function writeEmbeddingCache(
+  db: AsyncDb,
+  params: {
+    targetType: string;
+    targetId: string;
+    dense: number[];
+    contentHash: string;
+    provider: string;
+    model: string;
+    now: number;
+  },
+): Promise<void> {
+  const { targetType, targetId, dense, contentHash, provider, model, now } =
+    params;
+  try {
+    const table = db.schema.memoryEmbeddings;
+    const blobValue = vectorToBlob(dense);
+    await db.orm
+      .insert(table)
+      .values({
+        id: randomUUID(),
+        targetType,
+        targetId,
+        provider,
+        model,
+        dimensions: dense.length,
+        vectorBlob: blobValue,
+        vectorJson: null,
+        contentHash,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [table.targetType, table.targetId, table.provider, table.model],
+        set: {
+          vectorBlob: blobValue,
+          vectorJson: null,
+          dimensions: dense.length,
+          contentHash,
+          updatedAt: now,
+        },
+      });
+  } catch (err) {
+    log.warn(
+      { err, targetType, targetId },
+      "Failed to write embedding cache row",
+    );
+  }
+}
+
 /** Human-readable cache id for a section: `<article>#<ordinal>`. */
 function sectionCacheId(article: string, ordinal: number): string {
   return `${article}#${ordinal}`;
@@ -621,7 +733,7 @@ async function embedSectionsCached(
   // no provider resolves (backend down/disabled) skip the cache and let the
   // batched embed below surface the failure exactly as the uncached path did.
   const status = await getMemoryBackendStatus(config);
-  const mem = memoryDbOrNull("embedSectionsCached");
+  const mem = await memoryDbOrNull("embedSectionsCached");
 
   // Fold provider extras that change the vector for identical text (Gemini
   // task type / dimensions, custom endpoint URL / dimensions) into the
@@ -636,7 +748,7 @@ async function embedSectionsCached(
   if (mem && status.provider && status.model) {
     for (let i = 0; i < sections.length; i++) {
       const section = sections[i]!;
-      const cached = readEmbeddingCache(mem, {
+      const cached = await readEmbeddingCache(mem, {
         targetType: V3_SECTION_TARGET_TYPE,
         targetId: sectionCacheId(section.article, section.ordinal),
         provider: status.provider,
@@ -696,7 +808,7 @@ async function embedSectionsCached(
     result[i] = vector;
     const section = sections[i]!;
     if (mem) {
-      writeEmbeddingCache(mem, {
+      await writeEmbeddingCache(mem, {
         targetType: V3_SECTION_TARGET_TYPE,
         targetId: sectionCacheId(section.article, section.ordinal),
         dense: vector,

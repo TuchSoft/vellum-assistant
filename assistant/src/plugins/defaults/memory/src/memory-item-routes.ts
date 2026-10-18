@@ -50,7 +50,7 @@ import {
   isMemoryEnabled,
   MEMORY_V2_CONSOLIDATION_JOB_TRIGGERS,
 } from "../../../../persistence/jobs-store.js";
-import { memoryGraphNodes } from "../../../../persistence/schema/index.js";
+import { memoryGraphNodes } from "../../../../persistence/pg-schema/index.js";
 import { ACTOR_PRINCIPALS } from "../../../../runtime/auth/route-policy.js";
 import {
   BadRequestError,
@@ -324,7 +324,7 @@ async function handleListMemoryItems(queryParams: Record<string, string>) {
     );
   }
 
-  const db = memoryDbOrNull("listMemoryItems");
+  const db = await memoryDbOrNull("listMemoryItems");
   if (!db) {
     throw new Error("memory database unavailable");
   }
@@ -354,12 +354,11 @@ async function handleListMemoryItems(queryParams: Record<string, string>) {
         kindCountConditions.push(fidelityFilter);
       }
 
-      const kindCountRows = db
+      const kindCountRows = await db.orm
         .select({ kind: memoryGraphNodes.type, count: count() })
         .from(memoryGraphNodes)
         .where(and(...kindCountConditions))
-        .groupBy(memoryGraphNodes.type)
-        .all();
+        .groupBy(memoryGraphNodes.type);
       const semanticKindCounts: Record<string, number> = {};
       for (const row of kindCountRows) {
         semanticKindCounts[row.kind] = row.count;
@@ -379,14 +378,11 @@ async function handleListMemoryItems(queryParams: Record<string, string>) {
         }
 
         if (filterConditions.length > 1) {
-          const validIdSet = new Set(
-            db
-              .select({ id: memoryGraphNodes.id })
-              .from(memoryGraphNodes)
-              .where(and(...filterConditions))
-              .all()
-              .map((r) => r.id),
-          );
+          const validIdRows = await db.orm
+            .select({ id: memoryGraphNodes.id })
+            .from(memoryGraphNodes)
+            .where(and(...filterConditions));
+          const validIdSet = new Set(validIdRows.map((r) => r.id));
           filteredIds = semanticResult.ids.filter((id) => validIdSet.has(id));
         }
       }
@@ -411,11 +407,10 @@ async function handleListMemoryItems(queryParams: Record<string, string>) {
         hydrationConditions.push(eq(memoryGraphNodes.type, kindParam));
       }
 
-      const rows = db
+      const rows = await db.orm
         .select()
         .from(memoryGraphNodes)
-        .where(and(...hydrationConditions))
-        .all();
+        .where(and(...hydrationConditions));
 
       // Preserve Qdrant relevance ordering
       const idOrder = new Map(pageIds.map((id, i) => [id, i]));
@@ -444,12 +439,11 @@ async function handleListMemoryItems(queryParams: Record<string, string>) {
   const kindCountWhere =
     kindCountConditions.length > 0 ? and(...kindCountConditions) : undefined;
 
-  const sqlKindCountRows = db
+  const sqlKindCountRows = await db.orm
     .select({ kind: memoryGraphNodes.type, count: count() })
     .from(memoryGraphNodes)
     .where(kindCountWhere)
-    .groupBy(memoryGraphNodes.type)
-    .all();
+    .groupBy(memoryGraphNodes.type);
   const kindCounts: Record<string, number> = {};
   for (const row of sqlKindCountRows) {
     kindCounts[row.kind] = row.count;
@@ -470,25 +464,23 @@ async function handleListMemoryItems(queryParams: Record<string, string>) {
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
   // Count query
-  const countResult = db
+  const countRows = await db.orm
     .select({ count: count() })
     .from(memoryGraphNodes)
-    .where(whereClause)
-    .get();
-  const total = countResult?.count ?? 0;
+    .where(whereClause);
+  const total = countRows[0]?.count ?? 0;
 
   // Data query
   const sortColumn = SORT_COLUMN_MAP[sortParam];
   const orderFn = orderParam === "asc" ? asc : desc;
 
-  const rows = db
+  const rows = await db.orm
     .select()
     .from(memoryGraphNodes)
     .where(whereClause)
     .orderBy(orderFn(sortColumn))
     .limit(limitParam)
-    .offset(offsetParam)
-    .all();
+    .offset(offsetParam);
 
   const items = rows.map((row) => {
     const node = rowToNode(row);
@@ -568,11 +560,11 @@ async function handleCreateMemoryItem(body: Record<string, unknown>) {
     : trimmedStatement;
 
   // Check for duplicate content
-  const db = memoryDbOrNull("createMemoryItem");
+  const db = await memoryDbOrNull("createMemoryItem");
   if (!db) {
     throw new Error("memory database unavailable");
   }
-  const existing = db
+  const existingRows = await db.orm
     .select({ id: memoryGraphNodes.id })
     .from(memoryGraphNodes)
     .where(
@@ -580,8 +572,8 @@ async function handleCreateMemoryItem(body: Record<string, unknown>) {
         eq(memoryGraphNodes.content, content),
         ne(memoryGraphNodes.fidelity, "gone"),
       ),
-    )
-    .get();
+    );
+  const existing = existingRows[0];
 
   if (existing) {
     throw new ConflictError("A memory with this content already exists");
@@ -690,11 +682,11 @@ async function handleUpdateMemoryItem(
     changes.fidelity === "vivid" && existing.fidelity === "gone";
   if (contentChanged || reactivating) {
     const contentToCheck = changes.content ?? existing.content;
-    const db = memoryDbOrNull("updateMemoryItem");
+    const db = await memoryDbOrNull("updateMemoryItem");
     if (!db) {
       throw new Error("memory database unavailable");
     }
-    const collision = db
+    const collisionRows = await db.orm
       .select({ id: memoryGraphNodes.id })
       .from(memoryGraphNodes)
       .where(
@@ -703,8 +695,8 @@ async function handleUpdateMemoryItem(
           ne(memoryGraphNodes.id, id),
           ne(memoryGraphNodes.fidelity, "gone"),
         ),
-      )
-      .get();
+      );
+    const collision = collisionRows[0];
 
     if (collision) {
       throw new ConflictError(
@@ -748,7 +740,7 @@ async function maybeEnqueueConsolidationForCreate(
     if (!usesConceptPageMemory(config.memory)) {
       return;
     }
-    if (hasActiveJobOfType("memory_v2_consolidate")) {
+    if (await hasActiveJobOfType("memory_v2_consolidate")) {
       return;
     }
     const intervalMs =

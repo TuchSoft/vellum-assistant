@@ -367,7 +367,7 @@ export async function maybeEnqueueGraphBootstrap(): Promise<void> {
   }
 
   // Don't enqueue if already in progress
-  if (hasActiveJobOfType("graph_bootstrap")) {
+  if (await hasActiveJobOfType("graph_bootstrap")) {
     return;
   }
 

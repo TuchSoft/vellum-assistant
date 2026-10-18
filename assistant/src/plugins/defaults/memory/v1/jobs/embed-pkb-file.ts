@@ -57,7 +57,9 @@ export async function embedPkbFileJob(
  * (file-write hook, startup reconcile); a later switch back to v1 rebuilds
  * the index via the startup reconcile.
  */
-export function enqueuePkbIndexJob(input: EmbedPkbFileJobInput): string {
+export async function enqueuePkbIndexJob(
+  input: EmbedPkbFileJobInput,
+): Promise<string> {
   if (!isMemoryEnabled()) {
     return "";
   }

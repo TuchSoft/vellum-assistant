@@ -38,7 +38,10 @@
 
 import { and, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 
-import { memoryV3InjectedSections } from "../../../../persistence/schema/index.js";
+import type {
+  AsyncDb,
+  SchemaTables,
+} from "../../../../persistence/db-facade.js";
 import { getLogger } from "../logging.js";
 import { memoryDbOrNull } from "../memory-db.js";
 import { unwrapMemoryBlock } from "../memory-marker.js";
@@ -65,10 +68,10 @@ const log = getLogger("memory-v3-ever-injected-store");
  *  first (`plugin-schema.ts`, which also copies the legacy card rows in);
  *  `null`, with the degraded-mode warning, when the connection is
  *  unavailable. */
-function memoryDb(context: string): ReturnType<typeof memoryDbOrNull> {
-  const mdb = memoryDbOrNull(context);
+async function memoryDb(context: string): Promise<AsyncDb | null> {
+  const mdb = await memoryDbOrNull(context);
   if (mdb) {
-    ensureMemoryV3InjectedSectionsSchemaOnce(mdb.$client);
+    await ensureMemoryV3InjectedSectionsSchemaOnce(mdb);
   }
   return mdb;
 }
@@ -166,55 +169,54 @@ const readOr = memoryReader(memoryDb, (err, context) =>
  * production consumers use the narrower accessors ({@link getActiveSections},
  * {@link getActiveEntries}, {@link getPrunedSections}, {@link residentBytes}).
  */
-export function getInjected(conversationId: string): InjectedSectionRow[] {
-  return readOr("getInjected", [], (mdb) =>
-    mdb
+export async function getInjected(
+  conversationId: string,
+): Promise<InjectedSectionRow[]> {
+  return readOr("getInjected", [], async (mdb) => {
+    const table = mdb.schema.memoryV3InjectedSections;
+    return mdb.orm
       .select({
-        slug: memoryV3InjectedSections.slug,
-        key: memoryV3InjectedSections.sectionKey,
-        bytes: memoryV3InjectedSections.bytes,
-        injectedAt: memoryV3InjectedSections.injectedAt,
-        lastSelectedAt: memoryV3InjectedSections.lastSelectedAt,
-        prunedAt: memoryV3InjectedSections.prunedAt,
+        slug: table.slug,
+        key: table.sectionKey,
+        bytes: table.bytes,
+        injectedAt: table.injectedAt,
+        lastSelectedAt: table.lastSelectedAt,
+        prunedAt: table.prunedAt,
       })
-      .from(memoryV3InjectedSections)
-      .where(eq(memoryV3InjectedSections.conversationId, conversationId))
-      .orderBy(
-        memoryV3InjectedSections.slug,
-        memoryV3InjectedSections.sectionKey,
-      )
-      .all(),
-  );
+      .from(table)
+      .where(eq(table.conversationId, conversationId))
+      .orderBy(table.slug, table.sectionKey);
+  });
 }
 
-function selectRefs(
+async function selectRefs(
   conversationId: string,
   pruned: boolean,
   context: string,
-): SectionRef[] {
-  return readOr(context, [], (mdb) =>
-    mdb
+): Promise<SectionRef[]> {
+  return readOr(context, [], async (mdb) => {
+    const table = mdb.schema.memoryV3InjectedSections;
+    return mdb.orm
       .select({
-        slug: memoryV3InjectedSections.slug,
-        key: memoryV3InjectedSections.sectionKey,
+        slug: table.slug,
+        key: table.sectionKey,
       })
-      .from(memoryV3InjectedSections)
+      .from(table)
       .where(
         and(
-          eq(memoryV3InjectedSections.conversationId, conversationId),
-          pruned
-            ? isNotNull(memoryV3InjectedSections.prunedAt)
-            : isNull(memoryV3InjectedSections.prunedAt),
+          eq(table.conversationId, conversationId),
+          pruned ? isNotNull(table.prunedAt) : isNull(table.prunedAt),
         ),
-      )
-      .all(),
-  );
+      );
+  });
 }
 
 /** The injection dedup set: sections currently resident, keyed by slug. */
-export function getActiveSections(conversationId: string): SectionRefSet {
+export async function getActiveSections(
+  conversationId: string,
+): Promise<SectionRefSet> {
   return toSectionRefSet(
-    selectRefs(conversationId, false, "getActiveSections"),
+    await selectRefs(conversationId, false, "getActiveSections"),
   );
 }
 
@@ -235,27 +237,24 @@ export interface ActiveInjectedEntry extends SectionRef {
  * Active (non-pruned) rows with byte and injection-time accounting: the prune
  * valve's candidate set ({@link ActiveInjectedEntry}).
  */
-export function getActiveEntries(
+export async function getActiveEntries(
   conversationId: string,
-): ActiveInjectedEntry[] {
-  return readOr("getActiveEntries", [], (mdb) =>
-    mdb
+): Promise<ActiveInjectedEntry[]> {
+  return readOr("getActiveEntries", [], async (mdb) => {
+    const table = mdb.schema.memoryV3InjectedSections;
+    return mdb.orm
       .select({
-        slug: memoryV3InjectedSections.slug,
-        key: memoryV3InjectedSections.sectionKey,
-        bytes: memoryV3InjectedSections.bytes,
-        injectedAt: memoryV3InjectedSections.injectedAt,
-        lastSelectedAt: memoryV3InjectedSections.lastSelectedAt,
+        slug: table.slug,
+        key: table.sectionKey,
+        bytes: table.bytes,
+        injectedAt: table.injectedAt,
+        lastSelectedAt: table.lastSelectedAt,
       })
-      .from(memoryV3InjectedSections)
+      .from(table)
       .where(
-        and(
-          eq(memoryV3InjectedSections.conversationId, conversationId),
-          isNull(memoryV3InjectedSections.prunedAt),
-        ),
-      )
-      .all(),
-  );
+        and(eq(table.conversationId, conversationId), isNull(table.prunedAt)),
+      );
+  });
 }
 
 /**
@@ -263,8 +262,12 @@ export function getActiveEntries(
  * live-history strip and the `loadFromDb` rehydration filter (see `prune.ts`
  * / `daemon/conversation.ts`).
  */
-export function getPrunedSections(conversationId: string): SectionRefSet {
-  return toSectionRefSet(selectRefs(conversationId, true, "getPrunedSections"));
+export async function getPrunedSections(
+  conversationId: string,
+): Promise<SectionRefSet> {
+  return toSectionRefSet(
+    await selectRefs(conversationId, true, "getPrunedSections"),
+  );
 }
 
 /**
@@ -278,11 +281,11 @@ export function getPrunedSections(conversationId: string): SectionRefSet {
  * (`newestCopyIndexes` in `prune.ts`), so clearing the tombstone never
  * revives them.
  */
-export function recordInjected(
+export async function recordInjected(
   conversationId: string,
   entries: Array<SectionRef & { bytes: number }>,
   at: number = Date.now(),
-): void {
+): Promise<void> {
   if (entries.length === 0) {
     return;
   }
@@ -290,13 +293,14 @@ export function recordInjected(
   // agent turn, so a degraded memory connection or a failed statement only
   // logs a warning.
   try {
-    const mdb = memoryDb("recordInjected");
+    const mdb = await memoryDb("recordInjected");
     if (!mdb) {
       return;
     }
+    const table = mdb.schema.memoryV3InjectedSections;
     for (const entry of entries) {
-      mdb
-        .insert(memoryV3InjectedSections)
+      await mdb.orm
+        .insert(table)
         .values({
           conversationId,
           slug: entry.slug,
@@ -307,19 +311,14 @@ export function recordInjected(
           prunedAt: null,
         })
         .onConflictDoUpdate({
-          target: [
-            memoryV3InjectedSections.conversationId,
-            memoryV3InjectedSections.slug,
-            memoryV3InjectedSections.sectionKey,
-          ],
+          target: [table.conversationId, table.slug, table.sectionKey],
           set: {
             injectedAt: at,
             lastSelectedAt: at,
             bytes: entry.bytes,
             prunedAt: null,
           },
-        })
-        .run();
+        });
     }
   } catch (err) {
     log.warn({ err }, "failed to record injected sections; continuing");
@@ -339,40 +338,38 @@ const REF_KEY_BATCH_SIZE = 100;
  * memory connection or a failed statement logs `failureMessage` and leaves
  * the rows as they were. A ref with no row is a no-op.
  */
-function updateRefs(
+async function updateRefs(
   context: string,
   conversationId: string,
   refs: SectionRef[],
-  set: Partial<typeof memoryV3InjectedSections.$inferInsert>,
+  set: Partial<SchemaTables["memoryV3InjectedSections"]["$inferInsert"]>,
   failureMessage: string,
-): void {
+): Promise<void> {
   if (refs.length === 0) {
     return;
   }
   try {
-    const mdb = memoryDb(context);
+    const mdb = await memoryDb(context);
     if (!mdb) {
       return;
     }
-    mdb.transaction((tx) => {
+    const table = mdb.schema.memoryV3InjectedSections;
+    await mdb.transaction(async (tx) => {
       for (let i = 0; i < refs.length; i += REF_KEY_BATCH_SIZE) {
         const batch = refs.slice(i, i + REF_KEY_BATCH_SIZE);
-        tx.update(memoryV3InjectedSections)
+        await tx.orm
+          .update(table)
           .set(set)
           .where(
             and(
-              eq(memoryV3InjectedSections.conversationId, conversationId),
+              eq(table.conversationId, conversationId),
               or(
                 ...batch.map((ref) =>
-                  and(
-                    eq(memoryV3InjectedSections.slug, ref.slug),
-                    eq(memoryV3InjectedSections.sectionKey, ref.key),
-                  ),
+                  and(eq(table.slug, ref.slug), eq(table.sectionKey, ref.key)),
                 ),
               ),
             ),
-          )
-          .run();
+          );
       }
     });
   } catch (err) {
@@ -384,12 +381,12 @@ function updateRefs(
  * Mark sections pruned from the live context. Rows are never deleted: the
  * record stays auditable and the sections stay eligible for re-injection.
  */
-export function markPruned(
+export async function markPruned(
   conversationId: string,
   refs: SectionRef[],
   at: number,
-): void {
-  updateRefs(
+): Promise<void> {
+  await updateRefs(
     "markPruned",
     conversationId,
     refs,
@@ -407,12 +404,12 @@ export function markPruned(
  * never ranks the stale stamp in between. The turn's net-new sections take
  * the stamp from {@link recordInjected} instead.
  */
-export function touchSelected(
+export async function touchSelected(
   conversationId: string,
   refs: SectionRef[],
   at: number,
-): void {
-  updateRefs(
+): Promise<void> {
+  await updateRefs(
     "touchSelected",
     conversationId,
     refs,
@@ -431,19 +428,22 @@ export function touchSelected(
  * deleted, or when there is no memory database to hold any; `false` when the
  * delete fails and the record still claims its sections.
  */
-export function clearConversation(conversationId: string): boolean {
+export async function clearConversation(
+  conversationId: string,
+): Promise<boolean> {
   try {
-    const mdb = memoryDb("clearConversation");
+    const mdb = await memoryDb("clearConversation");
     if (!mdb) {
       return true;
     }
-    mdb.transaction((tx) => {
-      tx.delete(memoryV3InjectedSections)
-        .where(eq(memoryV3InjectedSections.conversationId, conversationId))
-        .run();
+    const table = mdb.schema.memoryV3InjectedSections;
+    await mdb.transaction(async (tx) => {
+      await tx.orm
+        .delete(table)
+        .where(eq(table.conversationId, conversationId));
       // The legacy table has no schema object: a raw statement on the
       // transaction's own connection, inside it.
-      deleteLegacyCardRows(mdb.$client, conversationId);
+      await deleteLegacyCardRows(tx, conversationId);
     });
     return true;
   } catch (err) {
@@ -456,24 +456,19 @@ export function clearConversation(conversationId: string): boolean {
 }
 
 /** Total bytes of resident (non-pruned) sections: the prune-valve input. */
-export function residentBytes(conversationId: string): number {
-  return readOr(
-    "residentBytes",
-    0,
-    (mdb) =>
-      mdb
-        .select({
-          total: sql<number>`COALESCE(SUM(${memoryV3InjectedSections.bytes}), 0)`,
-        })
-        .from(memoryV3InjectedSections)
-        .where(
-          and(
-            eq(memoryV3InjectedSections.conversationId, conversationId),
-            isNull(memoryV3InjectedSections.prunedAt),
-          ),
-        )
-        .get()?.total ?? 0,
-  );
+export async function residentBytes(conversationId: string): Promise<number> {
+  return readOr("residentBytes", 0, async (mdb) => {
+    const table = mdb.schema.memoryV3InjectedSections;
+    const rows = await mdb.orm
+      .select({
+        total: sql<number>`COALESCE(SUM(${table.bytes}), 0)`,
+      })
+      .from(table)
+      .where(
+        and(eq(table.conversationId, conversationId), isNull(table.prunedAt)),
+      );
+    return Number(rows[0]?.total ?? 0);
+  });
 }
 
 /**
@@ -485,45 +480,40 @@ export function residentBytes(conversationId: string): number {
  * the main fork transaction's handle. The copy is best-effort: an unavailable
  * memory database is a no-op.
  */
-export function forkEverInjected(
+export async function forkEverInjected(
   parentConversationId: string,
   newConversationId: string,
-): void {
+): Promise<void> {
   try {
-    const mdb = memoryDb("forkEverInjected");
+    const mdb = await memoryDb("forkEverInjected");
     if (!mdb) {
       return;
     }
-    const parentRows = mdb
+    const table = mdb.schema.memoryV3InjectedSections;
+    const parentRows = await mdb.orm
       .select({
-        slug: memoryV3InjectedSections.slug,
-        sectionKey: memoryV3InjectedSections.sectionKey,
-        injectedAt: memoryV3InjectedSections.injectedAt,
-        lastSelectedAt: memoryV3InjectedSections.lastSelectedAt,
-        bytes: memoryV3InjectedSections.bytes,
-        prunedAt: memoryV3InjectedSections.prunedAt,
+        slug: table.slug,
+        sectionKey: table.sectionKey,
+        injectedAt: table.injectedAt,
+        lastSelectedAt: table.lastSelectedAt,
+        bytes: table.bytes,
+        prunedAt: table.prunedAt,
       })
-      .from(memoryV3InjectedSections)
-      .where(eq(memoryV3InjectedSections.conversationId, parentConversationId))
-      .all();
+      .from(table)
+      .where(eq(table.conversationId, parentConversationId));
     for (const row of parentRows) {
-      mdb
-        .insert(memoryV3InjectedSections)
+      await mdb.orm
+        .insert(table)
         .values({ conversationId: newConversationId, ...row })
         .onConflictDoUpdate({
-          target: [
-            memoryV3InjectedSections.conversationId,
-            memoryV3InjectedSections.slug,
-            memoryV3InjectedSections.sectionKey,
-          ],
+          target: [table.conversationId, table.slug, table.sectionKey],
           set: {
             injectedAt: row.injectedAt,
             lastSelectedAt: row.lastSelectedAt,
             bytes: row.bytes,
             prunedAt: row.prunedAt,
           },
-        })
-        .run();
+        });
     }
   } catch (err) {
     log.warn({ err }, "failed to fork injected-section record; continuing");
@@ -574,12 +564,12 @@ export function forkEverInjected(
  * transaction's handle, and an unavailable memory database is a best-effort
  * no-op.
  */
-export function seedEverInjectedFromBlocks(
+export async function seedEverInjectedFromBlocks(
   parentConversationId: string,
   newConversationId: string,
   blocks: ReadonlyArray<InjectedBlock>,
   at: number,
-): void {
+): Promise<void> {
   const inherited = new Map<string, SectionRef & { bytes: number }>();
   for (const block of blocks) {
     if (block.format === "legacy") {
@@ -603,30 +593,30 @@ export function seedEverInjectedFromBlocks(
     return;
   }
   try {
-    const mdb = memoryDb("seedEverInjectedFromBlocks");
+    const mdb = await memoryDb("seedEverInjectedFromBlocks");
     if (!mdb) {
       return;
     }
-    const prunedRows = mdb
+    const table = mdb.schema.memoryV3InjectedSections;
+    const prunedRows = await mdb.orm
       .select({
-        slug: memoryV3InjectedSections.slug,
-        key: memoryV3InjectedSections.sectionKey,
-        prunedAt: memoryV3InjectedSections.prunedAt,
+        slug: table.slug,
+        key: table.sectionKey,
+        prunedAt: table.prunedAt,
       })
-      .from(memoryV3InjectedSections)
+      .from(table)
       .where(
         and(
-          eq(memoryV3InjectedSections.conversationId, parentConversationId),
-          isNotNull(memoryV3InjectedSections.prunedAt),
+          eq(table.conversationId, parentConversationId),
+          isNotNull(table.prunedAt),
         ),
-      )
-      .all();
+      );
     const parentPrunedAt = new Map(
       prunedRows.map((r) => [sectionRefId(r), r.prunedAt]),
     );
     for (const [id, { slug, key, bytes }] of inherited) {
-      mdb
-        .insert(memoryV3InjectedSections)
+      await mdb.orm
+        .insert(table)
         .values({
           conversationId: newConversationId,
           slug,
@@ -636,13 +626,8 @@ export function seedEverInjectedFromBlocks(
           prunedAt: parentPrunedAt.get(id) ?? null,
         })
         .onConflictDoNothing({
-          target: [
-            memoryV3InjectedSections.conversationId,
-            memoryV3InjectedSections.slug,
-            memoryV3InjectedSections.sectionKey,
-          ],
-        })
-        .run();
+          target: [table.conversationId, table.slug, table.sectionKey],
+        });
     }
   } catch (err) {
     log.warn(

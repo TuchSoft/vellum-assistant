@@ -161,7 +161,7 @@ export class ConversationGraphMemory {
    * Persist tracker state to the database so it survives eviction.
    * Called during conversation disposal.
    */
-  persistState(): void {
+  async persistState(): Promise<void> {
     if (!this.initialized) {
       return;
     }
@@ -174,7 +174,7 @@ export class ConversationGraphMemory {
         needsReload: this.needsReload,
         ...this.tracker.toJSON(),
       };
-      saveGraphMemoryState(this.conversationId, JSON.stringify(snapshot));
+      await saveGraphMemoryState(this.conversationId, JSON.stringify(snapshot));
     } catch (err) {
       log.warn(
         { err: err instanceof Error ? err.message : String(err) },
@@ -187,12 +187,12 @@ export class ConversationGraphMemory {
    * Restore tracker state from the database after eviction + recreation.
    * On failure or missing row, silently falls back to full context-load.
    */
-  restoreState(): void {
+  async restoreState(): Promise<void> {
     if (this.stateRestored) {
       return;
     }
     try {
-      const json = loadGraphMemoryState(this.conversationId);
+      const json = await loadGraphMemoryState(this.conversationId);
       if (!json) {
         return;
       }
@@ -401,7 +401,7 @@ export class ConversationGraphMemory {
     // section must become re-injectable. Cleared unconditionally for the
     // same crash-drift reason as v2's `everInjected` above. The store logs
     // its own failure and reports it.
-    const cleared = clearV3EverInjected(this.conversationId);
+    const cleared = await clearV3EverInjected(this.conversationId);
 
     this.needsReload = true;
     log.info(

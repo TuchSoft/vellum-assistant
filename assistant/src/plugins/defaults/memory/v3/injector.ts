@@ -423,10 +423,12 @@ async function renderSelections(
     const rendered = observedTurn(ctx.conversationId, ctx.turnIndex)?.rendered;
     const firstProduce = rendered === undefined;
     const replaced = ctx.replacesRunMessages === true;
-    const active = replaced ? null : getActiveSections(ctx.conversationId);
+    const active = replaced
+      ? null
+      : await getActiveSections(ctx.conversationId);
     const pruned = firstProduce
       ? undefined
-      : getPrunedSections(ctx.conversationId);
+      : await getPrunedSections(ctx.conversationId);
     const resident: SectionRef[] = [];
     const slots: BlockSlot[] = [];
     for (const { slug, key, matched } of injectionUnits(result.selections)) {
@@ -462,7 +464,7 @@ async function renderSelections(
     // The net-new pairs take the same time with their record in the commit.
     const selectedAt = Date.now();
     if (firstProduce) {
-      touchSelected(ctx.conversationId, resident, selectedAt);
+      await touchSelected(ctx.conversationId, resident, selectedAt);
     }
 
     // Render net-new sections (each an independent page read, so in
@@ -528,8 +530,8 @@ async function renderSelections(
     // a section it prunes from this very turn is stripped by assembly Step
     // 0 on the next turn, which applies the store's full tombstone set
     // every turn.
-    const commit = (): void => {
-      recordInjected(
+    const commit = async (): Promise<void> => {
+      await recordInjected(
         ctx.conversationId,
         entries.map(({ slug, key, text }) => ({
           slug,
@@ -578,7 +580,7 @@ export const memoryV3PointerInjector: Injector = {
     // window and tombstone one of them, stripping its body from the live
     // history. A pair no longer active is dropped rather than pointed at; it
     // is simply absent this turn and re-injects on its next selection.
-    const active = getActiveSections(ctx.conversationId);
+    const active = await getActiveSections(ctx.conversationId);
     const entries = remembered.filter(({ slug, key }) =>
       sectionRefSetHas(active, slug, key),
     );

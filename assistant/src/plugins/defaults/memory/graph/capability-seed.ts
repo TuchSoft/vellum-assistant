@@ -21,7 +21,6 @@ import {
   enqueueMemoryJob,
   upsertEmbedGraphNodeJob,
 } from "../../../../persistence/jobs-store.js";
-import { memoryGraphNodes } from "../../../../persistence/schema/index.js";
 import {
   getCachedCatalogSync,
   getCatalog,
@@ -117,20 +116,18 @@ function upsertCliCapabilityNode(
 /**
  * Remove the graph node for a skill capability.
  */
-export function deleteSkillCapabilityNode(skillId: string): void {
-  try {
-    const sourceKey = `${SKILL_SOURCE_PREFIX}${skillId}`;
-    deleteCapabilityNode(sourceKey);
-  } catch (err) {
+export function deleteSkillCapabilityNode(skillId: string): Promise<void> {
+  const sourceKey = `${SKILL_SOURCE_PREFIX}${skillId}`;
+  return deleteCapabilityNode(sourceKey).catch((err) => {
     log.warn({ err, skillId }, "Failed to delete skill capability graph node");
-  }
+  });
 }
 
 /**
  * Seed graph nodes for all enabled skills.
  * Prunes stale nodes whose skills are no longer enabled.
  */
-export function seedSkillGraphNodes(): void {
+export async function seedSkillGraphNodes(): Promise<void> {
   try {
     const catalog = loadSkillCatalog();
     const config = getConfig();
@@ -167,7 +164,7 @@ export function seedSkillGraphNodes(): void {
       log.info("Catalog cache is cold — pruning only locally disabled skills");
       const disabled = resolved.filter((r) => r.state !== "enabled");
       for (const { summary } of disabled) {
-        deleteSkillCapabilityNode(summary.id);
+        await deleteSkillCapabilityNode(summary.id);
       }
     } else {
       for (const entry of cachedCatalog) {
@@ -177,14 +174,14 @@ export function seedSkillGraphNodes(): void {
         }
         seenKeys.add(`${SKILL_SOURCE_PREFIX}${entry.id}`);
       }
-      pruneStaleCapabilities(SKILL_SOURCE_PREFIX, seenKeys);
+      await pruneStaleCapabilities(SKILL_SOURCE_PREFIX, seenKeys);
     }
 
     // Clean up old-format capability nodes (skill:* and cli:*) that use the
     // legacy "{prefix}:{id}\n..." content format. Mark them as gone so they
     // stop appearing as duplicates. Idempotent — once cleaned, subsequent
     // runs find nothing.
-    cleanupOldFormatCapabilityNodes();
+    await cleanupOldFormatCapabilityNodes();
   } catch (err) {
     log.warn({ err }, "Failed to seed skill graph nodes");
   }
@@ -202,7 +199,7 @@ export async function seedCliGraphNodes(): Promise<void> {
       seenKeys.add(`${CLI_SOURCE_PREFIX}${help.name}`);
     }
 
-    pruneStaleCapabilities(CLI_SOURCE_PREFIX, seenKeys);
+    await pruneStaleCapabilities(CLI_SOURCE_PREFIX, seenKeys);
   } catch (err) {
     log.warn({ err }, "Failed to seed CLI graph nodes");
   }
@@ -276,19 +273,20 @@ async function upsertCapabilityNode(
   sourceKey: string,
   content: string,
 ): Promise<void> {
-  const db = memoryDbOrNull("upsertCapabilityNode");
+  const db = await memoryDbOrNull("upsertCapabilityNode");
   if (!db) {
     return;
   }
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
 
   // Find existing node by sourceKey stored in source_conversations JSON
-  const existing = db
+  const existingRows = await db.orm
     .select()
     .from(memoryGraphNodes)
     .where(
       eq(memoryGraphNodes.sourceConversations, JSON.stringify([sourceKey])),
-    )
-    .get();
+    );
+  const existing = existingRows[0];
 
   const now = Date.now();
 
@@ -297,30 +295,30 @@ async function upsertCapabilityNode(
       // Same content — just touch lastAccessed (and backfill lastConsolidated
       // for nodes created before the fix so they don't decay immediately,
       // and backfill significance for nodes created before the raise to 0.6)
-      const updates: Record<string, number> = { lastAccessed: now };
+      const updates: Record<string, unknown> = { lastAccessed: now };
       if (existing.lastConsolidated === 0) {
         updates.lastConsolidated = now;
       }
       if (existing.significance < CAPABILITY_SIGNIFICANCE) {
         updates.significance = CAPABILITY_SIGNIFICANCE;
       }
-      db.update(memoryGraphNodes)
+      await db.orm
+        .update(memoryGraphNodes)
         .set(updates)
-        .where(eq(memoryGraphNodes.id, existing.id))
-        .run();
+        .where(eq(memoryGraphNodes.id, existing.id));
       return;
     }
 
     // Content changed or was deleted — update
-    db.update(memoryGraphNodes)
+    await db.orm
+      .update(memoryGraphNodes)
       .set({
         content,
         fidelity: "vivid",
         lastAccessed: now,
         ...(existing.lastConsolidated === 0 ? { lastConsolidated: now } : {}),
       })
-      .where(eq(memoryGraphNodes.id, existing.id))
-      .run();
+      .where(eq(memoryGraphNodes.id, existing.id));
     if (isMemoryV1Active(getConfig())) {
       upsertEmbedGraphNodeJob({ nodeId: existing.id });
     }
@@ -364,24 +362,25 @@ async function upsertCapabilityNode(
 /**
  * Soft-delete (mark as gone) a capability node by its sourceKey.
  */
-function deleteCapabilityNode(sourceKey: string): void {
-  const db = memoryDbOrNull("deleteCapabilityNode");
+async function deleteCapabilityNode(sourceKey: string): Promise<void> {
+  const db = await memoryDbOrNull("deleteCapabilityNode");
   if (!db) {
     return;
   }
-  const existing = db
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
+  const existingRows = await db.orm
     .select()
     .from(memoryGraphNodes)
     .where(
       eq(memoryGraphNodes.sourceConversations, JSON.stringify([sourceKey])),
-    )
-    .get();
+    );
+  const existing = existingRows[0];
 
   if (existing && existing.fidelity !== "gone") {
-    db.update(memoryGraphNodes)
+    await db.orm
+      .update(memoryGraphNodes)
       .set({ fidelity: "gone", lastAccessed: Date.now() })
-      .where(eq(memoryGraphNodes.id, existing.id))
-      .run();
+      .where(eq(memoryGraphNodes.id, existing.id));
     enqueueMemoryJob("delete_qdrant_vectors", {
       targetType: "graph_node",
       targetId: existing.id,
@@ -397,15 +396,16 @@ function deleteCapabilityNode(sourceKey: string): void {
  * This marks any remaining old-format nodes as gone so they no longer
  * surface in retrieval.
  */
-function cleanupOldFormatCapabilityNodes(): void {
-  const db = memoryDbOrNull("cleanupOldFormatCapabilityNodes");
+async function cleanupOldFormatCapabilityNodes(): Promise<void> {
+  const db = await memoryDbOrNull("cleanupOldFormatCapabilityNodes");
   if (!db) {
     return;
   }
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
   const now = Date.now();
 
   // --- skill:* old-format nodes ---
-  const oldFormatNodes = db
+  const oldFormatNodes = await db.orm
     .select()
     .from(memoryGraphNodes)
     .where(
@@ -414,8 +414,7 @@ function cleanupOldFormatCapabilityNodes(): void {
         sql`${memoryGraphNodes.fidelity} != 'gone'`,
         sql`${memoryGraphNodes.content} LIKE 'skill:%'`,
       ),
-    )
-    .all();
+    );
 
   for (const node of oldFormatNodes) {
     // Verify this is truly old-format: "skill:{id}\n..."
@@ -423,10 +422,10 @@ function cleanupOldFormatCapabilityNodes(): void {
       continue;
     }
 
-    db.update(memoryGraphNodes)
+    await db.orm
+      .update(memoryGraphNodes)
       .set({ fidelity: "gone", lastAccessed: now })
-      .where(eq(memoryGraphNodes.id, node.id))
-      .run();
+      .where(eq(memoryGraphNodes.id, node.id));
     enqueueMemoryJob("delete_qdrant_vectors", {
       targetType: "graph_node",
       targetId: node.id,
@@ -435,7 +434,7 @@ function cleanupOldFormatCapabilityNodes(): void {
   }
 
   // --- cli:* old-format nodes ---
-  const oldCliNodes = db
+  const oldCliNodes = await db.orm
     .select()
     .from(memoryGraphNodes)
     .where(
@@ -444,17 +443,16 @@ function cleanupOldFormatCapabilityNodes(): void {
         sql`${memoryGraphNodes.fidelity} != 'gone'`,
         sql`${memoryGraphNodes.content} LIKE 'cli:%'`,
       ),
-    )
-    .all();
+    );
 
   for (const node of oldCliNodes) {
     if (!/^cli:\S+\n/.test(node.content)) {
       continue;
     }
-    db.update(memoryGraphNodes)
+    await db.orm
+      .update(memoryGraphNodes)
       .set({ fidelity: "gone", lastAccessed: now })
-      .where(eq(memoryGraphNodes.id, node.id))
-      .run();
+      .where(eq(memoryGraphNodes.id, node.id));
     enqueueMemoryJob("delete_qdrant_vectors", {
       targetType: "graph_node",
       targetId: node.id,
@@ -466,16 +464,19 @@ function cleanupOldFormatCapabilityNodes(): void {
 /**
  * Remove capability nodes whose sourceKeys are no longer in the active set.
  */
-function pruneStaleCapabilities(prefix: string, activeKeys: Set<string>): void {
-  const db = memoryDbOrNull("pruneStaleCapabilities");
+async function pruneStaleCapabilities(
+  prefix: string,
+  activeKeys: Set<string>,
+): Promise<void> {
+  const db = await memoryDbOrNull("pruneStaleCapabilities");
   if (!db) {
     return;
   }
-  const allCapabilities = db
+  const memoryGraphNodes = db.schema.memoryGraphNodes;
+  const allCapabilities = await db.orm
     .select()
     .from(memoryGraphNodes)
-    .where(like(memoryGraphNodes.sourceConversations, `%${prefix}%`))
-    .all();
+    .where(like(memoryGraphNodes.sourceConversations, `%${prefix}%`));
 
   const now = Date.now();
   for (const row of allCapabilities) {
@@ -492,10 +493,10 @@ function pruneStaleCapabilities(prefix: string, activeKeys: Set<string>): void {
           { sourceKey: key, nodeId: row.id },
           "Pruning stale capability graph node",
         );
-        db.update(memoryGraphNodes)
+        await db.orm
+          .update(memoryGraphNodes)
           .set({ fidelity: "gone", lastAccessed: now })
-          .where(eq(memoryGraphNodes.id, row.id))
-          .run();
+          .where(eq(memoryGraphNodes.id, row.id));
         enqueueMemoryJob("delete_qdrant_vectors", {
           targetType: "graph_node",
           targetId: row.id,

@@ -14,7 +14,7 @@
  * the hot lane never duplicates core.
  */
 
-import { memorySqliteOrNull } from "../memory-db.js";
+import { memoryDbOrNull } from "../memory-db.js";
 import type { Slug } from "./types.js";
 
 export interface HotSetOptions {
@@ -49,24 +49,22 @@ interface SelectionAgeRow {
  * Fail-soft: an unavailable memory database yields an empty hot set — the
  * lane simply contributes nothing to the stable prefix.
  */
-export function computeHotSet(opts: HotSetOptions): HotSetEntry[] {
+export async function computeHotSet(
+  opts: HotSetOptions,
+): Promise<HotSetEntry[]> {
   const { k, halfLifeMs, now, excludeSlugs } = opts;
   if (k <= 0) {
     return [];
   }
 
-  const raw = memorySqliteOrNull("computeHotSet");
-  if (!raw) {
+  const db = await memoryDbOrNull("computeHotSet");
+  if (!db) {
     return [];
   }
 
-  const rows = raw
-    .query(
-      /*sql*/ `
+  const rows = await db.all<SelectionAgeRow>(/*sql*/ `
       SELECT slug, created_at FROM memory_v3_selections
-    `,
-    )
-    .all() as SelectionAgeRow[];
+    `);
 
   const scores = new Map<Slug, number>();
   for (const row of rows) {

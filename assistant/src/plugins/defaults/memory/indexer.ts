@@ -455,14 +455,14 @@ function enqueueSubstrateIndexTriggers(
   }
 }
 
-export function enqueueBackfillJob(force = false): string {
+export async function enqueueBackfillJob(force = false): Promise<string> {
   if (!isMemoryEnabled()) {
     return "";
   }
   return enqueueMemoryJob("backfill", { force });
 }
 
-export function enqueueRebuildIndexJob(): string {
+export async function enqueueRebuildIndexJob(): Promise<string> {
   if (!isMemoryEnabled()) {
     return "";
   }

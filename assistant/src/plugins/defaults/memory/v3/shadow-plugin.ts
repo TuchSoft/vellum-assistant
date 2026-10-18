@@ -46,10 +46,11 @@ import {
   recordLatencySubSpan,
   timeLatencySubSpan,
 } from "../../../../daemon/turn-latency-sub-spans.js";
+import type { AsyncDb } from "../../../../persistence/db-facade.js";
 import { enqueueMemoryJob } from "../../../../persistence/jobs-store.js";
 import { stripCommentLines } from "../host-utils.js";
 import { getLogger } from "../logging.js";
-import { type MemorySqlite, memorySqliteOrNull } from "../memory-db.js";
+import { memoryDbOrNull } from "../memory-db.js";
 import { getWorkspaceDir, getWorkspacePromptPath } from "../paths.js";
 import { getPageIndex, invalidatePageIndex } from "../substrate/page-index.js";
 import { readPage, renderPageContent } from "../substrate/page-store.js";
@@ -298,12 +299,14 @@ async function initLanes(config: AssistantConfig): Promise<ShadowLanes> {
   const coreSlugs = loadCoreSet(getWorkspaceDir()).filter((slug) =>
     sectionIndex.byArticle.has(slug),
   );
-  const hotSlugs = computeHotSet({
-    k: tuning.hotSetK,
-    halfLifeMs: config.memory.v3.hotSet.halfLifeDays * DAY_MS,
-    now: Date.now(),
-    excludeSlugs: new Set(coreSlugs),
-  })
+  const hotSlugs = (
+    await computeHotSet({
+      k: tuning.hotSetK,
+      halfLifeMs: config.memory.v3.hotSet.halfLifeDays * DAY_MS,
+      now: Date.now(),
+      excludeSlugs: new Set(coreSlugs),
+    })
+  )
     .map((entry) => entry.slug)
     .filter((slug) => sectionIndex.byArticle.has(slug));
 
@@ -397,7 +400,7 @@ async function initLanes(config: AssistantConfig): Promise<ShadowLanes> {
   const learned = config.memory.v3.learnedEdges;
   const learnedGraph =
     tuning.learnedEdgesCap > 0 && learned.maxPerPage > 0
-      ? computeLearnedEdgeGraph({
+      ? await computeLearnedEdgeGraph({
           halfLifeMs: learned.halfLifeDays * DAY_MS,
           minCount: learned.minCount,
           npmiFloor: learned.npmiFloor,
@@ -704,38 +707,39 @@ export function attributeSelections(result: OrchestrateResult): SelectionRow[] {
  * `backfillMemoryV3SelectionMessageId`. Throws on a failed statement; the
  * caller owns the transaction.
  */
-function replaceSelections(
-  raw: MemorySqlite,
+async function replaceSelections(
+  raw: AsyncDb,
   conversationId: string,
   turn: number,
   rows: SelectionRow[],
-): void {
-  raw
-    .query(
-      /*sql*/ `DELETE FROM memory_v3_selections
-               WHERE conversation_id = ? AND turn = ?`,
-    )
-    .run(conversationId, turn);
+): Promise<void> {
+  await raw.run(
+    /*sql*/ `DELETE FROM memory_v3_selections
+             WHERE conversation_id = ? AND turn = ?`,
+    [conversationId, turn],
+  );
   if (rows.length === 0) {
     return;
   }
-  const stmt = raw.query(/*sql*/ `
+  const now = Date.now();
+  for (const row of rows) {
+    await raw.run(
+      /*sql*/ `
     INSERT INTO memory_v3_selections (
       conversation_id, turn, slug, source, created_at,
       message_id, section_ordinal, section_title, section_key
     ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
-  `);
-  const now = Date.now();
-  for (const row of rows) {
-    stmt.run(
-      conversationId,
-      turn,
-      row.slug,
-      row.source,
-      now,
-      row.sectionOrdinal,
-      row.sectionTitle,
-      row.sectionKey,
+  `,
+      [
+        conversationId,
+        turn,
+        row.slug,
+        row.source,
+        now,
+        row.sectionOrdinal,
+        row.sectionTitle,
+        row.sectionKey,
+      ],
     );
   }
 }
@@ -755,26 +759,26 @@ function replaceSelections(
  * selection table's plugin-owned `section_key` column is ensured on the
  * first use of a connection in this process (`plugin-schema.ts`).
  */
-export function writeTurnLog(
+export async function writeTurnLog(
   conversationId: string,
   turn: number,
   rows: SelectionRow[],
   pool: PoolRecord,
   input?: PoolInputCapture,
-): void {
+): Promise<void> {
   try {
-    const raw = memorySqliteOrNull("writeTurnLog");
+    const raw = await memoryDbOrNull("writeTurnLog");
     if (!raw) {
       return;
     }
-    ensureMemoryV3SelectionsSectionKeyOnce(raw);
-    raw.transaction(() => {
-      replaceSelections(raw, conversationId, turn, rows);
-      writePool(raw, conversationId, turn, pool);
+    await ensureMemoryV3SelectionsSectionKeyOnce(raw);
+    await raw.transaction(async (tx) => {
+      await replaceSelections(tx, conversationId, turn, rows);
+      await writePool(tx, conversationId, turn, pool);
       if (input) {
-        writePoolInput(raw, conversationId, turn, input);
+        await writePoolInput(tx, conversationId, turn, input);
       }
-    })();
+    });
   } catch (err) {
     log.warn(
       { err },
@@ -796,28 +800,26 @@ export function writeTurnLog(
  * failing pool stamp degrades the inspector to selections-only rather than
  * blanking it.
  */
-export function backfillMemoryV3SelectionMessageId(
+export async function backfillMemoryV3SelectionMessageId(
   conversationId: string,
   turn: number,
   assistantMessageId: string,
-): void {
+): Promise<void> {
   try {
-    const raw = memorySqliteOrNull("backfillMemoryV3SelectionMessageId");
+    const raw = await memoryDbOrNull("backfillMemoryV3SelectionMessageId");
     if (!raw) {
       return;
     }
-    raw
-      .query(
-        /*sql*/ `UPDATE memory_v3_selections SET message_id = ?
-                 WHERE conversation_id = ? AND turn = ? AND message_id IS NULL`,
-      )
-      .run(assistantMessageId, conversationId, turn);
-    raw
-      .query(
-        /*sql*/ `UPDATE memory_v3_pools SET message_id = ?
-                 WHERE conversation_id = ? AND turn = ? AND message_id IS NULL`,
-      )
-      .run(assistantMessageId, conversationId, turn);
+    await raw.run(
+      /*sql*/ `UPDATE memory_v3_selections SET message_id = ?
+               WHERE conversation_id = ? AND turn = ? AND message_id IS NULL`,
+      [assistantMessageId, conversationId, turn],
+    );
+    await raw.run(
+      /*sql*/ `UPDATE memory_v3_pools SET message_id = ?
+               WHERE conversation_id = ? AND turn = ? AND message_id IS NULL`,
+      [assistantMessageId, conversationId, turn],
+    );
   } catch (err) {
     log.warn(
       { err },
@@ -865,7 +867,7 @@ export async function observeTurn(
     // Read-only: lets orchestrate compute the `net_new_count` telemetry field
     // against the same store the injector renders from. This turn has not
     // committed yet, so the set matches what the injector will see.
-    const activeSections = getActiveSections(conversationId);
+    const activeSections = await getActiveSections(conversationId);
     const selectorPrompt = resolveSelectorPrompt(
       v3.selectorPromptPath,
       getWorkspaceDir(),
@@ -927,7 +929,7 @@ export async function observeTurn(
     }
 
     const persistStartedAt = Date.now();
-    writeTurnLog(
+    await writeTurnLog(
       conversationId,
       turnIndex,
       attributeSelections(result),

@@ -100,44 +100,41 @@ const readSelectionsOr = memoryReader(
   },
 );
 
-function rowsForTurn(conversationId: string, turn: number): SelectionRow[] {
-  return readSelectionsOr(
-    "rowsForTurn",
-    [],
-    (raw) =>
-      raw
-        .query(
-          /*sql*/ `
+async function rowsForTurn(
+  conversationId: string,
+  turn: number,
+): Promise<SelectionRow[]> {
+  return readSelectionsOr("rowsForTurn", [], (raw) =>
+    raw.all<SelectionRow>(
+      /*sql*/ `
           SELECT ${SELECTION_COLUMNS} FROM memory_v3_selections
           WHERE conversation_id = ? AND turn = ?
-          ORDER BY rowid
+          ORDER BY ctid
         `,
-        )
-        .all(conversationId, turn) as SelectionRow[],
+      [conversationId, turn],
+    ),
   );
 }
 
 /** The selection rows stamped with any of the given message ids, or `null`
  *  when there are none (including when the memory connection is unavailable
  *  or the read degraded). */
-function rowsForMessageIds(messageIds: string[]): SelectionRow[] | null {
+async function rowsForMessageIds(
+  messageIds: string[],
+): Promise<SelectionRow[] | null> {
   if (messageIds.length === 0) {
     return null;
   }
   const placeholders = messageIds.map(() => "?").join(", ");
-  const rows = readSelectionsOr(
-    "rowsForMessageIds",
-    [],
-    (raw) =>
-      raw
-        .query(
-          /*sql*/ `
+  const rows = await readSelectionsOr("rowsForMessageIds", [], (raw) =>
+    raw.all<SelectionRow>(
+      /*sql*/ `
           SELECT ${SELECTION_COLUMNS} FROM memory_v3_selections
           WHERE message_id IN (${placeholders})
-          ORDER BY rowid
+          ORDER BY ctid
         `,
-        )
-        .all(...messageIds) as SelectionRow[],
+      messageIds,
+    ),
   );
   return rows.length > 0 ? rows : null;
 }
@@ -180,7 +177,7 @@ async function forkSourceIdsOf(messageIds: string[]): Promise<string[]> {
  */
 async function viaForkSource<T>(
   messageIds: string[],
-  lookup: (messageIds: string[]) => T | null,
+  lookup: (messageIds: string[]) => Promise<T | null>,
 ): Promise<T | null> {
   let frontier = messageIds;
   const visited = new Set(messageIds);
@@ -194,7 +191,7 @@ async function viaForkSource<T>(
     for (const id of sources) {
       visited.add(id);
     }
-    const found = lookup(sources);
+    const found = await lookup(sources);
     if (found !== null) {
       return found;
     }
@@ -359,7 +356,9 @@ async function buildSelectionLog(
     live: isMemoryV3Live(config),
     selections,
     injectedText,
-    pool: toInspectorPool(readPoolForTurn(first.conversation_id, first.turn)),
+    pool: toInspectorPool(
+      await readPoolForTurn(first.conversation_id, first.turn),
+    ),
   };
 }
 
@@ -389,13 +388,13 @@ export async function getMemoryV3SelectionForInspectorByMessageIds(
   messageIds: string[],
 ): Promise<MemoryV3SelectionLog | null> {
   const rows =
-    rowsForMessageIds(messageIds) ??
+    (await rowsForMessageIds(messageIds)) ??
     (await viaForkSource(messageIds, rowsForMessageIds));
   if (rows) {
     return buildSelectionLog(rows);
   }
   const pool =
-    readPoolForMessageIds(messageIds) ??
+    (await readPoolForMessageIds(messageIds)) ??
     (await viaForkSource(messageIds, readPoolForMessageIds));
   return pool ? poolOnlyLog(pool.turn, pool.record) : null;
 }
@@ -413,11 +412,11 @@ export async function getMemoryV3SelectionForInspector(
   if (turn == null) {
     return null;
   }
-  const rows = rowsForTurn(conversationId, turn);
+  const rows = await rowsForTurn(conversationId, turn);
   if (rows.length > 0) {
     return buildSelectionLog(rows);
   }
-  const pool = readPoolForTurn(conversationId, turn);
+  const pool = await readPoolForTurn(conversationId, turn);
   return pool ? poolOnlyLog(turn, pool) : null;
 }
 

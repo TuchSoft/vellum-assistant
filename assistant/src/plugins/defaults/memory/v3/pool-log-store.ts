@@ -19,7 +19,7 @@
  * selection rows always describe the same observation. That writer is
  * best-effort (a failure logs a warning, leaves the earlier rows in place,
  * and never fails the turn). Reads resolve the memory connection via
- * `memorySqliteOrNull` and degrade to `null`. `message_id` is written NULL
+ * `memoryDbOrNull` and degrade to `null`. `message_id` is written NULL
  * and stamped at turn end by `backfillMemoryV3SelectionMessageId`, in the
  * same batch as the selection rows, so a turn's pool can be read by its
  * message id even when the turn logged no selections.
@@ -44,8 +44,8 @@
 
 import { createHash } from "node:crypto";
 
+import type { AsyncDb } from "../../../../persistence/db-facade.js";
 import { getLogger } from "../logging.js";
-import type { MemorySqlite } from "../memory-db.js";
 import type { OrchestrateResult } from "./orchestrate.js";
 import {
   ensuredMemorySqlite,
@@ -148,15 +148,13 @@ export function buildPoolRecord(result: OrchestrateResult): PoolRecord {
     ]),
   );
   const candidates: PoolCandidateRecord[] = [
-    ...pool.stable.map(
-      (candidate): PoolCandidateRecord => ({
-        slug: candidate.slug,
-        lane: candidate.lane,
-        section_title: null,
-        section_key: null,
-        chosen: selected.has(candidate.slug),
-      }),
-    ),
+    ...pool.stable.map((candidate): PoolCandidateRecord => ({
+      slug: candidate.slug,
+      lane: candidate.lane,
+      section_title: null,
+      section_key: null,
+      chosen: selected.has(candidate.slug),
+    })),
     ...pool.finder.map((candidate): PoolCandidateRecord => {
       const key = candidate.section ? sectionKey(candidate.section) : null;
       return {
@@ -187,23 +185,28 @@ export function buildPoolRecord(result: OrchestrateResult): PoolRecord {
  * `shadow-plugin.ts` runs this inside the transaction that also replaces the
  * turn's selection rows, and owns the best-effort boundary around it.
  */
-export function writePool(
-  raw: MemorySqlite,
+export async function writePool(
+  raw: AsyncDb,
   conversationId: string,
   turn: number,
   record: PoolRecord,
-): void {
-  ensureMemoryV3PoolsSchemaOnce(raw);
-  raw
-    .query(
-      /*sql*/ `
-      INSERT OR REPLACE INTO memory_v3_pools (
+): Promise<void> {
+  await ensureMemoryV3PoolsSchemaOnce(raw);
+  await raw.run(
+    /*sql*/ `
+      INSERT INTO memory_v3_pools (
         conversation_id, turn, message_id, created_at,
         pool_size, selected_count, selector_ran, candidates_json
       ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
+      ON CONFLICT (conversation_id, turn) DO UPDATE SET
+        message_id = NULL,
+        created_at = EXCLUDED.created_at,
+        pool_size = EXCLUDED.pool_size,
+        selected_count = EXCLUDED.selected_count,
+        selector_ran = EXCLUDED.selector_ran,
+        candidates_json = EXCLUDED.candidates_json
     `,
-    )
-    .run(
+    [
       conversationId,
       turn,
       Date.now(),
@@ -211,7 +214,8 @@ export function writePool(
       record.selected_count,
       record.selector_ran ? 1 : 0,
       JSON.stringify(record.candidates),
-    );
+    ],
+  );
 }
 
 interface PoolRow {
@@ -256,12 +260,12 @@ const readPoolOr = memoryReader(
     ),
 );
 
-function readPool(
+async function readPool(
   context: string,
-  select: (raw: MemorySqlite) => PoolRow | null,
-): StoredPool | null {
-  return readPoolOr(context, null, (raw) => {
-    const row = select(raw);
+  select: (raw: AsyncDb) => Promise<PoolRow | null>,
+): Promise<StoredPool | null> {
+  return readPoolOr(context, null, async (raw) => {
+    const row = await select(raw);
     return row ? toStoredPool(row) : null;
   });
 }
@@ -270,21 +274,18 @@ function readPool(
  * Read the pool record for an exact `(conversation, turn)`. `null` when the
  * turn has no row (it predates pool logging) or the read degraded.
  */
-export function readPoolForTurn(
+export async function readPoolForTurn(
   conversationId: string,
   turn: number,
-): PoolRecord | null {
-  const stored = readPool(
-    "readPoolForTurn",
-    (raw) =>
-      raw
-        .query(
-          /*sql*/ `
+): Promise<PoolRecord | null> {
+  const stored = await readPool("readPoolForTurn", (raw) =>
+    raw.get<PoolRow>(
+      /*sql*/ `
         SELECT ${POOL_COLUMNS} FROM memory_v3_pools
         WHERE conversation_id = ? AND turn = ?
       `,
-        )
-        .get(conversationId, turn) as PoolRow | null,
+      [conversationId, turn],
+    ),
   );
   return stored?.record ?? null;
 }
@@ -298,23 +299,22 @@ export function readPoolForTurn(
  * the backfill (`message_id` NULL) never matches. `null` when no row matches
  * or the read degraded.
  */
-export function readPoolForMessageIds(messageIds: string[]): StoredPool | null {
+export async function readPoolForMessageIds(
+  messageIds: string[],
+): Promise<StoredPool | null> {
   if (messageIds.length === 0) {
     return null;
   }
   const placeholders = messageIds.map(() => "?").join(", ");
-  return readPool(
-    "readPoolForMessageIds",
-    (raw) =>
-      raw
-        .query(
-          /*sql*/ `
+  return readPool("readPoolForMessageIds", (raw) =>
+    raw.get<PoolRow>(
+      /*sql*/ `
         SELECT ${POOL_COLUMNS} FROM memory_v3_pools
         WHERE message_id IN (${placeholders})
-        ORDER BY rowid
+        ORDER BY ctid
       `,
-        )
-        .get(...messageIds) as PoolRow | null,
+      messageIds,
+    ),
   );
 }
 
@@ -410,26 +410,34 @@ export function buildPoolInput(
  * the transaction that writes the turn's pool and selection rows, and owns
  * the best-effort boundary around it.
  */
-export function writePoolInput(
-  raw: MemorySqlite,
+export async function writePoolInput(
+  raw: AsyncDb,
   conversationId: string,
   turn: number,
   capture: PoolInputCapture,
-): void {
-  ensureMemoryV3PoolInputsSchemaOnce(raw);
+): Promise<void> {
+  await ensureMemoryV3PoolInputsSchemaOnce(raw);
   const now = Date.now();
   const { input, texts } = capture;
-  raw
-    .query(
-      /*sql*/ `
-      INSERT OR REPLACE INTO memory_v3_pool_inputs (
+  await raw.run(
+    /*sql*/ `
+      INSERT INTO memory_v3_pool_inputs (
         conversation_id, turn, created_at, situational_context, recent_context,
         current_message, previous_assistant_message, selector_prompt_hash,
         kept_all, gate_reason, candidate_text_hashes_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (conversation_id, turn) DO UPDATE SET
+        created_at = EXCLUDED.created_at,
+        situational_context = EXCLUDED.situational_context,
+        recent_context = EXCLUDED.recent_context,
+        current_message = EXCLUDED.current_message,
+        previous_assistant_message = EXCLUDED.previous_assistant_message,
+        selector_prompt_hash = EXCLUDED.selector_prompt_hash,
+        kept_all = EXCLUDED.kept_all,
+        gate_reason = EXCLUDED.gate_reason,
+        candidate_text_hashes_json = EXCLUDED.candidate_text_hashes_json
     `,
-    )
-    .run(
+    [
       conversationId,
       turn,
       now,
@@ -441,13 +449,17 @@ export function writePoolInput(
       input.kept_all ? 1 : 0,
       input.gate_reason,
       JSON.stringify(input.candidate_text_hashes),
-    );
-  const insertText = raw.query(/*sql*/ `
-      INSERT OR IGNORE INTO memory_v3_pool_texts (text_hash, text, created_at)
-      VALUES (?, ?, ?)
-    `);
+    ],
+  );
   for (const [hash, text] of texts) {
-    insertText.run(hash, text, now);
+    await raw.run(
+      /*sql*/ `
+      INSERT INTO memory_v3_pool_texts (text_hash, text, created_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT (text_hash) DO NOTHING
+    `,
+      [hash, text, now],
+    );
   }
 }
 
@@ -479,22 +491,21 @@ const readPoolInputOr = memoryReader(
  * turn has none (it ran with the capture off or predates it) or the read
  * degraded.
  */
-export function readPoolInputForTurn(
+export async function readPoolInputForTurn(
   conversationId: string,
   turn: number,
-): PoolInputRecord | null {
-  return readPoolInputOr("readPoolInputForTurn", null, (raw) => {
-    const row = raw
-      .query(
-        /*sql*/ `
+): Promise<PoolInputRecord | null> {
+  return readPoolInputOr("readPoolInputForTurn", null, async (raw) => {
+    const row = await raw.get<PoolInputRow>(
+      /*sql*/ `
         SELECT situational_context, recent_context, current_message,
                previous_assistant_message, selector_prompt_hash, kept_all,
                gate_reason, candidate_text_hashes_json
         FROM memory_v3_pool_inputs
         WHERE conversation_id = ? AND turn = ?
       `,
-      )
-      .get(conversationId, turn) as PoolInputRow | null;
+      [conversationId, turn],
+    );
     if (!row) {
       return null;
     }
@@ -517,13 +528,12 @@ export function readPoolInputForTurn(
 
 /** The rendered text stored under `textHash`, or `null` when none is or the
  *  read degraded. */
-export function readPoolText(textHash: string): string | null {
-  return readPoolInputOr("readPoolText", null, (raw) => {
-    const row = raw
-      .query(
-        /*sql*/ `SELECT text FROM memory_v3_pool_texts WHERE text_hash = ?`,
-      )
-      .get(textHash) as { text: string } | null;
+export async function readPoolText(textHash: string): Promise<string | null> {
+  return readPoolInputOr("readPoolText", null, async (raw) => {
+    const row = await raw.get<{ text: string }>(
+      /*sql*/ `SELECT text FROM memory_v3_pool_texts WHERE text_hash = ?`,
+      [textHash],
+    );
     return row?.text ?? null;
   });
 }

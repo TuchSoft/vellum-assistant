@@ -151,19 +151,18 @@ export async function embedGraphTriggerJob(
   // Import here to avoid circular dependency
   const { memoryDbOrNull } = await import("../memory-db.js");
   const { eq } = await import("drizzle-orm");
-  const { memoryGraphTriggers } =
-    await import("../../../../persistence/schema/index.js");
   const { embedWithBackend } = await import("../embeddings.js");
 
-  const db = memoryDbOrNull("embedGraphTriggerJob");
+  const db = await memoryDbOrNull("embedGraphTriggerJob");
   if (!db) {
     return;
   }
-  const row = db
+  const memoryGraphTriggers = db.schema.memoryGraphTriggers;
+  const rows = await db.orm
     .select()
     .from(memoryGraphTriggers)
-    .where(eq(memoryGraphTriggers.id, triggerId))
-    .get();
+    .where(eq(memoryGraphTriggers.id, triggerId));
+  const row = rows[0];
 
   if (!row || !row.condition) {
     return;
@@ -176,10 +175,10 @@ export async function embedGraphTriggerJob(
   }
 
   const buffer = Buffer.from(new Float32Array(vector).buffer);
-  db.update(memoryGraphTriggers)
+  await db.orm
+    .update(memoryGraphTriggers)
     .set({ conditionEmbedding: buffer })
-    .where(eq(memoryGraphTriggers.id, triggerId))
-    .run();
+    .where(eq(memoryGraphTriggers.id, triggerId));
 }
 
 /**

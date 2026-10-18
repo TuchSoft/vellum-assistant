@@ -10,7 +10,7 @@ import { getQdrantClient } from "../../../../persistence/embeddings/qdrant-clien
 import {
   memorySegments,
   memorySummaries,
-} from "../../../../persistence/schema/index.js";
+} from "../../../../persistence/pg-schema/index.js";
 import { getMemoryConfig } from "../config.js";
 import { memoryDbOrNull } from "../memory-db.js";
 import { mapCosineToUnit } from "../validation.js";
@@ -104,7 +104,7 @@ export async function semanticSearch(
     );
   }
 
-  const mem = memoryDbOrNull("semanticSearch");
+  const mem = await memoryDbOrNull("semanticSearch");
 
   // Batch-fetch all backing records upfront to avoid N+1 queries per result
   const summaryTargetIds: string[] = [];
@@ -119,11 +119,10 @@ export async function semanticSearch(
 
   const summariesMap = new Map<string, typeof memorySummaries.$inferSelect>();
   if (mem && summaryTargetIds.length > 0) {
-    const allSummaries = mem
+    const allSummaries = await mem.orm
       .select()
       .from(memorySummaries)
-      .where(inArray(memorySummaries.id, summaryTargetIds))
-      .all();
+      .where(inArray(memorySummaries.id, summaryTargetIds));
     for (const s of allSummaries) {
       summariesMap.set(s.id, s);
     }
@@ -131,11 +130,10 @@ export async function semanticSearch(
 
   const segmentsMap = new Map<string, typeof memorySegments.$inferSelect>();
   if (mem && segmentTargetIds.length > 0) {
-    const allSegments = mem
+    const allSegments = await mem.orm
       .select()
       .from(memorySegments)
-      .where(inArray(memorySegments.id, segmentTargetIds))
-      .all();
+      .where(inArray(memorySegments.id, segmentTargetIds));
     for (const seg of allSegments) {
       segmentsMap.set(seg.id, seg);
     }

@@ -101,7 +101,7 @@ export async function reconcilePkbIndex(
   for (const [relPath, disk] of diskByPath) {
     const indexed = indexedByPath.get(relPath);
     if (!indexed || indexed.mixed || indexed.contentHash !== disk.contentHash) {
-      enqueuePkbIndexJob({
+      await enqueuePkbIndexJob({
         pkbRoot,
         absPath: join(pkbRoot, relPath),
       });

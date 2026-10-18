@@ -9,7 +9,7 @@
 
 import { eq, sql } from "drizzle-orm";
 
-import { memoryGraphNodes } from "../../../../../persistence/schema/index.js";
+import { memoryGraphNodes } from "../../../../../persistence/pg-schema/index.js";
 import type { EmotionalCharge, Fidelity } from "../../graph/types.js";
 import { memoryDbOrNull } from "../../memory-db.js";
 
@@ -133,22 +133,21 @@ export interface DecayTickResult {
  * Significance decay is computed at retrieval time (not stored) via
  * computeEffectiveSignificance in scoring.ts, so it's not applied here.
  */
-export function runDecayTick(): DecayTickResult {
+export async function runDecayTick(): Promise<DecayTickResult> {
   const result: DecayTickResult = {
     nodesProcessed: 0,
     emotionalDecays: 0,
     fidelityDowngrades: 0,
   };
-  const db = memoryDbOrNull("runDecayTick");
+  const db = await memoryDbOrNull("runDecayTick");
   if (!db) {
     return result;
   }
 
-  const rows = db
+  const rows = await db.orm
     .select()
     .from(memoryGraphNodes)
-    .where(sql`${memoryGraphNodes.fidelity} != 'gone'`)
-    .all();
+    .where(sql`${memoryGraphNodes.fidelity} != 'gone'`);
 
   const now = Date.now();
   const msPerDay = 1000 * 60 * 60 * 24;
@@ -184,10 +183,10 @@ export function runDecayTick(): DecayTickResult {
 
     // Apply updates if anything changed
     if (Object.keys(updates).length > 0) {
-      db.update(memoryGraphNodes)
+      await db.orm
+        .update(memoryGraphNodes)
         .set(updates)
-        .where(eq(memoryGraphNodes.id, row.id))
-        .run();
+        .where(eq(memoryGraphNodes.id, row.id));
     }
   }
 

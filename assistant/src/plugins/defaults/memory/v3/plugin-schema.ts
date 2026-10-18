@@ -23,23 +23,24 @@ import {
   getMemoryCheckpoint,
   setMemoryCheckpoint,
 } from "../../../../persistence/checkpoints.js";
+import type { AsyncDb } from "../../../../persistence/db-facade.js";
 import { getLogger } from "../logging.js";
-import { type MemorySqlite, memorySqliteOrNull } from "../memory-db.js";
+import { memoryDbOrNull } from "../memory-db.js";
 
 const log = getLogger("memory-v3-plugin-schema");
 
 /**
- * The raw memory connection with `ensure` applied to it, or `null` (with the
+ * The memory connection with `ensure` applied to it, or `null` (with the
  * degraded-mode warning) when the connection is unavailable: what a store
  * resolves before every statement.
  */
-export function ensuredMemorySqlite(
+export async function ensuredMemorySqlite(
   context: string,
-  ensure: (memoryRaw: MemorySqlite) => void,
-): MemorySqlite | null {
-  const raw = memorySqliteOrNull(context);
+  ensure: (memoryRaw: AsyncDb) => Promise<void>,
+): Promise<AsyncDb | null> {
+  const raw = await memoryDbOrNull(context);
   if (raw) {
-    ensure(raw);
+    await ensure(raw);
   }
   return raw;
 }
@@ -56,13 +57,17 @@ export function ensuredMemorySqlite(
  * and an inspector read shows no diagnostic rather than failing its route.
  */
 export function memoryReader<Handle>(
-  resolve: (context: string) => Handle | null,
+  resolve: (context: string) => Promise<Handle | null>,
   onFailure: (err: unknown, context: string) => void,
-): <T>(context: string, fallback: T, read: (handle: Handle) => T) => T {
-  return (context, fallback, read) => {
+): <T>(
+  context: string,
+  fallback: T,
+  read: (handle: Handle) => Promise<T>,
+) => Promise<T> {
+  return async (context, fallback, read) => {
     try {
-      const handle = resolve(context);
-      return handle === null ? fallback : read(handle);
+      const handle = await resolve(context);
+      return handle === null ? fallback : await read(handle);
     } catch (err) {
       onFailure(err, context);
       return fallback;
@@ -78,10 +83,10 @@ export function memoryReader<Handle>(
  * connection is ensured again.
  */
 export function ensureOncePerConnection(
-  ensure: (memoryRaw: MemorySqlite) => void | Promise<void>,
+  ensure: (memoryRaw: AsyncDb) => void | Promise<void>,
   degradedMessage: string,
-): (memoryRaw: MemorySqlite) => Promise<void> {
-  const ensured = new WeakSet<MemorySqlite>();
+): (memoryRaw: AsyncDb) => Promise<void> {
+  const ensured = new WeakSet<AsyncDb>();
   let warned = false;
   return async (memoryRaw) => {
     if (ensured.has(memoryRaw)) {
@@ -103,19 +108,15 @@ export function ensureOncePerConnection(
 }
 
 /** Add `column`, declared as `type`, to `table` unless it already has it. */
-function ensureColumn(
-  memoryRaw: MemorySqlite,
+async function ensureColumn(
+  memoryRaw: AsyncDb,
   table: string,
   column: string,
   type: string,
-): void {
-  const columns = memoryRaw
-    .query(/*sql*/ `PRAGMA table_info(${table})`)
-    .all() as Array<{ name: string }>;
-  if (columns.some((existing) => existing.name === column)) {
-    return;
-  }
-  memoryRaw.exec(/*sql*/ `ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+): Promise<void> {
+  await memoryRaw.exec(
+    /*sql*/ `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`,
+  );
 }
 
 /**
@@ -126,13 +127,15 @@ function ensureColumn(
  * `selector_ran` (0 for a turn whose selector never judged a pool, which is
  * persisted as an empty pool). Idempotent (`IF NOT EXISTS`).
  */
-export function ensureMemoryV3PoolsSchema(memoryRaw: MemorySqlite): void {
-  memoryRaw.exec(/*sql*/ `
+export async function ensureMemoryV3PoolsSchema(
+  memoryRaw: AsyncDb,
+): Promise<void> {
+  await memoryRaw.exec(/*sql*/ `
     CREATE TABLE IF NOT EXISTS memory_v3_pools (
       conversation_id TEXT NOT NULL,
-      turn INTEGER NOT NULL,
+      turn BIGINT NOT NULL,
       message_id TEXT,
-      created_at INTEGER NOT NULL,
+      created_at BIGINT NOT NULL,
       pool_size INTEGER NOT NULL,
       selected_count INTEGER NOT NULL,
       selector_ran INTEGER NOT NULL DEFAULT 1,
@@ -140,11 +143,11 @@ export function ensureMemoryV3PoolsSchema(memoryRaw: MemorySqlite): void {
       PRIMARY KEY (conversation_id, turn)
     )
   `);
-  memoryRaw.exec(/*sql*/ `
+  await memoryRaw.exec(/*sql*/ `
     CREATE INDEX IF NOT EXISTS idx_memory_v3_pools_message
       ON memory_v3_pools (message_id)
   `);
-  memoryRaw.exec(/*sql*/ `
+  await memoryRaw.exec(/*sql*/ `
     CREATE INDEX IF NOT EXISTS idx_memory_v3_pools_conv
       ON memory_v3_pools (conversation_id, turn DESC)
   `);
@@ -171,12 +174,14 @@ const POOL_TEXTS_TABLE = "memory_v3_pool_texts";
  * stable-prefix card repeated across turns is stored once. Idempotent
  * (`IF NOT EXISTS`).
  */
-export function ensureMemoryV3PoolInputsSchema(memoryRaw: MemorySqlite): void {
-  memoryRaw.exec(/*sql*/ `
+export async function ensureMemoryV3PoolInputsSchema(
+  memoryRaw: AsyncDb,
+): Promise<void> {
+  await memoryRaw.exec(/*sql*/ `
     CREATE TABLE IF NOT EXISTS ${POOL_INPUTS_TABLE} (
       conversation_id TEXT NOT NULL,
-      turn INTEGER NOT NULL,
-      created_at INTEGER NOT NULL,
+      turn BIGINT NOT NULL,
+      created_at BIGINT NOT NULL,
       situational_context TEXT,
       recent_context TEXT NOT NULL,
       current_message TEXT NOT NULL,
@@ -188,11 +193,11 @@ export function ensureMemoryV3PoolInputsSchema(memoryRaw: MemorySqlite): void {
       PRIMARY KEY (conversation_id, turn)
     )
   `);
-  memoryRaw.exec(/*sql*/ `
+  await memoryRaw.exec(/*sql*/ `
     CREATE TABLE IF NOT EXISTS ${POOL_TEXTS_TABLE} (
       text_hash TEXT PRIMARY KEY,
       text TEXT NOT NULL,
-      created_at INTEGER NOT NULL
+      created_at BIGINT NOT NULL
     )
   `);
 }
@@ -231,12 +236,13 @@ const memoryCheckpointLedger: CheckpointLedger = {
 export const SECTIONS_LEGACY_COPY_DONE_KEY =
   "memory_v3_injected_sections:legacy_copy_done";
 
-function legacyCardsTableExists(memoryRaw: MemorySqlite): boolean {
-  return (
-    memoryRaw
-      .query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
-      .get(LEGACY_CARDS_TABLE) != null
+async function legacyCardsTableExists(memoryRaw: AsyncDb): Promise<boolean> {
+  const row = await memoryRaw.get<{ name: string }>(
+    /*sql*/ `SELECT table_name AS name FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_name = ?`,
+    [LEGACY_CARDS_TABLE],
   );
+  return row !== null;
 }
 
 /**
@@ -266,7 +272,7 @@ function legacyCardsTableExists(memoryRaw: MemorySqlite): boolean {
  * blocks that are gone. A ledger that cannot be read skips the copy too,
  * leaving it to a later ensure rather than repeating it, and a copy whose
  * record could not be written is repeated by a later ensure. The DDL is
- * `IF NOT EXISTS` and the copy `INSERT OR IGNORE`, so a repeated copy
+ * `IF NOT EXISTS` and the copy `INSERT ... ON CONFLICT DO NOTHING`, so a repeated copy
  * neither duplicates rows nor overwrites entries the section store has since
  * refreshed. A memory database without the legacy table (a fresh install,
  * or one the relocation has not reached yet) gets the empty table and
@@ -274,28 +280,28 @@ function legacyCardsTableExists(memoryRaw: MemorySqlite): boolean {
  * are there.
  */
 export async function ensureMemoryV3InjectedSectionsSchema(
-  memoryRaw: MemorySqlite,
+  memoryRaw: AsyncDb,
   ledger: CheckpointLedger = memoryCheckpointLedger,
 ): Promise<void> {
-  memoryRaw.exec(/*sql*/ `
+  await memoryRaw.exec(/*sql*/ `
     CREATE TABLE IF NOT EXISTS ${SECTIONS_TABLE} (
       conversation_id TEXT NOT NULL,
       slug TEXT NOT NULL,
       section_key TEXT NOT NULL,
-      injected_at INTEGER NOT NULL,
-      bytes INTEGER NOT NULL DEFAULT 0,
-      pruned_at INTEGER,
-      last_selected_at INTEGER,
+      injected_at BIGINT NOT NULL,
+      bytes BIGINT NOT NULL DEFAULT 0,
+      pruned_at BIGINT,
+      last_selected_at BIGINT,
       PRIMARY KEY (conversation_id, slug, section_key)
     )
   `);
-  ensureColumn(memoryRaw, SECTIONS_TABLE, "last_selected_at", "INTEGER");
-  memoryRaw.exec(/*sql*/ `
+  await ensureColumn(memoryRaw, SECTIONS_TABLE, "last_selected_at", "BIGINT");
+  await memoryRaw.exec(/*sql*/ `
     CREATE INDEX IF NOT EXISTS idx_memory_v3_injected_sections_conv
       ON ${SECTIONS_TABLE} (conversation_id)
   `);
 
-  if (!legacyCardsTableExists(memoryRaw)) {
+  if (!(await legacyCardsTableExists(memoryRaw))) {
     return;
   }
   let copied: boolean;
@@ -311,11 +317,12 @@ export async function ensureMemoryV3InjectedSectionsSchema(
   if (copied) {
     return;
   }
-  memoryRaw.exec(/*sql*/ `
-    INSERT OR IGNORE INTO ${SECTIONS_TABLE}
+  await memoryRaw.exec(/*sql*/ `
+    INSERT INTO ${SECTIONS_TABLE}
       (conversation_id, slug, section_key, injected_at, bytes, pruned_at)
     SELECT conversation_id, slug, '', injected_at, 0, pruned_at
     FROM ${LEGACY_CARDS_TABLE}
+    ON CONFLICT (conversation_id, slug, section_key) DO NOTHING
   `);
   try {
     await ledger.set(SECTIONS_LEGACY_COPY_DONE_KEY, "1");
@@ -342,18 +349,17 @@ export const ensureMemoryV3InjectedSectionsSchemaOnce = ensureOncePerConnection(
  * has not reached) would bring the conversation's leads back as active
  * entries for blocks compaction stripped. No-op without the table.
  */
-export function deleteLegacyCardRows(
-  memoryRaw: MemorySqlite,
+export async function deleteLegacyCardRows(
+  memoryRaw: AsyncDb,
   conversationId: string,
-): void {
-  if (!legacyCardsTableExists(memoryRaw)) {
+): Promise<void> {
+  if (!(await legacyCardsTableExists(memoryRaw))) {
     return;
   }
-  memoryRaw
-    .query(
-      /*sql*/ `DELETE FROM ${LEGACY_CARDS_TABLE} WHERE conversation_id = ?`,
-    )
-    .run(conversationId);
+  await memoryRaw.run(
+    /*sql*/ `DELETE FROM ${LEGACY_CARDS_TABLE} WHERE conversation_id = ?`,
+    [conversationId],
+  );
 }
 
 const SELECTIONS_TABLE = "memory_v3_selections";
@@ -369,8 +375,10 @@ const SELECTIONS_TABLE = "memory_v3_selections";
  * which {@link ensureMemoryV3SelectionsSectionKeyOnce} reports and retries
  * on the connection's next use.
  */
-function ensureMemoryV3SelectionsSectionKey(memoryRaw: MemorySqlite): void {
-  ensureColumn(memoryRaw, SELECTIONS_TABLE, "section_key", "TEXT");
+async function ensureMemoryV3SelectionsSectionKey(
+  memoryRaw: AsyncDb,
+): Promise<void> {
+  await ensureColumn(memoryRaw, SELECTIONS_TABLE, "section_key", "TEXT");
 }
 
 /** {@link ensureMemoryV3SelectionsSectionKey} once per connection in this
@@ -389,11 +397,11 @@ export const ensureMemoryV3SelectionsSectionKeyOnce = ensureOncePerConnection(
  * the same connection is a no-op. No-op when the connection is unavailable
  * (the stores degrade to no-ops as on any turn).
  */
-export function ensureMemoryV3PluginSchema(): void {
-  ensuredMemorySqlite("ensureMemoryV3PluginSchema", (raw) => {
-    ensureMemoryV3PoolsSchemaOnce(raw);
-    ensureMemoryV3PoolInputsSchemaOnce(raw);
-    ensureMemoryV3InjectedSectionsSchemaOnce(raw);
-    ensureMemoryV3SelectionsSectionKeyOnce(raw);
+export async function ensureMemoryV3PluginSchema(): Promise<void> {
+  await ensuredMemorySqlite("ensureMemoryV3PluginSchema", async (raw) => {
+    await ensureMemoryV3PoolsSchemaOnce(raw);
+    await ensureMemoryV3PoolInputsSchemaOnce(raw);
+    await ensureMemoryV3InjectedSectionsSchemaOnce(raw);
+    await ensureMemoryV3SelectionsSectionKeyOnce(raw);
   });
 }

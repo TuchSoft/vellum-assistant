@@ -100,7 +100,7 @@ async function handleBackfill({
   const { op, force } = MemoryV2BackfillParams.parse(body);
   const payload: Record<string, unknown> =
     op === "migrate" && force === true ? { force: true } : {};
-  const jobId = enqueueMemoryJob(OP_TO_JOB_TYPE[op], payload);
+  const jobId = await enqueueMemoryJob(OP_TO_JOB_TYPE[op], payload);
   return { jobId };
 }
 

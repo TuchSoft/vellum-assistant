@@ -38,7 +38,7 @@
  * the persistence; nothing else is stored.
  */
 
-import { memorySqliteOrNull } from "../memory-db.js";
+import { memoryDbOrNull } from "../memory-db.js";
 import type { EdgeGraph } from "./edge.js";
 import type { Slug } from "./types.js";
 
@@ -83,7 +83,9 @@ interface SelectionRow {
  * Fail-soft: an unavailable memory database yields an empty graph — the lane
  * simply surfaces no learned associations.
  */
-export function computeLearnedEdgeGraph(opts: LearnedEdgesOptions): EdgeGraph {
+export async function computeLearnedEdgeGraph(
+  opts: LearnedEdgesOptions,
+): Promise<EdgeGraph> {
   const { halfLifeMs, minCount, npmiFloor, maxPerPage, now, windowMs } = opts;
   const empty: EdgeGraph = {
     adjacency: new Map(),
@@ -94,19 +96,18 @@ export function computeLearnedEdgeGraph(opts: LearnedEdgesOptions): EdgeGraph {
     return empty;
   }
 
-  const raw = memorySqliteOrNull("computeLearnedEdgeGraph");
-  if (!raw) {
+  const db = await memoryDbOrNull("computeLearnedEdgeGraph");
+  if (!db) {
     return empty;
   }
 
-  const rows = raw
-    .query(
-      /*sql*/ `
+  const rows = await db.all<SelectionRow>(
+    /*sql*/ `
       SELECT conversation_id, slug, created_at FROM memory_v3_selections
       WHERE created_at >= ?
     `,
-    )
-    .all(now - windowMs) as SelectionRow[];
+    [now - windowMs],
+  );
   if (rows.length === 0) {
     return empty;
   }

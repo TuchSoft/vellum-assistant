@@ -324,11 +324,11 @@ export interface PruneDeps {
  * slugs: dedup-only, no byte accounting) are skipped, since pruning them
  * frees nothing.
  */
-export function planPrune(
+export async function planPrune(
   deps: PruneDeps,
   conversationId: string,
-): PrunePlan | null {
-  const activeEntries = getActiveEntries(conversationId);
+): Promise<PrunePlan | null> {
+  const activeEntries = await getActiveEntries(conversationId);
   const resident = activeEntries.reduce((sum, e) => sum + e.bytes, 0);
   if (resident <= deps.maxResidentBytes) {
     return null;
@@ -594,7 +594,7 @@ export async function runPruneValve(
 
   // Planning needs only the store (cheap): a conversation within the cap
   // never pays for more than that (the common case).
-  const plan = planPrune(
+  const plan = await planPrune(
     {
       maxResidentBytes: pruneConfig.maxResidentBytes,
       targetResidentBytes: pruneConfig.targetResidentBytes,
@@ -605,7 +605,7 @@ export async function runPruneValve(
     return null;
   }
 
-  markPruned(conversationId, plan.sections, options.now ?? Date.now());
+  await markPruned(conversationId, plan.sections, options.now ?? Date.now());
 
   const liveMessages = options.liveMessages
     ? options.liveMessages(conversationId)
@@ -614,7 +614,7 @@ export async function runPruneValve(
   if (liveMessages) {
     strippedBlocks = stripPrunedSectionsFromMessages(
       liveMessages,
-      getPrunedSections(conversationId),
+      await getPrunedSections(conversationId),
     );
   }
 
@@ -624,7 +624,7 @@ export async function runPruneValve(
       prunedSections: plan.sections.length,
       bytesFreed: plan.bytesFreed,
       strippedBlocks,
-      residentBytes: residentBytes(conversationId),
+      residentBytes: await residentBytes(conversationId),
     },
     "memory-v3 prune valve: pruned least-recently-selected sections (one amortized prefix-cache bust)",
   );

@@ -88,7 +88,7 @@ export async function handleOAuthProxy(
     );
   }
 
-  if (!getProvider(provider)) {
+  if (!(await getProvider(provider))) {
     throw new NotFoundError(
       `Unknown provider "${provider}". Run 'assistant oauth providers list' to see available providers.`,
     );

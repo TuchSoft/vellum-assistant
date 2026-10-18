@@ -150,9 +150,9 @@ async function handleOAuthConnectStart({ body = {} }: RouteHandlerArgs) {
   let clientSecret: string | undefined;
 
   // Try existing connection first (re-auth flow)
-  const conn = getConnectionByProvider(service);
+  const conn = await getConnectionByProvider(service);
   if (conn) {
-    const app = getApp(conn.oauthAppId);
+    const app = await getApp(conn.oauthAppId);
     if (app) {
       clientId = app.clientId;
       clientSecret = await getSecureKeyAsync(app.clientSecretCredentialPath);
@@ -161,7 +161,7 @@ async function handleOAuthConnectStart({ body = {} }: RouteHandlerArgs) {
 
   // Fall back to most recent app for this provider (first-time connect with stored app)
   if (!clientId) {
-    const dbApp = getMostRecentAppByProvider(service);
+    const dbApp = await getMostRecentAppByProvider(service);
     if (dbApp) {
       clientId = dbApp.clientId;
       if (!clientSecret) {
@@ -178,7 +178,7 @@ async function handleOAuthConnectStart({ body = {} }: RouteHandlerArgs) {
     );
   }
 
-  const providerRow = getProvider(service);
+  const providerRow = await getProvider(service);
   const requiresSecret = !!providerRow?.requiresClientSecret;
   if (requiresSecret && !clientSecret) {
     throw new BadRequestError(
@@ -199,10 +199,10 @@ async function handleOAuthConnectStart({ body = {} }: RouteHandlerArgs) {
       openUrl: (url: string) => {
         authorizeUrl = url;
       },
-      onDeferredComplete: (deferredResult) => {
+      onDeferredComplete: async (deferredResult) => {
         let accountInfo = deferredResult.accountInfo;
         try {
-          const conn = getConnectionByProvider(service);
+          const conn = await getConnectionByProvider(service);
           if (conn?.accountInfo) {
             accountInfo = conn.accountInfo;
           }
@@ -250,7 +250,7 @@ async function handleOAuthConnectStart({ body = {} }: RouteHandlerArgs) {
 
     let responseAccountInfo = result.accountInfo;
     try {
-      const conn = getConnectionByProvider(service);
+      const conn = await getConnectionByProvider(service);
       if (conn?.accountInfo) {
         responseAccountInfo = conn.accountInfo;
       }

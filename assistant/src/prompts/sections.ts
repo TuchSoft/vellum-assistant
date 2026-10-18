@@ -69,7 +69,9 @@ export type SectionRenderContext = Record<string, unknown>;
  * The numeric prefix on each id is load-bearing inside its render phase; pick
  * a number that places the section where it should appear in the final prompt.
  */
-export function renderWorkspaceSections(ctx: SectionRenderContext): string[][] {
+export async function renderWorkspaceSections(
+  ctx: SectionRenderContext,
+): Promise<string[][]> {
   const workspaceDir = getWorkspaceSystemPromptDir();
   const ids = collectSectionIds(workspaceDir);
 
@@ -80,7 +82,7 @@ export function renderWorkspaceSections(ctx: SectionRenderContext): string[][] {
     if (section === null) {
       continue;
     }
-    const rendered = renderResolvedSection(section, ctx);
+    const rendered = await renderResolvedSection(section, ctx);
     if (rendered) {
       blocks[blocks.length - 1].push(rendered);
     }
@@ -248,17 +250,17 @@ function interpolateWorkspacePath(
   });
 }
 
-function renderResolvedSection(
+async function renderResolvedSection(
   section: ResolvedSection,
   ctx: SectionRenderContext,
-): string | null {
+): Promise<string | null> {
   if (!isEnabled(section.enabled, ctx)) {
     return null;
   }
 
   let body = section.body;
   if (section.transform) {
-    const transformed = section.transform(body, ctx);
+    const transformed = await section.transform(body, ctx);
     if (transformed === null) {
       return null;
     }

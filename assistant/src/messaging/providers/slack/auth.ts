@@ -77,7 +77,7 @@ export async function resolveSlackAuth(
       // granted no user scopes leaves a bot token there instead, which is the
       // same thing the next line falls back to, so the wrong guess costs
       // nothing.
-      if (getConnectionByProvider("slack")) {
+      if (await getConnectionByProvider("slack")) {
         try {
           return await resolveOAuthConnection("slack", {
             account: opts.account,
@@ -97,7 +97,7 @@ export async function resolveSlackAuth(
   // access_token, resolved as a refreshing OAuthConnection. Guard on the
   // stored connection row so a missing install returns undefined instead of
   // throwing.
-  if (!getConnectionByProvider("slack")) {
+  if (!(await getConnectionByProvider("slack"))) {
     return undefined;
   }
   return resolveOAuthConnection("slack", { account: opts.account });

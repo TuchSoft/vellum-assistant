@@ -41,11 +41,11 @@ export class CredentialInUseError extends RouteError {
  * The credential itself is never logged beyond its `credential/{service}/
  * {field}` account name, which holds no secret material.
  */
-export function assertCredentialNotInUse(
+export async function assertCredentialNotInUse(
   credentialAccount: string,
   force: boolean,
-): string[] {
-  const connections = findConnectionsUsingCredential(credentialAccount);
+): Promise<string[]> {
+  const connections = await findConnectionsUsingCredential(credentialAccount);
   if (connections.length === 0) {
     return connections;
   }

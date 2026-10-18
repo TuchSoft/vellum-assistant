@@ -32,7 +32,7 @@ export const telegramBotMessagingProvider: MessagingProvider = {
   capabilities: new Set(),
 
   async isConnected(): Promise<boolean> {
-    const conn = getConnectionByProvider("telegram");
+    const conn = await getConnectionByProvider("telegram");
     if (!(conn && conn.status === "active")) {
       return false;
     }

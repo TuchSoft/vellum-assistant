@@ -75,8 +75,10 @@ interface PlatformConnectionEntry {
   status?: string;
 }
 
-function getManagedServiceConfigKey(provider: string): string | null {
-  const providerRow = getProvider(provider);
+async function getManagedServiceConfigKey(
+  provider: string,
+): Promise<string | null> {
+  const providerRow = await getProvider(provider);
   const managedKey = providerRow?.managedServiceConfigKey;
   if (!managedKey || !(managedKey in ServicesSchema.shape)) {
     return null;
@@ -84,8 +86,8 @@ function getManagedServiceConfigKey(provider: string): string | null {
   return managedKey;
 }
 
-function isManagedMode(provider: string): boolean {
-  const managedKey = getManagedServiceConfigKey(provider);
+async function isManagedMode(provider: string): Promise<boolean> {
+  const managedKey = await getManagedServiceConfigKey(provider);
   if (!managedKey) {
     return false;
   }
@@ -267,11 +269,11 @@ function judgeProviderResponse(
  * that does not need it. A managed connection has no local row and reports
  * nothing.
  */
-function missingScopesForConnection(
+async function missingScopesForConnection(
   providerRow: OAuthProviderRow,
   connectionId: string,
-): string[] {
-  const row = getConnection(connectionId);
+): Promise<string[]> {
+  const row = await getConnection(connectionId);
   if (!row) {
     return [];
   }
@@ -299,7 +301,7 @@ async function handleDisconnect({ body = {} }: RouteHandlerArgs) {
     throw new BadRequestError("provider is required");
   }
 
-  const providerRow = getProvider(b.provider);
+  const providerRow = await getProvider(b.provider);
   if (!providerRow) {
     throw new NotFoundError(
       `Unknown provider "${b.provider}". Run 'assistant oauth providers list' to see available providers.`,
@@ -312,7 +314,7 @@ async function handleDisconnect({ body = {} }: RouteHandlerArgs) {
     );
   }
 
-  const managed = isManagedMode(b.provider);
+  const managed = await isManagedMode(b.provider);
 
   if (managed) {
     const client = await requirePlatformClient();
@@ -384,7 +386,7 @@ async function handleDisconnect({ body = {} }: RouteHandlerArgs) {
   let accountLabel: string | undefined;
 
   if (b.account) {
-    const conn = getActiveConnection(b.provider, { account: b.account });
+    const conn = await getActiveConnection(b.provider, { account: b.account });
     if (!conn) {
       throw new NotFoundError(
         `No active connection found for "${b.provider}" with account "${b.account}".`,
@@ -393,7 +395,7 @@ async function handleDisconnect({ body = {} }: RouteHandlerArgs) {
     connectionId = conn.id;
     accountLabel = conn.accountInfo ?? undefined;
   } else if (b.connection_id) {
-    const conn = getConnection(b.connection_id);
+    const conn = await getConnection(b.connection_id);
     if (!conn || conn.provider !== b.provider) {
       throw new NotFoundError(
         `Connection "${b.connection_id}" is not an active ${b.provider} connection.`,
@@ -402,7 +404,7 @@ async function handleDisconnect({ body = {} }: RouteHandlerArgs) {
     connectionId = conn.id;
     accountLabel = conn.accountInfo ?? undefined;
   } else {
-    const active = listActiveConnectionsByProvider(b.provider);
+    const active = await listActiveConnectionsByProvider(b.provider);
     if (active.length === 0) {
       throw new NotFoundError(
         `No active connections found for "${b.provider}".`,
@@ -444,20 +446,20 @@ async function handleDisconnect({ body = {} }: RouteHandlerArgs) {
 // Mode handlers
 // ---------------------------------------------------------------------------
 
-function handleModeGet({ queryParams = {} }: RouteHandlerArgs) {
+async function handleModeGet({ queryParams = {} }: RouteHandlerArgs) {
   const provider = queryParams.provider;
   if (!provider) {
     throw new BadRequestError("provider query param is required");
   }
 
-  const providerRow = getProvider(provider);
+  const providerRow = await getProvider(provider);
   if (!providerRow) {
     throw new NotFoundError(
       `Unknown provider "${provider}". Run 'assistant oauth providers list' to see available providers.`,
     );
   }
 
-  const managedKey = getManagedServiceConfigKey(provider);
+  const managedKey = await getManagedServiceConfigKey(provider);
   if (managedKey === null) {
     return {
       ok: true,
@@ -487,7 +489,7 @@ async function handleModeSet({ body = {} }: RouteHandlerArgs) {
     throw new BadRequestError("mode is required");
   }
 
-  const providerRow = getProvider(b.provider);
+  const providerRow = await getProvider(b.provider);
   if (!providerRow) {
     throw new NotFoundError(
       `Unknown provider "${b.provider}". Run 'assistant oauth providers list' to see available providers.`,
@@ -500,7 +502,7 @@ async function handleModeSet({ body = {} }: RouteHandlerArgs) {
     );
   }
 
-  const managedKey = getManagedServiceConfigKey(b.provider);
+  const managedKey = await getManagedServiceConfigKey(b.provider);
 
   if (managedKey === null) {
     if (b.mode === "your-own") {
@@ -549,9 +551,11 @@ async function handleModeSet({ body = {} }: RouteHandlerArgs) {
   let newModeConnections = 0;
   if (currentMode === "managed") {
     oldModeConnections = await countManagedConnections(b.provider);
-    newModeConnections = listActiveConnectionsByProvider(b.provider).length;
+    newModeConnections = (await listActiveConnectionsByProvider(b.provider))
+      .length;
   } else {
-    oldModeConnections = listActiveConnectionsByProvider(b.provider).length;
+    oldModeConnections = (await listActiveConnectionsByProvider(b.provider))
+      .length;
     newModeConnections = await countManagedConnections(b.provider);
   }
 
@@ -583,14 +587,14 @@ async function handleStatus({ queryParams = {} }: RouteHandlerArgs) {
     throw new BadRequestError("provider query param is required");
   }
 
-  const providerRow = getProvider(provider);
+  const providerRow = await getProvider(provider);
   if (!providerRow) {
     throw new NotFoundError(
       `Unknown provider "${provider}". Run 'assistant oauth providers list' to see available providers.`,
     );
   }
 
-  const managed = isManagedMode(provider);
+  const managed = await isManagedMode(provider);
 
   if (managed) {
     const client = await requirePlatformClient();
@@ -619,7 +623,7 @@ async function handleStatus({ queryParams = {} }: RouteHandlerArgs) {
     await syncManualTokenConnection(provider);
   }
 
-  const allConnections = listConnections(provider);
+  const allConnections = await listConnections(provider);
   const activeRows = allConnections.filter((r) => r.status === "active");
 
   const connections = activeRows.map((r) => {
@@ -663,7 +667,7 @@ async function handlePing({ body = {} }: RouteHandlerArgs) {
     throw new BadRequestError("provider is required");
   }
 
-  const providerRow = getProvider(b.provider);
+  const providerRow = await getProvider(b.provider);
   if (!providerRow) {
     throw new NotFoundError(
       `Unknown provider "${b.provider}". Run 'assistant oauth providers list' to see available providers.`,
@@ -762,7 +766,7 @@ async function handleToken({ body = {} }: RouteHandlerArgs) {
     throw new BadRequestError("provider is required");
   }
 
-  if (isManagedMode(b.provider)) {
+  if (await isManagedMode(b.provider)) {
     throw new BadRequestError(
       "Token retrieval is not supported for platform-managed providers. " +
         "When a provider is in managed mode, Vellum handles OAuth tokens on your behalf — " +
@@ -775,7 +779,7 @@ async function handleToken({ body = {} }: RouteHandlerArgs) {
   let tokenOpts: string | { connectionId: string } | undefined;
 
   if (b.account || b.client_id) {
-    const conn = getActiveConnection(b.provider, {
+    const conn = await getActiveConnection(b.provider, {
       clientId: b.client_id,
       account: b.account,
     });
@@ -851,20 +855,20 @@ export async function handleRequest({ body = {} }: RouteHandlerArgs) {
     throw new BadRequestError("url is required");
   }
 
-  const providerRow = getProvider(b.provider);
+  const providerRow = await getProvider(b.provider);
   if (!providerRow) {
     throw new NotFoundError(
       `Unknown provider "${b.provider}". Run 'assistant oauth providers list' to see available providers.`,
     );
   }
 
-  const managed = isManagedMode(b.provider);
+  const managed = await isManagedMode(b.provider);
 
   if (b.client_id) {
     if (managed) {
       log.info("--client-id is ignored for platform-managed providers");
     } else {
-      const app = getAppByProviderAndClientId(b.provider, b.client_id);
+      const app = await getAppByProviderAndClientId(b.provider, b.client_id);
       if (!app) {
         throw new NotFoundError(
           `No registered OAuth app found for "${b.provider}" with client ID "${b.client_id}".`,
@@ -1049,7 +1053,7 @@ export async function handleRequest({ body = {} }: RouteHandlerArgs) {
     botChannel: channelForBotProvider(b.provider),
     managed,
     resolvedBaseUrl: baseUrl ?? providerRow.baseUrl ?? undefined,
-    missingScopes: missingScopesForConnection(providerRow, connection.id),
+    missingScopes: await missingScopesForConnection(providerRow, connection.id),
   });
   if (hint) {
     result.hint = hint;

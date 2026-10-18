@@ -145,11 +145,12 @@ function renderFirstRunUserContext(onboarding: OnboardingContext): string {
  * Returns `null` when neither source has an active connection so the
  * `14-connected-services` transform gates the section off entirely.
  */
-function renderConnectedServices(): string | null {
+async function renderConnectedServices(): Promise<string | null> {
   const entries: { provider: string; accountInfo?: string | null }[] = [];
 
   try {
-    entries.push(...listConnections().filter((c) => c.status === "active"));
+    const connections = await listConnections();
+    entries.push(...connections.filter((c) => c.status === "active"));
   } catch {
     // OAuth DB unavailable — local connections skipped.
   }
@@ -256,7 +257,10 @@ export interface BundledSection {
    * interpolation can express (e.g. `08-identity` needs to detect
    * unmodified templates and strip onboarding placeholder lines).
    */
-  transform?: (content: string, ctx: Record<string, unknown>) => string | null;
+  transform?: (
+    content: string,
+    ctx: Record<string, unknown>,
+  ) => string | null | Promise<string | null>;
 }
 
 export const BUNDLED_SYSTEM_SECTIONS: readonly BundledSection[] = [

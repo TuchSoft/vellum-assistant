@@ -78,16 +78,16 @@ function formatAppRow(row: {
   };
 }
 
-function handleListApps({ queryParams = {} }: RouteHandlerArgs) {
+async function handleListApps({ queryParams = {} }: RouteHandlerArgs) {
   const provider = queryParams.provider_key;
   if (!provider) {
     throw new BadRequestError("provider_key query parameter is required");
   }
 
-  const allApps = listApps();
+  const allApps = await listApps();
   const filtered = allApps.filter((row) => row.provider === provider);
 
-  const providerRow = getProvider(provider);
+  const providerRow = await getProvider(provider);
   const providerSummary = providerRow
     ? serializeProviderSummary(providerRow)
     : null;
@@ -98,16 +98,16 @@ function handleListApps({ queryParams = {} }: RouteHandlerArgs) {
   };
 }
 
-function handleGetApp({ queryParams = {} }: RouteHandlerArgs) {
+async function handleGetApp({ queryParams = {} }: RouteHandlerArgs) {
   const { id, provider, client_id } = queryParams;
 
   let row;
   if (id) {
-    row = getApp(id);
+    row = await getApp(id);
   } else if (provider && client_id) {
-    row = getAppByProviderAndClientId(provider, client_id);
+    row = await getAppByProviderAndClientId(provider, client_id);
   } else if (provider) {
-    row = getMostRecentAppByProvider(provider);
+    row = await getMostRecentAppByProvider(provider);
   } else {
     throw new BadRequestError(
       "Provide id, provider, or provider + client_id query parameters",
@@ -168,7 +168,7 @@ async function handleCreateApp({ body = {} }: RouteHandlerArgs) {
     );
   }
 
-  const provider = getProvider(provider_key);
+  const provider = await getProvider(provider_key);
   if (!provider) {
     throw new NotFoundError(
       `No OAuth provider registered for "${provider_key}"`,
@@ -191,12 +191,12 @@ async function handleCreateApp({ body = {} }: RouteHandlerArgs) {
 }
 
 async function handleDeleteApp({ pathParams = {} }: RouteHandlerArgs) {
-  const app = getApp(pathParams.id ?? "");
+  const app = await getApp(pathParams.id ?? "");
   if (!app) {
     throw new NotFoundError(`OAuth app not found: ${pathParams.id}`);
   }
 
-  const connections = listConnections(app.provider, app.clientId);
+  const connections = await listConnections(app.provider, app.clientId);
   for (const conn of connections) {
     await disconnectOAuthProvider(app.provider, app.clientId, conn.id);
   }
@@ -206,13 +206,13 @@ async function handleDeleteApp({ pathParams = {} }: RouteHandlerArgs) {
   return { ok: true };
 }
 
-function handleListConnections({ pathParams = {} }: RouteHandlerArgs) {
-  const app = getApp(pathParams.appId ?? "");
+async function handleListConnections({ pathParams = {} }: RouteHandlerArgs) {
+  const app = await getApp(pathParams.appId ?? "");
   if (!app) {
     throw new NotFoundError(`OAuth app not found: ${pathParams.appId}`);
   }
 
-  const connections = listConnections(app.provider, app.clientId);
+  const connections = await listConnections(app.provider, app.clientId);
 
   return {
     connections: connections.map((row) => ({
@@ -230,7 +230,7 @@ function handleListConnections({ pathParams = {} }: RouteHandlerArgs) {
 }
 
 async function handleDeleteConnection({ pathParams = {} }: RouteHandlerArgs) {
-  const conn = getConnection(pathParams.id ?? "");
+  const conn = await getConnection(pathParams.id ?? "");
   if (!conn) {
     throw new NotFoundError(`OAuth connection not found: ${pathParams.id}`);
   }
@@ -250,7 +250,7 @@ async function handleDeleteConnection({ pathParams = {} }: RouteHandlerArgs) {
 }
 
 async function handleConnectApp({ pathParams = {}, body }: RouteHandlerArgs) {
-  const app = getApp(pathParams.appId ?? "");
+  const app = await getApp(pathParams.appId ?? "");
   if (!app) {
     throw new NotFoundError(`OAuth app not found: ${pathParams.appId}`);
   }

@@ -117,7 +117,7 @@ async function resolveRefreshConfig(
   service: string,
   connId: string,
 ): Promise<RefreshConfig> {
-  const conn = getConnection(connId);
+  const conn = await getConnection(connId);
   if (!conn) {
     throw new TokenExpiredError(
       service,
@@ -125,7 +125,7 @@ async function resolveRefreshConfig(
     );
   }
 
-  const app = getApp(conn.oauthAppId);
+  const app = await getApp(conn.oauthAppId);
   if (!app) {
     throw new TokenExpiredError(
       service,
@@ -133,7 +133,7 @@ async function resolveRefreshConfig(
     );
   }
 
-  const provider = getProvider(conn.provider);
+  const provider = await getProvider(conn.provider);
   if (!provider) {
     throw new TokenExpiredError(
       service,
@@ -275,7 +275,7 @@ async function doRefresh(service: string, connId: string): Promise<string> {
   // actual token in secure storage is valid.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      updateConnection(connId, {
+      await updateConnection(connId, {
         expiresAt: persisted.expiresAt,
         hasRefreshToken: persisted.hasRefreshToken,
       });
@@ -319,8 +319,8 @@ export async function withValidToken<T>(
 ): Promise<T> {
   const conn =
     opts && typeof opts === "object"
-      ? getConnection(opts.connectionId)
-      : getConnectionByProvider(service, opts);
+      ? await getConnection(opts.connectionId)
+      : await getConnectionByProvider(service, opts);
   const tokenResult = conn
     ? await getConnectionAccessTokenResult({
         provider: conn.provider,

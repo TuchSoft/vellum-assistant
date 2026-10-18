@@ -752,7 +752,7 @@ export async function checkAllCredentials(): Promise<CredentialHealthReport> {
 
   let providers;
   try {
-    providers = listProviders();
+    providers = await listProviders();
   } catch (err) {
     log.warn({ err }, "Failed to list OAuth providers");
     return { checkedAt, results, unhealthy: [] };
@@ -765,7 +765,7 @@ export async function checkAllCredentials(): Promise<CredentialHealthReport> {
   for (const providerRow of providers) {
     let connections;
     try {
-      connections = listActiveConnectionsByProvider(providerRow.provider);
+      connections = await listActiveConnectionsByProvider(providerRow.provider);
     } catch (err) {
       log.warn(
         { err, provider: providerRow.provider },
@@ -869,7 +869,7 @@ export async function checkAllCredentials(): Promise<CredentialHealthReport> {
 export async function checkCredentialForProvider(
   provider: string,
 ): Promise<CredentialHealthResult | null> {
-  const providerRow = getProvider(provider);
+  const providerRow = await getProvider(provider);
   if (!providerRow) {
     return null;
   }
@@ -887,7 +887,7 @@ export async function checkCredentialForProvider(
   // Fall back to BYO (local) connection check.
   let connections: OAuthConnectionRow[];
   try {
-    connections = listActiveConnectionsByProvider(provider);
+    connections = await listActiveConnectionsByProvider(provider);
   } catch {
     connections = [];
   }

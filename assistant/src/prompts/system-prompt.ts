@@ -546,7 +546,7 @@ export async function buildSystemPrompt(
   // splits into independently cached system blocks and other providers
   // strip.  Empty blocks are dropped so the marker never dangles at
   // either end of the prompt.
-  return renderWorkspaceSections(ctx)
+  return (await renderWorkspaceSections(ctx))
     .map((block) => block.join("\n\n"))
     .filter((block) => block.length > 0)
     .join(SYSTEM_PROMPT_CACHE_BOUNDARY);

@@ -184,7 +184,7 @@ export async function computeRelationshipState(): Promise<RelationshipState> {
     onboarding,
   });
   const conversationCount = await countConversations();
-  const capabilities = resolveCapabilityTiers({ conversationCount });
+  const capabilities = await resolveCapabilityTiers({ conversationCount });
   const { assistantName: identityName, hatchedDate } =
     parseIdentity(identityPath);
   const parsedUserName = parseUserName(userMd);
@@ -638,10 +638,10 @@ function capitalizeLabel(label: string): string {
  * Failures in the oauth lookup fall back to the "empty set" — every
  * integration appears as `next-up` — so startup paths never throw.
  */
-function resolveCapabilityTiers(opts: {
+async function resolveCapabilityTiers(opts: {
   conversationCount: number;
-}): Capability[] {
-  const connectedProviders = resolveConnectedProviders();
+}): Promise<Capability[]> {
+  const connectedProviders = await resolveConnectedProviders();
 
   return DEFAULT_CAPABILITIES.map((cap) => {
     switch (cap.id) {
@@ -683,9 +683,9 @@ function resolveCapabilityTiers(opts: {
  * returns an empty set so the writer keeps advancing with sane
  * defaults.
  */
-function resolveConnectedProviders(): Set<string> {
+async function resolveConnectedProviders(): Promise<Set<string>> {
   try {
-    const rows = listConnections();
+    const rows = await listConnections();
     const set = new Set<string>();
     for (const row of rows) {
       if (row.status === "active") {

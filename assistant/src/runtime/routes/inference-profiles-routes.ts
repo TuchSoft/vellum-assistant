@@ -205,7 +205,7 @@ function assertValidProvider(provider: string): void {
  * authoritative for models the code-owned catalog doesn't know (a custom
  * endpoint declares its own models at connection-create time).
  */
-function modelReachIssue(
+async function modelReachIssue(
   provider: string,
   model: string,
   connectionName?: string,

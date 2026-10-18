@@ -81,19 +81,19 @@ function scrubSecret(secret: string | undefined): string {
   return secret.slice(0, 4) + "****";
 }
 
-function safeGetConnectionByProvider(
+async function safeGetConnectionByProvider(
   service: string,
-): OAuthConnectionRow | undefined {
+): Promise<OAuthConnectionRow | undefined> {
   try {
-    return getConnectionByProvider(service);
+    return await getConnectionByProvider(service);
   } catch {
     return undefined;
   }
 }
 
-function safeListConnections(): OAuthConnectionRow[] {
+async function safeListConnections(): Promise<OAuthConnectionRow[]> {
   try {
-    return listConnections();
+    return await listConnections();
   } catch {
     return [];
   }
@@ -265,7 +265,7 @@ async function handleCredentialsList({ body }: RouteHandlerArgs) {
   }
 
   // Build a lookup of oauth connections keyed by provider for enrichment.
-  const allConnections = safeListConnections();
+  const allConnections = await safeListConnections();
   const connectionsByProvider = new Map<string, OAuthConnectionRow>();
   for (const conn of allConnections) {
     if (conn.status !== "active") {
@@ -345,7 +345,7 @@ async function handleCredentialsInspect({ body }: RouteHandlerArgs) {
     };
   }
 
-  const connection = safeGetConnectionByProvider(lookup.metadata.service);
+  const connection = await safeGetConnectionByProvider(lookup.metadata.service);
   const output = buildCredentialOutput(lookup.metadata, secret, connection);
 
   if (unreachable && (secret == null || secret.length === 0)) {
@@ -559,7 +559,10 @@ async function handleCredentialsDelete({ body }: RouteHandlerArgs) {
     service === "slack_channel" && field === "user_token";
 
   const key = credentialKey(service, field);
-  const affectedConnections = assertCredentialNotInUse(key, force === true);
+  const affectedConnections = await assertCredentialNotInUse(
+    key,
+    force === true,
+  );
   const deleteResult = await deleteSecureKeyAsync(key);
 
   if (deleteResult === "error") {

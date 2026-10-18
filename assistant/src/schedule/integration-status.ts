@@ -13,7 +13,7 @@ import {
 export async function isOAuthProviderConnected(
   provider: string,
 ): Promise<boolean> {
-  const providerRow = getProvider(provider);
+  const providerRow = await getProvider(provider);
   const managedKey = providerRow?.managedServiceConfigKey;
 
   if (managedKey) {
@@ -35,7 +35,7 @@ export async function isOAuthProviderConnected(
     }
   }
 
-  return isProviderConnected(provider);
+  return await isProviderConnected(provider);
 }
 
 /**
@@ -101,7 +101,7 @@ const INTEGRATION_PROBES: IntegrationProbe[] = [
     name: "Telegram",
     category: "messaging",
     isConnected: async () => {
-      const conn = getConnectionByProvider("telegram");
+      const conn = await getConnectionByProvider("telegram");
       return !!(conn && conn.status === "active");
     },
   },

@@ -53,7 +53,7 @@ async function handleOAuthConnectStart({
   // Provider row drives validation that applies regardless of whether the
   // caller supplied an explicit clientId: existence, manual-token rejection,
   // and the requiresClientSecret check below.
-  const providerRow = getProvider(service);
+  const providerRow = await getProvider(service);
   if (!providerRow) {
     throw new NotFoundError(
       `Unknown provider "${service}". Run 'assistant oauth providers list' to see available providers.`,
@@ -72,7 +72,7 @@ async function handleOAuthConnectStart({
   let clientSecret = rawClientSecret;
 
   if (!clientId) {
-    const dbApp = getMostRecentAppByProvider(service);
+    const dbApp = await getMostRecentAppByProvider(service);
     if (!dbApp) {
       throw new BadRequestError(
         `No client_id found for "${service}". Register one with 'assistant oauth apps upsert'.`,
@@ -88,7 +88,7 @@ async function handleOAuthConnectStart({
     }
   } else {
     // clientId was explicitly provided — resolve its app.
-    const dbApp = getAppByProviderAndClientId(service, clientId);
+    const dbApp = await getAppByProviderAndClientId(service, clientId);
     if (!dbApp) {
       throw new NotFoundError(
         `No registered app found for "${service}" with client_id "${clientId}". ` +

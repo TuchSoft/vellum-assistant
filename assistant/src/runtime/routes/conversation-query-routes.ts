@@ -112,7 +112,7 @@ import {
   type ConversationKind,
   resolveConversationKind,
 } from "../../persistence/conversation-types.js";
-import { getDb } from "../../persistence/db-connection.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { clearEmbeddingBackendCache } from "../../persistence/embeddings/embedding-backend.js";
 import { resolveOpenAICompatibleBaseUrl } from "../../persistence/embeddings/embedding-openai.js";
 import { getLlmRequestLogSource } from "../../persistence/llm-request-log-source.js";
@@ -1633,7 +1633,8 @@ export async function commitConfigWrite(
  */
 function scrubRemovedServiceModes(raw: Record<string, unknown>): void {
   const services = raw.services as
-    Record<string, Record<string, unknown> | undefined> | undefined;
+    | Record<string, Record<string, unknown> | undefined>
+    | undefined;
   if (!services) {
     return;
   }
@@ -2053,19 +2054,18 @@ async function handleReplaceInferenceProfile({
     !ROUTING_IDENTITY_PROVIDERS.has(fragment.provider as string)
   ) {
     const provider = fragment.provider as string;
-    const db = getDb();
     // Exclude the orphaned legacy `*-managed` rows: they may still linger in
     // provider_connections on upgraded workspaces (hidden from the list route
     // until a follow-up migration deletes them). Auto-binding to one would keep
     // the profile stale and break it once those rows are removed.
-    const [active] = listConnections(db, { provider }).filter(
-      (c) => !LEGACY_MANAGED_CONNECTION_NAMES.has(c.name),
-    );
+    const [active] = (
+      await listConnections(requireMainDb(), { provider })
+    ).filter((c) => !LEGACY_MANAGED_CONNECTION_NAMES.has(c.name));
     if (active) {
       fragment.provider_connection = active.name;
     } else if (
       MANAGED_ROUTABLE_PROVIDERS.has(provider) &&
-      getConnection(db, VELLUM_MANAGED_CONNECTION_NAME)
+      (await getConnection(requireMainDb(), VELLUM_MANAGED_CONNECTION_NAME))
     ) {
       // Managed-routable providers are served by the single Vellum-managed
       // connection; prefer it over lazily creating a personal connection.
@@ -2073,7 +2073,7 @@ async function handleReplaceInferenceProfile({
     } else if (!PROVIDERS_REQUIRING_BASE_URL_AND_MODELS.has(provider)) {
       const connectionName = `${provider}-personal`;
       const isKeyless = provider === "ollama";
-      const result = createConnection(db, {
+      const result = await createConnection(requireMainDb(), {
         name: connectionName,
         provider,
         auth: isKeyless

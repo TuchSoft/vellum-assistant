@@ -51,7 +51,7 @@ function resolveRedirectUri(loopbackPort: number | null): string | null {
   return `http://localhost:${loopbackPort}${LOOPBACK_CALLBACK_PATH}`;
 }
 
-function serializeProviderFull(row: ReturnType<typeof getProvider>) {
+function serializeProviderFull(row: Awaited<ReturnType<typeof getProvider>>) {
   if (!row) {
     return null;
   }
@@ -64,8 +64,8 @@ function serializeProviderFull(row: ReturnType<typeof getProvider>) {
 // Handlers
 // ---------------------------------------------------------------------------
 
-function handleListProviders({ queryParams = {} }: RouteHandlerArgs) {
-  const rows = listProviders();
+async function handleListProviders({ queryParams = {} }: RouteHandlerArgs) {
+  const rows = await listProviders();
   const config = loadConfig();
   const visibleRows = rows.filter((r) => isProviderVisible(r, config));
   let serialized = visibleRows
@@ -82,9 +82,9 @@ function handleListProviders({ queryParams = {} }: RouteHandlerArgs) {
   return { providers: serialized };
 }
 
-function handleGetProvider({ pathParams = {} }: RouteHandlerArgs) {
+async function handleGetProvider({ pathParams = {} }: RouteHandlerArgs) {
   const { providerKey } = pathParams;
-  const row = getProvider(providerKey);
+  const row = await getProvider(providerKey);
   if (!row) {
     throw new NotFoundError(
       `No OAuth provider registered for "${providerKey}"`,
@@ -111,7 +111,7 @@ function handleGetProvider({ pathParams = {} }: RouteHandlerArgs) {
   };
 }
 
-function handleRegisterProvider({ body = {} }: RouteHandlerArgs) {
+async function handleRegisterProvider({ body = {} }: RouteHandlerArgs) {
   const b = body as Record<string, unknown>;
   const providerKey = b.provider_key as string | undefined;
   const authUrl = b.auth_url as string | undefined;
@@ -124,7 +124,7 @@ function handleRegisterProvider({ body = {} }: RouteHandlerArgs) {
   }
 
   try {
-    const row = registerProvider({
+    const row = await registerProvider({
       provider: providerKey,
       authorizeUrl: authUrl,
       tokenExchangeUrl: tokenUrl,
@@ -191,12 +191,12 @@ function handleRegisterProvider({ body = {} }: RouteHandlerArgs) {
   }
 }
 
-function handleUpdateProvider({
+async function handleUpdateProvider({
   pathParams = {},
   body = {},
 }: RouteHandlerArgs) {
   const { providerKey } = pathParams;
-  const existing = getProvider(providerKey);
+  const existing = await getProvider(providerKey);
   if (!existing) {
     throw new NotFoundError(
       `No OAuth provider registered for "${providerKey}"`,
@@ -325,7 +325,7 @@ function handleUpdateProvider({
     throw new BadRequestError("No fields to update");
   }
 
-  const row = updateProvider(providerKey, params);
+  const row = await updateProvider(providerKey, params);
   return { provider: serializeProviderFull(row) };
 }
 
@@ -334,7 +334,7 @@ async function handleDeleteProvider({
   body = {},
 }: RouteHandlerArgs) {
   const { providerKey } = pathParams;
-  const existing = getProvider(providerKey);
+  const existing = await getProvider(providerKey);
   if (!existing) {
     throw new NotFoundError(
       `No OAuth provider registered for "${providerKey}"`,
@@ -349,8 +349,10 @@ async function handleDeleteProvider({
 
   const force = (body as Record<string, unknown>).force === true;
 
-  const dependentApps = listApps().filter((a) => a.provider === providerKey);
-  const dependentConnections = listConnections(providerKey);
+  const dependentApps = (await listApps()).filter(
+    (a) => a.provider === providerKey,
+  );
+  const dependentConnections = await listConnections(providerKey);
   const appCount = dependentApps.length;
   const connCount = dependentConnections.length;
 
@@ -368,13 +370,13 @@ async function handleDeleteProvider({
       conn.id as string,
     );
     if (result === "error") {
-      deleteConnection(conn.id);
+      await deleteConnection(conn.id);
     }
   }
   for (const app of dependentApps) {
     await deleteApp(app.id);
   }
-  deleteProvider(providerKey);
+  await deleteProvider(providerKey);
 
   return {
     ok: true,

@@ -94,8 +94,11 @@ export function pgDefaultFor(rawDefault: string): string {
  * Two SQLite-isms need fixing: booleans stored as 0/1 (`boolean` rejects an
  * integer default), and a time function default on an epoch-ms `bigint` column
  * (`now()` is a timestamptz).
+ *
+ * Exported so the loader can add a column the baseline does not carry with the
+ * same default translation.
  */
-function defaultClause(rawDefault: string, pgType: string): string {
+export function pgDefaultClause(rawDefault: string, pgType: string): string {
   const value = pgDefaultFor(rawDefault);
   if (value === "now()") {
     if (pgType === "bigint") {
@@ -177,7 +180,7 @@ function createTableStatement(
       parts.push("NOT NULL");
     }
     if (column.defaultValue !== null) {
-      parts.push(`DEFAULT ${defaultClause(column.defaultValue, pgType)}`);
+      parts.push(`DEFAULT ${pgDefaultClause(column.defaultValue, pgType)}`);
     }
     if (singlePk === column.name) {
       parts.push("PRIMARY KEY");
@@ -190,7 +193,12 @@ function createTableStatement(
   return `CREATE TABLE IF NOT EXISTS ${ident(table.name)} (\n${lines.join(",\n")}\n)`;
 }
 
-function foreignKeyStatements(table: SqliteTable): string[] {
+/**
+ * The idempotent `ALTER TABLE ... ADD CONSTRAINT` statements for a table's
+ * foreign keys, in the order the source declared them. Exported so the loader
+ * can re-add the same constraints it dropped for ordering.
+ */
+export function buildForeignKeyStatements(table: SqliteTable): string[] {
   return table.foreignKeys.map((fk) => {
     const constraint = `fk_${table.name}_${fk.columns.join("_")}`;
     const onDelete =
@@ -237,7 +245,7 @@ export function buildBaselineStatements(
     statements.push(createTableStatement(table, options));
   }
   for (const table of tables) {
-    statements.push(...foreignKeyStatements(table));
+    statements.push(...buildForeignKeyStatements(table));
   }
   for (const table of tables) {
     statements.push(...indexStatements(table));

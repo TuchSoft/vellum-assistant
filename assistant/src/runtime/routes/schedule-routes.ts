@@ -956,7 +956,7 @@ async function handleListScheduleRuns(
           conversationExists: conversation != null,
           conversationArchivedAt: conversation?.archivedAt ?? null,
           conversations,
-          estimatedCostUsd: getUsageCostForRun({
+          estimatedCostUsd: await getUsageCostForRun({
             cronRunId: r.id,
             conversationId: r.conversationId ?? undefined,
             from: r.startedAt,
@@ -969,9 +969,9 @@ async function handleListScheduleRuns(
   };
 }
 
-function handleScheduleUsageSummary(queryParams: Record<string, string>) {
+async function handleScheduleUsageSummary(queryParams: Record<string, string>) {
   const range = parseEpochMillisRange(queryParams);
-  return { summaries: getScheduleUsageSummaries(range) };
+  return { summaries: await getScheduleUsageSummaries(range) };
 }
 
 // ---------------------------------------------------------------------------

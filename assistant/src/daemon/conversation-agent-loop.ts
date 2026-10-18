@@ -635,7 +635,9 @@ export async function runAgentLoopImpl(
   // exit). The wrapper reads it to persist the matching user-facing notice
   // after the tool-result flush; null when the turn did not end in overflow.
   let overflowTerminalReason:
-    "context_too_large" | "budget_yield_unrecovered" | null = null;
+    | "context_too_large"
+    | "budget_yield_unrecovered"
+    | null = null;
   // Set when the loop ends the turn as `budget_yield_unrecovered`. SSE emission
   // happens immediately at the detection site; assistant-row persistence is
   // deferred until after the pendingToolResults flush so we don't orphan
@@ -644,7 +646,8 @@ export async function runAgentLoopImpl(
     typeof budgetYieldUnrecoveredClassification
   > | null = null;
   let emitTerminalExit:
-    ((reason: AgentLoopExitReason) => Promise<void>) | null = null;
+    | ((reason: AgentLoopExitReason) => Promise<void>)
+    | null = null;
 
   // Expose the turn's request origin (e.g. "memory_consolidation") on the live
   // conversation so the tool context — and through it `buildPolicyContext` —
@@ -2098,11 +2101,18 @@ export async function runAgentLoopImpl(
         // (or a downstream handler) doesn't try to clean up an id that
         // already corresponds to a finalized row.
         state.lastAssistantMessageId = errorRow.id;
-        await ctx.modeSessions.trackPersistedRow(
-          reqId,
-          errorRow.id,
-          errorRow.createdAt,
-        );
+        try {
+          await ctx.modeSessions.trackPersistedRow(
+            reqId,
+            errorRow.id,
+            errorRow.createdAt,
+          );
+        } catch (err) {
+          rlog.warn(
+            { err, messageId: errorRow.id },
+            "Failed to track the provider-error assistant row (non-fatal)",
+          );
+        }
         state.assistantRowAwaitingFinalization = false;
         newMessages.push(errorAssistantMessage);
         // Pipe the just-assigned message id into any orphaned LLM request log

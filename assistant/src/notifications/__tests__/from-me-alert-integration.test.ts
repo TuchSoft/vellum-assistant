@@ -53,7 +53,7 @@ async function persistedShare() {
       visibleInSourceNow: false,
     },
   };
-  createEvent({
+  await createEvent({
     id: signal.signalId,
     sourceEventName: signal.sourceEventName,
     sourceChannel: signal.sourceChannel,
@@ -73,7 +73,7 @@ async function persistedShare() {
     confidence: 1,
     fallbackUsed: false,
   };
-  createDecision({
+  await createDecision({
     ...decision,
     id: decision.persistedDecisionId,
     notificationEventId: signal.signalId,

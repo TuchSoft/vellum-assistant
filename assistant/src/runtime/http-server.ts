@@ -542,16 +542,29 @@ export class RuntimeHttpServer {
             // that a reconnect may have inserted under the same key.
             const msSession = msData.session;
             if (msSession) {
-              msSession.handleTransportClosed(code, reason?.toString());
-              msSession.destroy();
-              // Only delete from the map if *our* session is still the
-              // registered one — a reconnect may have already replaced it.
-              if (
-                activeMediaStreamSessions.get(msData.callSessionId) ===
-                msSession
-              ) {
-                activeMediaStreamSessions.delete(msData.callSessionId);
-              }
+              void (async () => {
+                try {
+                  await msSession.handleTransportClosed(
+                    code,
+                    reason?.toString(),
+                  );
+                } catch (err) {
+                  log.warn(
+                    { err, callSessionId: msData.callSessionId },
+                    "Media-stream transport teardown failed",
+                  );
+                } finally {
+                  msSession.destroy();
+                  // Only delete from the map if *our* session is still the
+                  // registered one — a reconnect may have already replaced it.
+                  if (
+                    activeMediaStreamSessions.get(msData.callSessionId) ===
+                    msSession
+                  ) {
+                    activeMediaStreamSessions.delete(msData.callSessionId);
+                  }
+                }
+              })();
             }
             return;
           }

@@ -17,34 +17,31 @@ import {
   getMessages,
 } from "../persistence/conversation-crud.js";
 import { isLastUserMessageToolResult } from "../persistence/conversation-queries.js";
-import { getTelemetryDb } from "../persistence/db-connection.js";
 import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
-import { telemetryEvents } from "../persistence/schema/index.js";
 import { describePg } from "./pg-test-db.js";
 // Initialize db once before all tests
 await initializeDb();
 
 /** Seed a pending telemetry outbox row (default name: skill_loaded). */
-function seedTelemetryEvent(
+async function seedTelemetryEvent(
   id: string,
   createdAt: number,
   conversationId: string | null,
   name = "skill_loaded",
-): void {
-  getTelemetryDb()!
-    .insert(telemetryEvents)
-    .values({ id, name, createdAt, conversationId, payload: "{}" })
-    .run();
+): Promise<void> {
+  await requireMainDb().run(
+    `INSERT INTO telemetry_events (id, name, created_at, conversation_id, payload)
+     VALUES (?, ?, ?, ?, ?)`,
+    [id, name, createdAt, conversationId, "{}"],
+  );
 }
 
-function pendingTelemetryEventIds(): string[] {
-  return getTelemetryDb()!
-    .select()
-    .from(telemetryEvents)
-    .all()
-    .map((r) => r.id)
-    .sort();
+async function pendingTelemetryEventIds(): Promise<string[]> {
+  const rows = await requireMainDb().all<{ id: string }>(
+    "SELECT id FROM telemetry_events",
+  );
+  return rows.map((row) => row.id).sort();
 }
 
 describePg("deleteLastExchange", () => {
@@ -367,58 +364,58 @@ describePg("attachment orphan cleanup", () => {
     // Privacy posture: Clear All wins over unflushed telemetry — the pending
     // skill_loaded rows (conversation id, skill name, model attribution)
     // must not survive the wipe and ship later.
-    getTelemetryDb()!.delete(telemetryEvents).run();
+    await requireMainDb().run("DELETE FROM telemetry_events");
     const conv = await createConversation("test");
-    seedTelemetryEvent("sle-clear-1", 1000, conv.id);
+    await seedTelemetryEvent("sle-clear-1", 1000, conv.id);
     // Rows without a conversation are wiped too.
-    seedTelemetryEvent("sle-clear-2", 2000, null);
+    await seedTelemetryEvent("sle-clear-2", 2000, null);
 
     await clearAll();
 
-    const skillRows = getTelemetryDb()!
-      .select()
-      .from(telemetryEvents)
-      .all()
-      .filter((r) => r.name === "skill_loaded");
+    const skillRows = (
+      await requireMainDb().all<{ name: string }>(
+        "SELECT name FROM telemetry_events",
+      )
+    ).filter((r) => r.name === "skill_loaded");
     expect(skillRows).toHaveLength(0);
   });
 
   test("deleteConversation removes that conversation's telemetry_events rows", async () => {
-    getTelemetryDb()!.delete(telemetryEvents).run();
+    await requireMainDb().run("DELETE FROM telemetry_events");
     const conv = await createConversation("doomed");
     await addMessage(conv.id, "user", "hello");
     const other = await createConversation("kept");
-    seedTelemetryEvent("te-del-1", 1000, conv.id);
-    seedTelemetryEvent("te-del-2", 2000, other.id);
+    await seedTelemetryEvent("te-del-1", 1000, conv.id);
+    await seedTelemetryEvent("te-del-2", 2000, other.id);
     // Redaction keys on conversation_id regardless of event name.
-    seedTelemetryEvent("te-del-3", 3000, conv.id, "future_event");
+    await seedTelemetryEvent("te-del-3", 3000, conv.id, "future_event");
 
     await deleteConversation(conv.id);
 
-    expect(pendingTelemetryEventIds()).toEqual(["te-del-2"]);
+    expect(await pendingTelemetryEventIds()).toEqual(["te-del-2"]);
   });
 
   test("deleteConversation removes telemetry_events rows when the conversation has no messages", async () => {
-    getTelemetryDb()!.delete(telemetryEvents).run();
+    await requireMainDb().run("DELETE FROM telemetry_events");
     const conv = await createConversation("empty");
-    seedTelemetryEvent("te-del-empty", 1000, conv.id);
+    await seedTelemetryEvent("te-del-empty", 1000, conv.id);
 
     await deleteConversation(conv.id);
 
-    expect(pendingTelemetryEventIds()).toHaveLength(0);
+    expect(await pendingTelemetryEventIds()).toHaveLength(0);
   });
 
   test("deleteConversationGently removes that conversation's telemetry_events rows", async () => {
-    getTelemetryDb()!.delete(telemetryEvents).run();
+    await requireMainDb().run("DELETE FROM telemetry_events");
     const conv = await createConversation("doomed");
     await addMessage(conv.id, "user", "hello");
     const other = await createConversation("kept");
-    seedTelemetryEvent("te-gentle-1", 1000, conv.id);
-    seedTelemetryEvent("te-gentle-2", 2000, other.id);
+    await seedTelemetryEvent("te-gentle-1", 1000, conv.id);
+    await seedTelemetryEvent("te-gentle-2", 2000, other.id);
 
     await deleteConversationGently(conv.id);
 
-    expect(pendingTelemetryEventIds()).toEqual(["te-gentle-2"]);
+    expect(await pendingTelemetryEventIds()).toEqual(["te-gentle-2"]);
   });
 
   test("deleteLastExchange does not delete unlinked user uploads", async () => {

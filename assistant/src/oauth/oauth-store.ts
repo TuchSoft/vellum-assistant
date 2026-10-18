@@ -1,8 +1,9 @@
 /**
  * CRUD store for OAuth providers, apps, and connections.
  *
- * Backed by Drizzle + SQLite. All JSON fields (default_scopes, available_scopes,
- * extra_params, granted_scopes, metadata) are stored as serialized JSON strings.
+ * Backed by Drizzle over the async Postgres facade. All JSON fields
+ * (default_scopes, available_scopes, extra_params, granted_scopes, metadata)
+ * are stored as serialized JSON strings.
  *
  * Note: TS field names use camelCase from the platform's naming
  * (provider, authorizeUrl, tokenExchangeUrl, displayLabel, authorizeParams),
@@ -20,13 +21,8 @@ import { and, desc, eq, or, sql } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
 import { invalidateAssistantSuggestedPromptsCache } from "../home/suggested-prompts-cache.js";
-import { getDb } from "../persistence/db-connection.js";
-import { rawChanges } from "../persistence/raw-query.js";
-import {
-  oauthApps,
-  oauthConnections,
-  oauthProviders,
-} from "../persistence/schema/oauth.js";
+import type { SchemaTables } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   deleteSecureKeyAsync,
   getSecureKeyAsync,
@@ -43,9 +39,10 @@ const log = getLogger("oauth-store");
 // Row types
 // ---------------------------------------------------------------------------
 
-export type OAuthProviderRow = typeof oauthProviders.$inferSelect;
-export type OAuthAppRow = typeof oauthApps.$inferSelect;
-export type OAuthConnectionRow = typeof oauthConnections.$inferSelect;
+export type OAuthProviderRow = SchemaTables["oauthProviders"]["$inferSelect"];
+export type OAuthAppRow = SchemaTables["oauthApps"]["$inferSelect"];
+export type OAuthConnectionRow =
+  SchemaTables["oauthConnections"]["$inferSelect"];
 
 // ---------------------------------------------------------------------------
 // Provider operations
@@ -67,7 +64,7 @@ export type OAuthConnectionRow = typeof oauthConnections.$inferSelect;
  * (e.g. legacy rows created before the column existed) but preserved
  * if the user has set a custom value.
  */
-export function seedProviders(
+export async function seedProviders(
   profiles: Array<{
     provider: string;
     authorizeUrl: string;
@@ -114,8 +111,9 @@ export function seedProviders(
     responseOkField?: string;
     featureFlag?: string;
   }>,
-): void {
-  const db = getDb();
+): Promise<void> {
+  const db = requireMainDb();
+  const providers = db.schema.oauthProviders;
   const now = Date.now();
   for (const p of profiles) {
     const authorizeUrl = p.authorizeUrl;
@@ -179,7 +177,8 @@ export function seedProviders(
     const responseOkField = p.responseOkField ?? null;
     const featureFlag = p.featureFlag ?? null;
 
-    db.insert(oauthProviders)
+    await db.orm
+      .insert(providers)
       .values({
         provider: p.provider,
         authorizeUrl,
@@ -224,7 +223,7 @@ export function seedProviders(
         updatedAt: now,
       })
       .onConflictDoUpdate({
-        target: oauthProviders.provider,
+        target: providers.provider,
         set: {
           authorizeUrl,
           tokenExchangeUrl,
@@ -232,7 +231,7 @@ export function seedProviders(
           tokenEndpointAuthMethod,
           tokenExchangeBodyFormat,
           userinfoUrl,
-          baseUrl: sql`COALESCE(${oauthProviders.baseUrl}, ${baseUrl})`,
+          baseUrl: sql`COALESCE(${providers.baseUrl}, ${baseUrl})`,
           defaultScopes,
           availableScopes,
           scopeSeparator,
@@ -266,15 +265,14 @@ export function seedProviders(
           featureFlag,
           updatedAt: now,
         },
-      })
-      .run();
+      });
   }
 }
 
 /**
  * Rewrite a provider's stored base URL, but only when it still holds a known
  * stale default value. Existing installs are seeded with `COALESCE(baseUrl,
- * seedValue)`, so a corrected seed base URL never propagates on its own — a row
+ * seedValue)`, so a corrected seed base URL never propagates on its own: a row
  * created with the old default keeps it forever. This targeted update advances
  * that specific stale value to the current default while leaving user-customized
  * base URLs (anything other than `staleBaseUrl`) untouched.
@@ -282,45 +280,51 @@ export function seedProviders(
  * Idempotent: once the row holds `nextBaseUrl` the WHERE clause matches nothing.
  * Returns the number of rows updated.
  */
-export function migrateProviderBaseUrl(params: {
+export async function migrateProviderBaseUrl(params: {
   provider: string;
   staleBaseUrl: string;
   nextBaseUrl: string;
-}): number {
-  const db = getDb();
-  db.update(oauthProviders)
+}): Promise<number> {
+  const db = requireMainDb();
+  const providers = db.schema.oauthProviders;
+  const updated = await db.orm
+    .update(providers)
     .set({ baseUrl: params.nextBaseUrl, updatedAt: Date.now() })
     .where(
       and(
-        eq(oauthProviders.provider, params.provider),
-        eq(oauthProviders.baseUrl, params.staleBaseUrl),
+        eq(providers.provider, params.provider),
+        eq(providers.baseUrl, params.staleBaseUrl),
       ),
     )
-    .run();
-  return rawChanges();
+    .returning({ id: providers.provider });
+  return updated.length;
 }
 
 /** Look up a provider by its primary key. */
-export function getProvider(provider: string): OAuthProviderRow | undefined {
-  const db = getDb();
-  return db
+export async function getProvider(
+  provider: string,
+): Promise<OAuthProviderRow | undefined> {
+  const db = requireMainDb();
+  const providers = db.schema.oauthProviders;
+  const rows = await db.orm
     .select()
-    .from(oauthProviders)
-    .where(eq(oauthProviders.provider, provider))
-    .get();
+    .from(providers)
+    .where(eq(providers.provider, provider))
+    .limit(1);
+  return rows[0];
 }
 
 /** Return all registered providers. */
-export function listProviders(): OAuthProviderRow[] {
-  const db = getDb();
-  return db.select().from(oauthProviders).all();
+export async function listProviders(): Promise<OAuthProviderRow[]> {
+  const db = requireMainDb();
+  return await db.orm.select().from(db.schema.oauthProviders);
 }
 
 /**
  * Register a new provider (for dynamic registration). Throws if the
  * provider_key already exists.
  */
-export function registerProvider(params: {
+export async function registerProvider(params: {
   provider: string;
   authorizeUrl: string;
   tokenExchangeUrl: string;
@@ -365,11 +369,12 @@ export function registerProvider(params: {
   identityOkField?: string;
   responseOkField?: string;
   featureFlag?: string;
-}): OAuthProviderRow {
-  const db = getDb();
+}): Promise<OAuthProviderRow> {
+  const db = requireMainDb();
+  const providers = db.schema.oauthProviders;
   const now = Date.now();
 
-  const existing = getProvider(params.provider);
+  const existing = await getProvider(params.provider);
   if (existing) {
     throw new Error(`OAuth provider already exists: ${params.provider}`);
   }
@@ -436,7 +441,7 @@ export function registerProvider(params: {
     updatedAt: now,
   };
 
-  db.insert(oauthProviders).values(row).run();
+  await db.orm.insert(providers).values(row);
 
   return row;
 }
@@ -450,7 +455,7 @@ export function registerProvider(params: {
  * Returns the updated provider row, or `undefined` if no provider with the
  * given key exists.
  */
-export function updateProvider(
+export async function updateProvider(
   provider: string,
   params: Partial<{
     authorizeUrl: string;
@@ -496,14 +501,17 @@ export function updateProvider(
     featureFlag: string;
     managedServiceIsPaid: boolean;
   }>,
-): OAuthProviderRow | undefined {
-  const existing = getProvider(provider);
+): Promise<OAuthProviderRow | undefined> {
+  const existing = await getProvider(provider);
   if (!existing) {
     return undefined;
   }
 
-  const db = getDb();
-  const set: Record<string, unknown> = { updatedAt: Date.now() };
+  const db = requireMainDb();
+  const providers = db.schema.oauthProviders;
+  const set: Partial<SchemaTables["oauthProviders"]["$inferInsert"]> = {
+    updatedAt: Date.now(),
+  };
 
   if (params.authorizeUrl !== undefined) {
     set.authorizeUrl = params.authorizeUrl;
@@ -627,30 +635,34 @@ export function updateProvider(
     set.managedServiceIsPaid = params.managedServiceIsPaid;
   }
 
-  db.update(oauthProviders)
+  await db.orm
+    .update(providers)
     .set(set)
-    .where(eq(oauthProviders.provider, provider))
-    .run();
+    .where(eq(providers.provider, provider));
 
-  return getProvider(provider);
+  return await getProvider(provider);
 }
 
 /**
  * Delete a provider by its key. Returns `true` if a row was deleted,
  * `false` if no provider with that key existed.
  *
- * Note: SQLite enforces the foreign-key constraint from `oauth_apps.provider_key`,
+ * Note: Postgres enforces the foreign-key constraint from `oauth_apps.provider_key`,
  * so deleting a provider that has existing apps will throw.
  */
-export function deleteProvider(provider: string): boolean {
-  const existing = getProvider(provider);
+export async function deleteProvider(provider: string): Promise<boolean> {
+  const existing = await getProvider(provider);
   if (!existing) {
     return false;
   }
 
-  const db = getDb();
-  db.delete(oauthProviders).where(eq(oauthProviders.provider, provider)).run();
-  return rawChanges() > 0;
+  const db = requireMainDb();
+  const providers = db.schema.oauthProviders;
+  const deleted = await db.orm
+    .delete(providers)
+    .where(eq(providers.provider, provider))
+    .returning({ id: providers.provider });
+  return deleted.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -688,15 +700,15 @@ export async function upsertApp(
     }
   }
 
-  const db = getDb();
+  const db = requireMainDb();
+  const apps = db.schema.oauthApps;
 
-  const existingRow = db
+  const existingRows = await db.orm
     .select()
-    .from(oauthApps)
-    .where(
-      and(eq(oauthApps.provider, provider), eq(oauthApps.clientId, clientId)),
-    )
-    .get();
+    .from(apps)
+    .where(and(eq(apps.provider, provider), eq(apps.clientId, clientId)))
+    .limit(1);
+  const existingRow = existingRows[0];
 
   if (existingRow) {
     if (clientSecretValue) {
@@ -712,25 +724,26 @@ export async function upsertApp(
       // this, a concurrent inserter's rollback DELETE would still match on
       // the original updatedAt and delete the row we just validated.
       const newUpdatedAt = Date.now();
-      db.update(oauthApps)
+      await db.orm
+        .update(apps)
         .set({ updatedAt: newUpdatedAt })
-        .where(eq(oauthApps.id, existingRow.id))
-        .run();
+        .where(eq(apps.id, existingRow.id));
       return { ...existingRow, updatedAt: newUpdatedAt };
     }
     if (clientSecretCredentialPath) {
-      db.update(oauthApps)
+      await db.orm
+        .update(apps)
         .set({
           clientSecretCredentialPath,
           updatedAt: Date.now(),
         })
-        .where(eq(oauthApps.id, existingRow.id))
-        .run();
-      return db
+        .where(eq(apps.id, existingRow.id));
+      const refreshed = await db.orm
         .select()
-        .from(oauthApps)
-        .where(eq(oauthApps.id, existingRow.id))
-        .get()!;
+        .from(apps)
+        .where(eq(apps.id, existingRow.id))
+        .limit(1);
+      return refreshed[0]!;
     }
     return existingRow;
   }
@@ -750,7 +763,7 @@ export async function upsertApp(
 
   // Insert the DB row first so that a failed insert doesn't leave an
   // orphaned secret in secure storage.
-  db.insert(oauthApps).values(row).run();
+  await db.orm.insert(apps).values(row);
 
   if (clientSecretValue) {
     const stored = await setSecureKeyAsync(credPath, clientSecretValue);
@@ -760,11 +773,11 @@ export async function upsertApp(
       //
       // Guard: only delete if updatedAt still matches our insertion timestamp.
       // A concurrent upsertApp call may have observed this row, successfully
-      // stored the secret, and updated the row — deleting it would orphan that
+      // stored the secret, and updated the row, deleting it would orphan that
       // caller's valid reference.
-      db.delete(oauthApps)
-        .where(and(eq(oauthApps.id, id), eq(oauthApps.updatedAt, now)))
-        .run();
+      await db.orm
+        .delete(apps)
+        .where(and(eq(apps.id, id), eq(apps.updatedAt, now)));
       throw new Error("Failed to store client_secret in secure storage");
     }
   }
@@ -773,16 +786,18 @@ export async function upsertApp(
 }
 
 /** Look up an app by its primary key. */
-export function getApp(id: string): OAuthAppRow | undefined {
-  const db = getDb();
-  return db.select().from(oauthApps).where(eq(oauthApps.id, id)).get();
+export async function getApp(id: string): Promise<OAuthAppRow | undefined> {
+  const db = requireMainDb();
+  const apps = db.schema.oauthApps;
+  const rows = await db.orm.select().from(apps).where(eq(apps.id, id)).limit(1);
+  return rows[0];
 }
 
 /** Read an app client_secret from secure storage. */
 export async function getAppClientSecret(
   appOrId: OAuthAppRow | string,
 ): Promise<string | undefined> {
-  const app = typeof appOrId === "string" ? getApp(appOrId) : appOrId;
+  const app = typeof appOrId === "string" ? await getApp(appOrId) : appOrId;
   if (!app) {
     return undefined;
   }
@@ -790,55 +805,58 @@ export async function getAppClientSecret(
 }
 
 /** Look up an app by (provider_key, client_id). */
-export function getAppByProviderAndClientId(
+export async function getAppByProviderAndClientId(
   provider: string,
   clientId: string,
-): OAuthAppRow | undefined {
-  const db = getDb();
-  return db
+): Promise<OAuthAppRow | undefined> {
+  const db = requireMainDb();
+  const apps = db.schema.oauthApps;
+  const rows = await db.orm
     .select()
-    .from(oauthApps)
-    .where(
-      and(eq(oauthApps.provider, provider), eq(oauthApps.clientId, clientId)),
-    )
-    .get();
+    .from(apps)
+    .where(and(eq(apps.provider, provider), eq(apps.clientId, clientId)))
+    .limit(1);
+  return rows[0];
 }
 
 /**
  * Get the most recently created app for a provider.
  * Returns undefined if no app exists for this provider.
  */
-export function getMostRecentAppByProvider(
+export async function getMostRecentAppByProvider(
   provider: string,
-): OAuthAppRow | undefined {
-  const db = getDb();
-  return db
+): Promise<OAuthAppRow | undefined> {
+  const db = requireMainDb();
+  const apps = db.schema.oauthApps;
+  const rows = await db.orm
     .select()
-    .from(oauthApps)
-    .where(eq(oauthApps.provider, provider))
-    .orderBy(desc(oauthApps.createdAt))
-    .limit(1)
-    .get();
+    .from(apps)
+    .where(eq(apps.provider, provider))
+    .orderBy(desc(apps.createdAt))
+    .limit(1);
+  return rows[0];
 }
 
 /** Return all OAuth apps. */
-export function listApps(): OAuthAppRow[] {
-  const db = getDb();
-  return db.select().from(oauthApps).all();
+export async function listApps(): Promise<OAuthAppRow[]> {
+  const db = requireMainDb();
+  return await db.orm.select().from(db.schema.oauthApps);
 }
 
 /** Delete an app by ID. Cleans up the client_secret from secure storage. Returns true if a row was deleted. */
 export async function deleteApp(id: string): Promise<boolean> {
-  const db = getDb();
+  const db = requireMainDb();
+  const apps = db.schema.oauthApps;
 
-  const app = db.select().from(oauthApps).where(eq(oauthApps.id, id)).get();
+  const rows = await db.orm.select().from(apps).where(eq(apps.id, id)).limit(1);
+  const app = rows[0];
   if (!app) {
     return false;
   }
 
   // Delete the DB row first so that if it fails (e.g. FK constraint from
   // existing connections), the secret in secure storage remains intact.
-  db.delete(oauthApps).where(eq(oauthApps.id, id)).run();
+  await db.orm.delete(apps).where(eq(apps.id, id));
 
   const result = await deleteSecureKeyAsync(app.clientSecretCredentialPath);
   if (result === "error") {
@@ -861,7 +879,7 @@ export async function deleteApp(id: string): Promise<boolean> {
  * Create a new OAuth connection. Generates a UUID and sets status='active'.
  * `metadata` is an optional JSON object for provider-specific token response data.
  */
-export function createConnection(params: {
+export async function createConnection(params: {
   oauthAppId: string;
   provider: string;
   accountInfo?: string;
@@ -872,8 +890,9 @@ export function createConnection(params: {
   metadata?: Record<string, unknown>;
   /** Override the creation timestamp. Useful in tests to ensure deterministic ordering. */
   createdAt?: number;
-}): OAuthConnectionRow {
-  const db = getDb();
+}): Promise<OAuthConnectionRow> {
+  const db = requireMainDb();
+  const connections = db.schema.oauthConnections;
   const now = params.createdAt ?? Date.now();
   const id = uuid();
 
@@ -892,19 +911,23 @@ export function createConnection(params: {
     updatedAt: now,
   };
 
-  db.insert(oauthConnections).values(row).run();
+  await db.orm.insert(connections).values(row);
 
   return row;
 }
 
 /** Look up a connection by its primary key. */
-export function getConnection(id: string): OAuthConnectionRow | undefined {
-  const db = getDb();
-  return db
+export async function getConnection(
+  id: string,
+): Promise<OAuthConnectionRow | undefined> {
+  const db = requireMainDb();
+  const connections = db.schema.oauthConnections;
+  const rows = await db.orm
     .select()
-    .from(oauthConnections)
-    .where(eq(oauthConnections.id, id))
-    .get();
+    .from(connections)
+    .where(eq(connections.id, id))
+    .limit(1);
+  return rows[0];
 }
 
 /**
@@ -913,98 +936,95 @@ export function getConnection(id: string): OAuthConnectionRow | undefined {
  * Optional filters narrow the result:
  * - `account`: match an account label (e.g. email), then a connection ID when
  *   no label matches within the other filters.
- * - `clientId` — restrict to connections linked to a specific OAuth app.
+ * - `clientId`: restrict to connections linked to a specific OAuth app.
  *
  * Returns `undefined` when no matching active connection exists.
  */
-export function getActiveConnection(
+export async function getActiveConnection(
   provider: string,
   options?: { clientId?: string; account?: string },
-): OAuthConnectionRow | undefined {
-  return getActiveConnections(provider, options)[0];
+): Promise<OAuthConnectionRow | undefined> {
+  return (await getActiveConnections(provider, options))[0];
 }
 
 /**
  * Like {@link getActiveConnection}, but returns ALL matching active connections
  * (most-recently-created first) instead of just the newest. Callers that must
- * choose among multiple connections — e.g. picking the one that carries a
- * specific set of granted scopes — use this; `getActiveConnection` is the
+ * choose among multiple connections, for example picking the one that carries a
+ * specific set of granted scopes, use this; `getActiveConnection` is the
  * single-result convenience over the same query.
  */
-export function getActiveConnections(
+export async function getActiveConnections(
   provider: string,
   options?: { clientId?: string; account?: string },
-): OAuthConnectionRow[] {
+): Promise<OAuthConnectionRow[]> {
   const { clientId, account } = options ?? {};
-  const db = getDb();
+  const db = requireMainDb();
+  const connections = db.schema.oauthConnections;
 
   const conditions = [
-    eq(oauthConnections.provider, provider),
-    eq(oauthConnections.status, "active"),
+    eq(connections.provider, provider),
+    eq(connections.status, "active"),
   ];
 
   if (clientId) {
-    const app = getAppByProviderAndClientId(provider, clientId);
+    const app = await getAppByProviderAndClientId(provider, clientId);
     if (!app) {
       return [];
     }
-    conditions.push(eq(oauthConnections.oauthAppId, app.id));
+    conditions.push(eq(connections.oauthAppId, app.id));
   }
 
-  const connections = db
+  const rows = await db.orm
     .select()
-    .from(oauthConnections)
+    .from(connections)
     .where(
       and(
         ...conditions,
         account
           ? or(
-              eq(oauthConnections.accountInfo, account),
-              eq(oauthConnections.id, account),
+              eq(connections.accountInfo, account),
+              eq(connections.id, account),
             )
           : undefined,
       ),
     )
-    .orderBy(desc(oauthConnections.createdAt), sql`rowid DESC`)
-    .all();
+    .orderBy(desc(connections.createdAt), sql`ctid DESC`);
 
   if (account) {
-    const labelMatches = connections.filter(
+    const labelMatches = rows.filter(
       (connection) => connection.accountInfo === account,
     );
     if (labelMatches.length > 0) {
       return labelMatches;
     }
   }
-  return connections;
+  return rows;
 }
 
 /** @deprecated Use {@link getActiveConnection} instead. */
-export function getConnectionByProvider(
+export async function getConnectionByProvider(
   provider: string,
   clientId?: string,
-): OAuthConnectionRow | undefined {
-  return getActiveConnection(provider, { clientId });
+): Promise<OAuthConnectionRow | undefined> {
+  return await getActiveConnection(provider, { clientId });
 }
 
 /**
  * Get ALL active connections for a provider (supports multi-account).
  */
-export function listActiveConnectionsByProvider(
+export async function listActiveConnectionsByProvider(
   provider: string,
-): OAuthConnectionRow[] {
-  const db = getDb();
-  return db
+): Promise<OAuthConnectionRow[]> {
+  const db = requireMainDb();
+  const connections = db.schema.oauthConnections;
+  return await db.orm
     .select()
-    .from(oauthConnections)
+    .from(connections)
     .where(
-      and(
-        eq(oauthConnections.provider, provider),
-        eq(oauthConnections.status, "active"),
-      ),
+      and(eq(connections.provider, provider), eq(connections.status, "active")),
     )
-    .orderBy(desc(oauthConnections.createdAt), sql`rowid DESC`)
-    .all();
+    .orderBy(desc(connections.createdAt), sql`ctid DESC`);
 }
 
 /**
@@ -1016,7 +1036,7 @@ export function listActiveConnectionsByProvider(
  * `resolveOAuthConnection()` throw at usage time.
  */
 export async function isProviderConnected(provider: string): Promise<boolean> {
-  const conn = getActiveConnection(provider);
+  const conn = await getActiveConnection(provider);
   if (!conn || conn.status !== "active") {
     return false;
   }
@@ -1030,7 +1050,7 @@ export async function isProviderConnected(provider: string): Promise<boolean> {
 /**
  * Update fields on an existing connection. Returns true if a row was updated.
  */
-export function updateConnection(
+export async function updateConnection(
   id: string,
   updates: Partial<{
     oauthAppId: string;
@@ -1043,14 +1063,17 @@ export function updateConnection(
     label: string;
     metadata: Record<string, unknown>;
   }>,
-): boolean {
-  const db = getDb();
+): Promise<boolean> {
+  const db = requireMainDb();
+  const connections = db.schema.oauthConnections;
   const now = Date.now();
 
   // Build the set clause, serializing JSON fields and converting booleans.
   // For expiresAt, null means "clear the column" so we check for undefined
   // explicitly rather than truthiness.
-  const set: Record<string, unknown> = { updatedAt: now };
+  const set: Partial<SchemaTables["oauthConnections"]["$inferInsert"]> = {
+    updatedAt: now,
+  };
   if (updates.oauthAppId !== undefined) {
     set.oauthAppId = updates.oauthAppId;
   }
@@ -1076,43 +1099,44 @@ export function updateConnection(
     set.metadata = JSON.stringify(updates.metadata);
   }
 
-  db.update(oauthConnections).set(set).where(eq(oauthConnections.id, id)).run();
+  const updated = await db.orm
+    .update(connections)
+    .set(set)
+    .where(eq(connections.id, id))
+    .returning({ id: connections.id });
 
-  return rawChanges() > 0;
+  return updated.length > 0;
 }
 
 /** List connections, optionally filtered by provider key and/or client ID. */
-export function listConnections(
+export async function listConnections(
   provider?: string,
   clientId?: string,
-): OAuthConnectionRow[] {
-  const db = getDb();
+): Promise<OAuthConnectionRow[]> {
+  const db = requireMainDb();
+  const connections = db.schema.oauthConnections;
 
   let rows: OAuthConnectionRow[];
   if (provider) {
-    rows = db
+    rows = await db.orm
       .select()
-      .from(oauthConnections)
-      .where(eq(oauthConnections.provider, provider))
-      .orderBy(oauthConnections.provider, oauthConnections.id)
-      .all();
+      .from(connections)
+      .where(eq(connections.provider, provider))
+      .orderBy(connections.provider, connections.id);
   } else {
-    rows = db
+    rows = await db.orm
       .select()
-      .from(oauthConnections)
-      .orderBy(oauthConnections.provider, oauthConnections.id)
-      .all();
+      .from(connections)
+      .orderBy(connections.provider, connections.id);
   }
 
   if (clientId) {
-    const matchingAppIds = new Set(
-      db
-        .select({ id: oauthApps.id })
-        .from(oauthApps)
-        .where(eq(oauthApps.clientId, clientId))
-        .all()
-        .map((a) => a.id),
-    );
+    const apps = db.schema.oauthApps;
+    const matchingApps = await db.orm
+      .select({ id: apps.id })
+      .from(apps)
+      .where(eq(apps.clientId, clientId));
+    const matchingAppIds = new Set(matchingApps.map((a) => a.id));
     return rows.filter((r) => matchingAppIds.has(r.oauthAppId));
   }
 
@@ -1120,10 +1144,14 @@ export function listConnections(
 }
 
 /** Delete a connection by ID. Returns true if a row was deleted. */
-export function deleteConnection(id: string): boolean {
-  const db = getDb();
-  db.delete(oauthConnections).where(eq(oauthConnections.id, id)).run();
-  return rawChanges() > 0;
+export async function deleteConnection(id: string): Promise<boolean> {
+  const db = requireMainDb();
+  const connections = db.schema.oauthConnections;
+  const deleted = await db.orm
+    .delete(connections)
+    .where(eq(connections.id, id))
+    .returning({ id: connections.id });
+  return deleted.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1135,7 +1163,7 @@ export function deleteConnection(id: string): boolean {
  * 1. Best-effort upstream token revoke when the provider has `revokeUrl`
  *    configured (mirrors platform's `try_revoke_token`).
  * 2. Delete the new-format secure keys (access_token and refresh_token).
- * 3. Remove the connection row from SQLite.
+ * 3. Remove the connection row from the database.
  *
  * The upstream revoke step is strictly best-effort: any failure (network
  * error, non-2xx response, missing access token, etc.) is logged as a
@@ -1157,20 +1185,20 @@ export async function disconnectOAuthProvider(
   connectionId?: string,
 ): Promise<"disconnected" | "not-found" | "error"> {
   const conn = connectionId
-    ? getConnection(connectionId)
-    : getActiveConnection(provider, { clientId });
+    ? await getConnection(connectionId)
+    : await getActiveConnection(provider, { clientId });
   if (!conn) {
     return "not-found";
   }
 
   // Best-effort upstream revoke. Mirrors platform's try_revoke_token in
   // django/app/assistant/oauth/providers/base.py. Failures here never
-  // block local cleanup — the connection is always cleaned up locally
+  // block local cleanup; the connection is always cleaned up locally
   // regardless of whether the upstream call succeeds.
   try {
-    const providerRow = getProvider(conn.provider);
+    const providerRow = await getProvider(conn.provider);
     if (providerRow?.revokeUrl) {
-      const app = getApp(conn.oauthAppId);
+      const app = await getApp(conn.oauthAppId);
       const accessToken = await getSecureKeyAsync(
         oauthConnectionAccessTokenPath(conn.id),
       );
@@ -1221,7 +1249,7 @@ export async function disconnectOAuthProvider(
 
   if (accessTokenResult === "error" || refreshTokenResult === "error") {
     // Return "error" (rather than throwing like deleteApp) so the connection row
-    // is preserved. This avoids orphaning secrets in secure storage — the caller
+    // is preserved. This avoids orphaning secrets in secure storage; the caller
     // can retry later and the row acts as a pointer to the keys that still need
     // cleanup. In deleteApp the DB row is already gone, so throwing is the only
     // way to surface the failure.
@@ -1237,7 +1265,7 @@ export async function disconnectOAuthProvider(
     return "error";
   }
 
-  deleteConnection(conn.id);
+  await deleteConnection(conn.id);
 
   // Best-effort cache invalidation so Home suggestions track the disconnect;
   // the call swallows its own failures and never blocks disconnect.

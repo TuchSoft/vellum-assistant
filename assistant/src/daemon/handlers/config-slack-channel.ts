@@ -118,7 +118,7 @@ export async function getSlackChannelConfig(): Promise<SlackChannelConfigResult>
   const hasUserToken = !!(await getSecureKeyAsync(
     credentialKey("slack_channel", "user_token"),
   ));
-  const conn = getConnectionByProvider("slack_channel");
+  const conn = await getConnectionByProvider("slack_channel");
   const connected =
     !!(conn && conn.status === "active") && hasBotToken && hasAppToken;
 
@@ -161,7 +161,7 @@ async function currentErrorSnapshot(
   const errHasUserToken = !!(await getSecureKeyAsync(
     credentialKey("slack_channel", "user_token"),
   ));
-  const errConn = getConnectionByProvider("slack_channel");
+  const errConn = await getConnectionByProvider("slack_channel");
   return {
     success: false,
     hasBotToken: errHasBotToken,
@@ -425,7 +425,7 @@ export async function setSlackChannelConfig(
       : undefined;
     await ensureManualTokenConnection("slack_channel", accountInfo);
   } else {
-    removeManualTokenConnection("slack_channel");
+    await removeManualTokenConnection("slack_channel");
   }
 
   return {
@@ -465,7 +465,7 @@ export async function clearSlackUserToken(): Promise<SlackChannelConfigResult> {
     const hasUserToken = !!(await getSecureKeyAsync(
       credentialKey("slack_channel", "user_token"),
     ));
-    const conn = getConnectionByProvider("slack_channel");
+    const conn = await getConnectionByProvider("slack_channel");
     return {
       success: false,
       hasBotToken,
@@ -489,7 +489,7 @@ export async function clearSlackUserToken(): Promise<SlackChannelConfigResult> {
   const hasAppToken = !!(await getSecureKeyAsync(
     credentialKey("slack_channel", "app_token"),
   ));
-  const conn = getConnectionByProvider("slack_channel");
+  const conn = await getConnectionByProvider("slack_channel");
   const { teamId, teamName, teamUrl, botUserId, botUsername } =
     getConfig().slack;
 
@@ -531,7 +531,7 @@ export async function clearSlackChannelConfig(): Promise<SlackChannelConfigResul
     const hasUserToken = !!(await getSecureKeyAsync(
       credentialKey("slack_channel", "user_token"),
     ));
-    const conn = getConnectionByProvider("slack_channel");
+    const conn = await getConnectionByProvider("slack_channel");
     return {
       success: false,
       hasBotToken,
@@ -549,7 +549,7 @@ export async function clearSlackChannelConfig(): Promise<SlackChannelConfigResul
   deleteCredentialMetadata("slack_channel", "user_token");
 
   // Remove the oauth_connection row so getConnectionByProvider returns undefined.
-  removeManualTokenConnection("slack_channel");
+  await removeManualTokenConnection("slack_channel");
 
   const raw = loadRawConfig();
   setNestedValue(raw, "slack.teamId", "");

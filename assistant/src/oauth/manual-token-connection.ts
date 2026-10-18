@@ -58,15 +58,15 @@ function resolveManualTokenAccountInfo(
   return { source: "none" };
 }
 
-function accountInfoForManualTokenSync(
+async function accountInfoForManualTokenSync(
   provider: string,
   resolved: ResolvedAccountInfo,
-): string | undefined {
+): Promise<string | undefined> {
   if (resolved.source !== "derived") {
     return resolved.value;
   }
 
-  const existing = getConnectionByProvider(provider);
+  const existing = await getConnectionByProvider(provider);
   if (existing?.accountInfo) {
     return undefined;
   }
@@ -84,11 +84,11 @@ export async function ensureManualTokenConnection(
   provider: string,
   accountInfo?: string,
 ): Promise<void> {
-  const existing = getConnectionByProvider(provider);
+  const existing = await getConnectionByProvider(provider);
   if (existing) {
     // Update account info if provided
     if (accountInfo !== undefined) {
-      updateConnection(existing.id, { accountInfo });
+      await updateConnection(existing.id, { accountInfo });
     }
     return;
   }
@@ -96,7 +96,7 @@ export async function ensureManualTokenConnection(
   // Create synthetic app + connection
   const app = await upsertApp(provider, MANUAL_TOKEN_CLIENT_ID);
 
-  createConnection({
+  await createConnection({
     oauthAppId: app.id,
     provider,
     accountInfo,
@@ -111,12 +111,14 @@ export async function ensureManualTokenConnection(
  * Note: This only removes the oauth_connection row. The caller is still
  * responsible for deleting the stored credentials separately.
  */
-export function removeManualTokenConnection(provider: string): void {
-  const conn = getConnectionByProvider(provider);
+export async function removeManualTokenConnection(
+  provider: string,
+): Promise<void> {
+  const conn = await getConnectionByProvider(provider);
   if (!conn) {
     return;
   }
-  deleteConnection(conn.id);
+  await deleteConnection(conn.id);
 }
 
 /**
@@ -134,7 +136,7 @@ export async function syncManualTokenConnection(
     provider,
     accountInfo,
   );
-  const accountInfoToStore = accountInfoForManualTokenSync(
+  const accountInfoToStore = await accountInfoForManualTokenSync(
     provider,
     resolvedAccountInfo,
   );
@@ -162,7 +164,7 @@ export async function syncManualTokenConnection(
   if (results.every((r) => r.value)) {
     await ensureManualTokenConnection(provider, accountInfoToStore);
   } else {
-    removeManualTokenConnection(provider);
+    await removeManualTokenConnection(provider);
   }
 }
 

@@ -1708,8 +1708,8 @@ export const SEEDED_PROVIDER_KEYS = new Set(Object.keys(PROVIDER_SEED_DATA));
  * Uses INSERT … ON CONFLICT DO UPDATE so seed-data corrections propagate
  * to existing installations. Safe to call on every startup.
  */
-export function seedOAuthProviders(): void {
-  seedProviders(Object.values(PROVIDER_SEED_DATA));
+export async function seedOAuthProviders(): Promise<void> {
+  await seedProviders(Object.values(PROVIDER_SEED_DATA));
 
   // seedProviders preserves an existing baseUrl via COALESCE, so a corrected
   // seed default never reaches rows created with the old value. Advance the
@@ -1717,7 +1717,7 @@ export function seedOAuthProviders(): void {
   // user-customized base URL.
   const nextGoogleBaseUrl = PROVIDER_SEED_DATA.google.baseUrl;
   if (nextGoogleBaseUrl) {
-    migrateProviderBaseUrl({
+    await migrateProviderBaseUrl({
       provider: "google",
       staleBaseUrl: STALE_GOOGLE_BASE_URL,
       nextBaseUrl: nextGoogleBaseUrl,

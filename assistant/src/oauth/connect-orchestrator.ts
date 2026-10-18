@@ -123,7 +123,7 @@ export async function orchestrateOAuthConnect(
   );
 
   // Read provider config from the DB
-  const providerRow = getProvider(options.service);
+  const providerRow = await getProvider(options.service);
   if (!providerRow) {
     return {
       success: false,
@@ -157,8 +157,7 @@ export async function orchestrateOAuthConnect(
   const tokenExchangeUrl = providerRow.tokenExchangeUrl;
   const userinfoUrl = providerRow.userinfoUrl ?? undefined;
   const tokenEndpointAuthMethod = providerRow.tokenEndpointAuthMethod as
-    | TokenEndpointAuthMethod
-    | undefined;
+    TokenEndpointAuthMethod | undefined;
   const callbackTransport: "loopback" | "gateway" =
     options.callbackTransport ?? "loopback";
   const loopbackPort = providerRow.loopbackPort ?? undefined;

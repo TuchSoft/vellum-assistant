@@ -359,7 +359,7 @@ export async function runDaemon(): Promise<void> {
   // when the DB itself initialized successfully.
   if (dbReady) {
     try {
-      seedOAuthProviders();
+      await seedOAuthProviders();
     } catch (err) {
       log.warn({ err }, "OAuth provider seeding failed — continuing startup");
     }

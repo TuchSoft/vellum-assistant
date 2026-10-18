@@ -5,7 +5,7 @@
  * vault tool (interactive and deferred paths) and the OAuth
  * orchestrator without duplicating storage logic.
  *
- * Writes exclusively to the SQLite tables (oauth_app, oauth_connection)
+ * Writes exclusively to the oauth_app and oauth_connection tables
  * and new-format secure keys (`oauth_app/{id}/...`,
  * `oauth_connection/{id}/...`).
  *
@@ -124,7 +124,7 @@ export async function storeOAuth2Tokens(
 
   // 1. Upsert the oauth_app row (or use the pre-resolved ID).
   const app = params.oauthAppId
-    ? (getApp(params.oauthAppId) ?? {
+    ? ((await getApp(params.oauthAppId)) ?? {
         id: params.oauthAppId,
         clientSecretCredentialPath: oauthAppClientSecretPath(params.oauthAppId),
       })
@@ -151,13 +151,13 @@ export async function storeOAuth2Tokens(
   //    lookup so that re-auth without userinfo still updates the right row.
   //    However, treat provider-only matches as ambiguous when multiple active
   //    connections exist to avoid overwriting the wrong account's tokens.
-  let existingConn: ReturnType<typeof getActiveConnection>;
+  let existingConn: Awaited<ReturnType<typeof getActiveConnection>>;
   if (resolvedAccountInfo) {
-    existingConn = getActiveConnection(service, {
+    existingConn = await getActiveConnection(service, {
       account: resolvedAccountInfo,
     });
   } else {
-    const activeConns = listActiveConnectionsByProvider(service);
+    const activeConns = await listActiveConnectionsByProvider(service);
     // Only reuse the provider-only match when it's unambiguous (single connection).
     existingConn = activeConns.length === 1 ? activeConns[0] : undefined;
   }
@@ -177,7 +177,7 @@ export async function storeOAuth2Tokens(
 
   if (existingConn && !isNewAccount) {
     connId = existingConn.id;
-    updateConnection(connId, {
+    await updateConnection(connId, {
       oauthAppId: app.id,
       accountInfo: resolvedAccountInfo,
       grantedScopes,
@@ -186,7 +186,7 @@ export async function storeOAuth2Tokens(
       metadata: rawTokenResponse,
     });
   } else {
-    const conn = createConnection({
+    const conn = await createConnection({
       oauthAppId: app.id,
       provider: service,
       accountInfo: resolvedAccountInfo,

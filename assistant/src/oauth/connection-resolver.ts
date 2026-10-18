@@ -90,7 +90,7 @@ export async function resolveOAuthConnection(
  * Managed providers (where the service config `mode` is `"managed"`) are
  * routed through the platform proxy with no local state required.
  *
- * BYO providers resolve from the local SQLite oauth-store and require an
+ * BYO providers resolve from the local oauth store and require an
  * active connection row and a stored access token.
  */
 export async function resolveOAuthConnectionWithMeta(
@@ -98,7 +98,7 @@ export async function resolveOAuthConnectionWithMeta(
   options?: ResolveOAuthConnectionOptions,
 ): Promise<OAuthConnectionResolution> {
   const { clientId, account, requiredScopes } = options ?? {};
-  const providerRow = getProvider(provider);
+  const providerRow = await getProvider(provider);
   const managedKey = providerRow?.managedServiceConfigKey;
 
   if (managedKey && managedKey in ServicesSchema.shape) {
@@ -147,7 +147,10 @@ export async function resolveOAuthConnectionWithMeta(
     await syncManualTokenConnection(provider);
   }
 
-  const candidates = getActiveConnections(provider, { clientId, account });
+  const candidates = await getActiveConnections(provider, {
+    clientId,
+    account,
+  });
   if (candidates.length === 0) {
     // When a filter produced zero matches, enumerate the provider's other
     // active connections so the error can name the accounts that DO exist —
@@ -155,7 +158,7 @@ export async function resolveOAuthConnectionWithMeta(
     // disconnection.
     const availableLabels =
       account || clientId
-        ? getActiveConnections(provider).map(
+        ? (await getActiveConnections(provider)).map(
             (row) => (row.accountInfo as string | null) ?? (row.id as string),
           )
         : [];

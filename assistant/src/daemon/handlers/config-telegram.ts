@@ -87,7 +87,7 @@ export async function getTelegramConfig(): Promise<TelegramConfigResult> {
   const hasWebhookSecret = !!(await getSecureKeyAsync(
     credentialKey("telegram", "webhook_secret"),
   ));
-  const conn = getConnectionByProvider("telegram");
+  const conn = await getConnectionByProvider("telegram");
   const connected = !!(conn && conn.status === "active");
   const botId = getTelegramBotId();
   return {
@@ -310,7 +310,7 @@ export async function clearTelegramConfig(): Promise<TelegramConfigResult> {
   deleteCredentialMetadata("telegram", "webhook_secret");
 
   // Remove the oauth_connection row so getConnectionByProvider returns undefined.
-  removeManualTokenConnection("telegram");
+  await removeManualTokenConnection("telegram");
 
   // Clear bot ID and username from config so getTelegramBotId() and
   // getTelegramBotUsername() don't return stale values after disconnect.
@@ -360,7 +360,7 @@ export async function setTelegramCommands(
     );
     if (!res.ok) {
       const body = await res.text();
-      const cmdConn = getConnectionByProvider("telegram");
+      const cmdConn = await getConnectionByProvider("telegram");
       const cmdConnected = !!(cmdConn && cmdConn.status === "active");
       return {
         success: false,
@@ -372,7 +372,7 @@ export async function setTelegramCommands(
     }
   } catch (err) {
     const message = summarizeTelegramError(err);
-    const cmdConn = getConnectionByProvider("telegram");
+    const cmdConn = await getConnectionByProvider("telegram");
     const cmdConnected = !!(cmdConn && cmdConn.status === "active");
     return {
       success: false,
@@ -383,7 +383,7 @@ export async function setTelegramCommands(
     };
   }
 
-  const cmdConn = getConnectionByProvider("telegram");
+  const cmdConn = await getConnectionByProvider("telegram");
   const cmdConnected = !!(cmdConn && cmdConn.status === "active");
   return {
     success: true,

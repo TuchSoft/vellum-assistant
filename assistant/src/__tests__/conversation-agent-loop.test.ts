@@ -998,8 +998,8 @@ function makeCtx(
       assistantMessageChannel: "vellum" as const,
     }),
 
-    buildCurrentSystemPrompt: () => "system prompt",
-    syncLoopSystemPrompt: () => {},
+    buildCurrentSystemPrompt: async () => "system prompt",
+    syncLoopSystemPrompt: async () => {},
     modelOverride: undefined,
 
     graphMemory: {
@@ -1269,7 +1269,7 @@ describe("prompt cache warming", () => {
         messages: [],
         provider: { name: "mock-provider", sendMessage },
         agentLoop: { getResolvedTools: () => [] },
-        buildCurrentSystemPrompt: () => "system prompt",
+        buildCurrentSystemPrompt: async () => "system prompt",
       },
     ) as unknown as Conversation;
 
@@ -1300,7 +1300,7 @@ describe("prompt cache warming", () => {
             throw new Error("tool resolution failed");
           },
         },
-        buildCurrentSystemPrompt: () => "system prompt",
+        buildCurrentSystemPrompt: async () => "system prompt",
       },
     ) as unknown as Conversation;
 
@@ -1394,6 +1394,7 @@ describe("session-agent-loop", () => {
         await runAgentLoopImpl(ctx, "read the file", "msg-user-123", (event) =>
           events.push(event),
         );
+        await settleTurnTail(ctx.conversationId);
 
         expect(executeTool).toHaveBeenCalledTimes(1);
         expect(scripted.calls).toHaveLength(2);
@@ -2031,7 +2032,7 @@ describe("session-agent-loop", () => {
       };
       const observed: Array<boolean | undefined> = [];
       const ctx = makeCtx();
-      ctx.syncLoopSystemPrompt = () => {
+      ctx.syncLoopSystemPrompt = async () => {
         observed.push(ctx.diskPressureCleanupModeActive);
       };
 
@@ -2047,7 +2048,7 @@ describe("session-agent-loop", () => {
       mockDiskPressureDecision = { action: "allow-normal" };
       const observed: Array<boolean | undefined> = [];
       const ctx = makeCtx();
-      ctx.syncLoopSystemPrompt = () => {
+      ctx.syncLoopSystemPrompt = async () => {
         observed.push(ctx.diskPressureCleanupModeActive);
       };
 
@@ -4478,6 +4479,7 @@ describe("session-agent-loop", () => {
         () => {},
         { cronRunId: "run-schedule" },
       );
+      await settleTurnTail(ctx.conversationId);
       expect(projectAssistantMessageMock).toHaveBeenCalled();
       expect(emitBackgroundResultNotificationMock).toHaveBeenCalledTimes(1);
       expect(emitBackgroundResultNotificationMock.mock.calls[0]).toMatchObject([
@@ -4504,6 +4506,7 @@ describe("session-agent-loop", () => {
         providerResponses: [textResponse("here you go")],
       });
       await runAgentLoopImpl(ctx, "hi", "msg-user-7", () => {});
+      await settleTurnTail(ctx.conversationId);
 
       expect(emitAssistantReplyNotificationMock).toHaveBeenCalledTimes(1);
       const notifyCall = emitAssistantReplyNotificationMock.mock
@@ -4532,6 +4535,7 @@ describe("session-agent-loop", () => {
       await runAgentLoopImpl(ctx, "hi", "msg-user-tail", () => {}, {
         notifyUserMessageId: "msg-user-prompt",
       });
+      await settleTurnTail(ctx.conversationId);
 
       expect(emitAssistantReplyNotificationMock).toHaveBeenCalledTimes(1);
       const notifyCall = emitAssistantReplyNotificationMock.mock
@@ -4555,6 +4559,7 @@ describe("session-agent-loop", () => {
       await runAgentLoopImpl(ctx, "hi", "msg-user-8", () => {}, {
         replyDeliveredInAppOnly: true,
       });
+      await settleTurnTail(ctx.conversationId);
 
       expect(emitAssistantReplyNotificationMock).toHaveBeenCalledTimes(1);
       const notifyCall = emitAssistantReplyNotificationMock.mock
@@ -4576,6 +4581,7 @@ describe("session-agent-loop", () => {
         providerResponses: [textResponse("here you go")],
       });
       await runAgentLoopImpl(ctx, "hi", "msg-user-9", () => {});
+      await settleTurnTail(ctx.conversationId);
 
       expect(emitAssistantReplyNotificationMock).toHaveBeenCalledTimes(1);
       const notifyCall = emitAssistantReplyNotificationMock.mock
@@ -6142,11 +6148,13 @@ describe("session-agent-loop", () => {
      *  graph memory whose `onCompacted` records its position in `order`
      *  before running for real, and a post-compact hook that records when
      *  re-injection ran. */
-    function arrangeResidentSectionAndObservers(conversationId: string) {
-      recordV3Injected(conversationId, [
+    async function arrangeResidentSectionAndObservers(
+      conversationId: string,
+    ): Promise<void> {
+      await recordV3Injected(conversationId, [
         { slug: "page-a", key: "", bytes: 100 },
       ]);
-      expect(getV3ActiveSections(conversationId)).toEqual(
+      expect(await getV3ActiveSections(conversationId)).toEqual(
         new Map([["page-a", new Set([""])]]),
       );
       const order: string[] = [];
@@ -6188,7 +6196,7 @@ describe("session-agent-loop", () => {
 
     test("a budget-gate run that finds nothing to summarize resets the ledgers before re-injection", async () => {
       const { graphMemory, onCompacted, order } =
-        arrangeResidentSectionAndObservers("test-conv");
+        await arrangeResidentSectionAndObservers("test-conv");
       // Above the loop's first-call gate threshold, so it compacts in place
       // before its first provider call.
       mockEstimateTokens = 90_000;
@@ -6212,7 +6220,7 @@ describe("session-agent-loop", () => {
       expect(order).toEqual(["pipeline", "reset", "post_compact"]);
       // AND the section store no longer claims the section, so the next turn
       // injects it net-new instead of pointing at a block that is gone
-      expect(getV3ActiveSections("test-conv")).toEqual(new Map());
+      expect(await getV3ActiveSections("test-conv")).toEqual(new Map());
     });
 
     /** Stub the marker write so the first write succeeds and every later
@@ -6258,7 +6266,7 @@ describe("session-agent-loop", () => {
 
     test("resets the ledgers on the strip's durable marker write when a later marker write would fail", async () => {
       const { graphMemory, onCompacted, order } =
-        arrangeResidentSectionAndObservers("test-conv");
+        await arrangeResidentSectionAndObservers("test-conv");
       failMarkerWritesAfterTheFirst();
       mockEstimateTokens = 90_000;
       const ctx = makeCtx({
@@ -6273,12 +6281,12 @@ describe("session-agent-loop", () => {
       // before re-injection, and the store no longer claims the section
       expect(onCompacted.mock.calls).toEqual([[0]]);
       expect(order).toEqual(["pipeline", "reset", "post_compact"]);
-      expect(getV3ActiveSections("test-conv")).toEqual(new Map());
+      expect(await getV3ActiveSections("test-conv")).toEqual(new Map());
     });
 
     test("resets the ledgers on the strip's durable marker write when the pipeline compacts and a later marker write would fail", async () => {
       const { graphMemory, onCompacted, order } =
-        arrangeResidentSectionAndObservers("test-conv");
+        await arrangeResidentSectionAndObservers("test-conv");
       failMarkerWritesAfterTheFirst();
       mockEstimateTokens = 90_000;
       const ctx = makeCtx({
@@ -6292,12 +6300,12 @@ describe("session-agent-loop", () => {
       // on the strip's marker, without depending on a re-attempt that fails
       expect(onCompacted.mock.calls).toEqual([[2]]);
       expect(order).toEqual(["pipeline", "reset", "post_compact"]);
-      expect(getV3ActiveSections("test-conv")).toEqual(new Map());
+      expect(await getV3ActiveSections("test-conv")).toEqual(new Map());
     });
 
     test("an overflow rung that reduces without summarizing resets the ledgers before re-injection", async () => {
       const { graphMemory, onCompacted, order } =
-        arrangeResidentSectionAndObservers("test-conv");
+        await arrangeResidentSectionAndObservers("test-conv");
       // Reducer: a truncation rung that reduces the history with no summary.
       mockReducerStepFn = (msgs: Message[]) => {
         order.push("pipeline");
@@ -6318,7 +6326,7 @@ describe("session-agent-loop", () => {
 
       expect(onCompacted.mock.calls).toEqual([[0]]);
       expect(order).toEqual(["pipeline", "reset", "post_compact"]);
-      expect(getV3ActiveSections("test-conv")).toEqual(new Map());
+      expect(await getV3ActiveSections("test-conv")).toEqual(new Map());
     });
 
     /**
@@ -6375,9 +6383,9 @@ describe("session-agent-loop", () => {
               history: hookCtx.history,
               durable: structuredClone(ctx.messages),
             });
-            const resident = getV3ActiveSections(ctx.conversationId).has(
-              "page-a",
-            );
+            const resident = (
+              await getV3ActiveSections(ctx.conversationId)
+            ).has("page-a");
             const tail = hookCtx.history[hookCtx.history.length - 1]!;
             hookCtx.history = [
               ...hookCtx.history.slice(0, -1),
@@ -6413,7 +6421,7 @@ describe("session-agent-loop", () => {
       // GIVEN a resident section whose frozen block sits on an earlier turn's
       // user message, and a pipeline run that finds nothing to summarize
       const { graphMemory, order } =
-        arrangeResidentSectionAndObservers("test-conv");
+        await arrangeResidentSectionAndObservers("test-conv");
       const { provider, calls } = createMockProvider(
         [textResponse("response")],
         "mock-provider",
@@ -6447,7 +6455,7 @@ describe("session-agent-loop", () => {
       // GIVEN a resident section whose frozen block sits on an earlier turn's
       // user message, and a truncation rung that reduces with no summary
       const { graphMemory, order } =
-        arrangeResidentSectionAndObservers("test-conv");
+        await arrangeResidentSectionAndObservers("test-conv");
       mockReducerStepFn = (msgs: Message[]) => {
         order.push("pipeline");
         return {
@@ -6497,7 +6505,7 @@ describe("session-agent-loop", () => {
       // user message, a pipeline run that finds nothing to summarize, and a
       // marker write that fails at the strip and at the re-attempt
       const { graphMemory, onCompacted, order } =
-        arrangeResidentSectionAndObservers("test-conv");
+        await arrangeResidentSectionAndObservers("test-conv");
       failEveryMarkerWrite();
       const { provider, calls } = createMockProvider(
         [textResponse("response")],
@@ -6519,7 +6527,7 @@ describe("session-agent-loop", () => {
       // claims the section
       expect(setConversationHistoryStrippedAtMock).toHaveBeenCalledTimes(2);
       expect(onCompacted).not.toHaveBeenCalled();
-      expect(getV3ActiveSections("test-conv")).toEqual(
+      expect(await getV3ActiveSections("test-conv")).toEqual(
         new Map([["page-a", new Set([""])]]),
       );
       // AND the hook re-injected onto the history the durable commit holds:
@@ -6544,7 +6552,7 @@ describe("session-agent-loop", () => {
       // user message, a pipeline run that finds nothing to summarize, a
       // marker write that succeeds, and a ledger clear that fails
       const { graphMemory, onCompacted, order } =
-        arrangeResidentSectionAndObservers("test-conv");
+        await arrangeResidentSectionAndObservers("test-conv");
       onCompacted.mockImplementation(async () => {
         order.push("reset");
         return false;
@@ -6570,7 +6578,7 @@ describe("session-agent-loop", () => {
       expect(setConversationHistoryStrippedAtMock).toHaveBeenCalledTimes(1);
       expect(onCompacted.mock.calls).toEqual([[0]]);
       expect(order).toEqual(["pipeline", "reset", "post_compact"]);
-      expect(getV3ActiveSections("test-conv")).toEqual(
+      expect(await getV3ActiveSections("test-conv")).toEqual(
         new Map([["page-a", new Set([""])]]),
       );
       // AND the hook re-injected onto the injected history the durable commit
@@ -6595,7 +6603,7 @@ describe("session-agent-loop", () => {
       // user message, a truncation rung that reduces with no summary, and a
       // marker write that fails at the strip and at the re-attempt
       const { graphMemory, onCompacted, order } =
-        arrangeResidentSectionAndObservers("test-conv");
+        await arrangeResidentSectionAndObservers("test-conv");
       failEveryMarkerWrite();
       mockReducerStepFn = (msgs: Message[]) => {
         order.push("pipeline");
@@ -6629,7 +6637,7 @@ describe("session-agent-loop", () => {
       // THEN no reset ran and the store still claims the section
       expect(setConversationHistoryStrippedAtMock).toHaveBeenCalledTimes(2);
       expect(onCompacted).not.toHaveBeenCalled();
-      expect(getV3ActiveSections("test-conv")).toEqual(
+      expect(await getV3ActiveSections("test-conv")).toEqual(
         new Map([["page-a", new Set([""])]]),
       );
       // AND the hook re-injected onto the injected history the durable commit
@@ -6650,7 +6658,7 @@ describe("session-agent-loop", () => {
 
     test("leaves the ledgers intact when the history-stripped marker cannot be written", async () => {
       const { graphMemory, onCompacted, order } =
-        arrangeResidentSectionAndObservers("test-conv");
+        await arrangeResidentSectionAndObservers("test-conv");
       failEveryMarkerWrite();
       mockEstimateTokens = 90_000;
       const ctx = makeCtx({
@@ -6667,7 +6675,7 @@ describe("session-agent-loop", () => {
       expect(setConversationHistoryStrippedAtMock).toHaveBeenCalledTimes(2);
       expect(onCompacted).not.toHaveBeenCalled();
       expect(order).toEqual(["pipeline", "post_compact"]);
-      expect(getV3ActiveSections("test-conv")).toEqual(
+      expect(await getV3ActiveSections("test-conv")).toEqual(
         new Map([["page-a", new Set([""])]]),
       );
     });

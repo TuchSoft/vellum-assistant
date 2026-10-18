@@ -18,14 +18,7 @@ import {
   getMessages,
 } from "../persistence/conversation-crud.js";
 import { getConversationDirPath } from "../persistence/conversation-disk-view.js";
-import {
-  getLogsDb,
-  getMemoryDb,
-  getMemorySqlite,
-  getSqlite,
-} from "../persistence/db-connection.js";
 import { requireMainDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
 import {
   channelInboundEvents,
   conversationAssistantAttentionState,
@@ -35,13 +28,6 @@ import {
   messages,
   toolInvocations,
 } from "../persistence/pg-schema/index.js";
-import {
-  activationState,
-  conversationGraphMemoryState,
-  llmRequestLogs,
-  memoryJobs,
-  memoryRetrospectiveState,
-} from "../persistence/schema/index.js";
 import {
   loadGraphMemoryState,
   saveGraphMemoryState,
@@ -57,25 +43,21 @@ import {
 import { ensureMemoryV3InjectedSectionsSchema } from "../plugins/defaults/memory/v3/plugin-schema.js";
 import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
 async function resetTables(): Promise<void> {
   const db = requireMainDb();
   await db.orm.delete(channelInboundEvents);
   await db.orm.delete(externalConversationBindings);
   await db.orm.delete(conversationAssistantAttentionState);
-  // activation_state, conversation_graph_memory_state, and
-  // memory_retrospective_state all live on the memory connection now.
-  getMemoryDb()!.delete(activationState).run();
-  getMemoryDb()!.delete(conversationGraphMemoryState).run();
-  getMemoryDb()!.delete(memoryRetrospectiveState).run();
-  getLogsDb()!.delete(llmRequestLogs).run();
+  await db.run("DELETE FROM activation_state");
+  await db.run("DELETE FROM conversation_graph_memory_state");
+  await db.run("DELETE FROM memory_retrospective_state");
+  await db.run("DELETE FROM llm_request_logs");
   await db.orm.delete(toolInvocations);
-  getMemoryDb()!.delete(memoryJobs).run();
+  await db.run("DELETE FROM memory_jobs");
   // The plugin creates this table itself (init hook, or a store's first use);
   // the reset runs before either, so stand it up here.
-  await ensureMemoryV3InjectedSectionsSchema(getMemorySqlite()!);
-  getMemorySqlite()!.exec("DELETE FROM memory_v3_injected_sections");
+  await ensureMemoryV3InjectedSectionsSchema(db);
+  await db.run("DELETE FROM memory_v3_injected_sections");
   await db.run("DELETE FROM message_attachments");
   await db.run("DELETE FROM attachments");
   await db.run("DELETE FROM conversation_compaction_events");
@@ -232,7 +214,7 @@ describePg("forkConversationForRetrospective", () => {
     const forkAttachments = await getAttachmentsForMessage(forkAssistant!.id);
     expect(forkAttachments).toHaveLength(1);
     expect(forkAttachments[0]?.id).toBe(
-      await getAttachmentsForMessage(assistant.id)[0]?.id,
+      (await getAttachmentsForMessage(assistant.id))[0]?.id,
     );
   });
 
@@ -250,23 +232,21 @@ describePg("forkConversationForRetrospective", () => {
 
   test("rejects an unknown throughMessageId without creating a fork", async () => {
     const source = await seedSource("Failure thread");
-    const countConversations = () =>
-      (
-        getSqlite().query("SELECT COUNT(*) AS c FROM conversations").get() as {
-          c: number;
-        }
-      ).c;
-    const before = countConversations();
+    const countConversations = async () =>
+      (await requireMainDb().get<{ c: number }>(
+        "SELECT COUNT(*)::int AS c FROM conversations",
+      ))!.c;
+    const before = await countConversations();
 
     await expect(
-      await forkConversationForRetrospective({
+      forkConversationForRetrospective({
         conversationId: source.id,
         throughMessageId: "does-not-exist",
       }),
     ).rejects.toThrow();
 
     // The boundary check fails before any fork row is created — no orphan row.
-    expect(countConversations()).toBe(before);
+    expect(await countConversations()).toBe(before);
   });
 });
 
@@ -312,13 +292,13 @@ describePg("forkConversationForRetrospective — compacted source", () => {
     ];
     const db = requireMainDb();
     const base = Date.now();
-    rows.forEach((row, index) => {
+    for (const [index, row] of rows.entries()) {
       const createdAt = index < 4 ? base + index : base + index + 10;
       await db.orm
         .update(messages)
         .set({ createdAt })
         .where(eq(messages.id, row.id));
-    });
+    }
     const compactedAt = base + 5;
     const summary = "Summary of the old exchange";
     await db.orm
@@ -381,23 +361,15 @@ describePg("forkConversationForRetrospective — compacted source", () => {
     const snapshot = JSON.stringify({ inContext: ["node-a"], currentTurn: 7 });
     await saveGraphMemoryState(source.id, snapshot);
     const everInjected = JSON.stringify([{ slug: "page-a", turn: 1 }]);
-    getMemoryDb()!
-      .insert(activationState)
-      .values({
-        conversationId: source.id,
-        messageId: "source-turn-marker",
-        stateJson: "{}",
-        everInjectedJson: everInjected,
-        currentTurn: 7,
-        updatedAt: Date.now(),
-      })
-      .run();
-    getMemorySqlite()!
-      .query(
-        `INSERT INTO memory_v3_injected_sections (conversation_id, slug, section_key, injected_at, bytes, pruned_at)
-         VALUES (?, 'card-a', '', ?, 12, NULL)`,
-      )
-      .run(source.id, Date.now());
+    await requireMainDb().run(
+      "INSERT INTO activation_state (conversation_id, message_id, state_json, ever_injected_json, current_turn, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [source.id, "source-turn-marker", "{}", everInjected, 7, Date.now()],
+    );
+    await requireMainDb().run(
+      `INSERT INTO memory_v3_injected_sections (conversation_id, slug, section_key, injected_at, bytes, pruned_at)
+       VALUES (?, 'card-a', '', ?, 12, NULL)`,
+      [source.id, Date.now()],
+    );
 
     const tip = (await getMessages(source.id)).at(-1)!;
     const fork = await forkConversationForRetrospective({
@@ -410,17 +382,26 @@ describePg("forkConversationForRetrospective — compacted source", () => {
     // The fork's rendered window equals the source's, so activation,
     // ever-injected, and graph state are carried as-is.
     expect(await loadGraphMemoryState(fork.id)).toBe(snapshot);
-    const forkActivation = getMemoryDb()!
-      .select()
-      .from(activationState)
-      .where(eq(activationState.conversationId, fork.id))
-      .get();
-    expect(forkActivation?.everInjectedJson).toBe(everInjected);
-    const v3Rows = getMemorySqlite()!
-      .query(
+    const forkActivation = await requireMainDb().get<{
+      ever_injected_json: string;
+    }>(
+      "SELECT ever_injected_json FROM activation_state WHERE conversation_id = ?",
+      [fork.id],
+    );
+    expect(forkActivation?.ever_injected_json).toBe(everInjected);
+    // The fork hooks copy the section rows off the request path, so poll for
+    // the copy rather than assuming it landed with the fork row.
+    let v3Rows: Array<{ slug: string }> = [];
+    const v3Deadline = Date.now() + 2_000;
+    while (v3Rows.length === 0 && Date.now() < v3Deadline) {
+      v3Rows = await requireMainDb().all<{ slug: string }>(
         "SELECT slug FROM memory_v3_injected_sections WHERE conversation_id = ?",
-      )
-      .all(fork.id) as Array<{ slug: string }>;
+        [fork.id],
+      );
+      if (v3Rows.length === 0) {
+        await Bun.sleep(10);
+      }
+    }
     expect(v3Rows.map((r) => r.slug)).toEqual(["card-a"]);
   });
 
@@ -476,12 +457,13 @@ describePg("forkConversationForRetrospective — compacted source", () => {
 
     // Derived seeding sees only the copied tail's slug; the wholesale graph
     // carry is skipped for truncated forks.
-    const forkActivation = getMemoryDb()!
-      .select()
-      .from(activationState)
-      .where(eq(activationState.conversationId, fork.id))
-      .get();
-    expect(forkActivation?.everInjectedJson).toBe(
+    const forkActivation = await requireMainDb().get<{
+      ever_injected_json: string;
+    }>(
+      "SELECT ever_injected_json FROM activation_state WHERE conversation_id = ?",
+      [fork.id],
+    );
+    expect(forkActivation?.ever_injected_json).toBe(
       JSON.stringify([{ slug: "tail-slug", turn: 0 }]),
     );
     expect(await loadGraphMemoryState(fork.id)).toBeNull();

@@ -86,14 +86,14 @@ function makeTarget(onRun: (conv: Conversation) => void): {
     // real predicate rather than on a stubbed answer. Mirrors
     // `Conversation.buildCurrentSystemPrompt`: a replayed rendered state wins
     // over the derivation.
-    buildCurrentSystemPrompt: () =>
+    buildCurrentSystemPrompt: async () =>
       (target.delegateIndependentTasksReplay ??
       canSpawnSubagentsForTurn(target as unknown as Conversation))
         ? `base ${DELEGATION_SECTION}`
         : "base",
     // Mirrors `Conversation.syncLoopSystemPrompt`.
-    syncLoopSystemPrompt: () => {
-      const next = (
+    syncLoopSystemPrompt: async () => {
+      const next = await (
         target as unknown as Conversation
       ).buildCurrentSystemPrompt();
       if (next === target.systemPrompt) {
@@ -124,7 +124,7 @@ describe("the delegation section on a direct wake", () => {
 
     // An unrestricted app turn ran first and synced the section into the loop,
     // which holds it until something else syncs.
-    target.syncLoopSystemPrompt();
+    await target.syncLoopSystemPrompt();
     expect(loopPrompt()).toContain(DELEGATION_SECTION);
 
     await wakeAgentForOpportunity(

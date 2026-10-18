@@ -133,7 +133,9 @@ describePg("addPointerMessage", () => {
     const convId = "conv-ptr-no-channel";
     await ensureConversation(convId);
     await addPointerMessage(convId, "started", "+15551234567");
-    const rows = getMessages(convId).filter((m) => m.role === "assistant");
+    const rows = (await getMessages(convId)).filter(
+      (m) => m.role === "assistant",
+    );
     expect(rows.length).toBe(1);
     const metadata = rows[0].metadata ? JSON.parse(rows[0].metadata) : null;
     // metadata should be null/undefined — no userMessageChannel set

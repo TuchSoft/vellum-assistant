@@ -44,14 +44,14 @@ describePg("listConversations originChannel filter", () => {
     ).map((c) => c.id);
   }
 
-  test("vellum matches rows that were never attributed", () => {
+  test("vellum matches rows that were never attributed", async () => {
     await createConversation({ id: "conv-unattributed", source: "user" });
     await stamp("conv-unattributed", null);
 
     expect(await listedIds("vellum")).toEqual(["conv-unattributed"]);
   });
 
-  test("vellum matches rows explicitly stamped vellum", () => {
+  test("vellum matches rows explicitly stamped vellum", async () => {
     await createConversation({ id: "conv-native", source: "user" });
     await stamp("conv-native", "vellum");
 
@@ -61,7 +61,7 @@ describePg("listConversations originChannel filter", () => {
   /* The whole point: an unattributed row and a stamped native row are the same
      section. Asserting both are returned together, rather than each alone,
      is what fails if the predicate goes back to a strict equality. */
-  test("vellum returns unattributed and stamped rows together", () => {
+  test("vellum returns unattributed and stamped rows together", async () => {
     await createConversation({ id: "conv-native", source: "user" });
     await stamp("conv-native", "vellum");
     await createConversation({ id: "conv-unattributed", source: "user" });
@@ -73,7 +73,7 @@ describePg("listConversations originChannel filter", () => {
     ]);
   });
 
-  test("vellum does not claim a row belonging to a channel", () => {
+  test("vellum does not claim a row belonging to a channel", async () => {
     await createConversation({ id: "conv-slack", source: "user" });
     await stamp("conv-slack", "slack");
 
@@ -83,7 +83,7 @@ describePg("listConversations originChannel filter", () => {
   /* Only `vellum` is tolerant. A row is claimed for a channel by that channel
      alone, so there is no ambiguity for the others to absorb - and a tolerant
      `slack` would pull every unattributed row into the Slack card. */
-  test("a channel matches exactly and never absorbs unattributed rows", () => {
+  test("a channel matches exactly and never absorbs unattributed rows", async () => {
     await createConversation({ id: "conv-slack", source: "user" });
     await stamp("conv-slack", "slack");
     await createConversation({ id: "conv-unattributed", source: "user" });

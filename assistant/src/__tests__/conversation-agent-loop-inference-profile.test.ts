@@ -460,8 +460,8 @@ function makeCtx(
       assistantMessageChannel: "vellum" as const,
     }),
 
-    buildCurrentSystemPrompt: () => "system prompt",
-    syncLoopSystemPrompt: () => {},
+    buildCurrentSystemPrompt: async () => "system prompt",
+    syncLoopSystemPrompt: async () => {},
     modelOverride: undefined,
 
     graphMemory: {

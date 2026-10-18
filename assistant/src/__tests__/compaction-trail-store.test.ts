@@ -10,62 +10,45 @@
 
 import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
-import { eq } from "drizzle-orm";
-
 import { createConversation } from "../persistence/conversation-crud.js";
-import { getDb, getLogsDb } from "../persistence/db-connection.js";
 import { requireMainDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
 import {
   getCompactionLogsBetween,
   getRequestLogMetaById,
   recordRequestLog,
 } from "../persistence/llm-request-log-store.js";
-import { llmRequestLogs } from "../persistence/schema/index.js";
 import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
 async function resetTables(): Promise<void> {
-  const db = getDb();
-  // llm_request_logs lives in the dedicated logs connection.
-  getLogsDb()!.delete(llmRequestLogs).run();
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
-  const pg = requireMainDb();
-  await pg.run("DELETE FROM messages");
-  await pg.run("DELETE FROM conversations");
+  const db = requireMainDb();
+  await db.run("DELETE FROM llm_request_logs");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
 }
 
 /**
  * Insert a log row and overwrite its `createdAt` so tests can assert
  * order/cutoff without relying on `Date.now()` timing.
  */
-function insertLogAt(
+async function insertLogAt(
   conversationId: string,
   createdAt: number,
   callSite: "mainAgent" | "compactionAgent" | null,
   requestPayload = "{}",
-): string {
+): Promise<string> {
   // Logging is enabled in these tests, so the write always returns an id.
-  const id = recordRequestLog(
+  const id = (await recordRequestLog(
     conversationId,
     requestPayload,
     "{}",
     undefined,
     "anthropic",
     callSite ?? undefined,
-  )!;
-  // Use the Drizzle update builder rather than `db.run("UPDATE … ?")` —
-  // the drizzle wrapper doesn't accept positional parameters the same
-  // way `bun:sqlite` does, and a silent no-op there manifests as zero
-  // rows in the query under test (the inserted `created_at` keeps its
-  // `Date.now()` value and ends up far in the future of the cutoff).
-  getLogsDb()!
-    .update(llmRequestLogs)
-    .set({ createdAt })
-    .where(eq(llmRequestLogs.id, id))
-    .run();
+  ))!;
+  await requireMainDb().run(
+    "UPDATE llm_request_logs SET created_at = ? WHERE id = ?",
+    [createdAt, id],
+  );
   return id;
 }
 
@@ -85,13 +68,13 @@ describePg("getCompactionLogsBetween", () => {
     //   400 → null call site   ← excluded (pre-migration row, not a compaction)
     //   500 ← ceiling (the selected call's createdAt)
     //   600 → compactionAgent  ← excluded (after ceiling)
-    insertLogAt(conv.id, 100, "compactionAgent");
-    insertLogAt(conv.id, 200, "mainAgent");
-    insertLogAt(conv.id, 300, "compactionAgent");
-    insertLogAt(conv.id, 400, null);
-    insertLogAt(conv.id, 600, "compactionAgent");
+    await insertLogAt(conv.id, 100, "compactionAgent");
+    await insertLogAt(conv.id, 200, "mainAgent");
+    await insertLogAt(conv.id, 300, "compactionAgent");
+    await insertLogAt(conv.id, 400, null);
+    await insertLogAt(conv.id, 600, "compactionAgent");
 
-    const result = getCompactionLogsBetween(conv.id, 150, 500);
+    const result = await getCompactionLogsBetween(conv.id, 150, 500);
     expect(result).toHaveLength(1);
     expect(result[0]!.createdAt).toBe(300);
     expect(result[0]!.callSite).toBe("compactionAgent");
@@ -101,22 +84,22 @@ describePg("getCompactionLogsBetween", () => {
   test("null floor matches all compactions before the ceiling (first-real-call case)", async () => {
     const conv = await createConversation("null-floor");
 
-    insertLogAt(conv.id, 100, "compactionAgent");
-    insertLogAt(conv.id, 200, "compactionAgent");
-    insertLogAt(conv.id, 300, "compactionAgent");
-    insertLogAt(conv.id, 600, "compactionAgent");
+    await insertLogAt(conv.id, 100, "compactionAgent");
+    await insertLogAt(conv.id, 200, "compactionAgent");
+    await insertLogAt(conv.id, 300, "compactionAgent");
+    await insertLogAt(conv.id, 600, "compactionAgent");
 
-    const result = getCompactionLogsBetween(conv.id, null, 500);
+    const result = await getCompactionLogsBetween(conv.id, null, 500);
     expect(result.map((r) => r.createdAt)).toEqual([100, 200, 300]);
   });
 
   test("uses strict < at the ceiling (a row exactly at the cutoff is excluded)", async () => {
     const conv = await createConversation("strict-ceiling");
 
-    insertLogAt(conv.id, 100, "compactionAgent");
-    insertLogAt(conv.id, 500, "compactionAgent"); // exactly at the ceiling
+    await insertLogAt(conv.id, 100, "compactionAgent");
+    await insertLogAt(conv.id, 500, "compactionAgent"); // exactly at the ceiling
 
-    const result = getCompactionLogsBetween(conv.id, null, 500);
+    const result = await getCompactionLogsBetween(conv.id, null, 500);
     expect(result).toHaveLength(1);
     expect(result[0]!.createdAt).toBe(100);
   });
@@ -124,10 +107,10 @@ describePg("getCompactionLogsBetween", () => {
   test("uses strict > at the floor (a row exactly at the floor is excluded)", async () => {
     const conv = await createConversation("strict-floor");
 
-    insertLogAt(conv.id, 150, "compactionAgent"); // exactly at the floor
-    insertLogAt(conv.id, 200, "compactionAgent");
+    await insertLogAt(conv.id, 150, "compactionAgent"); // exactly at the floor
+    await insertLogAt(conv.id, 200, "compactionAgent");
 
-    const result = getCompactionLogsBetween(conv.id, 150, 500);
+    const result = await getCompactionLogsBetween(conv.id, 150, 500);
     expect(result).toHaveLength(1);
     expect(result[0]!.createdAt).toBe(200);
   });
@@ -136,11 +119,11 @@ describePg("getCompactionLogsBetween", () => {
     const a = await createConversation("conv-a");
     const b = await createConversation("conv-b");
 
-    insertLogAt(a.id, 100, "compactionAgent");
-    insertLogAt(b.id, 150, "compactionAgent");
-    insertLogAt(a.id, 200, "compactionAgent");
+    await insertLogAt(a.id, 100, "compactionAgent");
+    await insertLogAt(b.id, 150, "compactionAgent");
+    await insertLogAt(a.id, 200, "compactionAgent");
 
-    const result = getCompactionLogsBetween(a.id, null, 500);
+    const result = await getCompactionLogsBetween(a.id, null, 500);
     expect(result).toHaveLength(2);
     for (const row of result) {
       expect(row.conversationId).toBe(a.id);
@@ -151,11 +134,11 @@ describePg("getCompactionLogsBetween", () => {
     const conv = await createConversation("ordered");
 
     // Insert out of order to verify the ORDER BY clause does the work.
-    insertLogAt(conv.id, 300, "compactionAgent");
-    insertLogAt(conv.id, 100, "compactionAgent");
-    insertLogAt(conv.id, 200, "compactionAgent");
+    await insertLogAt(conv.id, 300, "compactionAgent");
+    await insertLogAt(conv.id, 100, "compactionAgent");
+    await insertLogAt(conv.id, 200, "compactionAgent");
 
-    const result = getCompactionLogsBetween(conv.id, null, 500);
+    const result = await getCompactionLogsBetween(conv.id, null, 500);
     expect(result.map((r) => r.createdAt)).toEqual([100, 200, 300]);
   });
 
@@ -163,15 +146,19 @@ describePg("getCompactionLogsBetween", () => {
     const conv = await createConversation("empty");
 
     // mainAgent (wrong site) + compactionAgent after the ceiling.
-    insertLogAt(conv.id, 100, "mainAgent");
-    insertLogAt(conv.id, 600, "compactionAgent");
+    await insertLogAt(conv.id, 100, "mainAgent");
+    await insertLogAt(conv.id, 600, "compactionAgent");
 
-    const result = getCompactionLogsBetween(conv.id, null, 500);
+    const result = await getCompactionLogsBetween(conv.id, null, 500);
     expect(result).toEqual([]);
   });
 
   test("returns an empty array for an unknown conversation_id", async () => {
-    const result = getCompactionLogsBetween("nonexistent-conv", null, 500);
+    const result = await getCompactionLogsBetween(
+      "nonexistent-conv",
+      null,
+      500,
+    );
     expect(result).toEqual([]);
   });
 
@@ -180,29 +167,29 @@ describePg("getCompactionLogsBetween", () => {
     // shape (Anthropic/OpenAI `messages`, Gemini `contents`, OpenAI
     // Responses `input`), plus rows where the count can't be derived
     const conv = await createConversation("msg-count");
-    insertLogAt(
+    await insertLogAt(
       conv.id,
       100,
       "compactionAgent",
       JSON.stringify({ messages: [{}, {}, {}] }),
     );
-    insertLogAt(
+    await insertLogAt(
       conv.id,
       200,
       "compactionAgent",
       JSON.stringify({ contents: [{}, {}] }),
     );
-    insertLogAt(
+    await insertLogAt(
       conv.id,
       300,
       "compactionAgent",
       JSON.stringify({ input: [{}] }),
     );
-    insertLogAt(conv.id, 400, "compactionAgent", "not-json{{{");
-    insertLogAt(conv.id, 500, "compactionAgent", JSON.stringify({}));
+    await insertLogAt(conv.id, 400, "compactionAgent", "not-json{{{");
+    await insertLogAt(conv.id, 500, "compactionAgent", JSON.stringify({}));
 
     // WHEN querying the trail window
-    const result = getCompactionLogsBetween(conv.id, null, 600);
+    const result = await getCompactionLogsBetween(conv.id, null, 600);
 
     // THEN each row carries the SQL-computed message count (null when
     // the payload is malformed or has no known message array)
@@ -228,10 +215,15 @@ describePg("getRequestLogMetaById", () => {
   test("returns the row's metadata without either payload column", async () => {
     // GIVEN a stored log row
     const conv = await createConversation("meta-lookup");
-    const id = insertLogAt(conv.id, 100, "compactionAgent", '{"big":true}');
+    const id = await insertLogAt(
+      conv.id,
+      100,
+      "compactionAgent",
+      '{"big":true}',
+    );
 
     // WHEN looking it up by id
-    const row = getRequestLogMetaById(id);
+    const row = await getRequestLogMetaById(id);
 
     // THEN the metadata comes back payload-free
     expect(row).not.toBeNull();
@@ -243,7 +235,7 @@ describePg("getRequestLogMetaById", () => {
   });
 
   test("returns null for an unknown id", async () => {
-    expect(getRequestLogMetaById("nonexistent")).toBeNull();
+    expect(await getRequestLogMetaById("nonexistent")).toBeNull();
   });
 });
 

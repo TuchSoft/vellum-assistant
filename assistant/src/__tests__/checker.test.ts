@@ -78,7 +78,7 @@ import * as personaResolver from "../prompts/persona-resolver.js";
 const guardianPathSpy = spyOn(
   personaResolver,
   "resolveGuardianPersonaPath",
-).mockImplementation(() => mockGuardianPersonaPath);
+).mockImplementation(async () => mockGuardianPersonaPath);
 
 import * as envRegistry from "../config/env-registry.js";
 import {

@@ -32,17 +32,16 @@ const {
 import type { Conversation } from "../daemon/conversation.js";
 import type { ProcessMessageOptions } from "../daemon/conversation-process.js";
 import type { SurfaceType, UiSurfaceShow } from "../daemon/message-protocol.js";
-import { getMemorySqlite } from "../persistence/db-connection.js";
-import { getTelemetryAsyncDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
+import {
+  getTelemetryAsyncDb,
+  requireMainDb,
+} from "../persistence/db-facade.js";
 import {
   isActivationSession,
   markActivationSession,
 } from "../plugins/defaults/memory/activation-session-store.js";
 import { queryTelemetryOutboxBatch as queryOutbox } from "../telemetry/telemetry-events-outbox.js";
 import type { OnboardingTelemetryEvent } from "../telemetry/types.js";
-
-await initializeDb();
 
 /** Pending onboarding outbox payloads, parsed, in `(created_at, id)` order. */
 async function pendingOnboardingPayloads(): Promise<
@@ -123,7 +122,7 @@ async function resetTables(): Promise<void> {
     throw new Error("telemetry DB unavailable in test");
   }
   await db.label("test:activation-reset").run("DELETE FROM telemetry_events");
-  getMemorySqlite()!.exec("DELETE FROM activation_sessions");
+  await requireMainDb().run("DELETE FROM activation_sessions");
 }
 
 /** Render a choice surface tagged (or not) with an activation_moment. */
@@ -157,8 +156,8 @@ describe("activation moment emission from ui_show surface commits", () => {
   });
 
   test("committed tagged surface in a marked session writes exactly one row", async () => {
-    markActivationSession("conv-marked");
-    expect(isActivationSession("conv-marked")).toBe(true);
+    await markActivationSession("conv-marked");
+    expect(await isActivationSession("conv-marked")).toBe(true);
 
     const sent: AssistantEvent[] = [];
     const ctx = makeContext("conv-marked", sent);
@@ -177,7 +176,7 @@ describe("activation moment emission from ui_show surface commits", () => {
   });
 
   test("a queue-rejected commit does NOT emit; the tag survives for the retry", async () => {
-    markActivationSession("conv-rejected");
+    await markActivationSession("conv-rejected");
     const sent: AssistantEvent[] = [];
     const ctx = makeContext("conv-rejected", sent);
     const surfaceId = await showTaggedChoice(ctx, sent, "moment_2");
@@ -208,7 +207,7 @@ describe("activation moment emission from ui_show surface commits", () => {
   });
 
   test("first_wow_executed records at SHOW time (no commit) and never double-emits", async () => {
-    markActivationSession("conv-wow");
+    await markActivationSession("conv-wow");
     const sent: AssistantEvent[] = [];
     const ctx = makeContext("conv-wow", sent);
 
@@ -249,7 +248,7 @@ describe("activation moment emission from ui_show surface commits", () => {
   });
 
   test("does not forward the daemon-only tag to the client", async () => {
-    markActivationSession("conv-marked-2");
+    await markActivationSession("conv-marked-2");
     const sent: AssistantEvent[] = [];
     const ctx = makeContext("conv-marked-2", sent);
     await showTaggedChoice(ctx, sent, "moment_2");
@@ -264,7 +263,7 @@ describe("activation moment emission from ui_show surface commits", () => {
   });
 
   test("untagged surface writes no row", async () => {
-    markActivationSession("conv-untagged");
+    await markActivationSession("conv-untagged");
     const sent: AssistantEvent[] = [];
     const ctx = makeContext("conv-untagged", sent);
     const surfaceId = await showTaggedChoice(ctx, sent, undefined);
@@ -291,7 +290,7 @@ describe("activation moment emission from ui_show surface commits", () => {
   });
 
   test("an invalid activation_moment token is ignored (no row)", async () => {
-    markActivationSession("conv-bad-tag");
+    await markActivationSession("conv-bad-tag");
     const sent: AssistantEvent[] = [];
     const ctx = makeContext("conv-bad-tag", sent);
     const surfaceId = await showTaggedChoice(ctx, sent, "bogus_moment");
@@ -305,7 +304,7 @@ describe("activation moment emission from ui_show surface commits", () => {
   });
 
   test("FIX 1: launch_conversation commit on a tagged surface records exactly one row", async () => {
-    markActivationSession("conv-launch");
+    await markActivationSession("conv-launch");
     const sent: AssistantEvent[] = [];
     const ctx = makeContext("conv-launch", sent);
 
@@ -337,7 +336,7 @@ describe("activation moment emission from ui_show surface commits", () => {
   });
 
   test("FIX 2: commit-timing tag survives a surfaceState restore from history", async () => {
-    markActivationSession("conv-restore");
+    await markActivationSession("conv-restore");
     const sent: AssistantEvent[] = [];
     const ctx = makeContext("conv-restore", sent);
     const surfaceId = await showTaggedChoice(ctx, sent, "moment_2");
@@ -386,7 +385,7 @@ describe("activation moment emission from ui_show surface commits", () => {
   });
 
   test("intermediate selection_changed does NOT emit; the terminal commit does", async () => {
-    markActivationSession("conv-table");
+    await markActivationSession("conv-table");
     const sent: AssistantEvent[] = [];
     const ctx = makeContext("conv-table", sent);
 

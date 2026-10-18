@@ -8,7 +8,7 @@
  * 3. Channel verification reply templates are non-empty and deterministic.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 
 // ---------------------------------------------------------------------------
 // Test isolation: in-memory SQLite via temp directory
@@ -46,7 +46,6 @@ mock.module("../daemon/process-message.js", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { initializeDb } from "../persistence/db-init.js";
 import { handleChannelInbound } from "../runtime/routes/inbound-message-handler.js";
 import {
   composeChannelVerifyReply,
@@ -141,9 +140,6 @@ describe("Channel verification reply templates", () => {
 describePg("Call session mode metadata", () => {
   // Cold DB init runs every migration; give it headroom over Bun's 5s default
   // hook timeout so a loaded CI runner doesn't trip it.
-  beforeEach(async () => {
-    await initializeDb();
-  }, 30_000);
 
   test("createCallSession persists callMode and verificationSessionId", async () => {
     // Dynamic import to avoid circular dependency issues
@@ -153,7 +149,7 @@ describePg("Call session mode metadata", () => {
       await import("../persistence/conversation-key-store.js");
 
     const { conversationId } = await getOrCreateConversation("test-conv-mode");
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId,
       provider: "twilio",
@@ -167,7 +163,7 @@ describePg("Call session mode metadata", () => {
     expect(session.verificationSessionId).toBe("gv-session-test");
 
     // Verify it persists to DB
-    const loaded = getCallSession(session.id);
+    const loaded = await getCallSession(session.id);
     expect(loaded).not.toBeNull();
     expect(loaded!.callMode).toBe("verification");
     expect(loaded!.verificationSessionId).toBe("gv-session-test");
@@ -182,7 +178,7 @@ describePg("Call session mode metadata", () => {
     const { conversationId } = await getOrCreateConversation(
       "test-conv-mode-default",
     );
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId,
       provider: "twilio",
@@ -193,7 +189,7 @@ describePg("Call session mode metadata", () => {
     expect(session.callMode).toBeNull();
     expect(session.verificationSessionId).toBeNull();
 
-    const loaded = getCallSession(session.id);
+    const loaded = await getCallSession(session.id);
     expect(loaded).not.toBeNull();
     expect(loaded!.callMode).toBeNull();
     expect(loaded!.verificationSessionId).toBeNull();
@@ -205,10 +201,6 @@ describePg("Call session mode metadata", () => {
 // ---------------------------------------------------------------------------
 
 describe("Verification control messages are deterministic (guard)", () => {
-  beforeEach(async () => {
-    await initializeDb();
-  }, 30_000);
-
   test("handleChannelInbound does not call processMessage for /start gv_<token> bootstrap commands", async () => {
     const { createHash, randomBytes } = await import("node:crypto");
 

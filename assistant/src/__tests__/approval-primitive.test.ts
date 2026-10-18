@@ -5,16 +5,12 @@ import {
   mintGrantFromDecision,
   type MintGrantParams,
 } from "../approvals/approval-primitive.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { scopedApprovalGrants } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { computeToolApprovalDigest } from "../security/tool-approval-digest.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function clearTables(): void {
-  const db = getDb();
-  db.delete(scopedApprovalGrants).run();
+async function clearTables(): Promise<void> {
+  await requireMainDb().run("DELETE FROM scoped_approval_grants");
 }
 
 // ---------------------------------------------------------------------------
@@ -36,11 +32,11 @@ function mintParams(overrides: Partial<MintGrantParams> = {}): MintGrantParams {
 // MINT TESTS
 // ===========================================================================
 
-describe("approval-primitive / mintGrantFromDecision", () => {
-  beforeEach(() => clearTables());
+describePg("approval-primitive / mintGrantFromDecision", () => {
+  beforeEach(async () => clearTables());
 
-  test("mints a request_id scoped grant successfully", () => {
-    const result = mintGrantFromDecision(
+  test("mints a request_id scoped grant successfully", async () => {
+    const result = await mintGrantFromDecision(
       mintParams({ scopeMode: "request_id", requestId: "req-1" }),
     );
     expect(result.ok).toBe(true);
@@ -52,9 +48,9 @@ describe("approval-primitive / mintGrantFromDecision", () => {
     expect(result.grant.scopeMode).toBe("request_id");
   });
 
-  test("mints a tool_signature scoped grant successfully", () => {
+  test("mints a tool_signature scoped grant successfully", async () => {
     const digest = computeToolApprovalDigest("shell", { command: "ls" });
-    const result = mintGrantFromDecision(
+    const result = await mintGrantFromDecision(
       mintParams({
         scopeMode: "tool_signature",
         toolName: "shell",
@@ -70,8 +66,8 @@ describe("approval-primitive / mintGrantFromDecision", () => {
     expect(result.grant.scopeMode).toBe("tool_signature");
   });
 
-  test("rejects request_id scope when requestId is missing", () => {
-    const result = mintGrantFromDecision(
+  test("rejects request_id scope when requestId is missing", async () => {
+    const result = await mintGrantFromDecision(
       mintParams({ scopeMode: "request_id", requestId: null }),
     );
     expect(result.ok).toBe(false);
@@ -81,8 +77,8 @@ describe("approval-primitive / mintGrantFromDecision", () => {
     expect(result.reason).toBe("missing_request_id");
   });
 
-  test("rejects tool_signature scope when toolName is missing", () => {
-    const result = mintGrantFromDecision(
+  test("rejects tool_signature scope when toolName is missing", async () => {
+    const result = await mintGrantFromDecision(
       mintParams({
         scopeMode: "tool_signature",
         toolName: null,
@@ -96,8 +92,8 @@ describe("approval-primitive / mintGrantFromDecision", () => {
     expect(result.reason).toBe("missing_tool_fields");
   });
 
-  test("rejects tool_signature scope when inputDigest is missing", () => {
-    const result = mintGrantFromDecision(
+  test("rejects tool_signature scope when inputDigest is missing", async () => {
+    const result = await mintGrantFromDecision(
       mintParams({
         scopeMode: "tool_signature",
         toolName: "shell",
@@ -111,8 +107,8 @@ describe("approval-primitive / mintGrantFromDecision", () => {
     expect(result.reason).toBe("missing_tool_fields");
   });
 
-  test("mints grant with full scope context fields", () => {
-    const result = mintGrantFromDecision(
+  test("mints grant with full scope context fields", async () => {
+    const result = await mintGrantFromDecision(
       mintParams({
         scopeMode: "request_id",
         requestId: "req-full",
@@ -143,7 +139,7 @@ describe("approval-primitive / consumeGrantForInvocation", () => {
   beforeEach(() => clearTables());
 
   test("consumes a request_id grant when requestId matches", async () => {
-    mintGrantFromDecision(
+    await mintGrantFromDecision(
       mintParams({ scopeMode: "request_id", requestId: "req-100" }),
     );
 
@@ -164,7 +160,7 @@ describe("approval-primitive / consumeGrantForInvocation", () => {
 
   test("consumes a tool_signature grant when tool+input matches", async () => {
     const digest = computeToolApprovalDigest("shell", { command: "ls" });
-    mintGrantFromDecision(
+    await mintGrantFromDecision(
       mintParams({
         scopeMode: "tool_signature",
         toolName: "shell",
@@ -188,7 +184,7 @@ describe("approval-primitive / consumeGrantForInvocation", () => {
   test("falls back to tool_signature when request_id does not match", async () => {
     const digest = computeToolApprovalDigest("shell", { command: "ls" });
     // Mint a tool_signature grant (not request_id)
-    mintGrantFromDecision(
+    await mintGrantFromDecision(
       mintParams({
         scopeMode: "tool_signature",
         toolName: "shell",
@@ -233,7 +229,7 @@ describe("approval-primitive / consumeGrantForInvocation", () => {
 
   test("miss: tool name mismatch", async () => {
     const digest = computeToolApprovalDigest("shell", { command: "ls" });
-    mintGrantFromDecision(
+    await mintGrantFromDecision(
       mintParams({
         scopeMode: "tool_signature",
         toolName: "shell",
@@ -258,7 +254,7 @@ describe("approval-primitive / consumeGrantForInvocation", () => {
   });
 
   test("miss: input digest mismatch", async () => {
-    mintGrantFromDecision(
+    await mintGrantFromDecision(
       mintParams({
         scopeMode: "tool_signature",
         toolName: "shell",
@@ -286,7 +282,7 @@ describe("approval-primitive / consumeGrantForInvocation", () => {
 
   test("miss: grant expired", async () => {
     const pastExpiry = Date.now() - 60_000;
-    mintGrantFromDecision(
+    await mintGrantFromDecision(
       mintParams({
         scopeMode: "request_id",
         requestId: "req-expired",
@@ -316,7 +312,7 @@ describe("approval-primitive / consumeGrantForInvocation", () => {
   // ---------------------------------------------------------------------------
 
   test("one-time consume: second consume of the same grant fails", async () => {
-    mintGrantFromDecision(
+    await mintGrantFromDecision(
       mintParams({ scopeMode: "request_id", requestId: "req-once" }),
     );
 
@@ -346,7 +342,7 @@ describe("approval-primitive / consumeGrantForInvocation", () => {
 
   test("one-time consume: tool_signature grant is consumed only once", async () => {
     const digest = computeToolApprovalDigest("shell", { command: "deploy" });
-    mintGrantFromDecision(
+    await mintGrantFromDecision(
       mintParams({
         scopeMode: "tool_signature",
         toolName: "shell",
@@ -382,7 +378,7 @@ describe("approval-primitive / consumeGrantForInvocation", () => {
 
   test("consumes tool_signature grant with matching conversation context", async () => {
     const digest = computeToolApprovalDigest("shell", { command: "test" });
-    mintGrantFromDecision(
+    await mintGrantFromDecision(
       mintParams({
         scopeMode: "tool_signature",
         toolName: "shell",
@@ -405,7 +401,7 @@ describe("approval-primitive / consumeGrantForInvocation", () => {
 
   test("miss: conversation context mismatch on tool_signature grant", async () => {
     const digest = computeToolApprovalDigest("shell", { command: "test" });
-    mintGrantFromDecision(
+    await mintGrantFromDecision(
       mintParams({
         scopeMode: "tool_signature",
         toolName: "shell",
@@ -437,11 +433,11 @@ describe("approval-primitive / consumeGrantForInvocation", () => {
 // ===========================================================================
 
 describe("approval-primitive / consumeGrantForInvocation retry", () => {
-  beforeEach(() => clearTables());
+  beforeEach(async () => clearTables());
 
   test("succeeds immediately when grant already exists (no retry needed)", async () => {
     const digest = computeToolApprovalDigest("shell", { command: "ls" });
-    mintGrantFromDecision(
+    await mintGrantFromDecision(
       mintParams({
         scopeMode: "tool_signature",
         toolName: "shell",
@@ -450,11 +446,14 @@ describe("approval-primitive / consumeGrantForInvocation retry", () => {
     );
 
     const start = Date.now();
-    const result = await consumeGrantForInvocation({
-      toolName: "shell",
-      inputDigest: digest,
-      consumingRequestId: "consumer-async-immediate",
-    });
+    const result = await consumeGrantForInvocation(
+      {
+        toolName: "shell",
+        inputDigest: digest,
+        consumingRequestId: "consumer-async-immediate",
+      },
+      { intervalMs: 10_000, maxWaitMs: 10_000 },
+    );
     const elapsed = Date.now() - start;
 
     expect(result.ok).toBe(true);
@@ -462,16 +461,16 @@ describe("approval-primitive / consumeGrantForInvocation retry", () => {
       return;
     }
     expect(result.grant.status).toBe("consumed");
-    // Should return nearly instantly — well under the retry interval
-    expect(elapsed).toBeLessThan(200);
+    // A fast-path hit returns before the retry interval can elapse.
+    expect(elapsed).toBeLessThan(2_000);
   });
 
   test("retries and succeeds when grant appears after a delay", async () => {
     const digest = computeToolApprovalDigest("shell", { command: "delayed" });
 
     // Mint the grant after 300ms — the async consumer should retry and find it
-    setTimeout(() => {
-      mintGrantFromDecision(
+    setTimeout(async () => {
+      await mintGrantFromDecision(
         mintParams({
           scopeMode: "tool_signature",
           toolName: "shell",

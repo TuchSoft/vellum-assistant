@@ -102,8 +102,8 @@ function makeTarget(onRun: (conv: Conversation) => void): {
         ),
       }),
     // Mirrors `Conversation.syncLoopSystemPrompt`.
-    syncLoopSystemPrompt: () => {
-      const next = (
+    syncLoopSystemPrompt: async () => {
+      const next = await (
         target as unknown as Conversation
       ).buildCurrentSystemPrompt();
       if (next === target.systemPrompt) {
@@ -177,7 +177,7 @@ describe("send_user_message on a direct wake", () => {
     // the gated section into the loop, which holds it until something else
     // syncs.
     target.currentTurnSendUserMessageActive = true;
-    target.syncLoopSystemPrompt();
+    await target.syncLoopSystemPrompt();
     expect(loopPrompt()).toContain(GATED_SECTION_HEADING);
     target.currentTurnSendUserMessageActive = undefined;
 

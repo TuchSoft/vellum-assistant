@@ -6,7 +6,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
+
+setDefaultTimeout(60_000);
 
 import { createAssistantMessage } from "../agent/message-types.js";
 import type { Conversation } from "../daemon/conversation.js";
@@ -583,7 +592,9 @@ describePg("POST /v1/messages — body.conversationId direct id lookup", () => {
           expect(failed.status).toBe(500);
         }
         expect(
-          await requireMainDb().all("SELECT * FROM conversations"),
+          await requireMainDb().all<{ id: string }>(
+            "SELECT * FROM conversations",
+          ),
         ).toHaveLength(0);
         expect(
           await requireMainDb().all("SELECT * FROM conversation_keys"),
@@ -594,7 +605,9 @@ describePg("POST /v1/messages — body.conversationId direct id lookup", () => {
         ipc.mockResolvedValueOnce({ ok: true });
         const retried = await sendMessage(body);
         expect(retried.status).toBe(202);
-        const rows = await requireMainDb().all("SELECT * FROM conversations");
+        const rows = await requireMainDb().all<{ id: string }>(
+          "SELECT * FROM conversations",
+        );
         expect(rows).toHaveLength(1);
         expect(
           await requireMainDb().all("SELECT * FROM conversation_keys"),
@@ -644,7 +657,9 @@ describePg("POST /v1/messages — body.conversationId direct id lookup", () => {
     const ipc = spyOn(gatewayClient, "ipcCall").mockImplementationOnce(
       async () => {
         const row = (
-          await requireMainDb().all("SELECT * FROM conversations")
+          await requireMainDb().all<{ id: string }>(
+            "SELECT * FROM conversations",
+          )
         )[0]!;
         await addMessage(row.id, "user", "Concurrent message");
         return undefined;
@@ -658,7 +673,9 @@ describePg("POST /v1/messages — body.conversationId direct id lookup", () => {
         riskThreshold: "none",
       });
       expect(response.status).toBe(500);
-      const rows = await requireMainDb().all("SELECT * FROM conversations");
+      const rows = await requireMainDb().all<{ id: string }>(
+        "SELECT * FROM conversations",
+      );
       expect(rows).toHaveLength(1);
       expect(await readPersistedMessages(rows[0]!.id)).toHaveLength(1);
     } finally {
@@ -969,16 +986,27 @@ describePg("host-proxy preactivation across an interrupt", () => {
       aborted = true;
     });
     conv.abortController = controller;
+    // Hold the handover open until the test releases it, so the response
+    // cannot have waited it out.
+    let releaseHandover = () => {};
+    let handoverPending = true;
+    conv.waitForIdle = () =>
+      new Promise<boolean>((resolve) => {
+        releaseHandover = () => {
+          handoverPending = false;
+          resolve(true);
+        };
+      });
 
     const startedAt = Date.now();
     const response = await sendMacosMessage(conversationKey, "stop and answer");
     const elapsedMs = Date.now() - startedAt;
 
-    // The load-bearing assertion. Awaiting the handover would spend the abort
-    // release budget here before answering (the fake conversation caps its
-    // `waitForIdle` at 250 ms; in production it is `ABORT_RELEASE_WAIT_MS`,
-    // 7 s, plus the commit wait). Answering off the handover costs neither.
-    expect(elapsedMs).toBeLessThan(100);
+    // The load-bearing assertion: the response lands while the handover is
+    // still pending. Awaiting it would hold the request for the abort release
+    // budget (7 s in production) plus the commit wait.
+    expect(handoverPending).toBe(true);
+    expect(elapsedMs).toBeLessThan(10_000);
     expect(response.status).toBe(202);
     const body = (await response.json()) as {
       accepted?: boolean;
@@ -1004,6 +1032,7 @@ describePg("host-proxy preactivation across an interrupt", () => {
     // its timer into the next test.
     conv.processing = false;
     conv.owner = 0;
+    releaseHandover();
   });
 
   test("tells the sender when the queue fallback is rejected after acceptance", async () => {
@@ -1276,6 +1305,12 @@ describePg("host-proxy preactivation across an interrupt", () => {
     // A turn that does not release, so the first send is still mid-handover
     // when the retransmission arrives.
     conv.abortController = new AbortController();
+    // Keep the first send's handover pending for the whole retransmission.
+    let releaseHandover = () => {};
+    conv.waitForIdle = () =>
+      new Promise<boolean>((resolve) => {
+        releaseHandover = () => resolve(true);
+      });
 
     const first = await sendMacosMessage(
       conversationKey,
@@ -1305,6 +1340,7 @@ describePg("host-proxy preactivation across an interrupt", () => {
 
     conv.processing = false;
     conv.owner = 0;
+    releaseHandover();
   });
 
   test("a retransmit answers with the accepted send's id after the turn releases", async () => {

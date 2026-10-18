@@ -190,7 +190,11 @@ function makeConversation(systemPrompt = "system prompt"): Conversation {
     systemPrompt,
     (_msg: AssistantEvent) => {},
     "/tmp",
-    { maxTokens: 4096 },
+    {
+      maxTokens: 4096,
+      // The builder's own output is not an override; any other prompt is.
+      systemPromptIsOverride: systemPrompt !== "system prompt",
+    },
   );
 }
 
@@ -208,20 +212,20 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("Conversation.buildCurrentSystemPrompt delegation-state capture", () => {
-  test("captures the state the build rendered and hands the builder the same value", () => {
+  test("captures the state the build rendered and hands the builder the same value", async () => {
     const conversation = makeConversation();
     expect(conversation.renderedDelegateIndependentTasks).toBeUndefined();
 
-    conversation.buildCurrentSystemPrompt();
+    await conversation.buildCurrentSystemPrompt();
 
     // An unrestricted turn can spawn, so the section renders on.
     expect(conversation.renderedDelegateIndependentTasks).toBe(true);
     expect(lastBuildDelegation()).toBe(true);
   });
 
-  test("a change to the gate's inputs after the build does not touch the captured state until the next build", () => {
+  test("a change to the gate's inputs after the build does not touch the captured state until the next build", async () => {
     const conversation = makeConversation();
-    conversation.buildCurrentSystemPrompt();
+    await conversation.buildCurrentSystemPrompt();
     expect(conversation.renderedDelegateIndependentTasks).toBe(true);
 
     // The loop is still sending the prompt built above, so the recorder must
@@ -229,14 +233,14 @@ describe("Conversation.buildCurrentSystemPrompt delegation-state capture", () =>
     conversation.setSubagentAllowedTools(new Set(["remember"]));
     expect(conversation.renderedDelegateIndependentTasks).toBe(true);
 
-    conversation.buildCurrentSystemPrompt();
+    await conversation.buildCurrentSystemPrompt();
     expect(conversation.renderedDelegateIndependentTasks).toBe(false);
     expect(lastBuildDelegation()).toBe(false);
   });
 
-  test("a failed build leaves the previously captured state in place", () => {
+  test("a failed build leaves the previously captured state in place", async () => {
     const conversation = makeConversation();
-    conversation.buildCurrentSystemPrompt();
+    await conversation.buildCurrentSystemPrompt();
     expect(conversation.renderedDelegateIndependentTasks).toBe(true);
 
     // A wake's prompt sync swallows this and runs on the previous prompt,
@@ -244,31 +248,33 @@ describe("Conversation.buildCurrentSystemPrompt delegation-state capture", () =>
     // off.
     conversation.setSubagentAllowedTools(new Set(["remember"]));
     throwOnBuild = true;
-    expect(() => conversation.buildCurrentSystemPrompt()).toThrow(
+    await expect(conversation.buildCurrentSystemPrompt()).rejects.toThrow(
       "prompt build failed",
     );
 
     expect(conversation.renderedDelegateIndependentTasks).toBe(true);
   });
 
-  test("a verbatim system-prompt override captures unknown", () => {
+  test("a verbatim system-prompt override captures unknown", async () => {
     const conversation = makeConversation("override prompt");
     builtWith = [];
 
-    expect(conversation.buildCurrentSystemPrompt()).toBe("override prompt");
+    expect(await conversation.buildCurrentSystemPrompt()).toBe(
+      "override prompt",
+    );
 
     expect(conversation.renderedDelegateIndependentTasks).toBeNull();
     // The override is returned as is; nothing is built.
     expect(builtWith).toEqual([]);
   });
 
-  test("a replaying wake's recorded state wins over the derivation", () => {
+  test("a replaying wake's recorded state wins over the derivation", async () => {
     const conversation = makeConversation();
     // Replaying a channel-sourced conversation that recorded the section off,
     // on a wake whose own scope could spawn.
     conversation.delegateIndependentTasksReplay = false;
 
-    conversation.buildCurrentSystemPrompt();
+    await conversation.buildCurrentSystemPrompt();
 
     expect(conversation.renderedDelegateIndependentTasks).toBe(false);
     expect(lastBuildDelegation()).toBe(false);

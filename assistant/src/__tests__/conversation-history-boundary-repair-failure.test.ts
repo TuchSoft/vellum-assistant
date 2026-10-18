@@ -18,26 +18,37 @@ import {
   beginConversationModeSession,
   updateConversationModeSessionBoundaries,
 } from "../persistence/conversation-mode-sessions.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { describePg } from "./pg-test-db.js";
-
-await initializeDb();
 
 const FAIL_REPAIR_TRIGGER = "fail_mode_session_boundary_repair";
 
-function installFailingBoundaryRepairTrigger(): void {
-  getDb().run(/* sql */ `
+async function installFailingBoundaryRepairTrigger(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(/* sql */ `
+    CREATE OR REPLACE FUNCTION ${FAIL_REPAIR_TRIGGER}()
+    RETURNS trigger AS $$
+    BEGIN
+      RAISE EXCEPTION 'injected boundary repair failure';
+    END;
+    $$ LANGUAGE plpgsql
+  `);
+  await db.run(
+    `DROP TRIGGER IF EXISTS ${FAIL_REPAIR_TRIGGER} ON conversation_mode_sessions`,
+  );
+  await db.run(/* sql */ `
     CREATE TRIGGER ${FAIL_REPAIR_TRIGGER}
     BEFORE UPDATE ON conversation_mode_sessions
-    BEGIN
-      SELECT RAISE(ABORT, 'injected boundary repair failure');
-    END
+    FOR EACH ROW EXECUTE FUNCTION ${FAIL_REPAIR_TRIGGER}()
   `);
 }
 
-afterEach(() => {
-  getDb().run(`DROP TRIGGER IF EXISTS ${FAIL_REPAIR_TRIGGER}`);
+afterEach(async () => {
+  const db = requireMainDb();
+  await db.run(
+    `DROP TRIGGER IF EXISTS ${FAIL_REPAIR_TRIGGER} ON conversation_mode_sessions`,
+  );
+  await db.run(`DROP FUNCTION IF EXISTS ${FAIL_REPAIR_TRIGGER}()`);
 });
 
 describePg("message deletion mode-session boundary repair failures", () => {
@@ -49,7 +60,7 @@ describePg("message deletion mode-session boundary repair failures", () => {
     const owner = { id: sessionId, mode: "browser" as const };
     const sourceStartedAt = Date.now() - 10_000;
     expect(
-      beginConversationModeSession({
+      await beginConversationModeSession({
         id: sessionId,
         conversationId: conversation.id,
         mode: owner.mode,
@@ -81,7 +92,7 @@ describePg("message deletion mode-session boundary repair failures", () => {
       { metadata: { modeSession: owner } },
     );
     expect(
-      updateConversationModeSessionBoundaries({
+      await updateConversationModeSessionBoundaries({
         id: sessionId,
         conversationId: conversation.id,
         expectedRevision: 1,
@@ -93,9 +104,11 @@ describePg("message deletion mode-session boundary repair failures", () => {
         lastOwnedMessageId: donor.id,
       }),
     ).toMatchObject({ ok: true });
-    installFailingBoundaryRepairTrigger();
+    await installFailingBoundaryRepairTrigger();
 
-    expect(consolidateAssistantMessages(conversation.id, user.id)).toBe(true);
+    expect(await consolidateAssistantMessages(conversation.id, user.id)).toBe(
+      true,
+    );
     const rows = await getMessages(conversation.id);
     expect(rows.map((row) => row.id)).toEqual([user.id, retained.id]);
     const retainedContent = rows[1]!.content;
@@ -105,7 +118,9 @@ describePg("message deletion mode-session boundary repair failures", () => {
       { type: "tool_result", tool_use_id: "tool-1", content: "done" },
     ]);
 
-    expect(consolidateAssistantMessages(conversation.id, user.id)).toBe(false);
+    expect(await consolidateAssistantMessages(conversation.id, user.id)).toBe(
+      false,
+    );
     expect((await getMessages(conversation.id))[1]!.content).toEqual(
       retainedContent,
     );
@@ -126,7 +141,7 @@ describePg("message deletion mode-session boundary repair failures", () => {
     const sessionId = `session-${conversation.id}`;
     const owner = { id: sessionId, mode: "browser" as const };
     expect(
-      beginConversationModeSession({
+      await beginConversationModeSession({
         id: sessionId,
         conversationId: conversation.id,
         mode: owner.mode,
@@ -152,7 +167,7 @@ describePg("message deletion mode-session boundary repair failures", () => {
       { metadata: { modeSession: owner } },
     );
     expect(
-      updateConversationModeSessionBoundaries({
+      await updateConversationModeSessionBoundaries({
         id: sessionId,
         conversationId: conversation.id,
         expectedRevision: 1,
@@ -164,9 +179,9 @@ describePg("message deletion mode-session boundary repair failures", () => {
         lastOwnedMessageId: deletedAssistant.id,
       }),
     ).toMatchObject({ ok: true });
-    installFailingBoundaryRepairTrigger();
+    await installFailingBoundaryRepairTrigger();
 
-    expect(deleteLastExchange(conversation.id)).toBe(2);
+    expect(await deleteLastExchange(conversation.id)).toBe(2);
     expect((await getMessages(conversation.id)).map((row) => row.id)).toEqual([
       keptUser.id,
       keptAssistant.id,

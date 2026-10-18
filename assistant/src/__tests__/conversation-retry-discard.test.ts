@@ -4,7 +4,13 @@
  * message CRUD (deleteMessageById cascade, metadata merge) against the test
  * database rather than mocking persistence.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
 import {
   discardLastAssistantDisplayTurn,
@@ -12,9 +18,7 @@ import {
 } from "../daemon/conversation-history.js";
 import { registerPluginHooks } from "../hooks/registry.js";
 import { addMessage, getMessages } from "../persistence/conversation-crud.js";
-import { getMemorySqlite } from "../persistence/db-connection.js";
 import { requireMainDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
 import memoryMessageDeleted from "../plugins/defaults/memory/hooks/message-deleted.js";
 import {
   ensureRetrospectiveCursorColumn,
@@ -23,8 +27,6 @@ import {
 import type { PluginHooks } from "../plugins/types.js";
 import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
 // Register the memory plugin's `message-deleted` hook the way boot does, so
 // the delete primitive's dispatch reaches the cursor bookkeeping.
 registerPluginHooks("default-memory", {
@@ -32,6 +34,8 @@ registerPluginHooks("default-memory", {
 } as PluginHooks);
 
 const CONV_ID = "conv-retry-discard-test";
+
+setDefaultTimeout(60_000);
 
 async function seedConversation(): Promise<void> {
   const now = Date.now();
@@ -224,9 +228,9 @@ describe("extractUserPromptText", () => {
 describePg(
   "discardLastAssistantDisplayTurn keeps the memory-retrospective cursor placeable",
   () => {
-    beforeEach(() => {
-      ensureRetrospectiveCursorColumn("test");
-      getMemorySqlite()!.exec(`DELETE FROM memory_retrospective_state`);
+    beforeEach(async () => {
+      await ensureRetrospectiveCursorColumn("test");
+      await requireMainDb().run("DELETE FROM memory_retrospective_state");
     });
 
     test("a cursor stored without its timestamp gets it from the reply being discarded", async () => {
@@ -239,13 +243,12 @@ describePg(
       )!.createdAt;
       // A state row as a build without the timestamp column wrote it: the
       // retrospective reviewed through the reply, so the cursor sits on it.
-      getMemorySqlite()!
-        .query(
-          `INSERT INTO memory_retrospective_state
-           (conversation_id, last_processed_message_id, last_run_at, remembered_log, last_processed_created_at)
+      await requireMainDb().run(
+        `INSERT INTO memory_retrospective_state
+         (conversation_id, last_processed_message_id, last_run_at, remembered_log, last_processed_created_at)
          VALUES (?, ?, 1, NULL, NULL)`,
-        )
-        .run(CONV_ID, assistantId);
+        [CONV_ID, assistantId],
+      );
 
       await discardLastAssistantDisplayTurn(CONV_ID);
 
@@ -256,11 +259,12 @@ describePg(
       // stamp lands shortly after the discard returns.
       const deadline = Date.now() + 2_000;
       let stamped =
-        getRetrospectiveState(CONV_ID)?.lastProcessedCreatedAt ?? null;
+        (await getRetrospectiveState(CONV_ID))?.lastProcessedCreatedAt ?? null;
       while (stamped === null && Date.now() < deadline) {
         await Bun.sleep(10);
         stamped =
-          getRetrospectiveState(CONV_ID)?.lastProcessedCreatedAt ?? null;
+          (await getRetrospectiveState(CONV_ID))?.lastProcessedCreatedAt ??
+          null;
       }
       expect(stamped).toBe(replyCreatedAt);
     });

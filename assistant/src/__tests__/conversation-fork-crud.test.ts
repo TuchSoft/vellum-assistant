@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
-import { eq, like } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import {
   getAttachmentContent,
@@ -29,13 +29,7 @@ import {
   COMPUTER_USE_SCREENSHOT_ATTACHMENT_IDS_KEY,
   computerUseScreenshotAttachmentIdsFromMetadata,
 } from "../persistence/conversation-types.js";
-import {
-  getLogsDb,
-  getMemoryDb,
-  getMemorySqlite,
-} from "../persistence/db-connection.js";
 import { requireMainDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
 import { getRequestLogsByMessageId } from "../persistence/llm-request-log-store.js";
 import { stringifyMessageContent } from "../persistence/message-content.js";
 import {
@@ -47,13 +41,6 @@ import {
   toolInvocations,
 } from "../persistence/pg-schema/index.js";
 import { rawGetAsync, rawRunAsync } from "../persistence/raw-query.js";
-import {
-  activationState,
-  conversationGraphMemoryState,
-  llmRequestLogs,
-  memoryJobs,
-  memoryRetrospectiveState,
-} from "../persistence/schema/index.js";
 import {
   loadGraphMemoryState,
   saveGraphMemoryState,
@@ -76,30 +63,46 @@ import { ensureMemoryV3InjectedSectionsSchema } from "../plugins/defaults/memory
 import { handleListMessages } from "../runtime/routes/conversation-routes.js";
 import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
 async function resetTables(): Promise<void> {
   const db = requireMainDb();
   await db.orm.delete(channelInboundEvents);
   await db.orm.delete(externalConversationBindings);
   await db.orm.delete(conversationAssistantAttentionState);
-  getMemoryDb()!.delete(activationState).run();
+  await db.run("DELETE FROM activation_state");
   await db.orm.delete(conversationCompactionEvents);
-  // conversation_graph_memory_state, memory_retrospective_state, and
-  // memory_v3_injected_sections all live on the memory connection.
-  getMemoryDb()!.delete(conversationGraphMemoryState).run();
-  getMemoryDb()!.delete(memoryRetrospectiveState).run();
-  getLogsDb()!.delete(llmRequestLogs).run();
+  await db.run("DELETE FROM conversation_graph_memory_state");
+  await db.run("DELETE FROM memory_retrospective_state");
+  await db.run("DELETE FROM llm_request_logs");
   await db.orm.delete(toolInvocations);
-  getMemoryDb()!.delete(memoryJobs).run();
+  await db.run("DELETE FROM memory_jobs");
   // The plugin creates this table itself (init hook, or a store's first use);
   // the reset runs before either, so stand it up here.
-  await ensureMemoryV3InjectedSectionsSchema(getMemorySqlite()!);
-  getMemorySqlite()!.exec("DELETE FROM memory_v3_injected_sections");
+  await ensureMemoryV3InjectedSectionsSchema(db);
+  await db.run("DELETE FROM memory_v3_injected_sections");
   await db.run("DELETE FROM message_attachments");
   await db.run("DELETE FROM attachments");
   await db.run("DELETE FROM messages");
   await db.run("DELETE FROM conversations");
+}
+
+async function insertActivationState(row: {
+  conversationId: string;
+  messageId: string;
+  state: Record<string, number>;
+  everInjected: Array<{ slug: string; turn: number }>;
+  currentTurn: number;
+}): Promise<void> {
+  await requireMainDb().run(
+    "INSERT INTO activation_state (conversation_id, message_id, state_json, ever_injected_json, current_turn, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    [
+      row.conversationId,
+      row.messageId,
+      JSON.stringify(row.state),
+      JSON.stringify(row.everInjected),
+      row.currentTurn,
+      1_700_000_000_000,
+    ],
+  );
 }
 
 function parseMetadata(metadata: string | null): unknown {
@@ -557,7 +560,7 @@ describePg("forkConversation", () => {
     });
 
     const historyStrippedAt = preClean.createdAt + 1;
-    requireMainDb()
+    await requireMainDb()
       .orm.update(conversations)
       .set({ historyStrippedAt })
       .where(eq(conversations.id, source.id));
@@ -585,7 +588,7 @@ describePg("forkConversation", () => {
     });
 
     const historyStrippedAt = preClean.createdAt + 1;
-    requireMainDb()
+    await requireMainDb()
       .orm.update(conversations)
       .set({ historyStrippedAt })
       .where(eq(conversations.id, source.id));
@@ -612,7 +615,7 @@ describePg("forkConversation", () => {
     });
 
     const historyStrippedAt = last.createdAt - 1;
-    requireMainDb()
+    await requireMainDb()
       .orm.update(conversations)
       .set({ historyStrippedAt })
       .where(eq(conversations.id, source.id));
@@ -670,7 +673,7 @@ describePg("forkConversation", () => {
       `UPDATE messages SET created_at = ${base + 2} WHERE id = '${tail.id}'`,
     );
     const compactedAt = base + 3;
-    requireMainDb()
+    await requireMainDb()
       .orm.update(conversations)
       .set({
         contextSummary: "summary",
@@ -761,7 +764,7 @@ describePg("forkConversation", () => {
       ),
     ).toBe(true);
     expect(forkJsonl[1]?.attachments).toEqual(["wireframe.png"]);
-    expect(await getAttachmentsForMessage(sourceAssistant.id)[0]?.id).toBe(
+    expect((await getAttachmentsForMessage(sourceAssistant.id))[0]?.id).toBe(
       sourceAttachments[0]?.id,
     );
   });
@@ -879,7 +882,7 @@ describePg("forkConversation", () => {
       ),
     ).toEqual([clonedScreenshot!.id]);
 
-    deleteConversation(source.id);
+    await deleteConversation(source.id);
 
     const forkJsonl = readFileSync(
       join(getConversationDirPath(fork.id, fork.createdAt), "messages.jsonl"),
@@ -953,7 +956,7 @@ describePg("forkConversation", () => {
     await addMessage(source.id, "user", "Use the balanced profile", {
       skipIndexing: true,
     });
-    requireMainDb()
+    await requireMainDb()
       .orm.update(conversations)
       .set({ inferenceProfile: "balanced" })
       .where(eq(conversations.id, source.id));
@@ -992,17 +995,17 @@ describePg("forkConversation", () => {
 
     const db = requireMainDb();
     const now = Date.now();
-    getLogsDb()!
-      .insert(llmRequestLogs)
-      .values({
-        id: "llm-log-1",
-        conversationId: source.id,
-        messageId: sourceAssistant.id,
-        requestPayload: '{"prompt":"debug"}',
-        responsePayload: '{"result":"ok"}',
-        createdAt: now,
-      })
-      .run();
+    await db.run(
+      "INSERT INTO llm_request_logs (id, conversation_id, message_id, request_payload, response_payload, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [
+        "llm-log-1",
+        source.id,
+        sourceAssistant.id,
+        '{"prompt":"debug"}',
+        '{"result":"ok"}',
+        now,
+      ],
+    );
     await db.orm.insert(toolInvocations).values({
       id: "tool-invocation-1",
       conversationId: source.id,
@@ -1014,22 +1017,22 @@ describePg("forkConversation", () => {
       durationMs: 42,
       createdAt: now,
     });
-    getMemoryDb()!
-      .insert(memoryJobs)
-      .values({
-        id: "memory-job-1",
-        type: "delete_qdrant_vectors",
-        payload: JSON.stringify({ conversationId: source.id }),
-        status: "pending",
-        attempts: 0,
-        deferrals: 0,
-        runAfter: now,
-        lastError: null,
-        startedAt: null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+    await db.run(
+      "INSERT INTO memory_jobs (id, type, payload, status, attempts, deferrals, run_after, last_error, started_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        "memory-job-1",
+        "delete_qdrant_vectors",
+        JSON.stringify({ conversationId: source.id }),
+        "pending",
+        0,
+        0,
+        now,
+        null,
+        null,
+        now,
+        now,
+      ],
+    );
     await db.orm.insert(channelInboundEvents).values({
       id: "inbound-event-1",
       sourceChannel: "telegram",
@@ -1062,31 +1065,27 @@ describePg("forkConversation", () => {
         })
       : null;
     const forkRequestLogs = forkAssistant
-      ? getRequestLogsByMessageId(forkAssistant.id)
+      ? await getRequestLogsByMessageId(forkAssistant.id)
       : [];
     const forkState = (await getAttentionStateByConversationIds([fork.id])).get(
       fork.id,
     );
-    const forkRequestLogCount = getLogsDb()!
-      .select()
-      .from(llmRequestLogs)
-      .where(eq(llmRequestLogs.conversationId, fork.id))
-      .all().length;
-    const forkToolInvocationCount = db
-      .select()
-      .from(toolInvocations)
-      .where(eq(toolInvocations.conversationId, fork.id))
-      .all().length;
-    const forkInboundEventCount = db
-      .select()
-      .from(channelInboundEvents)
-      .where(eq(channelInboundEvents.conversationId, fork.id))
-      .all().length;
-    const forkQueuedWorkCount = getMemoryDb()!
-      .select()
-      .from(memoryJobs)
-      .where(like(memoryJobs.payload, `%${fork.id}%`))
-      .all().length;
+    const forkRequestLogCount = (await db.get<{ cnt: number }>(
+      "SELECT COUNT(*)::int AS cnt FROM llm_request_logs WHERE conversation_id = ?",
+      [fork.id],
+    ))!.cnt;
+    const forkToolInvocationCount = (await db.get<{ cnt: number }>(
+      "SELECT COUNT(*)::int AS cnt FROM tool_invocations WHERE conversation_id = ?",
+      [fork.id],
+    ))!.cnt;
+    const forkInboundEventCount = (await db.get<{ cnt: number }>(
+      "SELECT COUNT(*)::int AS cnt FROM channel_inbound_events WHERE conversation_id = ?",
+      [fork.id],
+    ))!.cnt;
+    const forkQueuedWorkCount = (await db.get<{ cnt: number }>(
+      "SELECT COUNT(*)::int AS cnt FROM memory_jobs WHERE payload LIKE ?",
+      [`%${fork.id}%`],
+    ))!.cnt;
 
     expect(sourceState).toBeDefined();
     expect(sourceState?.lastSeenAssistantMessageId).toBeNull();
@@ -1116,23 +1115,19 @@ describePg("forkConversation", () => {
       { skipIndexing: true },
     );
 
-    getMemoryDb()!
-      .insert(activationState)
-      .values({
-        conversationId: source.id,
-        messageId: sourceMessage.id,
-        stateJson: JSON.stringify({
-          "concepts/q3-launch-plan": 0.71,
-          "concepts/marketing-ops": 0.34,
-        }),
-        everInjectedJson: JSON.stringify([
-          { slug: "concepts/q3-launch-plan", turn: 1 },
-          { slug: "concepts/marketing-ops", turn: 1 },
-        ]),
-        currentTurn: 2,
-        updatedAt: 1_700_000_000_000,
-      })
-      .run();
+    await insertActivationState({
+      conversationId: source.id,
+      messageId: sourceMessage.id,
+      state: {
+        "concepts/q3-launch-plan": 0.71,
+        "concepts/marketing-ops": 0.34,
+      },
+      everInjected: [
+        { slug: "concepts/q3-launch-plan", turn: 1 },
+        { slug: "concepts/marketing-ops", turn: 1 },
+      ],
+      currentTurn: 2,
+    });
 
     const fork = await forkConversation({ conversationId: source.id });
 
@@ -1205,17 +1200,13 @@ describePg("forkConversation", () => {
       skipIndexing: true,
     });
 
-    getMemoryDb()!
-      .insert(activationState)
-      .values({
-        conversationId: source.id,
-        messageId: lastMessage.id,
-        stateJson: JSON.stringify({ "concepts/foo": 0.5 }),
-        everInjectedJson: JSON.stringify([{ slug: "concepts/foo", turn: 2 }]),
-        currentTurn: 2,
-        updatedAt: 1_700_000_000_000,
-      })
-      .run();
+    await insertActivationState({
+      conversationId: source.id,
+      messageId: lastMessage.id,
+      state: { "concepts/foo": 0.5 },
+      everInjected: [{ slug: "concepts/foo", turn: 2 }],
+      currentTurn: 2,
+    });
     await saveGraphMemoryState(
       source.id,
       JSON.stringify({
@@ -1265,22 +1256,18 @@ describePg("forkConversation", () => {
       skipIndexing: true,
     });
 
-    getMemoryDb()!
-      .insert(activationState)
-      .values({
-        conversationId: source.id,
-        messageId: "parent-msg",
-        stateJson: JSON.stringify({ "topics/page-d": 0.9 }),
-        everInjectedJson: JSON.stringify([
-          { slug: "topics/page-a", turn: 1 },
-          { slug: "topics/page-b", turn: 1 },
-          { slug: "topics/page-c", turn: 2 },
-          { slug: "topics/page-d", turn: 3 },
-        ]),
-        currentTurn: 3,
-        updatedAt: 1_700_000_000_000,
-      })
-      .run();
+    await insertActivationState({
+      conversationId: source.id,
+      messageId: "parent-msg",
+      state: { "topics/page-d": 0.9 },
+      everInjected: [
+        { slug: "topics/page-a", turn: 1 },
+        { slug: "topics/page-b", turn: 1 },
+        { slug: "topics/page-c", turn: 2 },
+        { slug: "topics/page-d", turn: 3 },
+      ],
+      currentTurn: 3,
+    });
 
     const fork = await forkConversation({
       conversationId: source.id,
@@ -1385,7 +1372,7 @@ describePg("forkConversation", () => {
     const source = await createConversation("V3 carry thread");
     await addMessage(source.id, "user", "first turn", { skipIndexing: true });
 
-    recordV3Injected(
+    await recordV3Injected(
       source.id,
       [
         { slug: "topics/page-a", key: "", bytes: 120 },
@@ -1394,7 +1381,7 @@ describePg("forkConversation", () => {
       ],
       1_700_000_000_000,
     );
-    markV3Pruned(
+    await markV3Pruned(
       source.id,
       [{ slug: "topics/page-b", key: "" }],
       1_700_000_001_000,
@@ -1403,7 +1390,7 @@ describePg("forkConversation", () => {
     const fork = await forkConversation({ conversationId: source.id });
 
     // Full-row copy, pruned state included.
-    expect(getV3Injected(fork.id)).toEqual([
+    expect(await getV3Injected(fork.id)).toEqual([
       {
         slug: "topics/page-a",
         key: "",
@@ -1430,7 +1417,7 @@ describePg("forkConversation", () => {
       },
     ]);
     // Parent record is untouched.
-    expect(getV3Injected(source.id)).toHaveLength(3);
+    expect(await getV3Injected(source.id)).toHaveLength(3);
   });
 
   test("leaves the fork's memory-v3 record empty when the parent has none", async () => {
@@ -1441,7 +1428,7 @@ describePg("forkConversation", () => {
 
     const fork = await forkConversation({ conversationId: source.id });
 
-    expect(getV3Injected(fork.id)).toEqual([]);
+    expect(await getV3Injected(fork.id)).toEqual([]);
   });
 
   test("truncated fork seeds the memory-v3 record from inherited v3 section blocks", async () => {
@@ -1482,7 +1469,7 @@ describePg("forkConversation", () => {
       skipIndexing: true,
     });
 
-    recordV3Injected(
+    await recordV3Injected(
       source.id,
       [
         { slug: "topics/page-a", key: "", bytes: 120 },
@@ -1503,7 +1490,7 @@ describePg("forkConversation", () => {
     // accounting starts at what it inherited), plus the inherited skill chunk
     // as a zero-byte capability row.
     expect(
-      getV3Injected(fork.id).map(({ slug, key, bytes, prunedAt }) => ({
+      (await getV3Injected(fork.id)).map(({ slug, key, bytes, prunedAt }) => ({
         slug,
         key,
         bytes,
@@ -1562,7 +1549,7 @@ describePg("forkConversation", () => {
     // the final message takes the wholesale-copy path instead).
     await addMessage(source.id, "user", "second turn", { skipIndexing: true });
 
-    recordV3Injected(
+    await recordV3Injected(
       source.id,
       [
         { slug: "topics/page-a", key: "", bytes: 120 },
@@ -1570,7 +1557,7 @@ describePg("forkConversation", () => {
       ],
       1_700_000_000_000,
     );
-    markV3Pruned(
+    await markV3Pruned(
       source.id,
       [{ slug: "topics/page-b", key: "Notes" }],
       1_700_000_005_000,
@@ -1582,7 +1569,7 @@ describePg("forkConversation", () => {
     });
 
     expect(
-      getV3Injected(fork.id).map(({ slug, key, bytes, prunedAt }) => ({
+      (await getV3Injected(fork.id)).map(({ slug, key, bytes, prunedAt }) => ({
         slug,
         key,
         bytes,
@@ -1667,17 +1654,13 @@ describePg("forkConversation", () => {
       skipIndexing: true,
     });
 
-    getMemoryDb()!
-      .insert(activationState)
-      .values({
-        conversationId: source.id,
-        messageId: lastMessage.id,
-        stateJson: JSON.stringify({ "concepts/foo": 0.9 }),
-        everInjectedJson: JSON.stringify([{ slug: "concepts/foo", turn: 1 }]),
-        currentTurn: 1,
-        updatedAt: 1_700_000_000_000,
-      })
-      .run();
+    await insertActivationState({
+      conversationId: source.id,
+      messageId: lastMessage.id,
+      state: { "concepts/foo": 0.9 },
+      everInjected: [{ slug: "concepts/foo", turn: 1 }],
+      currentTurn: 1,
+    });
 
     const fork = await forkConversation({
       conversationId: source.id,
@@ -1766,7 +1749,7 @@ describePg("forkConversation + memory_retrospective_state", () => {
 
     const fork = await forkConversation({ conversationId: source.id });
 
-    expect(getRetrospectiveState(fork.id)).toBeNull();
+    expect(await getRetrospectiveState(fork.id)).toBeNull();
   });
 
   test("maps the source pointer when it falls within the copied range", async () => {
@@ -1784,14 +1767,14 @@ describePg("forkConversation + memory_retrospective_state", () => {
       skipIndexing: true,
     });
 
-    upsertRetrospectiveState({
+    await upsertRetrospectiveState({
       conversationId: source.id,
       lastProcessedMessageId: processedMessage.id,
       lastRunAt: 1_700_000_000_000,
     });
 
     const fork = await forkConversation({ conversationId: source.id });
-    const forkState = getRetrospectiveState(fork.id);
+    const forkState = await getRetrospectiveState(fork.id);
     const forkMessages = await getMessages(fork.id);
     const mappedProcessedId = forkMessages.find((m) => {
       const md = parseMetadata(m.metadata) as {
@@ -1824,7 +1807,7 @@ describePg("forkConversation + memory_retrospective_state", () => {
       skipIndexing: true,
     });
 
-    upsertRetrospectiveState({
+    await upsertRetrospectiveState({
       conversationId: source.id,
       lastProcessedMessageId: pastBoundaryMessage.id,
       lastRunAt: 1_700_000_000_000,
@@ -1834,7 +1817,7 @@ describePg("forkConversation + memory_retrospective_state", () => {
       conversationId: source.id,
       throughMessageId: branchPoint.id,
     });
-    const forkState = getRetrospectiveState(fork.id);
+    const forkState = await getRetrospectiveState(fork.id);
     const forkMessages = await getMessages(fork.id);
     const lastForkedMessageId = forkMessages.at(-1)?.id;
 
@@ -1848,10 +1831,10 @@ describePg("forkConversation + memory_retrospective_state", () => {
     await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
-    bumpRetrospectiveLastRunAt(source.id, 1_700_000_000_000);
+    await bumpRetrospectiveLastRunAt(source.id, 1_700_000_000_000);
 
     const fork = await forkConversation({ conversationId: source.id });
-    const forkState = getRetrospectiveState(fork.id);
+    const forkState = await getRetrospectiveState(fork.id);
 
     expect(forkState?.lastProcessedMessageId).toBe("");
     expect(forkState?.lastRunAt).toBe(1_700_000_000_000);
@@ -1862,7 +1845,7 @@ describePg("forkConversation + memory_retrospective_state", () => {
     const message = await addMessage(source.id, "user", "Message 1", {
       skipIndexing: true,
     });
-    upsertRetrospectiveState({
+    await upsertRetrospectiveState({
       conversationId: source.id,
       lastProcessedMessageId: message.id,
       lastRunAt: 1_700_000_000_000,
@@ -1870,7 +1853,9 @@ describePg("forkConversation + memory_retrospective_state", () => {
 
     const fork = await forkConversation({ conversationId: source.id });
 
-    expect(getRetrospectiveState(fork.id)?.lastRunAt).toBe(1_700_000_000_000);
+    expect((await getRetrospectiveState(fork.id))?.lastRunAt).toBe(
+      1_700_000_000_000,
+    );
   });
 
   test("inherits the earlier of two compactions when forking between them", async () => {
@@ -2156,4 +2141,4 @@ describePg("forkConversation with unfinalized rows", () => {
   });
 });
 
-setDefaultTimeout(30_000);
+setDefaultTimeout(60_000);

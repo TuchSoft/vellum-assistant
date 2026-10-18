@@ -91,9 +91,9 @@ function createFlow(overrides?: Partial<CallSetupFlowDeps>) {
       outcome: "failure" as const,
       ttsMessage: "unused",
     }),
-    resolveGuardianLabel: () => "Bob",
-    resolveAssistantLabel: () => null,
-    getCallSession: () => ({ conversationId: "conv-1" }),
+    resolveGuardianLabel: async () => "Bob",
+    resolveAssistantLabel: async () => null,
+    getCallSession: async () => ({ conversationId: "conv-1" }),
     finalizeCall: () => {},
     fireCallTranscriptNotifier: () => {},
     resolveMidCallTrustContext: async () => ({

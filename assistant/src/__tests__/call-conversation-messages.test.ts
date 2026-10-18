@@ -96,7 +96,7 @@ describePg("call-conversation-messages", () => {
   test("buildCallCompletionMessage labels failed calls correctly", async () => {
     const conversationId = "conv-call-msg-failed";
     await ensureConversation(conversationId);
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId,
       provider: "twilio",
@@ -104,12 +104,15 @@ describePg("call-conversation-messages", () => {
       toNumber: "+15550002222",
     });
 
-    updateCallSession(session.id, { status: "in_progress", startedAt: 1_000 });
-    updateCallSession(session.id, { status: "failed", endedAt: 6_000 });
-    recordCallEvent(session.id, "call_connected");
-    recordCallEvent(session.id, "call_failed");
+    await updateCallSession(session.id, {
+      status: "in_progress",
+      startedAt: 1_000,
+    });
+    await updateCallSession(session.id, { status: "failed", endedAt: 6_000 });
+    await recordCallEvent(session.id, "call_connected");
+    await recordCallEvent(session.id, "call_failed");
 
-    expect(buildCallCompletionMessage(session.id)).toBe(
+    expect(await buildCallCompletionMessage(session.id)).toBe(
       "**Call failed** (5s). 2 event(s) recorded.",
     );
   });
@@ -117,7 +120,7 @@ describePg("call-conversation-messages", () => {
   test("buildCallCompletionMessage labels cancelled calls correctly", async () => {
     const conversationId = "conv-call-msg-cancelled";
     await ensureConversation(conversationId);
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId,
       provider: "twilio",
@@ -125,12 +128,18 @@ describePg("call-conversation-messages", () => {
       toNumber: "+15550002222",
     });
 
-    updateCallSession(session.id, { status: "in_progress", startedAt: 1_000 });
-    updateCallSession(session.id, { status: "cancelled", endedAt: 4_000 });
-    recordCallEvent(session.id, "call_connected");
-    recordCallEvent(session.id, "call_ended");
+    await updateCallSession(session.id, {
+      status: "in_progress",
+      startedAt: 1_000,
+    });
+    await updateCallSession(session.id, {
+      status: "cancelled",
+      endedAt: 4_000,
+    });
+    await recordCallEvent(session.id, "call_connected");
+    await recordCallEvent(session.id, "call_ended");
 
-    expect(buildCallCompletionMessage(session.id)).toBe(
+    expect(await buildCallCompletionMessage(session.id)).toBe(
       "**Call cancelled** (3s). 2 event(s) recorded.",
     );
   });
@@ -138,7 +147,7 @@ describePg("call-conversation-messages", () => {
   test("persistCallCompletionMessage keeps completed label when status is completed", async () => {
     const conversationId = "conv-call-msg-completed";
     await ensureConversation(conversationId);
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId,
       provider: "twilio",
@@ -146,8 +155,8 @@ describePg("call-conversation-messages", () => {
       toNumber: "+15550002222",
     });
 
-    updateCallSession(session.id, { status: "completed" });
-    recordCallEvent(session.id, "call_ended");
+    await updateCallSession(session.id, { status: "completed" });
+    await recordCallEvent(session.id, "call_ended");
 
     const summary = await persistCallCompletionMessage(
       conversationId,
@@ -168,7 +177,7 @@ describePg("call-conversation-messages", () => {
     // surface-capable clients from rendering the card AND a duplicate line.
     const conversationId = "conv-call-msg-fallback";
     await ensureConversation(conversationId);
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId,
       provider: "twilio",
@@ -176,9 +185,15 @@ describePg("call-conversation-messages", () => {
       toNumber: "+12025550102",
     });
 
-    updateCallSession(session.id, { status: "in_progress", startedAt: 1_000 });
-    updateCallSession(session.id, { status: "completed", endedAt: 43_000 });
-    recordCallEvent(session.id, "call_ended");
+    await updateCallSession(session.id, {
+      status: "in_progress",
+      startedAt: 1_000,
+    });
+    await updateCallSession(session.id, {
+      status: "completed",
+      endedAt: 43_000,
+    });
+    await recordCallEvent(session.id, "call_ended");
 
     const summary = await persistCallCompletionMessage(
       conversationId,
@@ -206,15 +221,15 @@ describePg("call-conversation-messages", () => {
     // the read-path noise that spiked with voice GA (LUM-2869).
     const conversationId = "conv-call-msg-schema";
     await ensureConversation(conversationId);
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId,
       provider: "twilio",
       fromNumber: "+12025550101",
       toNumber: "+12025550102",
     });
-    updateCallSession(session.id, { status: "completed" });
-    recordCallEvent(session.id, "call_ended");
+    await updateCallSession(session.id, { status: "completed" });
+    await recordCallEvent(session.id, "call_ended");
     await persistCallCompletionMessage(conversationId, session.id);
 
     const blocks = await getLatestAssistantBlocks(conversationId);

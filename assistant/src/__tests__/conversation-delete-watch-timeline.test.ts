@@ -31,12 +31,14 @@ mock.module("../persistence/job-handlers/message-lexical.js", () => ({
  * own existence check has nothing to catch and only the wipe's ordering keeps
  * the row from outliving the wipe.
  */
-let appendDuringWipe: { onStatement: string; run: () => void } | null = null;
+let appendDuringWipe: {
+  onStatement: string;
+  run: () => void | Promise<void>;
+} | null = null;
 
-// Every bulk delete in `clearAll` goes through `runAsyncSqlite`, which spawns
-// a sqlite3 subprocess and yields the event loop. The wrapper runs the real
-// statement and stands in for whatever else the daemon would have done while
-// it was in flight.
+// Bulk deletes that still take the sqlite3 subprocess path yield the event
+// loop. The wrapper runs the real statement and stands in for whatever else
+// the daemon would have done while it was in flight.
 const actualAsyncQuery = await import("../persistence/db-async-query.js");
 const realRunAsyncSqlite = actualAsyncQuery.runAsyncSqlite;
 mock.module("../persistence/db-async-query.js", () => ({
@@ -50,9 +52,37 @@ mock.module("../persistence/db-async-query.js", () => ({
     if (appendDuringWipe && appendDuringWipe.onStatement === sql) {
       const pending = appendDuringWipe;
       appendDuringWipe = null;
-      pending.run();
+      await pending.run();
     }
     return result;
+  },
+}));
+
+// `clearAll` issues its deletes through the async main facade. Wrapping `run`
+// lets the test run an append after a chosen statement, while the wipe is
+// still in progress.
+const actualFacade = await import("../persistence/db-facade.js");
+const realRequireMainDb = actualFacade.requireMainDb;
+mock.module("../persistence/db-facade.js", () => ({
+  ...actualFacade,
+  requireMainDb: () => {
+    const db = realRequireMainDb();
+    return new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop !== "run") {
+          return Reflect.get(target, prop, receiver);
+        }
+        return async (sql: string, params?: readonly unknown[]) => {
+          const result = await target.run(sql, params as never);
+          if (appendDuringWipe && appendDuringWipe.onStatement === sql) {
+            const pending = appendDuringWipe;
+            appendDuringWipe = null;
+            await pending.run();
+          }
+          return result;
+        };
+      },
+    });
   },
 }));
 
@@ -63,7 +93,6 @@ import {
   deleteConversationGently,
 } from "../persistence/conversation-crud.js";
 import { requireMainDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
 import { attachments } from "../persistence/pg-schema/index.js";
 import type { WatchAppendResult } from "../watch/watch-timeline.js";
 import {
@@ -73,8 +102,6 @@ import {
   renderWatchTimeline,
 } from "../watch/watch-timeline.js";
 import { describePg } from "./pg-test-db.js";
-
-await initializeDb();
 
 /** A 1x1 JPEG, the shape the host hands over on every observe. */
 const SCREENSHOT_BASE64 =
@@ -93,30 +120,30 @@ async function seedWatchedConversation(
   const conversation = await createConversation(title);
   const sessionId = `watch-${conversation.id}`;
 
-  appendObservation(sessionId, {
+  await appendObservation(sessionId, {
     conversationId: conversation.id,
     atMs: 1_000,
     observation: { axTree: "window Mail", screenshot: SCREENSHOT_BASE64 },
     attachScreenshot: true,
   });
-  appendNarration(sessionId, {
+  await appendNarration(sessionId, {
     conversationId: conversation.id,
     atMs: 2_000,
     text: "this is how I file it",
   });
 
-  const rendered = renderWatchTimeline(sessionId);
+  const rendered = await renderWatchTimeline(sessionId);
   expect(rendered.totalEntries).toBe(2);
   const entryId = rendered.screenshotEntryIds[0];
   expect(entryId).toBeDefined();
-  expect(readWatchScreenshot(entryId as string)).not.toBeNull();
+  expect(await readWatchScreenshot(entryId as string)).not.toBeNull();
 
   return { conversationId: conversation.id, sessionId, entryId: entryId ?? "" };
 }
 
 async function expectPurged(watched: WatchedConversation): Promise<void> {
-  expect(renderWatchTimeline(watched.sessionId).totalEntries).toBe(0);
-  expect(readWatchScreenshot(watched.entryId)).toBeNull();
+  expect((await renderWatchTimeline(watched.sessionId)).totalEntries).toBe(0);
+  expect(await readWatchScreenshot(watched.entryId)).toBeNull();
 }
 
 /** Every attachment row in the store. */
@@ -139,8 +166,8 @@ describePg("deleteConversation purges the watch timeline", () => {
 
     await expectPurged(watched);
     // Scoped to the conversation being deleted, not the whole store.
-    expect(renderWatchTimeline(other.sessionId).totalEntries).toBe(2);
-    expect(readWatchScreenshot(other.entryId)).not.toBeNull();
+    expect((await renderWatchTimeline(other.sessionId)).totalEntries).toBe(2);
+    expect(await readWatchScreenshot(other.entryId)).not.toBeNull();
   });
 });
 
@@ -159,7 +186,7 @@ describePg("an append that lands after the delete", () => {
     const watched = await seedWatchedConversation("watched-late-append");
 
     await deleteConversation(watched.conversationId);
-    const result = appendObservation(watched.sessionId, {
+    const result = await appendObservation(watched.sessionId, {
       conversationId: watched.conversationId,
       atMs: 3_000,
       observation: { axTree: "window Mail", screenshot: SCREENSHOT_BASE64 },
@@ -167,7 +194,7 @@ describePg("an append that lands after the delete", () => {
     });
 
     expect(result).toEqual({ ok: false, reason: "conversation_missing" });
-    expect(renderWatchTimeline(watched.sessionId).totalEntries).toBe(0);
+    expect((await renderWatchTimeline(watched.sessionId)).totalEntries).toBe(0);
   });
 });
 
@@ -194,8 +221,8 @@ describePg("an append that lands inside a clear-all", () => {
     let landed: WatchAppendResult | null = null;
     appendDuringWipe = {
       onStatement: "DELETE FROM messages",
-      run: () => {
-        landed = appendObservation(watched.sessionId, {
+      run: async () => {
+        landed = await appendObservation(watched.sessionId, {
           conversationId: watched.conversationId,
           atMs: 3_000,
           observation: {
@@ -212,9 +239,9 @@ describePg("an append that lands inside a clear-all", () => {
     // The row really did land, so the wipe had something to sweep.
     const result = landed as WatchAppendResult | null;
     expect(result?.ok).toBe(true);
-    expect(renderWatchTimeline(watched.sessionId).totalEntries).toBe(0);
+    expect((await renderWatchTimeline(watched.sessionId)).totalEntries).toBe(0);
     expect(
-      readWatchScreenshot(result?.ok === true ? result.entryId : ""),
+      await readWatchScreenshot(result?.ok === true ? result.entryId : ""),
     ).toBeNull();
   });
 });
@@ -224,14 +251,14 @@ describePg("an append that arrives once the clear-all is done", () => {
     const watched = await seedWatchedConversation("watched-clear-all-after");
 
     await clearAll();
-    const result = appendNarration(watched.sessionId, {
+    const result = await appendNarration(watched.sessionId, {
       conversationId: watched.conversationId,
       atMs: 3_000,
       text: "too late",
     });
 
     expect(result).toEqual({ ok: false, reason: "conversation_missing" });
-    expect(renderWatchTimeline(watched.sessionId).totalEntries).toBe(0);
+    expect((await renderWatchTimeline(watched.sessionId)).totalEntries).toBe(0);
   });
 });
 

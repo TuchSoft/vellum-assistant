@@ -1,13 +1,13 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { getDocumentById } from "../documents/document-store.js";
-import { getSqlite } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   executeDocumentCreate,
   executeDocumentUpdate,
 } from "../tools/document/document-tool.js";
 import type { ToolContext, ToolExecutionResult } from "../tools/types.js";
-import { resetDbForTesting } from "./db-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 const CONVERSATION_ID = "conv-current";
 
@@ -30,64 +30,25 @@ function parseResult<T>(result: ToolExecutionResult): T {
   return JSON.parse(result.content) as T;
 }
 
-function bootstrapDocumentTables(): void {
-  resetDbForTesting();
-  const raw = getSqlite();
-  raw.exec(/*sql*/ `
-    DROP TABLE IF EXISTS document_conversations;
-    DROP TABLE IF EXISTS document_revisions;
-    DROP TABLE IF EXISTS documents;
-    DROP TABLE IF EXISTS conversations;
-
-    CREATE TABLE conversations (
-      id TEXT PRIMARY KEY,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
-    );
-
-    CREATE TABLE documents (
-      surface_id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      word_count INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      revision INTEGER NOT NULL DEFAULT 0,
-      workspace_path TEXT
-    );
-
-    CREATE TABLE document_revisions (
-      surface_id TEXT NOT NULL REFERENCES documents(surface_id) ON DELETE CASCADE,
-      revision INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      word_count INTEGER NOT NULL DEFAULT 0,
-      author TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (surface_id, revision)
-    );
-
-    CREATE TABLE document_conversations (
-      surface_id TEXT NOT NULL,
-      conversation_id TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (surface_id, conversation_id),
-      FOREIGN KEY (surface_id) REFERENCES documents(surface_id) ON DELETE CASCADE
-    );
-  `);
-  raw
-    .query(`INSERT OR IGNORE INTO conversations (id, created_at) VALUES (?, ?)`)
-    .run(CONVERSATION_ID, Date.now());
+async function bootstrapDocumentTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM document_conversations");
+  await db.run("DELETE FROM document_revisions");
+  await db.run("DELETE FROM documents");
+  await db.run("DELETE FROM conversations");
+  const now = Date.now();
+  await db.run(
+    "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    [CONVERSATION_ID, `Conversation ${CONVERSATION_ID}`, now, now],
+  );
 }
 
-function seedDocument(surfaceId: string, content: string): void {
+async function seedDocument(surfaceId: string, content: string): Promise<void> {
   const now = Date.now();
-  const raw = getSqlite();
-  raw
-    .query(
-      `INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+  const db = requireMainDb();
+  await db.run(
+    "INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [
       surfaceId,
       CONVERSATION_ID,
       "Draft",
@@ -95,27 +56,27 @@ function seedDocument(surfaceId: string, content: string): void {
       content.split(/\s+/).filter(Boolean).length,
       now,
       now,
-    );
-  raw
-    .query(
-      `INSERT OR IGNORE INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?)`,
-    )
-    .run(surfaceId, CONVERSATION_ID, now);
+    ],
+  );
+  await db.run(
+    "INSERT INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?)",
+    [surfaceId, CONVERSATION_ID, now],
+  );
 }
 
-describe("document append idempotency", () => {
-  beforeEach(() => {
-    bootstrapDocumentTables();
+describePg("document append idempotency", () => {
+  beforeEach(async () => {
+    await bootstrapDocumentTables();
   });
 
-  test("an opening passed to both document_create and the first append lands once", () => {
-    const created = executeDocumentCreate(
+  test("an opening passed to both document_create and the first append lands once", async () => {
+    const created = await executeDocumentCreate(
       { title: "Draft", initial_content: `# Draft\n\n${OPENING}` },
       makeContext(),
     );
     const surfaceId = parseResult<{ surface_id: string }>(created).surface_id;
 
-    const result = executeDocumentUpdate(
+    const result = await executeDocumentUpdate(
       {
         surface_id: surfaceId,
         content: `# Draft\n\n${OPENING}\n\nThe second paragraph carries the argument forward.`,
@@ -125,15 +86,15 @@ describe("document append idempotency", () => {
     );
 
     expect(result.isError).toBe(false);
-    expect(getDocumentById(surfaceId)?.content).toBe(
+    expect((await getDocumentById(surfaceId))?.content).toBe(
       `# Draft\n\n${OPENING}\n\nThe second paragraph carries the argument forward.`,
     );
   });
 
-  test("an append that only restates the tail writes nothing", () => {
-    seedDocument("doc-restate", `# Draft\n\n${OPENING}`);
+  test("an append that only restates the tail writes nothing", async () => {
+    await seedDocument("doc-restate", `# Draft\n\n${OPENING}`);
 
-    const result = executeDocumentUpdate(
+    const result = await executeDocumentUpdate(
       { surface_id: "doc-restate", content: OPENING, mode: "append" },
       makeContext(),
     );
@@ -144,16 +105,16 @@ describe("document append idempotency", () => {
     expect(body.message).toBe(
       "Nothing appended: the content is already at the end of the document",
     );
-    expect(getDocumentById("doc-restate")?.content).toBe(
+    expect((await getDocumentById("doc-restate"))?.content).toBe(
       `# Draft\n\n${OPENING}`,
     );
   });
 
-  test("the client is told what landed, not what was submitted", () => {
-    seedDocument("doc-client", OPENING);
+  test("the client is told what landed, not what was submitted", async () => {
+    await seedDocument("doc-client", OPENING);
     const sent: { markdown: unknown; mode: unknown }[] = [];
 
-    executeDocumentUpdate(
+    await executeDocumentUpdate(
       {
         surface_id: "doc-client",
         content: `${OPENING}\n\nAnd then the rest.`,
@@ -173,23 +134,23 @@ describe("document append idempotency", () => {
 
   // ── Legitimate repetition the guard must not eat ──────────────────
 
-  test("keeps a short repeated line, even back to back", () => {
-    seedDocument("doc-refrain", "## Checklist\n\nTODO");
+  test("keeps a short repeated line, even back to back", async () => {
+    await seedDocument("doc-refrain", "## Checklist\n\nTODO");
 
-    executeDocumentUpdate(
+    await executeDocumentUpdate(
       { surface_id: "doc-refrain", content: "TODO\n\nTODO", mode: "append" },
       makeContext(),
     );
 
-    expect(getDocumentById("doc-refrain")?.content).toBe(
+    expect((await getDocumentById("doc-refrain"))?.content).toBe(
       "## Checklist\n\nTODO\n\nTODO\n\nTODO",
     );
   });
 
-  test("keeps a repeated heading followed by new prose", () => {
-    seedDocument("doc-heading", "# Weekly Notes\n\n## Monday");
+  test("keeps a repeated heading followed by new prose", async () => {
+    await seedDocument("doc-heading", "# Weekly Notes\n\n## Monday");
 
-    executeDocumentUpdate(
+    await executeDocumentUpdate(
       {
         surface_id: "doc-heading",
         content: "## Monday\n\nShipped the importer.",
@@ -198,28 +159,31 @@ describe("document append idempotency", () => {
       makeContext(),
     );
 
-    expect(getDocumentById("doc-heading")?.content).toBe(
+    expect((await getDocumentById("doc-heading"))?.content).toBe(
       "# Weekly Notes\n\n## Monday\n\n## Monday\n\nShipped the importer.",
     );
   });
 
-  test("keeps a long paragraph that repeats something other than the tail", () => {
-    seedDocument("doc-midway", `${OPENING}\n\nA later paragraph ends the doc.`);
+  test("keeps a long paragraph that repeats something other than the tail", async () => {
+    await seedDocument(
+      "doc-midway",
+      `${OPENING}\n\nA later paragraph ends the doc.`,
+    );
 
-    executeDocumentUpdate(
+    await executeDocumentUpdate(
       { surface_id: "doc-midway", content: OPENING, mode: "append" },
       makeContext(),
     );
 
-    expect(getDocumentById("doc-midway")?.content).toBe(
+    expect((await getDocumentById("doc-midway"))?.content).toBe(
       `${OPENING}\n\nA later paragraph ends the doc.\n\n${OPENING}`,
     );
   });
 
-  test("keeps content whose repetition starts partway into the append", () => {
-    seedDocument("doc-partway", `# Draft\n\n${OPENING}`);
+  test("keeps content whose repetition starts partway into the append", async () => {
+    await seedDocument("doc-partway", `# Draft\n\n${OPENING}`);
 
-    executeDocumentUpdate(
+    await executeDocumentUpdate(
       {
         surface_id: "doc-partway",
         content: `A fresh lead-in.\n\n${OPENING}`,
@@ -228,19 +192,19 @@ describe("document append idempotency", () => {
       makeContext(),
     );
 
-    expect(getDocumentById("doc-partway")?.content).toBe(
+    expect((await getDocumentById("doc-partway"))?.content).toBe(
       `# Draft\n\n${OPENING}\n\nA fresh lead-in.\n\n${OPENING}`,
     );
   });
 
-  test("replace mode is never deduplicated", () => {
-    seedDocument("doc-replace", OPENING);
+  test("replace mode is never deduplicated", async () => {
+    await seedDocument("doc-replace", OPENING);
 
-    executeDocumentUpdate(
+    await executeDocumentUpdate(
       { surface_id: "doc-replace", content: OPENING, mode: "replace" },
       makeContext(),
     );
 
-    expect(getDocumentById("doc-replace")?.content).toBe(OPENING);
+    expect((await getDocumentById("doc-replace"))?.content).toBe(OPENING);
   });
 });

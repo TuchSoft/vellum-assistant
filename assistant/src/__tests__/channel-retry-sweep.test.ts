@@ -304,7 +304,7 @@ describe("channel-retry-sweep", () => {
     ];
 
     for (const c of cases) {
-      resetTables();
+      await resetTables();
       const eventId = await seedFailedEventWithTrustClass(c.trustClass);
       let capturedOptions:
         | {
@@ -752,7 +752,7 @@ describe("channel-retry-sweep", () => {
         createdAt: Date.now() + 1,
       });
     // …and a sibling inbound event linked to that user row already owns delivery.
-    const sibling = deliveryCrud.recordInbound(
+    const sibling = await deliveryCrud.recordInbound(
       "slack",
       "C-OWNED",
       "sibling-msg",
@@ -846,7 +846,7 @@ describe("channel-retry-sweep", () => {
     > = ["guardian", "non-guardian", "unverified_channel"];
 
     for (const actorRole of actorRoles) {
-      resetTables();
+      await resetTables();
       const eventId = await seedFailedEventWithActorRoleOnly(actorRole);
       let processMessageCalled = false;
 
@@ -881,7 +881,7 @@ describe("channel-retry-sweep", () => {
   });
 
   test("marks payloads with invalid trustClass values as failed", async () => {
-    resetTables();
+    await resetTables();
     const eventId = await seedFailedEventWithTrustClass("invalid_value");
     let processMessageCalled = false;
 
@@ -914,7 +914,7 @@ describe("channel-retry-sweep", () => {
   });
 
   test("synthesizes unknown trust context when trustCtx is missing", async () => {
-    const inbound = deliveryCrud.recordInbound(
+    const inbound = await deliveryCrud.recordInbound(
       "telegram",
       "chat-no-ctx",
       "msg-no-ctx",
@@ -966,7 +966,7 @@ describe("channel-retry-sweep", () => {
   });
 
   test("delivery failure after successful replay does not requeue processing", async () => {
-    const inbound = deliveryCrud.recordInbound(
+    const inbound = await deliveryCrud.recordInbound(
       "telegram",
       "chat-delivery-fails",
       "msg-delivery-fails",
@@ -1033,7 +1033,7 @@ describe("channel-retry-sweep", () => {
   });
 
   test("Slack DM processing retry reconciles into the streamed message without opening a second stream", async () => {
-    const inbound = deliveryCrud.recordInbound(
+    const inbound = await deliveryCrud.recordInbound(
       "slack",
       "D-LIVE-RETRY",
       "slack-msg-live-retry",
@@ -1116,7 +1116,7 @@ describe("channel-retry-sweep", () => {
   });
 
   test("Slack DM processing retry with no prior stream delivers the full reply normally", async () => {
-    const inbound = deliveryCrud.recordInbound(
+    const inbound = await deliveryCrud.recordInbound(
       "slack",
       "D-LIVE-RETRY-SAME-REPLY",
       "slack-msg-live-retry-same-reply",
@@ -1194,7 +1194,7 @@ describe("channel-retry-sweep", () => {
   });
 
   test("Slack DM processing retry preserves the streamed message ts when delivery fails again", async () => {
-    const inbound = deliveryCrud.recordInbound(
+    const inbound = await deliveryCrud.recordInbound(
       "slack",
       "D-LIVE-RETRY-FINAL-FAILS",
       "slack-msg-live-retry-final-fails",
@@ -1276,7 +1276,7 @@ describe("channel-retry-sweep", () => {
   });
 
   test("delivery retry for processed events resumes delivery without processing", async () => {
-    const inbound = deliveryCrud.recordInbound(
+    const inbound = await deliveryCrud.recordInbound(
       "telegram",
       "chat-delivery-only",
       "msg-delivery-only",
@@ -1332,7 +1332,7 @@ describe("channel-retry-sweep", () => {
   });
 
   test("delivery retry edits a prior streamed message in place instead of posting a duplicate", async () => {
-    const inbound = deliveryCrud.recordInbound(
+    const inbound = await deliveryCrud.recordInbound(
       "slack",
       "D-DELIVERY-ONLY-STREAM",
       "msg-delivery-only-stream",
@@ -1387,7 +1387,7 @@ describe("channel-retry-sweep", () => {
   });
 
   test("delivery retry resolves missing reply id from the linked user turn", async () => {
-    const inbound = deliveryCrud.recordInbound(
+    const inbound = await deliveryCrud.recordInbound(
       "telegram",
       "chat-delivery-fallback",
       "msg-delivery-fallback",

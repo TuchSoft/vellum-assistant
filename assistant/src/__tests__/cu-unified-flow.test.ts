@@ -362,7 +362,7 @@ describe("surfaceProxyResolver — CU tool routing", () => {
           activateSource,
           beginDraining: mock(async () => false),
           claimTurn: mock(async () => undefined),
-          getTurnOwner: mock(async () => undefined),
+          getTurnOwner: mock(() => undefined),
           recordActivity: mock(async () => false),
           retireSource: mock(async () => false),
         },

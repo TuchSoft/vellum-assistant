@@ -133,9 +133,9 @@ function createHarness(overrides?: Partial<CallSetupFlowDeps>) {
       redemptionCalls.push(params);
       return redemptionImpl(params);
     },
-    resolveGuardianLabel: () => "Bob",
-    resolveAssistantLabel: () => "Vellum",
-    getCallSession: () => ({ conversationId: CONVERSATION_ID }),
+    resolveGuardianLabel: async () => "Bob",
+    resolveAssistantLabel: async () => "Vellum",
+    getCallSession: async () => ({ conversationId: CONVERSATION_ID }),
     finalizeCall: (callSessionId, conversationId) => {
       finalizeCalls.push({ callSessionId, conversationId });
     },
@@ -210,7 +210,7 @@ describe("CallSetupFlow invite redemption", () => {
 
     test("outbound prompt introduces the assistant by name", async () => {
       const { flow, spoken } = createHarness({
-        resolveGuardianLabel: () => "Hank",
+        resolveGuardianLabel: async () => "Hank",
       });
 
       await flow.start(inviteOutcome("Grace"), makeResolved(false));
@@ -222,8 +222,8 @@ describe("CallSetupFlow invite redemption", () => {
 
     test("outbound prompt omits the assistant name when unavailable", async () => {
       const { flow, spoken } = createHarness({
-        resolveGuardianLabel: () => "Hank",
-        resolveAssistantLabel: () => null,
+        resolveGuardianLabel: async () => "Hank",
+        resolveAssistantLabel: async () => null,
       });
 
       await flow.start(inviteOutcome("Grace"), makeResolved(false));
@@ -347,7 +347,7 @@ describe("CallSetupFlow invite redemption", () => {
 
     test("blank invitee name without an assistant name uses the plain neutral copy", async () => {
       const { flow, spoken } = createHarness({
-        resolveAssistantLabel: () => null,
+        resolveAssistantLabel: async () => null,
       });
 
       await flow.start(inviteOutcome(null), makeResolved(true));
@@ -358,7 +358,7 @@ describe("CallSetupFlow invite redemption", () => {
 
     test("named invitee without an assistant name omits the introduction", async () => {
       const { flow, spoken } = createHarness({
-        resolveAssistantLabel: () => null,
+        resolveAssistantLabel: async () => null,
       });
 
       await flow.start(inviteOutcome("Alice Example"), makeResolved(true));
@@ -382,7 +382,7 @@ describe("CallSetupFlow invite redemption", () => {
         endReasons,
       } = createHarness({
         attemptInviteCodeRedemption: failureRedemption,
-        resolveGuardianLabel: () => "Dave",
+        resolveGuardianLabel: async () => "Dave",
       });
 
       await flow.start(inviteOutcome("Carol"), makeResolved(true));

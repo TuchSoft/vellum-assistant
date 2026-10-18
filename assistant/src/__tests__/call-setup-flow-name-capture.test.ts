@@ -162,7 +162,7 @@ class FakeGuardianWait implements GuardianWaitHandle {
     this.startParams = params;
   }
 
-  handleTranscript(text: string): void {
+  async handleTranscript(text: string): Promise<void> {
     this.transcripts.push(text);
   }
 
@@ -231,7 +231,7 @@ function createFlow(opts?: {
       results.push(result);
     },
     ttsPlaybackDelayMs: 0,
-    getCallSession: () => session,
+    getCallSession: async () => session,
     finalizeCall: (callSessionId, conversationId) => {
       finalized.push({ callSessionId, conversationId });
     },
@@ -243,8 +243,8 @@ function createFlow(opts?: {
     ) => {
       notified.push({ conversationId, callSessionId, speaker, text });
     },
-    resolveGuardianLabel: () => "Alex",
-    resolveAssistantLabel: () => "Aria",
+    resolveGuardianLabel: async () => "Alex",
+    resolveAssistantLabel: async () => "Aria",
     notifyGuardianOfAccessRequest: async (params) => {
       notifyCalls.push(params);
       if (notifyResult instanceof Error) {
@@ -322,7 +322,7 @@ describe("CallSetupFlow name capture", () => {
   });
 
   test("intro greeting omits the assistant name when unavailable", async () => {
-    const f = createFlow({ deps: { resolveAssistantLabel: () => null } });
+    const f = createFlow({ deps: { resolveAssistantLabel: async () => null } });
 
     await f.flow.start(nameCaptureOutcome, makeResolved());
 

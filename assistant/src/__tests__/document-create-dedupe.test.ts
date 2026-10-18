@@ -1,13 +1,13 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import {
   getDocumentById,
   getDocumentsForConversation,
 } from "../documents/document-store.js";
-import { getSqlite } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { executeDocumentCreate } from "../tools/document/document-tool.js";
 import type { ToolContext, ToolExecutionResult } from "../tools/types.js";
-import { resetDbForTesting } from "./db-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 function makeContext(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
@@ -24,69 +24,34 @@ function parseResult<T>(result: ToolExecutionResult): T {
   return JSON.parse(result.content) as T;
 }
 
-function bootstrapDocumentTables(): void {
-  resetDbForTesting();
-  const raw = getSqlite();
-  raw.exec(/*sql*/ `
-    DROP TABLE IF EXISTS document_conversations;
-    DROP TABLE IF EXISTS document_revisions;
-    DROP TABLE IF EXISTS documents;
-    DROP TABLE IF EXISTS conversations;
-
-    CREATE TABLE conversations (
-      id TEXT PRIMARY KEY,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
-    );
-
-    CREATE TABLE documents (
-      surface_id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      word_count INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      revision INTEGER NOT NULL DEFAULT 0,
-      workspace_path TEXT
-    );
-
-    CREATE TABLE document_revisions (
-      surface_id TEXT NOT NULL REFERENCES documents(surface_id) ON DELETE CASCADE,
-      revision INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      word_count INTEGER NOT NULL DEFAULT 0,
-      author TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (surface_id, revision)
-    );
-
-    CREATE TABLE document_conversations (
-      surface_id TEXT NOT NULL,
-      conversation_id TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (surface_id, conversation_id),
-      FOREIGN KEY (surface_id) REFERENCES documents(surface_id) ON DELETE CASCADE
-    );
-  `);
+async function bootstrapDocumentTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM document_conversations");
+  await db.run("DELETE FROM document_revisions");
+  await db.run("DELETE FROM documents");
+  await db.run("DELETE FROM conversations");
 }
 
-function seedDocument(params: {
+async function seedDocument(params: {
   surfaceId: string;
   conversationId: string;
   title: string;
   content: string;
   createdAt: number;
-}): void {
-  const raw = getSqlite();
-  raw
-    .query(`INSERT OR IGNORE INTO conversations (id, created_at) VALUES (?, ?)`)
-    .run(params.conversationId, params.createdAt);
-  raw
-    .query(
-      `INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+}): Promise<void> {
+  const db = requireMainDb();
+  await db.run(
+    "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    [
+      params.conversationId,
+      `Conversation ${params.conversationId}`,
+      params.createdAt,
+      params.createdAt,
+    ],
+  );
+  await db.run(
+    "INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [
       params.surfaceId,
       params.conversationId,
       params.title,
@@ -94,22 +59,22 @@ function seedDocument(params: {
       params.content.split(/\s+/).filter(Boolean).length,
       params.createdAt,
       params.createdAt,
-    );
-  raw
-    .query(
-      `INSERT OR IGNORE INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?)`,
-    )
-    .run(params.surfaceId, params.conversationId, params.createdAt);
+    ],
+  );
+  await db.run(
+    "INSERT INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?)",
+    [params.surfaceId, params.conversationId, params.createdAt],
+  );
 }
 
-describe("executeDocumentCreate — dedupe empty same-title document", () => {
-  beforeEach(() => {
-    bootstrapDocumentTables();
+describePg("executeDocumentCreate — dedupe empty same-title document", () => {
+  beforeEach(async () => {
+    await bootstrapDocumentTables();
   });
 
-  test("reuses an empty same-title doc when incoming content is non-empty", () => {
+  test("reuses an empty same-title doc when incoming content is non-empty", async () => {
     const seededId = "doc-empty-seeded";
-    seedDocument({
+    await seedDocument({
       surfaceId: seededId,
       conversationId: "conv-current",
       title: "My Post",
@@ -117,7 +82,7 @@ describe("executeDocumentCreate — dedupe empty same-title document", () => {
       createdAt: Date.now(),
     });
 
-    const result = executeDocumentCreate(
+    const result = await executeDocumentCreate(
       { title: "My Post", initial_content: "Hello" },
       makeContext(),
     );
@@ -131,13 +96,13 @@ describe("executeDocumentCreate — dedupe empty same-title document", () => {
     expect(body.reused).toBe(true);
     expect(body.message).toBe("Document editor reopened (deduped empty draft)");
 
-    expect(getDocumentById(seededId)?.content).toBe("Hello");
-    expect(getDocumentsForConversation("conv-current").length).toBe(1);
+    expect((await getDocumentById(seededId))?.content).toBe("Hello");
+    expect((await getDocumentsForConversation("conv-current")).length).toBe(1);
   });
 
-  test("creates a new doc when incoming initial_content is empty (no dedupe)", () => {
+  test("creates a new doc when incoming initial_content is empty (no dedupe)", async () => {
     const seededId = "doc-empty-seeded";
-    seedDocument({
+    await seedDocument({
       surfaceId: seededId,
       conversationId: "conv-current",
       title: "My Post",
@@ -145,7 +110,7 @@ describe("executeDocumentCreate — dedupe empty same-title document", () => {
       createdAt: Date.now(),
     });
 
-    const result = executeDocumentCreate(
+    const result = await executeDocumentCreate(
       { title: "My Post", initial_content: "" },
       makeContext(),
     );
@@ -153,12 +118,12 @@ describe("executeDocumentCreate — dedupe empty same-title document", () => {
     const body = parseResult<{ surface_id: string; reused?: boolean }>(result);
     expect(body.reused).toBeUndefined();
     expect(body.surface_id).not.toBe(seededId);
-    expect(getDocumentsForConversation("conv-current").length).toBe(2);
+    expect((await getDocumentsForConversation("conv-current")).length).toBe(2);
   });
 
-  test("does not dedupe when the seeded doc already has content", () => {
+  test("does not dedupe when the seeded doc already has content", async () => {
     const seededId = "doc-has-content";
-    seedDocument({
+    await seedDocument({
       surfaceId: seededId,
       conversationId: "conv-current",
       title: "My Post",
@@ -166,7 +131,7 @@ describe("executeDocumentCreate — dedupe empty same-title document", () => {
       createdAt: Date.now(),
     });
 
-    const result = executeDocumentCreate(
+    const result = await executeDocumentCreate(
       { title: "My Post", initial_content: "Hello" },
       makeContext(),
     );
@@ -174,13 +139,13 @@ describe("executeDocumentCreate — dedupe empty same-title document", () => {
     const body = parseResult<{ surface_id: string; reused?: boolean }>(result);
     expect(body.reused).toBeUndefined();
     expect(body.surface_id).not.toBe(seededId);
-    expect(getDocumentById(seededId)?.content).toBe("already drafted");
-    expect(getDocumentsForConversation("conv-current").length).toBe(2);
+    expect((await getDocumentById(seededId))?.content).toBe("already drafted");
+    expect((await getDocumentsForConversation("conv-current")).length).toBe(2);
   });
 
-  test("does not dedupe when the seeded empty doc is outside the 5-minute window", () => {
+  test("does not dedupe when the seeded empty doc is outside the 5-minute window", async () => {
     const seededId = "doc-stale-empty";
-    seedDocument({
+    await seedDocument({
       surfaceId: seededId,
       conversationId: "conv-current",
       title: "My Post",
@@ -189,7 +154,7 @@ describe("executeDocumentCreate — dedupe empty same-title document", () => {
       createdAt: Date.now() - 10 * 60 * 1000,
     });
 
-    const result = executeDocumentCreate(
+    const result = await executeDocumentCreate(
       { title: "My Post", initial_content: "Hello" },
       makeContext(),
     );
@@ -197,7 +162,7 @@ describe("executeDocumentCreate — dedupe empty same-title document", () => {
     const body = parseResult<{ surface_id: string; reused?: boolean }>(result);
     expect(body.reused).toBeUndefined();
     expect(body.surface_id).not.toBe(seededId);
-    expect(getDocumentById(seededId)?.content).toBe("");
-    expect(getDocumentsForConversation("conv-current").length).toBe(2);
+    expect((await getDocumentById(seededId))?.content).toBe("");
+    expect((await getDocumentsForConversation("conv-current")).length).toBe(2);
   });
 });

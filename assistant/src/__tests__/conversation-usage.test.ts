@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 const updateConversationUsageCalls: Array<{
   conversationId: string;
@@ -40,8 +40,7 @@ mock.module("../persistence/conversation-crud.js", () => ({
 }));
 
 import { recordUsage } from "../daemon/conversation-usage.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { listUsageEvents } from "../persistence/llm-usage-store.js";
 import type { Provider, ProviderResponse } from "../providers/types.js";
 import { UsageTrackingProvider } from "../providers/usage-tracking.js";
@@ -49,8 +48,7 @@ import type { PricingUsage } from "../usage/types.js";
 import { resolvePricingForUsageWithOverrides } from "../util/pricing.js";
 import { setConfig } from "./helpers/set-config.js";
 import { waitFor } from "./helpers/wait-for.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 // The attribution assertions resolve profiles/call sites through the real
 // workspace config, so seed the fixtures the tests reference.
@@ -72,16 +70,15 @@ setConfig("llm", {
   },
 });
 
-describe("recordUsage", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
+describePg("recordUsage", () => {
+  beforeEach(async () => {
+    await requireMainDb().run("DELETE FROM llm_usage_events");
     updateConversationUsageCalls.length = 0;
     updateConversationUsageFailures = 0;
     updateConversationUsageFailureCode = "SQLITE_BUSY";
   });
 
-  test("uses the provider-reported cost from the response over the token estimate", () => {
+  test("uses the provider-reported cost from the response over the token estimate", async () => {
     const usageStats = {
       inputTokens: 0,
       outputTokens: 0,
@@ -89,7 +86,7 @@ describe("recordUsage", () => {
     };
     const onEventMessages: unknown[] = [];
 
-    recordUsage(
+    await recordUsage(
       {
         conversationId: "conv-reported-cost",
         providerName: "openai",
@@ -106,7 +103,7 @@ describe("recordUsage", () => {
       { usage: { prompt_tokens: 41, completion_tokens: 428, cost: 0.0002181 } },
     );
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0].pricingStatus).toBe("priced");
     expect(events[0].estimatedCostUsd ?? 0).toBeCloseTo(0.0002181, 10);
@@ -121,7 +118,7 @@ describe("recordUsage", () => {
     expect(update?.estimatedCost).toBeCloseTo(0.0002181, 10);
   });
 
-  test("applies fast mode pricing when any response has speed: fast", () => {
+  test("applies fast mode pricing when any response has speed: fast", async () => {
     const usageStats = {
       inputTokens: 0,
       outputTokens: 0,
@@ -134,7 +131,7 @@ describe("recordUsage", () => {
       { usage: { speed: "fast" } },
     ];
 
-    recordUsage(
+    await recordUsage(
       {
         conversationId: "conv-speed-1",
         providerName: "anthropic",
@@ -151,7 +148,7 @@ describe("recordUsage", () => {
       rawResponses,
     );
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
 
     // With fast mode, pricing should use the 6x multiplier
@@ -177,7 +174,7 @@ describe("recordUsage", () => {
     expect(expectedPricing.estimatedCostUsd).toBe(180);
   });
 
-  test("stores direct input separately from Anthropic cache usage while keeping live totals combined", () => {
+  test("stores direct input separately from Anthropic cache usage while keeping live totals combined", async () => {
     const usageStats = {
       inputTokens: 0,
       outputTokens: 0,
@@ -202,7 +199,7 @@ describe("recordUsage", () => {
       },
     ];
 
-    recordUsage(
+    await recordUsage(
       {
         conversationId: "conv-usage-1",
         providerName: "anthropic",
@@ -219,7 +216,7 @@ describe("recordUsage", () => {
       rawResponses,
     );
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
 
     const expectedUsage: PricingUsage = {
@@ -308,7 +305,7 @@ describe("recordUsage", () => {
         },
       },
     );
-    expect(listUsageEvents()).toHaveLength(0);
+    expect(await listUsageEvents()).toHaveLength(0);
 
     const usageStats = {
       inputTokens: 0,
@@ -316,7 +313,7 @@ describe("recordUsage", () => {
       estimatedCost: 0,
     };
 
-    recordUsage(
+    await recordUsage(
       {
         conversationId: "conv-manual-1",
         providerName: "openai",
@@ -330,7 +327,7 @@ describe("recordUsage", () => {
       "req-manual-1",
     );
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       actor: "main_agent",
@@ -343,14 +340,14 @@ describe("recordUsage", () => {
     });
   });
 
-  test("persists resolved main-agent attribution from input without changing totals", () => {
+  test("persists resolved main-agent attribution from input without changing totals", async () => {
     const usageStats = {
       inputTokens: 0,
       outputTokens: 0,
       estimatedCost: 0,
     };
 
-    recordUsage(
+    await recordUsage(
       {
         conversationId: "conv-attrib-1",
         providerName: "openai",
@@ -373,7 +370,7 @@ describe("recordUsage", () => {
       },
     );
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       actor: "main_agent",
@@ -389,14 +386,14 @@ describe("recordUsage", () => {
     expect(usageStats.outputTokens).toBe(20);
   });
 
-  test("persists compaction attribution using the summary call-site profile", () => {
+  test("persists compaction attribution using the summary call-site profile", async () => {
     const usageStats = {
       inputTokens: 0,
       outputTokens: 0,
       estimatedCost: 0,
     };
 
-    recordUsage(
+    await recordUsage(
       {
         conversationId: "conv-attrib-2",
         providerName: "anthropic",
@@ -421,7 +418,7 @@ describe("recordUsage", () => {
       },
     );
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       actor: "context_compactor",
@@ -435,14 +432,14 @@ describe("recordUsage", () => {
     });
   });
 
-  test("persists a pre-resolved attribution snapshot", () => {
+  test("persists a pre-resolved attribution snapshot", async () => {
     const usageStats = {
       inputTokens: 0,
       outputTokens: 0,
       estimatedCost: 0,
     };
 
-    recordUsage(
+    await recordUsage(
       {
         conversationId: "conv-attrib-3",
         providerName: "anthropic",
@@ -471,7 +468,7 @@ describe("recordUsage", () => {
       },
     );
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       callSite: "mainAgent",
@@ -623,7 +620,7 @@ describe("recordUsage", () => {
     expect(usageStats.inputTokens).toBe(100);
   });
 
-  test("NaN token counts never reach persistence and a poisoned total self-heals", () => {
+  test("NaN token counts never reach persistence and a poisoned total self-heals", async () => {
     const usageStats = {
       inputTokens: Number.NaN,
       outputTokens: 5,

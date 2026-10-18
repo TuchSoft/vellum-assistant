@@ -207,7 +207,7 @@ function createFlow(opts?: {
       results.push(result);
     },
     ttsPlaybackDelayMs: 0,
-    getCallSession: () => session,
+    getCallSession: async () => session,
     finalizeCall: (callSessionId, conversationId) => {
       finalized.push({ callSessionId, conversationId });
     },
@@ -240,8 +240,8 @@ function createFlow(opts?: {
     ) => {
       notified.push({ conversationId, callSessionId, speaker, text });
     },
-    resolveGuardianLabel: () => "Alex",
-    resolveAssistantLabel: () => "Aria",
+    resolveGuardianLabel: async () => "Alex",
+    resolveAssistantLabel: async () => "Aria",
     attemptVerificationCode: async (params) => {
       attemptCalls.push(params);
       return attempt(params);

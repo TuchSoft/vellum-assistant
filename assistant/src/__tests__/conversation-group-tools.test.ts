@@ -4,17 +4,15 @@ import {
   createConversation,
   getDisplayMetaForConversations,
 } from "../persistence/conversation-crud.js";
-import { ensureGroupMigration } from "../persistence/conversation-group-migration.js";
+import { ensureGroupMigrationAsync } from "../persistence/conversation-group-migration.js";
 import { requireMainDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
 import { executeConversationGroupCreate } from "../tools/conversation-groups/group_create.js";
 import { executeConversationGroupList } from "../tools/conversation-groups/group_list.js";
 import { executeConversationMoveToGroup } from "../tools/conversation-groups/move_to_group.js";
 import type { ToolContext } from "../tools/types.js";
 import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-await ensureGroupMigration();
+await ensureGroupMigrationAsync();
 
 const ctx: ToolContext = {
   workingDir: "/tmp",
@@ -25,7 +23,7 @@ const ctx: ToolContext = {
 async function clearState(): Promise<void> {
   const db = requireMainDb();
   await db.run("DELETE FROM conversations");
-  await db.run("DELETE FROM conversation_groups WHERE is_system_group = 0");
+  await db.run("DELETE FROM conversation_groups WHERE is_system_group = false");
 }
 
 function extractGroupId(content: string): string {
@@ -231,7 +229,7 @@ describePg("conversation_move_to_group tool", () => {
     await executeConversationGroupCreate({ name: "Alpha" }, ctx);
     // Bypass the tool's dedup to create the case-variant directly
     await requireMainDb().run(
-      "INSERT INTO conversation_groups (id, name, sort_position, is_system_group, created_at, updated_at) VALUES ('dup-group-id', 'alpha', 99, 0, 0, 0)",
+      "INSERT INTO conversation_groups (id, name, sort_position, is_system_group, created_at, updated_at) VALUES ('dup-group-id', 'alpha', 99, false, 0, 0)",
     );
     await createConversation({ id: "conv-5" });
 

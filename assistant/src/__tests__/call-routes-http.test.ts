@@ -5,7 +5,7 @@
  * POST /v1/calls/:id/cancel, and POST /v1/calls/:id/answer
  * through RuntimeHttpServer.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 mock.module("../config/env.js", () => ({ isHttpAuthDisabled: () => true }));
 
@@ -60,11 +60,10 @@ import {
   createPendingQuestion,
   updateCallSession,
 } from "../calls/call-store.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { RuntimeHttpServer } from "../runtime/http-server.js";
 import { setConfig } from "./helpers/set-config.js";
+import { describePg } from "./pg-test-db.js";
 
 import "../calls/call-state.js";
 
@@ -75,8 +74,6 @@ setConfig("ingress", {
   enabled: true,
   publicBaseUrl: "https://test.example.com",
 });
-
-await initializeDb();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -89,31 +86,27 @@ const AUTH_HEADERS: Record<string, string> = {};
 
 let ensuredConvIds = new Set<string>();
 
-function ensureConversation(id: string): void {
+async function ensureConversation(id: string): Promise<void> {
   if (ensuredConvIds.has(id)) {
     return;
   }
-  const db = getDb();
+  const db = requireMainDb();
   const now = Date.now();
-  db.insert(conversations)
-    .values({
-      id,
-      title: `Test conversation ${id}`,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  await db.run(
+    "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    [id, `Test conversation ${id}`, now, now],
+  );
   ensuredConvIds.add(id);
 }
 
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM call_pending_questions");
-  db.run("DELETE FROM call_events");
-  db.run("DELETE FROM call_sessions");
-  db.run("DELETE FROM tool_invocations");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM call_pending_questions");
+  await db.run("DELETE FROM call_events");
+  await db.run("DELETE FROM call_sessions");
+  await db.run("DELETE FROM tool_invocations");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
   ensuredConvIds = new Set();
 }
 
@@ -121,12 +114,12 @@ function resetTables() {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("runtime call routes — HTTP layer", () => {
+describePg("runtime call routes — HTTP layer", () => {
   let server: RuntimeHttpServer;
   let port: number;
 
-  beforeEach(() => {
-    resetTables();
+  beforeEach(async () => {
+    await resetTables();
   });
 
   async function startServer(): Promise<void> {
@@ -147,7 +140,7 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/start returns 201 with call session", async () => {
     await startServer();
-    ensureConversation("conv-start-1");
+    await ensureConversation("conv-start-1");
 
     const res = await fetch(callsUrl("/start"), {
       method: "POST",
@@ -201,7 +194,7 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/start returns 400 for invalid phone number", async () => {
     await startServer();
-    ensureConversation("conv-start-2");
+    await ensureConversation("conv-start-2");
 
     const res = await fetch(callsUrl("/start"), {
       method: "POST",
@@ -238,7 +231,7 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/start with callerIdentityMode user_number is accepted", async () => {
     await startServer();
-    ensureConversation("conv-start-identity-1");
+    await ensureConversation("conv-start-identity-1");
 
     const res = await fetch(callsUrl("/start"), {
       method: "POST",
@@ -264,7 +257,7 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/start without callerIdentityMode defaults to assistant_number", async () => {
     await startServer();
-    ensureConversation("conv-start-identity-2");
+    await ensureConversation("conv-start-identity-2");
 
     const res = await fetch(callsUrl("/start"), {
       method: "POST",
@@ -297,7 +290,7 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/start returns 400 for invalid callerIdentityMode", async () => {
     await startServer();
-    ensureConversation("conv-start-identity-bogus");
+    await ensureConversation("conv-start-identity-bogus");
 
     const res = await fetch(callsUrl("/start"), {
       method: "POST",
@@ -326,9 +319,9 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("GET /v1/calls/:id returns call status", async () => {
     await startServer();
-    ensureConversation("conv-get-1");
+    await ensureConversation("conv-get-1");
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "outbound",
       conversationId: "conv-get-1",
       provider: "twilio",
@@ -378,9 +371,9 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/:id/cancel transitions to cancelled", async () => {
     await startServer();
-    ensureConversation("conv-cancel-1");
+    await ensureConversation("conv-cancel-1");
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: "conv-cancel-1",
       provider: "twilio",
@@ -408,9 +401,9 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/:id/cancel returns 409 for already-ended call", async () => {
     await startServer();
-    ensureConversation("conv-cancel-2");
+    await ensureConversation("conv-cancel-2");
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: "conv-cancel-2",
       provider: "twilio",
@@ -418,7 +411,10 @@ describe("runtime call routes — HTTP layer", () => {
       toNumber: "+15559998888",
     });
 
-    updateCallSession(session.id, { status: "completed", endedAt: Date.now() });
+    await updateCallSession(session.id, {
+      status: "completed",
+      endedAt: Date.now(),
+    });
 
     const res = await fetch(callsUrl(`/${session.id}/cancel`), {
       method: "POST",
@@ -449,9 +445,9 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/:id/answer returns 400 for malformed JSON", async () => {
     await startServer();
-    ensureConversation("conv-answer-badjson");
+    await ensureConversation("conv-answer-badjson");
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: "conv-answer-badjson",
       provider: "twilio",
@@ -472,9 +468,9 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/:id/answer returns 404 when no pending question", async () => {
     await startServer();
-    ensureConversation("conv-answer-1");
+    await ensureConversation("conv-answer-1");
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: "conv-answer-1",
       provider: "twilio",
@@ -499,9 +495,9 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/:id/answer returns 400 when answer is empty", async () => {
     await startServer();
-    ensureConversation("conv-answer-2");
+    await ensureConversation("conv-answer-2");
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: "conv-answer-2",
       provider: "twilio",
@@ -522,9 +518,9 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/:id/answer returns 409 when no orchestrator", async () => {
     await startServer();
-    ensureConversation("conv-answer-3");
+    await ensureConversation("conv-answer-3");
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: "conv-answer-3",
       provider: "twilio",
@@ -533,7 +529,7 @@ describe("runtime call routes — HTTP layer", () => {
     });
 
     // Create a pending question but no orchestrator
-    createPendingQuestion(session.id, "What date do you prefer?");
+    await createPendingQuestion(session.id, "What date do you prefer?");
 
     const res = await fetch(callsUrl(`/${session.id}/answer`), {
       method: "POST",
@@ -554,9 +550,9 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/:id/instruction returns 400 for malformed JSON", async () => {
     await startServer();
-    ensureConversation("conv-instr-badjson");
+    await ensureConversation("conv-instr-badjson");
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: "conv-instr-badjson",
       provider: "twilio",
@@ -577,9 +573,9 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/:id/instruction returns 400 when instruction is empty", async () => {
     await startServer();
-    ensureConversation("conv-instr-empty");
+    await ensureConversation("conv-instr-empty");
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: "conv-instr-empty",
       provider: "twilio",
@@ -604,9 +600,9 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/:id/instruction returns 400 when instruction field is missing", async () => {
     await startServer();
-    ensureConversation("conv-instr-missing");
+    await ensureConversation("conv-instr-missing");
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: "conv-instr-missing",
       provider: "twilio",
@@ -649,9 +645,9 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/:id/instruction returns 409 for ended call", async () => {
     await startServer();
-    ensureConversation("conv-instr-ended");
+    await ensureConversation("conv-instr-ended");
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: "conv-instr-ended",
       provider: "twilio",
@@ -659,7 +655,10 @@ describe("runtime call routes — HTTP layer", () => {
       toNumber: "+15559998888",
     });
 
-    updateCallSession(session.id, { status: "completed", endedAt: Date.now() });
+    await updateCallSession(session.id, {
+      status: "completed",
+      endedAt: Date.now(),
+    });
 
     const res = await fetch(callsUrl(`/${session.id}/instruction`), {
       method: "POST",
@@ -678,9 +677,9 @@ describe("runtime call routes — HTTP layer", () => {
 
   test("POST /v1/calls/:id/instruction returns 409 when no orchestrator", async () => {
     await startServer();
-    ensureConversation("conv-instr-no-orch");
+    await ensureConversation("conv-instr-no-orch");
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: "conv-instr-no-orch",
       provider: "twilio",

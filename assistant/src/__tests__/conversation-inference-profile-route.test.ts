@@ -28,16 +28,13 @@ import {
   getConversation,
 } from "../persistence/conversation-crud.js";
 import { requireMainDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { providerConnections } from "../persistence/schema/inference.js";
+import { providerConnections } from "../persistence/pg-schema/inference.js";
 import { assistantEventHub } from "../runtime/assistant-event-hub.js";
 import { ROUTES } from "../runtime/routes/conversation-management-routes.js";
 import { BadRequestError, NotFoundError } from "../runtime/routes/errors.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
 import { waitFor } from "./helpers/wait-for.js";
 import { describePg } from "./pg-test-db.js";
-
-await initializeDb();
 
 // The Vellum-managed connection row the managed presets resolve to.
 await requireMainDb()

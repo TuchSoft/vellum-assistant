@@ -16,7 +16,7 @@
 
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 const TEST_DIR = process.env.VELLUM_WORKSPACE_DIR!;
 
@@ -25,10 +25,8 @@ const { isActivationSession } =
   await import("../plugins/defaults/memory/activation-session-store.js");
 const { ACTIVATION_RAIL_BOOTSTRAP_TEMPLATE } =
   await import("../telemetry/activation-funnel.js");
-const { getMemorySqlite } = await import("../persistence/db-connection.js");
-const { initializeDb } = await import("../persistence/db-init.js");
-
-await initializeDb();
+const { requireMainDb } = await import("../persistence/db-facade.js");
+const { describePg } = await import("./pg-test-db.js");
 
 /** Seed the workspace BOOTSTRAP.md with the unmodified generic template so the
  *  one-shot reseed inside `applyBootstrapTemplate` fires. */
@@ -41,42 +39,54 @@ function seedGenericBootstrap(): void {
   writeFileSync(join(TEST_DIR, "BOOTSTRAP.md"), generic, "utf-8");
 }
 
-describe("applyBootstrapTemplate — early activation marking", () => {
-  beforeEach(() => {
-    getMemorySqlite()!.exec("DELETE FROM activation_sessions");
+/** The mark is written fire-and-forget, so give the write a bounded window to land. */
+async function waitForMarked(conversationId: string): Promise<boolean> {
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    if (await isActivationSession(conversationId)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return false;
+}
+
+describePg("applyBootstrapTemplate — early activation marking", () => {
+  beforeEach(async () => {
+    await requireMainDb().run("DELETE FROM activation_sessions");
   });
 
-  test("marks the conversation when the activation-rail template is applied", () => {
+  test("marks the conversation when the activation-rail template is applied", async () => {
     seedGenericBootstrap();
-    expect(isActivationSession("rail-conv")).toBe(false);
+    expect(await isActivationSession("rail-conv")).toBe(false);
 
     // No buildSystemPrompt call — marking must happen here.
     applyBootstrapTemplate(ACTIVATION_RAIL_BOOTSTRAP_TEMPLATE, "rail-conv");
 
-    expect(isActivationSession("rail-conv")).toBe(true);
+    expect(await waitForMarked("rail-conv")).toBe(true);
   });
 
-  test("does not mark when a non-rail bootstrap template is applied", () => {
+  test("does not mark when a non-rail bootstrap template is applied", async () => {
     seedGenericBootstrap();
 
     applyBootstrapTemplate("BOOTSTRAP-REFERENCE.md", "non-rail-conv");
 
-    expect(isActivationSession("non-rail-conv")).toBe(false);
+    expect(await isActivationSession("non-rail-conv")).toBe(false);
   });
 
-  test("does not mark when no conversation id is supplied", () => {
+  test("does not mark when no conversation id is supplied", async () => {
     seedGenericBootstrap();
 
     applyBootstrapTemplate(ACTIVATION_RAIL_BOOTSTRAP_TEMPLATE);
 
     // Nothing to assert by id; confirm the table stayed empty.
-    const { n } = getMemorySqlite()!
-      .query("SELECT COUNT(*) AS n FROM activation_sessions")
-      .get() as { n: number };
+    const { n } = (await requireMainDb().get<{ n: number }>(
+      "SELECT COUNT(*)::int AS n FROM activation_sessions",
+    ))!;
     expect(n).toBe(0);
   });
 
-  test("does not mark when BOOTSTRAP.md is customized to something else", () => {
+  test("does not mark when BOOTSTRAP.md is customized to something else", async () => {
     mkdirSync(TEST_DIR, { recursive: true });
     // A user-customized BOOTSTRAP.md is neither the generic template (so the
     // reseed no-ops) nor the activation-rail template — the rail is not active.
@@ -88,10 +98,10 @@ describe("applyBootstrapTemplate — early activation marking", () => {
 
     applyBootstrapTemplate(ACTIVATION_RAIL_BOOTSTRAP_TEMPLATE, "custom-conv");
 
-    expect(isActivationSession("custom-conv")).toBe(false);
+    expect(await isActivationSession("custom-conv")).toBe(false);
   });
 
-  test("marks idempotently when BOOTSTRAP.md already holds the rail template", () => {
+  test("marks idempotently when BOOTSTRAP.md already holds the rail template", async () => {
     mkdirSync(TEST_DIR, { recursive: true });
     // Simulate a later turn: BOOTSTRAP.md already holds the rail template, so
     // the reseed no-ops but marking still fires (idempotent backstop).
@@ -109,6 +119,6 @@ describe("applyBootstrapTemplate — early activation marking", () => {
     applyBootstrapTemplate(ACTIVATION_RAIL_BOOTSTRAP_TEMPLATE, "rail-conv-2");
     applyBootstrapTemplate(ACTIVATION_RAIL_BOOTSTRAP_TEMPLATE, "rail-conv-2");
 
-    expect(isActivationSession("rail-conv-2")).toBe(true);
+    expect(await waitForMarked("rail-conv-2")).toBe(true);
   });
 });

@@ -93,6 +93,7 @@ mock.module("../util/logger.js", () => ({
   truncateForLog: (value: string, maxLen = 500) =>
     value.length > maxLen ? value.slice(0, maxLen) + "..." : value,
   initLogger: () => {},
+  getCurrentLogFilePath: () => "/tmp/test-assistant.log",
   pruneOldLogFiles: () => 0,
 }));
 
@@ -216,14 +217,14 @@ describe("Conversation initialization benchmark", () => {
     expect(median(timings)).toBeLessThan(15);
   });
 
-  test("buildSystemPrompt assembles prompt under 50ms (median of 5)", () => {
+  test("buildSystemPrompt assembles prompt under 50ms (median of 5)", async () => {
     // Warm-up
-    buildSystemPrompt();
+    await buildSystemPrompt();
 
     const timings: number[] = [];
     for (let i = 0; i < 5; i++) {
       const start = performance.now();
-      const prompt = buildSystemPrompt();
+      const prompt = await buildSystemPrompt();
       timings.push(performance.now() - start);
       if (i === 0) {
         expect(prompt.length).toBeGreaterThan(0);
@@ -235,11 +236,11 @@ describe("Conversation initialization benchmark", () => {
     expect(median(timings)).toBeLessThan(50);
   });
 
-  test("repeated buildSystemPrompt calls are consistently fast (10 iterations)", () => {
+  test("repeated buildSystemPrompt calls are consistently fast (10 iterations)", async () => {
     const timings: number[] = [];
     for (let i = 0; i < 10; i++) {
       const start = performance.now();
-      buildSystemPrompt();
+      await buildSystemPrompt();
       timings.push(performance.now() - start);
     }
 
@@ -285,7 +286,7 @@ describe("End-to-end session creation benchmark", () => {
   test("session creation without preactivated skills completes under 200ms (median of 3)", async () => {
     __resetRegistryForTesting();
     await initializeTools();
-    const systemPrompt = buildSystemPrompt();
+    const systemPrompt = await buildSystemPrompt();
 
     // Warm-up run
     const warmup = new Conversation(
@@ -328,7 +329,7 @@ describe("End-to-end session creation benchmark", () => {
   test("session creation with 3 preactivated skills completes under 300ms (median of 3)", async () => {
     __resetRegistryForTesting();
     await initializeTools();
-    const systemPrompt = buildSystemPrompt();
+    const systemPrompt = await buildSystemPrompt();
 
     // Warm-up run — includes skill projection so manifest loading is JIT'd
     const warmup = new Conversation(
@@ -385,8 +386,8 @@ describe("End-to-end session creation benchmark", () => {
     expect(median(timings)).toBeLessThan(300);
   });
 
-  test("Conversation constructor (sync, no loadFromDb) completes under 10ms (median of 5)", () => {
-    const systemPrompt = buildSystemPrompt();
+  test("Conversation constructor (sync, no loadFromDb) completes under 10ms (median of 5)", async () => {
+    const systemPrompt = await buildSystemPrompt();
 
     // Warm-up
     const warmup = new Conversation(

@@ -4,6 +4,7 @@ import { getLogger } from "../util/logger.js";
 import { getDbPath } from "../util/platform.js";
 import { runAsyncSqlite } from "./db-async-query.js";
 import { getDb, getSqliteFrom } from "./db-connection.js";
+import type { InitializeDbResult } from "./initialize-result.js";
 import { runMigrationSteps } from "./migrations/run-migrations.js";
 import { validateMigrationState } from "./migrations/validate-migration-state.js";
 import { PLANNER_OPTIMIZE_PRAGMA } from "./planner-statistics.js";
@@ -73,12 +74,7 @@ export async function checkpointWalBeforeOpen(): Promise<void> {
 
 // ---------------------------------------------------------------------------
 
-export interface InitializeDbResult {
-  migrationsOk: boolean;
-  failedMigrations: Array<{ name: string; error?: string }>;
-  deferredMigrations: Array<{ name: string; missing: string[] }>;
-  validationError?: string;
-}
+export type { InitializeDbResult } from "./initialize-result.js";
 
 export async function initializeDb(): Promise<InitializeDbResult> {
   // Fold any post-crash WAL back into the database off the main event loop

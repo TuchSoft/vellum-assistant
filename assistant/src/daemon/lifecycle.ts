@@ -26,10 +26,10 @@ import { backfillManualTokenConnections } from "../oauth/manual-token-connection
 import { seedOAuthProviders } from "../oauth/seed-providers.js";
 import { getMaxPersistedConversationSeq } from "../persistence/conversation-crud.js";
 import { requireMainDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
 import { startEmbeddingRuntimeManager } from "../persistence/embeddings/embedding-backend.js";
 import { maybeEnqueueLexicalBackfillOnUpgrade } from "../persistence/job-handlers/message-lexical-backfill.js";
 import { clearLifecycleQuiesce } from "../persistence/lifecycle-quiesce.js";
+import { initializePostgresDb } from "../persistence/pg-migrations/pg-db-init.js";
 import { isPlatformClientConfigured } from "../platform/client.js";
 import { startConsentRefresh } from "../platform/consent-cache.js";
 import { syncAvatarToPlatform } from "../platform/sync-avatar.js";
@@ -134,11 +134,11 @@ export async function runDaemon(): Promise<void> {
     "Daemon starting",
   );
 
-  // Signal handlers install before any blocking startup work — a boot that
-  // inherits a large WAL can spend minutes inside `initializeDb()`, and
-  // without handlers a SIGTERM in that window is the default hard kill.
-  // Handlers run a minimal exit path until `setStartupComplete()` below
-  // switches them to the full graceful shutdown.
+  // Signal handlers install before any blocking startup work — a boot whose
+  // migrations are slow runs them off the event loop, and without handlers a
+  // SIGTERM in that window is the default hard kill. Handlers run a minimal
+  // exit path until `setStartupComplete()` below switches them to the full
+  // graceful shutdown.
   installShutdownHandlers();
 
   ensureDataDir();
@@ -157,8 +157,8 @@ export async function runDaemon(): Promise<void> {
   // at `<workspaceDir>.import-marker.json` (persisted before any rename
   // runs) tells us where the orphaned preserved paths landed; the
   // recovery helper moves them back into the live workspace and cleans
-  // up the temp tree. Running this BEFORE `initializeDb()` ensures the
-  // DB singleton opens against the fully-restored `assistant.db`.
+  // up the temp tree. Running this BEFORE `initializePostgresDb()` ensures
+  // any restored workspace state is in place before startup reads it.
   try {
     const recoveryResult = await recoverInterruptedImport(getWorkspaceDir());
     if (!recoveryResult.ok) {
@@ -261,14 +261,14 @@ export async function runDaemon(): Promise<void> {
   // backfill that populates attachment filePaths).
   //
   // The daemon continues in a degraded state on either DB failure mode:
-  // (a) initializeDb() throws (e.g. the DB can't be opened), or (b) the DB
-  // opens but one or more migrations failed (initializeDb resolves with
-  // migrationsOk:false rather than throwing, per the daemon-never-blocks
-  // philosophy). In both cases DB-dependent features won't work, but the
-  // HTTP server and config-based subsystems still start so the process remains
-  // reachable for diagnostics. The trivial /healthz probe stays green while
-  // detailed health reports the migration state, and /readyz fails only when
-  // migrations fail.
+  // (a) initializePostgresDb() throws (e.g. the database is unreachable), or
+  // (b) the database opens but one or more migrations failed
+  // (initializePostgresDb resolves with migrationsOk:false rather than
+  // throwing, per the daemon-never-blocks philosophy). In both cases
+  // DB-dependent features won't work, but the HTTP server and config-based
+  // subsystems still start so the process remains reachable for diagnostics.
+  // The trivial /healthz probe stays green while detailed health reports the
+  // migration state, and /readyz fails only when migrations fail.
   //
   // The local `dbReady` and the module-level readiness latch intentionally
   // diverge on the migration-failure path: `dbReady` stays true to allow the
@@ -276,7 +276,7 @@ export async function runDaemon(): Promise<void> {
   // records the failed migration state so /readyz returns 503.
   let dbReady = false;
   try {
-    const initResult = await initializeDb();
+    const initResult = await initializePostgresDb();
     const { migrationsOk } = initResult;
     dbReady = true;
     // A quiesce lease can survive a stop that happened mid-drain; clear it so
@@ -345,8 +345,9 @@ export async function runDaemon(): Promise<void> {
     // startBackgroundSweeps) so refused replays can't burn dead-letter budget.
     startRuntimeHttpServerBackgroundSweeps();
   } catch (err) {
-    // Sweeps intentionally NOT started on this path: initializeDb() threw, so
-    // the DB never opened and every sweep cycle would just error against it.
+    // Sweeps intentionally NOT started on this path: initializePostgresDb()
+    // threw, so the DB never opened and every sweep cycle would just error
+    // against it.
     setDbMigrationFailed(err);
     log.error(
       { err },

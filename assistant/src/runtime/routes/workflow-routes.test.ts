@@ -60,7 +60,7 @@ interface FakeManager {
     status?: WorkflowRun["status"];
   }) => Promise<WorkflowRun[]>;
   status: (id: string) => Promise<WorkflowRun | null>;
-  abort: (id: string) => Promise<void>;
+  abort: (id: string) => boolean;
   resume: (id: string) => Promise<{ runId: string }>;
 }
 
@@ -123,8 +123,9 @@ function setup(opts: {
       return result;
     },
     status: async (id) => runs.find((r) => r.id === id) ?? null,
-    abort: async (id) => {
+    abort: (id) => {
       aborted.push(id);
+      return true;
     },
     resume:
       opts.resume ??

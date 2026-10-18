@@ -1463,11 +1463,12 @@ export async function getScheduleRunStatus(
 }
 
 /** Currently-running schedule runs with their job names, oldest first. */
-export async function listRunningScheduleRuns(): Promise<
+export async function listRunningScheduleRuns(limit = 20): Promise<
   Array<{
     runId: string;
     scheduleName: string | null;
     startedAt: number;
+    conversationId: string | null;
   }>
 > {
   const db = requireMainDb();
@@ -1478,12 +1479,13 @@ export async function listRunningScheduleRuns(): Promise<
       runId: runs.id,
       scheduleName: jobs.name,
       startedAt: runs.startedAt,
+      conversationId: runs.conversationId,
     })
     .from(runs)
     .leftJoin(jobs, eq(runs.jobId, jobs.id))
     .where(eq(runs.status, "running"))
     .orderBy(asc(runs.startedAt))
-    .limit(20);
+    .limit(limit);
   return rows;
 }
 

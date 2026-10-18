@@ -355,9 +355,18 @@ export class WorkflowRunManager {
     return saved.source;
   }
 
-  /** Abort an in-flight run by signalling its {@link AbortController}. No-op for unknown/finished runs. */
-  abort(runId: string): void {
-    this.inflight.get(runId)?.abort();
+  /**
+   * Abort an in-flight run by signalling its {@link AbortController}.
+   * Returns false for unknown/finished runs, which includes a `running` row
+   * owned by another process.
+   */
+  abort(runId: string): boolean {
+    const controller = this.inflight.get(runId);
+    if (!controller) {
+      return false;
+    }
+    controller.abort();
+    return true;
   }
 
   /** Read the current run row (live counts + status), or null if unknown. */

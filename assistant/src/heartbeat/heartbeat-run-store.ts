@@ -347,6 +347,15 @@ export async function getLastHeartbeatRunAt(): Promise<number | null> {
 }
 
 /**
+ * Age cap for `running` heartbeat rows in the drain snapshot. A beat orphaned
+ * by a crash keeps its `running` status until a later boot's stale sweep, so
+ * an unbounded read would let a phantom row hold the drain open indefinitely.
+ * Real beats finish well inside this bound (the runner enforces its own
+ * timeout).
+ */
+export const RUNNING_HEARTBEAT_MAX_AGE_MS = 15 * 60_000;
+
+/**
  * Heartbeat runs currently `running`, capped to those started within
  * `maxAgeMs`. The age bound matters: a run orphaned by a crash keeps its
  * `running` status until a later boot's stale sweep relabels it, and an
@@ -354,12 +363,19 @@ export async function getLastHeartbeatRunAt(): Promise<number | null> {
  */
 export async function listRunningHeartbeatRuns(
   maxAgeMs: number,
-): Promise<Array<{ runId: string; startedAt: number }>> {
+  limit = 20,
+): Promise<
+  Array<{ runId: string; startedAt: number; conversationId: string | null }>
+> {
   const db = requireMainDb();
   const runs = db.schema.heartbeatRuns;
   const cutoff = Date.now() - maxAgeMs;
   return (await db.orm
-    .select({ runId: runs.id, startedAt: runs.startedAt })
+    .select({
+      runId: runs.id,
+      startedAt: runs.startedAt,
+      conversationId: runs.conversationId,
+    })
     .from(runs)
     .where(
       and(
@@ -369,7 +385,11 @@ export async function listRunningHeartbeatRuns(
       ),
     )
     .orderBy(desc(runs.startedAt))
-    .limit(20)) as Array<{ runId: string; startedAt: number }>;
+    .limit(limit)) as Array<{
+    runId: string;
+    startedAt: number;
+    conversationId: string | null;
+  }>;
 }
 
 // ---------------------------------------------------------------------------

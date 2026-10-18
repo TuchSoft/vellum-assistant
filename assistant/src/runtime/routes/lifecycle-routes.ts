@@ -12,7 +12,11 @@
 
 import { z } from "zod";
 
-import { listRunningHeartbeatRuns } from "../../heartbeat/heartbeat-run-store.js";
+import { stopAllWork } from "../../daemon/stop-all.js";
+import {
+  listRunningHeartbeatRuns,
+  RUNNING_HEARTBEAT_MAX_AGE_MS,
+} from "../../heartbeat/heartbeat-run-store.js";
 import { listProcessingConversations } from "../../persistence/conversation-crud.js";
 import { listRunningMemoryJobs } from "../../persistence/jobs-store.js";
 import {
@@ -26,6 +30,7 @@ import { getLogger } from "../../util/logger.js";
 import { listRuns as listWorkflowRuns } from "../../workflows/journal-store.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { BadRequestError } from "./errors.js";
+import { parseStopMode } from "./stop-mode.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
 
 const log = getLogger("lifecycle-routes");
@@ -67,6 +72,18 @@ const runningHeartbeatRunSchema = z.object({
   startedAt: z.number(),
 });
 
+const stopAllResponseSchema = z.object({
+  conversations: z.number(),
+  subagents: z.number(),
+  acpSessions: z.number(),
+  backgroundTools: z.number(),
+  scheduleRuns: z.number(),
+  workflowRuns: z.number(),
+  heartbeatRuns: z.number(),
+  memoryJobs: z.number(),
+  unsupported: z.array(z.string()),
+});
+
 const drainStatusResponseSchema = z.object({
   quiescedUntil: z.number().nullable(),
   idle: z
@@ -80,15 +97,6 @@ const drainStatusResponseSchema = z.object({
   workflowRuns: z.array(runningWorkflowRunSchema),
   heartbeatRuns: z.array(runningHeartbeatRunSchema),
 });
-
-/**
- * Age cap for `running` heartbeat rows in the drain snapshot. A beat orphaned
- * by a crash keeps its `running` status until a later boot's stale sweep, so
- * an unbounded read would let a phantom row hold the drain open indefinitely.
- * Real beats finish well inside this bound (the runner enforces its own
- * timeout).
- */
-const HEARTBEAT_RUN_MAX_AGE_MS = 15 * 60_000;
 
 export const ROUTES: RouteDefinition[] = [
   {
@@ -144,6 +152,30 @@ export const ROUTES: RouteDefinition[] = [
     },
   },
   {
+    operationId: "stopAllLifecycleWork",
+    endpoint: "lifecycle/stop-all",
+    method: "POST",
+    policy: {
+      requiredScopes: ["settings.write"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
+    summary: "Stop all in-flight work",
+    description:
+      "Stops every category of in-flight work the drain snapshot enumerates: processing conversations (plus their subagents and ACP sessions), background tools, running schedule/heartbeat runs, and in-flight workflow runs. Memory jobs are reported in `unsupported` and left untouched. The optional mode defaults to hard.",
+    tags: ["system"],
+    requestBody: z.object({
+      mode: z
+        .enum(["hard", "graceful", "main-only"])
+        .optional()
+        .describe("Stop mode applied to conversations. Defaults to hard."),
+    }),
+    responseBody: stopAllResponseSchema,
+    handler: async ({ body }: RouteHandlerArgs) => {
+      const mode = parseStopMode(body);
+      return stopAllWork(mode);
+    },
+  },
+  {
     operationId: "getLifecycleDrainStatus",
     endpoint: "lifecycle/drain-status",
     method: "GET",
@@ -164,7 +196,13 @@ export const ROUTES: RouteDefinition[] = [
       // fails closed.
       const activeConversations = await listProcessingConversations();
       const memoryJobs = await listRunningMemoryJobs();
-      const scheduleRuns = await listRunningScheduleRuns();
+      const scheduleRuns = (await listRunningScheduleRuns()).map(
+        ({ runId, scheduleName, startedAt }) => ({
+          runId,
+          scheduleName,
+          startedAt,
+        }),
+      );
       // Workflows launched by a schedule outlive their schedule run — the
       // scheduler fires them and completes its own run row immediately — so
       // a running workflow must hold the drain open in its own right.
@@ -181,9 +219,9 @@ export const ROUTES: RouteDefinition[] = [
       // A beat between startHeartbeatRun() and its background conversation
       // existing (e.g. mid credential-health check) has a running row but no
       // processing conversation yet.
-      const heartbeatRuns = await listRunningHeartbeatRuns(
-        HEARTBEAT_RUN_MAX_AGE_MS,
-      );
+      const heartbeatRuns = (
+        await listRunningHeartbeatRuns(RUNNING_HEARTBEAT_MAX_AGE_MS)
+      ).map(({ runId, startedAt }) => ({ runId, startedAt }));
       return {
         quiescedUntil: await getLifecycleQuiesceUntil(),
         idle:

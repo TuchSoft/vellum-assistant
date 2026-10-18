@@ -204,9 +204,9 @@ describePg("handleContactChannelIdentityLookup", () => {
   });
 
   test("returns null when no channel matches", async () => {
-    const result = await handleContactChannelIdentityLookup({
+    const result = (await handleContactChannelIdentityLookup({
       body: { channelId: "nope" },
-    });
+    })) as { channel: Record<string, unknown> | null };
     expect(result).toEqual({ channel: null });
   });
 

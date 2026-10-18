@@ -43,9 +43,9 @@ function resetFixtures(): void {
 }
 
 /** Assert plugin output === host output, and return it for content checks. */
-function expectParity(): string | null {
-  const host = buildCoreIdentityContext();
-  expect(buildIdentityContext()).toBe(host);
+async function expectParity(): Promise<string | null> {
+  const host = await buildCoreIdentityContext();
+  expect(await buildIdentityContext()).toBe(host);
   return host;
 }
 
@@ -53,51 +53,51 @@ describe("memory identity-context parity", () => {
   beforeEach(resetFixtures);
   afterEach(resetFixtures);
 
-  test("no prompt files and no persona → both null", () => {
-    expect(expectParity()).toBeNull();
+  test("no prompt files and no persona → both null", async () => {
+    expect(await expectParity()).toBeNull();
   });
 
-  test("customized IDENTITY.md + SOUL.md concatenate in file order", () => {
+  test("customized IDENTITY.md + SOUL.md concatenate in file order", async () => {
     writeFileSync(identityPath, "# Identity\n\nI am the workspace assistant.");
     writeFileSync(soulPath, "# Soul\n\nWarm, direct, curious.");
-    const output = expectParity();
+    const output = await expectParity();
     expect(output).toBe(
       "# Identity\n\nI am the workspace assistant.\n\n# Soul\n\nWarm, direct, curious.",
     );
   });
 
-  test("unmodified IDENTITY.md template is skipped; SOUL.md still counts", () => {
+  test("unmodified IDENTITY.md template is skipped; SOUL.md still counts", async () => {
     const identityTemplate = readFileSync(
       join(templatesDir, "IDENTITY.md"),
       "utf-8",
     );
     writeFileSync(identityPath, identityTemplate);
     writeFileSync(soulPath, "# Soul\n\nWarm, direct, curious.");
-    const output = expectParity();
+    const output = await expectParity();
     expect(output).toBe("# Soul\n\nWarm, direct, curious.");
   });
 
-  test("SOUL.md is included even when it matches its shipped template", () => {
+  test("SOUL.md is included even when it matches its shipped template", async () => {
     const soulTemplatePath = join(templatesDir, "SOUL.md");
     if (!existsSync(soulTemplatePath)) {
       return;
     } // no shipped SOUL template
     writeFileSync(soulPath, readFileSync(soulTemplatePath, "utf-8"));
-    const output = expectParity();
+    const output = await expectParity();
     expect(output).not.toBeNull();
   });
 
-  test("guardian persona is appended last", () => {
+  test("guardian persona is appended last", async () => {
     writeFileSync(identityPath, "# Identity\n\nI am the workspace assistant.");
     personaValue = "## User\n\nAlice (she/her), prefers terse updates.";
-    const output = expectParity();
+    const output = await expectParity();
     expect(output).toBe(
       "# Identity\n\nI am the workspace assistant.\n\n## User\n\nAlice (she/her), prefers terse updates.",
     );
   });
 
-  test("persona alone still produces a block", () => {
+  test("persona alone still produces a block", async () => {
     personaValue = "## User\n\nAlice (she/her).";
-    expect(expectParity()).toBe("## User\n\nAlice (she/her).");
+    expect(await expectParity()).toBe("## User\n\nAlice (she/her).");
   });
 });

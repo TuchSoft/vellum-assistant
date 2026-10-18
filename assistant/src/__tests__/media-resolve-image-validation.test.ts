@@ -351,17 +351,17 @@ describePg("isUnsendableImageSource", () => {
 
     // WHEN each source is checked
     // THEN only the unreadable one is reported, matching what the boundary does
-    expect(isUnsendableImageSource(good.source)).toBe(false);
-    expect(isUnsendableImageSource(bad.source)).toBe(true);
+    expect(await isUnsendableImageSource(good.source)).toBe(false);
+    expect(await isUnsendableImageSource(bad.source)).toBe(true);
   });
 
-  test("does not report a reference whose attachment is gone", () => {
+  test("does not report a reference whose attachment is gone", async () => {
     // GIVEN a reference with no row behind it
     // WHEN it is checked
     // THEN it is not called unsendable: a missing payload is a separate
     // failure, and naming it in the drop card would misinform the user
     expect(
-      isUnsendableImageSource({
+      await isUnsendableImageSource({
         type: "workspace_ref",
         media_type: "image/png",
         attachmentId: "missing-attachment",
@@ -388,7 +388,7 @@ describePg("unsendable-image notice", () => {
     }
 
     // WHEN the notice decides what to name
-    const filenames = unsendableImageFilenames([
+    const filenames = await unsendableImageFilenames([
       { filename: "holiday.png", source: good.source },
       { filename: "beach.png", source: bad.source },
     ]);
@@ -412,7 +412,9 @@ describePg("unsendable-image notice", () => {
     // WHEN the notice decides what to name
     // THEN there is nothing to say, so no card is written
     expect(
-      unsendableImageFilenames([{ filename: "one.png", source: good.source }]),
+      await unsendableImageFilenames([
+        { filename: "one.png", source: good.source },
+      ]),
     ).toEqual([]);
   });
 

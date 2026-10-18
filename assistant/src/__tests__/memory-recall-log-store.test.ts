@@ -4,41 +4,27 @@
  * installs a fresh in-memory database into the `memory` singleton slot with
  * the relocated table's schema.
  */
-import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
-
-import { clearStoredDb, setStoredDb } from "../persistence/db-singleton.js";
-import { ensureRecallLogsSchema } from "../persistence/migrations/337-move-memory-recall-logs-to-memory-db.js";
-import * as schema from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   backfillMemoryRecallLogMessageId,
   getMemoryRecallLogByMessageIds,
   normalizeTopCandidates,
   recordMemoryRecallLog,
 } from "../plugins/defaults/memory/memory-recall-log-store.js";
+import { describePg } from "./pg-test-db.js";
 
-let memorySqlite: Database;
+describePg("memory-recall-log-store", () => {
+  beforeEach(async () => {
+    await requireMainDb().run("DELETE FROM memory_recall_logs");
+  });
 
-beforeEach(() => {
-  memorySqlite = new Database(":memory:");
-  ensureRecallLogsSchema(memorySqlite);
-  setStoredDb("memory", drizzle(memorySqlite, { schema }), () =>
-    memorySqlite.close(),
-  );
-});
-
-afterEach(() => {
-  clearStoredDb("memory");
-});
-
-describe("memory-recall-log-store", () => {
-  test("round-trip: record → backfill messageId → query by messageId", () => {
+  test("round-trip: record → backfill messageId → query by messageId", async () => {
     const conversationId = "conv-1";
     const messageId = "msg-1";
 
-    recordMemoryRecallLog({
+    await recordMemoryRecallLog({
       conversationId,
       enabled: true,
       degraded: false,
@@ -60,9 +46,9 @@ describe("memory-recall-log-store", () => {
       queryContext: "what is the weather like",
     });
 
-    backfillMemoryRecallLogMessageId(conversationId, messageId);
+    await backfillMemoryRecallLogMessageId(conversationId, messageId);
 
-    const result = getMemoryRecallLogByMessageIds([messageId]);
+    const result = await getMemoryRecallLogByMessageIds([messageId]);
     expect(result).not.toBeNull();
     expect(result!.enabled).toBe(true);
     expect(result!.degraded).toBe(false);
@@ -84,11 +70,11 @@ describe("memory-recall-log-store", () => {
     expect(result!.queryContext).toBe("what is the weather like");
   });
 
-  test("queryContext defaults to null when omitted", () => {
+  test("queryContext defaults to null when omitted", async () => {
     const conversationId = "conv-no-query-ctx";
     const messageId = "msg-no-query-ctx";
 
-    recordMemoryRecallLog({
+    await recordMemoryRecallLog({
       conversationId,
       enabled: true,
       degraded: false,
@@ -104,15 +90,15 @@ describe("memory-recall-log-store", () => {
       topCandidatesJson: [],
     });
 
-    backfillMemoryRecallLogMessageId(conversationId, messageId);
+    await backfillMemoryRecallLogMessageId(conversationId, messageId);
 
-    const result = getMemoryRecallLogByMessageIds([messageId]);
+    const result = await getMemoryRecallLogByMessageIds([messageId]);
     expect(result).not.toBeNull();
     expect(result!.queryContext).toBeNull();
   });
 
-  test("writes land in the memory connection", () => {
-    recordMemoryRecallLog({
+  test("writes land in the memory connection", async () => {
+    await recordMemoryRecallLog({
       conversationId: "conv-mem",
       enabled: true,
       degraded: false,
@@ -127,27 +113,27 @@ describe("memory-recall-log-store", () => {
       latencyMs: 80,
       topCandidatesJson: [],
     });
-    const { n } = memorySqlite
-      .query(`SELECT COUNT(*) AS n FROM memory_recall_logs`)
-      .get() as { n: number };
+    const { n } = (await requireMainDb().get(
+      `SELECT COUNT(*) AS n FROM memory_recall_logs`,
+    )) as { n: number };
     expect(n).toBe(1);
   });
 
-  test("returns null when no log exists for a messageId", () => {
-    const result = getMemoryRecallLogByMessageIds(["nonexistent-msg"]);
+  test("returns null when no log exists for a messageId", async () => {
+    const result = await getMemoryRecallLogByMessageIds(["nonexistent-msg"]);
     expect(result).toBeNull();
   });
 
-  test("returns null for empty messageIds array", () => {
-    const result = getMemoryRecallLogByMessageIds([]);
+  test("returns null for empty messageIds array", async () => {
+    const result = await getMemoryRecallLogByMessageIds([]);
     expect(result).toBeNull();
   });
 
-  test("backfill only updates rows with NULL messageId", () => {
+  test("backfill only updates rows with NULL messageId", async () => {
     const conversationId = "conv-2";
 
     // Record first log and backfill with msg-a
-    recordMemoryRecallLog({
+    await recordMemoryRecallLog({
       conversationId,
       enabled: true,
       degraded: false,
@@ -162,10 +148,10 @@ describe("memory-recall-log-store", () => {
       latencyMs: 150,
       topCandidatesJson: [],
     });
-    backfillMemoryRecallLogMessageId(conversationId, "msg-a");
+    await backfillMemoryRecallLogMessageId(conversationId, "msg-a");
 
     // Record second log (messageId is still NULL)
-    recordMemoryRecallLog({
+    await recordMemoryRecallLog({
       conversationId,
       enabled: true,
       degraded: true,
@@ -183,25 +169,25 @@ describe("memory-recall-log-store", () => {
     });
 
     // Backfill second log with msg-b
-    backfillMemoryRecallLogMessageId(conversationId, "msg-b");
+    await backfillMemoryRecallLogMessageId(conversationId, "msg-b");
 
     // Verify first log still has msg-a
-    const firstLog = getMemoryRecallLogByMessageIds(["msg-a"]);
+    const firstLog = await getMemoryRecallLogByMessageIds(["msg-a"]);
     expect(firstLog).not.toBeNull();
     expect(firstLog!.degraded).toBe(false);
 
     // Verify second log has msg-b
-    const secondLog = getMemoryRecallLogByMessageIds(["msg-b"]);
+    const secondLog = await getMemoryRecallLogByMessageIds(["msg-b"]);
     expect(secondLog).not.toBeNull();
     expect(secondLog!.degraded).toBe(true);
   });
 
-  test("normalizes SSE-event format candidates to inspector format on read", () => {
+  test("normalizes SSE-event format candidates to inspector format on read", async () => {
     const conversationId = "conv-normalize-sse";
     const messageId = "msg-normalize-sse";
 
     // Store candidates in SSE-event format (key/finalScore/semantic/recency/kind)
-    recordMemoryRecallLog({
+    await recordMemoryRecallLog({
       conversationId,
       enabled: true,
       degraded: false,
@@ -226,9 +212,9 @@ describe("memory-recall-log-store", () => {
       ],
     });
 
-    backfillMemoryRecallLogMessageId(conversationId, messageId);
+    await backfillMemoryRecallLogMessageId(conversationId, messageId);
 
-    const result = getMemoryRecallLogByMessageIds([messageId]);
+    const result = await getMemoryRecallLogByMessageIds([messageId]);
     expect(result).not.toBeNull();
     const candidates = result!.topCandidates as Array<Record<string, unknown>>;
     expect(candidates).toHaveLength(1);
@@ -248,12 +234,12 @@ describe("memory-recall-log-store", () => {
     expect(candidates[0]).not.toHaveProperty("recency");
   });
 
-  test("passes through candidates already in inspector format unchanged", () => {
+  test("passes through candidates already in inspector format unchanged", async () => {
     const conversationId = "conv-normalize-inspector";
     const messageId = "msg-normalize-inspector";
 
     // Store candidates already in inspector format (nodeId/score/semanticSimilarity/recencyBoost)
-    recordMemoryRecallLog({
+    await recordMemoryRecallLog({
       conversationId,
       enabled: true,
       degraded: false,
@@ -277,9 +263,9 @@ describe("memory-recall-log-store", () => {
       ],
     });
 
-    backfillMemoryRecallLogMessageId(conversationId, messageId);
+    await backfillMemoryRecallLogMessageId(conversationId, messageId);
 
-    const result = getMemoryRecallLogByMessageIds([messageId]);
+    const result = await getMemoryRecallLogByMessageIds([messageId]);
     expect(result).not.toBeNull();
     const candidates = result!.topCandidates as Array<Record<string, unknown>>;
     expect(candidates).toHaveLength(1);
@@ -292,7 +278,7 @@ describe("memory-recall-log-store", () => {
     });
   });
 
-  test("normalizeTopCandidates handles non-array input", () => {
+  test("normalizeTopCandidates handles non-array input", async () => {
     expect(normalizeTopCandidates(null)).toBeNull();
     expect(normalizeTopCandidates("not-an-array")).toBe("not-an-array");
     expect(normalizeTopCandidates(42)).toBe(42);

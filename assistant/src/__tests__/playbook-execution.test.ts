@@ -4,29 +4,21 @@ mock.module("../persistence/jobs-store.js", () => ({
   enqueueMemoryJob: () => {},
 }));
 
-import type { Database } from "bun:sqlite";
-
 import { v4 as uuid } from "uuid";
 
 import { executePlaybookCreate } from "../config/bundled-skills/playbooks/tools/playbook-create.js";
 import { executePlaybookDelete } from "../config/bundled-skills/playbooks/tools/playbook-delete.js";
 import { executePlaybookList } from "../config/bundled-skills/playbooks/tools/playbook-list.js";
 import { executePlaybookUpdate } from "../config/bundled-skills/playbooks/tools/playbook-update.js";
-import { getMemorySqlite } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { compilePlaybooks } from "../playbooks/playbook-compiler.js";
 import { parsePlaybookStatement } from "../playbooks/types.js";
 import { getNode } from "../plugins/defaults/memory/graph/store.js";
 import type { ToolContext } from "../tools/types.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function getRawDb(): Database {
-  return getMemorySqlite()!;
-}
-
-function clearPlaybooks(): void {
-  getRawDb().run(
+async function clearPlaybooks(): Promise<void> {
+  await requireMainDb().run(
     "DELETE FROM memory_graph_nodes WHERE source_conversations LIKE '%playbook:%'",
   );
 }
@@ -45,7 +37,7 @@ const ctx: ToolContext = {
  * sourceConversations contains ["playbook:<nodeId>"] to identify playbook nodes.
  * fidelity = "gone" serves as soft-delete; "vivid" means active.
  */
-function insertPlaybookGraphNode(
+async function insertPlaybookGraphNode(
   overrides: Partial<{
     id: string;
     trigger: string;
@@ -58,7 +50,7 @@ function insertPlaybookGraphNode(
     significance: number;
     statement: string;
   }> = {},
-): string {
+): Promise<string> {
   const id = overrides.id ?? uuid();
   const trigger = overrides.trigger ?? "test trigger";
   const action = overrides.action ?? "test action";
@@ -91,7 +83,7 @@ function insertPlaybookGraphNode(
     originalIntensity: 0.1,
   });
 
-  getRawDb().run(
+  await requireMainDb().run(
     `INSERT INTO memory_graph_nodes (
       id, content, type, created, last_accessed, last_consolidated,
       emotional_charge, fidelity, confidence, significance,
@@ -118,7 +110,7 @@ function insertPlaybookGraphNode(
 // ── parsePlaybookStatement ──────────────────────────────────────────
 
 describe("parsePlaybookStatement", () => {
-  test("parses valid playbook JSON with all fields", () => {
+  test("parses valid playbook JSON with all fields", async () => {
     const statement = JSON.stringify({
       trigger: "meeting request",
       action: "check calendar",
@@ -139,7 +131,7 @@ describe("parsePlaybookStatement", () => {
     expect(result!.priority).toBe(10);
   });
 
-  test("applies defaults for missing optional fields", () => {
+  test("applies defaults for missing optional fields", async () => {
     const statement = JSON.stringify({
       trigger: "newsletter",
       action: "archive it",
@@ -156,33 +148,33 @@ describe("parsePlaybookStatement", () => {
     expect(result!.priority).toBe(0);
   });
 
-  test("returns null for invalid JSON", () => {
+  test("returns null for invalid JSON", async () => {
     expect(parsePlaybookStatement("not json")).toBeNull();
     expect(parsePlaybookStatement("{broken")).toBeNull();
     expect(parsePlaybookStatement("")).toBeNull();
   });
 
-  test("returns null when trigger is missing", () => {
+  test("returns null when trigger is missing", async () => {
     const statement = JSON.stringify({ action: "do something" });
     expect(parsePlaybookStatement(statement)).toBeNull();
   });
 
-  test("returns null when action is missing", () => {
+  test("returns null when action is missing", async () => {
     const statement = JSON.stringify({ trigger: "test" });
     expect(parsePlaybookStatement(statement)).toBeNull();
   });
 
-  test("returns null when trigger is not a string", () => {
+  test("returns null when trigger is not a string", async () => {
     const statement = JSON.stringify({ trigger: 42, action: "test" });
     expect(parsePlaybookStatement(statement)).toBeNull();
   });
 
-  test("returns null when action is not a string", () => {
+  test("returns null when action is not a string", async () => {
     const statement = JSON.stringify({ trigger: "test", action: true });
     expect(parsePlaybookStatement(statement)).toBeNull();
   });
 
-  test("defaults invalid autonomyLevel to draft", () => {
+  test("defaults invalid autonomyLevel to draft", async () => {
     const statement = JSON.stringify({
       trigger: "test",
       action: "act",
@@ -194,7 +186,7 @@ describe("parsePlaybookStatement", () => {
     expect(result!.autonomyLevel).toBe("draft");
   });
 
-  test("defaults non-string channel to wildcard", () => {
+  test("defaults non-string channel to wildcard", async () => {
     const statement = JSON.stringify({
       trigger: "test",
       action: "act",
@@ -206,7 +198,7 @@ describe("parsePlaybookStatement", () => {
     expect(result!.channel).toBe("*");
   });
 
-  test("defaults non-number priority to 0", () => {
+  test("defaults non-number priority to 0", async () => {
     const statement = JSON.stringify({
       trigger: "test",
       action: "act",
@@ -218,7 +210,7 @@ describe("parsePlaybookStatement", () => {
     expect(result!.priority).toBe(0);
   });
 
-  test("accepts all valid autonomy levels", () => {
+  test("accepts all valid autonomy levels", async () => {
     for (const level of ["auto", "draft", "notify"] as const) {
       const statement = JSON.stringify({
         trigger: "test",
@@ -234,18 +226,20 @@ describe("parsePlaybookStatement", () => {
 
 // ── compilePlaybooks ────────────────────────────────────────────────
 
-describe("compilePlaybooks", () => {
-  beforeEach(clearPlaybooks);
+describePg("compilePlaybooks", () => {
+  beforeEach(async () => {
+    await clearPlaybooks();
+  });
 
-  test("returns empty result when no playbooks exist", () => {
-    const result = compilePlaybooks();
+  test("returns empty result when no playbooks exist", async () => {
+    const result = await compilePlaybooks();
     expect(result.text).toBe("");
     expect(result.totalCount).toBe(0);
     expect(result.includedCount).toBe(0);
   });
 
-  test("compiles a single playbook into action-playbooks block", () => {
-    insertPlaybookGraphNode({
+  test("compiles a single playbook into action-playbooks block", async () => {
+    await insertPlaybookGraphNode({
       trigger: "meeting request",
       action: "check calendar",
       channel: "*",
@@ -253,7 +247,7 @@ describe("compilePlaybooks", () => {
       priority: 0,
     });
 
-    const result = compilePlaybooks();
+    const result = await compilePlaybooks();
     expect(result.totalCount).toBe(1);
     expect(result.includedCount).toBe(1);
     expect(result.text).toContain("<action-playbooks>");
@@ -264,24 +258,24 @@ describe("compilePlaybooks", () => {
     expect(result.text).toContain("draft for review");
   });
 
-  test("sorts playbooks by priority descending", () => {
-    insertPlaybookGraphNode({
+  test("sorts playbooks by priority descending", async () => {
+    await insertPlaybookGraphNode({
       trigger: "low priority",
       action: "act-low",
       priority: 1,
     });
-    insertPlaybookGraphNode({
+    await insertPlaybookGraphNode({
       trigger: "high priority",
       action: "act-high",
       priority: 10,
     });
-    insertPlaybookGraphNode({
+    await insertPlaybookGraphNode({
       trigger: "medium priority",
       action: "act-med",
       priority: 5,
     });
 
-    const result = compilePlaybooks();
+    const result = await compilePlaybooks();
     expect(result.includedCount).toBe(3);
 
     const lines = result.text.split("\n").filter((l) => l.startsWith("- WHEN"));
@@ -290,78 +284,81 @@ describe("compilePlaybooks", () => {
     expect(lines[2]).toContain("low priority");
   });
 
-  test("excludes soft-deleted playbooks (fidelity=gone)", () => {
-    insertPlaybookGraphNode({
+  test("excludes soft-deleted playbooks (fidelity=gone)", async () => {
+    await insertPlaybookGraphNode({
       trigger: "active",
       action: "yes",
       fidelity: "vivid",
     });
-    insertPlaybookGraphNode({
+    await insertPlaybookGraphNode({
       trigger: "deleted",
       action: "no",
       fidelity: "gone",
     });
 
-    const result = compilePlaybooks();
+    const result = await compilePlaybooks();
     expect(result.includedCount).toBe(1);
     expect(result.text).toContain("active");
     expect(result.text).not.toContain("deleted");
   });
 
-  test("skips rows with unparseable statements", () => {
-    insertPlaybookGraphNode({ trigger: "good", action: "ok" });
+  test("skips rows with unparseable statements", async () => {
+    await insertPlaybookGraphNode({ trigger: "good", action: "ok" });
     // Insert a row with corrupted statement
-    insertPlaybookGraphNode({ statement: "not valid json", trigger: "bad" });
+    await insertPlaybookGraphNode({
+      statement: "not valid json",
+      trigger: "bad",
+    });
 
-    const result = compilePlaybooks();
+    const result = await compilePlaybooks();
     expect(result.totalCount).toBe(2);
     expect(result.includedCount).toBe(1);
     expect(result.text).toContain("good");
   });
 
-  test("renders correct autonomy labels", () => {
-    insertPlaybookGraphNode({
+  test("renders correct autonomy labels", async () => {
+    await insertPlaybookGraphNode({
       trigger: "auto-trigger",
       action: "auto-act",
       autonomyLevel: "auto",
       priority: 3,
     });
-    insertPlaybookGraphNode({
+    await insertPlaybookGraphNode({
       trigger: "draft-trigger",
       action: "draft-act",
       autonomyLevel: "draft",
       priority: 2,
     });
-    insertPlaybookGraphNode({
+    await insertPlaybookGraphNode({
       trigger: "notify-trigger",
       action: "notify-act",
       autonomyLevel: "notify",
       priority: 1,
     });
 
-    const result = compilePlaybooks();
+    const result = await compilePlaybooks();
     expect(result.text).toContain("execute automatically");
     expect(result.text).toContain("draft for review");
     expect(result.text).toContain("notify only");
   });
 
-  test("renders channel name for non-wildcard channels", () => {
-    insertPlaybookGraphNode({
+  test("renders channel name for non-wildcard channels", async () => {
+    await insertPlaybookGraphNode({
       trigger: "email rule",
       action: "handle",
       channel: "email",
     });
 
-    const result = compilePlaybooks();
+    const result = await compilePlaybooks();
     expect(result.text).toContain("on email");
     expect(result.text).not.toContain("all channels");
   });
 
-  test("returns empty text when all rows have unparseable statements", () => {
-    insertPlaybookGraphNode({ statement: "garbage1", trigger: "a" });
-    insertPlaybookGraphNode({ statement: "garbage2", trigger: "b" });
+  test("returns empty text when all rows have unparseable statements", async () => {
+    await insertPlaybookGraphNode({ statement: "garbage1", trigger: "a" });
+    await insertPlaybookGraphNode({ statement: "garbage2", trigger: "b" });
 
-    const result = compilePlaybooks();
+    const result = await compilePlaybooks();
     expect(result.text).toBe("");
     expect(result.totalCount).toBe(2);
     expect(result.includedCount).toBe(0);
@@ -371,7 +368,9 @@ describe("compilePlaybooks", () => {
 // ── Tool edge cases not covered in playbook-tools.test.ts ───────────
 
 describe("playbook tool edge cases", () => {
-  beforeEach(clearPlaybooks);
+  beforeEach(async () => {
+    await clearPlaybooks();
+  });
 
   test("update detects collision with another playbook", async () => {
     const _r1 = await executePlaybookCreate(
@@ -412,7 +411,7 @@ describe("playbook tool edge cases", () => {
     await executePlaybookDelete({ playbook_id: id }, ctx);
 
     // Node still exists in DB but with fidelity = 'gone'
-    const node = getNode(id);
+    const node = await getNode(id);
     expect(node).not.toBeNull();
     expect(node!.fidelity).toBe("gone");
   });

@@ -36,14 +36,14 @@ describe("Dynamic Skill Authoring Workflow moved to tool descriptions", () => {
     setOverridesForTesting({});
   });
 
-  test("system prompt no longer contains Dynamic Skill Authoring section", () => {
+  test("system prompt no longer contains Dynamic Skill Authoring section", async () => {
     writeFileSync(join(TEST_DIR, "IDENTITY.md"), "I am Vellum.");
-    const result = buildSystemPrompt();
+    const result = await buildSystemPrompt();
     expect(result).not.toContain("## Dynamic Skill Authoring Workflow");
     expect(result).not.toContain("### Community Skills Discovery");
   });
 
-  test("prompt no longer includes available skills catalog", () => {
+  test("prompt no longer includes available skills catalog", async () => {
     const skillsDir = join(TEST_DIR, "skills");
     mkdirSync(join(skillsDir, "test-skill"), { recursive: true });
     writeFileSync(
@@ -52,23 +52,23 @@ describe("Dynamic Skill Authoring Workflow moved to tool descriptions", () => {
     );
     writeFileSync(join(TEST_DIR, "IDENTITY.md"), "I am Vellum.");
 
-    const result = buildSystemPrompt();
+    const result = await buildSystemPrompt();
     expect(result).not.toContain("## Available Skills");
     expect(result).not.toContain("**test-skill**");
   });
 
-  test("prompt is additive with IDENTITY/SOUL files", () => {
+  test("prompt is additive with IDENTITY/SOUL files", async () => {
     writeFileSync(join(TEST_DIR, "IDENTITY.md"), "Identity here");
     writeFileSync(join(TEST_DIR, "SOUL.md"), "Soul here");
 
-    const result = buildSystemPrompt();
+    const result = await buildSystemPrompt();
     expect(result).toContain("Identity here");
     expect(result).toContain("Soul here");
   });
 
-  test("browser skill activation hints no longer appear in system prompt", () => {
+  test("browser skill activation hints no longer appear in system prompt", async () => {
     writeFileSync(join(TEST_DIR, "IDENTITY.md"), "I am Vellum.");
-    const result = buildSystemPrompt();
+    const result = await buildSystemPrompt();
     expect(result).not.toContain("Browser Skill Prerequisite");
     // Skills catalog removed from system prompt — activation hints live in capability memories
     expect(result).not.toContain("## Available Skills");

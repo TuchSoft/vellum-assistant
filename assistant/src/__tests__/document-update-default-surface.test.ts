@@ -1,10 +1,10 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { getDocumentById } from "../documents/document-store.js";
-import { getSqlite } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { executeDocumentUpdate } from "../tools/document/document-tool.js";
 import type { ToolContext, ToolExecutionResult } from "../tools/types.js";
-import { resetDbForTesting } from "./db-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 function makeContext(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
@@ -21,70 +21,30 @@ function parseResult<T>(result: ToolExecutionResult): T {
   return JSON.parse(result.content) as T;
 }
 
-function bootstrapDocumentTables(): void {
-  resetDbForTesting();
-  const raw = getSqlite();
-  raw.exec(/*sql*/ `
-    DROP TABLE IF EXISTS document_conversations;
-    DROP TABLE IF EXISTS document_revisions;
-    DROP TABLE IF EXISTS documents;
-    DROP TABLE IF EXISTS conversations;
-
-    CREATE TABLE conversations (
-      id TEXT PRIMARY KEY,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
-    );
-
-    CREATE TABLE documents (
-      surface_id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      word_count INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      revision INTEGER NOT NULL DEFAULT 0,
-      workspace_path TEXT
-    );
-
-    CREATE TABLE document_revisions (
-      surface_id TEXT NOT NULL REFERENCES documents(surface_id) ON DELETE CASCADE,
-      revision INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      word_count INTEGER NOT NULL DEFAULT 0,
-      author TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (surface_id, revision)
-    );
-
-    CREATE TABLE document_conversations (
-      surface_id TEXT NOT NULL,
-      conversation_id TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (surface_id, conversation_id),
-      FOREIGN KEY (surface_id) REFERENCES documents(surface_id) ON DELETE CASCADE
-    );
-  `);
+async function bootstrapDocumentTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM document_revisions");
+  await db.run("DELETE FROM document_conversations");
+  await db.run("DELETE FROM documents");
+  await db.run("DELETE FROM conversations");
 }
 
-function seedDocument(params: {
+async function seedDocument(params: {
   surfaceId: string;
   conversationId: string;
   title: string;
   content: string;
   createdAt: number;
   updatedAt?: number;
-}): void {
-  const raw = getSqlite();
-  raw
-    .query(`INSERT OR IGNORE INTO conversations (id, created_at) VALUES (?, ?)`)
-    .run(params.conversationId, params.createdAt);
-  raw
-    .query(
-      `INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+}): Promise<void> {
+  const db = requireMainDb();
+  await db.run(
+    `INSERT INTO conversations (id, created_at, updated_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`,
+    [params.conversationId, params.createdAt, params.createdAt],
+  );
+  await db.run(
+    `INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
       params.surfaceId,
       params.conversationId,
       params.title,
@@ -92,22 +52,22 @@ function seedDocument(params: {
       params.content.split(/\s+/).filter(Boolean).length,
       params.createdAt,
       params.updatedAt ?? params.createdAt,
-    );
-  raw
-    .query(
-      `INSERT OR IGNORE INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?)`,
-    )
-    .run(params.surfaceId, params.conversationId, params.createdAt);
+    ],
+  );
+  await db.run(
+    `INSERT INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`,
+    [params.surfaceId, params.conversationId, params.createdAt],
+  );
 }
 
-describe("executeDocumentUpdate — default surface_id resolution", () => {
-  beforeEach(() => {
-    bootstrapDocumentTables();
+describePg("executeDocumentUpdate — default surface_id resolution", () => {
+  beforeEach(async () => {
+    await bootstrapDocumentTables();
   });
 
-  test("appends to the conversation's only document when surface_id is omitted", () => {
+  test("appends to the conversation's only document when surface_id is omitted", async () => {
     const surfaceId = "doc-only";
-    seedDocument({
+    await seedDocument({
       surfaceId,
       conversationId: "conv-current",
       title: "Dating in 2026",
@@ -115,7 +75,7 @@ describe("executeDocumentUpdate — default surface_id resolution", () => {
       createdAt: Date.now(),
     });
 
-    const result = executeDocumentUpdate(
+    const result = await executeDocumentUpdate(
       { content: "## Section two", mode: "append" },
       makeContext(),
     );
@@ -124,14 +84,14 @@ describe("executeDocumentUpdate — default surface_id resolution", () => {
     const body = parseResult<{ surface_id: string; success: boolean }>(result);
     expect(body.success).toBe(true);
     expect(body.surface_id).toBe(surfaceId);
-    expect(getDocumentById(surfaceId)?.content).toBe(
+    expect((await getDocumentById(surfaceId))?.content).toBe(
       "# Dating in 2026\n\nIntro.\n\n## Section two",
     );
   });
 
-  test("targets the most recently updated document when several exist", () => {
+  test("targets the most recently updated document when several exist", async () => {
     const now = Date.now();
-    seedDocument({
+    await seedDocument({
       surfaceId: "doc-old",
       conversationId: "conv-current",
       title: "Old",
@@ -139,7 +99,7 @@ describe("executeDocumentUpdate — default surface_id resolution", () => {
       createdAt: now - 10_000,
       updatedAt: now - 10_000,
     });
-    seedDocument({
+    await seedDocument({
       surfaceId: "doc-fresh",
       conversationId: "conv-current",
       title: "Fresh",
@@ -148,18 +108,21 @@ describe("executeDocumentUpdate — default surface_id resolution", () => {
       updatedAt: now,
     });
 
-    const result = executeDocumentUpdate({ content: "more" }, makeContext());
+    const result = await executeDocumentUpdate(
+      { content: "more" },
+      makeContext(),
+    );
 
     expect(result.isError).toBe(false);
     const body = parseResult<{ surface_id: string }>(result);
     expect(body.surface_id).toBe("doc-fresh");
-    expect(getDocumentById("doc-fresh")?.content).toBe("fresh\n\nmore");
-    expect(getDocumentById("doc-old")?.content).toBe("old");
+    expect((await getDocumentById("doc-fresh"))?.content).toBe("fresh\n\nmore");
+    expect((await getDocumentById("doc-old"))?.content).toBe("old");
   });
 
-  test("an explicit surface_id still wins over the default", () => {
+  test("an explicit surface_id still wins over the default", async () => {
     const now = Date.now();
-    seedDocument({
+    await seedDocument({
       surfaceId: "doc-target",
       conversationId: "conv-current",
       title: "Target",
@@ -167,7 +130,7 @@ describe("executeDocumentUpdate — default surface_id resolution", () => {
       createdAt: now - 10_000,
       updatedAt: now - 10_000,
     });
-    seedDocument({
+    await seedDocument({
       surfaceId: "doc-fresh",
       conversationId: "conv-current",
       title: "Fresh",
@@ -176,7 +139,7 @@ describe("executeDocumentUpdate — default surface_id resolution", () => {
       updatedAt: now,
     });
 
-    const result = executeDocumentUpdate(
+    const result = await executeDocumentUpdate(
       { surface_id: "doc-target", content: "hit" },
       makeContext(),
     );
@@ -185,12 +148,14 @@ describe("executeDocumentUpdate — default surface_id resolution", () => {
     expect(parseResult<{ surface_id: string }>(result).surface_id).toBe(
       "doc-target",
     );
-    expect(getDocumentById("doc-target")?.content).toBe("target\n\nhit");
-    expect(getDocumentById("doc-fresh")?.content).toBe("fresh");
+    expect((await getDocumentById("doc-target"))?.content).toBe(
+      "target\n\nhit",
+    );
+    expect((await getDocumentById("doc-fresh"))?.content).toBe("fresh");
   });
 
-  test("errors helpfully when the conversation has no document", () => {
-    const result = executeDocumentUpdate(
+  test("errors helpfully when the conversation has no document", async () => {
+    const result = await executeDocumentUpdate(
       { content: "orphan chunk" },
       makeContext(),
     );
@@ -200,13 +165,13 @@ describe("executeDocumentUpdate — default surface_id resolution", () => {
     expect(result.content).toContain("document_create");
   });
 
-  test("reports success when no client is connected to render the edit", () => {
+  test("reports success when no client is connected to render the edit", async () => {
     // A headless turn (a schedule, or an SMS or Telegram channel) has no
     // client, but the row is written all the same. Reporting an error would
     // skip the post-execution hooks, so the documents-changed broadcast that
     // tells clients about the edit would never fire, and the model would be
     // told to retry a write that already succeeded.
-    seedDocument({
+    await seedDocument({
       surfaceId: "doc-headless",
       conversationId: "conv-current",
       title: "X",
@@ -214,7 +179,7 @@ describe("executeDocumentUpdate — default surface_id resolution", () => {
       createdAt: Date.now(),
     });
 
-    const result = executeDocumentUpdate(
+    const result = await executeDocumentUpdate(
       { content: "appended", mode: "append" },
       makeContext({ sendToClient: undefined }),
     );
@@ -225,11 +190,13 @@ describe("executeDocumentUpdate — default surface_id resolution", () => {
     // Web anchors its changed-document chip on this id, so a headless write
     // that omitted it would surface nothing.
     expect(body.surface_id).toBe("doc-headless");
-    expect(getDocumentById("doc-headless")?.content).toBe("start\n\nappended");
+    expect((await getDocumentById("doc-headless"))?.content).toBe(
+      "start\n\nappended",
+    );
   });
 
-  test("still requires content", () => {
-    seedDocument({
+  test("still requires content", async () => {
+    await seedDocument({
       surfaceId: "doc-only",
       conversationId: "conv-current",
       title: "X",
@@ -237,7 +204,10 @@ describe("executeDocumentUpdate — default surface_id resolution", () => {
       createdAt: Date.now(),
     });
 
-    const result = executeDocumentUpdate({ mode: "append" }, makeContext());
+    const result = await executeDocumentUpdate(
+      { mode: "append" },
+      makeContext(),
+    );
     expect(result.isError).toBe(true);
     expect(result.content).toContain("content is required");
   });

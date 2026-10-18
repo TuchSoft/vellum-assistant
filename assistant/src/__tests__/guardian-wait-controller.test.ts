@@ -147,7 +147,7 @@ function createController(overrides?: Partial<GuardianWaitControllerDeps>) {
     recordCallEvent: (_callSessionId, eventType, payload) => {
       events.push({ eventType, payload });
     },
-    resolveGuardianLabel: () => "Alice",
+    resolveGuardianLabel: async () => "Alice",
     onApproved: (ctx) => {
       approvals.push(ctx);
     },
@@ -174,12 +174,19 @@ function createController(overrides?: Partial<GuardianWaitControllerDeps>) {
   };
 }
 
+/** Yield once so promises chained inside the controller settle. */
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+}
+
 /** Make an in-wait callback offer, then opt in. Bypasses no timers. */
-function optIntoCallback(controller: GuardianWaitController): void {
+async function optIntoCallback(
+  controller: GuardianWaitController,
+): Promise<void> {
   nowValue += IN_WAIT_REPLY_COOLDOWN_MS + 1;
-  controller.handleTranscript("hurry up, this is taking too long");
+  await controller.handleTranscript("hurry up, this is taking too long");
   nowValue += 1;
-  controller.handleTranscript("yes, please call me back");
+  await controller.handleTranscript("yes, please call me back");
 }
 
 beforeEach(() => {
@@ -199,11 +206,12 @@ afterEach(() => {
 
 describe("GuardianWaitController", () => {
   describe("start", () => {
-    test("speaks the hold message, marks the session waiting, and enters the wait state", () => {
+    test("speaks the hold message, marks the session waiting, and enters the wait state", async () => {
       const { controller, spoken, sessionUpdates } = createController();
 
       expect(controller.getState()).toBe("idle");
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
       expect(controller.getState()).toBe("awaiting_guardian_decision");
       expect(controller.getResolution()).toBeNull();
@@ -215,9 +223,10 @@ describe("GuardianWaitController", () => {
       controller.dispose();
     });
 
-    test("may only be called once", () => {
+    test("may only be called once", async () => {
       const { controller } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
       expect(() => controller.start(START_PARAMS)).toThrow(
         "may only be called once",
       );
@@ -226,10 +235,11 @@ describe("GuardianWaitController", () => {
   });
 
   describe("resolution", () => {
-    test("approval: poll observes approved and fires onApproved once", () => {
+    test("approval: poll observes approved and fires onApproved once", async () => {
       seedRequest("pending");
       const { controller, approvals, denials, timeouts } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
       jest.advanceTimersByTime(50);
       expect(approvals).toHaveLength(0);
@@ -255,10 +265,11 @@ describe("GuardianWaitController", () => {
       expect(approvals).toHaveLength(1);
     });
 
-    test("denial: poll observes denied and fires onDenied once", () => {
+    test("denial: poll observes denied and fires onDenied once", async () => {
       seedRequest("pending");
       const { controller, approvals, denials, timeouts } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
       seedRequest("denied");
       jest.advanceTimersByTime(50);
@@ -272,12 +283,13 @@ describe("GuardianWaitController", () => {
       expect(denials).toHaveLength(1);
     });
 
-    test("pending/expired statuses keep polling; timeout fires onTimeout", () => {
+    test("pending/expired statuses keep polling; timeout fires onTimeout", async () => {
       seedRequest("pending");
       const { controller, timeouts } = createController({
         consultTimeoutMs: 2000,
       });
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
       jest.advanceTimersByTime(1999);
       expect(timeouts).toHaveLength(0);
@@ -292,10 +304,11 @@ describe("GuardianWaitController", () => {
       expect(emitSignalCalls).toHaveLength(0);
     });
 
-    test("heartbeats and speech stop after resolution", () => {
+    test("heartbeats and speech stop after resolution", async () => {
       seedRequest("pending");
       const { controller, spoken } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
       seedRequest("approved");
       jest.advanceTimersByTime(50);
@@ -307,11 +320,12 @@ describe("GuardianWaitController", () => {
   });
 
   describe("heartbeats", () => {
-    test("fires at the initial interval inside the initial window", () => {
+    test("fires at the initial interval inside the initial window", async () => {
       seedRequest("pending");
       nowValue = Date.now();
       const { controller, spoken } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
       // Margins are generous because bun's fake clock bases timer due
       // times on real registration timestamps (a few ms of drift).
@@ -332,7 +346,7 @@ describe("GuardianWaitController", () => {
       controller.dispose();
     });
 
-    test("uses the jittered steady interval past the initial window and advances the sequence", () => {
+    test("uses the jittered steady interval past the initial window and advances the sequence", async () => {
       seedRequest("pending");
       // Stamp the wait start 10s in the past so elapsed exceeds the 3000ms
       // initial window and the steady interval range [1500, 2000) applies.
@@ -344,6 +358,7 @@ describe("GuardianWaitController", () => {
         nowValue = Date.now() - 10_000;
         const { controller, spoken } = createController();
         controller.start(START_PARAMS);
+        await flushMicrotasks();
 
         jest.advanceTimersByTime(1400);
         expect(spoken).toHaveLength(1);
@@ -363,14 +378,15 @@ describe("GuardianWaitController", () => {
       }
     });
 
-    test("a caller reply resets the heartbeat timer", () => {
+    test("a caller reply resets the heartbeat timer", async () => {
       seedRequest("pending");
       nowValue = Date.now();
       const { controller, spoken } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
       jest.advanceTimersByTime(600);
-      controller.handleTranscript("any update?");
+      await controller.handleTranscript("any update?");
       expect(spoken).toHaveLength(2);
       expect(spoken[1]).toContain("still here");
 
@@ -389,11 +405,12 @@ describe("GuardianWaitController", () => {
   });
 
   describe("wait utterances", () => {
-    test("classifies every utterance and ignores empty ones without speaking", () => {
+    test("classifies every utterance and ignores empty ones without speaking", async () => {
       const { controller, spoken, events } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
-      controller.handleTranscript("   ");
+      await controller.handleTranscript("   ");
       expect(events).toEqual([
         {
           eventType: "voice_guardian_wait_prompt_classified",
@@ -405,11 +422,12 @@ describe("GuardianWaitController", () => {
       controller.dispose();
     });
 
-    test("patience check gets immediate reassurance", () => {
+    test("patience check gets immediate reassurance", async () => {
       const { controller, spoken } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
-      controller.handleTranscript("are you still there?");
+      await controller.handleTranscript("are you still there?");
       expect(spoken[1]).toBe(
         "Yes, I'm still here. Still waiting to hear back from Alice.",
       );
@@ -417,11 +435,12 @@ describe("GuardianWaitController", () => {
       controller.dispose();
     });
 
-    test("neutral utterance gets an acknowledgment", () => {
+    test("neutral utterance gets an acknowledgment", async () => {
       const { controller, spoken } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
-      controller.handleTranscript("I was calling about the garden fence");
+      await controller.handleTranscript("I was calling about the garden fence");
       expect(spoken[1]).toBe(
         "Thanks for that. I'm still waiting on Alice. I'll let you know as soon as I hear back.",
       );
@@ -429,11 +448,12 @@ describe("GuardianWaitController", () => {
       controller.dispose();
     });
 
-    test("impatience triggers the callback offer once, then plain reassurance", () => {
+    test("impatience triggers the callback offer once, then plain reassurance", async () => {
       const { controller, spoken, events } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
-      controller.handleTranscript("hurry up");
+      await controller.handleTranscript("hurry up");
       expect(spoken[1]).toContain("call you back");
       expect(
         events.filter(
@@ -442,7 +462,7 @@ describe("GuardianWaitController", () => {
       ).toHaveLength(1);
 
       nowValue += IN_WAIT_REPLY_COOLDOWN_MS + 1;
-      controller.handleTranscript("come on, hurry up");
+      await controller.handleTranscript("come on, hurry up");
       expect(spoken[2]).toBe(
         "I hear you, I'm sorry for the wait. Still trying to reach Alice.",
       );
@@ -455,31 +475,33 @@ describe("GuardianWaitController", () => {
       controller.dispose();
     });
 
-    test("cooldown suppresses rapid-fire non-callback replies", () => {
+    test("cooldown suppresses rapid-fire non-callback replies", async () => {
       const { controller, spoken } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
-      controller.handleTranscript("hello?");
+      await controller.handleTranscript("hello?");
       expect(spoken).toHaveLength(2);
 
       nowValue += IN_WAIT_REPLY_COOLDOWN_MS - 1;
-      controller.handleTranscript("hello again?");
+      await controller.handleTranscript("hello again?");
       expect(spoken).toHaveLength(2);
 
       nowValue += 1;
-      controller.handleTranscript("still there?");
+      await controller.handleTranscript("still there?");
       expect(spoken).toHaveLength(3);
 
       controller.dispose();
     });
 
-    test("callback opt-in and decline bypass the cooldown", () => {
+    test("callback opt-in and decline bypass the cooldown", async () => {
       const { controller, spoken, events } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
-      controller.handleTranscript("hurry up"); // offer made
+      await controller.handleTranscript("hurry up"); // offer made
       nowValue += 1; // well inside cooldown
-      controller.handleTranscript("yes, please call me back");
+      await controller.handleTranscript("yes, please call me back");
       expect(spoken[2]).toContain("you'd like a callback");
       expect(
         events.some(
@@ -488,7 +510,7 @@ describe("GuardianWaitController", () => {
       ).toBe(true);
 
       nowValue += 1; // still inside cooldown
-      controller.handleTranscript("actually no, I'll hold");
+      await controller.handleTranscript("actually no, I'll hold");
       expect(spoken[3]).toBe(
         "No problem, I'll keep holding. Still waiting on Alice.",
       );
@@ -501,28 +523,31 @@ describe("GuardianWaitController", () => {
       controller.dispose();
     });
 
-    test("transcripts are ignored before start and after resolution/dispose", () => {
+    test("transcripts are ignored before start and after resolution/dispose", async () => {
       const { controller, events, spoken } = createController();
 
-      controller.handleTranscript("hello?");
+      await controller.handleTranscript("hello?");
       expect(events).toHaveLength(0);
 
       controller.start(START_PARAMS);
+
+      await flushMicrotasks();
       controller.dispose();
-      controller.handleTranscript("hello?");
+      await controller.handleTranscript("hello?");
       expect(events).toHaveLength(0);
       expect(spoken).toHaveLength(1);
     });
   });
 
   describe("callback handoff exactly-once", () => {
-    test("timeout after opt-in emits the handoff once, before onTimeout", () => {
+    test("timeout after opt-in emits the handoff once, before onTimeout", async () => {
       seedRequest("pending");
       const { controller, timeouts } = createController({
         consultTimeoutMs: 2000,
       });
       controller.start(START_PARAMS);
-      optIntoCallback(controller);
+      await flushMicrotasks();
+      await optIntoCallback(controller);
 
       jest.advanceTimersByTime(2000);
       expect(emitSignalCalls).toHaveLength(1);
@@ -533,13 +558,14 @@ describe("GuardianWaitController", () => {
       expect(timeouts[0].callbackOptIn).toBe(true);
     });
 
-    test("disconnect racing timeout does not emit a second handoff", () => {
+    test("disconnect racing timeout does not emit a second handoff", async () => {
       seedRequest("pending");
       const { controller, timeouts } = createController({
         consultTimeoutMs: 2000,
       });
       controller.start(START_PARAMS);
-      optIntoCallback(controller);
+      await flushMicrotasks();
+      await optIntoCallback(controller);
 
       jest.advanceTimersByTime(2000);
       expect(emitSignalCalls).toHaveLength(1);
@@ -556,7 +582,8 @@ describe("GuardianWaitController", () => {
         consultTimeoutMs: 2000,
       });
       controller.start(START_PARAMS);
-      optIntoCallback(controller);
+      await flushMicrotasks();
+      await optIntoCallback(controller);
 
       controller.dispose("transport_closed");
       // The handoff enriches from an async gateway read before emitting.
@@ -575,20 +602,22 @@ describe("GuardianWaitController", () => {
       expect(timeouts).toHaveLength(0);
     });
 
-    test("disconnect mid-wait without opt-in emits nothing", () => {
+    test("disconnect mid-wait without opt-in emits nothing", async () => {
       seedRequest("pending");
       const { controller } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
       controller.dispose("transport_closed");
       expect(emitSignalCalls).toHaveLength(0);
     });
 
-    test("plain teardown never emits the handoff", () => {
+    test("plain teardown never emits the handoff", async () => {
       seedRequest("pending");
       const { controller } = createController();
       controller.start(START_PARAMS);
-      optIntoCallback(controller);
+      await flushMicrotasks();
+      await optIntoCallback(controller);
 
       controller.dispose();
       expect(emitSignalCalls).toHaveLength(0);
@@ -596,11 +625,12 @@ describe("GuardianWaitController", () => {
   });
 
   describe("dispose", () => {
-    test("clears every timer — nothing fires afterwards", () => {
+    test("clears every timer — nothing fires afterwards", async () => {
       seedRequest("pending");
       const { controller, spoken, approvals, denials, timeouts } =
         createController({ consultTimeoutMs: 2000 });
       controller.start(START_PARAMS);
+      await flushMicrotasks();
 
       controller.dispose();
       expect(controller.getState()).toBe("disposed");
@@ -618,10 +648,11 @@ describe("GuardianWaitController", () => {
       ).toHaveLength(0);
     });
 
-    test("is idempotent and preserves a reached resolution", () => {
+    test("is idempotent and preserves a reached resolution", async () => {
       seedRequest("approved");
       const { controller, approvals } = createController();
       controller.start(START_PARAMS);
+      await flushMicrotasks();
       jest.advanceTimersByTime(50);
       expect(approvals).toHaveLength(1);
 

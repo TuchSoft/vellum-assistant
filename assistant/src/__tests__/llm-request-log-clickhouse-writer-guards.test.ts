@@ -7,7 +7,7 @@
  * local row in local mode, flip `readSource` to `clickhouse`, and assert each
  * mutator leaves the local row untouched.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 mock.module("../util/logger.js", () => ({
   getLogger: () =>
@@ -28,8 +28,7 @@ function setReadSource(readSource: "local" | "clickhouse"): void {
   setConfig("llmRequestLogs", { readSource, clickhouse: CLICKHOUSE_CONFIG });
 }
 
-import { getLogsDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   backfillMessageIdOnLogs,
   getRequestLogById,
@@ -37,21 +36,19 @@ import {
   relinkLlmRequestLogs,
   setAgentLoopExitReasonOnLatestLog,
 } from "../persistence/llm-request-log-store.js";
-import { llmRequestLogs } from "../persistence/schema/index.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetLogs(): void {
-  getLogsDb()!.delete(llmRequestLogs).run();
+async function resetLogs(): Promise<void> {
+  await requireMainDb().run("DELETE FROM llm_request_logs");
 }
 
-/** Seed one local SQLite row in local-write mode and return its id. */
-function seedLocalRow(
+/** Seed one local row in local-write mode and return its id. */
+async function seedLocalRow(
   conversationId: string,
   opts: { messageId?: string } = {},
-): string {
+): Promise<string> {
   setReadSource("local");
-  const id = recordRequestLog(
+  const id = await recordRequestLog(
     conversationId,
     '{"req":1}',
     '{"res":1}',
@@ -63,46 +60,48 @@ function seedLocalRow(
   return id!;
 }
 
-describe("SQLite mutators skip when ClickHouse owns writes", () => {
-  beforeEach(() => {
-    resetLogs();
+describePg("SQLite mutators skip when ClickHouse owns writes", () => {
+  beforeEach(async () => {
+    await resetLogs();
     setReadSource("local");
   });
 
-  test("setAgentLoopExitReasonOnLatestLog stamps in local mode", () => {
-    const id = seedLocalRow("conv-1");
-    setAgentLoopExitReasonOnLatestLog("conv-1", "no_tool_calls");
-    expect(getRequestLogById(id)?.agentLoopExitReason).toBe("no_tool_calls");
+  test("setAgentLoopExitReasonOnLatestLog stamps in local mode", async () => {
+    const id = await seedLocalRow("conv-1");
+    await setAgentLoopExitReasonOnLatestLog("conv-1", "no_tool_calls");
+    expect((await getRequestLogById(id))?.agentLoopExitReason).toBe(
+      "no_tool_calls",
+    );
   });
 
-  test("setAgentLoopExitReasonOnLatestLog leaves stale local rows untouched in ClickHouse mode", () => {
+  test("setAgentLoopExitReasonOnLatestLog leaves stale local rows untouched in ClickHouse mode", async () => {
     // An older local-mode row with a NULL exit reason (a normal intermediate
     // call). A later ClickHouse-mode turn must NOT stamp it.
-    const staleId = seedLocalRow("conv-1");
+    const staleId = await seedLocalRow("conv-1");
     setReadSource("clickhouse");
-    setAgentLoopExitReasonOnLatestLog("conv-1", "yield_to_user");
-    expect(getRequestLogById(staleId)?.agentLoopExitReason).toBeNull();
+    await setAgentLoopExitReasonOnLatestLog("conv-1", "yield_to_user");
+    expect((await getRequestLogById(staleId))?.agentLoopExitReason).toBeNull();
   });
 
-  test("backfillMessageIdOnLogs leaves stale local rows untouched in ClickHouse mode", () => {
-    const staleId = seedLocalRow("conv-2"); // messageId NULL
-    expect(getRequestLogById(staleId)?.messageId).toBeNull();
+  test("backfillMessageIdOnLogs leaves stale local rows untouched in ClickHouse mode", async () => {
+    const staleId = await seedLocalRow("conv-2"); // messageId NULL
+    expect((await getRequestLogById(staleId))?.messageId).toBeNull();
     setReadSource("clickhouse");
-    backfillMessageIdOnLogs("conv-2", "msg-new");
-    expect(getRequestLogById(staleId)?.messageId).toBeNull();
+    await backfillMessageIdOnLogs("conv-2", "msg-new");
+    expect((await getRequestLogById(staleId))?.messageId).toBeNull();
   });
 
-  test("relinkLlmRequestLogs leaves stale local rows untouched in ClickHouse mode", () => {
-    const staleId = seedLocalRow("conv-3", { messageId: "m1" });
-    expect(getRequestLogById(staleId)?.messageId).toBe("m1");
+  test("relinkLlmRequestLogs leaves stale local rows untouched in ClickHouse mode", async () => {
+    const staleId = await seedLocalRow("conv-3", { messageId: "m1" });
+    expect((await getRequestLogById(staleId))?.messageId).toBe("m1");
     setReadSource("clickhouse");
-    relinkLlmRequestLogs(["m1"], "m2");
-    expect(getRequestLogById(staleId)?.messageId).toBe("m1");
+    await relinkLlmRequestLogs(["m1"], "m2");
+    expect((await getRequestLogById(staleId))?.messageId).toBe("m1");
   });
 
-  test("backfillMessageIdOnLogs still works in local mode", () => {
-    const id = seedLocalRow("conv-4");
-    backfillMessageIdOnLogs("conv-4", "msg-local");
-    expect(getRequestLogById(id)?.messageId).toBe("msg-local");
+  test("backfillMessageIdOnLogs still works in local mode", async () => {
+    const id = await seedLocalRow("conv-4");
+    await backfillMessageIdOnLogs("conv-4", "msg-local");
+    expect((await getRequestLogById(id))?.messageId).toBe("msg-local");
   });
 });

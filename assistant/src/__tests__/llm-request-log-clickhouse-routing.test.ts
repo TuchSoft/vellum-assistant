@@ -4,7 +4,7 @@
  * otherwise. The sink module is mocked so the routing decision is observable
  * without a live ClickHouse.
  */
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, expect, mock, test } from "bun:test";
 
 // Logging stays enabled and writes stay on local SQLite — both are the
 // schema defaults, so no config seeding is needed (the sink factory itself
@@ -38,30 +38,27 @@ afterAll(() => {
   sinkActive = false;
 });
 
-import { getLogsDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   getRequestLogsByConversationId,
   recordRequestLog,
   recordSyntheticAgentErrorMessageLog,
 } from "../persistence/llm-request-log-store.js";
-import { llmRequestLogs } from "../persistence/schema/index.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetLogs(): void {
-  getLogsDb()!.delete(llmRequestLogs).run();
+async function resetLogs(): Promise<void> {
+  await requireMainDb().run("DELETE FROM llm_request_logs");
 }
 
-describe("write routing between SQLite and ClickHouse", () => {
-  beforeEach(() => {
-    resetLogs();
+describePg("write routing between SQLite and ClickHouse", () => {
+  beforeEach(async () => {
+    await resetLogs();
     capturedRows = [];
     sinkActive = false;
   });
 
-  test("writes to local SQLite when no ClickHouse sink is configured", () => {
-    const id = recordRequestLog(
+  test("writes to local SQLite when no ClickHouse sink is configured", async () => {
+    const id = await recordRequestLog(
       "conv-local",
       '{"req":1}',
       '{"res":1}',
@@ -71,14 +68,14 @@ describe("write routing between SQLite and ClickHouse", () => {
     );
     expect(id).not.toBeNull();
     expect(capturedRows).toHaveLength(0);
-    const rows = getRequestLogsByConversationId("conv-local");
+    const rows = await getRequestLogsByConversationId("conv-local");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.provider).toBe("anthropic");
   });
 
-  test("routes to ClickHouse and skips SQLite when a sink is configured", () => {
+  test("routes to ClickHouse and skips SQLite when a sink is configured", async () => {
     sinkActive = true;
-    const id = recordRequestLog(
+    const id = await recordRequestLog(
       "conv-ch",
       '{"req":1}',
       '{"res":1}',
@@ -88,7 +85,7 @@ describe("write routing between SQLite and ClickHouse", () => {
     );
     expect(id).not.toBeNull();
     // Nothing landed in the local table.
-    expect(getRequestLogsByConversationId("conv-ch")).toEqual([]);
+    expect(await getRequestLogsByConversationId("conv-ch")).toEqual([]);
     // The row went to the sink, carrying the same id and call site.
     expect(capturedRows).toHaveLength(1);
     expect(capturedRows[0]!.id).toBe(id!);
@@ -96,9 +93,9 @@ describe("write routing between SQLite and ClickHouse", () => {
     expect(capturedRows[0]!.callSite).toBe("mainAgent");
   });
 
-  test("routes synthetic error rows to ClickHouse too", () => {
+  test("routes synthetic error rows to ClickHouse too", async () => {
     sinkActive = true;
-    const id = recordSyntheticAgentErrorMessageLog({
+    const id = await recordSyntheticAgentErrorMessageLog({
       conversationId: "conv-ch-2",
       messageId: "msg-ch-2",
       exitReason: "budget_yield_unrecovered",
@@ -107,7 +104,7 @@ describe("write routing between SQLite and ClickHouse", () => {
       createdAt: 1_700_000_000_000,
     });
     expect(id).not.toBeNull();
-    expect(getRequestLogsByConversationId("conv-ch-2")).toEqual([]);
+    expect(await getRequestLogsByConversationId("conv-ch-2")).toEqual([]);
     expect(capturedRows).toHaveLength(1);
     expect(capturedRows[0]!.callSite).toBe("syntheticAgentErrorMessage");
   });

@@ -143,13 +143,13 @@ describePg("mode-session history projection", () => {
     const conversation = await createConversation();
     const coordinator = new ConversationModeSessionCoordinator(conversation.id);
     registerCoordinator(conversation.id, coordinator);
-    const session = coordinator.activateSource({
+    const session = await coordinator.activateSource({
       sourceId: "browser-source",
       generation: 1,
       mode: "browser",
       sourceStartedAt: 100,
     })!;
-    const requestedSession = coordinator.activateSource({
+    const requestedSession = await coordinator.activateSource({
       sourceId: "computer-source",
       generation: 1,
       mode: "computer_use",
@@ -206,12 +206,14 @@ describePg("mode-session history projection", () => {
     const parent = await createConversation();
     const child = await createConversation();
     expect(
-      await beginConversationModeSession({
-        id: "session-parent",
-        conversationId: parent.id,
-        mode: "browser",
-        sourceStartedAt: 100,
-      }).ok,
+      (
+        await beginConversationModeSession({
+          id: "session-parent",
+          conversationId: parent.id,
+          mode: "browser",
+          sourceStartedAt: 100,
+        })
+      ).ok,
     ).toBe(true);
     await addMessage(
       child.id,

@@ -75,7 +75,9 @@ describePg("deleteMessageById segment purge", () => {
     expect(await memoryRows("memory_embeddings")).toEqual(["emb-seg-b"]);
     // The conversation and the sibling message live on.
     expect(
-      await requireMainDb().get("SELECT COUNT(*) AS c FROM conversations"),
+      await requireMainDb().get<{ c: number }>(
+        "SELECT COUNT(*) AS c FROM conversations",
+      ),
     ).toEqual({ c: 1 });
     expect(await requireMainDb().all("SELECT id FROM messages")).toEqual([
       { id: msgB.id },

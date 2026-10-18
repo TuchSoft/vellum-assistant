@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { getDocumentById } from "../documents/document-store.js";
-import { getSqlite } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   executeDocumentCreate,
   executeDocumentDelete,
@@ -12,7 +12,7 @@ import {
   executeDocumentUpdate,
 } from "../tools/document/document-tool.js";
 import type { ToolContext, ToolExecutionResult } from "../tools/types.js";
-import { resetDbForTesting } from "./db-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 function makeContext(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
@@ -28,69 +28,29 @@ function parseResult<T>(result: ToolExecutionResult): T {
   return JSON.parse(result.content) as T;
 }
 
-function bootstrapDocumentTables(): void {
-  resetDbForTesting();
-  const raw = getSqlite();
-  raw.exec(/*sql*/ `
-    DROP TABLE IF EXISTS document_conversations;
-    DROP TABLE IF EXISTS document_revisions;
-    DROP TABLE IF EXISTS documents;
-    DROP TABLE IF EXISTS conversations;
-
-    CREATE TABLE conversations (
-      id TEXT PRIMARY KEY,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
-    );
-
-    CREATE TABLE documents (
-      surface_id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      word_count INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      revision INTEGER NOT NULL DEFAULT 0,
-      workspace_path TEXT
-    );
-
-    CREATE TABLE document_revisions (
-      surface_id TEXT NOT NULL REFERENCES documents(surface_id) ON DELETE CASCADE,
-      revision INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      word_count INTEGER NOT NULL DEFAULT 0,
-      author TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (surface_id, revision)
-    );
-
-    CREATE TABLE document_conversations (
-      surface_id TEXT NOT NULL,
-      conversation_id TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (surface_id, conversation_id),
-      FOREIGN KEY (surface_id) REFERENCES documents(surface_id) ON DELETE CASCADE
-    );
-  `);
+async function bootstrapDocumentTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM document_revisions");
+  await db.run("DELETE FROM document_conversations");
+  await db.run("DELETE FROM documents");
+  await db.run("DELETE FROM conversations");
 }
 
-function seedDocument(params: {
+async function seedDocument(params: {
   surfaceId: string;
   conversationId: string;
   title: string;
   content: string;
   updatedAt: number;
-}): void {
-  const raw = getSqlite();
-  raw
-    .query(`INSERT OR IGNORE INTO conversations (id, created_at) VALUES (?, ?)`)
-    .run(params.conversationId, params.updatedAt);
-  raw
-    .query(
-      `INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+}): Promise<void> {
+  const db = requireMainDb();
+  await db.run(
+    `INSERT INTO conversations (id, created_at, updated_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`,
+    [params.conversationId, params.updatedAt, params.updatedAt],
+  );
+  await db.run(
+    `INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
       params.surfaceId,
       params.conversationId,
       params.title,
@@ -98,30 +58,30 @@ function seedDocument(params: {
       params.content.split(/\s+/).filter(Boolean).length,
       params.updatedAt,
       params.updatedAt,
-    );
-  raw
-    .query(
-      `INSERT OR IGNORE INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?)`,
-    )
-    .run(params.surfaceId, params.conversationId, params.updatedAt);
+    ],
+  );
+  await db.run(
+    `INSERT INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`,
+    [params.surfaceId, params.conversationId, params.updatedAt],
+  );
 }
 
-function seedFixtureDocuments(): void {
-  seedDocument({
+async function seedFixtureDocuments(): Promise<void> {
+  await seedDocument({
     surfaceId: "doc-current",
     conversationId: "conv-current",
     title: "Current Business Plan",
     content: "current plan",
     updatedAt: 1000,
   });
-  seedDocument({
+  await seedDocument({
     surfaceId: "doc-other",
     conversationId: "conv-other",
     title: "Other Business Plan",
     content: "other plan",
     updatedAt: 2000,
   });
-  seedDocument({
+  await seedDocument({
     surfaceId: "doc-percent",
     conversationId: "conv-other",
     title: "100% Plan",
@@ -130,14 +90,14 @@ function seedFixtureDocuments(): void {
   });
 }
 
-describe("document tool security", () => {
-  beforeEach(() => {
-    bootstrapDocumentTables();
-    seedFixtureDocuments();
+describePg("document tool security", () => {
+  beforeEach(async () => {
+    await bootstrapDocumentTables();
+    await seedFixtureDocuments();
   });
 
-  test("scopes title search to the current conversation for non-guardian remote actors", () => {
-    const result = executeDocumentList(
+  test("scopes title search to the current conversation for non-guardian remote actors", async () => {
+    const result = await executeDocumentList(
       { query: "Business Plan" },
       makeContext({ trustClass: "trusted_contact", executionChannel: "slack" }),
     );
@@ -150,8 +110,8 @@ describe("document tool security", () => {
     ]);
   });
 
-  test("does not treat SQL LIKE wildcards as title-search wildcards", () => {
-    const result = executeDocumentList(
+  test("does not treat SQL LIKE wildcards as title-search wildcards", async () => {
+    const result = await executeDocumentList(
       { query: "%" },
       makeContext({ trustClass: "guardian", executionChannel: "telegram" }),
     );
@@ -164,13 +124,13 @@ describe("document tool security", () => {
     ]);
   });
 
-  test("allows guardian and local actors to use documents from previous conversations", () => {
+  test("allows guardian and local actors to use documents from previous conversations", async () => {
     const guardianContext = makeContext({
       trustClass: "guardian",
       executionChannel: "telegram",
       sendToClient: () => {},
     });
-    const guardianList = executeDocumentList(
+    const guardianList = await executeDocumentList(
       { query: "Other Business" },
       guardianContext,
     );
@@ -181,7 +141,7 @@ describe("document tool security", () => {
       "doc-other",
     ]);
 
-    const localRead = executeDocumentRead(
+    const localRead = await executeDocumentRead(
       { surface_id: "doc-other" },
       makeContext({ trustClass: "unknown", executionChannel: "vellum" }),
     );
@@ -196,29 +156,29 @@ describe("document tool security", () => {
       content: "other plan",
     });
 
-    const guardianUpdate = executeDocumentUpdate(
+    const guardianUpdate = await executeDocumentUpdate(
       { surface_id: "doc-other", content: "guardian edit", mode: "replace" },
       guardianContext,
     );
     expect(guardianUpdate.isError).toBe(false);
-    expect(getDocumentById("doc-other")?.content).toBe("guardian edit");
+    expect((await getDocumentById("doc-other"))?.content).toBe("guardian edit");
 
-    const guardianDelete = executeDocumentDelete(
+    const guardianDelete = await executeDocumentDelete(
       { surface_id: "doc-other" },
       guardianContext,
     );
     expect(guardianDelete.isError).toBe(false);
-    expect(getDocumentById("doc-other")).toBeNull();
+    expect(await getDocumentById("doc-other")).toBeNull();
   });
 
-  test("blocks cross-conversation read, update, and delete for non-guardian remote actors", () => {
+  test("blocks cross-conversation read, update, and delete for non-guardian remote actors", async () => {
     const remoteContext = makeContext({
       trustClass: "trusted_contact",
       executionChannel: "slack",
       sendToClient: () => {},
     });
 
-    const read = executeDocumentRead(
+    const read = await executeDocumentRead(
       { surface_id: "doc-other" },
       remoteContext,
     );
@@ -227,7 +187,7 @@ describe("document tool security", () => {
       "Document not found",
     );
 
-    const update = executeDocumentUpdate(
+    const update = await executeDocumentUpdate(
       {
         surface_id: "doc-other",
         content: "updated by another conversation",
@@ -236,53 +196,55 @@ describe("document tool security", () => {
       remoteContext,
     );
     expect(update.isError).toBe(true);
-    expect(getDocumentById("doc-other")?.content).toBe("other plan");
+    expect((await getDocumentById("doc-other"))?.content).toBe("other plan");
 
-    const deleted = executeDocumentDelete(
+    const deleted = await executeDocumentDelete(
       { surface_id: "doc-other" },
       remoteContext,
     );
     expect(deleted.isError).toBe(true);
-    expect(getDocumentById("doc-other")).not.toBeNull();
+    expect(await getDocumentById("doc-other")).not.toBeNull();
   });
 
-  test("keeps current-conversation documents editable and deletable", () => {
+  test("keeps current-conversation documents editable and deletable", async () => {
     const remoteContext = makeContext({
       trustClass: "trusted_contact",
       executionChannel: "slack",
       sendToClient: () => {},
     });
 
-    const read = executeDocumentRead(
+    const read = await executeDocumentRead(
       { surface_id: "doc-current" },
       remoteContext,
     );
     expect(read.isError).toBe(false);
 
-    const update = executeDocumentUpdate(
+    const update = await executeDocumentUpdate(
       { surface_id: "doc-current", content: "revised plan", mode: "replace" },
       remoteContext,
     );
     expect(update.isError).toBe(false);
-    expect(getDocumentById("doc-current")?.content).toBe("revised plan");
+    expect((await getDocumentById("doc-current"))?.content).toBe(
+      "revised plan",
+    );
 
-    const deleted = executeDocumentDelete(
+    const deleted = await executeDocumentDelete(
       { surface_id: "doc-current" },
       remoteContext,
     );
     expect(deleted.isError).toBe(false);
-    expect(getDocumentById("doc-current")).toBeNull();
+    expect(await getDocumentById("doc-current")).toBeNull();
   });
 });
 
-describe("executeDocumentUpdate — input validation", () => {
-  beforeEach(() => {
-    bootstrapDocumentTables();
-    seedFixtureDocuments();
+describePg("executeDocumentUpdate — input validation", () => {
+  beforeEach(async () => {
+    await bootstrapDocumentTables();
+    await seedFixtureDocuments();
   });
 
-  test("resolves to the conversation's document when surface_id is omitted", () => {
-    const result = executeDocumentUpdate(
+  test("resolves to the conversation's document when surface_id is omitted", async () => {
+    const result = await executeDocumentUpdate(
       { content: "appended chunk" },
       makeContext({ sendToClient: () => {} }),
     );
@@ -292,8 +254,8 @@ describe("executeDocumentUpdate — input validation", () => {
     expect(body.surface_id).toBe("doc-current");
   });
 
-  test("returns Invalid input when content is missing", () => {
-    const result = executeDocumentUpdate(
+  test("returns Invalid input when content is missing", async () => {
+    const result = await executeDocumentUpdate(
       { surface_id: "doc-x" },
       makeContext(),
     );
@@ -304,8 +266,8 @@ describe("executeDocumentUpdate — input validation", () => {
     );
   });
 
-  test("allows empty string content (falls through to access check)", () => {
-    const result = executeDocumentUpdate(
+  test("allows empty string content (falls through to access check)", async () => {
+    const result = await executeDocumentUpdate(
       { surface_id: "doc-x", content: "" },
       makeContext(),
     );
@@ -315,8 +277,8 @@ describe("executeDocumentUpdate — input validation", () => {
     expect(body.error).toBe("Document not found");
   });
 
-  test("returns Invalid input when mode is not replace or append", () => {
-    const result = executeDocumentUpdate(
+  test("returns Invalid input when mode is not replace or append", async () => {
+    const result = await executeDocumentUpdate(
       { surface_id: "doc-x", content: "hi", mode: "bogus" },
       makeContext(),
     );
@@ -327,11 +289,11 @@ describe("executeDocumentUpdate — input validation", () => {
     );
   });
 
-  test("treats mode: null the same as undefined (factory validator accepts both)", () => {
+  test("treats mode: null the same as undefined (factory validator accepts both)", async () => {
     // validateInputAgainstSchema treats null as "absent" for enum checks, so
     // the executor must agree — { mode: null } should fall through to the
     // access check, not return a confusing 'mode must be ...' error.
-    const result = executeDocumentUpdate(
+    const result = await executeDocumentUpdate(
       { surface_id: "doc-x", content: "hi", mode: null },
       makeContext(),
     );
@@ -341,15 +303,15 @@ describe("executeDocumentUpdate — input validation", () => {
     expect(body.error).toBe("Document not found");
   });
 
-  test("executeDocumentRead returns Invalid input when surface_id is missing", () => {
-    const result = executeDocumentRead({}, makeContext());
+  test("executeDocumentRead returns Invalid input when surface_id is missing", async () => {
+    const result = await executeDocumentRead({}, makeContext());
     expect(result.isError).toBe(true);
     const body = parseResult<{ error: string }>(result);
     expect(body.error).toContain("Invalid input: surface_id is required");
   });
 
-  test("executeDocumentDelete returns Invalid input when surface_id is missing", () => {
-    const result = executeDocumentDelete({}, makeContext());
+  test("executeDocumentDelete returns Invalid input when surface_id is missing", async () => {
+    const result = await executeDocumentDelete({}, makeContext());
     expect(result.isError).toBe(true);
     const body = parseResult<{ error: string }>(result);
     expect(body.error).toContain("Invalid input: surface_id is required");
@@ -358,14 +320,14 @@ describe("executeDocumentUpdate — input validation", () => {
 
 // ── model-input schema validation (LUM-2854) ─────────────────────────
 
-describe("document tools — model-input schema validation", () => {
-  beforeEach(() => {
-    bootstrapDocumentTables();
-    seedFixtureDocuments();
+describePg("document tools — model-input schema validation", () => {
+  beforeEach(async () => {
+    await bootstrapDocumentTables();
+    await seedFixtureDocuments();
   });
 
-  test("document_find rejects a non-string query instead of crashing downstream", () => {
-    const result = executeDocumentFind(
+  test("document_find rejects a non-string query instead of crashing downstream", async () => {
+    const result = await executeDocumentFind(
       { surface_id: "doc-current", query: 42 },
       makeContext(),
     );
@@ -374,8 +336,8 @@ describe("document tools — model-input schema validation", () => {
     expect(result.content).toContain("query");
   });
 
-  test("document_find rejects a missing query cleanly", () => {
-    const result = executeDocumentFind(
+  test("document_find rejects a missing query cleanly", async () => {
+    const result = await executeDocumentFind(
       { surface_id: "doc-current" },
       makeContext(),
     );
@@ -383,8 +345,8 @@ describe("document tools — model-input schema validation", () => {
     expect(result.content).toContain('Invalid input for tool "document_find"');
   });
 
-  test("document_find treats null option flags as omitted", () => {
-    const result = executeDocumentFind(
+  test("document_find treats null option flags as omitted", async () => {
+    const result = await executeDocumentFind(
       {
         surface_id: "doc-current",
         query: "current",
@@ -398,8 +360,8 @@ describe("document tools — model-input schema validation", () => {
     expect(body.total_matches).toBe(1);
   });
 
-  test("document_create rejects a non-string title instead of persisting it", () => {
-    const result = executeDocumentCreate(
+  test("document_create rejects a non-string title instead of persisting it", async () => {
+    const result = await executeDocumentCreate(
       { title: 42, initial_content: "hello" },
       makeContext({ conversationId: "conv-current" }),
     );
@@ -410,8 +372,8 @@ describe("document tools — model-input schema validation", () => {
     expect(result.content).toContain("title");
   });
 
-  test("document_update rejects a non-string content before the bespoke checks", () => {
-    const result = executeDocumentUpdate(
+  test("document_update rejects a non-string content before the bespoke checks", async () => {
+    const result = await executeDocumentUpdate(
       { surface_id: "doc-current", content: 42 },
       makeContext(),
     );
@@ -421,8 +383,8 @@ describe("document tools — model-input schema validation", () => {
     );
   });
 
-  test("document_list still silently ignores a malformed query", () => {
-    const result = executeDocumentList({ query: 42 }, makeContext());
+  test("document_list still silently ignores a malformed query", async () => {
+    const result = await executeDocumentList({ query: 42 }, makeContext());
     expect(result.isError).toBe(false);
     const body = parseResult<{ documents: Array<{ surface_id: string }> }>(
       result,
@@ -430,8 +392,8 @@ describe("document tools — model-input schema validation", () => {
     expect(body.documents.map((d) => d.surface_id)).toEqual(["doc-current"]);
   });
 
-  test("document_replace_text rejects a non-number max_replacements", () => {
-    const result = executeDocumentReplaceText(
+  test("document_replace_text rejects a non-number max_replacements", async () => {
+    const result = await executeDocumentReplaceText(
       {
         surface_id: "doc-current",
         find: "current",

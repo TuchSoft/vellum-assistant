@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 import type { ConversationCreatedInfo } from "../notifications/broadcaster.js";
 import type { NotificationDeliveryResult } from "../notifications/types.js";
@@ -78,25 +78,20 @@ import {
   createPendingQuestion,
 } from "../calls/call-store.js";
 import { dispatchGuardianQuestion } from "../calls/guardian-dispatch.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { createGuardianBinding } from "./helpers/create-guardian-binding.js";
 import { resetGatewayAclStore } from "./helpers/gateway-acl-store.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function ensureConversation(id: string): void {
-  const db = getDb();
+async function ensureConversation(id: string): Promise<void> {
+  const db = requireMainDb();
   const now = Date.now();
-  db.insert(conversations)
-    .values({
-      id,
-      title: `Conversation ${id}`,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  await db.orm.insert(db.schema.conversations).values({
+    id,
+    title: `Conversation ${id}`,
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 function requestsForCallSession(callSessionId: string) {
@@ -112,14 +107,14 @@ function deliveryFor(requestId: string, channel: string) {
 }
 
 async function resetTables(): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
   bridgeState.reset();
-  db.run("DELETE FROM call_pending_questions");
-  db.run("DELETE FROM call_events");
-  db.run("DELETE FROM call_sessions");
-  db.run("DELETE FROM conversations");
-  db.run("DELETE FROM contact_channels");
-  db.run("DELETE FROM contacts");
+  await db.run("DELETE FROM call_pending_questions");
+  await db.run("DELETE FROM call_events");
+  await db.run("DELETE FROM call_sessions");
+  await db.run("DELETE FROM conversations");
+  await db.run("DELETE FROM contact_channels");
+  await db.run("DELETE FROM contacts");
   resetGatewayAclStore();
 
   // Seed the vellum guardian binding (gateway does this at startup in production)
@@ -148,23 +143,26 @@ async function resetTables(): Promise<void> {
   };
 }
 
-describe("guardian-dispatch", () => {
+describePg("guardian-dispatch", () => {
   beforeEach(async () => {
-    resetTables();
+    await resetTables();
   });
 
   test("creates a guardian action request and vellum delivery from pipeline results", async () => {
     const convId = "conv-dispatch-1";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "What is the gate code?");
+    const pq = await createPendingQuestion(
+      session.id,
+      "What is the gate code?",
+    );
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,
@@ -194,9 +192,9 @@ describe("guardian-dispatch", () => {
     // source the actor submit path reads) carries a different principal than
     // the gateway would. The request must be stamped with that local value so
     // a later actor submission matches (no identity_mismatch under drift).
-    const db = getDb();
-    db.run("DELETE FROM contact_channels");
-    db.run("DELETE FROM contacts");
+    const db = requireMainDb();
+    await db.run("DELETE FROM contact_channels");
+    await db.run("DELETE FROM contacts");
     resetGatewayAclStore();
     await createGuardianBinding({
       channel: "vellum",
@@ -207,16 +205,16 @@ describe("guardian-dispatch", () => {
     });
 
     const convId = "conv-dispatch-drift";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "Drifted bindings?");
+    const pq = await createPendingQuestion(session.id, "Drifted bindings?");
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,
@@ -231,22 +229,25 @@ describe("guardian-dispatch", () => {
   });
 
   test("skips dispatch when no local guardian binding exists (no principal to stamp)", async () => {
-    const db = getDb();
-    db.run("DELETE FROM contact_channels");
-    db.run("DELETE FROM contacts");
+    const db = requireMainDb();
+    await db.run("DELETE FROM contact_channels");
+    await db.run("DELETE FROM contacts");
     resetGatewayAclStore();
 
     const convId = "conv-dispatch-no-principal";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "No principal available");
+    const pq = await createPendingQuestion(
+      session.id,
+      "No principal available",
+    );
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,
@@ -262,7 +263,7 @@ describe("guardian-dispatch", () => {
 
   test("creates a telegram guardian delivery with binding metadata when pipeline sends telegram", async () => {
     const convId = "conv-dispatch-2";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     mockEmitResult = {
       signalId: "sig-2",
@@ -284,14 +285,14 @@ describe("guardian-dispatch", () => {
       ],
     };
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "Should I proceed?");
+    const pq = await createPendingQuestion(session.id, "Should I proceed?");
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,
@@ -309,7 +310,7 @@ describe("guardian-dispatch", () => {
 
   test("marks non-sent pipeline delivery results as failed", async () => {
     const convId = "conv-dispatch-3";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     mockEmitResult = {
       signalId: "sig-3",
@@ -327,14 +328,14 @@ describe("guardian-dispatch", () => {
       ],
     };
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "Error case");
+    const pq = await createPendingQuestion(session.id, "Error case");
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,
@@ -351,7 +352,7 @@ describe("guardian-dispatch", () => {
 
   test("uses onConversationCreated callback conversation when delivery result omits conversationId", async () => {
     const convId = "conv-dispatch-4";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     conversationCreatedFromMock = {
       conversationId: "conv-from-thread-created",
@@ -373,14 +374,17 @@ describe("guardian-dispatch", () => {
       ],
     };
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "Need callback conversation");
+    const pq = await createPendingQuestion(
+      session.id,
+      "Need callback conversation",
+    );
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,
@@ -399,16 +403,16 @@ describe("guardian-dispatch", () => {
 
   test("persists toolName and inputDigest on the guardian request for tool-approval dispatches", async () => {
     const convId = "conv-dispatch-5";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(
+    const pq = await createPendingQuestion(
       session.id,
       "Allow send_email to bob@example.com?",
     );
@@ -435,16 +439,16 @@ describe("guardian-dispatch", () => {
 
   test("omitting toolName and inputDigest stores null for informational ASK_GUARDIAN dispatches", async () => {
     const convId = "conv-dispatch-6";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "What time works?");
+    const pq = await createPendingQuestion(session.id, "What time works?");
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,
@@ -461,16 +465,16 @@ describe("guardian-dispatch", () => {
 
   test("includes activeGuardianRequestCount in context payload", async () => {
     const convId = "conv-dispatch-7";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "First question");
+    const pq = await createPendingQuestion(session.id, "First question");
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,
@@ -491,12 +495,12 @@ describe("guardian-dispatch", () => {
 
   test("repeated guardian questions in the same call each create per-request delivery rows even when sharing a conversation", async () => {
     const convId = "conv-dispatch-reuse-1";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     // Both dispatches deliver to the same vellum conversation (simulating thread reuse)
     const sharedConversationId = "conv-shared-guardian";
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
@@ -505,7 +509,10 @@ describe("guardian-dispatch", () => {
     });
 
     // First dispatch
-    const pq1 = createPendingQuestion(session.id, "What is the gate code?");
+    const pq1 = await createPendingQuestion(
+      session.id,
+      "What is the gate code?",
+    );
     mockEmitResult = {
       signalId: "sig-reuse-1",
       deduplicated: false,
@@ -530,7 +537,10 @@ describe("guardian-dispatch", () => {
 
     // Second dispatch (same call session, same shared conversation)
     emitCalls.length = 0;
-    const pq2 = createPendingQuestion(session.id, "Should I let them in?");
+    const pq2 = await createPendingQuestion(
+      session.id,
+      "Should I let them in?",
+    );
     mockEmitResult = {
       signalId: "sig-reuse-2",
       deduplicated: false,
@@ -581,11 +591,11 @@ describe("guardian-dispatch", () => {
 
   test("second guardian question in same call session passes conversationAffinityHint with first conversation ID", async () => {
     const convId = "conv-dispatch-affinity-1";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     const sharedConversationId = "conv-affinity-guardian";
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
@@ -594,7 +604,7 @@ describe("guardian-dispatch", () => {
     });
 
     // First dispatch — no affinity hint expected (no prior delivery exists)
-    const pq1 = createPendingQuestion(session.id, "First question");
+    const pq1 = await createPendingQuestion(session.id, "First question");
     mockEmitResult = {
       signalId: "sig-affinity-1",
       deduplicated: false,
@@ -623,7 +633,7 @@ describe("guardian-dispatch", () => {
 
     // Second dispatch — should carry the affinity hint from the first delivery
     emitCalls.length = 0;
-    const pq2 = createPendingQuestion(session.id, "Second question");
+    const pq2 = await createPendingQuestion(session.id, "Second question");
     mockEmitResult = {
       signalId: "sig-affinity-2",
       deduplicated: false,
@@ -654,11 +664,11 @@ describe("guardian-dispatch", () => {
 
   test("ASK_GUARDIAN_APPROVAL path (toolName present) uses same-thread affinity on second dispatch", async () => {
     const convId = "conv-dispatch-affinity-tool";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     const sharedConversationId = "conv-affinity-tool-guardian";
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
@@ -667,7 +677,7 @@ describe("guardian-dispatch", () => {
     });
 
     // First dispatch — tool-approval style pending_question (toolName set)
-    const pq1 = createPendingQuestion(
+    const pq1 = await createPendingQuestion(
       session.id,
       "Allow send_email to bob@example.com?",
     );
@@ -699,7 +709,7 @@ describe("guardian-dispatch", () => {
 
     // Second dispatch — also with toolName
     emitCalls.length = 0;
-    const pq2 = createPendingQuestion(
+    const pq2 = await createPendingQuestion(
       session.id,
       "Allow run_script with sudo?",
     );
@@ -734,11 +744,11 @@ describe("guardian-dispatch", () => {
 
   test("third guardian question in same call session also carries affinity hint", async () => {
     const convId = "conv-dispatch-affinity-2";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     const sharedConversationId = "conv-affinity-triple";
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
@@ -749,7 +759,7 @@ describe("guardian-dispatch", () => {
     // Dispatch three guardian questions in the same call session
     for (let i = 0; i < 3; i++) {
       emitCalls.length = 0;
-      const pq = createPendingQuestion(session.id, `Question ${i + 1}`);
+      const pq = await createPendingQuestion(session.id, `Question ${i + 1}`);
       mockEmitResult = {
         signalId: `sig-triple-${i}`,
         deduplicated: false,

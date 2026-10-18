@@ -67,7 +67,7 @@ mock.module("../util/platform.js", () => ({
     join(mockWorkspaceDir, "prompts", filename),
 }));
 
-mock.module("../contacts/contact-store.js", () => ({
+mock.module("../contacts/contact-read-sync.js", () => ({
   findContactByAddress: (channelType: string, address: string) =>
     mockContactsByAddress[`${channelType}:${address}`] ?? null,
 }));
@@ -136,14 +136,14 @@ afterEach(() => {
 // ── resolveGuardianPersonaPath ─────────────────────────────────────
 
 describe("resolveGuardianPersonaPath", () => {
-  test("returns null when no guardian exists", () => {
-    expect(resolveGuardianPersonaPath()).toBeNull();
+  test("returns null when no guardian exists", async () => {
+    expect(await resolveGuardianPersonaPath()).toBeNull();
   });
 
-  test("returns absolute path when guardian has userFile set", () => {
+  test("returns absolute path when guardian has userFile set", async () => {
     seedVellumGuardian("alice.md");
 
-    const result = resolveGuardianPersonaPath();
+    const result = await resolveGuardianPersonaPath();
     expect(result).toBe(join(mockWorkspaceDir, "users", "alice.md"));
   });
 
@@ -155,13 +155,13 @@ describe("resolveGuardianPersonaPath", () => {
     ];
     mockContactsByAddress["vellum:vellum:self"] = { userFile: "alice.md" };
 
-    expect(resolveGuardianPersonaPath()).toBeNull();
+    expect(await resolveGuardianPersonaPath()).toBeNull();
 
     // Async callers warm the vellum guardian-delivery cache before the sync
     // resolution; afterwards the guardian slug resolves instead of default.md.
     await getGuardianDelivery({ channelTypes: ["vellum"] });
 
-    expect(resolveGuardianPersonaPath()).toBe(
+    expect(await resolveGuardianPersonaPath()).toBe(
       join(mockWorkspaceDir, "users", "alice.md"),
     );
   });
@@ -170,7 +170,7 @@ describe("resolveGuardianPersonaPath", () => {
 // ── ensureGuardianPersonaFile ──────────────────────────────────────
 
 describe("ensureGuardianPersonaFile", () => {
-  test("writes the template when the file is missing", () => {
+  test("writes the template when the file is missing", async () => {
     const userFile = "alice.md";
     const filePath = join(mockWorkspaceDir, "users", userFile);
 
@@ -189,7 +189,7 @@ describe("ensureGuardianPersonaFile", () => {
     );
   });
 
-  test("is a no-op when the file already exists (does not clobber)", () => {
+  test("is a no-op when the file already exists (does not clobber)", async () => {
     const userFile = "alice.md";
     const dir = join(mockWorkspaceDir, "users");
     const filePath = join(dir, userFile);
@@ -209,11 +209,11 @@ describe("ensureGuardianPersonaFile", () => {
 // ── resolveGuardianPersonaStrict ───────────────────────────────────
 
 describe("resolveGuardianPersonaStrict", () => {
-  test("returns null when no guardian contact exists", () => {
-    expect(resolveGuardianPersonaStrict()).toBeNull();
+  test("returns null when no guardian contact exists", async () => {
+    expect(await resolveGuardianPersonaStrict()).toBeNull();
   });
 
-  test("returns null when the guardian's own file is missing, even if default.md exists", () => {
+  test("returns null when the guardian's own file is missing, even if default.md exists", async () => {
     seedVellumGuardian("alice.md");
 
     // default.md is populated but alice.md is not on disk.
@@ -226,13 +226,13 @@ describe("resolveGuardianPersonaStrict", () => {
     );
 
     // Strict variant must not leak default.md content.
-    expect(resolveGuardianPersonaStrict()).toBeNull();
+    expect(await resolveGuardianPersonaStrict()).toBeNull();
     // Sanity: the non-strict variant DOES fall back to default.md, which
     // is the documented divergence these tests pin down.
-    expect(resolveGuardianPersona()).toContain("DefaultName");
+    expect(await resolveGuardianPersona()).toContain("DefaultName");
   });
 
-  test("returns guardian file content when present", () => {
+  test("returns guardian file content when present", async () => {
     seedVellumGuardian("alice.md");
 
     const usersDir = join(mockWorkspaceDir, "users");
@@ -243,19 +243,19 @@ describe("resolveGuardianPersonaStrict", () => {
       "utf-8",
     );
 
-    expect(resolveGuardianPersonaStrict()).toContain("Alice");
+    expect(await resolveGuardianPersonaStrict()).toContain("Alice");
   });
 });
 
 // ── isGuardianPersonaCustomized ────────────────────────────────────
 
 describe("isGuardianPersonaCustomized", () => {
-  test("returns false when the file does not exist", () => {
+  test("returns false when the file does not exist", async () => {
     const filePath = join(mockWorkspaceDir, "users", "nobody.md");
     expect(isGuardianPersonaCustomized(filePath)).toBe(false);
   });
 
-  test("returns false for the bare scaffold template (no user edits)", () => {
+  test("returns false for the bare scaffold template (no user edits)", async () => {
     const userFile = "alice.md";
     const filePath = join(mockWorkspaceDir, "users", userFile);
 
@@ -266,7 +266,7 @@ describe("isGuardianPersonaCustomized", () => {
     expect(isGuardianPersonaCustomized(filePath)).toBe(false);
   });
 
-  test("returns false when the file contains only comment lines", () => {
+  test("returns false when the file contains only comment lines", async () => {
     const userFile = "alice.md";
     const dir = join(mockWorkspaceDir, "users");
     const filePath = join(dir, userFile);
@@ -281,7 +281,7 @@ describe("isGuardianPersonaCustomized", () => {
     expect(isGuardianPersonaCustomized(filePath)).toBe(false);
   });
 
-  test("returns true when the file has user-authored content", () => {
+  test("returns true when the file has user-authored content", async () => {
     const userFile = "alice.md";
     const dir = join(mockWorkspaceDir, "users");
     const filePath = join(dir, userFile);
@@ -304,7 +304,7 @@ describe("isGuardianPersonaCustomized", () => {
 // (parity with foreground guardian turns), not fall through to default.
 
 describe("resolveUserSlug (guardian trust, no requester identity)", () => {
-  test("guardian trust context without requesterExternalUserId resolves the guardian user file", () => {
+  test("guardian trust context without requesterExternalUserId resolves the guardian user file", async () => {
     seedVellumGuardian("alice.md");
 
     const trustContext = {
@@ -312,10 +312,10 @@ describe("resolveUserSlug (guardian trust, no requester identity)", () => {
       trustClass: "guardian",
     } as TrustContext;
 
-    expect(resolveUserSlug(trustContext)).toBe("alice");
+    expect(await resolveUserSlug(trustContext)).toBe("alice");
   });
 
-  test("non-guardian trust context without requesterExternalUserId does not borrow the guardian persona", () => {
+  test("non-guardian trust context without requesterExternalUserId does not borrow the guardian persona", async () => {
     seedVellumGuardian("alice.md");
 
     const trustContext = {
@@ -323,10 +323,10 @@ describe("resolveUserSlug (guardian trust, no requester identity)", () => {
       trustClass: "trusted_contact",
     } as TrustContext;
 
-    expect(resolveUserSlug(trustContext)).toBeNull();
+    expect(await resolveUserSlug(trustContext)).toBeNull();
   });
 
-  test("guardian identity from the verdict keys the guardian user-file info read", () => {
+  test("guardian identity from the verdict keys the guardian user-file info read", async () => {
     // The verdict-bound guardian is looked up by its address, not by the
     // most-recently-verified channel guardian, so a different channel guardian
     // does not shadow the verdict's binding.
@@ -341,10 +341,10 @@ describe("resolveUserSlug (guardian trust, no requester identity)", () => {
       guardianExternalUserId: "guardian-tg",
     } as TrustContext;
 
-    expect(resolveUserSlug(trustContext)).toBe("alice");
+    expect(await resolveUserSlug(trustContext)).toBe("alice");
   });
 
-  test("falls back to the channel guardian when the verdict carries no guardian identity", () => {
+  test("falls back to the channel guardian when the verdict carries no guardian identity", async () => {
     seedVellumGuardian("alice.md");
 
     const trustContext = {
@@ -352,7 +352,7 @@ describe("resolveUserSlug (guardian trust, no requester identity)", () => {
       trustClass: "guardian",
     } as TrustContext;
 
-    expect(resolveUserSlug(trustContext)).toBe("alice");
+    expect(await resolveUserSlug(trustContext)).toBe("alice");
   });
 });
 
@@ -367,7 +367,7 @@ describe("resolveUserSlug (guardian trust, no requester identity)", () => {
 // through to the guardian file the onboarding profile was written to.
 
 describe("resolveUserSlug (guardian trust WITH requester identity)", () => {
-  test("null-userFile guardian contact falls through to the guardian file, not default", () => {
+  test("null-userFile guardian contact falls through to the guardian file, not default", async () => {
     // Guardian contact exists but has no explicit userFile (post-hatch state).
     seedVellumGuardian(null);
     // The requester principal id resolves to that same null-userFile contact.
@@ -380,10 +380,10 @@ describe("resolveUserSlug (guardian trust WITH requester identity)", () => {
       guardianExternalUserId: "vellum:self",
     } as TrustContext;
 
-    expect(resolveUserSlug(trustContext)).toBe("guardian");
+    expect(await resolveUserSlug(trustContext)).toBe("guardian");
   });
 
-  test("an explicit requester userFile still wins over the guardian fallback", () => {
+  test("an explicit requester userFile still wins over the guardian fallback", async () => {
     seedVellumGuardian(null);
     mockContactsByAddress["vellum:principal-123"] = { userFile: "alice.md" };
 
@@ -394,10 +394,10 @@ describe("resolveUserSlug (guardian trust WITH requester identity)", () => {
       guardianExternalUserId: "vellum:self",
     } as TrustContext;
 
-    expect(resolveUserSlug(trustContext)).toBe("alice");
+    expect(await resolveUserSlug(trustContext)).toBe("alice");
   });
 
-  test("non-guardian turn with a null-userFile contact does not borrow the guardian persona", () => {
+  test("non-guardian turn with a null-userFile contact does not borrow the guardian persona", async () => {
     seedVellumGuardian(null);
     mockContactsByAddress["vellum:principal-123"] = { userFile: null };
 
@@ -408,7 +408,7 @@ describe("resolveUserSlug (guardian trust WITH requester identity)", () => {
       guardianExternalUserId: "vellum:self",
     } as TrustContext;
 
-    expect(resolveUserSlug(trustContext)).toBeNull();
+    expect(await resolveUserSlug(trustContext)).toBeNull();
   });
 });
 
@@ -420,7 +420,7 @@ describe("resolveUserSlug (guardian trust WITH requester identity)", () => {
 // guardian instead of silently landing on users/default.md.
 
 describe("resolveUserSlug (guardian bound on a non-vellum channel)", () => {
-  test("falls back to the any-channel guardian when the source channel has none", () => {
+  test("falls back to the any-channel guardian when the source channel has none", async () => {
     mockGuardianDeliveries = [
       { channelType: "telegram", address: "guardian-tg", status: "active" },
     ];
@@ -431,10 +431,10 @@ describe("resolveUserSlug (guardian bound on a non-vellum channel)", () => {
       trustClass: "guardian",
     } as TrustContext;
 
-    expect(resolveUserSlug(trustContext)).toBe("alice");
+    expect(await resolveUserSlug(trustContext)).toBe("alice");
   });
 
-  test("any-channel guardian with no userFile resolves the guardian.md fallback", () => {
+  test("any-channel guardian with no userFile resolves the guardian.md fallback", async () => {
     mockGuardianDeliveries = [
       { channelType: "telegram", address: "guardian-tg", status: "active" },
     ];
@@ -445,7 +445,7 @@ describe("resolveUserSlug (guardian bound on a non-vellum channel)", () => {
       trustClass: "guardian",
     } as TrustContext;
 
-    expect(resolveUserSlug(trustContext)).toBe("guardian");
+    expect(await resolveUserSlug(trustContext)).toBe("guardian");
   });
 });
 
@@ -468,13 +468,13 @@ describe("resolveUserSlug (cold cache, background shape)", () => {
     } as TrustContext;
 
     // Cold: the sync peek finds nothing and the slug falls back to default.
-    expect(resolveUserSlug(trustContext)).toBeNull();
+    expect(await resolveUserSlug(trustContext)).toBeNull();
 
     // resolveInitialSystemPrompt warms guardian bindings for guardian-class
     // contexts before building; afterwards the same resolution succeeds.
     await getGuardianDelivery({ channelTypes: ["vellum"] });
 
-    expect(resolveUserSlug(trustContext)).toBe("alice");
+    expect(await resolveUserSlug(trustContext)).toBe("alice");
   });
 });
 
@@ -485,7 +485,7 @@ describe("resolveUserSlug (cold cache, background shape)", () => {
 // falling back to users/default.md.
 
 describe("resolveUserName", () => {
-  test("prefers the Name label from the guardian's own persona file over default.md", () => {
+  test("prefers the Name label from the guardian's own persona file over default.md", async () => {
     seedVellumGuardian("alice.md");
     const usersDir = join(mockWorkspaceDir, "users");
     mkdirSync(usersDir, { recursive: true });
@@ -496,10 +496,10 @@ describe("resolveUserName", () => {
       "utf-8",
     );
 
-    expect(resolveUserName(mockWorkspaceDir)).toBe("Alice");
+    expect(await resolveUserName(mockWorkspaceDir)).toBe("Alice");
   });
 
-  test("reads the onboarding-written Preferred name bullet", () => {
+  test("reads the onboarding-written Preferred name bullet", async () => {
     seedVellumGuardian("alice.md");
     const usersDir = join(mockWorkspaceDir, "users");
     mkdirSync(usersDir, { recursive: true });
@@ -509,10 +509,10 @@ describe("resolveUserName", () => {
       "utf-8",
     );
 
-    expect(resolveUserName(mockWorkspaceDir)).toBe("Ali");
+    expect(await resolveUserName(mockWorkspaceDir)).toBe("Ali");
   });
 
-  test("reads the scaffold's filled Preferred name/reference line", () => {
+  test("reads the scaffold's filled Preferred name/reference line", async () => {
     seedVellumGuardian("alice.md");
     const usersDir = join(mockWorkspaceDir, "users");
     mkdirSync(usersDir, { recursive: true });
@@ -522,10 +522,10 @@ describe("resolveUserName", () => {
       "utf-8",
     );
 
-    expect(resolveUserName(mockWorkspaceDir)).toBe("Alice");
+    expect(await resolveUserName(mockWorkspaceDir)).toBe("Alice");
   });
 
-  test("an unfilled scaffold does not swallow the next line and falls back to default.md", () => {
+  test("an unfilled scaffold does not swallow the next line and falls back to default.md", async () => {
     seedVellumGuardian("alice.md");
     const usersDir = join(mockWorkspaceDir, "users");
     mkdirSync(usersDir, { recursive: true });
@@ -533,10 +533,10 @@ describe("resolveUserName", () => {
     ensureGuardianPersonaFile("alice.md");
     writeFileSync(join(usersDir, "default.md"), "**Name:** Bob\n", "utf-8");
 
-    expect(resolveUserName(mockWorkspaceDir)).toBe("Bob");
+    expect(await resolveUserName(mockWorkspaceDir)).toBe("Bob");
   });
 
-  test("a declined_by_user sentinel is not used as a name", () => {
+  test("a declined_by_user sentinel is not used as a name", async () => {
     seedVellumGuardian("alice.md");
     const usersDir = join(mockWorkspaceDir, "users");
     mkdirSync(usersDir, { recursive: true });
@@ -547,18 +547,18 @@ describe("resolveUserName", () => {
     );
     writeFileSync(join(usersDir, "default.md"), "**Name:** Bob\n", "utf-8");
 
-    expect(resolveUserName(mockWorkspaceDir)).toBe("Bob");
+    expect(await resolveUserName(mockWorkspaceDir)).toBe("Bob");
   });
 
-  test("falls back to default.md when no guardian resolves", () => {
+  test("falls back to default.md when no guardian resolves", async () => {
     const usersDir = join(mockWorkspaceDir, "users");
     mkdirSync(usersDir, { recursive: true });
     writeFileSync(join(usersDir, "default.md"), "**Name:** Bob\n", "utf-8");
 
-    expect(resolveUserName(mockWorkspaceDir)).toBe("Bob");
+    expect(await resolveUserName(mockWorkspaceDir)).toBe("Bob");
   });
 
-  test("returns null when neither file yields a name", () => {
-    expect(resolveUserName(mockWorkspaceDir)).toBeNull();
+  test("returns null when neither file yields a name", async () => {
+    expect(await resolveUserName(mockWorkspaceDir)).toBeNull();
   });
 });

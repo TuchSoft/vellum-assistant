@@ -1,7 +1,6 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { getDb, getSqlite } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   getUsageDayBuckets,
   getUsageGroupBreakdown,
@@ -14,9 +13,7 @@ import {
   recordUsageEvent,
 } from "../persistence/llm-usage-store.js";
 import type { PricingResult, UsageEventInput } from "../usage/types.js";
-
-// Initialize db once before all tests
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 function makeInput(overrides?: Partial<UsageEventInput>): UsageEventInput {
   return {
@@ -46,27 +43,27 @@ const unpricedResult: PricingResult = {
 };
 
 /** Insert an event at a specific epoch-millis timestamp. */
-function insertEventAt(
+async function insertEventAt(
   timestamp: number,
   inputOverrides?: Partial<UsageEventInput>,
   pricing: PricingResult = pricedResult,
-): void {
-  const event = recordUsageEvent(makeInput(inputOverrides), pricing);
-  const db = getDb();
-  db.run(
+): Promise<void> {
+  const event = await recordUsageEvent(makeInput(inputOverrides), pricing);
+  const db = requireMainDb();
+  await db.run(
     `UPDATE llm_usage_events SET created_at = ${timestamp} WHERE id = '${event.id}'`,
   );
 }
 
-describe("recordUsageEvent", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
+describePg("recordUsageEvent", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM llm_usage_events`);
   });
 
-  test("persists an event and returns it with id and createdAt", () => {
+  test("persists an event and returns it with id and createdAt", async () => {
     const input = makeInput();
-    const event = recordUsageEvent(input, pricedResult);
+    const event = await recordUsageEvent(input, pricedResult);
 
     expect(event.id).toBeDefined();
     expect(typeof event.id).toBe("string");
@@ -82,11 +79,11 @@ describe("recordUsageEvent", () => {
     expect(event.pricingStatus).toBe("priced");
   });
 
-  test("persists a priced event that can be retrieved", () => {
+  test("persists a priced event that can be retrieved", async () => {
     const input = makeInput({ conversationId: "c1" });
-    const event = recordUsageEvent(input, pricedResult);
+    const event = await recordUsageEvent(input, pricedResult);
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0].id).toBe(event.id);
     expect(events[0].estimatedCostUsd).toBe(0.0045);
@@ -94,8 +91,8 @@ describe("recordUsageEvent", () => {
     expect(events[0].conversationId).toBe("c1");
   });
 
-  test("persists call-site and inference-profile attribution", () => {
-    const event = recordUsageEvent(
+  test("persists call-site and inference-profile attribution", async () => {
+    const event = await recordUsageEvent(
       makeInput({
         callSite: "mainAgent",
         inferenceProfile: "balanced",
@@ -104,7 +101,7 @@ describe("recordUsageEvent", () => {
       pricedResult,
     );
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
     expect(event.callSite).toBe("mainAgent");
     expect(event.inferenceProfile).toBe("balanced");
@@ -114,11 +111,11 @@ describe("recordUsageEvent", () => {
     expect(events[0].inferenceProfileSource).toBe("conversation");
   });
 
-  test("persists an unpriced event", () => {
+  test("persists an unpriced event", async () => {
     const input = makeInput({ provider: "ollama", model: "llama3" });
-    const event = recordUsageEvent(input, unpricedResult);
+    const event = await recordUsageEvent(input, unpricedResult);
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0].id).toBe(event.id);
     expect(events[0].estimatedCostUsd).toBeNull();
@@ -127,7 +124,7 @@ describe("recordUsageEvent", () => {
     expect(events[0].model).toBe("llama3");
   });
 
-  test("handles null optional fields", () => {
+  test("handles null optional fields", async () => {
     const input = makeInput({
       conversationId: null,
       runId: null,
@@ -135,9 +132,9 @@ describe("recordUsageEvent", () => {
       cacheCreationInputTokens: null,
       cacheReadInputTokens: null,
     });
-    const _event = recordUsageEvent(input, unpricedResult);
+    const _event = await recordUsageEvent(input, unpricedResult);
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0].conversationId).toBeNull();
     expect(events[0].runId).toBeNull();
@@ -149,9 +146,9 @@ describe("recordUsageEvent", () => {
     expect(events[0].cacheReadInputTokens).toBeNull();
   });
 
-  test("reads old-shape rows with null attribution", () => {
-    const db = getDb();
-    db.run(/*sql*/ `
+  test("reads old-shape rows with null attribution", async () => {
+    const db = requireMainDb();
+    await db.run(/*sql*/ `
       INSERT INTO llm_usage_events (
         id,
         created_at,
@@ -189,13 +186,13 @@ describe("recordUsageEvent", () => {
       )
     `);
 
-    const [event] = listUsageEvents();
+    const [event] = await listUsageEvents();
     expect(event.callSite).toBeNull();
     expect(event.inferenceProfile).toBeNull();
     expect(event.inferenceProfileSource).toBeNull();
   });
 
-  test("handles populated optional fields", () => {
+  test("handles populated optional fields", async () => {
     const input = makeInput({
       conversationId: "conv-1",
       runId: "run-1",
@@ -203,9 +200,9 @@ describe("recordUsageEvent", () => {
       cacheCreationInputTokens: 200,
       cacheReadInputTokens: 300,
     });
-    const _event = recordUsageEvent(input, pricedResult);
+    const _event = await recordUsageEvent(input, pricedResult);
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0].conversationId).toBe("conv-1");
     expect(events[0].runId).toBe("run-1");
@@ -214,7 +211,7 @@ describe("recordUsageEvent", () => {
     expect(events[0].cacheReadInputTokens).toBe(300);
   });
 
-  test("round-trips the provider's raw_usage payload verbatim", () => {
+  test("round-trips the provider's raw_usage payload verbatim", async () => {
     // The `raw_usage` column carries the literal usage object the provider
     // returned (Anthropic nests TTL breakdown under `cache_creation`,
     // OpenAI nests cached-read details under `prompt_tokens_details`, etc.)
@@ -232,117 +229,119 @@ describe("recordUsageEvent", () => {
       cache_read_input_tokens: 0,
       service_tier: "standard",
     };
-    recordUsageEvent(makeInput({ rawUsage }), pricedResult);
+    await recordUsageEvent(makeInput({ rawUsage }), pricedResult);
 
-    const [event] = listUsageEvents();
+    const [event] = await listUsageEvents();
     expect(event.rawUsage).toEqual(rawUsage);
   });
 
-  test("raw_usage defaults to null when the provider did not return one", () => {
+  test("raw_usage defaults to null when the provider did not return one", async () => {
     // Providers that don't surface a usage block (or daemons predating
     // migration 260) write null. Coercing to `{}` would be
     // indistinguishable from a usage block that genuinely has no fields,
     // so we preserve null as the "absent" signal.
-    recordUsageEvent(
+    await recordUsageEvent(
       makeInput({ provider: "openai", model: "gpt-4o", rawUsage: null }),
       pricedResult,
     );
 
-    const [event] = listUsageEvents();
+    const [event] = await listUsageEvents();
     expect(event.rawUsage).toBeNull();
   });
 
-  test("round-trips cronRunId through SQLite", () => {
-    const event = recordUsageEvent(
+  test("round-trips cronRunId through SQLite", async () => {
+    const event = await recordUsageEvent(
       makeInput({ cronRunId: "cron-run-1" }),
       pricedResult,
     );
     expect(event.cronRunId).toBe("cron-run-1");
 
-    const row = getSqlite()
-      .query("SELECT cron_run_id FROM llm_usage_events WHERE id = ?")
-      .get(event.id) as { cron_run_id: string | null } | null;
+    const row = (await requireMainDb().get(
+      "SELECT cron_run_id FROM llm_usage_events WHERE id = ?",
+      [event.id],
+    )) as { cron_run_id: string | null } | null;
     expect(row?.cron_run_id).toBe("cron-run-1");
 
     // listUsageEvents routes through rowToUsageEvent; cronRunId must survive it.
-    const [typed] = listUsageEvents();
+    const [typed] = await listUsageEvents();
     expect(typed?.cronRunId).toBe("cron-run-1");
   });
 
-  test("cronRunId defaults to null when omitted", () => {
-    const event = recordUsageEvent(makeInput(), pricedResult);
+  test("cronRunId defaults to null when omitted", async () => {
+    const event = await recordUsageEvent(makeInput(), pricedResult);
     expect(event.cronRunId ?? null).toBeNull();
 
-    const row = getSqlite()
-      .query("SELECT cron_run_id FROM llm_usage_events WHERE id = ?")
-      .get(event.id) as { cron_run_id: string | null } | null;
+    const row = (await requireMainDb().get(
+      "SELECT cron_run_id FROM llm_usage_events WHERE id = ?",
+      [event.id],
+    )) as { cron_run_id: string | null } | null;
     expect(row?.cron_run_id).toBeNull();
   });
 });
 
-describe("listUsageEvents", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
+describePg("listUsageEvents", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM llm_usage_events`);
   });
 
-  test("returns events in descending createdAt order", () => {
+  test("returns events in descending createdAt order", async () => {
     // Insert events with small delays to ensure different timestamps
-    const event1 = recordUsageEvent(
+    const event1 = await recordUsageEvent(
       makeInput({ model: "model-a" }),
       pricedResult,
     );
     // Manually adjust createdAt for deterministic ordering
-    const db = getDb();
-    db.run(
+    const db = requireMainDb();
+    await db.run(
       `UPDATE llm_usage_events SET created_at = 1000 WHERE id = '${event1.id}'`,
     );
 
-    const event2 = recordUsageEvent(
+    const event2 = await recordUsageEvent(
       makeInput({ model: "model-b" }),
       pricedResult,
     );
-    db.run(
+    await db.run(
       `UPDATE llm_usage_events SET created_at = 2000 WHERE id = '${event2.id}'`,
     );
 
-    const event3 = recordUsageEvent(
+    const event3 = await recordUsageEvent(
       makeInput({ model: "model-c" }),
       pricedResult,
     );
-    db.run(
+    await db.run(
       `UPDATE llm_usage_events SET created_at = 3000 WHERE id = '${event3.id}'`,
     );
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(3);
     expect(events[0].model).toBe("model-c");
     expect(events[1].model).toBe("model-b");
     expect(events[2].model).toBe("model-a");
   });
 
-  test("respects the limit option", () => {
-    recordUsageEvent(makeInput({ model: "model-a" }), pricedResult);
-    recordUsageEvent(makeInput({ model: "model-b" }), pricedResult);
-    recordUsageEvent(makeInput({ model: "model-c" }), pricedResult);
+  test("respects the limit option", async () => {
+    await recordUsageEvent(makeInput({ model: "model-a" }), pricedResult);
+    await recordUsageEvent(makeInput({ model: "model-b" }), pricedResult);
+    await recordUsageEvent(makeInput({ model: "model-c" }), pricedResult);
 
-    const events = listUsageEvents({ limit: 2 });
+    const events = await listUsageEvents({ limit: 2 });
     expect(events).toHaveLength(2);
   });
 
-  test("defaults to limit of 100", () => {
+  test("defaults to limit of 100", async () => {
     // Just verify it returns without error when no limit is specified
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(Array.isArray(events)).toBe(true);
   });
 
-  test("returns empty array when no events exist", () => {
-    const events = listUsageEvents();
+  test("returns empty array when no events exist", async () => {
+    const events = await listUsageEvents();
     expect(events).toHaveLength(0);
   });
 
-  test("returns events with correct types", () => {
-    recordUsageEvent(
+  test("returns events with correct types", async () => {
+    await recordUsageEvent(
       makeInput({
         cacheCreationInputTokens: 100,
         cacheReadInputTokens: 200,
@@ -350,7 +349,7 @@ describe("listUsageEvents", () => {
       pricedResult,
     );
 
-    const events = listUsageEvents();
+    const events = await listUsageEvents();
     expect(events).toHaveLength(1);
     const event = events[0];
 
@@ -369,46 +368,49 @@ describe("listUsageEvents", () => {
   });
 });
 
-describe("listRunConversationIds", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
+describePg("listRunConversationIds", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM llm_usage_events`);
   });
 
   /** Record an event for a conversation, stamped with the given cron run id. */
-  function insertRunEvent(
+  async function insertRunEvent(
     cronRunId: string,
     conversationId: string | null,
-  ): void {
-    const event = recordUsageEvent(makeInput({ conversationId }), pricedResult);
-    const db = getDb();
-    db.run(
+  ): Promise<void> {
+    const event = await recordUsageEvent(
+      makeInput({ conversationId }),
+      pricedResult,
+    );
+    const db = requireMainDb();
+    await db.run(
       `UPDATE llm_usage_events SET cron_run_id = '${cronRunId}' WHERE id = '${event.id}'`,
     );
   }
 
-  test("returns the distinct conversation ids a firing touched (deduped)", () => {
-    insertRunEvent("run-1", "conv-a");
-    insertRunEvent("run-1", "conv-a"); // same conversation, second LLM call
-    insertRunEvent("run-1", "conv-b");
+  test("returns the distinct conversation ids a firing touched (deduped)", async () => {
+    await insertRunEvent("run-1", "conv-a");
+    await insertRunEvent("run-1", "conv-a"); // same conversation, second LLM call
+    await insertRunEvent("run-1", "conv-b");
 
-    expect(listRunConversationIds("run-1").sort()).toEqual([
+    expect((await listRunConversationIds("run-1")).sort()).toEqual([
       "conv-a",
       "conv-b",
     ]);
   });
 
-  test("returns an empty array for an unknown run", () => {
-    insertRunEvent("run-1", "conv-a");
-    expect(listRunConversationIds("run-unknown")).toEqual([]);
+  test("returns an empty array for an unknown run", async () => {
+    await insertRunEvent("run-1", "conv-a");
+    expect(await listRunConversationIds("run-unknown")).toEqual([]);
   });
 
-  test("ignores rows with no conversation id and other runs", () => {
-    insertRunEvent("run-1", "conv-a");
-    insertRunEvent("run-1", null); // memory consolidation etc.
-    insertRunEvent("run-2", "conv-b");
+  test("ignores rows with no conversation id and other runs", async () => {
+    await insertRunEvent("run-1", "conv-a");
+    await insertRunEvent("run-1", null); // memory consolidation etc.
+    await insertRunEvent("run-2", "conv-b");
 
-    expect(listRunConversationIds("run-1")).toEqual(["conv-a"]);
+    expect(await listRunConversationIds("run-1")).toEqual(["conv-a"]);
   });
 });
 
@@ -416,14 +418,14 @@ describe("listRunConversationIds", () => {
 // Aggregation query tests
 // ---------------------------------------------------------------------------
 
-describe("getUsageTotals", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
+describePg("getUsageTotals", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM llm_usage_events`);
   });
 
-  test("returns zeros when no events exist in range", () => {
-    const totals = getUsageTotals({ from: 0, to: 99999 });
+  test("returns zeros when no events exist in range", async () => {
+    const totals = await getUsageTotals({ from: 0, to: 99999 });
     expect(totals.totalInputTokens).toBe(0);
     expect(totals.totalOutputTokens).toBe(0);
     expect(totals.totalCacheCreationTokens).toBe(0);
@@ -434,8 +436,8 @@ describe("getUsageTotals", () => {
     expect(totals.unpricedEventCount).toBe(0);
   });
 
-  test("sums direct input, cache tokens, and cost across priced events", () => {
-    insertEventAt(
+  test("sums direct input, cache tokens, and cost across priced events", async () => {
+    await insertEventAt(
       1000,
       {
         inputTokens: 100,
@@ -448,7 +450,7 @@ describe("getUsageTotals", () => {
         pricingStatus: "priced",
       },
     );
-    insertEventAt(
+    await insertEventAt(
       2000,
       {
         inputTokens: 200,
@@ -462,7 +464,7 @@ describe("getUsageTotals", () => {
       },
     );
 
-    const totals = getUsageTotals({ from: 0, to: 5000 });
+    const totals = await getUsageTotals({ from: 0, to: 5000 });
     expect(totals.totalInputTokens).toBe(300);
     expect(totals.totalOutputTokens).toBe(150);
     expect(totals.totalCacheCreationTokens).toBe(100);
@@ -473,65 +475,65 @@ describe("getUsageTotals", () => {
     expect(totals.unpricedEventCount).toBe(0);
   });
 
-  test("counts priced and unpriced events separately", () => {
-    insertEventAt(1000, {}, pricedResult);
-    insertEventAt(
+  test("counts priced and unpriced events separately", async () => {
+    await insertEventAt(1000, {}, pricedResult);
+    await insertEventAt(
       2000,
       { provider: "ollama", model: "llama3" },
       unpricedResult,
     );
 
-    const totals = getUsageTotals({ from: 0, to: 5000 });
+    const totals = await getUsageTotals({ from: 0, to: 5000 });
     expect(totals.eventCount).toBe(2);
     expect(totals.pricedEventCount).toBe(1);
     expect(totals.unpricedEventCount).toBe(1);
   });
 
-  test("respects time range boundaries (inclusive)", () => {
-    insertEventAt(1000);
-    insertEventAt(2000);
-    insertEventAt(3000);
+  test("respects time range boundaries (inclusive)", async () => {
+    await insertEventAt(1000);
+    await insertEventAt(2000);
+    await insertEventAt(3000);
 
     // Only the middle event
-    const totals = getUsageTotals({ from: 2000, to: 2000 });
+    const totals = await getUsageTotals({ from: 2000, to: 2000 });
     expect(totals.eventCount).toBe(1);
   });
 
-  test("excludes events outside the time range", () => {
-    insertEventAt(500);
-    insertEventAt(5000);
+  test("excludes events outside the time range", async () => {
+    await insertEventAt(500);
+    await insertEventAt(5000);
 
-    const totals = getUsageTotals({ from: 1000, to: 4000 });
+    const totals = await getUsageTotals({ from: 1000, to: 4000 });
     expect(totals.eventCount).toBe(0);
   });
 
-  test("sums cache tokens including nulls", () => {
-    insertEventAt(1000, {
+  test("sums cache tokens including nulls", async () => {
+    await insertEventAt(1000, {
       cacheCreationInputTokens: 50,
       cacheReadInputTokens: 100,
     });
-    insertEventAt(2000, {
+    await insertEventAt(2000, {
       cacheCreationInputTokens: null,
       cacheReadInputTokens: null,
     });
 
-    const totals = getUsageTotals({ from: 0, to: 5000 });
+    const totals = await getUsageTotals({ from: 0, to: 5000 });
     expect(totals.totalCacheCreationTokens).toBe(50);
     expect(totals.totalCacheReadTokens).toBe(100);
   });
 });
 
-describe("usage aggregation schedule filters", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
-    db.run(`DELETE FROM cron_runs`);
-    db.run(`DELETE FROM cron_jobs`);
+describePg("usage aggregation schedule filters", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM llm_usage_events`);
+    await db.run(`DELETE FROM cron_runs`);
+    await db.run(`DELETE FROM cron_jobs`);
   });
 
-  function insertScheduleJob(id: string, name: string): void {
+  async function insertScheduleJob(id: string, name: string): Promise<void> {
     const now = Date.UTC(2026, 0, 1);
-    getSqlite().run(
+    await requireMainDb().run(
       `INSERT INTO cron_jobs (
         id,
         name,
@@ -546,7 +548,7 @@ describe("usage aggregation schedule filters", () => {
     );
   }
 
-  function insertScheduleRun({
+  async function insertScheduleRun({
     id,
     scheduleId,
     conversationId,
@@ -558,8 +560,8 @@ describe("usage aggregation schedule filters", () => {
     conversationId: string;
     startedAt: number;
     finishedAt: number | null;
-  }): void {
-    getSqlite().run(
+  }): Promise<void> {
+    await requireMainDb().run(
       `INSERT INTO cron_runs (
         id,
         job_id,
@@ -573,30 +575,30 @@ describe("usage aggregation schedule filters", () => {
     );
   }
 
-  function insertStampedEventAt(
+  async function insertStampedEventAt(
     timestamp: number,
     cronRunId: string,
     inputOverrides?: Partial<UsageEventInput>,
     pricing: PricingResult = pricedResult,
-  ): void {
-    const event = recordUsageEvent(makeInput(inputOverrides), pricing);
-    getSqlite().run(
+  ): Promise<void> {
+    const event = await recordUsageEvent(makeInput(inputOverrides), pricing);
+    await requireMainDb().run(
       `UPDATE llm_usage_events SET created_at = ?, cron_run_id = ? WHERE id = ?`,
       [timestamp, cronRunId, event.id],
     );
   }
 
-  function seedScheduleUsage(): void {
-    insertScheduleJob("schedule-a", "Morning summary");
-    insertScheduleJob("schedule-b", "Nightly sync");
-    insertScheduleRun({
+  async function seedScheduleUsage(): Promise<void> {
+    await insertScheduleJob("schedule-a", "Morning summary");
+    await insertScheduleJob("schedule-b", "Nightly sync");
+    await insertScheduleRun({
       id: "run-a-1",
       scheduleId: "schedule-a",
       conversationId: "conv-reused",
       startedAt: 1_000,
       finishedAt: 2_000,
     });
-    insertScheduleRun({
+    await insertScheduleRun({
       id: "run-b-1",
       scheduleId: "schedule-b",
       conversationId: "conv-reused",
@@ -604,12 +606,12 @@ describe("usage aggregation schedule filters", () => {
       finishedAt: 3_500,
     });
 
-    insertEventAt(
+    await insertEventAt(
       900,
       { conversationId: "conv-reused", inputTokens: 90 },
       { estimatedCostUsd: 0.09, pricingStatus: "priced" },
     );
-    insertEventAt(
+    await insertEventAt(
       1_000,
       {
         conversationId: "conv-reused",
@@ -618,7 +620,7 @@ describe("usage aggregation schedule filters", () => {
       },
       { estimatedCostUsd: 0.1, pricingStatus: "priced" },
     );
-    insertEventAt(
+    await insertEventAt(
       1_500,
       {
         conversationId: "conv-reused",
@@ -627,7 +629,7 @@ describe("usage aggregation schedule filters", () => {
       },
       { estimatedCostUsd: 0.2, pricingStatus: "priced" },
     );
-    insertEventAt(
+    await insertEventAt(
       2_000,
       {
         conversationId: "conv-reused",
@@ -636,12 +638,12 @@ describe("usage aggregation schedule filters", () => {
       },
       { estimatedCostUsd: 0.3, pricingStatus: "priced" },
     );
-    insertEventAt(
+    await insertEventAt(
       2_500,
       { conversationId: "conv-reused", inputTokens: 400 },
       { estimatedCostUsd: 0.4, pricingStatus: "priced" },
     );
-    insertEventAt(
+    await insertEventAt(
       3_200,
       {
         conversationId: "conv-reused",
@@ -650,40 +652,40 @@ describe("usage aggregation schedule filters", () => {
       },
       { estimatedCostUsd: 0.5, pricingStatus: "priced" },
     );
-    insertEventAt(
+    await insertEventAt(
       1_500,
       { conversationId: "conv-other", inputTokens: 800 },
       { estimatedCostUsd: 0.8, pricingStatus: "priced" },
     );
   }
 
-  test("filters totals, buckets, breakdowns, and series by cron run windows", () => {
-    seedScheduleUsage();
+  test("filters totals, buckets, breakdowns, and series by cron run windows", async () => {
+    await seedScheduleUsage();
     const range = { from: 0, to: 4_000 };
     const filter = { scheduleId: "schedule-a" };
 
-    const totals = getUsageTotals(range, filter);
+    const totals = await getUsageTotals(range, filter);
     expect(totals.eventCount).toBe(3);
     expect(totals.totalInputTokens).toBe(600);
     expect(totals.totalEstimatedCostUsd).toBeCloseTo(0.6);
 
-    const dailyBuckets = getUsageDayBuckets(range, "UTC", {}, filter);
+    const dailyBuckets = await getUsageDayBuckets(range, "UTC", {}, filter);
     expect(dailyBuckets).toHaveLength(1);
     expect(dailyBuckets[0].totalInputTokens).toBe(600);
     expect(dailyBuckets[0].eventCount).toBe(3);
 
-    const hourlyBuckets = getUsageHourBuckets(range, "UTC", {}, filter);
+    const hourlyBuckets = await getUsageHourBuckets(range, "UTC", {}, filter);
     expect(hourlyBuckets).toHaveLength(1);
     expect(hourlyBuckets[0].totalInputTokens).toBe(600);
     expect(hourlyBuckets[0].eventCount).toBe(3);
 
-    const breakdown = getUsageGroupBreakdown(range, "provider", filter);
+    const breakdown = await getUsageGroupBreakdown(range, "provider", filter);
     expect(breakdown).toHaveLength(1);
     expect(breakdown[0].group).toBe("anthropic");
     expect(breakdown[0].totalInputTokens).toBe(600);
     expect(breakdown[0].eventCount).toBe(3);
 
-    const series = getUsageGroupedSeries(
+    const series = await getUsageGroupedSeries(
       range,
       "call_site",
       "daily",
@@ -702,11 +704,11 @@ describe("usage aggregation schedule filters", () => {
     });
   });
 
-  test("groups schedule-attributed usage by schedule id with schedule names", () => {
-    seedScheduleUsage();
+  test("groups schedule-attributed usage by schedule id with schedule names", async () => {
+    await seedScheduleUsage();
     const range = { from: 0, to: 4_000 };
 
-    const breakdown = getUsageGroupBreakdown(range, "schedule");
+    const breakdown = await getUsageGroupBreakdown(range, "schedule");
     const scheduleA = breakdown.find((row) => row.groupKey === "schedule-a");
     const scheduleB = breakdown.find((row) => row.groupKey === "schedule-b");
     const other = breakdown.find((row) => row.groupKey === null);
@@ -733,7 +735,13 @@ describe("usage aggregation schedule filters", () => {
       eventCount: 3,
     });
 
-    const series = getUsageGroupedSeries(range, "schedule", "daily", "UTC", {});
+    const series = await getUsageGroupedSeries(
+      range,
+      "schedule",
+      "daily",
+      "UTC",
+      {},
+    );
     expect(series).toHaveLength(1);
     expect(series[0].groups["value:schedule-a"]).toMatchObject({
       group: "Morning summary",
@@ -755,17 +763,17 @@ describe("usage aggregation schedule filters", () => {
     });
   });
 
-  test("attributes a cron_run_id-stamped row to its firing's schedule and keeps legacy windowed rows", () => {
-    insertScheduleJob("schedule-a", "Morning summary");
-    insertScheduleJob("schedule-b", "Nightly sync");
-    insertScheduleRun({
+  test("attributes a cron_run_id-stamped row to its firing's schedule and keeps legacy windowed rows", async () => {
+    await insertScheduleJob("schedule-a", "Morning summary");
+    await insertScheduleJob("schedule-b", "Nightly sync");
+    await insertScheduleRun({
       id: "run-a-1",
       scheduleId: "schedule-a",
       conversationId: "conv-reused",
       startedAt: 1_000,
       finishedAt: 2_000,
     });
-    insertScheduleRun({
+    await insertScheduleRun({
       id: "run-b-1",
       scheduleId: "schedule-b",
       conversationId: "conv-reused",
@@ -774,7 +782,7 @@ describe("usage aggregation schedule filters", () => {
     });
 
     // Legacy row: null cron_run_id, attributed to schedule-a via the conversation + window match.
-    insertEventAt(
+    await insertEventAt(
       1_500,
       { conversationId: "conv-reused", inputTokens: 100 },
       { estimatedCostUsd: 0.1, pricingStatus: "priced" },
@@ -782,7 +790,7 @@ describe("usage aggregation schedule filters", () => {
 
     // Stamped row: cron_run_id pins it to schedule-a's firing even though it is
     // outside every run window and on a conversation no run references.
-    insertStampedEventAt(
+    await insertStampedEventAt(
       9_999,
       "run-a-1",
       { conversationId: "conv-script", inputTokens: 50 },
@@ -790,7 +798,7 @@ describe("usage aggregation schedule filters", () => {
     );
 
     const range = { from: 0, to: 10_000 };
-    const breakdown = getUsageGroupBreakdown(range, "schedule");
+    const breakdown = await getUsageGroupBreakdown(range, "schedule");
     const scheduleA = breakdown.find((row) => row.groupKey === "schedule-a");
     const scheduleB = breakdown.find((row) => row.groupKey === "schedule-b");
 
@@ -806,10 +814,10 @@ describe("usage aggregation schedule filters", () => {
   });
 });
 
-describe("getUsageDayBuckets", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
+describePg("getUsageDayBuckets", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM llm_usage_events`);
   });
 
   // Helper: epoch millis for a UTC date
@@ -817,31 +825,31 @@ describe("getUsageDayBuckets", () => {
     return Date.UTC(year, month - 1, day, hour);
   }
 
-  test("returns empty array when no events exist", () => {
-    const buckets = getUsageDayBuckets({ from: 0, to: 99999999999 });
+  test("returns empty array when no events exist", async () => {
+    const buckets = await getUsageDayBuckets({ from: 0, to: 99999999999 });
     expect(buckets).toHaveLength(0);
   });
 
-  test("groups direct input into correct day buckets without double-counting cache tokens", () => {
+  test("groups direct input into correct day buckets without double-counting cache tokens", async () => {
     const day1Start = utcMs(2025, 3, 1, 0);
     const day1Mid = utcMs(2025, 3, 1, 12);
     const day2Start = utcMs(2025, 3, 2, 6);
 
-    insertEventAt(day1Start, { inputTokens: 100, outputTokens: 10 });
-    insertEventAt(day1Mid, {
+    await insertEventAt(day1Start, { inputTokens: 100, outputTokens: 10 });
+    await insertEventAt(day1Mid, {
       inputTokens: 200,
       outputTokens: 20,
       cacheCreationInputTokens: 50,
       cacheReadInputTokens: 100,
     });
-    insertEventAt(day2Start, {
+    await insertEventAt(day2Start, {
       inputTokens: 300,
       outputTokens: 30,
       cacheCreationInputTokens: 20,
       cacheReadInputTokens: 30,
     });
 
-    const buckets = getUsageDayBuckets({
+    const buckets = await getUsageDayBuckets({
       from: utcMs(2025, 3, 1),
       to: utcMs(2025, 3, 3),
     });
@@ -858,12 +866,12 @@ describe("getUsageDayBuckets", () => {
     expect(buckets[1].eventCount).toBe(1);
   });
 
-  test("buckets are ordered by date ascending", () => {
-    insertEventAt(utcMs(2025, 3, 3));
-    insertEventAt(utcMs(2025, 3, 1));
-    insertEventAt(utcMs(2025, 3, 2));
+  test("buckets are ordered by date ascending", async () => {
+    await insertEventAt(utcMs(2025, 3, 3));
+    await insertEventAt(utcMs(2025, 3, 1));
+    await insertEventAt(utcMs(2025, 3, 2));
 
-    const buckets = getUsageDayBuckets({
+    const buckets = await getUsageDayBuckets({
       from: utcMs(2025, 3, 1),
       to: utcMs(2025, 3, 4),
     });
@@ -874,15 +882,15 @@ describe("getUsageDayBuckets", () => {
     ]);
   });
 
-  test("handles day boundary correctly (midnight UTC)", () => {
+  test("handles day boundary correctly (midnight UTC)", async () => {
     // Last millisecond of March 1 and first millisecond of March 2
     const endOfDay1 = utcMs(2025, 3, 1, 23) + 59 * 60 * 1000 + 59 * 1000;
     const startOfDay2 = utcMs(2025, 3, 2, 0);
 
-    insertEventAt(endOfDay1, { inputTokens: 111 });
-    insertEventAt(startOfDay2, { inputTokens: 222 });
+    await insertEventAt(endOfDay1, { inputTokens: 111 });
+    await insertEventAt(startOfDay2, { inputTokens: 222 });
 
-    const buckets = getUsageDayBuckets({
+    const buckets = await getUsageDayBuckets({
       from: utcMs(2025, 3, 1),
       to: utcMs(2025, 3, 3),
     });
@@ -894,12 +902,16 @@ describe("getUsageDayBuckets", () => {
     expect(buckets[1].totalInputTokens).toBe(222);
   });
 
-  test("sums cost correctly with mixed priced/unpriced events", () => {
+  test("sums cost correctly with mixed priced/unpriced events", async () => {
     const day = utcMs(2025, 3, 1);
-    insertEventAt(day, {}, { estimatedCostUsd: 0.05, pricingStatus: "priced" });
-    insertEventAt(day + 1000, { provider: "ollama" }, unpricedResult);
+    await insertEventAt(
+      day,
+      {},
+      { estimatedCostUsd: 0.05, pricingStatus: "priced" },
+    );
+    await insertEventAt(day + 1000, { provider: "ollama" }, unpricedResult);
 
-    const buckets = getUsageDayBuckets({
+    const buckets = await getUsageDayBuckets({
       from: utcMs(2025, 3, 1),
       to: utcMs(2025, 3, 2),
     });
@@ -908,7 +920,7 @@ describe("getUsageDayBuckets", () => {
     expect(buckets[0].eventCount).toBe(2);
   });
 
-  test("collapses many events within a sub-bucket span without losing totals", () => {
+  test("collapses many events within a sub-bucket span without losing totals", async () => {
     // The read path pre-aggregates events into 15-minute UTC buckets in SQL
     // before local-time bucketing. Many events inside one such window must
     // still sum exactly, and events split across the 15-minute boundary but
@@ -916,13 +928,13 @@ describe("getUsageDayBuckets", () => {
     const windowStart = utcMs(2025, 3, 1, 10); // 10:00:00 UTC
     for (let i = 0; i < 50; i++) {
       // Spread across ~16 minutes so the events straddle a 15-minute boundary.
-      insertEventAt(windowStart + i * 20_000, {
+      await insertEventAt(windowStart + i * 20_000, {
         inputTokens: 2,
         outputTokens: 1,
       });
     }
 
-    const buckets = getUsageDayBuckets({
+    const buckets = await getUsageDayBuckets({
       from: utcMs(2025, 3, 1),
       to: utcMs(2025, 3, 2),
     });
@@ -934,21 +946,21 @@ describe("getUsageDayBuckets", () => {
   });
 });
 
-describe("getUsageDayBuckets — timezone-aware", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
+describePg("getUsageDayBuckets — timezone-aware", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM llm_usage_events`);
   });
 
-  test("integer offset: anchors daily buckets to local midnight", () => {
+  test("integer offset: anchors daily buckets to local midnight", async () => {
     // 2026-04-10T22:30:00Z is 15:30 PDT (UTC-7) on 2026-04-10.
     // 2026-04-11T06:30:00Z is 23:30 PDT on 2026-04-10 (same local day).
-    insertEventAt(Date.UTC(2026, 3, 10, 22, 30), { inputTokens: 100 });
-    insertEventAt(Date.UTC(2026, 3, 11, 6, 30), { inputTokens: 200 });
+    await insertEventAt(Date.UTC(2026, 3, 10, 22, 30), { inputTokens: 100 });
+    await insertEventAt(Date.UTC(2026, 3, 11, 6, 30), { inputTokens: 200 });
     // 2026-04-11T08:00:00Z is 01:00 PDT on 2026-04-11 (next local day).
-    insertEventAt(Date.UTC(2026, 3, 11, 8, 0), { inputTokens: 400 });
+    await insertEventAt(Date.UTC(2026, 3, 11, 8, 0), { inputTokens: 400 });
 
-    const buckets = getUsageDayBuckets(
+    const buckets = await getUsageDayBuckets(
       { from: Date.UTC(2026, 3, 10, 0), to: Date.UTC(2026, 3, 12, 0) },
       "America/Los_Angeles",
     );
@@ -960,14 +972,14 @@ describe("getUsageDayBuckets — timezone-aware", () => {
     expect(buckets[1].displayLabel).toBeDefined();
   });
 
-  test("fractional offset: anchors daily buckets to local midnight in IST", () => {
+  test("fractional offset: anchors daily buckets to local midnight in IST", async () => {
     // Asia/Kolkata is UTC+5:30. Local midnight April 10 IST = 18:30 UTC April 9.
     // Event at 18:31 UTC April 9 = 00:01 IST April 10.
     // Event at 18:29 UTC April 9 = 23:59 IST April 9.
-    insertEventAt(Date.UTC(2026, 3, 9, 18, 31), { inputTokens: 100 });
-    insertEventAt(Date.UTC(2026, 3, 9, 18, 29), { inputTokens: 50 });
+    await insertEventAt(Date.UTC(2026, 3, 9, 18, 31), { inputTokens: 100 });
+    await insertEventAt(Date.UTC(2026, 3, 9, 18, 29), { inputTokens: 50 });
 
-    const buckets = getUsageDayBuckets(
+    const buckets = await getUsageDayBuckets(
       { from: Date.UTC(2026, 3, 9, 0), to: Date.UTC(2026, 3, 10, 23) },
       "Asia/Kolkata",
     );
@@ -979,12 +991,12 @@ describe("getUsageDayBuckets — timezone-aware", () => {
     expect(map["2026-04-10"]?.totalInputTokens).toBe(100);
   });
 
-  test("backwards compat: default tz is UTC", () => {
-    insertEventAt(Date.UTC(2025, 5, 1, 0, 0), { inputTokens: 111 });
-    insertEventAt(Date.UTC(2025, 5, 1, 23, 59), { inputTokens: 222 });
-    insertEventAt(Date.UTC(2025, 5, 2, 0, 0), { inputTokens: 333 });
+  test("backwards compat: default tz is UTC", async () => {
+    await insertEventAt(Date.UTC(2025, 5, 1, 0, 0), { inputTokens: 111 });
+    await insertEventAt(Date.UTC(2025, 5, 1, 23, 59), { inputTokens: 222 });
+    await insertEventAt(Date.UTC(2025, 5, 2, 0, 0), { inputTokens: 333 });
 
-    const buckets = getUsageDayBuckets({
+    const buckets = await getUsageDayBuckets({
       from: Date.UTC(2025, 5, 1, 0),
       to: Date.UTC(2025, 5, 2, 12),
     });
@@ -994,17 +1006,17 @@ describe("getUsageDayBuckets — timezone-aware", () => {
     expect(buckets[1].totalInputTokens).toBe(333);
   });
 
-  test("throws on invalid timezone identifier", () => {
-    expect(() =>
+  test("throws on invalid timezone identifier", async () => {
+    await expect(
       getUsageDayBuckets({ from: 0, to: 1000 }, "Not/A/Real/Zone"),
-    ).toThrow(/Invalid IANA timezone identifier/);
+    ).rejects.toThrow(/Invalid IANA timezone identifier/);
   });
 
-  test("fillEmpty seeds zero buckets for empty days", () => {
-    insertEventAt(Date.UTC(2026, 3, 10, 12), { inputTokens: 100 });
-    insertEventAt(Date.UTC(2026, 3, 12, 12), { inputTokens: 200 });
+  test("fillEmpty seeds zero buckets for empty days", async () => {
+    await insertEventAt(Date.UTC(2026, 3, 10, 12), { inputTokens: 100 });
+    await insertEventAt(Date.UTC(2026, 3, 12, 12), { inputTokens: 200 });
 
-    const buckets = getUsageDayBuckets(
+    const buckets = await getUsageDayBuckets(
       { from: Date.UTC(2026, 3, 10, 0), to: Date.UTC(2026, 3, 12, 23) },
       "UTC",
       { fillEmpty: true },
@@ -1021,21 +1033,21 @@ describe("getUsageDayBuckets — timezone-aware", () => {
     expect(buckets[2].totalInputTokens).toBe(200);
   });
 
-  test("DST spring forward: mid-day `from` anchors correctly to local midnight", () => {
+  test("DST spring forward: mid-day `from` anchors correctly to local midnight", async () => {
     // America/Los_Angeles 2026-03-08 spring-forward: 02:00 PST -> 03:00 PDT.
     // Naive day alignment (subtract current wall-clock hours from epoch)
     // would misplace events around the transition when `from` is mid-day on
     // the transition day. (PR #24722 review feedback from Codex.)
 
     // Event at 17:00 UTC = 10:00 PDT on 2026-03-08 (post-DST).
-    insertEventAt(Date.UTC(2026, 2, 8, 17), { inputTokens: 500 });
+    await insertEventAt(Date.UTC(2026, 2, 8, 17), { inputTokens: 500 });
     // Event at 23:00 UTC = 16:00 PDT on 2026-03-08 (post-DST).
-    insertEventAt(Date.UTC(2026, 2, 8, 23), { inputTokens: 700 });
+    await insertEventAt(Date.UTC(2026, 2, 8, 23), { inputTokens: 700 });
     // Event at 06:00 UTC = 22:00 PST on 2026-03-07 (pre-DST, previous local day).
-    insertEventAt(Date.UTC(2026, 2, 8, 6), { inputTokens: 300 });
+    await insertEventAt(Date.UTC(2026, 2, 8, 6), { inputTokens: 300 });
 
     // `from` is mid-day on the transition day.
-    const buckets = getUsageDayBuckets(
+    const buckets = await getUsageDayBuckets(
       { from: Date.UTC(2026, 2, 8, 18), to: Date.UTC(2026, 2, 9, 23) },
       "America/Los_Angeles",
       { fillEmpty: true },
@@ -1056,13 +1068,13 @@ describe("getUsageDayBuckets — timezone-aware", () => {
     expect(map["2026-03-08"]?.totalInputTokens).toBeGreaterThanOrEqual(700);
   });
 
-  test("DST spring forward: day-midnight alignment works across the jump", () => {
+  test("DST spring forward: day-midnight alignment works across the jump", async () => {
     // Direct regression test: an event at the FIRST moment of post-DST (just
     // after 03:00 PDT = 10:00 UTC) on 2026-03-08 should bucket to 2026-03-08,
     // not 2026-03-07.
-    insertEventAt(Date.UTC(2026, 2, 8, 10, 1), { inputTokens: 42 });
+    await insertEventAt(Date.UTC(2026, 2, 8, 10, 1), { inputTokens: 42 });
 
-    const buckets = getUsageDayBuckets(
+    const buckets = await getUsageDayBuckets(
       { from: Date.UTC(2026, 2, 8, 10), to: Date.UTC(2026, 2, 9, 0) },
       "America/Los_Angeles",
     );
@@ -1072,9 +1084,9 @@ describe("getUsageDayBuckets — timezone-aware", () => {
     expect(map["2026-03-07"]).toBeUndefined();
   });
 
-  test("bucketId: daily bucketId equals the date string", () => {
-    insertEventAt(Date.UTC(2026, 3, 10, 12), { inputTokens: 10 });
-    const buckets = getUsageDayBuckets(
+  test("bucketId: daily bucketId equals the date string", async () => {
+    await insertEventAt(Date.UTC(2026, 3, 10, 12), { inputTokens: 10 });
+    const buckets = await getUsageDayBuckets(
       { from: Date.UTC(2026, 3, 10, 0), to: Date.UTC(2026, 3, 10, 23) },
       "UTC",
     );
@@ -1082,21 +1094,21 @@ describe("getUsageDayBuckets — timezone-aware", () => {
   });
 });
 
-describe("getUsageHourBuckets — timezone-aware", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
+describePg("getUsageHourBuckets — timezone-aware", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM llm_usage_events`);
   });
 
-  test("integer offset: buckets align to local-hour boundaries in PDT", () => {
+  test("integer offset: buckets align to local-hour boundaries in PDT", async () => {
     // 2026-04-10T22:00:00Z = 15:00 PDT = "2026-04-10 15:00" bucket
     // 2026-04-10T22:30:00Z = 15:30 PDT = same bucket
     // 2026-04-10T23:00:00Z = 16:00 PDT = next bucket
-    insertEventAt(Date.UTC(2026, 3, 10, 22, 0), { inputTokens: 100 });
-    insertEventAt(Date.UTC(2026, 3, 10, 22, 30), { inputTokens: 200 });
-    insertEventAt(Date.UTC(2026, 3, 10, 23, 0), { inputTokens: 300 });
+    await insertEventAt(Date.UTC(2026, 3, 10, 22, 0), { inputTokens: 100 });
+    await insertEventAt(Date.UTC(2026, 3, 10, 22, 30), { inputTokens: 200 });
+    await insertEventAt(Date.UTC(2026, 3, 10, 23, 0), { inputTokens: 300 });
 
-    const buckets = getUsageHourBuckets(
+    const buckets = await getUsageHourBuckets(
       { from: Date.UTC(2026, 3, 10, 21), to: Date.UTC(2026, 3, 11, 0) },
       "America/Los_Angeles",
     );
@@ -1108,18 +1120,18 @@ describe("getUsageHourBuckets — timezone-aware", () => {
     expect(map["2026-04-10 16:00"]?.displayLabel).toBe("4pm");
   });
 
-  test("fractional offset: events in a half-hour-offset tz bucket to correct local hour", () => {
+  test("fractional offset: events in a half-hour-offset tz bucket to correct local hour", async () => {
     // Asia/Kolkata UTC+5:30.
     // 13:30 UTC = 19:00 IST → "19:00" bucket
     // 13:45 UTC = 19:15 IST → "19:00" bucket (same)
     // 14:15 UTC = 19:45 IST → "19:00" bucket (same)
     // 14:31 UTC = 20:01 IST → "20:00" bucket
-    insertEventAt(Date.UTC(2026, 3, 10, 13, 30), { inputTokens: 10 });
-    insertEventAt(Date.UTC(2026, 3, 10, 13, 45), { inputTokens: 20 });
-    insertEventAt(Date.UTC(2026, 3, 10, 14, 15), { inputTokens: 30 });
-    insertEventAt(Date.UTC(2026, 3, 10, 14, 31), { inputTokens: 40 });
+    await insertEventAt(Date.UTC(2026, 3, 10, 13, 30), { inputTokens: 10 });
+    await insertEventAt(Date.UTC(2026, 3, 10, 13, 45), { inputTokens: 20 });
+    await insertEventAt(Date.UTC(2026, 3, 10, 14, 15), { inputTokens: 30 });
+    await insertEventAt(Date.UTC(2026, 3, 10, 14, 31), { inputTokens: 40 });
 
-    const buckets = getUsageHourBuckets(
+    const buckets = await getUsageHourBuckets(
       { from: Date.UTC(2026, 3, 10, 12), to: Date.UTC(2026, 3, 10, 16) },
       "Asia/Kolkata",
     );
@@ -1129,14 +1141,14 @@ describe("getUsageHourBuckets — timezone-aware", () => {
     expect(map["2026-04-10 20:00"]?.totalInputTokens).toBe(40);
   });
 
-  test("DST spring forward: skipped hour does not produce a bucket", () => {
+  test("DST spring forward: skipped hour does not produce a bucket", async () => {
     // America/New_York 2026-03-08: 2:00 AM EST jumps to 3:00 AM EDT.
     // Event at 06:30 UTC = 01:30 EST (before jump) → "01:00" bucket
     // Event at 07:30 UTC = 03:30 EDT (after jump) → "03:00" bucket
-    insertEventAt(Date.UTC(2026, 2, 8, 6, 30), { inputTokens: 100 });
-    insertEventAt(Date.UTC(2026, 2, 8, 7, 30), { inputTokens: 200 });
+    await insertEventAt(Date.UTC(2026, 2, 8, 6, 30), { inputTokens: 100 });
+    await insertEventAt(Date.UTC(2026, 2, 8, 7, 30), { inputTokens: 200 });
 
-    const buckets = getUsageHourBuckets(
+    const buckets = await getUsageHourBuckets(
       { from: Date.UTC(2026, 2, 8, 5), to: Date.UTC(2026, 2, 8, 9) },
       "America/New_York",
       { fillEmpty: true },
@@ -1154,14 +1166,14 @@ describe("getUsageHourBuckets — timezone-aware", () => {
     expect(map["2026-03-08 03:00"]?.totalInputTokens).toBe(200);
   });
 
-  test("DST fall back: duplicate 1am local hour is preserved as two buckets", () => {
+  test("DST fall back: duplicate 1am local hour is preserved as two buckets", async () => {
     // America/New_York 2026-11-01: 2:00 AM EDT falls back to 1:00 AM EST.
     // Event at 05:30 UTC = 01:30 EDT (first 1am) → EDT 01:00 bucket
     // Event at 06:30 UTC = 01:30 EST (second 1am) → EST 01:00 bucket (distinct!)
-    insertEventAt(Date.UTC(2026, 10, 1, 5, 30), { inputTokens: 100 });
-    insertEventAt(Date.UTC(2026, 10, 1, 6, 30), { inputTokens: 200 });
+    await insertEventAt(Date.UTC(2026, 10, 1, 5, 30), { inputTokens: 100 });
+    await insertEventAt(Date.UTC(2026, 10, 1, 6, 30), { inputTokens: 200 });
 
-    const buckets = getUsageHourBuckets(
+    const buckets = await getUsageHourBuckets(
       { from: Date.UTC(2026, 10, 1, 4), to: Date.UTC(2026, 10, 1, 8) },
       "America/New_York",
     );
@@ -1192,10 +1204,10 @@ describe("getUsageHourBuckets — timezone-aware", () => {
     }
   });
 
-  test("fillEmpty seeds zero buckets for empty hours in range", () => {
-    insertEventAt(Date.UTC(2026, 3, 10, 14), { inputTokens: 100 });
+  test("fillEmpty seeds zero buckets for empty hours in range", async () => {
+    await insertEventAt(Date.UTC(2026, 3, 10, 14), { inputTokens: 100 });
 
-    const buckets = getUsageHourBuckets(
+    const buckets = await getUsageHourBuckets(
       { from: Date.UTC(2026, 3, 10, 12), to: Date.UTC(2026, 3, 10, 16) },
       "UTC",
       { fillEmpty: true },
@@ -1209,9 +1221,9 @@ describe("getUsageHourBuckets — timezone-aware", () => {
     expect(map["2026-04-10 12:00"]?.eventCount).toBe(0);
   });
 
-  test("generates lowercase hour display labels like '3pm'", () => {
-    insertEventAt(Date.UTC(2026, 3, 10, 22, 0), { inputTokens: 100 });
-    const buckets = getUsageHourBuckets(
+  test("generates lowercase hour display labels like '3pm'", async () => {
+    await insertEventAt(Date.UTC(2026, 3, 10, 22, 0), { inputTokens: 100 });
+    const buckets = await getUsageHourBuckets(
       { from: Date.UTC(2026, 3, 10, 22), to: Date.UTC(2026, 3, 10, 23) },
       "America/Los_Angeles",
     );
@@ -1220,20 +1232,23 @@ describe("getUsageHourBuckets — timezone-aware", () => {
   });
 });
 
-describe("getUsageGroupBreakdown", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
-    db.run(`DELETE FROM conversations`);
+describePg("getUsageGroupBreakdown", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM llm_usage_events`);
+    await db.run(`DELETE FROM conversations`);
   });
 
-  test("returns empty array when no events exist", () => {
-    const groups = getUsageGroupBreakdown({ from: 0, to: 99999 }, "actor");
+  test("returns empty array when no events exist", async () => {
+    const groups = await getUsageGroupBreakdown(
+      { from: 0, to: 99999 },
+      "actor",
+    );
     expect(groups).toHaveLength(0);
   });
 
-  test("groups by actor with direct input and cache totals kept separate", () => {
-    insertEventAt(
+  test("groups by actor with direct input and cache totals kept separate", async () => {
+    await insertEventAt(
       1000,
       {
         actor: "main_agent",
@@ -1246,7 +1261,7 @@ describe("getUsageGroupBreakdown", () => {
         pricingStatus: "priced",
       },
     );
-    insertEventAt(
+    await insertEventAt(
       2000,
       {
         actor: "main_agent",
@@ -1259,7 +1274,7 @@ describe("getUsageGroupBreakdown", () => {
         pricingStatus: "priced",
       },
     );
-    insertEventAt(
+    await insertEventAt(
       3000,
       { actor: "title_generator", inputTokens: 50 },
       {
@@ -1268,7 +1283,7 @@ describe("getUsageGroupBreakdown", () => {
       },
     );
 
-    const groups = getUsageGroupBreakdown({ from: 0, to: 5000 }, "actor");
+    const groups = await getUsageGroupBreakdown({ from: 0, to: 5000 }, "actor");
     expect(groups).toHaveLength(2);
 
     // Ordered by cost descending
@@ -1286,8 +1301,8 @@ describe("getUsageGroupBreakdown", () => {
     expect(groups[1].eventCount).toBe(1);
   });
 
-  test("groups by provider", () => {
-    insertEventAt(
+  test("groups by provider", async () => {
+    await insertEventAt(
       1000,
       { provider: "anthropic" },
       {
@@ -1295,9 +1310,12 @@ describe("getUsageGroupBreakdown", () => {
         pricingStatus: "priced",
       },
     );
-    insertEventAt(2000, { provider: "ollama" }, unpricedResult);
+    await insertEventAt(2000, { provider: "ollama" }, unpricedResult);
 
-    const groups = getUsageGroupBreakdown({ from: 0, to: 5000 }, "provider");
+    const groups = await getUsageGroupBreakdown(
+      { from: 0, to: 5000 },
+      "provider",
+    );
     expect(groups).toHaveLength(2);
     expect(groups[0].group).toBe("anthropic");
     expect(groups[0].totalEstimatedCostUsd).toBeCloseTo(0.05);
@@ -1305,24 +1323,27 @@ describe("getUsageGroupBreakdown", () => {
     expect(groups[1].totalEstimatedCostUsd).toBe(0);
   });
 
-  test("groups by call site with display labels and raw group keys", () => {
-    insertEventAt(
+  test("groups by call site with display labels and raw group keys", async () => {
+    await insertEventAt(
       1000,
       { callSite: "mainAgent", inputTokens: 100 },
       { estimatedCostUsd: 0.03, pricingStatus: "priced" },
     );
-    insertEventAt(
+    await insertEventAt(
       2000,
       { callSite: "conversationTitle", inputTokens: 200 },
       { estimatedCostUsd: 0.01, pricingStatus: "priced" },
     );
-    insertEventAt(
+    await insertEventAt(
       3000,
       { callSite: null, inputTokens: 300 },
       { estimatedCostUsd: 0.02, pricingStatus: "priced" },
     );
 
-    const groups = getUsageGroupBreakdown({ from: 0, to: 5000 }, "call_site");
+    const groups = await getUsageGroupBreakdown(
+      { from: 0, to: 5000 },
+      "call_site",
+    );
     expect(groups.map((group) => group.group)).toEqual([
       "Main Agent",
       "Unknown Task",
@@ -1338,19 +1359,19 @@ describe("getUsageGroupBreakdown", () => {
     ).toBe(300);
   });
 
-  test("groups by inference profile with unset historical rows preserved", () => {
-    insertEventAt(
+  test("groups by inference profile with unset historical rows preserved", async () => {
+    await insertEventAt(
       1000,
       { inferenceProfile: "fast", inputTokens: 100 },
       { estimatedCostUsd: 0.01, pricingStatus: "priced" },
     );
-    insertEventAt(
+    await insertEventAt(
       2000,
       { inferenceProfile: null, inputTokens: 200 },
       { estimatedCostUsd: 0.02, pricingStatus: "priced" },
     );
 
-    const groups = getUsageGroupBreakdown(
+    const groups = await getUsageGroupBreakdown(
       { from: 0, to: 5000 },
       "inference_profile",
     );
@@ -1362,8 +1383,8 @@ describe("getUsageGroupBreakdown", () => {
     expect(groups[0].totalInputTokens).toBe(200);
   });
 
-  test("groups by model", () => {
-    insertEventAt(
+  test("groups by model", async () => {
+    await insertEventAt(
       1000,
       { model: "claude-sonnet-4-20250514" },
       {
@@ -1371,7 +1392,7 @@ describe("getUsageGroupBreakdown", () => {
         pricingStatus: "priced",
       },
     );
-    insertEventAt(
+    await insertEventAt(
       2000,
       { model: "claude-sonnet-4-20250514" },
       {
@@ -1379,9 +1400,9 @@ describe("getUsageGroupBreakdown", () => {
         pricingStatus: "priced",
       },
     );
-    insertEventAt(3000, { model: "llama3" }, unpricedResult);
+    await insertEventAt(3000, { model: "llama3" }, unpricedResult);
 
-    const groups = getUsageGroupBreakdown({ from: 0, to: 5000 }, "model");
+    const groups = await getUsageGroupBreakdown({ from: 0, to: 5000 }, "model");
     expect(groups).toHaveLength(2);
     expect(groups[0].group).toBe("claude-sonnet-4-20250514");
     expect(groups[0].totalEstimatedCostUsd).toBeCloseTo(0.05);
@@ -1389,16 +1410,19 @@ describe("getUsageGroupBreakdown", () => {
     expect(groups[1].group).toBe("llama3");
   });
 
-  test("respects time range", () => {
-    insertEventAt(1000, { actor: "main_agent" });
-    insertEventAt(5000, { actor: "title_generator" });
+  test("respects time range", async () => {
+    await insertEventAt(1000, { actor: "main_agent" });
+    await insertEventAt(5000, { actor: "title_generator" });
 
-    const groups = getUsageGroupBreakdown({ from: 2000, to: 4000 }, "actor");
+    const groups = await getUsageGroupBreakdown(
+      { from: 2000, to: 4000 },
+      "actor",
+    );
     expect(groups).toHaveLength(0);
   });
 
-  test("orders groups by estimated cost descending", () => {
-    insertEventAt(
+  test("orders groups by estimated cost descending", async () => {
+    await insertEventAt(
       1000,
       { actor: "main_agent" },
       {
@@ -1406,7 +1430,7 @@ describe("getUsageGroupBreakdown", () => {
         pricingStatus: "priced",
       },
     );
-    insertEventAt(
+    await insertEventAt(
       2000,
       { actor: "title_generator" },
       {
@@ -1414,7 +1438,7 @@ describe("getUsageGroupBreakdown", () => {
         pricingStatus: "priced",
       },
     );
-    insertEventAt(
+    await insertEventAt(
       3000,
       { actor: "context_compactor" },
       {
@@ -1423,32 +1447,32 @@ describe("getUsageGroupBreakdown", () => {
       },
     );
 
-    const groups = getUsageGroupBreakdown({ from: 0, to: 5000 }, "actor");
+    const groups = await getUsageGroupBreakdown({ from: 0, to: 5000 }, "actor");
     expect(groups[0].group).toBe("title_generator");
     expect(groups[1].group).toBe("context_compactor");
     expect(groups[2].group).toBe("main_agent");
   });
 
-  test("returns groupId matching the seeded conversation id when grouping by conversation", () => {
-    const db = getDb();
+  test("returns groupId matching the seeded conversation id when grouping by conversation", async () => {
+    const db = requireMainDb();
     const conversationId = "conv-breakdown-1";
     const now = Date.now();
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('${conversationId}', 'Debug session', ${now}, ${now})`,
     );
 
-    insertEventAt(
+    await insertEventAt(
       1000,
       { conversationId, inputTokens: 100, outputTokens: 50 },
       { estimatedCostUsd: 0.02, pricingStatus: "priced" },
     );
-    insertEventAt(
+    await insertEventAt(
       2000,
       { conversationId, inputTokens: 200, outputTokens: 75 },
       { estimatedCostUsd: 0.03, pricingStatus: "priced" },
     );
 
-    const groups = getUsageGroupBreakdown(
+    const groups = await getUsageGroupBreakdown(
       { from: 0, to: 5000 },
       "conversation",
     );
@@ -1463,30 +1487,30 @@ describe("getUsageGroupBreakdown", () => {
     expect(groups[0].turnCount).toBe(0);
   });
 
-  test("counts conversation turns from eligible user messages when grouping by conversation", () => {
-    const db = getDb();
+  test("counts conversation turns from eligible user messages when grouping by conversation", async () => {
+    const db = requireMainDb();
     const conversationId = "conv-turns-1";
     const now = Date.now();
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('${conversationId}', 'Turn counting', ${now}, ${now})`,
     );
     // Two user turns; the second turn has two LLM calls, but the count comes
     // from the user messages (2), not the number of LLM calls (3).
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1', '${conversationId}', 'user', 'first', 500)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u2', '${conversationId}', 'user', 'second', 2000)`,
     );
     // Tool-result user messages are not real turns and must be excluded.
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('tr1', '${conversationId}', 'user', '[{"type":"tool_result","tool_use_id":"x","content":""}]', 2100)`,
     );
-    insertEventAt(1000, { conversationId, inputTokens: 100 });
-    insertEventAt(2500, { conversationId, inputTokens: 100 });
-    insertEventAt(2600, { conversationId, inputTokens: 100 });
+    await insertEventAt(1000, { conversationId, inputTokens: 100 });
+    await insertEventAt(2500, { conversationId, inputTokens: 100 });
+    await insertEventAt(2600, { conversationId, inputTokens: 100 });
 
-    const groups = getUsageGroupBreakdown(
+    const groups = await getUsageGroupBreakdown(
       { from: 0, to: 5000 },
       "conversation",
     );
@@ -1496,19 +1520,19 @@ describe("getUsageGroupBreakdown", () => {
     expect(groups[0].turnCount).toBe(2);
   });
 
-  test("returns groupId null for the Other bucket when grouping by conversation and events have no conversation id", () => {
-    insertEventAt(
+  test("returns groupId null for the Other bucket when grouping by conversation and events have no conversation id", async () => {
+    await insertEventAt(
       1000,
       { conversationId: null, inputTokens: 100 },
       { estimatedCostUsd: 0.01, pricingStatus: "priced" },
     );
-    insertEventAt(
+    await insertEventAt(
       2000,
       { conversationId: null, inputTokens: 200 },
       { estimatedCostUsd: 0.02, pricingStatus: "priced" },
     );
 
-    const groups = getUsageGroupBreakdown(
+    const groups = await getUsageGroupBreakdown(
       { from: 0, to: 5000 },
       "conversation",
     );
@@ -1521,20 +1545,20 @@ describe("getUsageGroupBreakdown", () => {
     expect(groups[0].turnCount).toBeNull();
   });
 
-  test("returns groupId null for every row when grouping by a non-conversation dimension", () => {
-    insertEventAt(
+  test("returns groupId null for every row when grouping by a non-conversation dimension", async () => {
+    await insertEventAt(
       1000,
       { model: "claude-sonnet-4-20250514", conversationId: "conv-a" },
       { estimatedCostUsd: 0.03, pricingStatus: "priced" },
     );
-    insertEventAt(
+    await insertEventAt(
       2000,
       { model: "claude-sonnet-4-20250514", conversationId: "conv-b" },
       { estimatedCostUsd: 0.02, pricingStatus: "priced" },
     );
-    insertEventAt(3000, { model: "llama3" }, unpricedResult);
+    await insertEventAt(3000, { model: "llama3" }, unpricedResult);
 
-    const groups = getUsageGroupBreakdown({ from: 0, to: 5000 }, "model");
+    const groups = await getUsageGroupBreakdown({ from: 0, to: 5000 }, "model");
     expect(groups.length).toBeGreaterThan(0);
     for (const row of groups) {
       expect(row.groupId).toBeNull();
@@ -1544,30 +1568,30 @@ describe("getUsageGroupBreakdown", () => {
   });
 });
 
-describe("getUsageGroupedSeries", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
+describePg("getUsageGroupedSeries", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM llm_usage_events`);
   });
 
-  test("returns grouped daily buckets keyed by call-site ids", () => {
-    insertEventAt(Date.UTC(2026, 3, 10, 10), {
+  test("returns grouped daily buckets keyed by call-site ids", async () => {
+    await insertEventAt(Date.UTC(2026, 3, 10, 10), {
       callSite: "mainAgent",
       inputTokens: 100,
       outputTokens: 10,
     });
-    insertEventAt(Date.UTC(2026, 3, 10, 12), {
+    await insertEventAt(Date.UTC(2026, 3, 10, 12), {
       callSite: "conversationTitle",
       inputTokens: 200,
       outputTokens: 20,
     });
-    insertEventAt(Date.UTC(2026, 3, 11, 10), {
+    await insertEventAt(Date.UTC(2026, 3, 11, 10), {
       callSite: null,
       inputTokens: 300,
       outputTokens: 30,
     });
 
-    const buckets = getUsageGroupedSeries(
+    const buckets = await getUsageGroupedSeries(
       {
         from: Date.UTC(2026, 3, 10, 0),
         to: Date.UTC(2026, 3, 11, 23),
@@ -1596,17 +1620,17 @@ describe("getUsageGroupedSeries", () => {
     });
   });
 
-  test("returns grouped hourly buckets by inference profile including unset rows", () => {
-    insertEventAt(Date.UTC(2026, 3, 10, 10, 15), {
+  test("returns grouped hourly buckets by inference profile including unset rows", async () => {
+    await insertEventAt(Date.UTC(2026, 3, 10, 10, 15), {
       inferenceProfile: "fast",
       inputTokens: 100,
     });
-    insertEventAt(Date.UTC(2026, 3, 10, 10, 45), {
+    await insertEventAt(Date.UTC(2026, 3, 10, 10, 45), {
       inferenceProfile: null,
       inputTokens: 200,
     });
 
-    const buckets = getUsageGroupedSeries(
+    const buckets = await getUsageGroupedSeries(
       {
         from: Date.UTC(2026, 3, 10, 10),
         to: Date.UTC(2026, 3, 10, 11),
@@ -1630,17 +1654,17 @@ describe("getUsageGroupedSeries", () => {
     });
   });
 
-  test("orders grouped hourly buckets chronologically across positive-offset fall back", () => {
-    insertEventAt(Date.UTC(2026, 3, 4, 15, 15), {
+  test("orders grouped hourly buckets chronologically across positive-offset fall back", async () => {
+    await insertEventAt(Date.UTC(2026, 3, 4, 15, 15), {
       inferenceProfile: "first-hour",
       inputTokens: 100,
     });
-    insertEventAt(Date.UTC(2026, 3, 4, 16, 15), {
+    await insertEventAt(Date.UTC(2026, 3, 4, 16, 15), {
       inferenceProfile: "second-hour",
       inputTokens: 200,
     });
 
-    const buckets = getUsageGroupedSeries(
+    const buckets = await getUsageGroupedSeries(
       {
         from: Date.UTC(2026, 3, 4, 15),
         to: Date.UTC(2026, 3, 4, 17),
@@ -1673,26 +1697,26 @@ describe("getUsageGroupedSeries", () => {
 // queryUnreportedUsageEvents tests
 // ---------------------------------------------------------------------------
 
-describe("queryUnreportedUsageEvents", () => {
-  beforeEach(() => {
-    const db = getDb();
+describePg("queryUnreportedUsageEvents", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
     // Order matters: clear `llm_usage_events` (no FK), then `messages`
     // (FK to conversations cascades, but be explicit), then
     // `conversations`. The conversation-level metadata tests below
     // depend on a clean conversations + messages slate so JOINs are
     // deterministic.
-    db.run(`DELETE FROM llm_usage_events`);
-    db.run(`DELETE FROM messages`);
-    db.run(`DELETE FROM conversations`);
+    await db.run(`DELETE FROM llm_usage_events`);
+    await db.run(`DELETE FROM messages`);
+    await db.run(`DELETE FROM conversations`);
   });
 
-  test("returns events with createdAt strictly greater than afterCreatedAt in ascending order", () => {
-    insertEventAt(1000, { model: "model-a" });
-    insertEventAt(2000, { model: "model-b" });
-    insertEventAt(3000, { model: "model-c" });
+  test("returns events with createdAt strictly greater than afterCreatedAt in ascending order", async () => {
+    await insertEventAt(1000, { model: "model-a" });
+    await insertEventAt(2000, { model: "model-b" });
+    await insertEventAt(3000, { model: "model-c" });
 
     // afterCreatedAt = 1000 should exclude the event at exactly 1000
-    const events = queryUnreportedUsageEvents(1000, undefined, 100);
+    const events = await queryUnreportedUsageEvents(1000, undefined, 100);
     expect(events).toHaveLength(2);
     expect(events[0].model).toBe("model-b");
     expect(events[0].createdAt).toBe(2000);
@@ -1700,41 +1724,41 @@ describe("queryUnreportedUsageEvents", () => {
     expect(events[1].createdAt).toBe(3000);
   });
 
-  test("respects the limit parameter", () => {
-    insertEventAt(1000, { model: "model-a" });
-    insertEventAt(2000, { model: "model-b" });
-    insertEventAt(3000, { model: "model-c" });
+  test("respects the limit parameter", async () => {
+    await insertEventAt(1000, { model: "model-a" });
+    await insertEventAt(2000, { model: "model-b" });
+    await insertEventAt(3000, { model: "model-c" });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 2);
+    const events = await queryUnreportedUsageEvents(0, undefined, 2);
     expect(events).toHaveLength(2);
     // Should return the earliest two due to ASC ordering
     expect(events[0].model).toBe("model-a");
     expect(events[1].model).toBe("model-b");
   });
 
-  test("returns attribution fields for unreported usage events", () => {
-    insertEventAt(1000, {
+  test("returns attribution fields for unreported usage events", async () => {
+    await insertEventAt(1000, {
       callSite: "mainAgent",
       inferenceProfile: "balanced",
       inferenceProfileSource: "active",
     });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     expect(events[0].callSite).toBe("mainAgent");
     expect(events[0].inferenceProfile).toBe("balanced");
     expect(events[0].inferenceProfileSource).toBe("active");
   });
 
-  test("returns empty array when no events match", () => {
-    insertEventAt(1000, { model: "model-a" });
+  test("returns empty array when no events match", async () => {
+    await insertEventAt(1000, { model: "model-a" });
 
-    const events = queryUnreportedUsageEvents(2000, undefined, 100);
+    const events = await queryUnreportedUsageEvents(2000, undefined, 100);
     expect(events).toHaveLength(0);
   });
 
-  test("returns empty array when table is empty", () => {
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+  test("returns empty array when table is empty", async () => {
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(0);
   });
 
@@ -1746,21 +1770,21 @@ describe("queryUnreportedUsageEvents", () => {
   // time.
   // -------------------------------------------------------------------------
 
-  test("conversationType resolves from the conversations table", () => {
-    const db = getDb();
+  test("conversationType resolves from the conversations table", async () => {
+    const db = requireMainDb();
     const now = Date.now();
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('conv-std', 'standard', ${now}, ${now})`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('conv-bg', 'background', ${now}, ${now})`,
     );
 
-    insertEventAt(1000, { conversationId: "conv-std" });
-    insertEventAt(2000, { conversationId: "conv-bg" });
-    insertEventAt(3000, { conversationId: null });
+    await insertEventAt(1000, { conversationId: "conv-std" });
+    await insertEventAt(2000, { conversationId: "conv-bg" });
+    await insertEventAt(3000, { conversationId: null });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(3);
     expect(events[0].conversationType).toBe("standard");
     expect(events[1].conversationType).toBe("background");
@@ -1768,25 +1792,26 @@ describe("queryUnreportedUsageEvents", () => {
     expect(events[2].conversationType).toBeNull();
   });
 
-  test("conversationType is stamped on the row at record time", () => {
-    const db = getDb();
+  test("conversationType is stamped on the row at record time", async () => {
+    const db = requireMainDb();
     const now = Date.now();
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('conv-stamp', 'background', ${now}, ${now})`,
     );
 
-    const event = recordUsageEvent(
+    const event = await recordUsageEvent(
       makeInput({ conversationId: "conv-stamp" }),
       pricedResult,
     );
 
-    const row = getSqlite()
-      .query("SELECT conversation_type FROM llm_usage_events WHERE id = ?")
-      .get(event.id) as { conversation_type: string | null } | null;
+    const row = (await requireMainDb().get(
+      "SELECT conversation_type FROM llm_usage_events WHERE id = ?",
+      [event.id],
+    )) as { conversation_type: string | null } | null;
     expect(row?.conversation_type).toBe("background");
   });
 
-  test("conversationType survives deletion of the parent conversation before flush", () => {
+  test("conversationType survives deletion of the parent conversation before flush", async () => {
     // Reproduces the memory-retrospective NULL-label bug: the retrospective
     // runs in a `background` fork conversation whose row is GC'd once a
     // newer run supersedes it (or immediately on wake failure). Usage rows
@@ -1794,52 +1819,52 @@ describe("queryUnreportedUsageEvents", () => {
     // conversation_type, because the type was derived only via a flush-time
     // JOIN. Same mechanism covers users deleting a standard conversation
     // within the flush window (the mainAgent NULL case).
-    const db = getDb();
+    const db = requireMainDb();
     const now = Date.now();
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('conv-gone', 'background', ${now}, ${now})`,
     );
-    insertEventAt(1000, {
+    await insertEventAt(1000, {
       conversationId: "conv-gone",
       callSite: "memoryRetrospective",
     });
 
-    db.run(`DELETE FROM conversations WHERE id = 'conv-gone'`);
+    await db.run(`DELETE FROM conversations WHERE id = 'conv-gone'`);
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     expect(events[0].conversationId).toBe("conv-gone");
     expect(events[0].conversationType).toBe("background");
   });
 
-  test("conversationType falls back to the JOIN for pre-migration rows", () => {
-    const db = getDb();
+  test("conversationType falls back to the JOIN for pre-migration rows", async () => {
+    const db = requireMainDb();
     const now = Date.now();
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('conv-legacy', 'scheduled', ${now}, ${now})`,
     );
-    insertEventAt(1000, { conversationId: "conv-legacy" });
+    await insertEventAt(1000, { conversationId: "conv-legacy" });
     // Simulate a row persisted before migration 353 stamped the column.
-    db.run(
+    await db.run(
       `UPDATE llm_usage_events SET conversation_type = NULL WHERE conversation_id = 'conv-legacy'`,
     );
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     expect(events[0].conversationType).toBe("scheduled");
   });
 
-  test("turnIndex counts real user turns up to the LLM call's createdAt", () => {
-    const db = getDb();
+  test("turnIndex counts real user turns up to the LLM call's createdAt", async () => {
+    const db = requireMainDb();
     const now = Date.now();
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('conv-1', 'standard', ${now}, ${now})`,
     );
     // Two user messages in the conversation.
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('m1', 'conv-1', 'user', 'hello', 1000)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('m2', 'conv-1', 'user', 'follow up', 3000)`,
     );
 
@@ -1847,60 +1872,60 @@ describe("queryUnreportedUsageEvents", () => {
     //  - mid-turn-1 (between m1 and m2)
     //  - exactly at m2's createdAt (still counts m2: `created_at <= e.created_at`)
     //  - after m2
-    insertEventAt(2000, { conversationId: "conv-1" });
-    insertEventAt(3000, { conversationId: "conv-1" });
-    insertEventAt(4000, { conversationId: "conv-1" });
+    await insertEventAt(2000, { conversationId: "conv-1" });
+    await insertEventAt(3000, { conversationId: "conv-1" });
+    await insertEventAt(4000, { conversationId: "conv-1" });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(3);
     expect(events[0].turnIndex).toBe(1);
     expect(events[1].turnIndex).toBe(2);
     expect(events[2].turnIndex).toBe(2);
   });
 
-  test("turnIndex is null when the LLM call has no conversationId", () => {
-    insertEventAt(1000, { conversationId: null });
+  test("turnIndex is null when the LLM call has no conversationId", async () => {
+    await insertEventAt(1000, { conversationId: null });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     expect(events[0].conversationId).toBeNull();
     expect(events[0].turnIndex).toBeNull();
   });
 
-  test("turnIndex skips tool_result rows when counting", () => {
-    const db = getDb();
+  test("turnIndex skips tool_result rows when counting", async () => {
+    const db = requireMainDb();
     const now = Date.now();
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('conv-tr', 'standard', ${now}, ${now})`,
     );
     // One real user turn, then a tool_result row (which should be
     // ignored), then the LLM call. Expected turn_index = 1.
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('real-1', 'conv-tr', 'user', 'real text', 1000)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('tool-1', 'conv-tr', 'user', '[{"type":"tool_result","tool_use_id":"x","content":""}]', 1500)`,
     );
-    insertEventAt(2000, { conversationId: "conv-tr" });
+    await insertEventAt(2000, { conversationId: "conv-tr" });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     expect(events[0].turnIndex).toBe(1);
   });
 
-  test("turnIndex is 0 when the LLM call fires before any user message", () => {
-    const db = getDb();
+  test("turnIndex is 0 when the LLM call fires before any user message", async () => {
+    const db = requireMainDb();
     const now = Date.now();
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('conv-early', 'standard', ${now}, ${now})`,
     );
     // LLM call fires at t=1000; first user message is at t=2000.
-    insertEventAt(1000, { conversationId: "conv-early" });
-    db.run(
+    await insertEventAt(1000, { conversationId: "conv-early" });
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('later', 'conv-early', 'user', 'hi', 2000)`,
     );
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     // Conversation exists but no user turn has fired yet. The CASE
     // short-circuits only on null conversationId, so we get a real 0.
@@ -1915,108 +1940,108 @@ describe("queryUnreportedUsageEvents", () => {
   // attribute the child's usage to the parent turn in flight at spawn.
   // -------------------------------------------------------------------------
 
-  test("parentConversationId links a subagent conversation and parentTurnIndex counts the parent turn in flight at spawn", () => {
-    const db = getDb();
+  test("parentConversationId links a subagent conversation and parentTurnIndex counts the parent turn in flight at spawn", async () => {
+    const db = requireMainDb();
     // Parent user turns at t=1000 and t=3000; the child conversation is
     // created at t=2000, i.e. while the parent's turn 1 is in flight.
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('parent-1', 'standard', 500, 500)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('p1', 'parent-1', 'user', 'first', 1000)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('p2', 'parent-1', 'user', 'second', 3000)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at, parent_conversation_id) VALUES ('child-1', 'background', 2000, 2000, 'parent-1')`,
     );
     // The usage event fires after the parent's turn 2, but attribution is
     // anchored to the child's creation time, not the event time.
-    insertEventAt(5000, { conversationId: "child-1" });
+    await insertEventAt(5000, { conversationId: "child-1" });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     expect(events[0].parentConversationId).toBe("parent-1");
     expect(events[0].parentTurnIndex).toBe(1);
   });
 
-  test("parent linkage falls back to fork_parent_conversation_id (retrospective forks)", () => {
-    const db = getDb();
-    db.run(
+  test("parent linkage falls back to fork_parent_conversation_id (retrospective forks)", async () => {
+    const db = requireMainDb();
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('source-1', 'standard', 500, 500)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('s1', 'source-1', 'user', 'hello', 1000)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at, fork_parent_conversation_id) VALUES ('retro-1', 'background', 2000, 2000, 'source-1')`,
     );
-    insertEventAt(3000, { conversationId: "retro-1" });
+    await insertEventAt(3000, { conversationId: "retro-1" });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     expect(events[0].parentConversationId).toBe("source-1");
     expect(events[0].parentTurnIndex).toBe(1);
   });
 
-  test("fork parentTurnIndex anchors on the fork boundary message, not fork creation time", () => {
-    const db = getDb();
+  test("fork parentTurnIndex anchors on the fork boundary message, not fork creation time", async () => {
+    const db = requireMainDb();
     // Source conversation with turns at t=1000 and t=3000. The fork
     // branches from the FIRST turn (boundary message s1) but is created
     // at t=5000, after turn 2 exists — attribution must report turn 1.
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('source-2', 'standard', 500, 500)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('s2a', 'source-2', 'user', 'first', 1000)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('s2b', 'source-2', 'user', 'second', 3000)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at, fork_parent_conversation_id, fork_parent_message_id) VALUES ('retro-2', 'background', 5000, 5000, 'source-2', 's2a')`,
     );
-    insertEventAt(6000, { conversationId: "retro-2" });
+    await insertEventAt(6000, { conversationId: "retro-2" });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     expect(events[0].parentConversationId).toBe("source-2");
     expect(events[0].parentTurnIndex).toBe(1);
   });
 
-  test("user-initiated forks (standard type) do not inherit fork parent attribution", () => {
-    const db = getDb();
+  test("user-initiated forks (standard type) do not inherit fork parent attribution", async () => {
+    const db = requireMainDb();
     // A user forks a conversation: the fork stamps
     // fork_parent_conversation_id but is a first-class standard
     // conversation — its usage must not fold into the source turn.
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('source-3', 'standard', 500, 500)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('s3', 'source-3', 'user', 'hello', 1000)`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at, fork_parent_conversation_id, fork_parent_message_id) VALUES ('user-fork-1', 'standard', 2000, 2000, 'source-3', 's3')`,
     );
-    insertEventAt(3000, { conversationId: "user-fork-1" });
+    await insertEventAt(3000, { conversationId: "user-fork-1" });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     expect(events[0].parentConversationId).toBeNull();
     expect(events[0].parentTurnIndex).toBeNull();
   });
 
-  test("parent fields are null for parentless conversations and no-conversation events", () => {
-    const db = getDb();
+  test("parent fields are null for parentless conversations and no-conversation events", async () => {
+    const db = requireMainDb();
     const now = Date.now();
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('conv-solo', 'background', ${now}, ${now})`,
     );
-    insertEventAt(1000, { conversationId: "conv-solo" });
-    insertEventAt(2000, { conversationId: null });
+    await insertEventAt(1000, { conversationId: "conv-solo" });
+    await insertEventAt(2000, { conversationId: null });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(2);
     expect(events[0].parentConversationId).toBeNull();
     expect(events[0].parentTurnIndex).toBeNull();
@@ -2031,31 +2056,31 @@ describe("queryUnreportedUsageEvents", () => {
   // what make advisor consults, forks and regular spawns separable.
   // -------------------------------------------------------------------------
 
-  test("surfaces subagentRole and subagentSpawnMode from the child conversation", () => {
-    const db = getDb();
-    db.run(
+  test("surfaces subagentRole and subagentSpawnMode from the child conversation", async () => {
+    const db = requireMainDb();
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at, parent_conversation_id, subagent_role, subagent_spawn_mode) VALUES ('advisor-child', 'background', 1000, 1000, 'parent-1', 'advisor', 'advisor_consult')`,
     );
-    insertEventAt(2000, { conversationId: "advisor-child" });
+    await insertEventAt(2000, { conversationId: "advisor-child" });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     expect(events[0].subagentRole).toBe("advisor");
     expect(events[0].subagentSpawnMode).toBe("advisor_consult");
   });
 
-  test("role and spawn mode are independent: a general subagent can be regular or forked", () => {
-    const db = getDb();
-    db.run(
+  test("role and spawn mode are independent: a general subagent can be regular or forked", async () => {
+    const db = requireMainDb();
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at, subagent_role, subagent_spawn_mode) VALUES ('plain-child', 'background', 1000, 1000, 'general', 'regular')`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at, subagent_role, subagent_spawn_mode) VALUES ('forked-child', 'background', 1000, 1000, 'general', 'fork')`,
     );
-    insertEventAt(2000, { conversationId: "plain-child" });
-    insertEventAt(3000, { conversationId: "forked-child" });
+    await insertEventAt(2000, { conversationId: "plain-child" });
+    await insertEventAt(3000, { conversationId: "forked-child" });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(2);
     expect(events[0].subagentRole).toBe("general");
     expect(events[0].subagentSpawnMode).toBe("regular");
@@ -2063,15 +2088,15 @@ describe("queryUnreportedUsageEvents", () => {
     expect(events[1].subagentSpawnMode).toBe("fork");
   });
 
-  test("subagent fields are null for ordinary conversations and no-conversation events", () => {
-    const db = getDb();
-    db.run(
+  test("subagent fields are null for ordinary conversations and no-conversation events", async () => {
+    const db = requireMainDb();
+    await db.run(
       `INSERT INTO conversations (id, conversation_type, created_at, updated_at) VALUES ('conv-plain', 'standard', 500, 500)`,
     );
-    insertEventAt(1000, { conversationId: "conv-plain" });
-    insertEventAt(2000, { conversationId: null });
+    await insertEventAt(1000, { conversationId: "conv-plain" });
+    await insertEventAt(2000, { conversationId: null });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(2);
     expect(events[0].subagentRole).toBeNull();
     expect(events[0].subagentSpawnMode).toBeNull();
@@ -2079,18 +2104,18 @@ describe("queryUnreportedUsageEvents", () => {
     expect(events[1].subagentSpawnMode).toBeNull();
   });
 
-  test("surfaces llmCallCount on unreported events", () => {
-    insertEventAt(1000, { llmCallCount: 4 });
-    insertEventAt(2000, {});
+  test("surfaces llmCallCount on unreported events", async () => {
+    await insertEventAt(1000, { llmCallCount: 4 });
+    await insertEventAt(2000, {});
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(2);
     expect(events[0].llmCallCount).toBe(4);
     // recordUsageEvent defaults llmCallCount to 1 when unset.
     expect(events[1].llmCallCount).toBe(1);
   });
 
-  test("surfaces raw_usage on unreported events", () => {
+  test("surfaces raw_usage on unreported events", async () => {
     // The telemetry reporter consumes `queryUnreportedUsageEvents` output
     // directly and forwards it to BigQuery. If the SELECT projection
     // drops the `raw_usage` column, every provider-specific detail
@@ -2106,12 +2131,12 @@ describe("queryUnreportedUsageEvents", () => {
         ephemeral_1h_input_tokens: 500,
       },
     };
-    insertEventAt(1000, {
+    await insertEventAt(1000, {
       cacheCreationInputTokens: 800,
       rawUsage,
     });
 
-    const events = queryUnreportedUsageEvents(0, undefined, 100);
+    const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     expect(events[0].cacheCreationInputTokens).toBe(800);
     expect(events[0].rawUsage).toEqual(rawUsage);
@@ -2127,37 +2152,37 @@ describe("queryUnreportedUsageEvents", () => {
 // query must return it so the reporter can put it on the wire.
 // ---------------------------------------------------------------------------
 
-describe("recordUsageEvent — assistantVersion stamping", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
+describePg("recordUsageEvent — assistantVersion stamping", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM llm_usage_events`);
   });
 
   test("stamps APP_VERSION on the returned event", async () => {
     const { APP_VERSION } = await import("../version.js");
-    const event = recordUsageEvent(makeInput(), pricedResult);
+    const event = await recordUsageEvent(makeInput(), pricedResult);
     expect(event.assistantVersion).toBe(APP_VERSION);
   });
 
   test("persists assistantVersion and queryUnreportedUsageEvents returns it", async () => {
     const { APP_VERSION } = await import("../version.js");
-    insertEventAt(1000);
-    const [event] = queryUnreportedUsageEvents(0, undefined, 100);
+    await insertEventAt(1000);
+    const [event] = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(event).toBeDefined();
     expect(event.assistantVersion).toBe(APP_VERSION);
   });
 
-  test("legacy rows (null assistant_version column) round-trip as null", () => {
+  test("legacy rows (null assistant_version column) round-trip as null", async () => {
     // Simulate a row that was persisted before migration 267 ran by
     // inserting one through recordUsageEvent and then nulling the
     // column out. This mirrors what production rows look like before
     // the migration backfills `null`s; the reporter must accept them
     // and let the platform fall back to the envelope's version.
-    insertEventAt(1000);
-    const db = getDb();
-    db.run(`UPDATE llm_usage_events SET assistant_version = NULL`);
+    await insertEventAt(1000);
+    const db = requireMainDb();
+    await db.run(`UPDATE llm_usage_events SET assistant_version = NULL`);
 
-    const [event] = queryUnreportedUsageEvents(0, undefined, 100);
+    const [event] = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(event).toBeDefined();
     expect(event.assistantVersion).toBeNull();
   });

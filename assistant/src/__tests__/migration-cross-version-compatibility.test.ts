@@ -340,7 +340,7 @@ interface ImportCommitResponse {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("schema version compatibility", () => {
-  test("bundle with schema_version 1 validates successfully", () => {
+  test("bundle with schema_version 1 validates successfully", async () => {
     const vbundle = createValidVBundle();
     const result = validateVBundle(vbundle);
 
@@ -348,7 +348,7 @@ describe("schema version compatibility", () => {
     expect(result.manifest?.schema_version).toBe(1);
   });
 
-  test("bundle with schema_version != 1 is rejected by the v1 validator", () => {
+  test("bundle with schema_version != 1 is rejected by the v1 validator", async () => {
     // The v1 validator pins `schema_version: z.literal(1)`. Bundles that
     // claim a different schema version are rejected outright; this used to
     // be permissive when schema_version was a free-form string.
@@ -364,7 +364,7 @@ describe("schema version compatibility", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("missing or malformed version fields", () => {
-  test("missing schema_version produces MANIFEST_SCHEMA_ERROR", () => {
+  test("missing schema_version produces MANIFEST_SCHEMA_ERROR", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const manifestObj = {
       // schema_version intentionally omitted
@@ -392,7 +392,7 @@ describe("missing or malformed version fields", () => {
     expect(schemaError!.message).toContain("schema_version");
   });
 
-  test("numeric schema_version (instead of string) produces schema error", () => {
+  test("numeric schema_version (instead of string) produces schema error", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const manifestObj = {
       schema_version: 1, // should be a string
@@ -418,7 +418,7 @@ describe("missing or malformed version fields", () => {
     );
   });
 
-  test("null schema_version produces schema error", () => {
+  test("null schema_version produces schema error", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const manifestObj = {
       schema_version: null,
@@ -444,7 +444,7 @@ describe("missing or malformed version fields", () => {
     );
   });
 
-  test("zero schema_version is rejected by the v1 validator", () => {
+  test("zero schema_version is rejected by the v1 validator", async () => {
     // The v1 schema pins schema_version to the literal `1`; any other
     // numeric value (including 0) is rejected.
     const vbundle = createValidVBundle(undefined, { schema_version: 0 });
@@ -453,7 +453,7 @@ describe("missing or malformed version fields", () => {
     expect(result.is_valid).toBe(false);
   });
 
-  test("missing created_at produces MANIFEST_SCHEMA_ERROR", () => {
+  test("missing created_at produces MANIFEST_SCHEMA_ERROR", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const manifestObj = {
       schema_version: 1,
@@ -484,7 +484,7 @@ describe("missing or malformed version fields", () => {
     expect(error).toBeDefined();
   });
 
-  test("missing files array produces MANIFEST_SCHEMA_ERROR", () => {
+  test("missing files array produces MANIFEST_SCHEMA_ERROR", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const manifestObj = {
       schema_version: 1,
@@ -504,7 +504,7 @@ describe("missing or malformed version fields", () => {
     );
   });
 
-  test("missing manifest_sha256 produces MANIFEST_SCHEMA_ERROR", () => {
+  test("missing manifest_sha256 produces MANIFEST_SCHEMA_ERROR", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const manifestObj = {
       schema_version: 1,
@@ -530,7 +530,7 @@ describe("missing or malformed version fields", () => {
     );
   });
 
-  test("file entry missing sha256 produces MANIFEST_SCHEMA_ERROR", () => {
+  test("file entry missing sha256 produces MANIFEST_SCHEMA_ERROR", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const manifestObj = {
       schema_version: 1,
@@ -556,7 +556,7 @@ describe("missing or malformed version fields", () => {
     );
   });
 
-  test("file entry with negative size produces MANIFEST_SCHEMA_ERROR", () => {
+  test("file entry with negative size produces MANIFEST_SCHEMA_ERROR", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const manifestObj = {
       schema_version: 1,
@@ -582,7 +582,7 @@ describe("missing or malformed version fields", () => {
     );
   });
 
-  test("version field error includes descriptive path in diagnostic", () => {
+  test("version field error includes descriptive path in diagnostic", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const manifestObj = {
       schema_version: 42, // wrong type
@@ -693,7 +693,7 @@ describe("round-trip: export -> validate -> preflight -> import", () => {
     );
   });
 
-  test("round-trip via builder: build -> validate -> analyze -> commit", () => {
+  test("round-trip via builder: build -> validate -> analyze -> commit", async () => {
     const dbData = new Uint8Array([0xca, 0xfe, 0xba, 0xbe]);
     const configData = new TextEncoder().encode('{"model":"test-round-trip"}');
 
@@ -716,7 +716,7 @@ describe("round-trip: export -> validate -> preflight -> import", () => {
 
     // Step 3: Analyze (preflight)
     const resolver = new DefaultPathResolver(testDir);
-    const report = analyzeImport({
+    const report = await analyzeImport({
       manifest: validationResult.manifest!,
       pathResolver: resolver,
     });
@@ -725,7 +725,7 @@ describe("round-trip: export -> validate -> preflight -> import", () => {
     expect(report.summary.total_files).toBe(2);
 
     // Step 4: Commit
-    const commitResult = commitImport({
+    const commitResult = await commitImport({
       archiveData: archive,
       pathResolver: resolver,
     });
@@ -771,7 +771,7 @@ describe("round-trip: export -> validate -> preflight -> import", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("partial failure scenarios", () => {
-  test("commitImport to read-only path returns write_failed with partial report", () => {
+  test("commitImport to read-only path returns write_failed with partial report", async () => {
     const newDbData = new Uint8Array([0xde, 0xad]);
     const vbundle = createValidVBundle([
       { path: "data/db/assistant.db", data: newDbData },
@@ -788,7 +788,7 @@ describe("partial failure scenarios", () => {
     );
 
     const resolver = new DefaultPathResolver(blockerWorkspace);
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: vbundle,
       pathResolver: resolver,
     });
@@ -804,9 +804,9 @@ describe("partial failure scenarios", () => {
     rmSync(blockerWorkspace, { recursive: true, force: true });
   });
 
-  test("commitImport with invalid archive returns validation_failed", () => {
+  test("commitImport with invalid archive returns validation_failed", async () => {
     const resolver = new DefaultPathResolver(testDir);
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: new Uint8Array([0xba, 0xad, 0xf0, 0x0d]),
       pathResolver: resolver,
     });
@@ -866,7 +866,7 @@ describe("partial failure scenarios", () => {
     expect(body.validation!.errors.length).toBeGreaterThan(0);
   });
 
-  test("import does not modify disk when bundle has checksum mismatch", () => {
+  test("import does not modify disk when bundle has checksum mismatch", async () => {
     // Save original disk state
     const originalDb = new Uint8Array(readFileSync(testDbPath));
     const originalConfig = readFileSync(testConfigPath, "utf8");
@@ -894,7 +894,7 @@ describe("partial failure scenarios", () => {
     const corruptVBundle = gzipSync(tar);
 
     const resolver = new DefaultPathResolver(testDir);
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: corruptVBundle,
       pathResolver: resolver,
     });
@@ -914,7 +914,7 @@ describe("partial failure scenarios", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("edge cases", () => {
-  test("bundle with empty database file validates and imports", () => {
+  test("bundle with empty database file validates and imports", async () => {
     const emptyDb = new Uint8Array(0);
     const vbundle = createValidVBundle([
       { path: "data/db/assistant.db", data: emptyDb },
@@ -926,7 +926,7 @@ describe("edge cases", () => {
 
     // Import should also succeed
     const resolver = new DefaultPathResolver(testDir);
-    const importResult = commitImport({
+    const importResult = await commitImport({
       archiveData: vbundle,
       pathResolver: resolver,
     });
@@ -936,7 +936,7 @@ describe("edge cases", () => {
     }
   });
 
-  test("bundle with large file entry validates correctly", () => {
+  test("bundle with large file entry validates correctly", async () => {
     // Create a 100KB file to test larger payloads
     const largeData = new Uint8Array(100 * 1024);
     for (let i = 0; i < largeData.length; i++) {
@@ -952,7 +952,7 @@ describe("edge cases", () => {
     expect(result.manifest?.contents[0].size_bytes).toBe(100 * 1024);
   });
 
-  test("bundle with duplicate archive paths uses last occurrence in tar", () => {
+  test("bundle with duplicate archive paths uses last occurrence in tar", async () => {
     // A tar archive with duplicate paths: the tar parser will keep the
     // last one it sees. Create manually to have duplicates.
     const dbData1 = new Uint8Array([0x01, 0x02, 0x03]);
@@ -986,7 +986,7 @@ describe("edge cases", () => {
     expect(result.is_valid).toBe(true);
   });
 
-  test("corrupted file checksum is detected with clear diagnostic", () => {
+  test("corrupted file checksum is detected with clear diagnostic", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const wrongChecksum =
       "0000000000000000000000000000000000000000000000000000000000000000";
@@ -1020,7 +1020,7 @@ describe("edge cases", () => {
     expect(checksumError!.path).toBe("data/db/assistant.db");
   });
 
-  test("manifest declaring non-existent file produces MISSING_DECLARED_FILE", () => {
+  test("manifest declaring non-existent file produces MISSING_DECLARED_FILE", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const ghostSha = sha256Hex(new TextEncoder().encode("ghost-content"));
 
@@ -1058,7 +1058,7 @@ describe("edge cases", () => {
     expect(missingError!.message).toContain("data/extra/ghost.bin");
   });
 
-  test("bundle with empty contents is rejected by the v1 contents refine", () => {
+  test("bundle with empty contents is rejected by the v1 contents refine", async () => {
     // The v1 schema's `.refine()` requires `data/db/assistant.db` (legacy)
     // or its `workspace/`-prefixed counterpart. A manifest declaring an
     // empty contents array is valid at the field level but rejected by
@@ -1081,7 +1081,7 @@ describe("edge cases", () => {
     expect(dbBytes).toBeDefined();
   });
 
-  test("completely empty gzip content (no tar entries) fails gracefully", () => {
+  test("completely empty gzip content (no tar entries) fails gracefully", async () => {
     // A gzip of an empty buffer
     const emptyGzip = gzipSync(new Uint8Array(0));
     const result = validateVBundle(emptyGzip);
@@ -1091,7 +1091,7 @@ describe("edge cases", () => {
     expect(result.errors.length).toBeGreaterThan(0);
   });
 
-  test("non-gzip data (random bytes) produces INVALID_GZIP", () => {
+  test("non-gzip data (random bytes) produces INVALID_GZIP", async () => {
     const randomBytes = new Uint8Array(256);
     for (let i = 0; i < randomBytes.length; i++) {
       randomBytes[i] = Math.floor(Math.random() * 256);
@@ -1105,7 +1105,7 @@ describe("edge cases", () => {
     expect(result.errors[0].message).toContain("gzip");
   });
 
-  test("truncated gzip data produces INVALID_GZIP", () => {
+  test("truncated gzip data produces INVALID_GZIP", async () => {
     // Create a valid gzip and truncate it
     const validGzip = gzipSync(new Uint8Array([1, 2, 3, 4, 5]));
     const truncated = validGzip.subarray(0, Math.floor(validGzip.length / 2));
@@ -1116,14 +1116,14 @@ describe("edge cases", () => {
     expect(result.errors[0].code).toBe("INVALID_GZIP");
   });
 
-  test("single byte input produces INVALID_GZIP", () => {
+  test("single byte input produces INVALID_GZIP", async () => {
     const result = validateVBundle(new Uint8Array([0x00]));
 
     expect(result.is_valid).toBe(false);
     expect(result.errors[0].code).toBe("INVALID_GZIP");
   });
 
-  test("bundle with extra undeclared files in archive still validates (extra files are ignored)", () => {
+  test("bundle with extra undeclared files in archive still validates (extra files are ignored)", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const extraData = new TextEncoder().encode("bonus content");
 
@@ -1160,14 +1160,14 @@ describe("edge cases", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("diagnostic quality", () => {
-  test("INVALID_GZIP error message mentions gzip", () => {
+  test("INVALID_GZIP error message mentions gzip", async () => {
     const result = validateVBundle(new Uint8Array([0xff, 0xfe]));
     const err = result.errors.find((e) => e.code === "INVALID_GZIP");
     expect(err).toBeDefined();
     expect(err!.message.toLowerCase()).toContain("gzip");
   });
 
-  test("MISSING_ENTRY error identifies which entry is missing", () => {
+  test("MISSING_ENTRY error identifies which entry is missing", async () => {
     const tar = createTarArchive([
       { name: "something-else.txt", data: new TextEncoder().encode("hi") },
     ]);
@@ -1181,7 +1181,7 @@ describe("diagnostic quality", () => {
     expect(manifestMissing!.message).toContain("manifest.json");
   });
 
-  test("MANIFEST_CHECKSUM_MISMATCH includes expected and computed hashes", () => {
+  test("MANIFEST_CHECKSUM_MISMATCH includes expected and computed hashes", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const badHash =
       "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
@@ -1226,7 +1226,7 @@ describe("diagnostic quality", () => {
     expect(err!.message).toContain("computed"); // shows computed hash
   });
 
-  test("FILE_CHECKSUM_MISMATCH includes file path and both hashes", () => {
+  test("FILE_CHECKSUM_MISMATCH includes file path and both hashes", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const wrongSha =
       "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
@@ -1256,7 +1256,7 @@ describe("diagnostic quality", () => {
     expect(err!.message).toContain("data/db/assistant.db");
   });
 
-  test("FILE_SIZE_MISMATCH includes file path and both sizes", () => {
+  test("FILE_SIZE_MISMATCH includes file path and both sizes", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
 
     const manifest = buildTestManifest({
@@ -1284,9 +1284,9 @@ describe("diagnostic quality", () => {
     expect(err!.message).toContain(String(dbData.length));
   });
 
-  test("import commit validation_failed response includes error codes and messages", () => {
+  test("import commit validation_failed response includes error codes and messages", async () => {
     const resolver = new DefaultPathResolver(testDir);
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: new Uint8Array([0x00]),
       pathResolver: resolver,
     });
@@ -1330,7 +1330,7 @@ describe("diagnostic quality", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("multiple error accumulation", () => {
-  test("bundle with multiple file-level errors reports all of them", () => {
+  test("bundle with multiple file-level errors reports all of them", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     const configData = new TextEncoder().encode('{"key":"value"}');
     const wrongSha =
@@ -1382,7 +1382,7 @@ describe("multiple error accumulation", () => {
     expect(result.errors.length).toBeGreaterThanOrEqual(2);
   });
 
-  test("manifest with multiple missing required fields reports all issues", () => {
+  test("manifest with multiple missing required fields reports all issues", async () => {
     const dbData = new Uint8Array([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
     // Completely empty manifest (has none of the required fields)
     const manifestObj = {};
@@ -1406,7 +1406,7 @@ describe("multiple error accumulation", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("builder -> validator consistency", () => {
-  test("buildVBundle archives across content shapes pass validation", () => {
+  test("buildVBundle archives across content shapes pass validation", async () => {
     const testCases: Array<{ files: VBundleFile[] }> = [
       {
         files: [
@@ -1450,7 +1450,7 @@ describe("builder -> validator consistency", () => {
     }
   });
 
-  test("builder output checksum matches validator computation", () => {
+  test("builder output checksum matches validator computation", async () => {
     const { archive, manifest } = buildVBundle({
       files: [
         {
@@ -1466,7 +1466,7 @@ describe("builder -> validator consistency", () => {
     expect(result.manifest?.checksum).toBe(manifest.checksum);
   });
 
-  test("builder output file checksums match validator computation", () => {
+  test("builder output file checksums match validator computation", async () => {
     const fileData = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
     const { archive, manifest } = buildVBundle({
       files: [{ path: "data/db/assistant.db", data: fileData }],
@@ -1487,11 +1487,11 @@ describe("builder -> validator consistency", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("import analyzer edge cases", () => {
-  test("all-unchanged files produce correct summary", () => {
+  test("all-unchanged files produce correct summary", async () => {
     const resolver = new DefaultPathResolver(testDir);
     const existingConfig = new Uint8Array(readFileSync(testConfigPath));
 
-    const report = analyzeImport({
+    const report = await analyzeImport({
       manifest: {
         schema_version: 1,
         bundle_id: "00000000-0000-4000-8000-000000000000",
@@ -1532,12 +1532,12 @@ describe("import analyzer edge cases", () => {
     expect(report.conflicts).toHaveLength(0);
   });
 
-  test("all-create scenario (fresh install) produces correct summary", () => {
+  test("all-create scenario (fresh install) produces correct summary", async () => {
     const resolver = new DefaultPathResolver(
       join(testDir, "nonexistent-workspace"),
     );
 
-    const report = analyzeImport({
+    const report = await analyzeImport({
       manifest: buildTestManifest({
         contents: [
           {
@@ -1565,14 +1565,14 @@ describe("import analyzer edge cases", () => {
     expect(report.summary.files_to_overwrite).toBe(0);
   });
 
-  test("mixed create/overwrite/unchanged produces accurate counts", () => {
+  test("mixed create/overwrite/unchanged produces accurate counts", async () => {
     const resolver = new DefaultPathResolver(testDir);
 
     // db: different from disk -> overwrite
     // config: same as disk -> unchanged
     const existingConfig = new Uint8Array(readFileSync(testConfigPath));
 
-    const report = analyzeImport({
+    const report = await analyzeImport({
       manifest: buildTestManifest({
         contents: [
           {
@@ -1599,10 +1599,10 @@ describe("import analyzer edge cases", () => {
     expect(report.summary.files_to_create).toBe(0);
   });
 
-  test("unknown archive path produces UNKNOWN_ARCHIVE_PATH conflict", () => {
+  test("unknown archive path produces UNKNOWN_ARCHIVE_PATH conflict", async () => {
     const resolver = new DefaultPathResolver(testDir);
 
-    const report = analyzeImport({
+    const report = await analyzeImport({
       manifest: buildTestManifest({
         contents: [
           {

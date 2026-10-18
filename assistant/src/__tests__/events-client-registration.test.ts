@@ -14,7 +14,6 @@
  */
 import { describe, expect, test } from "bun:test";
 
-import { initializeDb } from "../persistence/db-init.js";
 import { AssistantEventHub } from "../runtime/assistant-event-hub.js";
 import {
   BadRequestError,
@@ -22,12 +21,10 @@ import {
 } from "../runtime/routes/errors.js";
 import { handleSubscribeAssistantEvents } from "../runtime/routes/events-routes.js";
 
-await initializeDb();
-
 describe("events client registration", () => {
   // ── Registration on connect ───────────────────────────────────────────────
 
-  test("registers client when both headers are provided", () => {
+  test("registers client when both headers are provided", async () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
@@ -54,7 +51,7 @@ describe("events client registration", () => {
     ac.abort();
   });
 
-  test("registers Windows with only its implemented host capabilities", () => {
+  test("registers Windows with only its implemented host capabilities", async () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
@@ -82,7 +79,7 @@ describe("events client registration", () => {
     ac.abort();
   });
 
-  test("skips registration when no headers are provided (backwards compat)", () => {
+  test("skips registration when no headers are provided (backwards compat)", async () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
@@ -93,7 +90,7 @@ describe("events client registration", () => {
     ac.abort();
   });
 
-  test("skips registration when only interface header is provided", () => {
+  test("skips registration when only interface header is provided", async () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
@@ -112,36 +109,34 @@ describe("events client registration", () => {
 
   // ── Validation ────────────────────────────────────────────────────────────
 
-  test("throws BadRequestError when clientId is provided without interfaceId", () => {
+  test("throws BadRequestError when clientId is provided without interfaceId", async () => {
     const hub = new AssistantEventHub();
 
-    expect(
-      () =>
-        await handleSubscribeAssistantEvents(
-          {
-            headers: { "x-vellum-client-id": "test-mac-001" },
-          },
-          { hub },
-        ),
-    ).toThrow(BadRequestError);
+    await expect(
+      handleSubscribeAssistantEvents(
+        {
+          headers: { "x-vellum-client-id": "test-mac-001" },
+        },
+        { hub },
+      ),
+    ).rejects.toThrow(BadRequestError);
     expect(hub.listClients()).toHaveLength(0);
   });
 
-  test("throws BadRequestError when interfaceId is invalid", () => {
+  test("throws BadRequestError when interfaceId is invalid", async () => {
     const hub = new AssistantEventHub();
 
-    expect(
-      () =>
-        await handleSubscribeAssistantEvents(
-          {
-            headers: {
-              "x-vellum-client-id": "test-bad-001",
-              "x-vellum-interface-id": "not-a-valid-interface",
-            },
+    await expect(
+      handleSubscribeAssistantEvents(
+        {
+          headers: {
+            "x-vellum-client-id": "test-bad-001",
+            "x-vellum-interface-id": "not-a-valid-interface",
           },
-          { hub },
-        ),
-    ).toThrow(BadRequestError);
+        },
+        { hub },
+      ),
+    ).rejects.toThrow(BadRequestError);
     expect(hub.listClients()).toHaveLength(0);
   });
 
@@ -280,27 +275,26 @@ describe("events client registration", () => {
 
   // ── Capacity limit cleanup ────────────────────────────────────────────────
 
-  test("throws ServiceUnavailableError when hub has zero capacity", () => {
+  test("throws ServiceUnavailableError when hub has zero capacity", async () => {
     const hub = new AssistantEventHub({ maxSubscribers: 0 });
 
-    expect(
-      () =>
-        await handleSubscribeAssistantEvents(
-          {
-            headers: {
-              "x-vellum-client-id": "no-room",
-              "x-vellum-interface-id": "macos",
-            },
+    await expect(
+      handleSubscribeAssistantEvents(
+        {
+          headers: {
+            "x-vellum-client-id": "no-room",
+            "x-vellum-interface-id": "macos",
           },
-          { hub },
-        ),
-    ).toThrow(ServiceUnavailableError);
+        },
+        { hub },
+      ),
+    ).rejects.toThrow(ServiceUnavailableError);
     expect(hub.listClients()).toHaveLength(0);
   });
 
   // ── Client deduplication on reconnect ─────────────────────────────────────
 
-  test("deduplicates stale subscribers when same clientId reconnects", () => {
+  test("deduplicates stale subscribers when same clientId reconnects", async () => {
     const hub = new AssistantEventHub();
     const ac1 = new AbortController();
     const ac2 = new AbortController();
@@ -338,7 +332,7 @@ describe("events client registration", () => {
     ac2.abort();
   });
 
-  test("deduplication evicts stale entry via onEvict callback", () => {
+  test("deduplication evicts stale entry via onEvict callback", async () => {
     const hub = new AssistantEventHub();
     const ac1 = new AbortController();
     const ac2 = new AbortController();
@@ -375,7 +369,7 @@ describe("events client registration", () => {
     ac2.abort();
   });
 
-  test("different clientIds are not deduplicated", () => {
+  test("different clientIds are not deduplicated", async () => {
     const hub = new AssistantEventHub();
     const ac1 = new AbortController();
     const ac2 = new AbortController();
@@ -410,7 +404,7 @@ describe("events client registration", () => {
 
   // ── actorPrincipalId capture ──────────────────────────────────────────────
 
-  test("captures actorPrincipalId from x-vellum-actor-principal-id header", () => {
+  test("captures actorPrincipalId from x-vellum-actor-principal-id header", async () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
@@ -435,7 +429,7 @@ describe("events client registration", () => {
     ac.abort();
   });
 
-  test("registers client with undefined actorPrincipalId when header is absent", () => {
+  test("registers client with undefined actorPrincipalId when header is absent", async () => {
     const ac = new AbortController();
     const hub = new AssistantEventHub();
 
@@ -462,7 +456,7 @@ describe("events client registration", () => {
 
   // ── disposeClient (force disconnect) ──────────────────────────────────────
 
-  test("disposeClient removes all subscribers for the clientId", () => {
+  test("disposeClient removes all subscribers for the clientId", async () => {
     const hub = new AssistantEventHub();
 
     hub.subscribe({
@@ -480,12 +474,12 @@ describe("events client registration", () => {
     expect(hub.listClients()).toHaveLength(0);
   });
 
-  test("disposeClient returns 0 for unknown clientId", () => {
+  test("disposeClient returns 0 for unknown clientId", async () => {
     const hub = new AssistantEventHub();
     expect(hub.disposeClient("nonexistent")).toBe(0);
   });
 
-  test("disposeClient fires onEvict for each disposed entry", () => {
+  test("disposeClient fires onEvict for each disposed entry", async () => {
     const hub = new AssistantEventHub();
     let evictCount = 0;
 

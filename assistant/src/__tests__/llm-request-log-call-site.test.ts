@@ -4,29 +4,31 @@
  * `LogRow.callSite`. Historical rows (pre-migration 264) stay NULL —
  * "we don't know" rather than guessing `mainAgent`.
  */
+import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 
-import { getLogsDb, getSqliteFrom } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+
+import type { DrizzleDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   getRequestLogById,
   recordRequestLog,
 } from "../persistence/llm-request-log-store.js";
 import { migrateLlmRequestLogCallSite } from "../persistence/migrations/264-llm-request-log-call-site.js";
-import { llmRequestLogs } from "../persistence/schema/index.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-// llm_request_logs lives in the dedicated logs connection.
-function resetLogs(): void {
-  getLogsDb()!.delete(llmRequestLogs).run();
+async function resetLogs(): Promise<void> {
+  await requireMainDb().run("DELETE FROM llm_request_logs");
 }
 
-describe("recordRequestLog call_site stamping", () => {
-  beforeEach(resetLogs);
+describePg("recordRequestLog call_site stamping", () => {
+  beforeEach(async () => {
+    await resetLogs();
+  });
 
-  test("stamps callSite when provided", () => {
-    const id = recordRequestLog(
+  test("stamps callSite when provided", async () => {
+    const id = await recordRequestLog(
       "conv-1",
       '{"req":1}',
       '{"res":1}',
@@ -34,20 +36,20 @@ describe("recordRequestLog call_site stamping", () => {
       "anthropic",
       "mainAgent",
     );
-    const row = getRequestLogById(id!);
+    const row = await getRequestLogById(id!);
     expect(row).not.toBeNull();
     expect(row!.callSite).toBe("mainAgent");
   });
 
-  test("leaves callSite NULL when omitted (backward compat)", () => {
-    const id = recordRequestLog("conv-1", '{"req":1}', '{"res":1}');
-    const row = getRequestLogById(id!);
+  test("leaves callSite NULL when omitted (backward compat)", async () => {
+    const id = await recordRequestLog("conv-1", '{"req":1}', '{"res":1}');
+    const row = await getRequestLogById(id!);
     expect(row).not.toBeNull();
     expect(row!.callSite).toBeNull();
   });
 
-  test("supports the compactionAgent value", () => {
-    const id = recordRequestLog(
+  test("supports the compactionAgent value", async () => {
+    const id = await recordRequestLog(
       "conv-1",
       '{"req":1}',
       '{"res":1}',
@@ -55,11 +57,11 @@ describe("recordRequestLog call_site stamping", () => {
       "anthropic",
       "compactionAgent",
     );
-    expect(getRequestLogById(id!)?.callSite).toBe("compactionAgent");
+    expect((await getRequestLogById(id!))?.callSite).toBe("compactionAgent");
   });
 
-  test("two rows in the same conversation can carry different callSites", () => {
-    const mainId = recordRequestLog(
+  test("two rows in the same conversation can carry different callSites", async () => {
+    const mainId = await recordRequestLog(
       "conv-1",
       '{"req":1}',
       '{"res":1}',
@@ -67,7 +69,7 @@ describe("recordRequestLog call_site stamping", () => {
       "anthropic",
       "mainAgent",
     );
-    const compactId = recordRequestLog(
+    const compactId = await recordRequestLog(
       "conv-1",
       '{"req":2}',
       '{"res":2}',
@@ -75,29 +77,28 @@ describe("recordRequestLog call_site stamping", () => {
       "anthropic",
       "compactionAgent",
     );
-    expect(getRequestLogById(mainId!)?.callSite).toBe("mainAgent");
-    expect(getRequestLogById(compactId!)?.callSite).toBe("compactionAgent");
+    expect((await getRequestLogById(mainId!))?.callSite).toBe("mainAgent");
+    expect((await getRequestLogById(compactId!))?.callSite).toBe(
+      "compactionAgent",
+    );
   });
 });
 
+/** A standalone SQLite handle for exercising the SQLite-only migration. */
+function createMigrationDb(): { db: DrizzleDb; raw: Database } {
+  const raw = new Database(":memory:");
+  raw.exec("CREATE TABLE llm_request_logs (id TEXT PRIMARY KEY)");
+  const db = drizzle(raw) as unknown as DrizzleDb;
+  return { db, raw };
+}
+
 describe("migrateLlmRequestLogCallSite", () => {
   test("adds the call_site column when missing", () => {
-    const db = getLogsDb()!;
-    const raw = getSqliteFrom(db);
-
-    // Drop the column if present (simulate pre-264 state). SQLite supports
-    // `DROP COLUMN` since 3.35 (June 2021) — bun-sqlite ships well past that.
+    const { db, raw } = createMigrationDb();
     const before = raw
       .query(`PRAGMA table_info(llm_request_logs)`)
       .all() as Array<{ name: string }>;
-    if (before.some((c) => c.name === "call_site")) {
-      raw.exec(`ALTER TABLE llm_request_logs DROP COLUMN call_site`);
-    }
-
-    const without = raw
-      .query(`PRAGMA table_info(llm_request_logs)`)
-      .all() as Array<{ name: string }>;
-    expect(without.some((c) => c.name === "call_site")).toBe(false);
+    expect(before.some((c) => c.name === "call_site")).toBe(false);
 
     migrateLlmRequestLogCallSite(db);
 
@@ -105,14 +106,13 @@ describe("migrateLlmRequestLogCallSite", () => {
       .query(`PRAGMA table_info(llm_request_logs)`)
       .all() as Array<{ name: string }>;
     expect(after.some((c) => c.name === "call_site")).toBe(true);
+    raw.close();
   });
 
   test("is idempotent — second run is a no-op", () => {
-    const db = getLogsDb()!;
-    // First run (column may or may not exist depending on test order; either
-    // path is fine for the idempotency contract).
+    const { db, raw } = createMigrationDb();
     migrateLlmRequestLogCallSite(db);
-    // Second run must not throw.
     expect(() => migrateLlmRequestLogCallSite(db)).not.toThrow();
+    raw.close();
   });
 });

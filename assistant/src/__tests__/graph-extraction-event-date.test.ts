@@ -12,35 +12,35 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("parseEpochMs", () => {
-  test("returns number as-is", () => {
+  test("returns number as-is", async () => {
     expect(parseEpochMs(1712534400000)).toBe(1712534400000);
   });
 
-  test("coerces numeric string to number", () => {
+  test("coerces numeric string to number", async () => {
     expect(parseEpochMs("1712534400000")).toBe(1712534400000);
   });
 
-  test("returns null for non-numeric string", () => {
+  test("returns null for non-numeric string", async () => {
     expect(parseEpochMs("not a number")).toBeNull();
   });
 
-  test("returns null for null", () => {
+  test("returns null for null", async () => {
     expect(parseEpochMs(null)).toBeNull();
   });
 
-  test("returns null for undefined", () => {
+  test("returns null for undefined", async () => {
     expect(parseEpochMs(undefined)).toBeNull();
   });
 
-  test("returns null for Infinity", () => {
+  test("returns null for Infinity", async () => {
     expect(parseEpochMs(Infinity)).toBeNull();
   });
 
-  test("returns null for NaN", () => {
+  test("returns null for NaN", async () => {
     expect(parseEpochMs(NaN)).toBeNull();
   });
 
-  test("returns null for empty string", () => {
+  test("returns null for empty string", async () => {
     expect(parseEpochMs("")).toBeNull();
   });
 });
@@ -50,7 +50,7 @@ describe("parseEpochMs", () => {
 // ---------------------------------------------------------------------------
 
 describe("event_date prompt grounding", () => {
-  test("conversation timestamp block includes local and ISO anchors", () => {
+  test("conversation timestamp block includes local and ISO anchors", async () => {
     const timestamp = Date.UTC(2026, 3, 26, 18, 30, 0);
     const block = buildAuthoritativeConversationTimestampBlock(timestamp);
 
@@ -62,7 +62,7 @@ describe("event_date prompt grounding", () => {
     );
   });
 
-  test("event date rules prefer the conversation year for partial dates", () => {
+  test("event date rules prefer the conversation year for partial dates", async () => {
     expect(EVENT_DATE_PROMPT_RULES).toContain(
       "use the authoritative conversation year",
     );
@@ -104,9 +104,9 @@ describe("parseExtractionResponse event_date coercion", () => {
     };
   }
 
-  test("coerces string event_date on create_nodes", () => {
+  test("coerces string event_date on create_nodes", async () => {
     const input = makeInput({ event_date: "1712534400000" });
-    const { diff } = parseExtractionResponse(
+    const { diff } = await parseExtractionResponse(
       input,
       conversationId,
       candidateNodeIds,
@@ -115,9 +115,9 @@ describe("parseExtractionResponse event_date coercion", () => {
     expect(diff.createNodes[0].eventDate).toBe(1712534400000);
   });
 
-  test("passes through numeric event_date on create_nodes", () => {
+  test("passes through numeric event_date on create_nodes", async () => {
     const input = makeInput({ event_date: 1712534400000 });
-    const { diff } = parseExtractionResponse(
+    const { diff } = await parseExtractionResponse(
       input,
       conversationId,
       candidateNodeIds,
@@ -126,9 +126,9 @@ describe("parseExtractionResponse event_date coercion", () => {
     expect(diff.createNodes[0].eventDate).toBe(1712534400000);
   });
 
-  test("nullifies non-numeric string event_date on create_nodes", () => {
+  test("nullifies non-numeric string event_date on create_nodes", async () => {
     const input = makeInput({ event_date: "next tuesday" });
-    const { diff } = parseExtractionResponse(
+    const { diff } = await parseExtractionResponse(
       input,
       conversationId,
       candidateNodeIds,
@@ -137,7 +137,7 @@ describe("parseExtractionResponse event_date coercion", () => {
     expect(diff.createNodes[0].eventDate).toBeNull();
   });
 
-  test("coerces string event_date on triggers", () => {
+  test("coerces string event_date on triggers", async () => {
     const input = makeInput({
       event_date: 1712534400000,
       triggers: [
@@ -149,7 +149,7 @@ describe("parseExtractionResponse event_date coercion", () => {
         },
       ],
     });
-    const { deferredTriggers } = parseExtractionResponse(
+    const { deferredTriggers } = await parseExtractionResponse(
       input,
       conversationId,
       candidateNodeIds,
@@ -163,7 +163,7 @@ describe("parseExtractionResponse event_date coercion", () => {
     expect(explicitTrigger!.trigger.eventDate).toBe(1712534400000);
   });
 
-  test("coerces string event_date on update_nodes", () => {
+  test("coerces string event_date on update_nodes", async () => {
     const existingNodeId = "existing-node-1";
     const candidates = new Set([existingNodeId]);
     const input = {
@@ -176,7 +176,7 @@ describe("parseExtractionResponse event_date coercion", () => {
         },
       ],
     };
-    const { diff } = parseExtractionResponse(
+    const { diff } = await parseExtractionResponse(
       input,
       conversationId,
       candidates,
@@ -185,11 +185,11 @@ describe("parseExtractionResponse event_date coercion", () => {
     expect(diff.updateNodes[0].changes.eventDate).toBe(1712534400000);
   });
 
-  test("auto-creates an event trigger for future event_date", () => {
+  test("auto-creates an event trigger for future event_date", async () => {
     const conversationTs = Date.UTC(2026, 3, 26, 0, 0, 0);
     const futureEventDate = Date.UTC(2026, 5, 1, 0, 0, 0);
     const input = makeInput({ event_date: futureEventDate });
-    const { deferredTriggers } = parseExtractionResponse(
+    const { deferredTriggers } = await parseExtractionResponse(
       input,
       conversationId,
       candidateNodeIds,
@@ -202,11 +202,11 @@ describe("parseExtractionResponse event_date coercion", () => {
     expect(auto).toBeTruthy();
   });
 
-  test("does not auto-create an event trigger for past event_date", () => {
+  test("does not auto-create an event trigger for past event_date", async () => {
     const conversationTs = Date.UTC(2026, 3, 26, 0, 0, 0);
     const pastEventDate = Date.UTC(2025, 0, 15, 0, 0, 0);
     const input = makeInput({ event_date: pastEventDate });
-    const { deferredTriggers } = parseExtractionResponse(
+    const { deferredTriggers } = await parseExtractionResponse(
       input,
       conversationId,
       candidateNodeIds,
@@ -217,7 +217,7 @@ describe("parseExtractionResponse event_date coercion", () => {
     );
   });
 
-  test("null-clears event_date on update_nodes when explicitly null", () => {
+  test("null-clears event_date on update_nodes when explicitly null", async () => {
     const existingNodeId = "existing-node-1";
     const candidates = new Set([existingNodeId]);
     const input = {
@@ -230,7 +230,7 @@ describe("parseExtractionResponse event_date coercion", () => {
         },
       ],
     };
-    const { diff } = parseExtractionResponse(
+    const { diff } = await parseExtractionResponse(
       input,
       conversationId,
       candidates,

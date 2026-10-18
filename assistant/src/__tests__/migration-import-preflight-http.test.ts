@@ -508,12 +508,12 @@ describe("handleMigrationImportPreflight — validation failures", () => {
 // ---------------------------------------------------------------------------
 
 describe("analyzeImport", () => {
-  test("detects create when file does not exist on disk", () => {
+  test("detects create when file does not exist on disk", async () => {
     const resolver = new DefaultPathResolver(
       join(testDir, "nonexistent-workspace"),
     );
 
-    const report = analyzeImport({
+    const report = await analyzeImport({
       manifest: v1Manifest([
         {
           path: "data/db/assistant.db",
@@ -531,10 +531,10 @@ describe("analyzeImport", () => {
     expect(report.summary.files_to_create).toBe(1);
   });
 
-  test("detects unchanged when file on disk matches bundle", () => {
+  test("detects unchanged when file on disk matches bundle", async () => {
     const resolver = new DefaultPathResolver(testDir);
 
-    const report = analyzeImport({
+    const report = await analyzeImport({
       manifest: v1Manifest([
         {
           path: "data/db/assistant.db",
@@ -550,10 +550,10 @@ describe("analyzeImport", () => {
     expect(report.summary.files_unchanged).toBe(1);
   });
 
-  test("detects overwrite when file on disk differs from bundle", () => {
+  test("detects overwrite when file on disk differs from bundle", async () => {
     const resolver = new DefaultPathResolver(testDir);
 
-    const report = analyzeImport({
+    const report = await analyzeImport({
       manifest: v1Manifest([
         {
           path: "data/db/assistant.db",
@@ -570,10 +570,10 @@ describe("analyzeImport", () => {
     expect(report.summary.files_to_overwrite).toBe(1);
   });
 
-  test("flags unknown archive paths as conflicts with skip action", () => {
+  test("flags unknown archive paths as conflicts with skip action", async () => {
     const resolver = new DefaultPathResolver(testDir);
 
-    const report = analyzeImport({
+    const report = await analyzeImport({
       manifest: v1Manifest([
         {
           path: "data/db/assistant.db",
@@ -603,7 +603,7 @@ describe("analyzeImport", () => {
     expect(report.summary.files_to_create).toBe(0);
   });
 
-  test("includes manifest in report", () => {
+  test("includes manifest in report", async () => {
     const resolver = new DefaultPathResolver(testDir);
     const manifest = v1Manifest([
       {
@@ -613,7 +613,7 @@ describe("analyzeImport", () => {
       },
     ]);
 
-    const report = analyzeImport({ manifest, pathResolver: resolver });
+    const report = await analyzeImport({ manifest, pathResolver: resolver });
 
     expect(report.manifest).toBe(manifest);
     expect(report.manifest.schema_version).toBe(1);
@@ -628,63 +628,65 @@ describe("analyzeImport", () => {
 const WORKSPACE_DIR = "/home/user/.vellum/workspace";
 
 describe("DefaultPathResolver", () => {
-  test("resolves data/db/assistant.db to workspace db path (backward compat)", () => {
+  test("resolves data/db/assistant.db to workspace db path (backward compat)", async () => {
     const resolver = new DefaultPathResolver(WORKSPACE_DIR);
-    expect(resolver.resolve("data/db/assistant.db")).toBe(
+    expect(await resolver.resolve("data/db/assistant.db")).toBe(
       `${WORKSPACE_DIR}/data/db/assistant.db`,
     );
   });
 
-  test("resolves config/settings.json to workspace config path (backward compat)", () => {
+  test("resolves config/settings.json to workspace config path (backward compat)", async () => {
     const resolver = new DefaultPathResolver(WORKSPACE_DIR);
-    expect(resolver.resolve("config/settings.json")).toBe(
+    expect(await resolver.resolve("config/settings.json")).toBe(
       `${WORKSPACE_DIR}/config.json`,
     );
   });
 
-  test("returns null for unknown paths", () => {
+  test("returns null for unknown paths", async () => {
     const resolver = new DefaultPathResolver(WORKSPACE_DIR);
-    expect(resolver.resolve("unknown/path.txt")).toBeNull();
+    expect(await resolver.resolve("unknown/path.txt")).toBeNull();
   });
 
-  test("resolves valid skills path via backward compat", () => {
+  test("resolves valid skills path via backward compat", async () => {
     const resolver = new DefaultPathResolver(WORKSPACE_DIR);
-    expect(resolver.resolve("skills/my-skill/SKILL.md")).toBe(
+    expect(await resolver.resolve("skills/my-skill/SKILL.md")).toBe(
       `${WORKSPACE_DIR}/skills/my-skill/SKILL.md`,
     );
   });
 
-  test("resolves workspace/ prefix paths", () => {
+  test("resolves workspace/ prefix paths", async () => {
     const resolver = new DefaultPathResolver(WORKSPACE_DIR);
-    expect(resolver.resolve("workspace/data/db/assistant.db")).toBe(
+    expect(await resolver.resolve("workspace/data/db/assistant.db")).toBe(
       `${WORKSPACE_DIR}/data/db/assistant.db`,
     );
-    expect(resolver.resolve("workspace/config.json")).toBe(
+    expect(await resolver.resolve("workspace/config.json")).toBe(
       `${WORKSPACE_DIR}/config.json`,
     );
-    expect(resolver.resolve("workspace/skills/my-skill/SKILL.md")).toBe(
+    expect(await resolver.resolve("workspace/skills/my-skill/SKILL.md")).toBe(
       `${WORKSPACE_DIR}/skills/my-skill/SKILL.md`,
     );
   });
 
-  test("returns null for workspace/ path traversal attempt", () => {
+  test("returns null for workspace/ path traversal attempt", async () => {
     const resolver = new DefaultPathResolver(WORKSPACE_DIR);
-    expect(resolver.resolve("workspace/../../etc/passwd")).toBeNull();
+    expect(await resolver.resolve("workspace/../../etc/passwd")).toBeNull();
   });
 
-  test("returns null for skills path traversal attempt (../../etc/passwd)", () => {
+  test("returns null for skills path traversal attempt (../../etc/passwd)", async () => {
     const resolver = new DefaultPathResolver(WORKSPACE_DIR);
-    expect(resolver.resolve("skills/../../etc/passwd")).toBeNull();
+    expect(await resolver.resolve("skills/../../etc/passwd")).toBeNull();
   });
 
-  test("returns null for skills path traversal attempt (../../../.ssh/authorized_keys)", () => {
+  test("returns null for skills path traversal attempt (../../../.ssh/authorized_keys)", async () => {
     const resolver = new DefaultPathResolver(WORKSPACE_DIR);
-    expect(resolver.resolve("skills/../../../.ssh/authorized_keys")).toBeNull();
+    expect(
+      await resolver.resolve("skills/../../../.ssh/authorized_keys"),
+    ).toBeNull();
   });
 
-  test("returns null for skills paths when workspaceDir is not provided", () => {
+  test("returns null for skills paths when workspaceDir is not provided", async () => {
     const resolver = new DefaultPathResolver();
-    expect(resolver.resolve("skills/my-skill/SKILL.md")).toBeNull();
+    expect(await resolver.resolve("skills/my-skill/SKILL.md")).toBeNull();
   });
 });
 

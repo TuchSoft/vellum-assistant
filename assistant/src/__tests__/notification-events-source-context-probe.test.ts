@@ -22,22 +22,16 @@ import {
   hasNotifiedSourceContextSince,
 } from "../notifications/events-store.js";
 import type { NotificationDeliveryStatus } from "../notifications/types.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import {
-  notificationDecisions,
-  notificationDeliveries,
-  notificationEvents,
-} from "../persistence/schema/index.js";
-
-await initializeDb();
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
 const CONVERSATION_ID = "conv-schedule-run";
 
-beforeEach(() => {
-  getDb().delete(notificationDeliveries).run();
-  getDb().delete(notificationDecisions).run();
-  getDb().delete(notificationEvents).run();
+beforeEach(async () => {
+  const db = requireMainDb();
+  await db.run("DELETE FROM notification_deliveries");
+  await db.run("DELETE FROM notification_decisions");
+  await db.run("DELETE FROM notification_events");
 });
 
 /**
@@ -55,14 +49,14 @@ type SeedOutcome = "no-verdict" | "declined" | NotificationDeliveryStatus;
  * Seed a signal and backdate its event: `createEvent` stamps `Date.now()`, but
  * the `since` cases turn entirely on where a row sits relative to a run's start.
  */
-function seedSignalAt(
+async function seedSignalAt(
   sourceContextId: string,
   createdAt: number,
   outcome: SeedOutcome = "sent",
   sourceEventName = "assistant.share",
-): void {
+): Promise<void> {
   const eventId = crypto.randomUUID();
-  createEvent({
+  await createEvent({
     id: eventId,
     sourceEventName,
     sourceChannel: "assistant_tool",
@@ -75,16 +69,18 @@ function seedSignalAt(
     },
     payload: { requestedMessage: "sent by the run itself" },
   });
-  getDb()
-    .update(notificationEvents)
-    .set({ createdAt })
-    .where(eq(notificationEvents.id, eventId))
-    .run();
+  {
+    const db = requireMainDb();
+    await db.orm
+      .update(db.schema.notificationEvents)
+      .set({ createdAt })
+      .where(eq(db.schema.notificationEvents.id, eventId));
+  }
 
   if (outcome === "no-verdict") {
     return;
   }
-  const decision = createDecision({
+  const decision = await createDecision({
     id: crypto.randomUUID(),
     notificationEventId: eventId,
     shouldNotify: outcome !== "declined",
@@ -96,7 +92,7 @@ function seedSignalAt(
   if (outcome === "declined") {
     return;
   }
-  createDelivery({
+  await createDelivery({
     id: crypto.randomUUID(),
     notificationDecisionId: decision.id,
     channel: "vellum",
@@ -106,48 +102,48 @@ function seedSignalAt(
   });
 }
 
-describe("hasNotifiedSourceContextSince", () => {
+describePg("hasNotifiedSourceContextSince", () => {
   const runStartedAt = 1_700_000_000_000;
 
-  test("result-only probes ignore approval cards while the scheduler keeps its broad contract", () => {
-    seedSignalAt(
+  test("result-only probes ignore approval cards while the scheduler keeps its broad contract", async () => {
+    await seedSignalAt(
       CONVERSATION_ID,
       runStartedAt + 100,
       "sent",
       "guardian.question",
     );
     const resultEvents = ["assistant.share", "activity.complete"];
-    expect(hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt)).toBe(
-      true,
-    );
     expect(
-      hasNotifiedSourceContextSince(
+      await hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt),
+    ).toBe(true);
+    expect(
+      await hasNotifiedSourceContextSince(
         CONVERSATION_ID,
         runStartedAt,
         resultEvents,
       ),
     ).toBe(false);
-    seedSignalAt(
+    await seedSignalAt(
       CONVERSATION_ID,
       runStartedAt + 200,
       "failed",
       "activity.complete",
     );
     expect(
-      hasNotifiedSourceContextSince(
+      await hasNotifiedSourceContextSince(
         CONVERSATION_ID,
         runStartedAt,
         resultEvents,
       ),
     ).toBe(false);
-    seedSignalAt(
+    await seedSignalAt(
       CONVERSATION_ID,
       runStartedAt + 300,
       "declined",
       "assistant.share",
     );
     expect(
-      hasNotifiedSourceContextSince(
+      await hasNotifiedSourceContextSince(
         CONVERSATION_ID,
         runStartedAt,
         resultEvents,
@@ -156,103 +152,106 @@ describe("hasNotifiedSourceContextSince", () => {
   });
 
   describe("the since bound", () => {
-    test("finds a notification sent during the run", () => {
-      seedSignalAt(CONVERSATION_ID, runStartedAt + 500);
+    test("finds a notification sent during the run", async () => {
+      await seedSignalAt(CONVERSATION_ID, runStartedAt + 500);
 
-      expect(hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt)).toBe(
-        true,
-      );
+      expect(
+        await hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt),
+      ).toBe(true);
     });
 
-    test("ignores a notification from a prior run in the same conversation", () => {
+    test("ignores a notification from a prior run in the same conversation", async () => {
       // The reused-conversation case: yesterday's firing notified, today's did
       // not. Today's run still owes the user a notification.
       const todaysRunStartedAt = runStartedAt + 86_400_000;
-      seedSignalAt(CONVERSATION_ID, runStartedAt + 500);
+      await seedSignalAt(CONVERSATION_ID, runStartedAt + 500);
 
       expect(
-        hasNotifiedSourceContextSince(CONVERSATION_ID, todaysRunStartedAt),
+        await hasNotifiedSourceContextSince(
+          CONVERSATION_ID,
+          todaysRunStartedAt,
+        ),
       ).toBe(false);
     });
 
-    test("counts a notification landing exactly at the run's start", () => {
+    test("counts a notification landing exactly at the run's start", async () => {
       // The bound is inclusive: a notification stamped in the same millisecond
       // the run began belongs to that run.
-      seedSignalAt(CONVERSATION_ID, runStartedAt);
+      await seedSignalAt(CONVERSATION_ID, runStartedAt);
 
-      expect(hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt)).toBe(
-        true,
-      );
+      expect(
+        await hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt),
+      ).toBe(true);
     });
 
-    test("ignores a notification from a different conversation", () => {
-      seedSignalAt("some-other-conversation", runStartedAt + 500);
+    test("ignores a notification from a different conversation", async () => {
+      await seedSignalAt("some-other-conversation", runStartedAt + 500);
 
-      expect(hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt)).toBe(
-        false,
-      );
+      expect(
+        await hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt),
+      ).toBe(false);
     });
 
-    test("returns false when nothing was ever emitted", () => {
-      expect(hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt)).toBe(
-        false,
-      );
+    test("returns false when nothing was ever emitted", async () => {
+      expect(
+        await hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt),
+      ).toBe(false);
     });
   });
 
   describe("the outcome test", () => {
-    test("ignores an event whose pipeline never reached a verdict", () => {
+    test("ignores an event whose pipeline never reached a verdict", async () => {
       // The audit row of an emit that threw before the decision stage. Nobody
       // was told, so the run still owes its notification.
-      seedSignalAt(CONVERSATION_ID, runStartedAt + 500, "no-verdict");
+      await seedSignalAt(CONVERSATION_ID, runStartedAt + 500, "no-verdict");
 
-      expect(hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt)).toBe(
-        false,
-      );
+      expect(
+        await hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt),
+      ).toBe(false);
     });
 
-    test("ignores an event whose only delivery failed", () => {
-      seedSignalAt(CONVERSATION_ID, runStartedAt + 500, "failed");
+    test("ignores an event whose only delivery failed", async () => {
+      await seedSignalAt(CONVERSATION_ID, runStartedAt + 500, "failed");
 
-      expect(hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt)).toBe(
-        false,
-      );
+      expect(
+        await hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt),
+      ).toBe(false);
     });
 
-    test("ignores an event whose only delivery was skipped", () => {
-      seedSignalAt(CONVERSATION_ID, runStartedAt + 500, "skipped");
+    test("ignores an event whose only delivery was skipped", async () => {
+      await seedSignalAt(CONVERSATION_ID, runStartedAt + 500, "skipped");
 
-      expect(hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt)).toBe(
-        false,
-      );
+      expect(
+        await hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt),
+      ).toBe(false);
     });
 
-    test("counts a delivery still pending", () => {
+    test("counts a delivery still pending", async () => {
       // Something is on its way; the fallback must not race it.
-      seedSignalAt(CONVERSATION_ID, runStartedAt + 500, "pending");
+      await seedSignalAt(CONVERSATION_ID, runStartedAt + 500, "pending");
 
-      expect(hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt)).toBe(
-        true,
-      );
+      expect(
+        await hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt),
+      ).toBe(true);
     });
 
-    test("counts a decision not to notify", () => {
+    test("counts a decision not to notify", async () => {
       // The engine ruled on the run's own signal. The fallback covers runs that
       // never asked; it does not appeal verdicts the user's settings produced.
-      seedSignalAt(CONVERSATION_ID, runStartedAt + 500, "declined");
+      await seedSignalAt(CONVERSATION_ID, runStartedAt + 500, "declined");
 
-      expect(hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt)).toBe(
-        true,
-      );
+      expect(
+        await hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt),
+      ).toBe(true);
     });
 
-    test("one delivered signal among failed ones is enough", () => {
-      seedSignalAt(CONVERSATION_ID, runStartedAt + 100, "failed");
-      seedSignalAt(CONVERSATION_ID, runStartedAt + 200, "sent");
+    test("one delivered signal among failed ones is enough", async () => {
+      await seedSignalAt(CONVERSATION_ID, runStartedAt + 100, "failed");
+      await seedSignalAt(CONVERSATION_ID, runStartedAt + 200, "sent");
 
-      expect(hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt)).toBe(
-        true,
-      );
+      expect(
+        await hasNotifiedSourceContextSince(CONVERSATION_ID, runStartedAt),
+      ).toBe(true);
     });
   });
 });

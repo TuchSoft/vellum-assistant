@@ -1,19 +1,33 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { listUsageEvents } from "../persistence/llm-usage-store.js";
 import { CallSiteConfiguredProvider } from "../providers/provider-send-message.js";
 import type { Provider, ProviderResponse } from "../providers/types.js";
 import { UsageTrackingProvider } from "../providers/usage-tracking.js";
 import { setConfig } from "./helpers/set-config.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 // Seed `llm` into the real workspace config; the loader schema-merges the
 // raw partial over defaults exactly as `LLMSchema.parse` did for the mock.
 function setLlmConfig(raw: unknown): void {
   setConfig("llm", raw);
+}
+
+/**
+ * The usage wrapper records in the background after the response resolves, so
+ * poll briefly for the row instead of racing the write.
+ */
+async function listRecordedUsageEvents(): Promise<
+  Awaited<ReturnType<typeof listUsageEvents>>
+> {
+  const deadline = Date.now() + 5_000;
+  let events = await listUsageEvents();
+  while (events.length === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    events = await listUsageEvents();
+  }
+  return events;
 }
 
 function makeProvider(response: ProviderResponse): Provider {
@@ -25,10 +39,10 @@ function makeProvider(response: ProviderResponse): Provider {
   };
 }
 
-describe("UsageTrackingProvider", () => {
-  beforeEach(() => {
-    const db = getDb();
-    db.run(`DELETE FROM llm_usage_events`);
+describePg("UsageTrackingProvider", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.run(`DELETE FROM llm_usage_events`);
     setLlmConfig({
       profiles: {
         // User-owned shadow of the default profile name: carries its own
@@ -70,7 +84,7 @@ describe("UsageTrackingProvider", () => {
       },
     );
 
-    const events = listUsageEvents();
+    const events = await listRecordedUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       actor: "llm_call_site",
@@ -116,7 +130,7 @@ describe("UsageTrackingProvider", () => {
       },
     );
 
-    const events = listUsageEvents();
+    const events = await listRecordedUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       provider: "openai",
@@ -149,7 +163,7 @@ describe("UsageTrackingProvider", () => {
       },
     );
 
-    const events = listUsageEvents();
+    const events = await listRecordedUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       callSite: "conversationTitle",
@@ -189,7 +203,7 @@ describe("UsageTrackingProvider", () => {
       },
     );
 
-    const events = listUsageEvents();
+    const events = await listRecordedUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       provider: "openai",
@@ -245,7 +259,7 @@ describe("UsageTrackingProvider", () => {
       },
     );
 
-    const events = listUsageEvents();
+    const events = await listRecordedUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       provider: "anthropic",
@@ -272,7 +286,7 @@ describe("UsageTrackingProvider", () => {
       { role: "user", content: [{ type: "text", text: "Hello" }] },
     ]);
 
-    expect(listUsageEvents()).toHaveLength(0);
+    expect(await listUsageEvents()).toHaveLength(0);
   });
 
   test("records calls from providers resolved for a call site even when send options omit it", async () => {
@@ -301,7 +315,7 @@ describe("UsageTrackingProvider", () => {
       },
     );
 
-    const events = listUsageEvents();
+    const events = await listRecordedUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       callSite: "mainAgent",
@@ -312,7 +326,7 @@ describe("UsageTrackingProvider", () => {
   });
 });
 
-describe("native web-search capability survives the wrapper chain", () => {
+describePg("native web-search capability survives the wrapper chain", () => {
   function leaf(supports: boolean | undefined): Provider {
     return {
       name: "anthropic",
@@ -328,7 +342,7 @@ describe("native web-search capability survives the wrapper chain", () => {
     };
   }
 
-  test("UsageTrackingProvider forwards supportsNativeWebSearch", () => {
+  test("UsageTrackingProvider forwards supportsNativeWebSearch", async () => {
     expect(new UsageTrackingProvider(leaf(true)).supportsNativeWebSearch).toBe(
       true,
     );
@@ -340,7 +354,7 @@ describe("native web-search capability survives the wrapper chain", () => {
     ).toBeUndefined();
   });
 
-  test("CallSiteConfiguredProvider forwards it through a nested wrapper", () => {
+  test("CallSiteConfiguredProvider forwards it through a nested wrapper", async () => {
     // The exact chain getConfiguredProvider returns: CallSiteConfigured →
     // UsageTracking → leaf. The advisor consult reads the flag off the top.
     const wrapped = new CallSiteConfiguredProvider(

@@ -15,15 +15,15 @@ mock.module("../runtime/pre-first-message-gate.js", () => ({
 }));
 
 // ── Heartbeat run store mock ───────────────────────────────────────
-const mockInsertPendingHeartbeatRun = mock(() => "mock-run-id");
-const mockStartHeartbeatRun = mock(() => true);
-const mockCompleteHeartbeatRun = mock(() => true);
-const mockSkipHeartbeatRun = mock(() => true);
-const mockSupersedePendingRun = mock(() => true);
-const mockMarkStaleRunsAsMissed = mock(() => 0);
-const mockMarkStaleRunningAsError = mock(() => 0);
-const mockListHeartbeatRuns = mock(() => []);
-const mockCountCompletedHeartbeatRuns = mock(() => 10);
+const mockInsertPendingHeartbeatRun = mock(async () => "mock-run-id");
+const mockStartHeartbeatRun = mock(async () => true);
+const mockCompleteHeartbeatRun = mock(async () => true);
+const mockSkipHeartbeatRun = mock(async () => true);
+const mockSupersedePendingRun = mock(async () => true);
+const mockMarkStaleRunsAsMissed = mock(async () => 0);
+const mockMarkStaleRunningAsError = mock(async () => 0);
+const mockListHeartbeatRuns = mock(async () => []);
+const mockCountCompletedHeartbeatRuns = mock(async () => 10);
 mock.module("../heartbeat/heartbeat-run-store.js", () => ({
   insertPendingHeartbeatRun: mockInsertPendingHeartbeatRun,
   startHeartbeatRun: mockStartHeartbeatRun,
@@ -34,10 +34,15 @@ mock.module("../heartbeat/heartbeat-run-store.js", () => ({
   markStaleRunningAsError: mockMarkStaleRunningAsError,
   listHeartbeatRuns: mockListHeartbeatRuns,
   countCompletedHeartbeatRuns: mockCountCompletedHeartbeatRuns,
-  countCompletedRunsToday: mock(() => 0),
-  countRecentConsecutiveRuns: mock(() => 0),
-  getLastHeartbeatRunAt: mock(() => null),
+  countCompletedRunsToday: mock(async () => 0),
+  countRecentConsecutiveRuns: mock(async () => 0),
+  getLastHeartbeatRunAt: mock(async () => null),
 }));
+
+/** Yield to the event loop so fire-and-forget store writes settle. */
+async function flushAsync(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 // ── Heartbeat config seeding ────────────────────────────────────────
 //
@@ -389,23 +394,23 @@ describe("HeartbeatService", () => {
     });
 
     mockInsertPendingHeartbeatRun.mockClear();
-    mockInsertPendingHeartbeatRun.mockImplementation(() => "mock-run-id");
+    mockInsertPendingHeartbeatRun.mockImplementation(async () => "mock-run-id");
     mockStartHeartbeatRun.mockClear();
-    mockStartHeartbeatRun.mockImplementation(() => true);
+    mockStartHeartbeatRun.mockImplementation(async () => true);
     mockCompleteHeartbeatRun.mockClear();
-    mockCompleteHeartbeatRun.mockImplementation(() => true);
+    mockCompleteHeartbeatRun.mockImplementation(async () => true);
     mockSkipHeartbeatRun.mockClear();
-    mockSkipHeartbeatRun.mockImplementation(() => true);
+    mockSkipHeartbeatRun.mockImplementation(async () => true);
     mockSupersedePendingRun.mockClear();
-    mockSupersedePendingRun.mockImplementation(() => true);
+    mockSupersedePendingRun.mockImplementation(async () => true);
     mockMarkStaleRunsAsMissed.mockClear();
-    mockMarkStaleRunsAsMissed.mockImplementation(() => 0);
+    mockMarkStaleRunsAsMissed.mockImplementation(async () => 0);
     mockMarkStaleRunningAsError.mockClear();
-    mockMarkStaleRunningAsError.mockImplementation(() => 0);
+    mockMarkStaleRunningAsError.mockImplementation(async () => 0);
     mockListHeartbeatRuns.mockClear();
-    mockListHeartbeatRuns.mockImplementation(() => []);
+    mockListHeartbeatRuns.mockImplementation(async () => []);
     mockCountCompletedHeartbeatRuns.mockClear();
-    mockCountCompletedHeartbeatRuns.mockImplementation(() => 10);
+    mockCountCompletedHeartbeatRuns.mockImplementation(async () => 10);
 
     heartbeatConfig = defaultHeartbeatSeed();
     setHeartbeatConfig();
@@ -527,6 +532,7 @@ describe("HeartbeatService", () => {
 
     const service = createService({ getCurrentHour: () => 3 });
     service.start();
+    await flushAsync();
 
     const before = Date.now();
     await service.runOnce();
@@ -625,10 +631,11 @@ describe("HeartbeatService", () => {
     expect(processMessageCalls).toHaveLength(1);
   });
 
-  test("disabled config prevents start", () => {
+  test("disabled config prevents start", async () => {
     setHeartbeatConfig({ enabled: false });
     const service = createService();
     service.start();
+    await flushAsync();
     // No error, just a no-op. We can verify by calling stop which should also be a no-op.
     // The key assertion is that no timer is set (verified by stop not hanging).
     service.stop();
@@ -700,9 +707,10 @@ describe("HeartbeatService", () => {
     );
   });
 
-  test("resetTimer() pushes nextRunAt forward", () => {
+  test("resetTimer() pushes nextRunAt forward", async () => {
     const service = createService();
     service.start();
+    await flushAsync();
 
     const firstNextRunAt = service.nextRunAt;
     expect(firstNextRunAt).not.toBeNull();
@@ -710,6 +718,7 @@ describe("HeartbeatService", () => {
     // Simulate some time passing, then reset
     const before = Date.now();
     service.resetTimer();
+    await flushAsync();
     const afterReset = service.nextRunAt;
 
     expect(afterReset).not.toBeNull();
@@ -720,20 +729,23 @@ describe("HeartbeatService", () => {
     service.stop();
   });
 
-  test("resetTimer() is a no-op when heartbeat is not running", () => {
+  test("resetTimer() is a no-op when heartbeat is not running", async () => {
     const service = createService();
     // Don't call start() — heartbeat not running
     expect(service.nextRunAt).toBeNull();
     service.resetTimer();
+    await flushAsync();
     expect(service.nextRunAt).toBeNull();
   });
 
-  test("resetTimer() is a no-op when heartbeat is disabled", () => {
+  test("resetTimer() is a no-op when heartbeat is disabled", async () => {
     setHeartbeatConfig({ enabled: false });
     const service = createService();
     service.start();
+    await flushAsync();
     expect(service.nextRunAt).toBeNull();
     service.resetTimer();
+    await flushAsync();
     expect(service.nextRunAt).toBeNull();
   });
 
@@ -796,67 +808,67 @@ describe("HeartbeatService", () => {
   });
 
   describe("isShallowProfile", () => {
-    test("returns true when IDENTITY.md is template and guardian persona is missing", () => {
+    test("returns true when IDENTITY.md is template and guardian persona is missing", async () => {
       writeFileSync(join(testWorkspaceDir, "IDENTITY.md"), IDENTITY_TEMPLATE);
       mockGuardianPersona = null;
 
-      expect(isShallowProfile()).toBe(true);
+      expect(await isShallowProfile()).toBe(true);
     });
 
-    test("returns true when IDENTITY.md is template and guardian persona has only scaffold fields", () => {
+    test("returns true when IDENTITY.md is template and guardian persona has only scaffold fields", async () => {
       writeFileSync(join(testWorkspaceDir, "IDENTITY.md"), IDENTITY_TEMPLATE);
       mockGuardianPersona = SCAFFOLD_PERSONA;
 
-      expect(isShallowProfile()).toBe(true);
+      expect(await isShallowProfile()).toBe(true);
     });
 
-    test("returns true when IDENTITY.md is template and guardian persona is empty string", () => {
+    test("returns true when IDENTITY.md is template and guardian persona is empty string", async () => {
       writeFileSync(join(testWorkspaceDir, "IDENTITY.md"), IDENTITY_TEMPLATE);
       mockGuardianPersona = "";
 
-      expect(isShallowProfile()).toBe(true);
+      expect(await isShallowProfile()).toBe(true);
     });
 
-    test("returns false when IDENTITY.md has been customized", () => {
+    test("returns false when IDENTITY.md has been customized", async () => {
       writeFileSync(
         join(testWorkspaceDir, "IDENTITY.md"),
         "# IDENTITY.md\n\n- **Name:** Jarvis\n",
       );
       mockGuardianPersona = SCAFFOLD_PERSONA;
 
-      expect(isShallowProfile()).toBe(false);
+      expect(await isShallowProfile()).toBe(false);
     });
 
-    test("returns false when guardian persona has real content", () => {
+    test("returns false when guardian persona has real content", async () => {
       writeFileSync(join(testWorkspaceDir, "IDENTITY.md"), IDENTITY_TEMPLATE);
       mockGuardianPersona =
         "# User Profile\n\n- Preferred name/reference: Alice\n- Work role: designer";
 
-      expect(isShallowProfile()).toBe(false);
+      expect(await isShallowProfile()).toBe(false);
     });
 
-    test("returns false when IDENTITY.md does not exist", () => {
+    test("returns false when IDENTITY.md does not exist", async () => {
       mockGuardianPersona = null;
 
-      expect(isShallowProfile()).toBe(false);
+      expect(await isShallowProfile()).toBe(false);
     });
   });
 
   describe("relationship-depth prompt injection", () => {
-    test("includes <relationship-depth> when profile is shallow", () => {
+    test("includes <relationship-depth> when profile is shallow", async () => {
       writeFileSync(join(testWorkspaceDir, "IDENTITY.md"), IDENTITY_TEMPLATE);
       mockGuardianPersona = SCAFFOLD_PERSONA;
 
       const service = createService();
       const { prompt, includedReengagement } =
-        service.buildPrompt("- Check things");
+        await service.buildPrompt("- Check things");
 
       expect(prompt).toContain("<relationship-depth>");
       expect(prompt).toContain("profile is still sparse");
       expect(includedReengagement).toBe(true);
     });
 
-    test("omits <relationship-depth> when profile is not shallow", () => {
+    test("omits <relationship-depth> when profile is not shallow", async () => {
       writeFileSync(
         join(testWorkspaceDir, "IDENTITY.md"),
         "# IDENTITY.md\n\n- **Name:** Jarvis\n",
@@ -865,13 +877,13 @@ describe("HeartbeatService", () => {
 
       const service = createService();
       const { prompt, includedReengagement } =
-        service.buildPrompt("- Check things");
+        await service.buildPrompt("- Check things");
 
       expect(prompt).not.toContain("<relationship-depth>");
       expect(includedReengagement).toBe(false);
     });
 
-    test("omits <relationship-depth> when cooldown has not elapsed", () => {
+    test("omits <relationship-depth> when cooldown has not elapsed", async () => {
       writeFileSync(join(testWorkspaceDir, "IDENTITY.md"), IDENTITY_TEMPLATE);
       mockGuardianPersona = SCAFFOLD_PERSONA;
       // Write a recent timestamp to simulate cooldown not elapsed
@@ -882,13 +894,13 @@ describe("HeartbeatService", () => {
 
       const service = createService();
       const { prompt, includedReengagement } =
-        service.buildPrompt("- Check things");
+        await service.buildPrompt("- Check things");
 
       expect(prompt).not.toContain("<relationship-depth>");
       expect(includedReengagement).toBe(false);
     });
 
-    test("includes <relationship-depth> when cooldown has elapsed", () => {
+    test("includes <relationship-depth> when cooldown has elapsed", async () => {
       writeFileSync(join(testWorkspaceDir, "IDENTITY.md"), IDENTITY_TEMPLATE);
       mockGuardianPersona = SCAFFOLD_PERSONA;
       // Write a timestamp from 19 hours ago
@@ -900,7 +912,7 @@ describe("HeartbeatService", () => {
 
       const service = createService();
       const { prompt, includedReengagement } =
-        service.buildPrompt("- Check things");
+        await service.buildPrompt("- Check things");
 
       expect(prompt).toContain("<relationship-depth>");
       expect(includedReengagement).toBe(true);
@@ -937,9 +949,9 @@ describe("HeartbeatService", () => {
   });
 
   describe("credential health gating", () => {
-    test("prompt includes credential-status when providers are unhealthy", () => {
+    test("prompt includes credential-status when providers are unhealthy", async () => {
       const service = createService();
-      const { prompt } = service.buildPrompt("- Check email", ["google"]);
+      const { prompt } = await service.buildPrompt("- Check email", ["google"]);
 
       expect(prompt).toContain("<credential-status>");
       expect(prompt).toContain("google");
@@ -948,16 +960,16 @@ describe("HeartbeatService", () => {
       );
     });
 
-    test("prompt omits credential-status when all providers are healthy", () => {
+    test("prompt omits credential-status when all providers are healthy", async () => {
       const service = createService();
-      const { prompt } = service.buildPrompt("- Check email", []);
+      const { prompt } = await service.buildPrompt("- Check email", []);
 
       expect(prompt).not.toContain("<credential-status>");
     });
 
-    test("prompt lists multiple unhealthy providers", () => {
+    test("prompt lists multiple unhealthy providers", async () => {
       const service = createService();
-      const { prompt } = service.buildPrompt("- Check things", [
+      const { prompt } = await service.buildPrompt("- Check things", [
         "google",
         "slack",
       ]);
@@ -967,9 +979,9 @@ describe("HeartbeatService", () => {
       );
     });
 
-    test("prompt tells an integration apart from the channel bot of the same name", () => {
+    test("prompt tells an integration apart from the channel bot of the same name", async () => {
       const service = createService();
-      const { prompt } = service.buildPrompt("- Check things", ["slack"]);
+      const { prompt } = await service.buildPrompt("- Check things", ["slack"]);
 
       expect(prompt).toContain(
         "slack (integration, acts as the connected person)",
@@ -977,7 +989,9 @@ describe("HeartbeatService", () => {
       expect(prompt).not.toContain("slack_channel");
       expect(prompt).toContain("A channel bot is the assistant's own identity");
 
-      const bot = service.buildPrompt("- Check things", ["slack_channel"]);
+      const bot = await service.buildPrompt("- Check things", [
+        "slack_channel",
+      ]);
       expect(bot.prompt).toContain("slack_channel (the slack channel bot)");
     });
   });
@@ -1203,7 +1217,7 @@ describe("HeartbeatService", () => {
   });
 
   describe("cron scheduling mode", () => {
-    test("start() with cronExpression sets nextRunAt to cron occurrence, not now+intervalMs", () => {
+    test("start() with cronExpression sets nextRunAt to cron occurrence, not now+intervalMs", async () => {
       const cronNextRunAt = Date.now() + 7_200_000; // 2 hours from now
       mockComputeNextRunAtResult = cronNextRunAt;
       setHeartbeatConfig({
@@ -1213,6 +1227,7 @@ describe("HeartbeatService", () => {
 
       const service = createService();
       service.start();
+      await flushAsync();
 
       expect(service.nextRunAt).toBe(cronNextRunAt);
       // Should NOT be now + intervalMs
@@ -1230,6 +1245,7 @@ describe("HeartbeatService", () => {
 
       const service = createService();
       service.start();
+      await flushAsync();
 
       // nextRunAt should be the cron time before runOnce
       expect(service.nextRunAt).toBe(cronNextRunAt);
@@ -1255,6 +1271,7 @@ describe("HeartbeatService", () => {
         },
       });
       service.start();
+      await flushAsync();
 
       await service.runOnce();
 
@@ -1264,13 +1281,14 @@ describe("HeartbeatService", () => {
       service.stop();
     });
 
-    test("resetTimer() in cron mode recomputes from the current time", () => {
+    test("resetTimer() in cron mode recomputes from the current time", async () => {
       const firstCronTime = Date.now() + 3_600_000;
       mockComputeNextRunAtResult = firstCronTime;
       setHeartbeatConfig({ cronExpression: "0 9,12,15,18 * * *" });
 
       const service = createService();
       service.start();
+      await flushAsync();
       expect(service.nextRunAt).toBe(firstCronTime);
 
       // Simulate time passing and a new cron occurrence
@@ -1278,14 +1296,17 @@ describe("HeartbeatService", () => {
       mockComputeNextRunAtResult = secondCronTime;
 
       service.resetTimer();
+
+      await flushAsync();
       expect(service.nextRunAt).toBe(secondCronTime);
       service.stop();
     });
 
-    test("reconfigure() switches from interval to cron mode", () => {
+    test("reconfigure() switches from interval to cron mode", async () => {
       const service = createService();
       // Start in interval mode
       service.start();
+      await flushAsync();
       const intervalNextRunAt = service.nextRunAt;
       expect(intervalNextRunAt).not.toBeNull();
 
@@ -1299,13 +1320,14 @@ describe("HeartbeatService", () => {
       service.stop();
     });
 
-    test("reconfigure() switches from cron to interval mode", () => {
+    test("reconfigure() switches from cron to interval mode", async () => {
       const cronNextRunAt = Date.now() + 7_200_000;
       mockComputeNextRunAtResult = cronNextRunAt;
       setHeartbeatConfig({ cronExpression: "0 9,12,15,18 * * *" });
 
       const service = createService();
       service.start();
+      await flushAsync();
       expect(service.nextRunAt).toBe(cronNextRunAt);
 
       // Reconfigure to interval mode
@@ -1335,6 +1357,7 @@ describe("HeartbeatService", () => {
         getCurrentHour: () => 23,
       });
       service.start();
+      await flushAsync();
       const result = await service.runOnce();
       expect(result).toBe(true);
       expect(processMessageCalls).toHaveLength(1);
@@ -1353,18 +1376,20 @@ describe("HeartbeatService", () => {
       // getCurrentHour returns 3 (outside 9-17 window), so runOnce should skip
       const service = createService({ getCurrentHour: () => 3 });
       service.start();
+      await flushAsync();
       const result = await service.runOnce();
       expect(result).toBe(false);
       expect(processMessageCalls).toHaveLength(0);
       service.stop();
     });
 
-    test("runtime fallback: computeNextRunAt throws, service falls back to interval mode", () => {
+    test("runtime fallback: computeNextRunAt throws, service falls back to interval mode", async () => {
       mockComputeNextRunAtError = new Error("No upcoming runs");
       setHeartbeatConfig({ cronExpression: "0 9,12,15,18 * * *" });
 
       const service = createService();
       service.start();
+      await flushAsync();
 
       // Should have fallen back to interval mode — nextRunAt should be ~now + intervalMs
       expect(service.nextRunAt).not.toBeNull();
@@ -1377,12 +1402,13 @@ describe("HeartbeatService", () => {
       service.stop();
     });
 
-    test("null cronExpression behaves identically to current fixed-interval mode", () => {
+    test("null cronExpression behaves identically to current fixed-interval mode", async () => {
       setHeartbeatConfig({ cronExpression: null });
 
       const service = createService();
       const before = Date.now();
       service.start();
+      await flushAsync();
 
       expect(service.nextRunAt).not.toBeNull();
       expect(service.nextRunAt!).toBeGreaterThanOrEqual(
@@ -1430,6 +1456,7 @@ describe("HeartbeatService", () => {
 
       const service = createService({ getCurrentHour: () => 3 });
       service.start();
+      await flushAsync();
       await service.runOnce();
 
       expect(mockSkipHeartbeatRun).toHaveBeenCalledWith(
@@ -1458,6 +1485,7 @@ describe("HeartbeatService", () => {
 
       // Start service so the second runOnce has a pending row
       service.start();
+      await flushAsync();
       mockSkipHeartbeatRun.mockClear();
 
       // Second run should be skipped due to overlap
@@ -1473,34 +1501,38 @@ describe("HeartbeatService", () => {
       service.stop();
     });
 
-    test("start() calls markStaleRunsAsMissed and markStaleRunningAsError", () => {
+    test("start() calls markStaleRunsAsMissed and markStaleRunningAsError", async () => {
       const service = createService();
       service.start();
+      await flushAsync();
 
       expect(mockMarkStaleRunsAsMissed).toHaveBeenCalledTimes(1);
       expect(mockMarkStaleRunningAsError).toHaveBeenCalledTimes(1);
       service.stop();
     });
 
-    test("scheduleNextRun supersedes old pending row before creating new one", () => {
+    test("scheduleNextRun supersedes old pending row before creating new one", async () => {
       const service = createService();
       service.start();
+      await flushAsync();
 
       // start() called scheduleNextRun which set _pendingRunId.
       // Calling resetTimer triggers another scheduleNextRun which
       // should supersede the existing pending row before inserting
       // a new one.
       const callOrder: string[] = [];
-      mockSupersedePendingRun.mockImplementation(() => {
+      mockSupersedePendingRun.mockImplementation(async () => {
         callOrder.push("supersede");
         return true;
       });
-      mockInsertPendingHeartbeatRun.mockImplementation(() => {
+      mockInsertPendingHeartbeatRun.mockImplementation(async () => {
         callOrder.push("insert");
         return "mock-run-id";
       });
 
       service.resetTimer();
+
+      await flushAsync();
 
       // resetTimer's scheduleNextRun should supersede then insert
       expect(callOrder.filter((c) => c === "supersede").length).toBeGreaterThan(
@@ -1513,12 +1545,14 @@ describe("HeartbeatService", () => {
       service.stop();
     });
 
-    test("resetTimer() supersedes pending row", () => {
+    test("resetTimer() supersedes pending row", async () => {
       const service = createService();
       service.start();
+      await flushAsync();
 
       mockSupersedePendingRun.mockClear();
       service.resetTimer();
+      await flushAsync();
 
       // resetTimer calls scheduleNextRun which supersedes existing pending
       expect(mockSupersedePendingRun).toHaveBeenCalled();
@@ -1528,6 +1562,7 @@ describe("HeartbeatService", () => {
     test("force run creates its own pending row, does not consume scheduled one", async () => {
       const service = createService();
       service.start();
+      await flushAsync();
 
       // Clear to track only the force run's calls
       mockInsertPendingHeartbeatRun.mockClear();
@@ -1546,6 +1581,7 @@ describe("HeartbeatService", () => {
     test("disabled config with stale pending row skips it as disabled", async () => {
       const service = createService();
       service.start();
+      await flushAsync();
 
       // Now disable config and call runOnce — should skip the pending row
       setHeartbeatConfig({ enabled: false });
@@ -1563,9 +1599,11 @@ describe("HeartbeatService", () => {
     test("stop() supersedes outstanding pending row", async () => {
       const service = createService();
       service.start();
+      await flushAsync();
 
       mockSupersedePendingRun.mockClear();
       await service.stop();
+      await flushAsync();
 
       expect(mockSupersedePendingRun).toHaveBeenCalledWith("mock-run-id");
     });
@@ -1598,12 +1636,13 @@ describe("HeartbeatService", () => {
       expect(signal.attentionHints?.isAsyncBackground).toBe(true);
     });
 
-    test("start() emits activity.failed notification when stale rows exist", () => {
-      mockMarkStaleRunsAsMissed.mockImplementation(() => 2);
-      mockMarkStaleRunningAsError.mockImplementation(() => 1);
+    test("start() emits activity.failed notification when stale rows exist", async () => {
+      mockMarkStaleRunsAsMissed.mockImplementation(async () => 2);
+      mockMarkStaleRunningAsError.mockImplementation(async () => 1);
 
       const service = createService();
       service.start();
+      await flushAsync();
 
       const missedSignals = emittedNotificationSignals.filter(
         (s) => s.sourceEventName === "activity.failed",
@@ -1619,12 +1658,13 @@ describe("HeartbeatService", () => {
       service.stop();
     });
 
-    test("start() does not emit notification when counts are 0", () => {
-      mockMarkStaleRunsAsMissed.mockImplementation(() => 0);
-      mockMarkStaleRunningAsError.mockImplementation(() => 0);
+    test("start() does not emit notification when counts are 0", async () => {
+      mockMarkStaleRunsAsMissed.mockImplementation(async () => 0);
+      mockMarkStaleRunningAsError.mockImplementation(async () => 0);
 
       const service = createService();
       service.start();
+      await flushAsync();
 
       const missedSignals = emittedNotificationSignals.filter(
         (s) => s.sourceEventName === "activity.failed",
@@ -1635,37 +1675,37 @@ describe("HeartbeatService", () => {
   });
 
   describe("early heartbeat nudge", () => {
-    test("includes <early-heartbeat> when completedRunCount is 0", () => {
+    test("includes <early-heartbeat> when completedRunCount is 0", async () => {
       const service = createService();
-      const { prompt } = service.buildPrompt("- Check things", [], 0);
+      const { prompt } = await service.buildPrompt("- Check things", [], 0);
 
       expect(prompt).toContain("<early-heartbeat>");
       expect(prompt).toContain("first heartbeats");
     });
 
-    test("includes <early-heartbeat> when completedRunCount is 2", () => {
+    test("includes <early-heartbeat> when completedRunCount is 2", async () => {
       const service = createService();
-      const { prompt } = service.buildPrompt("- Check things", [], 2);
+      const { prompt } = await service.buildPrompt("- Check things", [], 2);
 
       expect(prompt).toContain("<early-heartbeat>");
     });
 
-    test("omits <early-heartbeat> when completedRunCount is 3", () => {
+    test("omits <early-heartbeat> when completedRunCount is 3", async () => {
       const service = createService();
-      const { prompt } = service.buildPrompt("- Check things", [], 3);
+      const { prompt } = await service.buildPrompt("- Check things", [], 3);
 
       expect(prompt).not.toContain("<early-heartbeat>");
     });
 
-    test("omits <early-heartbeat> when completedRunCount is 10", () => {
+    test("omits <early-heartbeat> when completedRunCount is 10", async () => {
       const service = createService();
-      const { prompt } = service.buildPrompt("- Check things", [], 10);
+      const { prompt } = await service.buildPrompt("- Check things", [], 10);
 
       expect(prompt).not.toContain("<early-heartbeat>");
     });
 
     test("executeRun passes completed run count to buildPrompt", async () => {
-      mockCountCompletedHeartbeatRuns.mockImplementation(() => 0);
+      mockCountCompletedHeartbeatRuns.mockImplementation(async () => 0);
 
       const service = createService();
       await service.runOnce();
@@ -1675,7 +1715,7 @@ describe("HeartbeatService", () => {
     });
 
     test("executeRun omits nudge when enough runs have completed", async () => {
-      mockCountCompletedHeartbeatRuns.mockImplementation(() => 5);
+      mockCountCompletedHeartbeatRuns.mockImplementation(async () => 5);
 
       const service = createService();
       await service.runOnce();
@@ -1686,20 +1726,20 @@ describe("HeartbeatService", () => {
   });
 
   describe("configurable disposition", () => {
-    test("injects the configured disposition inside <heartbeat-disposition>", () => {
+    test("injects the configured disposition inside <heartbeat-disposition>", async () => {
       setHeartbeatConfig({ disposition: "Marker text from config." });
       const service = createService();
-      const { prompt } = service.buildPrompt("- Check things", [], 10);
+      const { prompt } = await service.buildPrompt("- Check things", [], 10);
 
       expect(prompt).toContain(
         "<heartbeat-disposition>\nMarker text from config.\n</heartbeat-disposition>",
       );
     });
 
-    test("omits the block when disposition is empty", () => {
+    test("omits the block when disposition is empty", async () => {
       setHeartbeatConfig({ disposition: "" });
       const service = createService();
-      const { prompt } = service.buildPrompt("- Check things", [], 10);
+      const { prompt } = await service.buildPrompt("- Check things", [], 10);
 
       expect(prompt).not.toContain("<heartbeat-disposition>");
     });
@@ -1707,7 +1747,7 @@ describe("HeartbeatService", () => {
 });
 
 describe("shouldRescheduleHeartbeatForTimezoneChange", () => {
-  test("reschedules cron heartbeats when the fallback user timezone changes", () => {
+  test("reschedules cron heartbeats when the fallback user timezone changes", async () => {
     expect(
       shouldRescheduleHeartbeatForTimezoneChange(
         {
@@ -1722,7 +1762,7 @@ describe("shouldRescheduleHeartbeatForTimezoneChange", () => {
     ).toBe(true);
   });
 
-  test("ignores ui timezone changes in interval mode", () => {
+  test("ignores ui timezone changes in interval mode", async () => {
     expect(
       shouldRescheduleHeartbeatForTimezoneChange(
         { ui: { userTimezone: "America/New_York" }, heartbeat: {} },
@@ -1734,7 +1774,7 @@ describe("shouldRescheduleHeartbeatForTimezoneChange", () => {
     ).toBe(false);
   });
 
-  test("ignores ui timezone changes when heartbeat.timezone is set", () => {
+  test("ignores ui timezone changes when heartbeat.timezone is set", async () => {
     expect(
       shouldRescheduleHeartbeatForTimezoneChange(
         {

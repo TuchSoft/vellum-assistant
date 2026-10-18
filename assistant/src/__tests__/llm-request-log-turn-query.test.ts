@@ -1,16 +1,12 @@
 import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 setDefaultTimeout(30_000);
 
-import { sql } from "drizzle-orm";
-
 import {
   addMessage,
   createConversation,
   forkConversation,
 } from "../persistence/conversation-crud.js";
-import { getLogsDb } from "../persistence/db-connection.js";
 import { requireMainDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
 import {
   backfillMessageIdOnLogs,
   getRequestLogsByMessageId,
@@ -18,19 +14,19 @@ import {
   recordRequestLog,
   relinkLlmRequestLogs,
 } from "../persistence/llm-request-log-store.js";
-import { llmRequestLogs } from "../persistence/schema/index.js";
+import { llmRequestLogs as pgLlmRequestLogs } from "../persistence/pg-schema/index.js";
 import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-// llm_request_logs lives in the dedicated logs connection.
-function logsDb() {
-  return getLogsDb()!;
+async function insertLog(
+  values: typeof pgLlmRequestLogs.$inferInsert,
+): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.insert(db.schema.llmRequestLogs).values(values);
 }
 
 async function resetTables(): Promise<void> {
   const db = requireMainDb();
-  logsDb().delete(llmRequestLogs).run();
+  await db.run("DELETE FROM llm_request_logs");
   await db.run("DELETE FROM tool_invocations");
   await db.run("DELETE FROM message_attachments");
   await db.run("DELETE FROM attachments");
@@ -77,8 +73,8 @@ describePg("getRequestLogsByMessageId — turn-aware query", () => {
     });
 
     // Record a log without messageId, then backfill
-    recordRequestLog(conv.id, '{"prompt":"hi"}', '{"result":"hello"}');
-    backfillMessageIdOnLogs(conv.id, a1.id);
+    await recordRequestLog(conv.id, '{"prompt":"hi"}', '{"result":"hello"}');
+    await backfillMessageIdOnLogs(conv.id, a1.id);
 
     const logs = await getRequestLogsByMessageId(a1.id);
     expect(logs).toHaveLength(1);
@@ -95,11 +91,11 @@ describePg("getRequestLogsByMessageId — turn-aware query", () => {
     });
 
     // First LLM call → A1
-    recordRequestLog(conv.id, '{"step":1}', '{"tool_use":"bash"}');
+    await recordRequestLog(conv.id, '{"step":1}', '{"tool_use":"bash"}');
     const a1 = await addMessage(conv.id, "assistant", "Using tool...", {
       skipIndexing: true,
     });
-    backfillMessageIdOnLogs(conv.id, a1.id);
+    await backfillMessageIdOnLogs(conv.id, a1.id);
 
     // tool_result user message
     await addMessage(conv.id, "user", toolResultContent(["tool-1"]), {
@@ -107,11 +103,11 @@ describePg("getRequestLogsByMessageId — turn-aware query", () => {
     });
 
     // Second LLM call → A2
-    recordRequestLog(conv.id, '{"step":2}', '{"result":"done"}');
+    await recordRequestLog(conv.id, '{"step":2}', '{"result":"done"}');
     const a2 = await addMessage(conv.id, "assistant", "All done!", {
       skipIndexing: true,
     });
-    backfillMessageIdOnLogs(conv.id, a2.id);
+    await backfillMessageIdOnLogs(conv.id, a2.id);
 
     // Query from A2 (the last message in the turn) → should return both logs
     const logs = await getRequestLogsByMessageId(a2.id);
@@ -130,21 +126,21 @@ describePg("getRequestLogsByMessageId — turn-aware query", () => {
       skipIndexing: true,
     });
 
-    recordRequestLog(source.id, '{"step":1}', '{"tool":"bash"}');
+    await recordRequestLog(source.id, '{"step":1}', '{"tool":"bash"}');
     const a1 = await addMessage(source.id, "assistant", "Using tool...", {
       skipIndexing: true,
     });
-    backfillMessageIdOnLogs(source.id, a1.id);
+    await backfillMessageIdOnLogs(source.id, a1.id);
 
     await addMessage(source.id, "user", toolResultContent(["tool-1"]), {
       skipIndexing: true,
     });
 
-    recordRequestLog(source.id, '{"step":2}', '{"result":"ok"}');
+    await recordRequestLog(source.id, '{"step":2}', '{"result":"ok"}');
     const a2 = await addMessage(source.id, "assistant", "Done with source!", {
       skipIndexing: true,
     });
-    backfillMessageIdOnLogs(source.id, a2.id);
+    await backfillMessageIdOnLogs(source.id, a2.id);
 
     // Fork the conversation
     const fork = await forkConversation({ conversationId: source.id });
@@ -170,31 +166,31 @@ describePg("getRequestLogsByMessageId — turn-aware query", () => {
     await addMessage(conv.id, "user", "First question", {
       skipIndexing: true,
     });
-    recordRequestLog(conv.id, '{"turn":1}', '{"answer":"first"}');
+    await recordRequestLog(conv.id, '{"turn":1}', '{"answer":"first"}');
     const a1 = await addMessage(conv.id, "assistant", "First answer", {
       skipIndexing: true,
     });
-    backfillMessageIdOnLogs(conv.id, a1.id);
+    await backfillMessageIdOnLogs(conv.id, a1.id);
 
     // Second turn: user → A2 (+ log2) → tool_result → A3 (+ log3)
     await addMessage(conv.id, "user", "Second question", {
       skipIndexing: true,
     });
-    recordRequestLog(conv.id, '{"turn":2,"step":1}', '{"tool":"bash"}');
+    await recordRequestLog(conv.id, '{"turn":2,"step":1}', '{"tool":"bash"}');
     const a2 = await addMessage(conv.id, "assistant", "Using tool...", {
       skipIndexing: true,
     });
-    backfillMessageIdOnLogs(conv.id, a2.id);
+    await backfillMessageIdOnLogs(conv.id, a2.id);
 
     await addMessage(conv.id, "user", toolResultContent(["tool-2"]), {
       skipIndexing: true,
     });
 
-    recordRequestLog(conv.id, '{"turn":2,"step":2}', '{"result":"done"}');
+    await recordRequestLog(conv.id, '{"turn":2,"step":2}', '{"result":"done"}');
     const a3 = await addMessage(conv.id, "assistant", "Second done!", {
       skipIndexing: true,
     });
-    backfillMessageIdOnLogs(conv.id, a3.id);
+    await backfillMessageIdOnLogs(conv.id, a3.id);
 
     // Query second turn → should only return logs for A2 and A3, NOT A1
     const secondTurnLogs = await getRequestLogsByMessageId(a3.id);
@@ -219,46 +215,37 @@ describePg("getRequestLogsByMessageId — turn-aware query", () => {
     await insertMessage("a3-o", conv.id, "assistant", '"Done!"', T + 30000);
 
     // Orphaned log 1: message_id points to a deleted message
-    logsDb()
-      .insert(llmRequestLogs)
-      .values({
-        id: "log-orphan-1",
-        conversationId: conv.id,
-        messageId: "deleted-msg-A1",
-        provider: "anthropic",
-        requestPayload: '{"step":1}',
-        responsePayload: '{"tool":"bash"}',
-        createdAt: T + 5000,
-      })
-      .run();
+    await insertLog({
+      id: "log-orphan-1",
+      conversationId: conv.id,
+      messageId: "deleted-msg-A1",
+      provider: "anthropic",
+      requestPayload: '{"step":1}',
+      responsePayload: '{"tool":"bash"}',
+      createdAt: T + 5000,
+    });
 
     // Orphaned log 2
-    logsDb()
-      .insert(llmRequestLogs)
-      .values({
-        id: "log-orphan-2",
-        conversationId: conv.id,
-        messageId: "deleted-msg-A2",
-        provider: "anthropic",
-        requestPayload: '{"step":2}',
-        responsePayload: '{"tool":"file_write"}',
-        createdAt: T + 15_000,
-      })
-      .run();
+    await insertLog({
+      id: "log-orphan-2",
+      conversationId: conv.id,
+      messageId: "deleted-msg-A2",
+      provider: "anthropic",
+      requestPayload: '{"step":2}',
+      responsePayload: '{"tool":"file_write"}',
+      createdAt: T + 15_000,
+    });
 
     // Surviving log: backfilled to the surviving assistant message
-    logsDb()
-      .insert(llmRequestLogs)
-      .values({
-        id: "log-surviving",
-        conversationId: conv.id,
-        messageId: "a3-o",
-        provider: "anthropic",
-        requestPayload: '{"step":3}',
-        responsePayload: '{"text":"Done!"}',
-        createdAt: T + 29_000,
-      })
-      .run();
+    await insertLog({
+      id: "log-surviving",
+      conversationId: conv.id,
+      messageId: "a3-o",
+      provider: "anthropic",
+      requestPayload: '{"step":3}',
+      responsePayload: '{"text":"Done!"}',
+      createdAt: T + 29_000,
+    });
 
     // Query from the surviving assistant message → should find all 3 logs
     const logs = await getRequestLogsByMessageId("a3-o");
@@ -277,32 +264,26 @@ describePg("getRequestLogsByMessageId — turn-aware query", () => {
     await insertMessage("a1-ul", conv.id, "assistant", '"Done!"', T + 30000);
 
     // Unlinked log: messageId is NULL (backfill hasn't run yet)
-    logsDb()
-      .insert(llmRequestLogs)
-      .values({
-        id: "log-unlinked-1",
-        conversationId: conv.id,
-        messageId: null,
-        provider: "anthropic",
-        requestPayload: '{"step":1}',
-        responsePayload: '{"tool":"bash"}',
-        createdAt: T + 5000,
-      })
-      .run();
+    await insertLog({
+      id: "log-unlinked-1",
+      conversationId: conv.id,
+      messageId: null,
+      provider: "anthropic",
+      requestPayload: '{"step":1}',
+      responsePayload: '{"tool":"bash"}',
+      createdAt: T + 5000,
+    });
 
     // Linked log: already backfilled to the assistant message
-    logsDb()
-      .insert(llmRequestLogs)
-      .values({
-        id: "log-linked-1",
-        conversationId: conv.id,
-        messageId: "a1-ul",
-        provider: "anthropic",
-        requestPayload: '{"step":2}',
-        responsePayload: '{"text":"Done!"}',
-        createdAt: T + 29_000,
-      })
-      .run();
+    await insertLog({
+      id: "log-linked-1",
+      conversationId: conv.id,
+      messageId: "a1-ul",
+      provider: "anthropic",
+      requestPayload: '{"step":2}',
+      responsePayload: '{"text":"Done!"}',
+      createdAt: T + 29_000,
+    });
 
     const logs = await getRequestLogsByMessageId("a1-ul");
     expect(logs).toHaveLength(2);
@@ -310,12 +291,12 @@ describePg("getRequestLogsByMessageId — turn-aware query", () => {
     expect(logs[1]?.id).toBe("log-linked-1");
 
     // Verify opportunistic backfill ran: the unlinked log should now have a messageId
-    const backfilledLog = logsDb()
-      .select({ messageId: llmRequestLogs.messageId })
-      .from(llmRequestLogs)
-      .where(sql`${llmRequestLogs.id} = 'log-unlinked-1'`)
-      .get();
-    expect(backfilledLog?.messageId).toBe("a1-ul");
+    const backfilledLog = await requireMainDb().get<{
+      message_id: string | null;
+    }>("SELECT message_id FROM llm_request_logs WHERE id = ?", [
+      "log-unlinked-1",
+    ]);
+    expect(backfilledLog?.message_id).toBe("a1-ul");
   });
 
   test("unlinked logs from different conversations don't bleed", async () => {
@@ -326,34 +307,28 @@ describePg("getRequestLogsByMessageId — turn-aware query", () => {
     // Conversation A: user + assistant + unlinked log
     await insertMessage("u1-a", convA.id, "user", '"Hello A"', T);
     await insertMessage("a1-a", convA.id, "assistant", '"Hi A"', T + 10000);
-    logsDb()
-      .insert(llmRequestLogs)
-      .values({
-        id: "log-conv-a",
-        conversationId: convA.id,
-        messageId: null,
-        provider: "anthropic",
-        requestPayload: '{"conv":"A"}',
-        responsePayload: '{"r":"A"}',
-        createdAt: T + 5000,
-      })
-      .run();
+    await insertLog({
+      id: "log-conv-a",
+      conversationId: convA.id,
+      messageId: null,
+      provider: "anthropic",
+      requestPayload: '{"conv":"A"}',
+      responsePayload: '{"r":"A"}',
+      createdAt: T + 5000,
+    });
 
     // Conversation B: user + assistant + unlinked log (overlapping timestamps)
     await insertMessage("u1-b", convB.id, "user", '"Hello B"', T);
     await insertMessage("a1-b", convB.id, "assistant", '"Hi B"', T + 10000);
-    logsDb()
-      .insert(llmRequestLogs)
-      .values({
-        id: "log-conv-b",
-        conversationId: convB.id,
-        messageId: null,
-        provider: "anthropic",
-        requestPayload: '{"conv":"B"}',
-        responsePayload: '{"r":"B"}',
-        createdAt: T + 5000,
-      })
-      .run();
+    await insertLog({
+      id: "log-conv-b",
+      conversationId: convB.id,
+      messageId: null,
+      provider: "anthropic",
+      requestPayload: '{"conv":"B"}',
+      responsePayload: '{"r":"B"}',
+      createdAt: T + 5000,
+    });
 
     // Query from conv A → should only find conv A's log
     const logsA = await getRequestLogsByMessageId("a1-a");
@@ -373,34 +348,28 @@ describePg("getRequestLogsByMessageId — turn-aware query", () => {
     // Turn 1: user → assistant (with linked log)
     await insertMessage("u1-t", conv.id, "user", '"Turn 1"', T);
     await insertMessage("a1-t", conv.id, "assistant", '"Answer 1"', T + 10000);
-    logsDb()
-      .insert(llmRequestLogs)
-      .values({
-        id: "log-turn1-unlinked",
-        conversationId: conv.id,
-        messageId: null,
-        provider: "anthropic",
-        requestPayload: '{"turn":1}',
-        responsePayload: '{"r":1}',
-        createdAt: T + 5000,
-      })
-      .run();
+    await insertLog({
+      id: "log-turn1-unlinked",
+      conversationId: conv.id,
+      messageId: null,
+      provider: "anthropic",
+      requestPayload: '{"turn":1}',
+      responsePayload: '{"r":1}',
+      createdAt: T + 5000,
+    });
 
     // Turn 2: user → assistant (with unlinked log)
     await insertMessage("u2-t", conv.id, "user", '"Turn 2"', T + 60000);
     await insertMessage("a2-t", conv.id, "assistant", '"Answer 2"', T + 70000);
-    logsDb()
-      .insert(llmRequestLogs)
-      .values({
-        id: "log-turn2-unlinked",
-        conversationId: conv.id,
-        messageId: null,
-        provider: "anthropic",
-        requestPayload: '{"turn":2}',
-        responsePayload: '{"r":2}',
-        createdAt: T + 65000,
-      })
-      .run();
+    await insertLog({
+      id: "log-turn2-unlinked",
+      conversationId: conv.id,
+      messageId: null,
+      provider: "anthropic",
+      requestPayload: '{"turn":2}',
+      responsePayload: '{"r":2}',
+      createdAt: T + 65000,
+    });
 
     // Query turn 2 → should only find turn 2's unlinked log
     const turn2Logs = await getRequestLogsByMessageId("a2-t");
@@ -422,11 +391,11 @@ describePg("getRequestLogsByMessageId — turn-aware query", () => {
     });
 
     // First LLM call → A1 (tool_use response)
-    recordRequestLog(conv.id, '{"step":1}', '{"tool_use":"bash"}');
+    await recordRequestLog(conv.id, '{"step":1}', '{"tool_use":"bash"}');
     const a1 = await addMessage(conv.id, "assistant", "Using tool...", {
       skipIndexing: true,
     });
-    backfillMessageIdOnLogs(conv.id, a1.id);
+    await backfillMessageIdOnLogs(conv.id, a1.id);
 
     // tool_result user message
     await addMessage(conv.id, "user", toolResultContent(["tool-1"]), {
@@ -434,14 +403,14 @@ describePg("getRequestLogsByMessageId — turn-aware query", () => {
     });
 
     // Second LLM call → A2 (text response)
-    recordRequestLog(conv.id, '{"step":2}', '{"result":"done"}');
+    await recordRequestLog(conv.id, '{"step":2}', '{"result":"done"}');
     const a2 = await addMessage(conv.id, "assistant", "All done!", {
       skipIndexing: true,
     });
-    backfillMessageIdOnLogs(conv.id, a2.id);
+    await backfillMessageIdOnLogs(conv.id, a2.id);
 
     // Simulate consolidation: re-link logs from A2 to A1, then delete A2
-    relinkLlmRequestLogs([a2.id], a1.id);
+    await relinkLlmRequestLogs([a2.id], a1.id);
 
     // Both logs should now be findable via A1
     const logs = await getRequestLogsByMessageId(a1.id);
@@ -461,11 +430,11 @@ describePg("compaction-call attribution", () => {
     await addMessage(source.id, "user", "Original question", {
       skipIndexing: true,
     });
-    recordRequestLog(source.id, '{"turn":"src"}', '{"answer":"hi"}');
+    await recordRequestLog(source.id, '{"turn":"src"}', '{"answer":"hi"}');
     const reply = await addMessage(source.id, "assistant", "Answer", {
       skipIndexing: true,
     });
-    backfillMessageIdOnLogs(source.id, reply.id);
+    await backfillMessageIdOnLogs(source.id, reply.id);
 
     const fork = await forkConversation({ conversationId: source.id });
     const forkMessages = await (
@@ -476,7 +445,7 @@ describePg("compaction-call attribution", () => {
 
     // A summarize-up-to compaction call lands in the fork, unlinked, inside
     // the pre-fork turn's open-ended time window.
-    recordRequestLog(
+    await recordRequestLog(
       fork.id,
       '{"compaction":true}',
       '{"summary":"..."}',
@@ -496,14 +465,14 @@ describePg("compaction-call attribution", () => {
   test("a linked compaction row belongs to the card's own group, not the prior turn", async () => {
     const conv = await createConversation("card-group");
     await addMessage(conv.id, "user", "Chat away", { skipIndexing: true });
-    recordRequestLog(conv.id, '{"turn":"main"}', '{"answer":"sure"}');
+    await recordRequestLog(conv.id, '{"turn":"main"}', '{"answer":"sure"}');
     const reply = await addMessage(conv.id, "assistant", "Sure!", {
       skipIndexing: true,
     });
-    backfillMessageIdOnLogs(conv.id, reply.id);
+    await backfillMessageIdOnLogs(conv.id, reply.id);
 
     // Summarize-up-to persists a card and links the compaction row to it.
-    const compactionLogId = recordRequestLog(
+    const compactionLogId = await recordRequestLog(
       conv.id,
       '{"compaction":true}',
       '{"summary":"..."}',
@@ -520,7 +489,7 @@ describePg("compaction-call attribution", () => {
         skipIndexing: true,
       },
     );
-    linkRequestLogsToMessage([compactionLogId!], card.id);
+    await linkRequestLogsToMessage([compactionLogId!], card.id);
 
     // The prior turn keeps only its own call…
     const turnLogs = await getRequestLogsByMessageId(reply.id);
@@ -539,7 +508,7 @@ describePg("compaction-call attribution", () => {
     const userMsg = await addMessage(conv.id, "user", "/compact", {
       skipIndexing: true,
     });
-    const compactionLogId = recordRequestLog(
+    const compactionLogId = await recordRequestLog(
       conv.id,
       '{"compaction":true}',
       '{"summary":"..."}',
@@ -551,7 +520,7 @@ describePg("compaction-call attribution", () => {
       metadata: { messageKind: "system_card" },
       skipIndexing: true,
     });
-    linkRequestLogsToMessage([compactionLogId!], card.id);
+    await linkRequestLogsToMessage([compactionLogId!], card.id);
 
     const logs = await getRequestLogsByMessageId(userMsg.id);
     expect(logs).toHaveLength(1);
@@ -561,15 +530,15 @@ describePg("compaction-call attribution", () => {
   test("recovery on the prior turn cannot defeat the deliberate card link", async () => {
     const conv = await createConversation("link-race");
     await addMessage(conv.id, "user", "Chat away", { skipIndexing: true });
-    recordRequestLog(conv.id, '{"turn":"main"}', '{"answer":"sure"}');
+    await recordRequestLog(conv.id, '{"turn":"main"}', '{"answer":"sure"}');
     const reply = await addMessage(conv.id, "assistant", "Sure!", {
       skipIndexing: true,
     });
-    backfillMessageIdOnLogs(conv.id, reply.id);
+    await backfillMessageIdOnLogs(conv.id, reply.id);
 
     // The compaction call is recorded unlinked, before its result card
     // persists — its createdAt falls inside the prior turn's open time window.
-    const compactionLogId = recordRequestLog(
+    const compactionLogId = await recordRequestLog(
       conv.id,
       '{"compaction":true}',
       '{"summary":"..."}',
@@ -583,19 +552,19 @@ describePg("compaction-call attribution", () => {
     // compaction row into the view, but it must NOT durably stamp it onto this
     // turn — otherwise the IS-NULL-guarded link below would no-op.
     await getRequestLogsByMessageId(reply.id);
-    const afterRecovery = logsDb()
-      .select({ messageId: llmRequestLogs.messageId })
-      .from(llmRequestLogs)
-      .where(sql`${llmRequestLogs.id} = ${compactionLogId!}`)
-      .get();
-    expect(afterRecovery?.messageId).toBeNull();
+    const afterRecovery = await requireMainDb().get<{
+      message_id: string | null;
+    }>("SELECT message_id FROM llm_request_logs WHERE id = ?", [
+      compactionLogId!,
+    ]);
+    expect(afterRecovery?.message_id).toBeNull();
 
     // The card persists and the route deliberately links the compaction row.
     const card = await addMessage(conv.id, "assistant", "**Compacted**", {
       metadata: { messageKind: "system_card" },
       skipIndexing: true,
     });
-    linkRequestLogsToMessage([compactionLogId!], card.id);
+    await linkRequestLogsToMessage([compactionLogId!], card.id);
 
     // The deliberate link wins: the compaction call belongs to the card…
     const cardLogs = await getRequestLogsByMessageId(card.id);

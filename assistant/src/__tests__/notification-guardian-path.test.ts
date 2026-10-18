@@ -5,7 +5,7 @@
  * pipeline (including conversation-created callbacks) without a custom dispatch path.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 import type { ConversationCreatedInfo } from "../notifications/broadcaster.js";
 import type { NotificationDeliveryResult } from "../notifications/types.js";
@@ -87,24 +87,19 @@ import {
   createPendingQuestion,
 } from "../calls/call-store.js";
 import { dispatchGuardianQuestion } from "../calls/guardian-dispatch.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { createGuardianBinding } from "./helpers/create-guardian-binding.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function ensureConversation(id: string): void {
-  const db = getDb();
+async function ensureConversation(id: string): Promise<void> {
+  const db = requireMainDb();
   const now = Date.now();
-  db.insert(conversations)
-    .values({
-      id,
-      title: `Conversation ${id}`,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  await db.orm.insert(db.schema.conversations).values({
+    id,
+    title: `Conversation ${id}`,
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 function requestForCallSession(callSessionId: string) {
@@ -114,14 +109,14 @@ function requestForCallSession(callSessionId: string) {
 }
 
 async function resetTables(): Promise<void> {
-  const db = getDb();
+  const db = requireMainDb();
   bridgeState.reset();
-  db.run("DELETE FROM call_pending_questions");
-  db.run("DELETE FROM call_events");
-  db.run("DELETE FROM call_sessions");
-  db.run("DELETE FROM conversations");
-  db.run("DELETE FROM contact_channels");
-  db.run("DELETE FROM contacts");
+  await db.run("DELETE FROM call_pending_questions");
+  await db.run("DELETE FROM call_events");
+  await db.run("DELETE FROM call_sessions");
+  await db.run("DELETE FROM conversations");
+  await db.run("DELETE FROM contact_channels");
+  await db.run("DELETE FROM contacts");
 
   // Seed the vellum guardian binding (gateway does this at startup in production)
   await createGuardianBinding({
@@ -150,23 +145,26 @@ async function resetTables(): Promise<void> {
   };
 }
 
-describe("ASK_GUARDIAN notification path", () => {
+describePg("ASK_GUARDIAN notification path", () => {
   beforeEach(async () => {
-    resetTables();
+    await resetTables();
   });
 
   test("dispatches through emitNotificationSignal with guardian context metadata", async () => {
     const convId = "conv-guardian-notif-1";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "What is the gate code?");
+    const pq = await createPendingQuestion(
+      session.id,
+      "What is the gate code?",
+    );
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,
@@ -199,7 +197,7 @@ describe("ASK_GUARDIAN notification path", () => {
 
   test("uses notification_conversation_created callback instead of a guardian-specific dispatch path", async () => {
     const convId = "conv-guardian-notif-2";
-    ensureConversation(convId);
+    await ensureConversation(convId);
     mockConversationCreated = {
       conversationId: "conv-from-thread-callback",
       title: "Guardian question",
@@ -220,14 +218,17 @@ describe("ASK_GUARDIAN notification path", () => {
       ],
     };
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "Need callback verification");
+    const pq = await createPendingQuestion(
+      session.id,
+      "Need callback verification",
+    );
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,
@@ -242,7 +243,7 @@ describe("ASK_GUARDIAN notification path", () => {
 
   test("creates guardian action deliveries from notification pipeline delivery results", async () => {
     const convId = "conv-guardian-notif-3";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     mockEmitResult = {
       signalId: "sig-3",
@@ -264,14 +265,14 @@ describe("ASK_GUARDIAN notification path", () => {
       ],
     };
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "Ship it?");
+    const pq = await createPendingQuestion(session.id, "Ship it?");
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,
@@ -300,7 +301,7 @@ describe("ASK_GUARDIAN notification path", () => {
 
   test("creates a failed vellum delivery when pipeline emits no vellum result", async () => {
     const convId = "conv-guardian-notif-4";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     mockEmitResult = {
       signalId: "sig-4",
@@ -310,14 +311,14 @@ describe("ASK_GUARDIAN notification path", () => {
       deliveryResults: [],
     };
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "Fallback row test");
+    const pq = await createPendingQuestion(session.id, "Fallback row test");
 
     await expect(
       dispatchGuardianQuestion({
@@ -339,16 +340,19 @@ describe("ASK_GUARDIAN notification path", () => {
 
   test("context payload includes callSessionId and activeGuardianRequestCount for candidate-affinity", async () => {
     const convId = "conv-guardian-notif-affinity";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "Affinity test question");
+    const pq = await createPendingQuestion(
+      session.id,
+      "Affinity test question",
+    );
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,
@@ -370,11 +374,11 @@ describe("ASK_GUARDIAN notification path", () => {
 
   test("repeated guardian questions retain per-request delivery records when sharing a conversation", async () => {
     const convId = "conv-guardian-notif-reuse";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     const sharedConvId = "conv-guardian-shared-thread";
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
@@ -383,7 +387,7 @@ describe("ASK_GUARDIAN notification path", () => {
     });
 
     // First guardian question
-    const pq1 = createPendingQuestion(
+    const pq1 = await createPendingQuestion(
       session.id,
       "Can they enter through the side gate?",
     );
@@ -411,7 +415,10 @@ describe("ASK_GUARDIAN notification path", () => {
 
     // Second guardian question (same call, pipeline reuses the same conversation)
     emitCalls.length = 0;
-    const pq2 = createPendingQuestion(session.id, "What about the back door?");
+    const pq2 = await createPendingQuestion(
+      session.id,
+      "What about the back door?",
+    );
     mockEmitResult = {
       signalId: "sig-reuse-b",
       deduplicated: false,
@@ -457,7 +464,7 @@ describe("ASK_GUARDIAN notification path", () => {
 
   test("follow-up/timeout flow is unchanged — expired request still gets fallback delivery on no pipeline result", async () => {
     const convId = "conv-guardian-notif-timeout";
-    ensureConversation(convId);
+    await ensureConversation(convId);
 
     // Simulate a scenario where the pipeline returns no delivery results (e.g. blocked)
     mockEmitResult = {
@@ -468,14 +475,14 @@ describe("ASK_GUARDIAN notification path", () => {
       deliveryResults: [],
     };
 
-    const session = createCallSession({
+    const session = await createCallSession({
       direction: "inbound",
       conversationId: convId,
       provider: "twilio",
       fromNumber: "+15550001111",
       toNumber: "+15550002222",
     });
-    const pq = createPendingQuestion(session.id, "Timeout scenario");
+    const pq = await createPendingQuestion(session.id, "Timeout scenario");
 
     await dispatchGuardianQuestion({
       callSessionId: session.id,

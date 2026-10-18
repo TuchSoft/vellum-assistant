@@ -93,7 +93,7 @@ describe("pre-chat onboarding contract", () => {
   });
 
   describe("handleSendMessage body.onboarding field", () => {
-    test("onboarding field shape matches OnboardingContext interface", () => {
+    test("onboarding field shape matches OnboardingContext interface", async () => {
       // Validate that the expected shape accepted by conversation-routes
       // matches the OnboardingContext type definition.
       const context = {
@@ -122,7 +122,7 @@ describe("pre-chat onboarding contract", () => {
       expect(typeof context.assistantName).toBe("string");
     });
 
-    test("onboarding field allows omitting optional userName and assistantName", () => {
+    test("onboarding field allows omitting optional userName and assistantName", async () => {
       const context: OnboardingContext = {
         tools: ["figma"],
         tasks: ["design"],
@@ -135,7 +135,7 @@ describe("pre-chat onboarding contract", () => {
   });
 
   describe("system prompt injection with onboarding context", () => {
-    test("injects onboarding context when BOOTSTRAP.md exists and context is present", () => {
+    test("injects onboarding context when BOOTSTRAP.md exists and context is present", async () => {
       writeFileSync(
         join(TEST_DIR, "BOOTSTRAP.md"),
         "# Bootstrap\n\nWelcome, new colleague.",
@@ -149,7 +149,7 @@ describe("pre-chat onboarding contract", () => {
         assistantName: "Nova",
       };
 
-      const result = buildSystemPrompt({ onboardingContext: context });
+      const result = await buildSystemPrompt({ onboardingContext: context });
       const bootstrap = bootstrapBlock(result);
 
       expect(bootstrap).toContain("## First-Run User Context");
@@ -166,7 +166,7 @@ describe("pre-chat onboarding contract", () => {
       expect(bootstrap).not.toContain("```json");
     });
 
-    test("does NOT inject onboarding context when BOOTSTRAP.md does not exist", () => {
+    test("does NOT inject onboarding context when BOOTSTRAP.md does not exist", async () => {
       // No BOOTSTRAP.md — simulates a non-first conversation.
       const context = {
         tools: ["slack"],
@@ -175,7 +175,7 @@ describe("pre-chat onboarding contract", () => {
         userName: "Alex",
       };
 
-      const result = buildSystemPrompt({ onboardingContext: context });
+      const result = await buildSystemPrompt({ onboardingContext: context });
       const bootstrap = bootstrapBlock(result);
 
       expect(bootstrap).not.toContain("## First-Run User Context");
@@ -183,7 +183,7 @@ describe("pre-chat onboarding contract", () => {
       expect(bootstrap).not.toContain("- Daily tools:");
     });
 
-    test("does NOT inject onboarding context when excludeBootstrap is true", () => {
+    test("does NOT inject onboarding context when excludeBootstrap is true", async () => {
       writeFileSync(
         join(TEST_DIR, "BOOTSTRAP.md"),
         "# Bootstrap\n\nFirst run.",
@@ -195,7 +195,7 @@ describe("pre-chat onboarding contract", () => {
         tone: "grounded",
       };
 
-      const result = buildSystemPrompt({
+      const result = await buildSystemPrompt({
         onboardingContext: context,
         excludeBootstrap: true,
       });
@@ -205,13 +205,13 @@ describe("pre-chat onboarding contract", () => {
       expect(bootstrap).not.toContain("First-Run Ritual");
     });
 
-    test("omits onboarding section when context is undefined", () => {
+    test("omits onboarding section when context is undefined", async () => {
       writeFileSync(
         join(TEST_DIR, "BOOTSTRAP.md"),
         "# Bootstrap\n\nFirst conversation.",
       );
 
-      const result = buildSystemPrompt({ onboardingContext: undefined });
+      const result = await buildSystemPrompt({ onboardingContext: undefined });
       const bootstrap = bootstrapBlock(result);
 
       // Bootstrap should still be present
@@ -220,7 +220,7 @@ describe("pre-chat onboarding contract", () => {
       expect(bootstrap).not.toContain("## First-Run User Context");
     });
 
-    test("accepts all four personality tones", () => {
+    test("accepts all four personality tones", async () => {
       writeFileSync(
         join(TEST_DIR, "BOOTSTRAP.md"),
         "# Bootstrap\n\nOnboarding.",
@@ -236,7 +236,7 @@ describe("pre-chat onboarding contract", () => {
           userName: "Alex",
         };
 
-        const result = buildSystemPrompt({ onboardingContext: context });
+        const result = await buildSystemPrompt({ onboardingContext: context });
         const bootstrap = bootstrapBlock(result);
 
         expect(bootstrap).toContain("## First-Run User Context");
@@ -244,7 +244,7 @@ describe("pre-chat onboarding contract", () => {
       }
     });
 
-    test("renders compact markdown, not JSON", () => {
+    test("renders compact markdown, not JSON", async () => {
       writeFileSync(
         join(TEST_DIR, "BOOTSTRAP.md"),
         "# Bootstrap\n\nOnboarding.",
@@ -258,7 +258,7 @@ describe("pre-chat onboarding contract", () => {
         assistantName: "Kit",
       };
 
-      const result = buildSystemPrompt({ onboardingContext: context });
+      const result = await buildSystemPrompt({ onboardingContext: context });
       const bootstrap = bootstrapBlock(result);
 
       // Should contain compact markdown lines
@@ -275,7 +275,7 @@ describe("pre-chat onboarding contract", () => {
       expect(bootstrap).not.toContain(expectedJson);
     });
 
-    test("renders prior assistants in first-run context", () => {
+    test("renders prior assistants in first-run context", async () => {
       writeFileSync(
         join(TEST_DIR, "BOOTSTRAP.md"),
         "# Bootstrap\n\nOnboarding.",
@@ -289,7 +289,7 @@ describe("pre-chat onboarding contract", () => {
         priorAssistants: ["chatgpt", "claude", "perplexity"],
       };
 
-      const result = buildSystemPrompt({ onboardingContext: context });
+      const result = await buildSystemPrompt({ onboardingContext: context });
       const bootstrap = bootstrapBlock(result);
 
       expect(bootstrap).toContain("## First-Run User Context");
@@ -298,7 +298,7 @@ describe("pre-chat onboarding contract", () => {
       );
     });
 
-    test("empty tools/tasks arrays result in no Daily tools / Common work lines", () => {
+    test("empty tools/tasks arrays result in no Daily tools / Common work lines", async () => {
       writeFileSync(
         join(TEST_DIR, "BOOTSTRAP.md"),
         "# Bootstrap\n\nOnboarding.",
@@ -311,7 +311,7 @@ describe("pre-chat onboarding contract", () => {
         userName: "Alex",
       };
 
-      const result = buildSystemPrompt({ onboardingContext: context });
+      const result = await buildSystemPrompt({ onboardingContext: context });
       const bootstrap = bootstrapBlock(result);
 
       expect(bootstrap).toContain("## First-Run User Context");
@@ -320,7 +320,7 @@ describe("pre-chat onboarding contract", () => {
       expect(bootstrap).not.toContain("- Common work:");
     });
 
-    test("absent userName results in no Name line", () => {
+    test("absent userName results in no Name line", async () => {
       writeFileSync(
         join(TEST_DIR, "BOOTSTRAP.md"),
         "# Bootstrap\n\nOnboarding.",
@@ -332,7 +332,7 @@ describe("pre-chat onboarding contract", () => {
         tone: "warm",
       };
 
-      const result = buildSystemPrompt({ onboardingContext: context });
+      const result = await buildSystemPrompt({ onboardingContext: context });
       const bootstrap = bootstrapBlock(result);
 
       expect(bootstrap).toContain("## First-Run User Context");
@@ -347,7 +347,7 @@ describe("pre-chat onboarding contract", () => {
   });
 
   describe("onboarding context only applied to first message", () => {
-    test("conversation-routes stores onboarding only when messages.length === 0", () => {
+    test("conversation-routes stores onboarding only when messages.length === 0", async () => {
       // This is a structural contract test: conversation-routes.ts checks
       // `body.onboarding && conversation.messages.length === 0` before
       // calling setOnboardingContext. We validate the contract by ensuring
@@ -363,7 +363,7 @@ describe("pre-chat onboarding contract", () => {
   });
 
   describe("end-to-end onboarding integration", () => {
-    test("with BOOTSTRAP.md present, onboarding context produces compact markdown with normalized labels", () => {
+    test("with BOOTSTRAP.md present, onboarding context produces compact markdown with normalized labels", async () => {
       writeFileSync(
         join(TEST_DIR, "BOOTSTRAP.md"),
         "# Bootstrap\n\nWelcome to your first conversation.",
@@ -377,7 +377,7 @@ describe("pre-chat onboarding contract", () => {
         assistantName: "Pax",
       };
 
-      const result = buildSystemPrompt({ onboardingContext: context });
+      const result = await buildSystemPrompt({ onboardingContext: context });
       const bootstrap = bootstrapBlock(result);
 
       // Heading is present
@@ -400,7 +400,7 @@ describe("pre-chat onboarding contract", () => {
       expect(bootstrap).not.toContain('"assistantName"');
     });
 
-    test("without BOOTSTRAP.md, onboarding context does NOT appear in system prompt", () => {
+    test("without BOOTSTRAP.md, onboarding context does NOT appear in system prompt", async () => {
       // No BOOTSTRAP.md created — simulates a returning user session
       const context: OnboardingContext = {
         tools: ["slack", "figma"],
@@ -410,7 +410,7 @@ describe("pre-chat onboarding contract", () => {
         assistantName: "Kit",
       };
 
-      const result = buildSystemPrompt({ onboardingContext: context });
+      const result = await buildSystemPrompt({ onboardingContext: context });
       const bootstrap = bootstrapBlock(result);
 
       // Onboarding section must be absent
@@ -422,7 +422,7 @@ describe("pre-chat onboarding contract", () => {
       expect(bootstrap).not.toContain("Apply this context quietly.");
     });
 
-    test("excludeBootstrap suppresses both bootstrap and onboarding sections", () => {
+    test("excludeBootstrap suppresses both bootstrap and onboarding sections", async () => {
       writeFileSync(
         join(TEST_DIR, "BOOTSTRAP.md"),
         "# Bootstrap\n\nFirst run instructions.",
@@ -436,7 +436,7 @@ describe("pre-chat onboarding contract", () => {
         assistantName: "Nova",
       };
 
-      const result = buildSystemPrompt({
+      const result = await buildSystemPrompt({
         onboardingContext: context,
         excludeBootstrap: true,
       });
@@ -450,7 +450,7 @@ describe("pre-chat onboarding contract", () => {
       expect(bootstrap).not.toContain("Apply this context quietly.");
     });
 
-    test("userPersona is included independently of onboarding context", () => {
+    test("userPersona is included independently of onboarding context", async () => {
       // No BOOTSTRAP.md — the durable persona path after bootstrap is deleted.
       // User persona content now lives in `users/<slug>.md` and renders
       // via the `10-user-persona` bundled section in the static prefix.
@@ -460,7 +460,7 @@ describe("pre-chat onboarding contract", () => {
         "# User Persona\n\nPrefers concise answers. Works in fintech.",
       );
 
-      const result = buildSystemPrompt({
+      const result = await buildSystemPrompt({
         // No onboardingContext — simulates post-onboarding conversation
       });
 
@@ -474,7 +474,7 @@ describe("pre-chat onboarding contract", () => {
       expect(bootstrap).not.toContain("First-Run Ritual");
     });
 
-    test("userPersona appears alongside onboarding context during first run", () => {
+    test("userPersona appears alongside onboarding context during first run", async () => {
       writeFileSync(
         join(TEST_DIR, "BOOTSTRAP.md"),
         "# Bootstrap\n\nOnboarding flow.",
@@ -495,7 +495,7 @@ describe("pre-chat onboarding contract", () => {
         userName: "Dana",
       };
 
-      const result = buildSystemPrompt({
+      const result = await buildSystemPrompt({
         onboardingContext: context,
       });
       const bootstrap = bootstrapBlock(result);

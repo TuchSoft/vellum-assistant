@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 import { createGuardianGatewaySim } from "./guardian-gateway-sim.js";
 
@@ -15,15 +15,12 @@ import {
   getRegisteredKinds,
   getResolver,
 } from "../approvals/guardian-request-resolvers.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { scopedApprovalGrants } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
-function resetState(): void {
+async function resetState(): Promise<void> {
   sim.reset();
-  getDb().run("DELETE FROM scoped_approval_grants");
+  await requireMainDb().run("DELETE FROM scoped_approval_grants");
 }
 
 // ---------------------------------------------------------------------------
@@ -57,18 +54,18 @@ function trustedActor(overrides: Partial<ActorContext> = {}): ActorContext {
 // Resolver registry tests
 // ---------------------------------------------------------------------------
 
-describe("guardian-request-resolvers / registry", () => {
-  test("built-in resolvers are registered", () => {
+describePg("guardian-request-resolvers / registry", () => {
+  test("built-in resolvers are registered", async () => {
     const kinds = getRegisteredKinds();
     expect(kinds).toContain("tool_approval");
     expect(kinds).toContain("pending_question");
   });
 
-  test("getResolver returns undefined for unknown kind", () => {
+  test("getResolver returns undefined for unknown kind", async () => {
     expect(getResolver("nonexistent_kind")).toBeUndefined();
   });
 
-  test("getResolver returns resolver for known kind", () => {
+  test("getResolver returns resolver for known kind", async () => {
     const resolver = getResolver("tool_approval");
     expect(resolver).toBeDefined();
     expect(resolver!.kind).toBe("tool_approval");
@@ -79,8 +76,10 @@ describe("guardian-request-resolvers / registry", () => {
 // applyGuardianDecision tests
 // ---------------------------------------------------------------------------
 
-describe("applyGuardianDecision", () => {
-  beforeEach(() => resetState());
+describePg("applyGuardianDecision", () => {
+  beforeEach(async () => {
+    await resetState();
+  });
 
   // ── Successful approval ─────────────────────────────────────────────
 
@@ -641,8 +640,8 @@ describe("applyGuardianDecision", () => {
     }
     expect(result.grantMinted).toBe(true);
 
-    const db = getDb();
-    const grants = db.select().from(scopedApprovalGrants).all();
+    const db = requireMainDb();
+    const grants = await db.orm.select().from(db.schema.scopedApprovalGrants);
     expect(grants.length).toBe(1);
     expect(grants[0].toolName).toBe("host_bash");
     expect(grants[0].conversationId).toBe("conv-voice-1");
@@ -655,10 +654,12 @@ describe("applyGuardianDecision", () => {
 // mintGuardianRequestGrant tests
 // ---------------------------------------------------------------------------
 
-describe("mintGuardianRequestGrant", () => {
-  beforeEach(() => resetState());
+describePg("mintGuardianRequestGrant", () => {
+  beforeEach(async () => {
+    await resetState();
+  });
 
-  test("mints grant for request with tool metadata", () => {
+  test("mints grant for request with tool metadata", async () => {
     const req = sim.seedRequest({
       kind: "tool_approval",
       sourceChannel: "telegram",
@@ -668,7 +669,7 @@ describe("mintGuardianRequestGrant", () => {
       inputDigest: "sha256:abc",
     });
 
-    const result = mintGuardianRequestGrant({
+    const result = await mintGuardianRequestGrant({
       request: req,
       actorChannel: "telegram",
       guardianExternalUserId: "guardian-1",
@@ -678,7 +679,7 @@ describe("mintGuardianRequestGrant", () => {
     expect(result.minted).toBe(true);
   });
 
-  test("mints grant when guardianExternalUserId is omitted", () => {
+  test("mints grant when guardianExternalUserId is omitted", async () => {
     const req = sim.seedRequest({
       kind: "tool_approval",
       sourceChannel: "telegram",
@@ -688,7 +689,7 @@ describe("mintGuardianRequestGrant", () => {
       inputDigest: "sha256:xyz",
     });
 
-    const result = mintGuardianRequestGrant({
+    const result = await mintGuardianRequestGrant({
       request: req,
       actorChannel: "vellum",
       effectiveAction: "approve_once",
@@ -696,20 +697,20 @@ describe("mintGuardianRequestGrant", () => {
 
     expect(result.minted).toBe(true);
 
-    const db = getDb();
-    const grants = db.select().from(scopedApprovalGrants).all();
+    const db = requireMainDb();
+    const grants = await db.orm.select().from(db.schema.scopedApprovalGrants);
     expect(grants.length).toBe(1);
     expect(grants[0].guardianExternalUserId).toBeNull();
   });
 
-  test("skips grant for request without tool metadata", () => {
+  test("skips grant for request without tool metadata", async () => {
     const req = sim.seedRequest({
       kind: "pending_question",
       guardianPrincipalId: TEST_PRINCIPAL_ID,
       // No toolName or inputDigest
     });
 
-    const result = mintGuardianRequestGrant({
+    const result = await mintGuardianRequestGrant({
       request: req,
       actorChannel: "telegram",
       guardianExternalUserId: "guardian-1",
@@ -719,7 +720,7 @@ describe("mintGuardianRequestGrant", () => {
     expect(result.minted).toBe(false);
   });
 
-  test("skips grant when toolName present but inputDigest missing", () => {
+  test("skips grant when toolName present but inputDigest missing", async () => {
     const req = sim.seedRequest({
       kind: "tool_approval",
       guardianPrincipalId: TEST_PRINCIPAL_ID,
@@ -727,7 +728,7 @@ describe("mintGuardianRequestGrant", () => {
       // No inputDigest
     });
 
-    const result = mintGuardianRequestGrant({
+    const result = await mintGuardianRequestGrant({
       request: req,
       actorChannel: "telegram",
       guardianExternalUserId: "guardian-1",
@@ -737,7 +738,7 @@ describe("mintGuardianRequestGrant", () => {
     expect(result.minted).toBe(false);
   });
 
-  test("mints grant with default 5m TTL for approve_once", () => {
+  test("mints grant with default 5m TTL for approve_once", async () => {
     const before = Date.now();
     const req = sim.seedRequest({
       kind: "tool_approval",
@@ -748,7 +749,7 @@ describe("mintGuardianRequestGrant", () => {
       inputDigest: "sha256:ttl-once",
     });
 
-    const result = mintGuardianRequestGrant({
+    const result = await mintGuardianRequestGrant({
       request: req,
       actorChannel: "telegram",
       guardianExternalUserId: "guardian-1",
@@ -757,8 +758,8 @@ describe("mintGuardianRequestGrant", () => {
 
     expect(result.minted).toBe(true);
 
-    const db = getDb();
-    const grants = db.select().from(scopedApprovalGrants).all();
+    const db = requireMainDb();
+    const grants = await db.orm.select().from(db.schema.scopedApprovalGrants);
     expect(grants.length).toBe(1);
     expect(grants[0].expiresAt).toBeGreaterThanOrEqual(before + GRANT_TTL_MS);
     expect(grants[0].expiresAt).toBeLessThanOrEqual(Date.now() + GRANT_TTL_MS);

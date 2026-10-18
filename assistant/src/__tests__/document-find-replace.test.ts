@@ -1,13 +1,13 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import { getDocumentById } from "../documents/document-store.js";
-import { getSqlite } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   executeDocumentFind,
   executeDocumentReplaceText,
 } from "../tools/document/document-tool.js";
 import type { ToolContext, ToolExecutionResult } from "../tools/types.js";
-import { resetDbForTesting } from "./db-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 function makeContext(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
@@ -23,69 +23,29 @@ function parseResult<T>(result: ToolExecutionResult): T {
   return JSON.parse(result.content) as T;
 }
 
-function bootstrapDocumentTables(): void {
-  resetDbForTesting();
-  const raw = getSqlite();
-  raw.exec(/*sql*/ `
-    DROP TABLE IF EXISTS document_conversations;
-    DROP TABLE IF EXISTS document_revisions;
-    DROP TABLE IF EXISTS documents;
-    DROP TABLE IF EXISTS conversations;
-
-    CREATE TABLE conversations (
-      id TEXT PRIMARY KEY,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
-    );
-
-    CREATE TABLE documents (
-      surface_id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      word_count INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      revision INTEGER NOT NULL DEFAULT 0,
-      workspace_path TEXT
-    );
-
-    CREATE TABLE document_revisions (
-      surface_id TEXT NOT NULL REFERENCES documents(surface_id) ON DELETE CASCADE,
-      revision INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      word_count INTEGER NOT NULL DEFAULT 0,
-      author TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (surface_id, revision)
-    );
-
-    CREATE TABLE document_conversations (
-      surface_id TEXT NOT NULL,
-      conversation_id TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (surface_id, conversation_id),
-      FOREIGN KEY (surface_id) REFERENCES documents(surface_id) ON DELETE CASCADE
-    );
-  `);
+async function bootstrapDocumentTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM document_revisions");
+  await db.run("DELETE FROM document_conversations");
+  await db.run("DELETE FROM documents");
+  await db.run("DELETE FROM conversations");
 }
 
-function seedDocument(params: {
+async function seedDocument(params: {
   surfaceId: string;
   conversationId: string;
   title: string;
   content: string;
   updatedAt: number;
-}): void {
-  const raw = getSqlite();
-  raw
-    .query(`INSERT OR IGNORE INTO conversations (id, created_at) VALUES (?, ?)`)
-    .run(params.conversationId, params.updatedAt);
-  raw
-    .query(
-      `INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+}): Promise<void> {
+  const db = requireMainDb();
+  await db.run(
+    `INSERT INTO conversations (id, created_at, updated_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`,
+    [params.conversationId, params.updatedAt, params.updatedAt],
+  );
+  await db.run(
+    `INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
       params.surfaceId,
       params.conversationId,
       params.title,
@@ -93,12 +53,12 @@ function seedDocument(params: {
       params.content.split(/\s+/).filter(Boolean).length,
       params.updatedAt,
       params.updatedAt,
-    );
-  raw
-    .query(
-      `INSERT OR IGNORE INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?)`,
-    )
-    .run(params.surfaceId, params.conversationId, params.updatedAt);
+    ],
+  );
+  await db.run(
+    `INSERT INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`,
+    [params.surfaceId, params.conversationId, params.updatedAt],
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -128,17 +88,17 @@ const MULTILINE_CONTENT = [
   "Final line with special chars: foo-bar_baz",
 ].join("\n");
 
-describe("document_find", () => {
-  beforeEach(() => {
-    bootstrapDocumentTables();
-    seedDocument({
+describePg("document_find", () => {
+  beforeEach(async () => {
+    await bootstrapDocumentTables();
+    await seedDocument({
       surfaceId: "doc-find-test",
       conversationId: "conv-current",
       title: "Find Test Doc",
       content: MULTILINE_CONTENT,
       updatedAt: 1000,
     });
-    seedDocument({
+    await seedDocument({
       surfaceId: "doc-other-conv",
       conversationId: "conv-other",
       title: "Other Conv Doc",
@@ -147,8 +107,8 @@ describe("document_find", () => {
     });
   });
 
-  test("literal search finds exact matches with correct line numbers", () => {
-    const result = executeDocumentFind(
+  test("literal search finds exact matches with correct line numbers", async () => {
+    const result = await executeDocumentFind(
       { surface_id: "doc-find-test", query: "Hello" },
       makeContext(),
     );
@@ -164,8 +124,8 @@ describe("document_find", () => {
     expect(body.matches![2].match_text).toBe("HELLO");
   });
 
-  test("case-insensitive search (default) matches regardless of case", () => {
-    const result = executeDocumentFind(
+  test("case-insensitive search (default) matches regardless of case", async () => {
+    const result = await executeDocumentFind(
       { surface_id: "doc-find-test", query: "hello" },
       makeContext(),
     );
@@ -177,8 +137,8 @@ describe("document_find", () => {
     expect(lineNumbers).toEqual([1, 3, 4]);
   });
 
-  test("case-sensitive search only matches exact case", () => {
-    const result = executeDocumentFind(
+  test("case-sensitive search only matches exact case", async () => {
+    const result = await executeDocumentFind(
       { surface_id: "doc-find-test", query: "Hello", case_sensitive: true },
       makeContext(),
     );
@@ -190,8 +150,8 @@ describe("document_find", () => {
     expect(body.matches![0].match_text).toBe("Hello");
   });
 
-  test("regex search works", () => {
-    const result = executeDocumentFind(
+  test("regex search works", async () => {
+    const result = await executeDocumentFind(
       { surface_id: "doc-find-test", query: "\\d+", regex: true },
       makeContext(),
     );
@@ -205,8 +165,8 @@ describe("document_find", () => {
     expect(body.matches![1].line_number).toBe(2);
   });
 
-  test("invalid regex returns error gracefully", () => {
-    const result = executeDocumentFind(
+  test("invalid regex returns error gracefully", async () => {
+    const result = await executeDocumentFind(
       { surface_id: "doc-find-test", query: "[invalid", regex: true },
       makeContext(),
     );
@@ -217,8 +177,8 @@ describe("document_find", () => {
     expect(body.error).toMatch(/Invalid regex/);
   });
 
-  test("no matches returns success with empty array", () => {
-    const result = executeDocumentFind(
+  test("no matches returns success with empty array", async () => {
+    const result = await executeDocumentFind(
       { surface_id: "doc-find-test", query: "nonexistent-text-xyz" },
       makeContext(),
     );
@@ -229,8 +189,8 @@ describe("document_find", () => {
     expect(body.matches).toEqual([]);
   });
 
-  test("access control blocks non-guardian from searching documents outside their conversation", () => {
-    const result = executeDocumentFind(
+  test("access control blocks non-guardian from searching documents outside their conversation", async () => {
+    const result = await executeDocumentFind(
       { surface_id: "doc-other-conv", query: "secret" },
       makeContext({
         trustClass: "trusted_contact",
@@ -244,9 +204,9 @@ describe("document_find", () => {
     expect(body.error).toBe("Document not found");
   });
 
-  test("results are capped at 50 matches", () => {
+  test("results are capped at 50 matches", async () => {
     const lines = Array.from({ length: 100 }, (_, i) => `match line ${i}`);
-    seedDocument({
+    await seedDocument({
       surfaceId: "doc-many-matches",
       conversationId: "conv-current",
       title: "Many Matches",
@@ -254,7 +214,7 @@ describe("document_find", () => {
       updatedAt: 3000,
     });
 
-    const result = executeDocumentFind(
+    const result = await executeDocumentFind(
       { surface_id: "doc-many-matches", query: "match" },
       makeContext(),
     );
@@ -270,17 +230,17 @@ describe("document_find", () => {
 // document_replace_text tests
 // ---------------------------------------------------------------------------
 
-describe("document_replace_text", () => {
-  beforeEach(() => {
-    bootstrapDocumentTables();
-    seedDocument({
+describePg("document_replace_text", () => {
+  beforeEach(async () => {
+    await bootstrapDocumentTables();
+    await seedDocument({
       surfaceId: "doc-replace",
       conversationId: "conv-current",
       title: "Replace Test",
       content: "foo bar foo baz foo",
       updatedAt: 1000,
     });
-    seedDocument({
+    await seedDocument({
       surfaceId: "doc-other",
       conversationId: "conv-other",
       title: "Other Doc",
@@ -289,8 +249,8 @@ describe("document_replace_text", () => {
     });
   });
 
-  test("literal replace replaces all occurrences", () => {
-    const result = executeDocumentReplaceText(
+  test("literal replace replaces all occurrences", async () => {
+    const result = await executeDocumentReplaceText(
       { surface_id: "doc-replace", find: "foo", replace: "qux" },
       makeContext({ sendToClient: () => {} }),
     );
@@ -302,18 +262,20 @@ describe("document_replace_text", () => {
     expect(body.success).toBe(true);
     expect(body.replacements_made).toBe(3);
     expect(body.content_changed).toBe(true);
-    expect(getDocumentById("doc-replace")?.content).toBe("qux bar qux baz qux");
+    expect((await getDocumentById("doc-replace"))?.content).toBe(
+      "qux bar qux baz qux",
+    );
   });
 
-  test("case-insensitive literal replace (default)", () => {
-    seedDocument({
+  test("case-insensitive literal replace (default)", async () => {
+    await seedDocument({
       surfaceId: "doc-case",
       conversationId: "conv-current",
       title: "Case Test",
       content: "Foo FOO foo",
       updatedAt: 3000,
     });
-    const result = executeDocumentReplaceText(
+    const result = await executeDocumentReplaceText(
       { surface_id: "doc-case", find: "foo", replace: "x" },
       makeContext({ sendToClient: () => {} }),
     );
@@ -323,18 +285,18 @@ describe("document_replace_text", () => {
     }>(result);
     expect(body.success).toBe(true);
     expect(body.replacements_made).toBe(3);
-    expect(getDocumentById("doc-case")?.content).toBe("x x x");
+    expect((await getDocumentById("doc-case"))?.content).toBe("x x x");
   });
 
-  test("case-sensitive literal replace", () => {
-    seedDocument({
+  test("case-sensitive literal replace", async () => {
+    await seedDocument({
       surfaceId: "doc-case-sensitive",
       conversationId: "conv-current",
       title: "Case Sensitive Test",
       content: "Foo FOO foo",
       updatedAt: 3000,
     });
-    const result = executeDocumentReplaceText(
+    const result = await executeDocumentReplaceText(
       {
         surface_id: "doc-case-sensitive",
         find: "foo",
@@ -349,18 +311,20 @@ describe("document_replace_text", () => {
     }>(result);
     expect(body.success).toBe(true);
     expect(body.replacements_made).toBe(1);
-    expect(getDocumentById("doc-case-sensitive")?.content).toBe("Foo FOO x");
+    expect((await getDocumentById("doc-case-sensitive"))?.content).toBe(
+      "Foo FOO x",
+    );
   });
 
-  test("regex replace with backreferences", () => {
-    seedDocument({
+  test("regex replace with backreferences", async () => {
+    await seedDocument({
       surfaceId: "doc-regex",
       conversationId: "conv-current",
       title: "Regex Test",
       content: "user1@example user2@test",
       updatedAt: 3000,
     });
-    const result = executeDocumentReplaceText(
+    const result = await executeDocumentReplaceText(
       {
         surface_id: "doc-regex",
         find: "(\\w+)@(\\w+)",
@@ -376,13 +340,13 @@ describe("document_replace_text", () => {
     }>(result);
     expect(body.success).toBe(true);
     expect(body.replacements_made).toBe(2);
-    expect(getDocumentById("doc-regex")?.content).toBe(
+    expect((await getDocumentById("doc-regex"))?.content).toBe(
       "example/user1 test/user2",
     );
   });
 
-  test("invalid regex returns clean error", () => {
-    const result = executeDocumentReplaceText(
+  test("invalid regex returns clean error", async () => {
+    const result = await executeDocumentReplaceText(
       {
         surface_id: "doc-replace",
         find: "[invalid",
@@ -397,8 +361,8 @@ describe("document_replace_text", () => {
     expect(result.isError).toBe(true);
   });
 
-  test("max_replacements limits substitutions", () => {
-    const result = executeDocumentReplaceText(
+  test("max_replacements limits substitutions", async () => {
+    const result = await executeDocumentReplaceText(
       {
         surface_id: "doc-replace",
         find: "foo",
@@ -415,18 +379,20 @@ describe("document_replace_text", () => {
     expect(body.success).toBe(true);
     expect(body.replacements_made).toBe(1);
     expect(body.content_changed).toBe(true);
-    expect(getDocumentById("doc-replace")?.content).toBe("qux bar foo baz foo");
+    expect((await getDocumentById("doc-replace"))?.content).toBe(
+      "qux bar foo baz foo",
+    );
   });
 
-  test("max_replacements with regex backreferences replaces correctly", () => {
-    seedDocument({
+  test("max_replacements with regex backreferences replaces correctly", async () => {
+    await seedDocument({
       surfaceId: "doc-regex-limit",
       conversationId: "conv-current",
       title: "Regex Limit Test",
       content: "a@b c@d e@f",
       updatedAt: 3000,
     });
-    const result = executeDocumentReplaceText(
+    const result = await executeDocumentReplaceText(
       {
         surface_id: "doc-regex-limit",
         find: "(\\w+)@(\\w+)",
@@ -445,11 +411,13 @@ describe("document_replace_text", () => {
     expect(body.success).toBe(true);
     expect(body.replacements_made).toBe(2);
     expect(body.content_changed).toBe(true);
-    expect(getDocumentById("doc-regex-limit")?.content).toBe("b/a d/c e@f");
+    expect((await getDocumentById("doc-regex-limit"))?.content).toBe(
+      "b/a d/c e@f",
+    );
   });
 
-  test("no matches returns success with zero replacements", () => {
-    const result = executeDocumentReplaceText(
+  test("no matches returns success with zero replacements", async () => {
+    const result = await executeDocumentReplaceText(
       { surface_id: "doc-replace", find: "nonexistent", replace: "x" },
       makeContext({ sendToClient: () => {} }),
     );
@@ -461,43 +429,45 @@ describe("document_replace_text", () => {
     expect(body.success).toBe(true);
     expect(body.replacements_made).toBe(0);
     expect(body.content_changed).toBe(false);
-    expect(getDocumentById("doc-replace")?.content).toBe("foo bar foo baz foo");
+    expect((await getDocumentById("doc-replace"))?.content).toBe(
+      "foo bar foo baz foo",
+    );
   });
 
-  test("word_count is recalculated after replacement", () => {
-    const before = getDocumentById("doc-replace");
+  test("word_count is recalculated after replacement", async () => {
+    const before = await getDocumentById("doc-replace");
     expect(before?.wordCount).toBe(5);
 
-    executeDocumentReplaceText(
+    await executeDocumentReplaceText(
       { surface_id: "doc-replace", find: "foo", replace: "one two" },
       makeContext({ sendToClient: () => {} }),
     );
-    const after = getDocumentById("doc-replace");
+    const after = await getDocumentById("doc-replace");
     expect(after?.wordCount).toBe(8);
   });
 
-  test("access control blocks non-guardian from other conversations", () => {
+  test("access control blocks non-guardian from other conversations", async () => {
     const remoteContext = makeContext({
       trustClass: "trusted_contact",
       executionChannel: "slack",
       sendToClient: () => {},
     });
-    const result = executeDocumentReplaceText(
+    const result = await executeDocumentReplaceText(
       { surface_id: "doc-other", find: "other", replace: "x" },
       remoteContext,
     );
     expect(result.isError).toBe(true);
     const body = parseResult<{ error: string }>(result);
     expect(body.error).toBe("Document not found");
-    expect(getDocumentById("doc-other")?.content).toBe("other content");
+    expect((await getDocumentById("doc-other"))?.content).toBe("other content");
   });
 
-  test("client is notified via sendToClient with updated content", () => {
+  test("client is notified via sendToClient with updated content", async () => {
     const messages: unknown[] = [];
     const sendToClient = (msg: unknown) => {
       messages.push(msg);
     };
-    executeDocumentReplaceText(
+    await executeDocumentReplaceText(
       { surface_id: "doc-replace", find: "foo", replace: "qux" },
       makeContext({ sendToClient }),
     );

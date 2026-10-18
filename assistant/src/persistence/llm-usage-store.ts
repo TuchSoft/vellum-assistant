@@ -867,7 +867,7 @@ export async function getUsageGroupBreakdown(
       /*sql*/ `
       SELECT
         CASE WHEN e.conversation_id IS NULL THEN 'Other'
-             ELSE COALESCE(c.title, 'Untitled')
+          ELSE COALESCE(MAX(c.title), 'Untitled')
         END AS group_key,
         e.conversation_id                                AS group_id,
         NULL                                             AS group_label,

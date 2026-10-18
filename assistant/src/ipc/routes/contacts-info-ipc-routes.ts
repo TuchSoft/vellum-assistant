@@ -14,7 +14,7 @@
  * route schema.
  */
 
-import { and, desc, eq, inArray, like, sql } from "drizzle-orm";
+import { and, eq, inArray, like, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { requireMainDb } from "../../persistence/db-facade.js";
@@ -146,7 +146,7 @@ export async function handleContactChannelIdentityLookup({
     .from(channels)
     .innerJoin(contactsTable, eq(contactsTable.id, channels.contactId))
     .where(where)
-    .orderBy(desc(channels.updatedAt))
+    .orderBy(sql`${channels.updatedAt} DESC NULLS LAST`)
     .limit(1);
 
   return { channel: rows[0] ?? null };

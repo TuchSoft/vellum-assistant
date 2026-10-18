@@ -73,8 +73,8 @@ export async function getScheduleUsageSummaries({
 
   return rows.map((row) => ({
     scheduleId: row.schedule_id,
-    runCount: row.run_count,
-    totalEstimatedCostUsd: row.total_estimated_cost_usd ?? 0,
-    eventCount: row.event_count ?? 0,
+    runCount: Number(row.run_count ?? 0),
+    totalEstimatedCostUsd: Number(row.total_estimated_cost_usd ?? 0),
+    eventCount: Number(row.event_count ?? 0),
   }));
 }

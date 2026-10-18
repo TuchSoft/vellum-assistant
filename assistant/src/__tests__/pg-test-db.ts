@@ -64,6 +64,9 @@ export async function preparePgTestDatabase(): Promise<string | undefined> {
 
   const url = urlWithSearchPath(baseUrl, schema);
   process.env.VELLUM_DATABASE_URL = url;
+  // The facade reads this to skip replaying the baseline this module just
+  // applied to the isolated schema.
+  process.env.VELLUM_PG_BASELINE_APPLIED = "1";
   provisioned = { url, schema, admin };
 
   afterAll(async () => {

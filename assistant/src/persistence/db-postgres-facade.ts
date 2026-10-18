@@ -34,6 +34,7 @@ export type PgDrizzleDb = ReturnType<typeof drizzle<typeof pgSchema>>;
 const pools = new Map<string, PgSql>();
 const orms = new Map<string, PgDrizzleDb>();
 const baselines = new Map<string, Promise<void>>();
+const facades = new Map<string, AsyncDb>();
 
 /** One pooled connection set per URL, shared by every facade on that URL. */
 function pool(url: string): PgSql {
@@ -179,6 +180,11 @@ export function getPostgresAsyncDb(
   url: string,
   baseline: readonly string[] = [],
 ): AsyncDb {
+  const key = `${slot}:${url}:${baseline.length > 0 ? "baseline" : "plain"}`;
+  const cached = facades.get(key);
+  if (cached) {
+    return cached;
+  }
   const sql = pool(url);
   let applied: Promise<void> | null = null;
   if (baseline.length > 0) {
@@ -197,7 +203,9 @@ export function getPostgresAsyncDb(
     }
     applied = existing;
   }
-  return new PostgresAsyncDb(slot, sql, url, applied);
+  const created = new PostgresAsyncDb(slot, sql, url, applied);
+  facades.set(key, created);
+  return created;
 }
 
 /** Test/shutdown hook: close every pooled connection. */
@@ -206,5 +214,6 @@ export async function closePostgresFacades(): Promise<void> {
   pools.clear();
   orms.clear();
   baselines.clear();
+  facades.clear();
   await Promise.all(open.map((sql) => sql.end({ timeout: 5 })));
 }

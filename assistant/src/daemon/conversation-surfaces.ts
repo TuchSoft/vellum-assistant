@@ -3291,13 +3291,22 @@ export async function surfaceProxyResolver(
           : typeof input.answer === "string"
             ? input.answer
             : "Task complete";
-      await ctx.computerUseModeSessions.endTask({
-        turnId: ctx.currentRequestId,
-        source: {
-          sourceId: hostCuProxy.sourceId,
-          generation: hostCuProxy.resetGeneration,
-        },
-      });
+      try {
+        await ctx.computerUseModeSessions.endTask({
+          turnId: ctx.currentRequestId,
+          source: {
+            sourceId: hostCuProxy.sourceId,
+            generation: hostCuProxy.resetGeneration,
+          },
+        });
+      } catch (err) {
+        // Tracking is bookkeeping; a failure must not turn a completed tool
+        // call into an error result.
+        log.warn(
+          { err, conversationId: ctx.conversationId },
+          "computer use task tracking failed after completion",
+        );
+      }
       hostCuProxy.endTask(ctx.conversationId);
       return { content: summary, isError: false };
     }

@@ -129,7 +129,11 @@ function facadeFor(slot: AsyncDbSlot): AsyncDb | null {
     }
     return null;
   }
-  return getPostgresAsyncDb(slot, url, BASELINE_STATEMENTS);
+  // A test preload that already applied the baseline marks it here, so the
+  // facade does not replay the same DDL on the first statement.
+  const baseline =
+    process.env.VELLUM_PG_BASELINE_APPLIED === "1" ? [] : BASELINE_STATEMENTS;
+  return getPostgresAsyncDb(slot, url, baseline);
 }
 
 /** The async facade for the main database, or `null` when it is unavailable. */

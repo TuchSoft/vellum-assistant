@@ -225,34 +225,38 @@ export const ROUTES: RouteDefinition[] = [
       const now = Date.now();
       return {
         nextCursor,
-        runs: rows.map((c) => {
-          const stat = assistantStats.get(c.id);
-          const hasAssistantOutput = (stat?.count ?? 0) > 0;
-          const finishedAt = hasAssistantOutput ? stat!.lastAt : null;
-          const estimatedCostUsd =
-            c.totalEstimatedCost > 0
-              ? c.totalEstimatedCost
-              : getUsageCostForConversationWindow({
-                  conversationId: c.id,
-                  from: c.createdAt,
-                  to: finishedAt ?? now,
-                });
-          return {
-            id: c.id,
-            scheduledFor: c.createdAt,
-            startedAt: c.createdAt,
-            finishedAt,
-            durationMs: finishedAt != null ? finishedAt - c.createdAt : null,
-            status: (hasAssistantOutput ? "ok" : "running") as "ok" | "running",
-            skipReason: null,
-            error: null,
-            conversationId: c.id,
-            conversationExists: true,
-            conversationArchivedAt: c.archivedAt,
-            estimatedCostUsd,
-            createdAt: c.createdAt,
-          };
-        }),
+        runs: await Promise.all(
+          rows.map(async (c) => {
+            const stat = assistantStats.get(c.id);
+            const hasAssistantOutput = (stat?.count ?? 0) > 0;
+            const finishedAt = hasAssistantOutput ? stat!.lastAt : null;
+            const estimatedCostUsd =
+              c.totalEstimatedCost > 0
+                ? c.totalEstimatedCost
+                : await getUsageCostForConversationWindow({
+                    conversationId: c.id,
+                    from: c.createdAt,
+                    to: finishedAt ?? now,
+                  });
+            return {
+              id: c.id,
+              scheduledFor: c.createdAt,
+              startedAt: c.createdAt,
+              finishedAt,
+              durationMs: finishedAt != null ? finishedAt - c.createdAt : null,
+              status: (hasAssistantOutput ? "ok" : "running") as
+                | "ok"
+                | "running",
+              skipReason: null,
+              error: null,
+              conversationId: c.id,
+              conversationExists: true,
+              conversationArchivedAt: c.archivedAt,
+              estimatedCostUsd,
+              createdAt: c.createdAt,
+            };
+          }),
+        ),
       };
     },
   },

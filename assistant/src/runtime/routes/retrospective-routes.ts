@@ -206,42 +206,47 @@ export const ROUTES: RouteDefinition[] = [
       const now = Date.now();
       return {
         nextCursor,
-        runs: rows.map(({ row: c, kind }) => {
-          const stat = assistantStats.get(c.id);
-          // Fork-based retrospectives copy the source conversation's
-          // messages with their ORIGINAL timestamps, so assistant messages
-          // can predate the fork row's createdAt. Only an assistant message
-          // at-or-after the conversation's creation is evidence the
-          // retrospective agent itself emitted output — without this guard
-          // an in-flight fork run would read "ok" with a negative duration.
-          const hasAssistantOutput = stat != null && stat.lastAt >= c.createdAt;
-          const finishedAt = hasAssistantOutput ? stat.lastAt : null;
-          const estimatedCostUsd =
-            c.totalEstimatedCost > 0
-              ? c.totalEstimatedCost
-              : getUsageCostForConversationWindow({
-                  conversationId: c.id,
-                  from: c.createdAt,
-                  to: finishedAt ?? now,
-                });
-          return {
-            id: c.id,
-            scheduledFor: c.createdAt,
-            startedAt: c.createdAt,
-            finishedAt,
-            durationMs: finishedAt != null ? finishedAt - c.createdAt : null,
-            status: (hasAssistantOutput ? "ok" : "running") as "ok" | "running",
-            skipReason: null,
-            error: null,
-            conversationId: c.id,
-            conversationExists: true,
-            conversationArchivedAt: c.archivedAt,
-            estimatedCostUsd,
-            createdAt: c.createdAt,
-            kind,
-            title: c.title ?? null,
-          };
-        }),
+        runs: await Promise.all(
+          rows.map(async ({ row: c, kind }) => {
+            const stat = assistantStats.get(c.id);
+            // Fork-based retrospectives copy the source conversation's
+            // messages with their ORIGINAL timestamps, so assistant messages
+            // can predate the fork row's createdAt. Only an assistant message
+            // at-or-after the conversation's creation is evidence the
+            // retrospective agent itself emitted output — without this guard
+            // an in-flight fork run would read "ok" with a negative duration.
+            const hasAssistantOutput =
+              stat != null && stat.lastAt >= c.createdAt;
+            const finishedAt = hasAssistantOutput ? stat.lastAt : null;
+            const estimatedCostUsd =
+              c.totalEstimatedCost > 0
+                ? c.totalEstimatedCost
+                : await getUsageCostForConversationWindow({
+                    conversationId: c.id,
+                    from: c.createdAt,
+                    to: finishedAt ?? now,
+                  });
+            return {
+              id: c.id,
+              scheduledFor: c.createdAt,
+              startedAt: c.createdAt,
+              finishedAt,
+              durationMs: finishedAt != null ? finishedAt - c.createdAt : null,
+              status: (hasAssistantOutput ? "ok" : "running") as
+                | "ok"
+                | "running",
+              skipReason: null,
+              error: null,
+              conversationId: c.id,
+              conversationExists: true,
+              conversationArchivedAt: c.archivedAt,
+              estimatedCostUsd,
+              createdAt: c.createdAt,
+              kind,
+              title: c.title ?? null,
+            };
+          }),
+        ),
       };
     },
   },

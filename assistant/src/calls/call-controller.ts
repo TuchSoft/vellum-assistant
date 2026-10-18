@@ -611,7 +611,7 @@ export class CallController {
     clearTimeout(this.pendingGuardianInput.timer);
     this.pendingGuardianInput = null;
 
-    updateCallSession(this.callSessionId, { status: "in_progress" });
+    await updateCallSession(this.callSessionId, { status: "in_progress" });
 
     // Inject the answer as a queued instruction so it merges into the
     // next turn naturally, respecting role-alternation. If the controller
@@ -640,7 +640,7 @@ export class CallController {
   async handleUserInstruction(instructionText: string): Promise<void> {
     this.cancelPendingEndCall();
 
-    recordCallEvent(this.callSessionId, "user_instruction_relayed", {
+    await recordCallEvent(this.callSessionId, "user_instruction_relayed", {
       instruction: instructionText,
     });
 
@@ -1439,11 +1439,11 @@ export class CallController {
       // Tool activity lands in the call event log, the call's own record of
       // what happened on the line: the call summary and status surfaces
       // read it, and it is what the caller sat in silence through.
-      tool_use_start: (toolName, detail) => {
+      tool_use_start: async (toolName, detail) => {
         if (!this.isCurrentRun(runVersion)) {
           return;
         }
-        recordCallEvent(this.callSessionId, "tool_use_started", {
+        await recordCallEvent(this.callSessionId, "tool_use_started", {
           toolName,
           ...(detail?.toolUseId !== undefined
             ? { toolUseId: detail.toolUseId }
@@ -1451,11 +1451,11 @@ export class CallController {
         });
         cadence.toolStarted(toolName, detail?.toolUseId);
       },
-      tool_result: (event) => {
+      tool_result: async (event) => {
         if (!this.isCurrentRun(runVersion)) {
           return;
         }
-        recordCallEvent(this.callSessionId, "tool_use_completed", {
+        await recordCallEvent(this.callSessionId, "tool_use_completed", {
           toolName: event.toolName,
           ...(event.toolUseId !== undefined
             ? { toolUseId: event.toolUseId }
@@ -1922,7 +1922,7 @@ export class CallController {
 
     // Record the assistant response event, keyed to the conversation rows it
     // mirrors when the bridge reported them.
-    recordCallEvent(this.callSessionId, "assistant_spoke", {
+    await recordCallEvent(this.callSessionId, "assistant_spoke", {
       text: responseText,
       ...(outcome.userMessageId !== null
         ? { userMessageId: outcome.userMessageId }
@@ -2009,9 +2009,13 @@ export class CallController {
           { callSessionId: this.callSessionId },
           "Guardian unavailable for call — skipping ASK_GUARDIAN wait",
         );
-        recordCallEvent(this.callSessionId, "guardian_unavailable_skipped", {
-          question: questionText,
-        });
+        await recordCallEvent(
+          this.callSessionId,
+          "guardian_unavailable_skipped",
+          {
+            question: questionText,
+          },
+        );
         this.pendingInstructions.push(
           `[GUARDIAN_UNAVAILABLE] You tried to consult your guardian again, but they were already unreachable earlier in this call. ` +
             `Do NOT use [ASK_GUARDIAN] again. Instead, let the caller know you cannot reach the guardian right now, ` +
@@ -2035,7 +2039,7 @@ export class CallController {
           { callSessionId: this.callSessionId },
           "Deferring ASK_GUARDIAN — queued USER_ANSWERED pending",
         );
-        recordCallEvent(this.callSessionId, "guardian_consult_deferred", {
+        await recordCallEvent(this.callSessionId, "guardian_consult_deferred", {
           question: questionText,
         });
         // Fall through to normal turn completion (idle + flushPendingInstructions)
@@ -2073,9 +2077,13 @@ export class CallController {
               },
               "Coalescing repeated ASK_GUARDIAN — same tool/action already pending",
             );
-            recordCallEvent(this.callSessionId, "guardian_consult_coalesced", {
-              question: questionText,
-            });
+            await recordCallEvent(
+              this.callSessionId,
+              "guardian_consult_coalesced",
+              {
+                question: questionText,
+              },
+            );
             // Fall through to normal turn completion (idle + flushPendingInstructions)
           } else {
             // Materially different intent — supersede the old consultation.
@@ -2158,7 +2166,7 @@ export class CallController {
     // instructions or waiting for playback drain — so restore in_progress if
     // we just cleared a pending guardian consultation for the end.
     if (clearedPendingGuardianInput) {
-      updateCallSession(this.callSessionId, { status: "in_progress" });
+      await updateCallSession(this.callSessionId, { status: "in_progress" });
     }
 
     // Queued instructions mean the call is continuing — flush and skip teardown.
@@ -2287,17 +2295,17 @@ export class CallController {
     const shouldNotifyCompletion = !!currentSession;
 
     this.transport.endSession("Call completed");
-    updateCallSession(this.callSessionId, {
+    await updateCallSession(this.callSessionId, {
       status: "completed",
       endedAt: Date.now(),
     });
-    recordCallEvent(this.callSessionId, "call_ended", {
+    await recordCallEvent(this.callSessionId, "call_ended", {
       reason: "completed",
     });
 
     // Notify the voice conversation
     if (shouldNotifyCompletion && currentSession) {
-      finalizeCall(this.callSessionId, currentSession.conversationId);
+      await finalizeCall(this.callSessionId, currentSession.conversationId);
     }
 
     // Post a pointer message in the initiating conversation
@@ -2512,7 +2520,7 @@ export class CallController {
       questionText,
     );
     await updateCallSession(this.callSessionId, { status: "waiting_on_user" });
-    recordCallEvent(this.callSessionId, "user_question_asked", {
+    await recordCallEvent(this.callSessionId, "user_question_asked", {
       question: questionText,
     });
 
@@ -2611,11 +2619,15 @@ export class CallController {
       // Expire pending questions and update call state
       await expirePendingQuestions(this.callSessionId);
       this.pendingGuardianInput = null;
-      updateCallSession(this.callSessionId, { status: "in_progress" });
+      await updateCallSession(this.callSessionId, { status: "in_progress" });
       this.guardianUnavailableForCall = true;
-      recordCallEvent(this.callSessionId, "guardian_consultation_timed_out", {
-        question: questionText,
-      });
+      await recordCallEvent(
+        this.callSessionId,
+        "guardian_consultation_timed_out",
+        {
+          question: questionText,
+        },
+      );
 
       // Inject timeout instruction so the model addresses it on the
       // next turn. If idle, flush immediately; otherwise it merges
@@ -2709,15 +2721,15 @@ export class CallController {
           : false;
 
         this.transport.endSession("Maximum call duration reached");
-        updateCallSession(this.callSessionId, {
+        await updateCallSession(this.callSessionId, {
           status: "completed",
           endedAt: Date.now(),
         });
-        recordCallEvent(this.callSessionId, "call_ended", {
+        await recordCallEvent(this.callSessionId, "call_ended", {
           reason: "max_duration",
         });
         if (shouldNotifyCompletion && currentSession) {
-          finalizeCall(this.callSessionId, currentSession.conversationId);
+          await finalizeCall(this.callSessionId, currentSession.conversationId);
         }
 
         // Post a pointer message in the initiating conversation

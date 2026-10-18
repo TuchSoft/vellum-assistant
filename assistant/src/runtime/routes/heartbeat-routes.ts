@@ -107,7 +107,7 @@ async function handleListRuns(queryParams: Record<string, string>) {
           conversationExists: conversation != null,
           conversationArchivedAt: conversation?.archivedAt ?? null,
           estimatedCostUsd: r.conversationId
-            ? getUsageCostForConversationWindow({
+            ? await getUsageCostForConversationWindow({
                 conversationId: r.conversationId,
                 from: r.startedAt ?? r.scheduledFor,
                 to: r.finishedAt ?? now,

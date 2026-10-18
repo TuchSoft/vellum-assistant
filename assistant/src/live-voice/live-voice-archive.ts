@@ -310,7 +310,7 @@ async function findExistingAttachmentByFilename(
   const rows = await requireMainDb().all<AttachmentLookupRow>(
     `SELECT
        a.id AS id,
-       a.original_filename AS originalFilename,
+       a.original_filename AS "originalFilename",
        a.mime_type AS mimeType,
        a.size_bytes AS sizeBytes,
        a.created_at AS createdAt

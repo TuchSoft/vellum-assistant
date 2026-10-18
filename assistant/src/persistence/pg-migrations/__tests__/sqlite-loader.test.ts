@@ -75,6 +75,8 @@ function fixtureDb(fileName = "assistant.db"): string {
   );
   pin.run("app-1", 1.5, null, 1_700_000_000_000);
   pin.run("app-2", -2.25, "red", 1_700_000_000_001);
+  // SQLite keeps a REAL in an INTEGER-affinity cell; the loader truncates it.
+  pin.run("app-3", 0.5, null, 1_700_000_000_002.5);
 
   const timeline = db.query(
     "INSERT INTO watch_timeline_entries (id, session_id, conversation_id, at_ms, kind, text, ax_tree, ax_diff, created_at, screenshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -97,7 +99,7 @@ function fixtureDb(fileName = "assistant.db"): string {
     "conv-1",
     1_700_000_000_101,
     "note",
-    "plain",
+    "plain\u0000text",
     null,
     null,
     1_700_000_000_101,
@@ -196,20 +198,27 @@ describePg("SQLite -> Postgres loader", () => {
     expect(report.ok).toBe(true);
     expect(report.totals.tables).toBe(4);
     expect(report.totals.failedTables).toBe(0);
-    expect(report.totals.sourceRows).toBe(9);
-    expect(report.totals.targetRows).toBe(9);
+    expect(report.totals.sourceRows).toBe(10);
+    expect(report.totals.targetRows).toBe(10);
+    expect(report.totals.normalizations).toEqual({
+      fractionalIntegersTruncated: 1,
+      nulBytesReplaced: 1,
+    });
     expect(report.createdTables).toContain("conversation_groups");
     for (const table of report.tables) {
       expect(table.checksumOk).toBe(true);
       expect(table.sourceRows).toBe(table.targetRows);
     }
 
-    const pins = await db.all<{ app_id: string; color: string | null }>(
-      "SELECT app_id, color FROM app_pins ORDER BY app_id",
-    );
+    const pins = await db.all<{
+      app_id: string;
+      color: string | null;
+      created_at: string | number;
+    }>("SELECT app_id, color, created_at FROM app_pins ORDER BY app_id");
     expect(pins).toEqual([
-      { app_id: "app-1", color: null },
-      { app_id: "app-2", color: "red" },
+      { app_id: "app-1", color: null, created_at: 1_700_000_000_000 },
+      { app_id: "app-2", color: "red", created_at: 1_700_000_000_001 },
+      { app_id: "app-3", color: null, created_at: 1_700_000_000_002 },
     ]);
 
     const watchdog = await db.all<{ id: string; sse_watchdog: boolean | null }>(
@@ -227,6 +236,10 @@ describePg("SQLite -> Postgres loader", () => {
     expect(Buffer.from(screenshot!.screenshot!).toString("hex")).toBe(
       "000102ff",
     );
+    const nulText = await db.get<{ text: string }>(
+      "SELECT text FROM watch_timeline_entries WHERE id = 'entry-2'",
+    );
+    expect(nulText?.text).toBe("plain\uFFFDtext");
 
     const groups = await db.all<{ id: string; is_system_group: boolean }>(
       "SELECT id, is_system_group FROM conversation_groups ORDER BY id",

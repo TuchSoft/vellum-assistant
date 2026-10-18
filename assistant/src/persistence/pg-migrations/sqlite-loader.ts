@@ -42,10 +42,8 @@ const MAX_PARAMS_PER_STATEMENT = 60_000;
 const DEFAULT_BATCH_SIZE = 1_000;
 const DEFAULT_CHECKSUM_PAGE_SIZE = 5_000;
 
-/** Error codes whose SQLSTATE the facade's retry wrapper recognizes later. */
+/** Keep the 64-bit accumulators in range. */
 const MASK_64 = (1n << 64n) - 1n;
-const FNV_OFFSET = 14_695_981_039_346_656_037n;
-const FNV_PRIME = 1_099_511_628_211n;
 
 export interface SqliteLoadSource {
   /** Logical slot the database belongs to; carried into the report. */
@@ -82,6 +80,8 @@ export interface TableLoadResult {
   createdTable: boolean;
   /** Target columns the loader added before loading. */
   addedColumns: string[];
+  /** Value normalizations the target types forced. */
+  normalizations: NormalizationCounts;
   /** Set when the table failed; the transaction rolled back. */
   error?: string;
 }
@@ -101,6 +101,7 @@ export interface SqliteLoadReport {
     sourceRows: number;
     targetRows: number;
     durationMs: number;
+    normalizations: NormalizationCounts;
   };
 }
 
@@ -122,8 +123,6 @@ interface RowChecksum {
   sum: bigint;
   xor: bigint;
 }
-
-type PgTypeCategory = "boolean" | "bytea" | "number" | "text";
 
 /**
  * Snapshot a SQLite database with `sqlite3 .backup`, then verify the copy.
@@ -515,6 +514,22 @@ async function relaxForeignKeys(
   };
 }
 
+type PgTypeCategory =
+  | "boolean"
+  | "bytea"
+  | "integer"
+  | "float"
+  | "numeric"
+  | "text";
+
+/** Value normalizations the target types force, counted per table. */
+export interface NormalizationCounts {
+  /** 0x00 bytes replaced with U+FFFD: Postgres text cannot store them. */
+  nulBytesReplaced: number;
+  /** Fractional values truncated into `bigint` columns. */
+  fractionalIntegersTruncated: number;
+}
+
 function typeCategory(dataType: string): PgTypeCategory {
   switch (dataType) {
     case "boolean":
@@ -522,12 +537,14 @@ function typeCategory(dataType: string): PgTypeCategory {
     case "bytea":
       return "bytea";
     case "bigint":
-    case "numeric":
     case "integer":
     case "smallint":
+      return "integer";
     case "double precision":
     case "real":
-      return "number";
+      return "float";
+    case "numeric":
+      return "numeric";
     default:
       return "text";
   }
@@ -581,17 +598,126 @@ function numericText(value: unknown, context: string): string {
   throw new Error(`${context}: expected a number, got ${describeValue(value)}`);
 }
 
-function asNumberParam(value: unknown, context: string): SqlParam {
+/**
+ * Postgres text rejects 0x00, so a NUL in a source text cell is replaced with
+ * U+FFFD (the same substitution the provider retry wrapper uses for orphan
+ * surrogates). Both sides of the checksum apply it, so the verification stays
+ * exact; the count is reported.
+ */
+function asText(
+  value: unknown,
+  context: string,
+  counts?: NormalizationCounts,
+): string {
+  let text: string;
+  if (typeof value === "string") {
+    text = value;
+  } else if (typeof value === "number" || typeof value === "bigint") {
+    text = String(value);
+  } else {
+    throw new Error(`${context}: expected text, got ${describeValue(value)}`);
+  }
+  if (!text.includes("\u0000")) {
+    return text;
+  }
+  if (counts) {
+    counts.nulBytesReplaced += text.split("\u0000").length - 1;
+  }
+  return text.replaceAll("\u0000", "\uFFFD");
+}
+
+/** SQLite stores a REAL in an INTEGER-affinity cell when it has a fraction. */
+function integerText(value: unknown, context: string): string {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error(`${context}: non-finite number ${value}`);
+    }
+    return Math.trunc(value).toString();
+  }
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^[+-]?\d+$/.test(trimmed)) {
+      return trimmed;
+    }
+    const numeric = Number(trimmed);
+    if (!Number.isFinite(numeric)) {
+      throw new Error(`${context}: not an integer: ${describeValue(value)}`);
+    }
+    return Math.trunc(numeric).toString();
+  }
+  if (typeof value === "boolean") {
+    return value ? "1" : "0";
+  }
+  throw new Error(
+    `${context}: expected an integer, got ${describeValue(value)}`,
+  );
+}
+
+function asIntegerParam(
+  value: unknown,
+  context: string,
+  counts?: NormalizationCounts,
+): SqlParam {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error(`${context}: non-finite number ${value}`);
+    }
+    if (Number.isInteger(value)) {
+      return value;
+    }
+    if (counts) {
+      counts.fractionalIntegersTruncated += 1;
+    }
+    return Math.trunc(value);
+  }
   if (typeof value === "bigint") {
     return value <= BigInt(Number.MAX_SAFE_INTEGER) &&
       value >= BigInt(Number.MIN_SAFE_INTEGER)
       ? Number(value)
       : value.toString();
   }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^[+-]?\d+$/.test(trimmed)) {
+      return trimmed;
+    }
+    const numeric = Number(trimmed);
+    if (!Number.isFinite(numeric)) {
+      throw new Error(`${context}: not an integer: ${describeValue(value)}`);
+    }
+    if (!Number.isInteger(numeric)) {
+      if (counts) {
+        counts.fractionalIntegersTruncated += 1;
+      }
+      return Math.trunc(numeric);
+    }
+    return numeric;
+  }
+  if (typeof value === "boolean") {
+    return value ? 1 : 0;
+  }
+  throw new Error(
+    `${context}: expected an integer, got ${describeValue(value)}`,
+  );
+}
+
+function asFloatParam(value: unknown, context: string): SqlParam {
   if (typeof value === "number") {
     return value;
   }
-  return numericText(value, context);
+  if (typeof value === "bigint") {
+    return Number(value);
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "boolean") {
+    return value ? 1 : 0;
+  }
+  throw new Error(`${context}: expected a number, got ${describeValue(value)}`);
 }
 
 /** Convert a source value to the bind parameter for its target column type. */
@@ -599,6 +725,7 @@ function bindValue(
   value: unknown,
   category: PgTypeCategory,
   context: string,
+  counts?: NormalizationCounts,
 ): SqlParam {
   if (value === null || value === undefined) {
     return null;
@@ -608,16 +735,14 @@ function bindValue(
       return asBoolean(value, context);
     case "bytea":
       return asBytes(value, context);
-    case "number":
-      return asNumberParam(value, context);
+    case "integer":
+      return asIntegerParam(value, context, counts);
+    case "float":
+      return asFloatParam(value, context);
+    case "numeric":
+      return numericText(value, context);
     case "text":
-      if (typeof value === "string") {
-        return value;
-      }
-      if (typeof value === "number" || typeof value === "bigint") {
-        return String(value);
-      }
-      throw new Error(`${context}: expected text, got ${describeValue(value)}`);
+      return asText(value, context, counts);
   }
 }
 
@@ -631,24 +756,26 @@ function canonicalValue(value: unknown, category: PgTypeCategory): string {
       return asBoolean(value, "checksum") ? "B1" : "B0";
     case "bytea":
       return "X" + Buffer.from(asBytes(value, "checksum")).toString("hex");
-    case "number":
+    case "integer":
+      return "D" + integerText(value, "checksum");
+    case "float":
+    case "numeric":
       return "D" + numericText(value, "checksum");
     case "text":
-      return "S" + String(value);
+      return "S" + asText(value, "checksum");
   }
 }
 
-function fnv1a64(text: string): bigint {
-  let hash = FNV_OFFSET;
-  for (const byte of Buffer.from(text, "utf8")) {
-    hash ^= BigInt(byte);
-    hash = (hash * FNV_PRIME) & MASK_64;
-  }
-  return hash;
+/**
+ * Non-cryptographic 64-bit hash, native in Bun. Both sides of the comparison
+ * run in this process, so the algorithm only has to be stable within a run.
+ */
+function rowHash(text: string): bigint {
+  return Bun.hash.xxHash64(text);
 }
 
 function addRowToChecksum(checksum: RowChecksum, parts: readonly string[]) {
-  const hash = fnv1a64(parts.join("\u0001"));
+  const hash = rowHash(parts.join("\u0001"));
   checksum.rows += 1;
   checksum.sum = (checksum.sum + hash) & MASK_64;
   checksum.xor ^= hash;
@@ -730,7 +857,10 @@ async function loadTableRows(
   db: AsyncDb,
   plan: TablePlan,
   batchSize: number,
-): Promise<RowChecksum> {
+): Promise<{
+  checksum: RowChecksum;
+  normalizations: NormalizationCounts;
+}> {
   const columns = plan.columns;
   const categories = columns.map((column) => typeCategory(column.dataType));
   const names = columns.map((column) => column.name);
@@ -742,6 +872,10 @@ async function loadTableRows(
   const insertHeader = `INSERT INTO ${quote(plan.table)} (${names.map(quote).join(", ")}) VALUES `;
   const rowPlaceholders = `(${names.map(() => "?").join(", ")})`;
   const checksum: RowChecksum = { rows: 0, sum: 0n, xor: 0n };
+  const normalizations: NormalizationCounts = {
+    nulBytesReplaced: 0,
+    fractionalIntegersTruncated: 0,
+  };
 
   const source = new Database(plan.path, { readonly: true });
   try {
@@ -771,6 +905,7 @@ async function loadTableRows(
               row[column.name],
               categories[index]!,
               `${plan.table}.${column.name}`,
+              normalizations,
             ),
           );
         }
@@ -790,7 +925,7 @@ async function loadTableRows(
   } finally {
     source.close();
   }
-  return checksum;
+  return { checksum, normalizations };
 }
 
 /**
@@ -970,7 +1105,8 @@ export async function loadSqliteToPostgres(
       }
       const tableStartedAt = Date.now();
       try {
-        const sourceChecksum = await loadTableRows(db, plan, batchSize);
+        const { checksum: sourceChecksum, normalizations } =
+          await loadTableRows(db, plan, batchSize);
         const targetChecksum = await checksumTargetTable(db, plan, pageSize);
         const checksumOk =
           sourceChecksum.rows === targetChecksum.rows &&
@@ -988,6 +1124,7 @@ export async function loadSqliteToPostgres(
           durationMs: Date.now() - tableStartedAt,
           createdTable: plan.createdTable,
           addedColumns: plan.addedColumns,
+          normalizations,
         };
         results.push(result);
         progress(
@@ -1009,6 +1146,10 @@ export async function loadSqliteToPostgres(
           durationMs: Date.now() - tableStartedAt,
           createdTable: plan.createdTable,
           addedColumns: plan.addedColumns,
+          normalizations: {
+            nulBytesReplaced: 0,
+            fractionalIntegersTruncated: 0,
+          },
           error: message,
         });
         progress(`FAIL ${plan.table}: ${message}`);
@@ -1035,6 +1176,16 @@ export async function loadSqliteToPostgres(
     (total, result) => total + result.targetRows,
     0,
   );
+  const normalizations = results.reduce<NormalizationCounts>(
+    (total, result) => ({
+      nulBytesReplaced:
+        total.nulBytesReplaced + result.normalizations.nulBytesReplaced,
+      fractionalIntegersTruncated:
+        total.fractionalIntegersTruncated +
+        result.normalizations.fractionalIntegersTruncated,
+    }),
+    { nulBytesReplaced: 0, fractionalIntegersTruncated: 0 },
+  );
 
   return {
     ok: failedTables === 0 && results.length === plans.length,
@@ -1049,6 +1200,7 @@ export async function loadSqliteToPostgres(
       sourceRows,
       targetRows,
       durationMs: Date.now() - startedAt,
+      normalizations,
     },
   };
 }

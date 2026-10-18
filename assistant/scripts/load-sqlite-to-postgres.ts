@@ -232,6 +232,10 @@ async function main(): Promise<void> {
         `${(report.totals.durationMs / 1000).toFixed(1)}s, ` +
         `${report.totals.failedTables} failed\n`,
     );
+    process.stdout.write(
+      `normalizations: ${report.totals.normalizations.fractionalIntegersTruncated} fractional integer(s) truncated, ` +
+        `${report.totals.normalizations.nulBytesReplaced} NUL byte(s) replaced with U+FFFD\n`,
+    );
 
     if (args.jsonPath) {
       mkdirSync(dirname(args.jsonPath), { recursive: true });

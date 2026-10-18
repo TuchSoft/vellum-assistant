@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 
 import { getLogger } from "../logging.js";
-import { memorySqliteOrNull } from "../memory-db.js";
+import { memoryDbOrNull } from "../memory-db.js";
 
 const log = getLogger("memory-v2-activation-log-store");
 
@@ -94,11 +94,7 @@ export interface MemoryV2ConceptRowRecord {
    *     rendered normally.
    */
   status:
-    | "in_context"
-    | "injected"
-    | "not_injected"
-    | "page_missing"
-    | "corrupt";
+    "in_context" | "injected" | "not_injected" | "page_missing" | "corrupt";
   /**
    * v3 shadow only: the retrieval lane that surfaced this slug
    * (`hot` | `sparse` | `dense` | `tree` | `edge`). Lets a shadow run be
@@ -141,13 +137,13 @@ export interface RecordMemoryV2ActivationLogParams {
   config: MemoryV2ConfigSnapshot;
 }
 
-export function recordMemoryV2ActivationLog(
+export async function recordMemoryV2ActivationLog(
   params: RecordMemoryV2ActivationLogParams,
-): void {
+): Promise<void> {
   // Best-effort — telemetry writes must never abort the agent turn, so a
   // degraded memory connection or a failed insert only logs a warning.
   try {
-    const raw = memorySqliteOrNull("recordMemoryV2ActivationLog");
+    const raw = memoryDbOrNull("recordMemoryV2ActivationLog");
     if (!raw) {
       return;
     }
@@ -155,14 +151,12 @@ export function recordMemoryV2ActivationLog(
     // separate `skills_json` column is always written empty. The column
     // itself remains in the schema for backwards-compat with prior log rows;
     // the reader drops it.
-    raw
-      .prepare(
-        `INSERT INTO memory_v2_activation_logs (
-           id, conversation_id, message_id, turn, mode,
-           concepts_json, skills_json, config_json, created_at
-         ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+    await raw.run(
+      `INSERT INTO memory_v2_activation_logs (
+         id, conversation_id, message_id, turn, mode,
+         concepts_json, skills_json, config_json, created_at
+       ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+      [
         uuid(),
         params.conversationId,
         params.turn,
@@ -171,33 +165,33 @@ export function recordMemoryV2ActivationLog(
         "[]",
         JSON.stringify(params.config),
         Date.now(),
-      );
+      ],
+    );
   } catch (err) {
     log.warn({ err }, "failed to record memory v2 activation log; continuing");
   }
 }
 
-export function backfillMemoryV2ActivationMessageId(
+export async function backfillMemoryV2ActivationMessageId(
   conversationId: string,
   messageId: string,
-): void {
+): Promise<void> {
   // `v3_shadow` rows are detached telemetry written outside the live turn with
   // a null messageId; they are not tied to any specific message. Excluding them
   // keeps their messageId null instead of stamping them with a later turn's id.
   try {
-    const raw = memorySqliteOrNull("backfillMemoryV2ActivationMessageId");
+    const raw = memoryDbOrNull("backfillMemoryV2ActivationMessageId");
     if (!raw) {
       return;
     }
-    raw
-      .prepare(
-        `UPDATE memory_v2_activation_logs
-           SET message_id = ?
-         WHERE conversation_id = ?
-           AND message_id IS NULL
-           AND mode != 'v3_shadow'`,
-      )
-      .run(messageId, conversationId);
+    await raw.run(
+      `UPDATE memory_v2_activation_logs
+         SET message_id = ?
+       WHERE conversation_id = ?
+         AND message_id IS NULL
+         AND mode != 'v3_shadow'`,
+      [messageId, conversationId],
+    );
   } catch (err) {
     log.warn(
       { err },
@@ -214,32 +208,31 @@ export interface MemoryV2ActivationLog {
   config: MemoryV2ConfigSnapshot;
 }
 
-export function getMemoryV2ActivationLogByMessageIds(
+export async function getMemoryV2ActivationLogByMessageIds(
   messageIds: string[],
-): MemoryV2ActivationLog | null {
+): Promise<MemoryV2ActivationLog | null> {
   if (messageIds.length === 0) {
     return null;
   }
-  const raw = memorySqliteOrNull("getMemoryV2ActivationLogByMessageIds");
+  const raw = memoryDbOrNull("getMemoryV2ActivationLogByMessageIds");
   if (!raw) {
     return null;
   }
   const placeholders = messageIds.map(() => "?").join(",");
-  const row = raw
-    .query(
-      `SELECT conversation_id, turn, mode, concepts_json, config_json
-         FROM memory_v2_activation_logs
-        WHERE message_id IN (${placeholders})
-        ORDER BY created_at DESC
-        LIMIT 1`,
-    )
-    .get(...messageIds) as {
+  const row = await raw.get<{
     conversation_id: string;
     turn: number;
     mode: string;
     concepts_json: string;
     config_json: string;
-  } | null;
+  }>(
+    `SELECT conversation_id, turn, mode, concepts_json, config_json
+       FROM memory_v2_activation_logs
+      WHERE message_id IN (${placeholders})
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    messageIds,
+  );
   if (!row) {
     return null;
   }
@@ -247,11 +240,7 @@ export function getMemoryV2ActivationLogByMessageIds(
     conversationId: row.conversation_id,
     turn: row.turn,
     mode: row.mode as
-      | "context-load"
-      | "per-turn"
-      | "errored"
-      | "router"
-      | "v3_shadow",
+      "context-load" | "per-turn" | "errored" | "router" | "v3_shadow",
     concepts: JSON.parse(row.concepts_json) as MemoryV2ConceptRowRecord[],
     config: JSON.parse(row.config_json) as MemoryV2ConfigSnapshot,
   };

@@ -24,9 +24,8 @@ import type { ContentBlock } from "@vellumai/plugin-api";
 import { and, desc, eq, lte } from "drizzle-orm";
 
 import type { AssistantConfig } from "../../../../../config/types.js";
-import type { DrizzleDb } from "../../../../../persistence/db-connection.js";
-import { messages } from "../../../../../persistence/schema/index.js";
-import { memorySqliteOrNull } from "../../memory-db.js";
+import type { AsyncDb } from "../../../../../persistence/db-facade.js";
+import { memoryDbOrNull } from "../../memory-db.js";
 import type { EverInjectedEntry } from "../../substrate/types.js";
 import type { MemoryV2ConceptRowRecord } from "../activation-log-store.js";
 import { loadNowText } from "../now-text.js";
@@ -111,7 +110,7 @@ function parseContent(raw: string): ContentBlock[] {
 }
 
 export async function reconstructInput(
-  db: DrizzleDb,
+  db: AsyncDb,
   turn: OracleTurn,
   config: AssistantConfig,
   workspaceDir: string,
@@ -123,7 +122,8 @@ export async function reconstructInput(
   // `windowPairs` (assistant,user) pairs, so a small generous bound suffices
   // even for very long conversations.
   const fetchWindow = Math.max(20, windowPairs * 12);
-  const recent = db
+  const messages = db.schema.messages;
+  const recent = await db.orm
     .select({
       id: messages.id,
       role: messages.role,
@@ -137,8 +137,7 @@ export async function reconstructInput(
       ),
     )
     .orderBy(desc(messages.createdAt), desc(messages.id))
-    .limit(fetchWindow)
-    .all();
+    .limit(fetchWindow);
 
   const anchorPos = recent.findIndex((m) => m.id === turn.anchorMessageId);
   if (anchorPos < 0) {
@@ -155,7 +154,7 @@ export async function reconstructInput(
     .map((m) => ({ role: m.role, content: parseContent(m.content) }));
 
   const recentTurnPairs = extractRecentTurnPairs(plain, windowPairs);
-  const priorEverInjected = reconstructPriorEverInjected(
+  const priorEverInjected = await reconstructPriorEverInjected(
     turn.conversationId,
     turn.turn,
   );
@@ -198,28 +197,24 @@ const PRIOR_STATUSES = new Set<string>([
  * Union of slugs injected on earlier `mode='router'` turns in this conversation
  * (turn < `currentTurn`), each tagged with the earliest turn it appeared on —
  * the harness analogue of the running `everInjected` list production maintains.
- * The activation log lives in the dedicated memory database; without that
+ * The activation log lives on the memory slot; without that
  * connection the prior state degrades to empty.
  */
-function reconstructPriorEverInjected(
+async function reconstructPriorEverInjected(
   conversationId: string,
   currentTurn: number,
-): EverInjectedEntry[] {
-  const raw = memorySqliteOrNull("reconstructPriorEverInjected");
+): Promise<EverInjectedEntry[]> {
+  const raw = memoryDbOrNull("reconstructPriorEverInjected");
   if (!raw) {
     return [];
   }
-  const rows = raw
-    .query(
-      `SELECT turn, concepts_json
-         FROM memory_v2_activation_logs
-        WHERE conversation_id = ? AND mode = 'router' AND turn < ?
-        ORDER BY turn ASC`,
-    )
-    .all(conversationId, currentTurn) as Array<{
-    turn: number;
-    concepts_json: string;
-  }>;
+  const rows = await raw.all<{ turn: number; concepts_json: string }>(
+    `SELECT turn, concepts_json
+       FROM memory_v2_activation_logs
+      WHERE conversation_id = ? AND mode = 'router' AND turn < ?
+      ORDER BY turn ASC`,
+    [conversationId, currentTurn],
+  );
 
   const firstTurnBySlug = new Map<string, number>();
   for (const row of rows) {

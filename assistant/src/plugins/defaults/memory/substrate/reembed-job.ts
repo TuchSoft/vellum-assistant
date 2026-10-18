@@ -43,7 +43,7 @@ export async function memoryV2ReembedJob(
   const slugs = await listPages(workspaceDir);
 
   for (const slug of slugs) {
-    enqueueEmbedConceptPageJob({ slug });
+    await enqueueEmbedConceptPageJob({ slug });
   }
 
   log.info(

@@ -163,7 +163,7 @@ export const ROUTES: RouteDefinition[] = [
       // in-flight work. Only the quiesce GATES are fail-open — this snapshot
       // fails closed.
       const activeConversations = await listProcessingConversations();
-      const memoryJobs = listRunningMemoryJobs();
+      const memoryJobs = await listRunningMemoryJobs();
       const scheduleRuns = await listRunningScheduleRuns();
       // Workflows launched by a schedule outlive their schedule run — the
       // scheduler fires them and completes its own run row immediately — so

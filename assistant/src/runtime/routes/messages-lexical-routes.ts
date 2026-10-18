@@ -52,7 +52,7 @@ async function handleBackfillLexicalIndex({
   }
   const payload: Record<string, unknown> =
     force === true ? { force: true } : {};
-  const jobId = enqueueMemoryJob(BACKFILL_LEXICAL_INDEX_JOB, payload);
+  const jobId = await enqueueMemoryJob(BACKFILL_LEXICAL_INDEX_JOB, payload);
   return { jobId };
 }
 

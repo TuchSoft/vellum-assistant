@@ -1,4 +1,4 @@
-import { memorySqliteOrNull } from "../memory-db.js";
+import { memoryDbOrNull } from "../memory-db.js";
 import { listPages } from "../substrate/page-store.js";
 import type { MemoryV2ConceptRowRecord } from "./activation-log-store.js";
 
@@ -66,13 +66,12 @@ export async function getConceptFrequencySummary(
   const conversationId = filters.conversationId ?? null;
   const sinceMs = filters.sinceMs ?? null;
 
-  // Kick off the on-disk page walk in parallel with the (synchronous) SQL
-  // queries below — listPages does fs.readdir, the sqlite queries are sync.
+  // Kick off the on-disk page walk in parallel with the SQL queries below.
   const onDiskSlugsPromise = listPages(workspaceDir);
 
   // Fail-soft: with the memory database unavailable the aggregation degrades
   // to zero counts, so every on-disk page reads as never evaluated.
-  const raw = memorySqliteOrNull("getConceptFrequencySummary");
+  const raw = memoryDbOrNull("getConceptFrequencySummary");
   if (!raw) {
     return {
       filters: { conversationId, sinceMs },
@@ -82,28 +81,27 @@ export async function getConceptFrequencySummary(
     };
   }
 
-  const aggRows = raw
-    .query(
-      `SELECT
-         json_extract(c.value, '$.slug')   AS slug,
-         json_extract(c.value, '$.status') AS status,
-         COUNT(*)                          AS count,
-         MAX(l.created_at)                 AS last_seen
-       FROM memory_v2_activation_logs l, json_each(l.concepts_json) c
-       WHERE (? IS NULL OR l.conversation_id = ?)
-         AND (? IS NULL OR l.created_at >= ?)
-       GROUP BY slug, status`,
-    )
-    .all(conversationId, conversationId, sinceMs, sinceMs) as AggRow[];
+  const aggRows = await raw.all<AggRow>(
+    `SELECT
+       c.value->>'slug'   AS slug,
+       c.value->>'status' AS status,
+       COUNT(*)           AS count,
+       MAX(l.created_at)  AS last_seen
+     FROM memory_v2_activation_logs l
+     CROSS JOIN LATERAL jsonb_array_elements(l.concepts_json::jsonb) AS c(value)
+     WHERE (? IS NULL OR l.conversation_id = ?)
+       AND (? IS NULL OR l.created_at >= ?)
+     GROUP BY 1, 2`,
+    [conversationId, conversationId, sinceMs, sinceMs],
+  );
 
-  const logCountRow = raw
-    .query(
-      `SELECT COUNT(*) AS count
-         FROM memory_v2_activation_logs
-         WHERE (? IS NULL OR conversation_id = ?)
-           AND (? IS NULL OR created_at >= ?)`,
-    )
-    .get(conversationId, conversationId, sinceMs, sinceMs) as CountRow | null;
+  const logCountRow = await raw.get<CountRow>(
+    `SELECT COUNT(*) AS count
+       FROM memory_v2_activation_logs
+       WHERE (? IS NULL OR conversation_id = ?)
+         AND (? IS NULL OR created_at >= ?)`,
+    [conversationId, conversationId, sinceMs, sinceMs],
+  );
 
   const bySlug = new Map<string, ConceptFrequencyRow>();
   let conceptOccurrences = 0;

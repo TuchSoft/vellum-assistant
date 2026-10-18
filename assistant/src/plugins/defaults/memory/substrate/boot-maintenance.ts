@@ -226,7 +226,7 @@ export async function maybeReseedCapabilitiesAfterManagedCredential(
     try {
       const { enqueueMemoryJob } =
         await import("../../../../persistence/jobs-store.js");
-      enqueueMemoryJob("memory_v3_maintain", {});
+      await enqueueMemoryJob("memory_v3_maintain", {});
     } catch (err) {
       log.warn(
         { err },
@@ -372,14 +372,14 @@ export async function maybeRebuildConceptCollection(
       // before this, and on a commit-fresh/migrate action that reconcile already
       // enqueues `memory_v2_reembed`. Dedup against the in-flight job so the
       // reconcile-then-rebuild interleaving re-embeds the corpus once, not twice.
-      if (hasActiveJobOfType("memory_v2_reembed")) {
+      if (await hasActiveJobOfType("memory_v2_reembed")) {
         log.info(
           "Memory v2 reembed already queued — skipping duplicate enqueue",
         );
         await clearReembedSentinel();
         return;
       }
-      const jobId = enqueueMemoryJob("memory_v2_reembed", {});
+      const jobId = await enqueueMemoryJob("memory_v2_reembed", {});
       log.info(
         { jobId, collectionMigrated: migrated },
         "Memory v2 collection rebuild required — enqueued reembed job",

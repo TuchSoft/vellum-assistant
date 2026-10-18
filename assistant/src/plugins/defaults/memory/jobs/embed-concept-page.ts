@@ -9,7 +9,7 @@
 // surface stays in sync with disk.
 //
 // Modeled on `embed-pkb-file.ts` for the embedding flow + cache key handling:
-// dense vectors are looked up in the existing `memory_embeddings` SQLite cache
+// dense vectors are looked up in the existing `memory_embeddings` cache
 // keyed on `(targetType="concept_page", targetId=<slug>, provider, model,
 // contentHash)` so unchanged pages skip the backend call. Unlike the PKB
 // handler, the v2 path bypasses `embedAndUpsert` because that helper is hard-
@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 
 import type { AssistantConfig } from "../../../../config/types.js";
-import { getDb } from "../../../../persistence/db-connection.js";
+import type { AsyncDb } from "../../../../persistence/db-facade.js";
 import {
   durableEmbeddingCacheExtras,
   generateSparseEmbedding,
@@ -38,7 +38,6 @@ import {
   type MemoryJob,
   upsertEmbedConceptPageJob,
 } from "../../../../persistence/jobs-store.js";
-import { memoryEmbeddings } from "../../../../persistence/schema/index.js";
 import { applyCorrectionIfCalibrated } from "../anisotropy.js";
 import { embedWithBackend } from "../embeddings.js";
 import { BackendUnavailableError } from "../host-utils.js";
@@ -138,7 +137,13 @@ export async function embedConceptPageJob(
     extras,
   );
   const bodyCache = mem
-    ? readEmbeddingCache(mem, slug, cacheProvider, cacheModel, expectedDim)
+    ? await readEmbeddingCache(
+        mem,
+        slug,
+        cacheProvider,
+        cacheModel,
+        expectedDim,
+      )
     : null;
   const bodyCacheHit = bodyCache?.contentHash === bodyContentHash;
 
@@ -157,7 +162,7 @@ export async function embedConceptPageJob(
     : undefined;
   const summaryCache =
     hasSummary && mem
-      ? readEmbeddingCache(
+      ? await readEmbeddingCache(
           mem,
           summaryCacheId,
           cacheProvider,
@@ -270,7 +275,7 @@ export async function embedConceptPageJob(
   // provider/model identity. Best-effort: write failure is not fatal, we
   // still want the Qdrant upsert below to fire.
   if (bodyFresh && mem) {
-    writeEmbeddingCache(mem, {
+    await writeEmbeddingCache(mem, {
       slug,
       cacheId: slug,
       dense: bodyDense,
@@ -281,7 +286,7 @@ export async function embedConceptPageJob(
     });
   }
   if (hasSummary && summaryFresh && summaryDense && summaryContentHash && mem) {
-    writeEmbeddingCache(mem, {
+    await writeEmbeddingCache(mem, {
       slug,
       cacheId: summaryCacheId,
       dense: summaryDense,
@@ -293,7 +298,7 @@ export async function embedConceptPageJob(
   }
 
   // Apply anisotropy correction at the boundary between the (raw) cached
-  // dense vector and the Qdrant collection. Storing raw in SQLite and
+  // dense vector and the Qdrant collection. Storing raw in the cache and
   // corrected in Qdrant means a recalibration just needs a reembed pass —
   // the cache survives and the (cheap) correction math reruns over each
   // cached vector. Pass-through when no calibration is fit yet.
@@ -323,7 +328,7 @@ export async function embedConceptPageJob(
   );
 }
 
-/** SQLite cache row shape returned by `readEmbeddingCache`. */
+/** Cache row shape returned by `readEmbeddingCache`. */
 interface EmbeddingCacheEntry {
   dense: number[];
   contentHash: string;
@@ -335,30 +340,33 @@ interface EmbeddingCacheEntry {
  * configured expectation — a stale row from a previous `vectorSize` is
  * treated as a cache miss so the caller re-embeds.
  */
-function readEmbeddingCache(
-  db: ReturnType<typeof getDb>,
+async function readEmbeddingCache(
+  db: AsyncDb,
   cacheId: string,
   provider: string,
   model: string,
   expectedDim: number,
-): EmbeddingCacheEntry | null {
-  const row = db
-    .select({
-      vectorBlob: memoryEmbeddings.vectorBlob,
-      vectorJson: memoryEmbeddings.vectorJson,
-      dimensions: memoryEmbeddings.dimensions,
-      contentHash: memoryEmbeddings.contentHash,
-    })
-    .from(memoryEmbeddings)
-    .where(
-      and(
-        eq(memoryEmbeddings.targetType, CONCEPT_PAGE_TARGET_TYPE),
-        eq(memoryEmbeddings.targetId, cacheId),
-        eq(memoryEmbeddings.provider, provider),
-        eq(memoryEmbeddings.model, model),
-      ),
-    )
-    .get();
+): Promise<EmbeddingCacheEntry | null> {
+  const table = db.schema.memoryEmbeddings;
+  const row = (
+    await db.orm
+      .select({
+        vectorBlob: table.vectorBlob,
+        vectorJson: table.vectorJson,
+        dimensions: table.dimensions,
+        contentHash: table.contentHash,
+      })
+      .from(table)
+      .where(
+        and(
+          eq(table.targetType, CONCEPT_PAGE_TARGET_TYPE),
+          eq(table.targetId, cacheId),
+          eq(table.provider, provider),
+          eq(table.model, model),
+        ),
+      )
+      .limit(1)
+  )[0];
   if (!row || row.dimensions !== expectedDim) {
     return null;
   }
@@ -374,11 +382,11 @@ function readEmbeddingCache(
 }
 
 /**
- * Persist a freshly embedded dense vector in the SQLite cache. Best-effort:
+ * Persist a freshly embedded dense vector in the cache. Best-effort:
  * a write failure is logged and swallowed so the Qdrant upsert still runs.
  */
-function writeEmbeddingCache(
-  db: ReturnType<typeof getDb>,
+async function writeEmbeddingCache(
+  db: AsyncDb,
   params: {
     slug: string;
     cacheId: string;
@@ -388,11 +396,13 @@ function writeEmbeddingCache(
     model: string;
     now: number;
   },
-): void {
+): Promise<void> {
   const { slug, cacheId, dense, contentHash, provider, model, now } = params;
+  const table = db.schema.memoryEmbeddings;
   try {
     const blobValue = vectorToBlob(dense);
-    db.insert(memoryEmbeddings)
+    await db.orm
+      .insert(table)
       .values({
         id: randomUUID(),
         targetType: CONCEPT_PAGE_TARGET_TYPE,
@@ -407,12 +417,7 @@ function writeEmbeddingCache(
         updatedAt: now,
       })
       .onConflictDoUpdate({
-        target: [
-          memoryEmbeddings.targetType,
-          memoryEmbeddings.targetId,
-          memoryEmbeddings.provider,
-          memoryEmbeddings.model,
-        ],
+        target: [table.targetType, table.targetId, table.provider, table.model],
         set: {
           vectorBlob: blobValue,
           vectorJson: null,
@@ -420,8 +425,7 @@ function writeEmbeddingCache(
           contentHash,
           updatedAt: now,
         },
-      })
-      .run();
+      });
   } catch (err) {
     log.warn(
       { err, slug, cacheId },
@@ -438,8 +442,8 @@ function writeEmbeddingCache(
  * (see `upsertEmbedConceptPageJob`): the handler reads the page from disk at
  * execution time, so one pending row covers any number of enqueues.
  */
-export function enqueueEmbedConceptPageJob(
+export async function enqueueEmbedConceptPageJob(
   input: EmbedConceptPageJobInput,
-): string {
+): Promise<string> {
   return upsertEmbedConceptPageJob({ slug: input.slug });
 }

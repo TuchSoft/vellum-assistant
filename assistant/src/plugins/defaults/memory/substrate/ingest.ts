@@ -302,7 +302,7 @@ export async function ingestPages(
     // in the batch threw; the follow-ups are enqueued before that error
     // propagates to the caller.
     if (successfulWrites > 0) {
-      enqueueReindexFollowUps();
+      await enqueueReindexFollowUps();
     }
   }
 }
@@ -400,17 +400,17 @@ function summarize(
  * A failed enqueue does not undo the writes; the next consolidation pass
  * performs the same fan-out.
  */
-function enqueueReindexFollowUps(): void {
+async function enqueueReindexFollowUps(): Promise<void> {
   for (const jobType of REINDEX_JOB_TYPES) {
     try {
-      if (hasPendingJobOfType(jobType)) {
+      if (await hasPendingJobOfType(jobType)) {
         log.debug(
           { jobType },
           "ingest: reindex follow-up already pending; skipping duplicate enqueue",
         );
         continue;
       }
-      enqueueMemoryJob(jobType, {});
+      await enqueueMemoryJob(jobType, {});
     } catch (err) {
       log.warn(
         { err, jobType },

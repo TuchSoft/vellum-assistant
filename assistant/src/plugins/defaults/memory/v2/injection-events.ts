@@ -1,5 +1,5 @@
 import { getLogger } from "../logging.js";
-import { memorySqliteOrNull } from "../memory-db.js";
+import { memoryDbOrNull } from "../memory-db.js";
 
 const log = getLogger("memory-v2-injection-events");
 
@@ -25,31 +25,30 @@ function decayContribution(elapsedMs: number): number {
 }
 
 /**
- * Append one event per slug. Best-effort — a SQLite write must never abort
+ * Append one event per slug. Best-effort — a memory write must never abort
  * the agent turn on top of a successful routing decision the rest of the
  * caller depends on.
  */
-export function recordInjectionEvents(
+export async function recordInjectionEvents(
   slugs: readonly string[],
   injectedAt: number,
-): void {
+): Promise<void> {
   if (slugs.length === 0) {
     return;
   }
   try {
-    const raw = memorySqliteOrNull("recordInjectionEvents");
+    const raw = memoryDbOrNull("recordInjectionEvents");
     if (!raw) {
       return;
     }
-    const insert = raw.prepare(
-      `INSERT INTO memory_v2_injection_events (slug, injected_at) VALUES (?, ?)`,
-    );
-    const append = raw.transaction((items: readonly string[]) => {
-      for (const slug of items) {
-        insert.run(slug, injectedAt);
+    await raw.transaction(async (tx) => {
+      for (const slug of slugs) {
+        await tx.run(
+          `INSERT INTO memory_v2_injection_events (slug, injected_at) VALUES (?, ?)`,
+          [slug, injectedAt],
+        );
       }
     });
-    append(slugs);
   } catch (err) {
     log.warn(
       { err, slugCount: slugs.length },
@@ -62,18 +61,20 @@ export function recordInjectionEvents(
  * `score(now) = Σᵢ exp(-λ × (now - tᵢ))` over events within READ_WINDOW_MS.
  * Returns 0 when the memory database is unavailable.
  */
-export function computeInjectionScore(slug: string, now: number): number {
-  const raw = memorySqliteOrNull("computeInjectionScore");
+export async function computeInjectionScore(
+  slug: string,
+  now: number,
+): Promise<number> {
+  const raw = memoryDbOrNull("computeInjectionScore");
   if (!raw) {
     return 0;
   }
   const cutoff = now - READ_WINDOW_MS;
-  const rows = raw
-    .query(
-      `SELECT injected_at FROM memory_v2_injection_events
-        WHERE slug = ? AND injected_at >= ?`,
-    )
-    .all(slug, cutoff) as Array<{ injected_at: number }>;
+  const rows = await raw.all<{ injected_at: number }>(
+    `SELECT injected_at FROM memory_v2_injection_events
+      WHERE slug = ? AND injected_at >= ?`,
+    [slug, cutoff],
+  );
   let score = 0;
   for (const row of rows) {
     score += decayContribution(now - row.injected_at);
@@ -89,26 +90,25 @@ export function computeInjectionScore(slug: string, now: number): number {
  * memory database is unavailable, so a degraded connection reads as
  * all-zero scores (tier 2 simply selects nothing).
  */
-export function computeInjectionScores(
+export async function computeInjectionScores(
   slugs: readonly string[],
   now: number,
-): Map<string, number> {
+): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   if (slugs.length === 0) {
     return out;
   }
-  const raw = memorySqliteOrNull("computeInjectionScores");
+  const raw = memoryDbOrNull("computeInjectionScores");
   if (!raw) {
     return out;
   }
   const cutoff = now - READ_WINDOW_MS;
   const placeholders = slugs.map(() => "?").join(",");
-  const rows = raw
-    .query(
-      `SELECT slug, injected_at FROM memory_v2_injection_events
-        WHERE slug IN (${placeholders}) AND injected_at >= ?`,
-    )
-    .all(...slugs, cutoff) as Array<{ slug: string; injected_at: number }>;
+  const rows = await raw.all<{ slug: string; injected_at: number }>(
+    `SELECT slug, injected_at FROM memory_v2_injection_events
+      WHERE slug IN (${placeholders}) AND injected_at >= ?`,
+    [...slugs, cutoff],
+  );
   for (const row of rows) {
     const prev = out.get(row.slug) ?? 0;
     out.set(row.slug, prev + decayContribution(now - row.injected_at));

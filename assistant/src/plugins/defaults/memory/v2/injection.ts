@@ -532,7 +532,7 @@ async function finalizeInjection(args: {
     }
   } finally {
     try {
-      recordMemoryV2ActivationLog({
+      await recordMemoryV2ActivationLog({
         conversationId,
         turn: currentTurn,
         mode,
@@ -657,10 +657,10 @@ async function injectViaRouter(args: {
   // Record router selections to the EMA event log. The router decided these
   // slugs are relevant THIS turn (regardless of whether they're newly
   // rendered or re-picked from prior context). The helper swallows its own
-  // errors — a SQLite write must not abort the turn on top of a successful
+  // errors — a memory write must not abort the turn on top of a successful
   // routing decision the rest of this function depends on.
   if (routerResult.failureReason === null) {
-    recordInjectionEvents(routerResult.selectedSlugs, Date.now());
+    await recordInjectionEvents(routerResult.selectedSlugs, Date.now());
   }
 
   if (routerResult.failureReason !== null) {

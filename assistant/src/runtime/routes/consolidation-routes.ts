@@ -138,10 +138,10 @@ export const ROUTES: RouteDefinition[] = [
       // Coalesce: don't pile up duplicate jobs if the worker hasn't picked up
       // the previous one yet. The consolidation job's own lock catches the
       // overlapping-window case but does not prevent queue depth from growing.
-      if (hasActiveJobOfType("memory_v2_consolidate")) {
+      if (await hasActiveJobOfType("memory_v2_consolidate")) {
         return { success: true, ran: false, jobId: null };
       }
-      const jobId = enqueueMemoryJob("memory_v2_consolidate", {
+      const jobId = await enqueueMemoryJob("memory_v2_consolidate", {
         trigger: MEMORY_V2_CONSOLIDATION_JOB_TRIGGERS.manual,
       });
       return { success: true, ran: true, jobId };

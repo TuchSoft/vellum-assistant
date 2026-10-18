@@ -225,10 +225,15 @@ export function startMemoryJobsWorker(): void {
  * process (`worker.ts`).
  */
 export function startMemoryJobsWorkerLoop(): MemoryJobsWorker {
-  const recovered = resetRunningJobsToPending();
-  if (recovered > 0) {
-    log.info({ recovered }, "Recovered stale running memory jobs");
-  }
+  const recovered = resetRunningJobsToPending()
+    .then((count) => {
+      if (count > 0) {
+        log.info({ recovered: count }, "Recovered stale running memory jobs");
+      }
+    })
+    .catch((err) =>
+      log.warn({ err }, "Failed to recover stale running memory jobs"),
+    );
 
   // Restore each cleanup job's cadence from its persisted checkpoint so a
   // restart resumes counting from the last enqueue instead of re-firing every
@@ -236,12 +241,14 @@ export function startMemoryJobsWorkerLoop(): MemoryJobsWorker {
   // touched the DB), so migrations are settled. Best-effort: on failure the
   // throttle stays at 0 and jobs fire on the first tick (the pre-persistence
   // behavior), which is a safe degradation.
-  void seedCleanupScheduleFromCheckpoints().catch((err) =>
-    log.warn(
-      { err },
-      "Failed to seed cleanup schedule from checkpoints; jobs will fire on the first tick",
-    ),
-  );
+  void recovered
+    .then(() => seedCleanupScheduleFromCheckpoints())
+    .catch((err) =>
+      log.warn(
+        { err },
+        "Failed to seed cleanup schedule from checkpoints; jobs will fire on the first tick",
+      ),
+    );
 
   // After running-job recovery (so legitimate in-flight retries aren't
   // swept), clean up orphan memory-retrospective background conversations
@@ -251,36 +258,42 @@ export function startMemoryJobsWorkerLoop(): MemoryJobsWorker {
   // candidates in one synchronous block after its awaited baseline loads, so
   // a retrospective forked by a mid-sweep tick is protected by its
   // pending/running job.
-  void sweepOrphanMemoryRetrospectiveConversations().catch((err: unknown) => {
-    log.warn(
-      { err },
-      "Memory-retrospective startup cleanup failed; continuing worker startup",
-    );
-  });
+  void recovered
+    .then(() => sweepOrphanMemoryRetrospectiveConversations())
+    .catch((err: unknown) => {
+      log.warn(
+        { err },
+        "Memory-retrospective startup cleanup failed; continuing worker startup",
+      );
+    });
 
   // Second chance for the cursor timestamp backfill the daemon's memory init
   // hook starts at boot: rows written before the column existed get their
   // `createdAt` so a later deletion of the row they point at (a regenerated
   // reply) cannot stall the conversation's retrospectives. Idempotent,
   // detached, and best-effort, same as the sweeps.
-  void backfillRetrospectiveCursorTimestamps().catch((err: unknown) => {
-    log.warn(
-      { err },
-      "Retrospective cursor timestamp backfill failed; continuing worker startup",
-    );
-  });
+  void recovered
+    .then(() => backfillRetrospectiveCursorTimestamps())
+    .catch((err: unknown) => {
+      log.warn(
+        { err },
+        "Retrospective cursor timestamp backfill failed; continuing worker startup",
+      );
+    });
 
   // Also catch up on relocated conversation-keyed tables orphaned while the
   // plugin was disabled: with memory off, the conversation-deleted hook never
   // fired, so deletes during that window left rows behind (the pre-Wave-2 main
   // DB cascade caught these regardless of plugin state). Detached and
   // best-effort, same as the sweep above.
-  void sweepOrphanConversationMemoryTables().catch((err: unknown) => {
-    log.warn(
-      { err },
-      "Relocated-memory-table orphan sweep failed; continuing worker startup",
-    );
-  });
+  void recovered
+    .then(() => sweepOrphanConversationMemoryTables())
+    .catch((err: unknown) => {
+      log.warn(
+        { err },
+        "Relocated-memory-table orphan sweep failed; continuing worker startup",
+      );
+    });
 
   let stopped = false;
   let tickRunning = false;
@@ -334,9 +347,13 @@ export function startMemoryJobsWorkerLoop(): MemoryJobsWorker {
     (timer as NodeJS.Timeout).unref?.();
   };
 
-  void tick().then(() => {
+  void recovered.finally(() => {
     if (!stopped) {
-      scheduleTick();
+      void tick().then(() => {
+        if (!stopped) {
+          scheduleTick();
+        }
+      });
     }
   });
 
@@ -380,7 +397,9 @@ export async function runMemoryJobsOnce(
   }
 
   // Fail jobs that have been running longer than the configured timeout
-  const timedOut = failStalledJobs(config.memory.jobs.stalledJobTimeoutMs);
+  const timedOut = await failStalledJobs(
+    config.memory.jobs.stalledJobTimeoutMs,
+  );
   if (timedOut > 0) {
     log.warn({ timedOut }, "Timed out stalled memory jobs");
   }
@@ -436,11 +455,11 @@ export async function runMemoryJobsOnce(
     for (const job of group) {
       try {
         const resolution = await processJob(job, config);
-        applyQueueResolution(job, resolution);
+        await applyQueueResolution(job, resolution);
         groupProcessed += 1;
       } catch (err) {
         try {
-          handleJobError(job, err);
+          await handleJobError(job, err);
         } catch (handlerErr) {
           log.error(
             { err: handlerErr, jobId: job.id, type: job.type },
@@ -455,7 +474,7 @@ export async function runMemoryJobsOnce(
           (embedSet.has(job.type) && extractHttpStatus(err) === 402)
         ) {
           for (const remaining of group.slice(group.indexOf(job) + 1)) {
-            deferMemoryJob(remaining.id);
+            await deferMemoryJob(remaining.id);
           }
           break;
         }
@@ -568,9 +587,9 @@ async function runLanePool(
 
 // ── Job error handling ─────────────────────────────────────────────
 
-function handleJobError(job: MemoryJob, err: unknown): void {
+async function handleJobError(job: MemoryJob, err: unknown): Promise<void> {
   if (err instanceof SweepPostponedOffV1Error) {
-    rescheduleMemoryJob(job.id, SWEEP_POSTPONE_OFF_V1_MS);
+    await rescheduleMemoryJob(job.id, SWEEP_POSTPONE_OFF_V1_MS);
     log.debug(
       { jobId: job.id, type: job.type },
       "Cacheless graph-node sweep held pending while v1 is not the live tier",
@@ -579,7 +598,7 @@ function handleJobError(job: MemoryJob, err: unknown): void {
   }
 
   if (err instanceof EmbeddingBillingBlockError) {
-    const result = deferMemoryJob(job.id);
+    const result = await deferMemoryJob(job.id);
     if (result === "failed") {
       log.error(
         { jobId: job.id, type: job.type },
@@ -598,7 +617,7 @@ function handleJobError(job: MemoryJob, err: unknown): void {
   // billing breaker so subsequent embed jobs short-circuit at claim time.
   if (EMBED_JOB_TYPES.includes(job.type) && extractHttpStatus(err) === 402) {
     recordBillingBlock();
-    const result = deferMemoryJob(job.id);
+    const result = await deferMemoryJob(job.id);
     if (result === "failed") {
       log.error(
         { jobId: job.id, type: job.type },
@@ -614,7 +633,7 @@ function handleJobError(job: MemoryJob, err: unknown): void {
   }
 
   if (err instanceof BackendUnavailableError) {
-    const result = deferMemoryJob(job.id);
+    const result = await deferMemoryJob(job.id);
     if (result === "failed") {
       log.error(
         { jobId: job.id, type: job.type },
@@ -627,7 +646,7 @@ function handleJobError(job: MemoryJob, err: unknown): void {
       );
     }
   } else if (err instanceof QdrantCircuitOpenError) {
-    const result = deferMemoryJob(job.id);
+    const result = await deferMemoryJob(job.id);
     if (result === "failed") {
       log.error(
         { jobId: job.id, type: job.type },
@@ -644,7 +663,7 @@ function handleJobError(job: MemoryJob, err: unknown): void {
     const category = classifyError(err);
     if (category === "retryable") {
       const delay = retryDelayForAttempt(job.attempts + 1);
-      failMemoryJob(job.id, message, {
+      await failMemoryJob(job.id, message, {
         retryDelayMs: delay,
         maxAttempts: RETRY_MAX_ATTEMPTS,
       });
@@ -653,7 +672,7 @@ function handleJobError(job: MemoryJob, err: unknown): void {
         "Memory job failed (retryable)",
       );
     } else {
-      failMemoryJob(job.id, message, { maxAttempts: 1 });
+      await failMemoryJob(job.id, message, { maxAttempts: 1 });
       log.warn(
         { err, jobId: job.id, type: job.type, category },
         "Memory job failed (fatal)",
@@ -674,24 +693,27 @@ function handleJobError(job: MemoryJob, err: unknown): void {
  * consolidation's `run_failed`) dead-letters or retries instead of silently
  * completing.
  */
-function applyQueueResolution(job: MemoryJob, resolution: unknown): void {
+async function applyQueueResolution(
+  job: MemoryJob,
+  resolution: unknown,
+): Promise<void> {
   if (!isJobQueueResolution(resolution)) {
-    completeMemoryJob(job.id);
+    await completeMemoryJob(job.id);
     return;
   }
   switch (resolution.queueResolution) {
     case "completed": {
-      completeMemoryJob(job.id);
+      await completeMemoryJob(job.id);
       return;
     }
     case "failed": {
-      failMemoryJob(job.id, resolution.errorMessage ?? "handler failed", {
+      await failMemoryJob(job.id, resolution.errorMessage ?? "handler failed", {
         maxAttempts: 1,
       });
       return;
     }
     case "retryable": {
-      failMemoryJob(job.id, resolution.errorMessage ?? "handler failed", {
+      await failMemoryJob(job.id, resolution.errorMessage ?? "handler failed", {
         retryDelayMs:
           resolution.retryDelayMs ?? retryDelayForAttempt(job.attempts + 1),
         maxAttempts: RETRY_MAX_ATTEMPTS,
@@ -699,7 +721,7 @@ function applyQueueResolution(job: MemoryJob, resolution: unknown): void {
       return;
     }
     case "deferred": {
-      deferMemoryJob(job.id, {
+      await deferMemoryJob(job.id, {
         ...(resolution.deferralExhaustedMessage
           ? { exhaustedMessage: resolution.deferralExhaustedMessage }
           : {}),
@@ -841,7 +863,7 @@ export async function maybeEnqueueScheduledCleanupJobs(
     cleanup.conversationRetentionDays > 0 &&
     isDue("conversations", cleanup.conversationRetentionDays * MS_PER_DAY)
   ) {
-    const jobId = enqueuePruneOldConversationsJob(
+    const jobId = await enqueuePruneOldConversationsJob(
       cleanup.conversationRetentionDays,
     );
     await recordCleanupEnqueued("conversations", nowMs);
@@ -862,7 +884,7 @@ export async function maybeEnqueueScheduledCleanupJobs(
     cleanup.llmRequestLogRetentionMs > 0 &&
     isDue("llm_request_logs", cleanup.llmRequestLogRetentionMs)
   ) {
-    const jobId = enqueuePruneOldLlmRequestLogsJob(
+    const jobId = await enqueuePruneOldLlmRequestLogsJob(
       cleanup.llmRequestLogRetentionMs,
     );
     await recordCleanupEnqueued("llm_request_logs", nowMs);
@@ -879,7 +901,7 @@ export async function maybeEnqueueScheduledCleanupJobs(
     config.auditLog.retentionDays > 0 &&
     isDue("tool_invocations", config.auditLog.retentionDays * MS_PER_DAY)
   ) {
-    const jobId = enqueuePruneOldToolInvocationsJob(
+    const jobId = await enqueuePruneOldToolInvocationsJob(
       config.auditLog.retentionDays,
     );
     await recordCleanupEnqueued("tool_invocations", nowMs);
@@ -974,12 +996,12 @@ export async function maybeEnqueueRetrospectiveSweepJob(
     return false;
   }
 
-  if (hasActiveJobOfType("memory_retrospective_sweep")) {
+  if (await hasActiveJobOfType("memory_retrospective_sweep")) {
     await setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, String(nowMs));
     return false;
   }
 
-  enqueueMemoryJob("memory_retrospective_sweep", {});
+  await enqueueMemoryJob("memory_retrospective_sweep", {});
   await setMemoryCheckpoint(RETROSPECTIVE_SWEEP_CHECKPOINT, String(nowMs));
   return true;
 }
@@ -1194,7 +1216,7 @@ async function enqueueSubstrateMaintenanceJobs(
   if (
     !enqueuedConsolidate &&
     maxLines !== null &&
-    !hasActiveJobOfType(consolidateEntry.jobType)
+    (await hasActiveJobOfType(consolidateEntry.jobType)) === false
   ) {
     if (memoryBufferLineCount() >= maxLines) {
       const backoffRemainingMs = await consolidationBackoffRemainingMs(
@@ -1207,7 +1229,7 @@ async function enqueueSubstrateMaintenanceJobs(
           "Size-triggered consolidation skipped: failure backoff active",
         );
       } else {
-        enqueueMemoryJob(
+        await enqueueMemoryJob(
           consolidateEntry.jobType,
           AUTOMATIC_CONSOLIDATION_JOB_PAYLOAD,
         );
@@ -1262,7 +1284,7 @@ async function maybeEnqueueScheduledConsolidation(
       return false;
     }
   }
-  enqueueMemoryJob(entry.jobType, AUTOMATIC_CONSOLIDATION_JOB_PAYLOAD);
+  await enqueueMemoryJob(entry.jobType, AUTOMATIC_CONSOLIDATION_JOB_PAYLOAD);
   await setMemoryCheckpoint(entry.key, String(nowMs));
   return true;
 }
@@ -1308,7 +1330,7 @@ async function enqueueV1MaintenanceJobs(
   for (const { key, intervalMs, jobType } of schedule) {
     const lastRun = parseInt((await getMemoryCheckpoint(key)) ?? "0", 10);
     if (nowMs - lastRun >= intervalMs) {
-      enqueueMemoryJob(jobType, {});
+      await enqueueMemoryJob(jobType, {});
       await setMemoryCheckpoint(key, String(nowMs));
     }
   }
@@ -1373,12 +1395,12 @@ async function enqueueV1MaintenanceJobs(
       continue;
     }
     if (
-      hasActiveJobOfType("pkb_filing") ||
-      hasActiveJobOfType("pkb_compaction")
+      (await hasActiveJobOfType("pkb_filing")) ||
+      (await hasActiveJobOfType("pkb_compaction"))
     ) {
       continue;
     }
-    enqueueMemoryJob(jobType, {});
+    await enqueueMemoryJob(jobType, {});
     await setMemoryCheckpoint(key, String(nowMs));
   }
 }
@@ -1399,7 +1421,7 @@ async function enqueueV3BackstopJobs(nowMs: number): Promise<void> {
     10,
   );
   if (nowMs - lastRun >= GRAPH_V3_MAINTAIN_INTERVAL_MS) {
-    enqueueMemoryJob("memory_v3_maintain", {});
+    await enqueueMemoryJob("memory_v3_maintain", {});
     await setMemoryCheckpoint(
       GRAPH_MAINTENANCE_CHECKPOINTS.memoryV3Maintain,
       String(nowMs),

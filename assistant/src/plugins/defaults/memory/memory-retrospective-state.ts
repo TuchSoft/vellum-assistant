@@ -24,17 +24,16 @@
 //     survives GC of superseded retrospective conversations and spans more
 //     than the last pass. Capped — see `appendToRememberedLog`.
 //
-// The row lives on the dedicated memory connection (`assistant-memory.db`),
-// resolved via `memoryDbOrNull`; every read/write degrades to a no-op when
-// that connection is unavailable. The memory database has no `conversations`
-// table, so there is no FK cascade — the `conversation-deleted` hook purges the
-// row explicitly instead.
+// The row lives on the plugin's memory domain, resolved via `memoryDbOrNull`;
+// every read/write degrades to a no-op when that connection is unavailable.
+// The plugin owns the row, so there is no FK cascade — the
+// `conversation-deleted` hook purges it explicitly instead.
 //
 // `last_processed_created_at` is added to the table by
 // `ensureRetrospectiveCursorColumn`: an idempotent, fail-open ALTER run lazily
 // on first use in each process (daemon, memory worker, CLI) rather than by the
 // global migration chain, which must not gate DB readiness on the memory
-// database. The probe is memoized per memory connection, so a connection
+// domain. The probe is memoized per memory connection, so a connection
 // replaced by `resetDb()` (restores, imports) is probed again before its
 // first read. When the column cannot be added, reads and writes fall back to
 // the id-only cursor shape and the probe is retried after a short backoff.
@@ -43,10 +42,9 @@ import { desc, eq } from "drizzle-orm";
 
 import type { AsyncDb } from "../../../persistence/db-facade.js";
 import { messageCreatedAtByIds } from "../../../persistence/message-reads.js";
-import { memoryRetrospectiveState } from "../../../persistence/schema/index.js";
 import { withSqliteRetry } from "./host-utils.js";
 import { getLogger } from "./logging.js";
-import { memoryDbOrNull, memorySqliteOrNull } from "./memory-db.js";
+import { memoryDbOrNull } from "./memory-db.js";
 
 const log = getLogger("memory-retrospective-state");
 
@@ -126,22 +124,27 @@ function serializeRememberedLog(log: string[]): string | null {
 // Cursor timestamp column
 // ---------------------------------------------------------------------------
 
-type MemorySqlite = NonNullable<ReturnType<typeof memorySqliteOrNull>>;
+type MemoryConnection = NonNullable<ReturnType<typeof memoryDbOrNull>>;
+/** The cached query root, stable per database URL and reset on reconnect. */
+type MemoryOrm = MemoryConnection["orm"];
 
-/** The memory connection the column was confirmed on; any other re-probes. */
-let cursorColumnEnsuredOn: MemorySqlite | null = null;
+/** The memory query root the column was confirmed on; any other re-probes. */
+let cursorColumnEnsuredOn: MemoryOrm | null = null;
 /**
  * The connection the last probe failed on and when. The backoff applies to
  * that connection only: a replaced connection is probed at once, so a
  * restore right after a failure still gets the column before its first read.
  */
-let cursorColumnFailedOn: MemorySqlite | null = null;
+let cursorColumnFailedOn: MemoryOrm | null = null;
 let lastCursorColumnFailureAt = 0;
 /** Backoff before re-probing the same connection after a failed ALTER. */
 const CURSOR_COLUMN_RETRY_MS = 60_000;
 
 function isDuplicateColumnError(err: unknown): boolean {
-  return err instanceof Error && /duplicate column name/i.test(err.message);
+  return (
+    err instanceof Error &&
+    /duplicate column name|already exists/i.test(err.message)
+  );
 }
 
 /**
@@ -154,35 +157,42 @@ function isDuplicateColumnError(err: unknown): boolean {
  * A table the migration chain has not created yet is neither memoized nor a
  * failure.
  */
-export function ensureRetrospectiveCursorColumn(context: string): boolean {
-  const raw = memorySqliteOrNull(context);
+export async function ensureRetrospectiveCursorColumn(
+  context: string,
+): Promise<boolean> {
+  const raw = memoryDbOrNull(context);
   if (!raw) {
     return false;
   }
-  if (cursorColumnEnsuredOn === raw) {
+  const orm = raw.orm;
+  if (cursorColumnEnsuredOn === orm) {
     return true;
   }
   if (
-    cursorColumnFailedOn === raw &&
+    cursorColumnFailedOn === orm &&
     Date.now() - lastCursorColumnFailureAt < CURSOR_COLUMN_RETRY_MS
   ) {
     return false;
   }
   try {
-    const columns = raw.query(`PRAGMA table_info(${TABLE})`).all() as Array<{
-      name: string;
-    }>;
+    const columns = await raw.all<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = ?`,
+      [TABLE],
+    );
     if (columns.length === 0) {
       return false;
     }
-    if (!columns.some((column) => column.name === CURSOR_CREATED_AT_COLUMN)) {
-      raw.exec(
-        `ALTER TABLE ${TABLE} ADD COLUMN ${CURSOR_CREATED_AT_COLUMN} INTEGER`,
+    if (
+      !columns.some((column) => column.column_name === CURSOR_CREATED_AT_COLUMN)
+    ) {
+      await raw.exec(
+        `ALTER TABLE ${TABLE} ADD COLUMN ${CURSOR_CREATED_AT_COLUMN} BIGINT`,
       );
     }
   } catch (err) {
     if (!isDuplicateColumnError(err)) {
-      cursorColumnFailedOn = raw;
+      cursorColumnFailedOn = orm;
       lastCursorColumnFailureAt = Date.now();
       log.warn(
         { err, context },
@@ -191,7 +201,7 @@ export function ensureRetrospectiveCursorColumn(context: string): boolean {
       return false;
     }
   }
-  cursorColumnEnsuredOn = raw;
+  cursorColumnEnsuredOn = orm;
   cursorColumnFailedOn = null;
   return true;
 }
@@ -210,17 +220,25 @@ export function _resetRetrospectiveCursorColumnForTests(): void {
 // Reads
 // ---------------------------------------------------------------------------
 
-const BASE_COLUMNS = {
-  conversationId: memoryRetrospectiveState.conversationId,
-  lastProcessedMessageId: memoryRetrospectiveState.lastProcessedMessageId,
-  lastRunAt: memoryRetrospectiveState.lastRunAt,
-  rememberedLog: memoryRetrospectiveState.rememberedLog,
-};
+function baseStateColumns(
+  table: MemoryConnection["schema"]["memoryRetrospectiveState"],
+) {
+  return {
+    conversationId: table.conversationId,
+    lastProcessedMessageId: table.lastProcessedMessageId,
+    lastRunAt: table.lastRunAt,
+    rememberedLog: table.rememberedLog,
+  };
+}
 
-const CURSOR_COLUMNS = {
-  ...BASE_COLUMNS,
-  lastProcessedCreatedAt: memoryRetrospectiveState.lastProcessedCreatedAt,
-};
+function cursorStateColumns(
+  table: MemoryConnection["schema"]["memoryRetrospectiveState"],
+) {
+  return {
+    ...baseStateColumns(table),
+    lastProcessedCreatedAt: table.lastProcessedCreatedAt,
+  };
+}
 
 interface StateRow {
   conversationId: string;
@@ -243,55 +261,58 @@ function toState(row: StateRow): MemoryRetrospectiveState {
 /**
  * Return the `limit` most-recently-run retrospective state rows, newest first.
  */
-export function listRetrospectiveStates(
+export async function listRetrospectiveStates(
   limit: number,
-): MemoryRetrospectiveState[] {
+): Promise<MemoryRetrospectiveState[]> {
   const mdb = memoryDbOrNull("listRetrospectiveStates");
   if (!mdb) {
     return [];
   }
-  const rows: StateRow[] = ensureRetrospectiveCursorColumn(
+  const table = mdb.schema.memoryRetrospectiveState;
+  const withCursor = await ensureRetrospectiveCursorColumn(
     "listRetrospectiveStates",
-  )
-    ? mdb
-        .select(CURSOR_COLUMNS)
-        .from(memoryRetrospectiveState)
-        .orderBy(desc(memoryRetrospectiveState.lastRunAt))
+  );
+  const rows: StateRow[] = withCursor
+    ? await mdb.orm
+        .select(cursorStateColumns(table))
+        .from(table)
+        .orderBy(desc(table.lastRunAt))
         .limit(limit)
-        .all()
-    : mdb
-        .select(BASE_COLUMNS)
-        .from(memoryRetrospectiveState)
-        .orderBy(desc(memoryRetrospectiveState.lastRunAt))
-        .limit(limit)
-        .all();
+    : await mdb.orm
+        .select(baseStateColumns(table))
+        .from(table)
+        .orderBy(desc(table.lastRunAt))
+        .limit(limit);
   return rows.map(toState);
 }
 
 /**
  * Load the state row for a conversation, or `null` if no row exists.
  */
-export function getRetrospectiveState(
+export async function getRetrospectiveState(
   conversationId: string,
-): MemoryRetrospectiveState | null {
+): Promise<MemoryRetrospectiveState | null> {
   const mdb = memoryDbOrNull("getRetrospectiveState");
   if (!mdb) {
     return null;
   }
-  const where = eq(memoryRetrospectiveState.conversationId, conversationId);
-  const row: StateRow | undefined = ensureRetrospectiveCursorColumn(
+  const table = mdb.schema.memoryRetrospectiveState;
+  const where = eq(table.conversationId, conversationId);
+  const withCursor = await ensureRetrospectiveCursorColumn(
     "getRetrospectiveState",
-  )
-    ? mdb
-        .select(CURSOR_COLUMNS)
-        .from(memoryRetrospectiveState)
+  );
+  const rows: StateRow[] = withCursor
+    ? await mdb.orm
+        .select(cursorStateColumns(table))
+        .from(table)
         .where(where)
-        .get()
-    : mdb
-        .select(BASE_COLUMNS)
-        .from(memoryRetrospectiveState)
+        .limit(1)
+    : await mdb.orm
+        .select(baseStateColumns(table))
+        .from(table)
         .where(where)
-        .get();
+        .limit(1);
+  const row = rows[0];
   return row ? toState(row) : null;
 }
 
@@ -324,7 +345,8 @@ export async function upsertRetrospectiveState(
   if (!mdb) {
     return;
   }
-  const withCursor = ensureRetrospectiveCursorColumn(
+  const table = mdb.schema.memoryRetrospectiveState;
+  const withCursor = await ensureRetrospectiveCursorColumn(
     "upsertRetrospectiveState",
   );
   const serializedLog =
@@ -351,8 +373,8 @@ export async function upsertRetrospectiveState(
   }
   await withSqliteRetry(
     () =>
-      mdb
-        .insert(memoryRetrospectiveState)
+      mdb.orm
+        .insert(table)
         .values({
           conversationId: args.conversationId,
           lastProcessedMessageId: args.lastProcessedMessageId,
@@ -363,10 +385,9 @@ export async function upsertRetrospectiveState(
             : {}),
         })
         .onConflictDoUpdate({
-          target: memoryRetrospectiveState.conversationId,
+          target: table.conversationId,
           set,
-        })
-        .run(),
+        }),
     {
       op: "upsertRetrospectiveState",
       context: { conversationId: args.conversationId },
@@ -466,24 +487,22 @@ export async function forkRetrospectiveState(args: {
       return;
     }
 
-    const withCursor = ensureRetrospectiveCursorColumn(
+    const withCursor = await ensureRetrospectiveCursorColumn(
       "forkRetrospectiveState",
     );
-    const sourceRow: StateRow | undefined = withCursor
-      ? mdb
-          .select(CURSOR_COLUMNS)
-          .from(memoryRetrospectiveState)
-          .where(
-            eq(memoryRetrospectiveState.conversationId, sourceConversationId),
-          )
-          .get()
-      : mdb
-          .select(BASE_COLUMNS)
-          .from(memoryRetrospectiveState)
-          .where(
-            eq(memoryRetrospectiveState.conversationId, sourceConversationId),
-          )
-          .get();
+    const table = mdb.schema.memoryRetrospectiveState;
+    const sourceRows: StateRow[] = withCursor
+      ? await mdb.orm
+          .select(cursorStateColumns(table))
+          .from(table)
+          .where(eq(table.conversationId, sourceConversationId))
+          .limit(1)
+      : await mdb.orm
+          .select(baseStateColumns(table))
+          .from(table)
+          .where(eq(table.conversationId, sourceConversationId))
+          .limit(1);
+    const sourceRow = sourceRows[0];
     if (!sourceRow) {
       return;
     }
@@ -544,14 +563,13 @@ export async function forkRetrospectiveState(args: {
       ...(withCursor ? { lastProcessedCreatedAt: forkedCreatedAt } : {}),
     };
 
-    mdb
-      .insert(memoryRetrospectiveState)
+    await mdb.orm
+      .insert(table)
       .values({ conversationId: forkedConversationId, ...values })
       .onConflictDoUpdate({
-        target: memoryRetrospectiveState.conversationId,
+        target: table.conversationId,
         set: values,
-      })
-      .run();
+      });
   } catch (err) {
     log.warn({ err }, "failed to fork retrospective state; continuing");
   }
@@ -574,20 +592,20 @@ export async function bumpRetrospectiveLastRunAt(
   if (!mdb) {
     return;
   }
+  const table = mdb.schema.memoryRetrospectiveState;
   await withSqliteRetry(
     () =>
-      mdb
-        .insert(memoryRetrospectiveState)
+      mdb.orm
+        .insert(table)
         .values({
           conversationId,
           lastProcessedMessageId: "",
           lastRunAt,
         })
         .onConflictDoUpdate({
-          target: memoryRetrospectiveState.conversationId,
+          target: table.conversationId,
           set: { lastRunAt },
-        })
-        .run(),
+        }),
     { op: "bumpRetrospectiveLastRunAt", context: { conversationId } },
   );
 }

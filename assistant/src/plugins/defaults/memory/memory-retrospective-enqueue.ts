@@ -53,10 +53,7 @@ import { getRetrospectiveState } from "./memory-retrospective-state.js";
 const log = getLogger("memory-retrospective-enqueue");
 
 export type MemoryRetrospectiveTrigger =
-  | "interval"
-  | "message_count"
-  | "compaction"
-  | "sweep";
+  "interval" | "message_count" | "compaction" | "sweep";
 
 const COMPACTION_DEBOUNCE_MS = 500;
 
@@ -107,7 +104,7 @@ export async function enqueueMemoryRetrospectiveIfEnabled(args: {
     trigger === "compaction" ? Date.now() + COMPACTION_DEBOUNCE_MS : Date.now();
 
   try {
-    upsertMemoryRetrospectiveJob({ conversationId }, runAfter);
+    await upsertMemoryRetrospectiveJob({ conversationId }, runAfter);
   } catch (err) {
     log.warn(
       { err, conversationId, trigger },
@@ -152,7 +149,7 @@ async function passesUserActivityGate(
     if (!getConfig().memory.retrospective.requireUserActivity) {
       return true;
     }
-    const state = getRetrospectiveState(conversationId);
+    const state = await getRetrospectiveState(conversationId);
     if (
       await hasQualifyingUserMessageAfter(
         conversationId,

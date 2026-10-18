@@ -17,9 +17,8 @@
 
 import { eq } from "drizzle-orm";
 
-import type { DrizzleDb } from "../../../../../persistence/db-connection.js";
-import { messages } from "../../../../../persistence/schema/index.js";
-import { memorySqliteOrNull } from "../../memory-db.js";
+import type { AsyncDb } from "../../../../../persistence/db-facade.js";
+import { memoryDbOrNull } from "../../memory-db.js";
 import type {
   MemoryV2ConceptRowRecord,
   MemoryV2ConfigSnapshot,
@@ -53,10 +52,10 @@ export interface ExtractOracleOptions {
   pageExists?: (slug: string) => boolean;
 }
 
-export function extractOracleTurns(
-  db: DrizzleDb,
+export async function extractOracleTurns(
+  db: AsyncDb,
   options: ExtractOracleOptions = {},
-): OracleTurn[] {
+): Promise<OracleTurn[]> {
   const {
     limit = 50,
     strategy = "recent",
@@ -70,10 +69,10 @@ export function extractOracleTurns(
     allowedStatuses.add("not_injected");
   }
 
-  // The activation log lives in the dedicated memory database; the anchor
+  // The activation log lives on the memory slot; the anchor
   // lookup below stays on the main connection (`messages`). Fail-soft: no
   // memory connection means no oracle turns.
-  const memoryRaw = memorySqliteOrNull("extractOracleTurns");
+  const memoryRaw = memoryDbOrNull("extractOracleTurns");
   if (!memoryRaw) {
     return [];
   }
@@ -87,23 +86,22 @@ export function extractOracleTurns(
   const orderBy = strategy === "random" ? "RANDOM()" : "created_at DESC";
   params.push(limit);
 
-  const rows = memoryRaw
-    .query(
-      `SELECT conversation_id, message_id, turn, concepts_json, config_json,
-              created_at
-         FROM memory_v2_activation_logs
-        WHERE ${where}
-        ORDER BY ${orderBy}
-        LIMIT ?`,
-    )
-    .all(...params) as Array<{
+  const rows = await memoryRaw.all<{
     conversation_id: string;
     message_id: string | null;
     turn: number;
     concepts_json: string;
     config_json: string;
     created_at: number;
-  }>;
+  }>(
+    `SELECT conversation_id, message_id, turn, concepts_json, config_json,
+            created_at
+       FROM memory_v2_activation_logs
+      WHERE ${where}
+      ORDER BY ${orderBy}
+      LIMIT ?`,
+    params,
+  );
 
   const turns: OracleTurn[] = [];
   for (const row of rows) {
@@ -112,12 +110,12 @@ export function extractOracleTurns(
       continue;
     }
 
-    const anchor = db
+    const messages = db.schema.messages;
+    const anchor = await db.orm
       .select({ createdAt: messages.createdAt })
       .from(messages)
       .where(eq(messages.id, messageId))
-      .limit(1)
-      .all();
+      .limit(1);
     const anchorRow = anchor[0];
     if (!anchorRow) {
       continue;

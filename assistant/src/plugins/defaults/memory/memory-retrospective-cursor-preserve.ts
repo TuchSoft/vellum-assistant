@@ -13,7 +13,6 @@
 
 import { and, eq, isNull } from "drizzle-orm";
 
-import { memoryRetrospectiveState } from "../../../persistence/schema/index.js";
 import { withSqliteRetry } from "./host-utils.js";
 import { getLogger } from "./logging.js";
 import { memoryDbOrNull } from "./memory-db.js";
@@ -37,17 +36,20 @@ export async function preserveRetrospectiveCursorTimestamps(
   const context = "preserveRetrospectiveCursorTimestamps";
   try {
     const mdb = memoryDbOrNull(context);
-    if (!mdb || !ensureRetrospectiveCursorColumn(context)) {
+    if (!mdb || !(await ensureRetrospectiveCursorColumn(context))) {
       return;
     }
-    const state = mdb
-      .select({
-        messageId: memoryRetrospectiveState.lastProcessedMessageId,
-        createdAt: memoryRetrospectiveState.lastProcessedCreatedAt,
-      })
-      .from(memoryRetrospectiveState)
-      .where(eq(memoryRetrospectiveState.conversationId, conversationId))
-      .get();
+    const table = mdb.schema.memoryRetrospectiveState;
+    const state = (
+      await mdb.orm
+        .select({
+          messageId: table.lastProcessedMessageId,
+          createdAt: table.lastProcessedCreatedAt,
+        })
+        .from(table)
+        .where(eq(table.conversationId, conversationId))
+        .limit(1)
+    )[0];
     if (!state || state.createdAt !== null) {
       return;
     }
@@ -57,17 +59,16 @@ export async function preserveRetrospectiveCursorTimestamps(
     }
     await withSqliteRetry(
       () =>
-        mdb
-          .update(memoryRetrospectiveState)
+        mdb.orm
+          .update(table)
           .set({ lastProcessedCreatedAt: row.createdAt })
           .where(
             and(
-              eq(memoryRetrospectiveState.conversationId, conversationId),
-              eq(memoryRetrospectiveState.lastProcessedMessageId, row.id),
-              isNull(memoryRetrospectiveState.lastProcessedCreatedAt),
+              eq(table.conversationId, conversationId),
+              eq(table.lastProcessedMessageId, row.id),
+              isNull(table.lastProcessedCreatedAt),
             ),
-          )
-          .run(),
+          ),
       { op: context, context: { conversationId } },
     );
   } catch (err) {

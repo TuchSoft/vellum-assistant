@@ -8,14 +8,14 @@
  */
 
 import type { AssistantConfig } from "../../../../../config/types.js";
-import type { DrizzleDb } from "../../../../../persistence/db-connection.js";
+import type { AsyncDb } from "../../../../../persistence/db-facade.js";
 import { extractOracleTurns } from "./oracle.js";
 import { reconstructInput } from "./replay-input.js";
 import type { Retriever } from "./retriever.js";
 import { type ComparisonReport, runComparison } from "./runner.js";
 
 export interface RunComparisonOverHistoryParams {
-  db: DrizzleDb;
+  db: AsyncDb;
   workspaceDir: string;
   config: AssistantConfig;
   retrievers: readonly Retriever[];
@@ -33,7 +33,7 @@ export async function runComparisonOverHistory(
 ): Promise<ComparisonReport> {
   const { db, workspaceDir, config } = params;
 
-  const oracleTurns = extractOracleTurns(db, {
+  const oracleTurns = await extractOracleTurns(db, {
     ...(params.limit !== undefined ? { limit: params.limit } : {}),
     ...(params.strategy !== undefined ? { strategy: params.strategy } : {}),
     ...(params.conversationIds !== undefined

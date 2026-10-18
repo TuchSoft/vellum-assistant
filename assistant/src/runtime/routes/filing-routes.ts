@@ -116,12 +116,12 @@ export const ROUTES: RouteDefinition[] = [
       // Coalesce: filing and compaction both rewrite the PKB tree, so don't
       // enqueue while either is already pending/running.
       if (
-        hasActiveJobOfType("pkb_filing") ||
-        hasActiveJobOfType("pkb_compaction")
+        (await hasActiveJobOfType("pkb_filing")) ||
+        (await hasActiveJobOfType("pkb_compaction"))
       ) {
         return { success: true, ran: false };
       }
-      enqueueMemoryJob("pkb_filing", { force: true });
+      await enqueueMemoryJob("pkb_filing", { force: true });
       return { success: true, ran: true };
     },
   },

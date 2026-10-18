@@ -82,7 +82,7 @@ export async function maybeEnqueueRetrospective(
   config: AssistantConfig,
 ): Promise<void> {
   try {
-    const state = getRetrospectiveState(conversationId);
+    const state = await getRetrospectiveState(conversationId);
     const newMessageCount = await countRetrospectiveMessagesAfter(
       conversationId,
       retrospectiveCursor(state),

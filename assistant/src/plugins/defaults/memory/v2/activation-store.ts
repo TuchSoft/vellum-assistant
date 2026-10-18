@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Memory v2 — Activation state SQLite persistence
+// Memory v2 — Activation state persistence
 // ---------------------------------------------------------------------------
 //
 // One row per conversation. The row is hydrated on resume, mutated in-memory
@@ -9,7 +9,6 @@
 
 import { eq } from "drizzle-orm";
 
-import { activationState } from "../../../../persistence/schema/index.js";
 import { memoryDbOrNull } from "../memory-db.js";
 import {
   type ActivationState,
@@ -29,17 +28,20 @@ export async function hydrate(
   if (!mdb) {
     return null;
   }
-  const row = mdb
-    .select({
-      messageId: activationState.messageId,
-      stateJson: activationState.stateJson,
-      everInjectedJson: activationState.everInjectedJson,
-      currentTurn: activationState.currentTurn,
-      updatedAt: activationState.updatedAt,
-    })
-    .from(activationState)
-    .where(eq(activationState.conversationId, conversationId))
-    .get();
+  const table = mdb.schema.activationState;
+  const row = (
+    await mdb.orm
+      .select({
+        messageId: table.messageId,
+        stateJson: table.stateJson,
+        everInjectedJson: table.everInjectedJson,
+        currentTurn: table.currentTurn,
+        updatedAt: table.updatedAt,
+      })
+      .from(table)
+      .where(eq(table.conversationId, conversationId))
+      .limit(1)
+  )[0];
   if (!row) {
     return null;
   }
@@ -68,8 +70,9 @@ export async function save(
   }
   const stateJson = JSON.stringify(state.state);
   const everInjectedJson = JSON.stringify(state.everInjected);
-  mdb
-    .insert(activationState)
+  const table = mdb.schema.activationState;
+  await mdb.orm
+    .insert(table)
     .values({
       conversationId,
       messageId: state.messageId,
@@ -79,7 +82,7 @@ export async function save(
       updatedAt: state.updatedAt,
     })
     .onConflictDoUpdate({
-      target: activationState.conversationId,
+      target: table.conversationId,
       set: {
         messageId: state.messageId,
         stateJson,
@@ -87,8 +90,7 @@ export async function save(
         currentTurn: state.currentTurn,
         updatedAt: state.updatedAt,
       },
-    })
-    .run();
+    });
 }
 
 /**
@@ -99,39 +101,42 @@ export async function save(
  * not re-injected on the child's first turn — matching the v1 semantics where
  * a fork carries over all in-context memories.
  *
- * Synchronous so it can run inside the fork's copy path. Writes the dedicated
+ * Runs inside the fork's async copy path. Writes the dedicated
  * memory connection, which is a separate database file from the main-DB fork
  * transaction, so the copy is not atomic with the message and attachment
  * copies; an unavailable memory database no-ops.
  */
-export function forkActivationState(
+export async function forkActivationState(
   parentConversationId: string,
   newConversationId: string,
-): void {
+): Promise<void> {
   const mdb = memoryDbOrNull("forkActivationState");
   if (!mdb) {
     return;
   }
-  const row = mdb
-    .select({
-      messageId: activationState.messageId,
-      stateJson: activationState.stateJson,
-      everInjectedJson: activationState.everInjectedJson,
-      currentTurn: activationState.currentTurn,
-      updatedAt: activationState.updatedAt,
-    })
-    .from(activationState)
-    .where(eq(activationState.conversationId, parentConversationId))
-    .get();
+  const table = mdb.schema.activationState;
+  const row = (
+    await mdb.orm
+      .select({
+        messageId: table.messageId,
+        stateJson: table.stateJson,
+        everInjectedJson: table.everInjectedJson,
+        currentTurn: table.currentTurn,
+        updatedAt: table.updatedAt,
+      })
+      .from(table)
+      .where(eq(table.conversationId, parentConversationId))
+      .limit(1)
+  )[0];
   if (!row) {
     return;
   }
 
-  mdb
-    .insert(activationState)
+  await mdb.orm
+    .insert(table)
     .values({ conversationId: newConversationId, ...row })
     .onConflictDoUpdate({
-      target: activationState.conversationId,
+      target: table.conversationId,
       set: {
         messageId: row.messageId,
         stateJson: row.stateJson,
@@ -139,8 +144,7 @@ export function forkActivationState(
         currentTurn: row.currentTurn,
         updatedAt: row.updatedAt,
       },
-    })
-    .run();
+    });
 }
 
 /**
@@ -161,8 +165,8 @@ export function forkActivationState(
  * stamped `turn: 0` — dedup is slug-set membership (`turn` is bookkeeping
  * only) and compaction clears the list wholesale.
  *
- * No-op when the child inherited no memory attachments. Synchronous so it can
- * run inside the fork's copy path. Writes the dedicated memory connection; an
+ * No-op when the child inherited no memory attachments. Runs inside the fork's
+ * async copy path. Writes the dedicated memory connection; an
  * unavailable memory database no-ops.
  *
  * The insert ignores a conflicting row rather than failing. This memory-DB
@@ -172,10 +176,10 @@ export function forkActivationState(
  * primary key. A retried fork re-inserts the same inherited slugs, so ignoring
  * the conflict is safe.
  */
-export function seedForkActivationState(
+export async function seedForkActivationState(
   newConversationId: string,
   inheritedSlugs: string[],
-): void {
+): Promise<void> {
   if (inheritedSlugs.length === 0) {
     return;
   }
@@ -188,8 +192,9 @@ export function seedForkActivationState(
     slug,
     turn: 0,
   }));
-  mdb
-    .insert(activationState)
+  const table = mdb.schema.activationState;
+  await mdb.orm
+    .insert(table)
     .values({
       conversationId: newConversationId,
       messageId: `${newConversationId}:turn:0`,
@@ -198,8 +203,7 @@ export function seedForkActivationState(
       currentTurn: 0,
       updatedAt: Date.now(),
     })
-    .onConflictDoNothing({ target: activationState.conversationId })
-    .run();
+    .onConflictDoNothing({ target: table.conversationId });
 }
 
 /**

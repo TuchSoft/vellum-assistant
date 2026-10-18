@@ -246,7 +246,7 @@ async function insertOrDeferSkillCard(
   // missing-row-wins semantics against its in-memory fast path.)
   const runConversation = await getConversation(runConversationId);
   if (runConversation && (await isConversationProcessing(runConversationId))) {
-    upsertSkillCardInsertJob(
+    await upsertSkillCardInsertJob(
       { sourceConversationId, runConversationId, skills },
       Date.now() + SKILL_CARD_INSERT_RETRY_DELAY_MS,
     );
@@ -267,7 +267,7 @@ async function insertOrDeferSkillCard(
   // header). The durable job re-checks until the turn ends, so the card
   // still always arrives.
   if (await isConversationProcessing(sourceConversationId)) {
-    upsertSkillCardInsertJob(
+    await upsertSkillCardInsertJob(
       { sourceConversationId, runConversationId, skills },
       Date.now() + SKILL_CARD_INSERT_RETRY_DELAY_MS,
     );

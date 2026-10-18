@@ -225,7 +225,7 @@ export async function runRetrospectiveSweep(
   const sweepIntervalMs = config.memory.retrospective.sweepIntervalMs;
   const lookbackCutoff = now - effectiveSweepLookbackMs(config);
   const pendingSourceIds = new Set(
-    listPendingMemoryRetrospectiveSourceConversationIds(),
+    await listPendingMemoryRetrospectiveSourceConversationIds(),
   );
 
   let scanned = 0;
@@ -270,7 +270,7 @@ export async function runRetrospectiveSweep(
       // last attempt within one sweep interval means the responsive path has
       // it in hand. Never-run conversations (no state) fall through to the
       // unprocessed-message check.
-      const state = getRetrospectiveState(conversationId);
+      const state = await getRetrospectiveState(conversationId);
       if (state && now - state.lastRunAt < sweepIntervalMs) {
         continue;
       }

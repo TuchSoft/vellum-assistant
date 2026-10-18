@@ -724,14 +724,14 @@ export async function memoryV2ConsolidateJob(
     }
     for (const jobType of jobTypes) {
       try {
-        if (hasPendingJobOfType(jobType)) {
+        if (await hasPendingJobOfType(jobType)) {
           log.debug(
             { jobType },
             "consolidation: follow-up already pending; skipping duplicate enqueue",
           );
           continue;
         }
-        followUpJobIds.push(enqueueMemoryJob(jobType, {}));
+        followUpJobIds.push(await enqueueMemoryJob(jobType, {}));
       } catch (err) {
         // Best-effort: a failed enqueue here doesn't undo the agent's writes,
         // and the next scheduled consolidation will attempt the same fan-out.

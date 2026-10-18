@@ -152,10 +152,9 @@ export function gatherV1State(
   // Edges with either endpoint pointing at a soft-deleted node are dropped to
   // stay consistent with the node filter above.
   const edgeRows = raw
-    .query<
-      { source_node_id: string; target_node_id: string },
-      []
-    >(/*sql*/ `SELECT source_node_id, target_node_id FROM memory_graph_edges`)
+    .query<{ source_node_id: string; target_node_id: string }, []>(
+      /*sql*/ `SELECT source_node_id, target_node_id FROM memory_graph_edges`,
+    )
     .all();
   const edges: V1Edge[] = [];
   for (const row of edgeRows) {
@@ -492,9 +491,9 @@ export function collapseEdges(
  * (`assistant-memory.db`). `upsertEmbedConceptPageJob` targets that queue by
  * default, so we pass no DB override here.
  */
-export function enqueueEmbeds(slugs: string[]): number {
+export async function enqueueEmbeds(slugs: string[]): Promise<number> {
   for (const slug of slugs) {
-    upsertEmbedConceptPageJob({ slug });
+    await upsertEmbedConceptPageJob({ slug });
   }
   return slugs.length;
 }
@@ -642,7 +641,7 @@ export async function runMemoryV2Migration(
   }
   await appendPromotions(workspaceDir, promotions);
 
-  const embedsEnqueued = enqueueEmbeds(finalizedPages.map((p) => p.slug));
+  const embedsEnqueued = await enqueueEmbeds(finalizedPages.map((p) => p.slug));
 
   await writeSentinel(workspaceDir);
 

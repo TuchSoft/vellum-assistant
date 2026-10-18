@@ -273,7 +273,7 @@ export async function runRouter(
     // EMA scores come from the dedicated memory connection; when it is
     // unavailable the scores read as all-zero and tier 2 selects nothing.
     const slugs = afterTier1.entries.map((e) => e.slug);
-    const scores = computeInjectionScores(slugs, Date.now());
+    const scores = await computeInjectionScores(slugs, Date.now());
     const split = splitTier2(afterTier1, tier2Size, scores);
     tier2 = split.tier2;
     afterTier2 = split.rest;

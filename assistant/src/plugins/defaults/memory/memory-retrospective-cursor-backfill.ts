@@ -14,7 +14,6 @@
 import { and, asc, eq, gt, isNull, ne } from "drizzle-orm";
 
 import { messageCreatedAtByIds } from "../../../persistence/message-reads.js";
-import { memoryRetrospectiveState } from "../../../persistence/schema/index.js";
 import { withSqliteRetry } from "./host-utils.js";
 import { getLogger } from "./logging.js";
 import { memoryDbOrNull } from "./memory-db.js";
@@ -51,28 +50,28 @@ export async function backfillRetrospectiveCursorTimestamps(opts?: {
   };
   const context = "backfillRetrospectiveCursorTimestamps";
   const mdb = memoryDbOrNull(context);
-  if (!mdb || !ensureRetrospectiveCursorColumn(context)) {
+  if (!mdb || !(await ensureRetrospectiveCursorColumn(context))) {
     return result;
   }
+  const table = mdb.schema.memoryRetrospectiveState;
 
   let afterConversationId = "";
   for (;;) {
-    const page = mdb
+    const page = await mdb.orm
       .select({
-        conversationId: memoryRetrospectiveState.conversationId,
-        messageId: memoryRetrospectiveState.lastProcessedMessageId,
+        conversationId: table.conversationId,
+        messageId: table.lastProcessedMessageId,
       })
-      .from(memoryRetrospectiveState)
+      .from(table)
       .where(
         and(
-          isNull(memoryRetrospectiveState.lastProcessedCreatedAt),
-          ne(memoryRetrospectiveState.lastProcessedMessageId, ""),
-          gt(memoryRetrospectiveState.conversationId, afterConversationId),
+          isNull(table.lastProcessedCreatedAt),
+          ne(table.lastProcessedMessageId, ""),
+          gt(table.conversationId, afterConversationId),
         ),
       )
-      .orderBy(asc(memoryRetrospectiveState.conversationId))
-      .limit(pageSize)
-      .all();
+      .orderBy(asc(table.conversationId))
+      .limit(pageSize);
     if (page.length === 0) {
       break;
     }
@@ -90,28 +89,21 @@ export async function backfillRetrospectiveCursorTimestamps(opts?: {
 
     if (recoverable.length > 0) {
       await withSqliteRetry(
-        () => {
-          mdb.transaction((tx) => {
+        () =>
+          mdb.transaction(async (tx) => {
             for (const row of recoverable) {
-              tx.update(memoryRetrospectiveState)
+              await tx.orm
+                .update(table)
                 .set({ lastProcessedCreatedAt: row.createdAt })
                 .where(
                   and(
-                    eq(
-                      memoryRetrospectiveState.conversationId,
-                      row.conversationId,
-                    ),
-                    eq(
-                      memoryRetrospectiveState.lastProcessedMessageId,
-                      row.messageId,
-                    ),
-                    isNull(memoryRetrospectiveState.lastProcessedCreatedAt),
+                    eq(table.conversationId, row.conversationId),
+                    eq(table.lastProcessedMessageId, row.messageId),
+                    isNull(table.lastProcessedCreatedAt),
                   ),
-                )
-                .run();
+                );
             }
-          });
-        },
+          }),
         { op: context, context: { afterConversationId } },
       );
       result.backfilled += recoverable.length;

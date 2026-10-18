@@ -353,7 +353,7 @@ export async function runForkBasedRetrospective(
     );
   }
 
-  const state = getRetrospectiveState(sourceConversationId);
+  const state = await getRetrospectiveState(sourceConversationId);
   const lastProcessedMessageId = state?.lastProcessedMessageId ?? null;
   // Kind-aware slice: a prior run's own `skill-authored-card` message lands
   // AFTER the cursor that run persisted, so the raw slice would treat the
@@ -746,11 +746,11 @@ function describeUnusableRun(
   return `run replied without saving anything, but ended on ${exitReason ?? "no terminal exit"} rather than a completed review`;
 }
 
-function enqueueFollowUpJobs(): string[] {
+async function enqueueFollowUpJobs(): Promise<string[]> {
   const followUpJobIds: string[] = [];
   for (const jobType of FOLLOW_UP_JOB_TYPES) {
     try {
-      followUpJobIds.push(enqueueMemoryJob(jobType, {}));
+      followUpJobIds.push(await enqueueMemoryJob(jobType, {}));
     } catch (err) {
       log.warn(
         { err, jobType },
@@ -1047,7 +1047,7 @@ async function finalizeSuccessfulRetrospective(args: {
 
   await deleteSupersededPriorRetrospective(config, prior, sourceConversationId);
 
-  const followUpJobIds = enqueueFollowUpJobs();
+  const followUpJobIds = await enqueueFollowUpJobs();
 
   log.info(
     {

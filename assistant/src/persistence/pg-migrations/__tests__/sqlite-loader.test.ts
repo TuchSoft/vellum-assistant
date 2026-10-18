@@ -164,7 +164,6 @@ async function resetTarget(): Promise<void> {
   ]) {
     await db.exec(`DROP TABLE IF EXISTS "${table}" CASCADE`);
   }
-  await db.exec(`DROP TABLE IF EXISTS pg_schema_migrations`);
 }
 
 describePg("SQLite -> Postgres loader", () => {

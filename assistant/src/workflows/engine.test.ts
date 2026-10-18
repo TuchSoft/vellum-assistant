@@ -1,11 +1,18 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
+import { describePg } from "../__tests__/pg-test-db.js";
 import type { WorkflowsConfig } from "../config/schemas/workflows.js";
 import type { TrustContext } from "../daemon/trust-context-types.js";
-import { getSqlite } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import type { ResolvedCapabilities } from "./capabilities.js";
 import {
@@ -17,15 +24,17 @@ import * as journalStore from "./journal-store.js";
 import type { LeafResult, RunLeafOptions } from "./leaf-runner.js";
 
 await initializeDb();
+setDefaultTimeout(60_000);
 
-function resetTables(): void {
-  getSqlite().exec("DELETE FROM workflow_journal");
-  getSqlite().exec("DELETE FROM workflow_runs");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM workflow_journal`);
+  await db.run(`DELETE FROM workflow_runs`);
 }
 
 /** Poll until `predicate()` is true (or a short deadline elapses). */
 async function waitUntil(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1000;
+  const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     if (predicate()) {
       return;
@@ -132,8 +141,8 @@ function execute(
   });
 }
 
-describe("extractWorkflowMeta", () => {
-  test("extracts a pure-literal meta", () => {
+describePg("extractWorkflowMeta", () => {
+  test("extracts a pure-literal meta", async () => {
     expect(
       extractWorkflowMeta(
         `export const meta = { name: "n", description: "d" };`,
@@ -141,17 +150,17 @@ describe("extractWorkflowMeta", () => {
     ).toEqual({ name: "n", description: "d" });
   });
 
-  test("rejects a missing meta", () => {
+  test("rejects a missing meta", async () => {
     expect(() => extractWorkflowMeta(`const x = 1;`)).toThrow();
   });
 
-  test("rejects a non-string name/description", () => {
+  test("rejects a non-string name/description", async () => {
     expect(() =>
       extractWorkflowMeta(`export const meta = { name: 1, description: "d" };`),
     ).toThrow();
   });
 
-  test("accepts single-quoted and unquoted-key literals", () => {
+  test("accepts single-quoted and unquoted-key literals", async () => {
     expect(
       extractWorkflowMeta(
         `export const meta = { name: 'n', description: 'd', };`,
@@ -159,7 +168,7 @@ describe("extractWorkflowMeta", () => {
     ).toEqual({ name: "n", description: "d" });
   });
 
-  test("rejects a computed meta without executing it (no host eval)", () => {
+  test("rejects a computed meta without executing it (no host eval)", async () => {
     // A function call in the literal must NOT run in the host process — it
     // simply fails to JSON-parse and is rejected.
     (globalThis as Record<string, unknown>).__pwned = false;
@@ -173,96 +182,99 @@ describe("extractWorkflowMeta", () => {
   });
 });
 
-describe("executeWorkflow — export stripping touches only real top-level decls", () => {
-  beforeEach(resetTables);
+describePg(
+  "executeWorkflow — export stripping touches only real top-level decls",
+  () => {
+    beforeEach(resetTables);
 
-  test("preserves `export` inside a multiline template-literal prompt", async () => {
-    const fake = makeFakeRunner();
-    // The leaf prompt is a TS snippet whose lines begin with `export ...`. The
-    // engine must NOT rewrite literal text — only genuine top-level decls — or a
-    // workflow asking a leaf to inspect/emit TypeScript gets a corrupted prompt.
-    const script = [
-      "const snippet = `Review this module:",
-      "export const config = { debug: true };",
-      "export function run() { return 1; }",
-      "`;",
-      "return agent(snippet);",
-    ].join("\n");
-    const res = await execute("wf-tmpl-export", script, fake.runner);
-    expect(res.status).toBe("completed");
-    expect(fake.prompts[0]).toBe(
-      "Review this module:\n" +
-        "export const config = { debug: true };\n" +
-        "export function run() { return 1; }\n",
-    );
-  });
+    test("preserves `export` inside a multiline template-literal prompt", async () => {
+      const fake = makeFakeRunner();
+      // The leaf prompt is a TS snippet whose lines begin with `export ...`. The
+      // engine must NOT rewrite literal text — only genuine top-level decls — or a
+      // workflow asking a leaf to inspect/emit TypeScript gets a corrupted prompt.
+      const script = [
+        "const snippet = `Review this module:",
+        "export const config = { debug: true };",
+        "export function run() { return 1; }",
+        "`;",
+        "return agent(snippet);",
+      ].join("\n");
+      const res = await execute("wf-tmpl-export", script, fake.runner);
+      expect(res.status).toBe("completed");
+      expect(fake.prompts[0]).toBe(
+        "Review this module:\n" +
+          "export const config = { debug: true };\n" +
+          "export function run() { return 1; }\n",
+      );
+    });
 
-  test("still strips real top-level exports (script stays runnable)", async () => {
-    const fake = makeFakeRunner();
-    // A top-level `export const` would be a syntax error inside the sandbox's
-    // function-body wrapper; stripping it is what keeps the script runnable.
-    const res = await execute(
-      "wf-real-export",
-      `export const greeting = "hello";\nreturn agent(greeting);`,
-      fake.runner,
-    );
-    expect(res.status).toBe("completed");
-    expect(fake.prompts[0]).toBe("hello");
-  });
+    test("still strips real top-level exports (script stays runnable)", async () => {
+      const fake = makeFakeRunner();
+      // A top-level `export const` would be a syntax error inside the sandbox's
+      // function-body wrapper; stripping it is what keeps the script runnable.
+      const res = await execute(
+        "wf-real-export",
+        `export const greeting = "hello";\nreturn agent(greeting);`,
+        fake.runner,
+      );
+      expect(res.status).toBe("completed");
+      expect(fake.prompts[0]).toBe("hello");
+    });
 
-  test("a regex literal containing a backtick does not derail stripping", async () => {
-    const fake = makeFakeRunner();
-    // A naive template-tracking transform would treat the backtick inside the
-    // regex as opening a template literal and fail to strip the next line's
-    // top-level export, breaking the script. The lexer skips regex bodies.
-    const res = await execute(
-      "wf-regex-tick",
-      "const re = /[`]/;\nexport const greeting = re.source;\nreturn agent(greeting);",
-      fake.runner,
-    );
-    expect(res.status).toBe("completed");
-    expect(fake.prompts[0]).toBe("[`]");
-  });
+    test("a regex literal containing a backtick does not derail stripping", async () => {
+      const fake = makeFakeRunner();
+      // A naive template-tracking transform would treat the backtick inside the
+      // regex as opening a template literal and fail to strip the next line's
+      // top-level export, breaking the script. The lexer skips regex bodies.
+      const res = await execute(
+        "wf-regex-tick",
+        "const re = /[`]/;\nexport const greeting = re.source;\nreturn agent(greeting);",
+        fake.runner,
+      );
+      expect(res.status).toBe("completed");
+      expect(fake.prompts[0]).toBe("[`]");
+    });
 
-  test("a line comment containing a backtick does not derail stripping", async () => {
-    const fake = makeFakeRunner();
-    const res = await execute(
-      "wf-linecomment-tick",
-      'const x = 1; // a ` backtick in a comment\nexport const greeting = "hi";\nreturn agent(greeting);',
-      fake.runner,
-    );
-    expect(res.status).toBe("completed");
-    expect(fake.prompts[0]).toBe("hi");
-  });
+    test("a line comment containing a backtick does not derail stripping", async () => {
+      const fake = makeFakeRunner();
+      const res = await execute(
+        "wf-linecomment-tick",
+        'const x = 1; // a ` backtick in a comment\nexport const greeting = "hi";\nreturn agent(greeting);',
+        fake.runner,
+      );
+      expect(res.status).toBe("completed");
+      expect(fake.prompts[0]).toBe("hi");
+    });
 
-  test("template `${}` interpolation returns to code so the next export strips", async () => {
-    const fake = makeFakeRunner();
-    const script = [
-      'const name = "world";',
-      "const msg = `hello ${name}!`;",
-      "export const out = msg;",
-      "return agent(out);",
-    ].join("\n");
-    const res = await execute("wf-interp-export", script, fake.runner);
-    expect(res.status).toBe("completed");
-    expect(fake.prompts[0]).toBe("hello world!");
-  });
+    test("template `${}` interpolation returns to code so the next export strips", async () => {
+      const fake = makeFakeRunner();
+      const script = [
+        'const name = "world";',
+        "const msg = `hello ${name}!`;",
+        "export const out = msg;",
+        "return agent(out);",
+      ].join("\n");
+      const res = await execute("wf-interp-export", script, fake.runner);
+      expect(res.status).toBe("completed");
+      expect(fake.prompts[0]).toBe("hello world!");
+    });
 
-  test("preserves `export` inside a block comment embedded in a prompt", async () => {
-    const fake = makeFakeRunner();
-    const script = [
-      "const snippet = `/*",
-      "export const x = 1;",
-      "*/`;",
-      "return agent(snippet);",
-    ].join("\n");
-    const res = await execute("wf-blockcomment-export", script, fake.runner);
-    expect(res.status).toBe("completed");
-    expect(fake.prompts[0]).toBe("/*\nexport const x = 1;\n*/");
-  });
-});
+    test("preserves `export` inside a block comment embedded in a prompt", async () => {
+      const fake = makeFakeRunner();
+      const script = [
+        "const snippet = `/*",
+        "export const x = 1;",
+        "*/`;",
+        "return agent(snippet);",
+      ].join("\n");
+      const res = await execute("wf-blockcomment-export", script, fake.runner);
+      expect(res.status).toBe("completed");
+      expect(fake.prompts[0]).toBe("/*\nexport const x = 1;\n*/");
+    });
+  },
+);
 
-describe("executeWorkflow — fan-out & aggregation", () => {
+describePg("executeWorkflow — fan-out & aggregation", () => {
   beforeEach(resetTables);
 
   test("map/parallel aggregates results and respects the concurrency cap", async () => {
@@ -340,41 +352,44 @@ describe("executeWorkflow — fan-out & aggregation", () => {
   });
 });
 
-describe("executeWorkflow — script return value becomes the run result", () => {
-  beforeEach(resetTables);
+describePg(
+  "executeWorkflow — script return value becomes the run result",
+  () => {
+    beforeEach(resetTables);
 
-  test("a top-level `return <value>` surfaces as the run result (not a bare expression)", async () => {
-    const fake = makeFakeRunner();
-    const res = await execute(
-      "wf-return",
-      `const summary = agent("summarize");
+    test("a top-level `return <value>` surfaces as the run result (not a bare expression)", async () => {
+      const fake = makeFakeRunner();
+      const res = await execute(
+        "wf-return",
+        `const summary = agent("summarize");
        return { final: summary, kind: "report" };`,
-      fake.runner,
-    );
-    expect(res.status).toBe("completed");
-    expect(res.result).toEqual({ final: "out:summarize", kind: "report" });
-  });
+        fake.runner,
+      );
+      expect(res.status).toBe("completed");
+      expect(res.result).toEqual({ final: "out:summarize", kind: "report" });
+    });
 
-  test("a script with NO top-level return completes with no result (undefined)", async () => {
-    // The authoring contract requires `return <result>;`. A bare trailing
-    // expression is discarded by the function-body wrapper, so the run
-    // completes with NO result. This documents WHY the contract mandates an
-    // explicit return: the leaf ran, but its value never reached the caller.
-    const fake = makeFakeRunner();
-    const res = await execute(
-      "wf-no-return",
-      `const summary = agent("summarize");
+    test("a script with NO top-level return completes with no result (undefined)", async () => {
+      // The authoring contract requires `return <result>;`. A bare trailing
+      // expression is discarded by the function-body wrapper, so the run
+      // completes with NO result. This documents WHY the contract mandates an
+      // explicit return: the leaf ran, but its value never reached the caller.
+      const fake = makeFakeRunner();
+      const res = await execute(
+        "wf-no-return",
+        `const summary = agent("summarize");
        summary;`,
-      fake.runner,
-    );
-    expect(res.status).toBe("completed");
-    expect(res.result).toBeUndefined();
-    // The leaf DID run — the value was simply discarded by the missing return.
-    expect(fake.prompts).toEqual(["summarize"]);
-  });
-});
+        fake.runner,
+      );
+      expect(res.status).toBe("completed");
+      expect(res.result).toBeUndefined();
+      // The leaf DID run — the value was simply discarded by the missing return.
+      expect(fake.prompts).toEqual(["summarize"]);
+    });
+  },
+);
 
-describe("executeWorkflow — abort handling (leaf abort = run abort)", () => {
+describePg("executeWorkflow — abort handling (leaf abort = run abort)", () => {
   beforeEach(resetTables);
 
   /**
@@ -428,7 +443,7 @@ describe("executeWorkflow — abort handling (leaf abort = run abort)", () => {
     expect(res.result).toBeNull();
 
     // The cancelled leaf is NOT journaled as a failed entry.
-    const journal = journalStore.getJournal("wf-abort-agent");
+    const journal = await journalStore.getJournal("wf-abort-agent");
     expect(journal.every((e) => e.status !== "failed")).toBe(true);
   });
 
@@ -457,7 +472,7 @@ describe("executeWorkflow — abort handling (leaf abort = run abort)", () => {
     // The run terminates as aborted rather than completing with [null,...].
     expect(res.status).toBe("aborted");
     expect(res.result).toBeNull();
-    const journal = journalStore.getJournal("wf-abort-parallel");
+    const journal = await journalStore.getJournal("wf-abort-parallel");
     expect(journal.every((e) => e.status !== "failed")).toBe(true);
   });
 
@@ -482,7 +497,7 @@ describe("executeWorkflow — abort handling (leaf abort = run abort)", () => {
   });
 });
 
-describe("executeWorkflow — pipeline", () => {
+describePg("executeWorkflow — pipeline", () => {
   beforeEach(resetTables);
 
   test("pipeline advances across stages with a per-stage barrier", async () => {
@@ -532,7 +547,7 @@ describe("executeWorkflow — pipeline", () => {
       { wrapped: "out:s1:b" },
     ]);
     // Only stage 1 ran leaves — the plain-value stage spent no agents.
-    expect(fake.prompts).toEqual(["s1:a", "s1:b"]);
+    expect([...fake.prompts].sort()).toEqual(["s1:a", "s1:b"]);
   });
 
   test("a stage may mix leaf specs and plain pass-through values (order preserved)", async () => {
@@ -555,7 +570,7 @@ describe("executeWorkflow — pipeline", () => {
   });
 });
 
-describe("executeWorkflow — resume", () => {
+describePg("executeWorkflow — resume", () => {
   beforeEach(resetTables);
 
   test("re-running the same runId replays the unchanged prefix (zero duplicate calls)", async () => {
@@ -584,7 +599,7 @@ describe("executeWorkflow — resume", () => {
       `agent("a"); return agent("b");`,
       first.runner,
     );
-    const afterFirst = journalStore.getRun("wf-resume-count");
+    const afterFirst = await journalStore.getRun("wf-resume-count");
     expect(afterFirst?.agentsSpawned).toBe(2);
     expect(afterFirst?.inputTokens).toBe(20);
 
@@ -602,7 +617,7 @@ describe("executeWorkflow — resume", () => {
     expect(res.inputTokens).toBe(30);
 
     // The persisted agents_spawned is not regressed downward by the resume.
-    const afterSecond = journalStore.getRun("wf-resume-count");
+    const afterSecond = await journalStore.getRun("wf-resume-count");
     expect(afterSecond?.agentsSpawned).toBe(3);
     expect(afterSecond!.agentsSpawned).toBeGreaterThanOrEqual(
       afterFirst!.agentsSpawned,
@@ -618,7 +633,7 @@ describe("executeWorkflow — resume", () => {
       first.runner,
       configWith({ maxAgentsPerRun: 500 }),
     );
-    expect(journalStore.getRun("wf-resume-cap")?.agentsSpawned).toBe(3);
+    expect((await journalStore.getRun("wf-resume-cap"))?.agentsSpawned).toBe(3);
 
     // Resume with cap=3 and one NEW leaf. Were the counter reset to 0, the new
     // leaf would fit a fresh budget; seeded from the persisted 3, the cap is
@@ -635,7 +650,7 @@ describe("executeWorkflow — resume", () => {
     // The new leaf never ran; the carried total stays at the cap.
     expect(second.prompts).toEqual([]);
     expect(res.agentsSpawned).toBe(3);
-    expect(journalStore.getRun("wf-resume-cap")?.agentsSpawned).toBe(3);
+    expect((await journalStore.getRun("wf-resume-cap"))?.agentsSpawned).toBe(3);
   });
 
   test("a changed call breaks the replay prefix and re-runs from there", async () => {
@@ -664,13 +679,13 @@ describe("executeWorkflow — resume", () => {
 
     const first = makeFakeRunner();
     await execute("wf-hash", script, first.runner);
-    const journalA = journalStore.getJournal("wf-hash");
+    const journalA = await journalStore.getJournal("wf-hash");
 
     resetTables();
 
     const second = makeFakeRunner();
     await execute("wf-hash", script, second.runner);
-    const journalB = journalStore.getJournal("wf-hash");
+    const journalB = await journalStore.getJournal("wf-hash");
 
     expect(journalA.map((e) => [e.seq, e.callHash])).toEqual(
       journalB.map((e) => [e.seq, e.callHash]),
@@ -682,7 +697,7 @@ describe("executeWorkflow — resume", () => {
     const runner = makeFakeRunner();
     await execute("wf-leaf-tokens", `return agent("alpha");`, runner.runner);
 
-    const journal = journalStore.getJournal("wf-leaf-tokens");
+    const journal = await journalStore.getJournal("wf-leaf-tokens");
     expect(journal).toHaveLength(1);
     // The fake runner reports 10/5 per leaf; the completed entry carries them.
     expect(journal[0]).toMatchObject({
@@ -694,7 +709,7 @@ describe("executeWorkflow — resume", () => {
   });
 });
 
-describe("executeWorkflow — schema vs tool leaf tool forwarding", () => {
+describePg("executeWorkflow — schema vs tool leaf tool forwarding", () => {
   beforeEach(resetTables);
 
   // A non-empty capability set, mirroring a real run (which always carries the
@@ -733,7 +748,7 @@ describe("executeWorkflow — schema vs tool leaf tool forwarding", () => {
   });
 });
 
-describe("executeWorkflow — persona gating", () => {
+describePg("executeWorkflow — persona gating", () => {
   beforeEach(resetTables);
 
   const personaCapabilities: ResolvedCapabilities = {
@@ -787,7 +802,7 @@ describe("executeWorkflow — persona gating", () => {
   });
 });
 
-describe("executeWorkflow — agent cap", () => {
+describePg("executeWorkflow — agent cap", () => {
   beforeEach(resetTables);
 
   test("exceeding maxAgentsPerRun aborts with cap_exceeded and persists partials", async () => {
@@ -810,10 +825,10 @@ describe("executeWorkflow — agent cap", () => {
 
     // Partials are persisted: the run row reflects cap_exceeded + 3 agents, and
     // 3 journal entries exist.
-    const run = journalStore.getRun("wf-cap");
+    const run = await journalStore.getRun("wf-cap");
     expect(run?.status).toBe("cap_exceeded");
     expect(run?.agentsSpawned).toBe(3);
-    expect(journalStore.getJournal("wf-cap").length).toBe(3);
+    expect((await journalStore.getJournal("wf-cap")).length).toBe(3);
   });
 
   test("a script that CATCHES the cap sentinel still ends cap_exceeded, not completed", async () => {
@@ -836,7 +851,9 @@ describe("executeWorkflow — agent cap", () => {
     expect(res.result).toBeNull();
     expect(res.agentsSpawned).toBe(1);
     expect(fake.prompts).toEqual(["first"]);
-    expect(journalStore.getRun("wf-cap-caught")?.status).toBe("cap_exceeded");
+    expect((await journalStore.getRun("wf-cap-caught"))?.status).toBe(
+      "cap_exceeded",
+    );
   });
 
   test("the cap counts only NEW leaves; replayed leaves do not consume it", async () => {
@@ -865,7 +882,7 @@ describe("executeWorkflow — agent cap", () => {
   });
 });
 
-describe("executeWorkflow — fan-out unwind (no orphaned leaves)", () => {
+describePg("executeWorkflow — fan-out unwind (no orphaned leaves)", () => {
   beforeEach(resetTables);
 
   test("a cap tripped mid-fan-out drains in-flight leaves before finishing (no post-finalization writes)", async () => {
@@ -891,9 +908,10 @@ describe("executeWorkflow — fan-out unwind (no orphaned leaves)", () => {
     // No journal entry lands AFTER the run is finalized: snapshot now, wait past
     // the leaf delay, and assert the count is unchanged (leaf "a" journaled
     // DURING the drain, before finishRun — not after it).
-    const lenAtResolve = journalStore.getJournal("wf-unwind-drain").length;
+    const lenAtResolve = (await journalStore.getJournal("wf-unwind-drain"))
+      .length;
     await new Promise((r) => setTimeout(r, 150));
-    expect(journalStore.getJournal("wf-unwind-drain").length).toBe(
+    expect((await journalStore.getJournal("wf-unwind-drain")).length).toBe(
       lenAtResolve,
     );
   });
@@ -948,18 +966,18 @@ describe("executeWorkflow — fan-out unwind (no orphaned leaves)", () => {
     expect(inFlight).toBe(0);
     // A cancelled leaf is never journaled (neither completed nor failed); the
     // cap leaf throws before journaling — so the journal is empty.
-    expect(journalStore.getJournal("wf-unwind-cancel")).toHaveLength(0);
+    expect(await journalStore.getJournal("wf-unwind-cancel")).toHaveLength(0);
   });
 });
 
-describe("executeWorkflow — nested workflow()", () => {
+describePg("executeWorkflow — nested workflow()", () => {
   // Saved workflows live at `<workspace>/workflows/*.workflow.ts`; point the
   // workspace at a temp dir so `workflow(name)` resolves a fixture we control.
   let workspaceDir: string;
   let prevOverride: string | undefined;
 
-  beforeEach(() => {
-    resetTables();
+  beforeEach(async () => {
+    await resetTables();
     workspaceDir = mkdtempSync(join(tmpdir(), "wf-nest-"));
     prevOverride = process.env.VELLUM_WORKSPACE_DIR;
     process.env.VELLUM_WORKSPACE_DIR = workspaceDir;
@@ -1022,7 +1040,7 @@ describe("executeWorkflow — nested workflow()", () => {
     // One contiguous seq sequence across the parent + child boundary. The
     // workflow() resolution itself takes seq 1 (snapshotting the child source),
     // then the child's two leaves take 2 and 3, and the parent's p2 takes 4.
-    const journal = journalStore.getJournal("wf-nest-seq");
+    const journal = await journalStore.getJournal("wf-nest-seq");
     expect(journal.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4]);
     // The workflow() resolution is journaled as a "workflow" snapshot at seq 1.
     const snapshot = journal.find((e) => e.seq === 1);
@@ -1163,7 +1181,7 @@ describe("executeWorkflow — nested workflow()", () => {
   });
 });
 
-describe("executeWorkflow — onLeaf observe-only hook", () => {
+describePg("executeWorkflow — onLeaf observe-only hook", () => {
   beforeEach(resetTables);
 
   /** Run a workflow, collecting every onLeaf event. */

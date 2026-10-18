@@ -119,10 +119,10 @@ describe("commitImport runtime-version compat gate", () => {
     cleanupWorkspaceParent(workspaceDir);
   });
 
-  test("compatible bundle imports normally", () => {
+  test("compatible bundle imports normally", async () => {
     const archive = buildBundleWithMinRuntimeVersion("0.0.1");
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: new DefaultPathResolver(workspaceDir),
       workspaceDir,
@@ -133,10 +133,10 @@ describe("commitImport runtime-version compat gate", () => {
     expect(existsSync(join(workspaceDir, "config.json"))).toBe(true);
   });
 
-  test("incompatible bundle (above APP_VERSION) returns version_incompatible without writing", () => {
+  test("incompatible bundle (above APP_VERSION) returns version_incompatible without writing", async () => {
     const archive = buildBundleWithMinRuntimeVersion("99.0.0");
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: new DefaultPathResolver(workspaceDir),
       workspaceDir,
@@ -157,10 +157,10 @@ describe("commitImport runtime-version compat gate", () => {
     expect([...walkFiles(workspaceDir)]).toEqual([]);
   });
 
-  test("legacy sentinel passes through", () => {
+  test("legacy sentinel passes through", async () => {
     const archive = buildBundleWithMinRuntimeVersion("0.0.0-legacy");
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: new DefaultPathResolver(workspaceDir),
       workspaceDir,
@@ -171,14 +171,14 @@ describe("commitImport runtime-version compat gate", () => {
     expect(existsSync(join(workspaceDir, "config.json"))).toBe(true);
   });
 
-  test("pre-existing workspace files stay untouched on incompatibility", () => {
+  test("pre-existing workspace files stay untouched on incompatibility", async () => {
     const sentinelPath = join(workspaceDir, "sentinel.txt");
     const sentinelContent = "keep me";
     writeFileSync(sentinelPath, sentinelContent);
 
     const archive = buildBundleWithMinRuntimeVersion("99.0.0");
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: new DefaultPathResolver(workspaceDir),
       workspaceDir,

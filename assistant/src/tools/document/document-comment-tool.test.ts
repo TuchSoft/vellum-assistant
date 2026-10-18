@@ -1,12 +1,13 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../../__tests__/pg-test-db.js";
 import {
   createComment,
   getComment,
   listComments,
 } from "../../documents/document-comments-store.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { initializeDb } from "../../persistence/db-init.js";
-import { rawRun, resetTestTables } from "../../persistence/raw-query.js";
 import type { ToolContext, ToolExecutionResult } from "../types.js";
 import {
   executeCommentList,
@@ -37,73 +38,61 @@ function parseResult<T>(result: ToolExecutionResult): T {
   return JSON.parse(result.content) as T;
 }
 
-function seedDocument(
+async function seedDocument(
   surfaceId: string = SURFACE_ID,
   conversationId: string = CONVERSATION_ID,
-): void {
+): Promise<void> {
+  const db = requireMainDb();
   const now = Date.now();
-  rawRun(
-    "test:seedConversation",
-    /*sql*/ `INSERT OR IGNORE INTO conversations (id, created_at, updated_at) VALUES (?, ?, ?)`,
-    conversationId,
-    now,
-    now,
+  await db.run(
+    /*sql*/ `INSERT INTO conversations (id, created_at, updated_at) VALUES (?, ?, ?) ON CONFLICT (id) DO NOTHING`,
+    [conversationId, now, now],
   );
-  rawRun(
-    "test:seedDocument",
-    /*sql*/ `INSERT OR IGNORE INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at)
-     VALUES (?, ?, 'Test Doc', 'body', 2, ?, ?)`,
-    surfaceId,
-    conversationId,
-    now,
-    now,
+  await db.run(
+    /*sql*/ `INSERT INTO documents (surface_id, conversation_id, title, content, word_count, created_at, updated_at)
+     VALUES (?, ?, 'Test Doc', 'body', 2, ?, ?) ON CONFLICT (surface_id) DO NOTHING`,
+    [surfaceId, conversationId, now, now],
   );
-  rawRun(
-    "test:seedDocConversation",
-    /*sql*/ `INSERT OR IGNORE INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?)`,
-    surfaceId,
-    conversationId,
-    now,
+  await db.run(
+    /*sql*/ `INSERT INTO document_conversations (surface_id, conversation_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`,
+    [surfaceId, conversationId, now],
   );
 }
 
-beforeEach(() => {
-  resetTestTables(
-    "document_comments",
-    "document_conversations",
-    "documents",
-    "conversations",
-  );
-  seedDocument();
+beforeEach(async () => {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM document_comments`);
+  await db.run(`DELETE FROM document_conversations`);
+  await db.run(`DELETE FROM documents`);
+  await db.run(`DELETE FROM conversations`);
+  await seedDocument();
 });
 
 // ---------------------------------------------------------------------------
 // comment_list
 // ---------------------------------------------------------------------------
 
-describe("executeCommentList", () => {
-  test("returns only open comments", () => {
-    const c1 = createComment({
+describePg("executeCommentList", () => {
+  test("returns only open comments", async () => {
+    const c1 = await createComment({
       surfaceId: SURFACE_ID,
       conversationId: CONVERSATION_ID,
       author: "user1",
       content: "Open comment",
     });
-    const c2 = createComment({
+    const c2 = await createComment({
       surfaceId: SURFACE_ID,
       conversationId: CONVERSATION_ID,
       author: "user1",
       content: "Resolved comment",
     });
     // Resolve one directly via the store
-    rawRun(
-      "test:resolveComment",
+    await requireMainDb().run(
       /*sql*/ `UPDATE document_comments SET status = 'resolved', resolved_by = 'user1', resolved_at = ? WHERE id = ?`,
-      Date.now(),
-      c2.id,
+      [Date.now(), c2.id],
     );
 
-    const result = executeCommentList(
+    const result = await executeCommentList(
       { surface_id: SURFACE_ID },
       makeContext(),
     );
@@ -119,8 +108,8 @@ describe("executeCommentList", () => {
     expect(body.comments[0].content).toBe("Open comment");
   });
 
-  test("includes anchor and thread metadata", () => {
-    const parent = createComment({
+  test("includes anchor and thread metadata", async () => {
+    const parent = await createComment({
       surfaceId: SURFACE_ID,
       conversationId: CONVERSATION_ID,
       author: "user1",
@@ -129,7 +118,7 @@ describe("executeCommentList", () => {
       anchorEnd: 10,
       anchorText: "hello",
     });
-    createComment({
+    await createComment({
       surfaceId: SURFACE_ID,
       conversationId: CONVERSATION_ID,
       author: "assistant",
@@ -137,7 +126,7 @@ describe("executeCommentList", () => {
       parentCommentId: parent.id,
     });
 
-    const result = executeCommentList(
+    const result = await executeCommentList(
       { surface_id: SURFACE_ID },
       makeContext(),
     );
@@ -158,16 +147,16 @@ describe("executeCommentList", () => {
     expect(body.comments[1].parent_comment_id).toBe(parent.id);
   });
 
-  test("blocks access for non-privileged actors on other conversations", () => {
-    seedDocument("doc-other", "conv-other");
-    createComment({
+  test("blocks access for non-privileged actors on other conversations", async () => {
+    await seedDocument("doc-other", "conv-other");
+    await createComment({
       surfaceId: "doc-other",
       conversationId: "conv-other",
       author: "user1",
       content: "Secret feedback",
     });
 
-    const result = executeCommentList(
+    const result = await executeCommentList(
       { surface_id: "doc-other" },
       makeContext({ conversationId: CONVERSATION_ID }),
     );
@@ -178,16 +167,16 @@ describe("executeCommentList", () => {
     );
   });
 
-  test("allows guardian access to comments on any document", () => {
-    seedDocument("doc-other", "conv-other");
-    createComment({
+  test("allows guardian access to comments on any document", async () => {
+    await seedDocument("doc-other", "conv-other");
+    await createComment({
       surfaceId: "doc-other",
       conversationId: "conv-other",
       author: "user1",
       content: "Cross-conv comment",
     });
 
-    const result = executeCommentList(
+    const result = await executeCommentList(
       { surface_id: "doc-other" },
       makeContext({ trustClass: "guardian" }),
     );
@@ -203,9 +192,9 @@ describe("executeCommentList", () => {
 // comment_resolve
 // ---------------------------------------------------------------------------
 
-describe("executeCommentResolve", () => {
-  test("resolves a comment with resolved_by: 'assistant' and emits SSE event", () => {
-    const c = createComment({
+describePg("executeCommentResolve", () => {
+  test("resolves a comment with resolved_by: 'assistant' and emits SSE event", async () => {
+    const c = await createComment({
       surfaceId: SURFACE_ID,
       conversationId: CONVERSATION_ID,
       author: "user1",
@@ -213,7 +202,7 @@ describe("executeCommentResolve", () => {
     });
 
     const sent: Array<{ type: string; [key: string]: unknown }> = [];
-    const result = executeCommentResolve(
+    const result = await executeCommentResolve(
       { surface_id: SURFACE_ID, comment_id: c.id },
       makeContext({ sendToClient: (msg) => sent.push(msg) }),
     );
@@ -224,7 +213,7 @@ describe("executeCommentResolve", () => {
     expect(body.comment_id).toBe(c.id);
 
     // Verify the DB was updated
-    const fetched = getComment(c.id);
+    const fetched = await getComment(c.id);
     expect(fetched!.status).toBe("resolved");
     expect(fetched!.resolvedBy).toBe("assistant");
 
@@ -235,8 +224,8 @@ describe("executeCommentResolve", () => {
     expect(sent[0].resolvedBy).toBe("assistant");
   });
 
-  test("returns error for non-existent comment", () => {
-    const result = executeCommentResolve(
+  test("returns error for non-existent comment", async () => {
+    const result = await executeCommentResolve(
       { surface_id: SURFACE_ID, comment_id: "comment-nonexistent" },
       makeContext(),
     );
@@ -247,16 +236,16 @@ describe("executeCommentResolve", () => {
     );
   });
 
-  test("blocks cross-conversation resolve for non-privileged actors", () => {
-    seedDocument("doc-other", "conv-other");
-    const c = createComment({
+  test("blocks cross-conversation resolve for non-privileged actors", async () => {
+    await seedDocument("doc-other", "conv-other");
+    const c = await createComment({
       surfaceId: "doc-other",
       conversationId: "conv-other",
       author: "user1",
       content: "Cannot resolve this",
     });
 
-    const result = executeCommentResolve(
+    const result = await executeCommentResolve(
       { surface_id: "doc-other", comment_id: c.id },
       makeContext({ conversationId: CONVERSATION_ID }),
     );
@@ -266,7 +255,7 @@ describe("executeCommentResolve", () => {
       "Document not found",
     );
     // Comment should remain open
-    expect(getComment(c.id)!.status).toBe("open");
+    expect((await getComment(c.id))!.status).toBe("open");
   });
 });
 
@@ -274,9 +263,9 @@ describe("executeCommentResolve", () => {
 // comment_reply
 // ---------------------------------------------------------------------------
 
-describe("executeCommentReply", () => {
-  test("creates a reply with parent_comment_id and author: 'assistant'", () => {
-    const parent = createComment({
+describePg("executeCommentReply", () => {
+  test("creates a reply with parent_comment_id and author: 'assistant'", async () => {
+    const parent = await createComment({
       surfaceId: SURFACE_ID,
       conversationId: CONVERSATION_ID,
       author: "user1",
@@ -284,7 +273,7 @@ describe("executeCommentReply", () => {
     });
 
     const sent: Array<{ type: string; [key: string]: unknown }> = [];
-    const result = executeCommentReply(
+    const result = await executeCommentReply(
       {
         surface_id: SURFACE_ID,
         comment_id: parent.id,
@@ -309,7 +298,7 @@ describe("executeCommentReply", () => {
     expect(body.comment.parent_comment_id).toBe(parent.id);
 
     // Verify persisted in DB
-    const fetched = getComment(body.comment.id);
+    const fetched = await getComment(body.comment.id);
     expect(fetched).not.toBeNull();
     expect(fetched!.author).toBe("assistant");
     expect(fetched!.parentCommentId).toBe(parent.id);
@@ -322,16 +311,16 @@ describe("executeCommentReply", () => {
     expect(eventComment.id).toBe(body.comment.id);
   });
 
-  test("blocks cross-conversation reply for non-privileged actors", () => {
-    seedDocument("doc-other", "conv-other");
-    const parent = createComment({
+  test("blocks cross-conversation reply for non-privileged actors", async () => {
+    await seedDocument("doc-other", "conv-other");
+    const parent = await createComment({
       surfaceId: "doc-other",
       conversationId: "conv-other",
       author: "user1",
       content: "Feedback on other doc",
     });
 
-    const result = executeCommentReply(
+    const result = await executeCommentReply(
       {
         surface_id: "doc-other",
         comment_id: parent.id,
@@ -345,19 +334,19 @@ describe("executeCommentReply", () => {
       "Document not found",
     );
     // No reply should exist
-    const comments = listComments("doc-other");
+    const comments = await listComments("doc-other");
     expect(comments).toHaveLength(1);
   });
 
-  test("works without sendToClient (no SSE emission)", () => {
-    const parent = createComment({
+  test("works without sendToClient (no SSE emission)", async () => {
+    const parent = await createComment({
       surfaceId: SURFACE_ID,
       conversationId: CONVERSATION_ID,
       author: "user1",
       content: "Question",
     });
 
-    const result = executeCommentReply(
+    const result = await executeCommentReply(
       {
         surface_id: SURFACE_ID,
         comment_id: parent.id,
@@ -378,16 +367,16 @@ describe("executeCommentReply", () => {
 
 // ── model-input schema validation (LUM-2854) ────────────────────────
 
-describe("comment tools — model-input schema validation", () => {
-  test("comment_list rejects a missing surface_id instead of 'Document not found'", () => {
-    const result = executeCommentList({}, makeContext());
+describePg("comment tools — model-input schema validation", () => {
+  test("comment_list rejects a missing surface_id instead of 'Document not found'", async () => {
+    const result = await executeCommentList({}, makeContext());
     expect(result.isError).toBe(true);
     expect(result.content).toContain('Invalid input for tool "comment_list"');
     expect(result.content).toContain("surface_id");
   });
 
-  test("comment_resolve rejects a non-string comment_id", () => {
-    const result = executeCommentResolve(
+  test("comment_resolve rejects a non-string comment_id", async () => {
+    const result = await executeCommentResolve(
       { surface_id: SURFACE_ID, comment_id: 42 },
       makeContext(),
     );
@@ -398,26 +387,26 @@ describe("comment tools — model-input schema validation", () => {
     expect(result.content).toContain("comment_id");
   });
 
-  test("comment_reply rejects a non-string content instead of persisting it", () => {
-    const parent = createComment({
+  test("comment_reply rejects a non-string content instead of persisting it", async () => {
+    const parent = await createComment({
       surfaceId: SURFACE_ID,
       conversationId: CONVERSATION_ID,
       author: "user",
       content: "Question",
     });
 
-    const result = executeCommentReply(
+    const result = await executeCommentReply(
       { surface_id: SURFACE_ID, comment_id: parent.id, content: 42 },
       makeContext(),
     );
     expect(result.isError).toBe(true);
     expect(result.content).toContain('Invalid input for tool "comment_reply"');
     expect(result.content).toContain("content");
-    expect(listComments(SURFACE_ID, {}).length).toBe(1);
+    expect((await listComments(SURFACE_ID, {})).length).toBe(1);
   });
 
-  test("comment tools pass unknown keys through (loose schema)", () => {
-    const result = executeCommentList(
+  test("comment tools pass unknown keys through (loose schema)", async () => {
+    const result = await executeCommentList(
       { surface_id: SURFACE_ID, activity: "checking comments" },
       makeContext(),
     );

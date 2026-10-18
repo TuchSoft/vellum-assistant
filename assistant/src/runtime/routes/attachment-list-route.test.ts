@@ -7,7 +7,9 @@
  * on a stub's idea of them.
  */
 
-import { beforeEach, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+
+setDefaultTimeout(30_000);
 
 import { describePg } from "../../__tests__/pg-test-db.js";
 import { isToolResultOnlyUserMessage } from "../../conversations/message-consolidation.js";
@@ -755,9 +757,11 @@ describePg("GET /v1/attachments", () => {
     await linkAttachmentToMessage(secondCarrier.id, secondPhoto, 0);
     await setCreatedAt(secondCarrier.id, 7000);
 
-    const fullOrder = await listAttachments({
-      conversationId: conversation.id,
-    }).attachments.map((a) => a.id);
+    const fullOrder = (
+      await listAttachments({
+        conversationId: conversation.id,
+      })
+    ).attachments.map((a) => a.id);
     expect([...fullOrder].sort()).toEqual([firstPhoto, secondPhoto].sort());
 
     for (let run = 0; run < 3; run += 1) {
@@ -782,12 +786,12 @@ describePg("GET /v1/attachments", () => {
     const carrier = await addMessage(conversation.id, "user", "both", {
       skipIndexing: true,
     });
-    const alpha = linkAttachmentToMessage(
+    const alpha = await linkAttachmentToMessage(
       carrier.id,
       await newAttachment("pos-alpha.png"),
       0,
     );
-    const beta = linkAttachmentToMessage(
+    const beta = await linkAttachmentToMessage(
       carrier.id,
       await newAttachment("pos-beta.png"),
       0,
@@ -797,9 +801,11 @@ describePg("GET /v1/attachments", () => {
     await setLinkId(alpha, "link-b-alpha");
     await setLinkId(beta, "link-a-beta");
 
-    const fullOrder = await listAttachments({
-      conversationId: conversation.id,
-    }).attachments.map((a) => a.id);
+    const fullOrder = (
+      await listAttachments({
+        conversationId: conversation.id,
+      })
+    ).attachments.map((a) => a.id);
     expect(fullOrder).toEqual([beta, alpha]);
 
     for (let run = 0; run < 3; run += 1) {

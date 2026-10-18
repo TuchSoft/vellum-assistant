@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 // Toggle for the share_analytics opt-out gate the audit listener consults
 // when populating the telemetry columns.
@@ -8,45 +8,96 @@ mock.module("../platform/consent-cache.js", () => ({
   getRawShareAnalytics: () => shareAnalytics,
 }));
 
-import {
-  seedToolInvocation,
-  TOOL_INVOCATION_PII_SENTINEL as PII_SENTINEL,
-  type ToolInvocationSeedSpec,
-} from "../__tests__/test-support/tool-invocation-seed.js";
-import { getDb } from "../persistence/db-connection.js";
+import { describePg } from "../__tests__/pg-test-db.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
-import { conversations, toolInvocations } from "../persistence/schema/index.js";
 import { recordToolExecuted } from "./tool-audit.js";
 import { queryUnreportedToolExecutedEvents } from "./tool-executed-events-store.js";
 
 await initializeDb();
 
+const PII_SENTINEL = "must never leave the device";
 const CONVERSATION_ID = "conv-tool-executed-store-test";
 
-function insertInvocation(
-  spec: Omit<ToolInvocationSeedSpec, "conversationId">,
-): void {
-  seedToolInvocation(
-    { db: getDb(), conversations, toolInvocations },
-    { ...spec, conversationId: CONVERSATION_ID },
+interface InvocationSpec {
+  id: string;
+  createdAt: number;
+  toolName?: string;
+  decision?: string;
+  durationMs?: number;
+  argBytes?: number | null;
+  resultBytes?: number | null;
+  provider?: string | null;
+  model?: string | null;
+  inferenceProfile?: string | null;
+  inferenceProfileSource?: string | null;
+}
+
+async function waitForToolRows(count: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows = await requireMainDb().all<{ id: string }>(
+      `SELECT id FROM tool_invocations`,
+    );
+    if (rows.length >= count) {
+      return;
+    }
+    await Bun.sleep(10);
+  }
+  throw new Error(`Timed out waiting for ${count} tool_invocations rows`);
+}
+
+async function insertInvocation(spec: InvocationSpec): Promise<void> {
+  const db = requireMainDb();
+  // tool_invocations has an enforced FK to conversations.
+  await db.run(
+    `INSERT INTO conversations (id, title, created_at, updated_at)
+     VALUES (?, 'test', 1000, 1000)
+     ON CONFLICT (id) DO NOTHING`,
+    [CONVERSATION_ID],
+  );
+  await db.run(
+    `INSERT INTO tool_invocations (
+       id, conversation_id, tool_name, input, result, decision, risk_level,
+       duration_ms, created_at, arg_bytes, result_bytes, provider, model,
+       inference_profile, inference_profile_source
+     ) VALUES (?, ?, ?, ?, ?, ?, 'low', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      spec.id,
+      CONVERSATION_ID,
+      spec.toolName ?? "calendar_list_events",
+      `{"secret":"raw tool args - ${PII_SENTINEL}"}`,
+      `{"secret":"raw tool output - ${PII_SENTINEL}"}`,
+      spec.decision ?? "allow",
+      spec.durationMs ?? 12,
+      spec.createdAt,
+      spec.argBytes !== undefined ? spec.argBytes : 2,
+      spec.resultBytes !== undefined ? spec.resultBytes : 9,
+      spec.provider ?? null,
+      spec.model ?? null,
+      spec.inferenceProfile ?? null,
+      spec.inferenceProfileSource ?? null,
+    ],
   );
 }
 
-describe("tool-executed-events-store", () => {
-  beforeEach(() => {
+describePg("tool-executed-events-store", () => {
+  beforeEach(async () => {
     shareAnalytics = true;
-    getDb().delete(toolInvocations).run();
+    const db = requireMainDb();
+    await db.run(`DELETE FROM tool_invocations`);
+    await db.run(`DELETE FROM conversations`);
   });
 
-  test("projects telemetry fields in (createdAt, id) order without input/result", () => {
-    insertInvocation({
+  test("projects telemetry fields in (createdAt, id) order without input/result", async () => {
+    await insertInvocation({
       id: "ti-b",
       createdAt: 2000,
       toolName: "web_search",
       decision: "error",
       durationMs: 7,
     });
-    insertInvocation({
+    await insertInvocation({
       id: "ti-a",
       createdAt: 1000,
       argBytes: 42,
@@ -57,7 +108,7 @@ describe("tool-executed-events-store", () => {
       inferenceProfileSource: "active",
     });
 
-    const rows = queryUnreportedToolExecutedEvents(0, undefined, 100);
+    const rows = await queryUnreportedToolExecutedEvents(0, undefined, 100);
     expect(rows.map((r) => r.id)).toEqual(["ti-a", "ti-b"]);
     expect(rows[0]).toEqual({
       id: "ti-a",
@@ -83,37 +134,49 @@ describe("tool-executed-events-store", () => {
     expect(JSON.stringify(rows)).not.toContain(PII_SENTINEL);
   });
 
-  test("excludes permission-denied rows", () => {
-    insertInvocation({ id: "ti-denied", createdAt: 1000, decision: "denied" });
-    insertInvocation({ id: "ti-allow", createdAt: 2000 });
-    insertInvocation({ id: "ti-error", createdAt: 3000, decision: "error" });
+  test("excludes permission-denied rows", async () => {
+    await insertInvocation({
+      id: "ti-denied",
+      createdAt: 1000,
+      decision: "denied",
+    });
+    await insertInvocation({ id: "ti-allow", createdAt: 2000 });
+    await insertInvocation({
+      id: "ti-error",
+      createdAt: 3000,
+      decision: "error",
+    });
 
-    const rows = queryUnreportedToolExecutedEvents(0, undefined, 100);
+    const rows = await queryUnreportedToolExecutedEvents(0, undefined, 100);
     expect(rows.map((r) => r.id)).toEqual(["ti-allow", "ti-error"]);
   });
 
-  test("excludes legacy pre-migration rows (null arg_bytes)", () => {
+  test("excludes legacy pre-migration rows (null arg_bytes)", async () => {
     // Already shipped under the reverted tool_execution type — never
     // projected, even from a zero watermark.
-    insertInvocation({
+    await insertInvocation({
       id: "ti-legacy",
       createdAt: 1000,
       argBytes: null,
       resultBytes: null,
     });
-    insertInvocation({ id: "ti-new", createdAt: 2000 });
+    await insertInvocation({ id: "ti-new", createdAt: 2000 });
 
-    const rows = queryUnreportedToolExecutedEvents(0, undefined, 100);
+    const rows = await queryUnreportedToolExecutedEvents(0, undefined, 100);
     expect(rows.map((r) => r.id)).toEqual(["ti-new"]);
   });
 
-  test("rows recorded while opted out are never projected, even from a zero watermark", () => {
+  test("rows recorded while opted out are never projected, even from a zero watermark", async () => {
     // End-to-end through the real audit terminal: the write-time opt-out
     // gate persists NULL telemetry columns, which the arg_bytes IS NOT NULL
     // filter excludes permanently — the same mechanism as legacy rows. No
     // watermark state is involved, so no later opt-in can ship these rows.
-    const recordExecuted = (toolName: string): void =>
-      recordToolExecuted({
+    await requireMainDb().run(
+      `INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, 'test', 1000, 1000) ON CONFLICT (id) DO NOTHING`,
+      [CONVERSATION_ID],
+    );
+    const recordExecuted = async (toolName: string): Promise<void> =>
+      await recordToolExecuted({
         conversationId: CONVERSATION_ID,
         toolName,
         input: { path: "/tmp/a" },
@@ -125,16 +188,17 @@ describe("tool-executed-events-store", () => {
         attribution: null,
       });
 
-    recordExecuted("t-opted-in-before");
+    await recordExecuted("t-opted-in-before");
 
     shareAnalytics = false;
-    recordExecuted("t-opted-out");
+    await recordExecuted("t-opted-out");
 
     shareAnalytics = true;
-    recordExecuted("t-opted-in-after");
+    await recordExecuted("t-opted-in-after");
+    await waitForToolRows(3);
 
     // Mid-session opt-out flip: only rows recorded while opted in project.
-    const rows = queryUnreportedToolExecutedEvents(0, undefined, 100);
+    const rows = await queryUnreportedToolExecutedEvents(0, undefined, 100);
     expect(rows.map((r) => r.toolName).sort()).toEqual([
       "t-opted-in-after",
       "t-opted-in-before",
@@ -142,7 +206,18 @@ describe("tool-executed-events-store", () => {
 
     // The audit row itself is still recorded — only its telemetry columns
     // are NULL.
-    const auditRows = getDb().select().from(toolInvocations).all();
+    const auditRows = await requireMainDb().all<{
+      toolName: string;
+      decision: string;
+      argBytes: number | null;
+      resultBytes: number | null;
+      provider: string | null;
+      model: string | null;
+      inferenceProfile: string | null;
+      inferenceProfileSource: string | null;
+    }>(
+      `SELECT tool_name AS "toolName", decision, arg_bytes AS "argBytes", result_bytes AS "resultBytes", provider, model, inference_profile AS "inferenceProfile", inference_profile_source AS "inferenceProfileSource" FROM tool_invocations`,
+    );
     expect(auditRows).toHaveLength(3);
     const optedOut = auditRows.find((r) => r.toolName === "t-opted-out");
     expect(optedOut).toMatchObject({
@@ -156,10 +231,10 @@ describe("tool-executed-events-store", () => {
     });
   });
 
-  test("post-migration rows project with null attribution columns", () => {
-    insertInvocation({ id: "ti-no-attr", createdAt: 1000 });
+  test("post-migration rows project with null attribution columns", async () => {
+    await insertInvocation({ id: "ti-no-attr", createdAt: 1000 });
 
-    const rows = queryUnreportedToolExecutedEvents(0, undefined, 100);
+    const rows = await queryUnreportedToolExecutedEvents(0, undefined, 100);
     expect(rows[0]).toMatchObject({
       argBytes: 2,
       resultBytes: 9,
@@ -170,17 +245,17 @@ describe("tool-executed-events-store", () => {
     });
   });
 
-  test("query advances past the compound (createdAt, id) cursor", () => {
+  test("query advances past the compound (createdAt, id) cursor", async () => {
     // Two rows in the same millisecond: pagination must use the id
     // tiebreaker to make forward progress, not loop.
-    insertInvocation({ id: "ti-1", createdAt: 5000 });
-    insertInvocation({ id: "ti-2", createdAt: 5000 });
-    insertInvocation({ id: "ti-3", createdAt: 6000 });
+    await insertInvocation({ id: "ti-1", createdAt: 5000 });
+    await insertInvocation({ id: "ti-2", createdAt: 5000 });
+    await insertInvocation({ id: "ti-3", createdAt: 6000 });
 
-    const first = queryUnreportedToolExecutedEvents(0, undefined, 1);
+    const first = await queryUnreportedToolExecutedEvents(0, undefined, 1);
     expect(first.map((r) => r.id)).toEqual(["ti-1"]);
 
-    const second = queryUnreportedToolExecutedEvents(
+    const second = await queryUnreportedToolExecutedEvents(
       first[0]!.createdAt,
       first[0]!.id,
       100,
@@ -189,22 +264,25 @@ describe("tool-executed-events-store", () => {
 
     // Without an id cursor the timestamp-only branch is used.
     expect(
-      queryUnreportedToolExecutedEvents(5000, undefined, 100).map((r) => r.id),
+      (await queryUnreportedToolExecutedEvents(5000, undefined, 100)).map(
+        (r) => r.id,
+      ),
     ).toEqual(["ti-3"]);
 
     // Cursor past the last row returns nothing.
     const last = second[second.length - 1]!;
     expect(
-      queryUnreportedToolExecutedEvents(last.createdAt, last.id, 100).length,
+      (await queryUnreportedToolExecutedEvents(last.createdAt, last.id, 100))
+        .length,
     ).toBe(0);
   });
 
-  test("honors the limit", () => {
-    insertInvocation({ id: "ti-l1", createdAt: 1000 });
-    insertInvocation({ id: "ti-l2", createdAt: 2000 });
-    insertInvocation({ id: "ti-l3", createdAt: 3000 });
+  test("honors the limit", async () => {
+    await insertInvocation({ id: "ti-l1", createdAt: 1000 });
+    await insertInvocation({ id: "ti-l2", createdAt: 2000 });
+    await insertInvocation({ id: "ti-l3", createdAt: 3000 });
 
-    const rows = queryUnreportedToolExecutedEvents(0, undefined, 2);
+    const rows = await queryUnreportedToolExecutedEvents(0, undefined, 2);
     expect(rows.map((r) => r.id)).toEqual(["ti-l1", "ti-l2"]);
   });
 });

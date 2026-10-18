@@ -18,18 +18,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import { invalidateConfigCache } from "../../../config/loader.js";
 import { createConversation } from "../../../persistence/conversation-crud.js";
-import { getDb } from "../../../persistence/db-connection.js";
 import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import { recordUsageEvent } from "../../../persistence/llm-usage-store.js";
-import { rawRun } from "../../../persistence/raw-query.js";
 import {
   MEMORY_RETROSPECTIVE_FORK_SOURCE,
   MEMORY_RETROSPECTIVE_SOURCE,
 } from "../../../plugins/defaults/memory/memory-retrospective-constants.js";
-import { describePg } from "../../__tests__/pg-test-db.js";
 import { ROUTES } from "../retrospective-routes.js";
 import type { RouteDefinition } from "../types.js";
 
@@ -40,10 +38,10 @@ let origWorkspaceDir: string | undefined;
 let configPath: string;
 
 async function resetTables(): Promise<void> {
-  const db = getDb();
-  db.run(`DELETE FROM llm_usage_events`);
-  await requireMainDb().run(`DELETE FROM messages`);
-  await requireMainDb().run(`DELETE FROM conversations`);
+  const db = requireMainDb();
+  await db.run(`DELETE FROM llm_usage_events`);
+  await db.run(`DELETE FROM messages`);
+  await db.run(`DELETE FROM conversations`);
 }
 
 function findHandler(operationId: string): RouteDefinition["handler"] {
@@ -81,13 +79,13 @@ async function setCreatedAt(
   );
 }
 
-function recordUsageCostAt(
+async function recordUsageCostAt(
   conversationId: string,
   requestId: string,
   createdAt: number,
   estimatedCostUsd: number,
-): void {
-  const event = recordUsageEvent(
+): Promise<void> {
+  const event = await recordUsageEvent(
     {
       conversationId,
       runId: null,
@@ -105,11 +103,9 @@ function recordUsageCostAt(
     },
     { estimatedCostUsd, pricingStatus: "priced" },
   );
-  rawRun(
-    "test:setUsageCreatedAt",
+  await requireMainDb().run(
     "UPDATE llm_usage_events SET created_at = ? WHERE id = ?",
-    createdAt,
-    event.id,
+    [createdAt, event.id],
   );
 }
 
@@ -284,9 +280,9 @@ describePg("listRetrospectiveRuns handler", () => {
     });
     await setCreatedAt(withWindow.id, 1000);
     await insertMessage(withWindow.id, "assistant", 2000);
-    recordUsageCostAt(withWindow.id, "retro-before", 999, 0.4);
-    recordUsageCostAt(withWindow.id, "retro-inside", 1500, 0.07);
-    recordUsageCostAt(withWindow.id, "retro-after", 2001, 0.5);
+    await recordUsageCostAt(withWindow.id, "retro-before", 999, 0.4);
+    await recordUsageCostAt(withWindow.id, "retro-inside", 1500, 0.07);
+    await recordUsageCostAt(withWindow.id, "retro-after", 2001, 0.5);
 
     const handler = findHandler("listRetrospectiveRuns");
     const result = (await handler({})) as ListRunsResponse;
@@ -349,7 +345,7 @@ describePg("listRetrospectiveRuns handler", () => {
   });
 });
 
-describe("getRetrospectiveConfig handler", () => {
+describePg("getRetrospectiveConfig handler", () => {
   test("reports availability and threshold interval with nextRunAt always null", async () => {
     writeFileSync(
       configPath,

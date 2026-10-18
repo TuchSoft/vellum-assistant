@@ -38,8 +38,8 @@ describe("buildSystemPrompt — tool routing guidance", () => {
     mkdirSync(TEST_DIR, { recursive: true });
   });
 
-  test("does not include ask_question routing guidance", () => {
-    const result = buildSystemPrompt({});
+  test("does not include ask_question routing guidance", async () => {
+    const result = await buildSystemPrompt({});
     expect(result).not.toContain("## Clarifying questions");
     expect(result).not.toContain("ask_question");
   });
@@ -58,8 +58,8 @@ describe("buildSystemPrompt — persona override", () => {
     writeFileSync(join(TEST_DIR, "channels", "telegram.md"), TELEGRAM_SENTINEL);
   });
 
-  test("personaOverride renders the given user + channel persona sections", () => {
-    const result = buildSystemPrompt({
+  test("personaOverride renders the given user + channel persona sections", async () => {
+    const result = await buildSystemPrompt({
       personaOverride: { userSlug: "alice", channelSlug: "telegram" },
     });
 
@@ -68,19 +68,19 @@ describe("buildSystemPrompt — persona override", () => {
     expect(result).not.toContain(DEFAULT_SENTINEL);
   });
 
-  test("no override → trust-context-derived resolution (default persona, vellum channel)", () => {
+  test("no override → trust-context-derived resolution (default persona, vellum channel)", async () => {
     // No trust context and no resolvable guardian contact in this test env,
     // so the user persona falls back to users/default.md and the channel
     // section resolves channels/vellum.md (absent → omitted).
-    const result = buildSystemPrompt({});
+    const result = await buildSystemPrompt({});
 
     expect(result).toContain(DEFAULT_SENTINEL);
     expect(result).not.toContain(ALICE_SENTINEL);
     expect(result).not.toContain(TELEGRAM_SENTINEL);
   });
 
-  test("partial override: userSlug alone leaves channel resolution untouched", () => {
-    const result = buildSystemPrompt({
+  test("partial override: userSlug alone leaves channel resolution untouched", async () => {
+    const result = await buildSystemPrompt({
       personaOverride: { userSlug: "alice" },
     });
 
@@ -88,8 +88,8 @@ describe("buildSystemPrompt — persona override", () => {
     expect(result).not.toContain(TELEGRAM_SENTINEL);
   });
 
-  test("override userSlug with no matching file falls back to users/default.md", () => {
-    const result = buildSystemPrompt({
+  test("override userSlug with no matching file falls back to users/default.md", async () => {
+    const result = await buildSystemPrompt({
       personaOverride: { userSlug: "missing-user" },
     });
 
@@ -126,8 +126,8 @@ describe("buildSystemPrompt — default persona trust-class guardrail", () => {
     }
   });
 
-  test("stranger (unknown) sees the guardrail and the stranger greeting", () => {
-    const result = buildSystemPrompt({
+  test("stranger (unknown) sees the guardrail and the stranger greeting", async () => {
+    const result = await buildSystemPrompt({
       trustContext: { sourceChannel: "slack", trustClass: "unknown" },
     });
 
@@ -136,8 +136,8 @@ describe("buildSystemPrompt — default persona trust-class guardrail", () => {
     expect(result).not.toContain(TRUSTED_GREETING);
   });
 
-  test("trusted contact sees the guardrail and the trusted greeting", () => {
-    const result = buildSystemPrompt({
+  test("trusted contact sees the guardrail and the trusted greeting", async () => {
+    const result = await buildSystemPrompt({
       trustContext: { sourceChannel: "slack", trustClass: "trusted_contact" },
     });
 
@@ -146,8 +146,8 @@ describe("buildSystemPrompt — default persona trust-class guardrail", () => {
     expect(result).not.toContain(STRANGER_GREETING);
   });
 
-  test("unverified contact is framed like a trusted contact", () => {
-    const result = buildSystemPrompt({
+  test("unverified contact is framed like a trusted contact", async () => {
+    const result = await buildSystemPrompt({
       trustContext: {
         sourceChannel: "slack",
         trustClass: "unverified_contact",
@@ -159,10 +159,10 @@ describe("buildSystemPrompt — default persona trust-class guardrail", () => {
     expect(result).not.toContain(STRANGER_GREETING);
   });
 
-  test("guardian trust class gates the whole default persona off", () => {
+  test("guardian trust class gates the whole default persona off", async () => {
     // A guardian normally renders their own users/<slug>.md; if they ever fall
     // back to default.md, every section is gated off and nothing leaks.
-    const result = buildSystemPrompt({
+    const result = await buildSystemPrompt({
       trustContext: { sourceChannel: "vellum", trustClass: "guardian" },
     });
 
@@ -171,14 +171,14 @@ describe("buildSystemPrompt — default persona trust-class guardrail", () => {
     expect(result).not.toContain(STRANGER_GREETING);
   });
 
-  test("renders for a non-guardian even when HTTP auth is disabled", () => {
+  test("renders for a non-guardian even when HTTP auth is disabled", async () => {
     // Platform-managed deployments run with DISABLE_HTTP_AUTH=true. A *present*
     // trustContext must keep the actor's real class under that posture
     // (resolveTrustClass only fail-safes *unresolved* actors), or the guardrail
     // would silently switch off for the non-guardian channel actors it exists
     // to protect.
     process.env.DISABLE_HTTP_AUTH = "true";
-    const result = buildSystemPrompt({
+    const result = await buildSystemPrompt({
       trustContext: { sourceChannel: "slack", trustClass: "unknown" },
     });
 
@@ -186,31 +186,31 @@ describe("buildSystemPrompt — default persona trust-class guardrail", () => {
     expect(result).toContain(STRANGER_GREETING);
   });
 
-  test("gates off for an unresolved local build when HTTP auth is disabled", () => {
+  test("gates off for an unresolved local build when HTTP auth is disabled", async () => {
     // Initial-prompt warming, home generation, and btw sidechains build
     // prompts with NO trustContext on behalf of the owner. In an auth-disabled
     // (local / platform-managed) deployment that unresolved actor is the
     // guardian, so the guardrail must not render into those guardian-facing
     // prompts (fail-stranger would stonewall the owner about their own data).
     process.env.DISABLE_HTTP_AUTH = "true";
-    const result = buildSystemPrompt({});
+    const result = await buildSystemPrompt({});
 
     expect(result).not.toContain(GUARDRAIL);
     expect(result).not.toContain(TRUSTED_GREETING);
     expect(result).not.toContain(STRANGER_GREETING);
   });
 
-  test("fails closed to the guardrail for an unresolved build when auth is enabled", () => {
+  test("fails closed to the guardrail for an unresolved build when auth is enabled", async () => {
     // With auth enabled there is no basis to assume the unresolved actor is
     // the guardian, so an unclassifiable build keeps the boundary.
     delete process.env.DISABLE_HTTP_AUTH;
-    const result = buildSystemPrompt({});
+    const result = await buildSystemPrompt({});
 
     expect(result).toContain(GUARDRAIL);
     expect(result).toContain(STRANGER_GREETING);
   });
 
-  test("boundary survives a per-contact persona file replacing default.md", () => {
+  test("boundary survives a per-contact persona file replacing default.md", async () => {
     // Every contact already has a `users/<slug>.md` filename reserved on
     // their contact record; the moment that file exists with content it
     // replaces `default.md` in the `10-user-persona` section. The privacy
@@ -221,7 +221,7 @@ describe("buildSystemPrompt — default persona trust-class guardrail", () => {
       "# Jane\n\nJane likes concise answers.\n",
       "utf-8",
     );
-    const result = buildSystemPrompt({
+    const result = await buildSystemPrompt({
       trustContext: { sourceChannel: "slack", trustClass: "trusted_contact" },
       personaOverride: { userSlug: "jane" },
     });
@@ -233,13 +233,13 @@ describe("buildSystemPrompt — default persona trust-class guardrail", () => {
     expect(result).toContain(GUARDRAIL);
   });
 
-  test("boundary is omitted for a guardian rendering their own persona file", () => {
+  test("boundary is omitted for a guardian rendering their own persona file", async () => {
     writeFileSync(
       join(TEST_DIR, "users", "owner.md"),
       "# Owner\n\nThe guardian's own profile.\n",
       "utf-8",
     );
-    const result = buildSystemPrompt({
+    const result = await buildSystemPrompt({
       trustContext: { sourceChannel: "vellum", trustClass: "guardian" },
       personaOverride: { userSlug: "owner" },
     });
@@ -248,14 +248,14 @@ describe("buildSystemPrompt — default persona trust-class guardrail", () => {
     expect(result).not.toContain(GUARDRAIL);
   });
 
-  test("never leaks literal mustache tags or comment lines", () => {
+  test("never leaks literal mustache tags or comment lines", async () => {
     for (const trustClass of [
       "unknown",
       "trusted_contact",
       "unverified_contact",
       "guardian",
     ] as const) {
-      const result = buildSystemPrompt({
+      const result = await buildSystemPrompt({
         trustContext: { sourceChannel: "slack", trustClass },
       });
       expect(result).not.toContain("{{");
@@ -273,11 +273,11 @@ describe("buildSystemPrompt — hasNoClient no longer affects the prompt", () =>
   // No system-prompt section branches on hasNoClient, so neither the flag nor
   // the SystemPromptPersonaOverride.hasNoClient pin changes prompt output.
   // Guards against a future section re-coupling to the flag.
-  test("output is identical regardless of the flag or its pin", () => {
-    const base = buildSystemPrompt({ hasNoClient: false });
-    expect(buildSystemPrompt({ hasNoClient: true })).toBe(base);
+  test("output is identical regardless of the flag or its pin", async () => {
+    const base = await buildSystemPrompt({ hasNoClient: false });
+    expect(await buildSystemPrompt({ hasNoClient: true })).toBe(base);
     expect(
-      buildSystemPrompt({
+      await buildSystemPrompt({
         hasNoClient: true,
         personaOverride: { hasNoClient: false },
       }),
@@ -303,25 +303,25 @@ describe("maybeReseedBootstrap — content-automation template", () => {
     return readFileSync(join(TEST_DIR, "BOOTSTRAP.md"), "utf-8");
   }
 
-  test("loads the geo-writing skill on first turn", () => {
+  test("loads the geo-writing skill on first turn", async () => {
     const content = reseedAndRead();
     expect(content).toContain("geo-writing");
   });
 
-  test("uses skill-first onboarding approach", () => {
+  test("uses skill-first onboarding approach", async () => {
     const content = reseedAndRead();
     expect(content).toContain("Skill-First Onboarding");
     expect(content).toContain("The skill is the onboarding");
   });
 
-  test("includes comment-driven edit loop", () => {
+  test("includes comment-driven edit loop", async () => {
     const content = reseedAndRead();
     expect(content).toContain("comment-driven");
     expect(content).toContain("comment_resolve");
     expect(content).toContain("document_update");
   });
 
-  test("references VOICE.md for voice capture", () => {
+  test("references VOICE.md for voice capture", async () => {
     const content = reseedAndRead();
     expect(content).toContain("VOICE.md");
   });
@@ -338,7 +338,7 @@ describe("maybeReseedBootstrap — activation rail template", () => {
     );
   });
 
-  test("replaces generic bootstrap with the activation rail template", () => {
+  test("replaces generic bootstrap with the activation rail template", async () => {
     maybeReseedBootstrap("BOOTSTRAP-ACTIVATION-RAIL.md");
     const content = readFileSync(join(TEST_DIR, "BOOTSTRAP.md"), "utf-8");
 

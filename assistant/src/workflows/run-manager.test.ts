@@ -73,7 +73,8 @@ function makeFakeJournal() {
         rows.set(input.id, run);
         return run;
       },
-      getRun: (id: string): WorkflowRun | null => rows.get(id) ?? null,
+      getRun: async (id: string): Promise<WorkflowRun | null> =>
+        rows.get(id) ?? null,
       updateRun: (
         id: string,
         patch: Partial<WorkflowRun>,
@@ -223,36 +224,36 @@ function makeHarness(opts?: {
 }
 
 describe("WorkflowRunManager.start — concurrent-run cap", () => {
-  test("the (N+1)th concurrent start is rejected", () => {
+  test("the (N+1)th concurrent start is rejected", async () => {
     const h = makeHarness({ maxConcurrentRuns: 2 });
-    const startOne = () =>
-      h.manager.start({
+    const startOne = async () =>
+      await h.manager.start({
         scriptSource: "export const meta = { name: 'x', description: 'y' }",
         args: {},
         manifest: { tools: [], hostFunctions: [], persona: false },
         trustContext: TRUST,
       });
 
-    startOne();
-    startOne();
+    await startOne();
+    await startOne();
     expect(h.manager.inflightCount()).toBe(2);
-    expect(() => startOne()).toThrow(WorkflowRunCapError);
+    await expect(startOne()).rejects.toThrow(WorkflowRunCapError);
     // The rejected start created no extra run row.
     expect(h.fake.rows.size).toBe(2);
   });
 
   test("a finished run frees a cap slot", async () => {
     const h = makeHarness({ maxConcurrentRuns: 1 });
-    const start = () =>
-      h.manager.start({
+    const start = async () =>
+      await h.manager.start({
         scriptSource: "export const meta = { name: 'x', description: 'y' }",
         args: {},
         manifest: { tools: [], hostFunctions: [], persona: false },
         trustContext: TRUST,
       });
 
-    start();
-    expect(() => start()).toThrow(WorkflowRunCapError);
+    await start();
+    await expect(start()).rejects.toThrow(WorkflowRunCapError);
 
     await h.resolveLatest({
       status: "completed",
@@ -264,14 +265,14 @@ describe("WorkflowRunManager.start — concurrent-run cap", () => {
 
     expect(h.manager.inflightCount()).toBe(0);
     // Slot freed: a second run now starts without throwing.
-    expect(() => start()).not.toThrow();
+    await expect(start()).resolves.toBeDefined();
   });
 });
 
 describe("WorkflowRunManager.abort", () => {
-  test("abort signals the engine's AbortController", () => {
+  test("abort signals the engine's AbortController", async () => {
     const h = makeHarness();
-    const { runId } = h.manager.start({
+    const { runId } = await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -286,7 +287,7 @@ describe("WorkflowRunManager.abort", () => {
 
   test("an aborted run resolves with status 'aborted' and persists it", async () => {
     const h = makeHarness();
-    const { runId } = h.manager.start({
+    const { runId } = await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -304,7 +305,7 @@ describe("WorkflowRunManager.abort", () => {
       outputTokens: 0,
     });
 
-    expect(h.manager.status(runId)?.status).toBe("aborted");
+    expect((await h.manager.status(runId))?.status).toBe("aborted");
     const completed = h.broadcasts.find((b) => b.type === "workflow_completed");
     expect(completed?.status).toBe("aborted");
   });
@@ -313,7 +314,7 @@ describe("WorkflowRunManager.abort", () => {
 describe("WorkflowRunManager — progress events", () => {
   test("onProgress phase/log are republished as workflow_progress", async () => {
     const h = makeHarness();
-    h.manager.start({
+    await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -325,6 +326,7 @@ describe("WorkflowRunManager — progress events", () => {
     const onProgress = h.executeCalls[0]!.onProgress!;
     onProgress({ type: "phase", title: "Gathering" });
     onProgress({ type: "log", message: "step done" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     const progress = h.broadcasts.filter((b) => b.type === "workflow_progress");
     expect(progress).toHaveLength(2);
@@ -341,9 +343,9 @@ describe("WorkflowRunManager — progress events", () => {
     });
   });
 
-  test("a run with no conversation broadcasts progress unscoped (no conversationId)", () => {
+  test("a run with no conversation broadcasts progress unscoped (no conversationId)", async () => {
     const h = makeHarness();
-    h.manager.start({
+    await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -354,6 +356,7 @@ describe("WorkflowRunManager — progress events", () => {
     const onProgress = h.executeCalls[0]!.onProgress!;
     onProgress({ type: "phase", title: "Gathering" });
     onProgress({ type: "log", message: "step done" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     // `workflow_progress` is a pre-existing event; it still broadcasts for a
     // conversationless run, just without a `conversationId` (unscoped).
@@ -367,7 +370,7 @@ describe("WorkflowRunManager — progress events", () => {
     expect(progress[0]).not.toHaveProperty("conversationId");
   });
 
-  test("onLeaf start/finish are republished as scoped leaf events", () => {
+  test("onLeaf start/finish are republished as scoped leaf events", async () => {
     const fakeEngine: WorkflowRunManagerDeps["executeWorkflow"] = (options) => {
       options.onLeaf?.({
         type: "leaf_started",
@@ -391,7 +394,7 @@ describe("WorkflowRunManager — progress events", () => {
     };
     const h = makeHarness({ engine: fakeEngine });
 
-    const { runId } = h.manager.start({
+    const { runId } = await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -428,9 +431,9 @@ describe("WorkflowRunManager — progress events", () => {
     });
   });
 
-  test("a run with no conversation gets no onLeaf callback", () => {
+  test("a run with no conversation gets no onLeaf callback", async () => {
     const h = makeHarness();
-    h.manager.start({
+    await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -442,9 +445,9 @@ describe("WorkflowRunManager — progress events", () => {
 });
 
 describe("WorkflowRunManager.start — workflow_started", () => {
-  test("start with a conversation broadcasts workflow_started carrying toolUseId", () => {
+  test("start with a conversation broadcasts workflow_started carrying toolUseId", async () => {
     const h = makeHarness();
-    const { runId } = h.manager.start({
+    const { runId } = await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -464,9 +467,9 @@ describe("WorkflowRunManager.start — workflow_started", () => {
     });
   });
 
-  test("start without a conversation broadcasts no workflow_started", () => {
+  test("start without a conversation broadcasts no workflow_started", async () => {
     const h = makeHarness();
-    h.manager.start({
+    await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -476,7 +479,7 @@ describe("WorkflowRunManager.start — workflow_started", () => {
     expect(h.broadcasts.some((b) => b.type === "workflow_started")).toBe(false);
   });
 
-  test("resume never broadcasts workflow_started", () => {
+  test("resume never broadcasts workflow_started", async () => {
     const h = makeHarness({});
     seedRun(h, {
       id: "run-x",
@@ -484,7 +487,7 @@ describe("WorkflowRunManager.start — workflow_started", () => {
       conversationId: "conv-1",
     });
 
-    h.manager.resume("run-x");
+    await h.manager.resume("run-x");
 
     expect(h.broadcasts.some((b) => b.type === "workflow_started")).toBe(false);
   });
@@ -493,7 +496,7 @@ describe("WorkflowRunManager.start — workflow_started", () => {
 describe("WorkflowRunManager — completion", () => {
   test("completion publishes workflow_completed and injects into the conversation", async () => {
     const h = makeHarness();
-    const { runId } = h.manager.start({
+    const { runId } = await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -531,7 +534,7 @@ describe("WorkflowRunManager — completion", () => {
     expect(h.wakes[0]!.hint).toContain("completed");
 
     // Final stats persisted to the run row.
-    const run = h.manager.status(runId);
+    const run = await h.manager.status(runId);
     expect(run?.status).toBe("completed");
     expect(run?.agentsSpawned).toBe(4);
     expect(run?.inputTokens).toBe(100);
@@ -541,7 +544,7 @@ describe("WorkflowRunManager — completion", () => {
   test("a large result is truncated in the summary but kept whole on the run row", async () => {
     const h = makeHarness();
     const big = "x".repeat(50_000);
-    const { runId } = h.manager.start({
+    const { runId } = await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -566,12 +569,12 @@ describe("WorkflowRunManager — completion", () => {
     expect(h.wakes[0]!.hint).toContain("[truncated");
 
     // The durable run row keeps the FULL, untruncated result.
-    expect(h.manager.status(runId)?.result).toBe(big);
+    expect((await h.manager.status(runId))?.result).toBe(big);
   });
 
   test("no conversationId → pre-existing events broadcast unscoped; UI events and wake are gated", async () => {
     const h = makeHarness();
-    h.manager.start({
+    await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -612,7 +615,7 @@ describe("WorkflowRunManager.start — saved-workflow name resolution", () => {
   const SAVED_SOURCE =
     "export const meta = { name: 'saved-flow', description: 'd' }";
 
-  test("start({ name }) resolves the library source and runs it", () => {
+  test("start({ name }) resolves the library source and runs it", async () => {
     const h = makeHarness({
       getWorkflow: (name) =>
         name === "saved-flow"
@@ -620,7 +623,7 @@ describe("WorkflowRunManager.start — saved-workflow name resolution", () => {
           : null,
     });
 
-    const { runId } = h.manager.start({
+    const { runId } = await h.manager.start({
       name: "saved-flow",
       args: { x: 1 },
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -635,16 +638,16 @@ describe("WorkflowRunManager.start — saved-workflow name resolution", () => {
     expect(h.fake.rows.get(runId)?.name).toBe("saved-flow");
   });
 
-  test("start({ name }) with an unknown name throws and creates no run row", () => {
+  test("start({ name }) with an unknown name throws and creates no run row", async () => {
     const h = makeHarness({ getWorkflow: () => null });
-    expect(() =>
+    await expect(
       h.manager.start({
         name: "ghost",
         args: {},
         manifest: { tools: [], hostFunctions: [], persona: false },
         trustContext: TRUST,
       }),
-    ).toThrow(WorkflowNotFoundError);
+    ).rejects.toThrow(WorkflowNotFoundError);
     expect(h.executeCalls).toHaveLength(0);
     expect(h.fake.rows.size).toBe(0);
   });
@@ -680,12 +683,12 @@ function seedRun(
 }
 
 describe("WorkflowRunManager.reconcileOrphanedRuns", () => {
-  test("flips running rows to interrupted, leaving counters untouched", () => {
+  test("flips running rows to interrupted, leaving counters untouched", async () => {
     const h = makeHarness({});
     seedRun(h, { id: "r-run", status: "running", agentsSpawned: 7 });
     seedRun(h, { id: "r-done", status: "completed", agentsSpawned: 2 });
 
-    const n = h.manager.reconcileOrphanedRuns();
+    const n = await h.manager.reconcileOrphanedRuns();
 
     expect(n).toBe(1);
     const reconciled = h.fake.rows.get("r-run")!;
@@ -709,7 +712,7 @@ describe("WorkflowRunManager.resume", () => {
       agentsSpawned: 4,
     });
 
-    const { runId } = h.manager.resume("run-x");
+    const { runId } = await h.manager.resume("run-x");
     expect(runId).toBe("run-x");
 
     // Engine invoked with the same runId + reconstructed args; no NEW row.
@@ -730,13 +733,13 @@ describe("WorkflowRunManager.resume", () => {
       outputTokens: 90,
     });
 
-    const run = h.manager.status("run-x");
+    const run = await h.manager.status("run-x");
     expect(run?.status).toBe("completed");
     expect(run?.agentsSpawned).toBe(6);
     expect(h.manager.inflightCount()).toBe(0);
   });
 
-  test("resume replays the SAME (non-guardian) trust the run started under — never escalates", () => {
+  test("resume replays the SAME (non-guardian) trust the run started under — never escalates", async () => {
     const h = makeHarness({});
     // A run started by a low-trust actor: persisted trust is NOT guardian.
     const lowTrust: TrustContext = {
@@ -751,7 +754,7 @@ describe("WorkflowRunManager.resume", () => {
       trust: lowTrust,
     });
 
-    h.manager.resume("run-x");
+    await h.manager.resume("run-x");
 
     const replayed = h.executeCalls[0]!.trustContext;
     // SECURITY: resume must reconstruct the exact trust the run started under,
@@ -761,7 +764,7 @@ describe("WorkflowRunManager.resume", () => {
     expect(replayed.sourceChannel).toBe("slack");
   });
 
-  test("resume of a trusted_contact run keeps trusted_contact (no escalation)", () => {
+  test("resume of a trusted_contact run keeps trusted_contact (no escalation)", async () => {
     const h = makeHarness({});
     seedRun(h, {
       id: "run-tc",
@@ -769,24 +772,24 @@ describe("WorkflowRunManager.resume", () => {
       trust: { sourceChannel: "slack", trustClass: "trusted_contact" },
     });
 
-    h.manager.resume("run-tc");
+    await h.manager.resume("run-tc");
 
     expect(h.executeCalls[0]!.trustContext.trustClass).toBe("trusted_contact");
   });
 
-  test("SECURITY: a legacy run row with no persisted trust resumes at LOW trust, never guardian", () => {
+  test("SECURITY: a legacy run row with no persisted trust resumes at LOW trust, never guardian", async () => {
     const h = makeHarness({});
     // Legacy row: written before the trust_json column existed → trust is null.
     seedRun(h, { id: "run-legacy", status: "interrupted", trust: null });
 
-    h.manager.resume("run-legacy");
+    await h.manager.resume("run-legacy");
 
     const replayed = h.executeCalls[0]!.trustContext;
     expect(replayed.trustClass).toBe("unknown");
     expect(replayed.trustClass).not.toBe("guardian");
   });
 
-  test("a persisted trust with an unrecognized trustClass falls back to LOW trust", () => {
+  test("a persisted trust with an unrecognized trustClass falls back to LOW trust", async () => {
     const h = makeHarness({});
     seedRun(h, {
       id: "run-bad",
@@ -795,18 +798,18 @@ describe("WorkflowRunManager.resume", () => {
       trust: { sourceChannel: "slack", trustClass: "superuser" },
     });
 
-    h.manager.resume("run-bad");
+    await h.manager.resume("run-bad");
 
     expect(h.executeCalls[0]!.trustContext.trustClass).toBe("unknown");
   });
 
-  test("start persists the originating trust context on the run row", () => {
+  test("start persists the originating trust context on the run row", async () => {
     const h = makeHarness({});
     const startTrust: TrustContext = {
       sourceChannel: "slack",
       trustClass: "unknown",
     };
-    const { runId } = h.manager.start({
+    const { runId } = await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -816,11 +819,11 @@ describe("WorkflowRunManager.resume", () => {
     expect(h.fake.rows.get(runId)?.trust).toEqual(startTrust);
   });
 
-  test("a non-interrupted run throws WorkflowResumeNotPossibleError and does not invoke the engine", () => {
+  test("a non-interrupted run throws WorkflowResumeNotPossibleError and does not invoke the engine", async () => {
     const h = makeHarness({});
     seedRun(h, { id: "run-done", status: "completed" });
 
-    expect(() => h.manager.resume("run-done")).toThrow(
+    await expect(h.manager.resume("run-done")).rejects.toThrow(
       WorkflowResumeNotPossibleError,
     );
     expect(h.executeCalls).toHaveLength(0);
@@ -828,18 +831,18 @@ describe("WorkflowRunManager.resume", () => {
     expect(h.fake.rows.get("run-done")!.status).toBe("completed");
   });
 
-  test("an unknown run throws WorkflowResumeNotPossibleError", () => {
+  test("an unknown run throws WorkflowResumeNotPossibleError", async () => {
     const h = makeHarness({});
-    expect(() => h.manager.resume("ghost")).toThrow(
+    await expect(h.manager.resume("ghost")).rejects.toThrow(
       WorkflowResumeNotPossibleError,
     );
     expect(h.executeCalls).toHaveLength(0);
   });
 
-  test("resume respects the concurrent-run cap", () => {
+  test("resume respects the concurrent-run cap", async () => {
     const h = makeHarness({ maxConcurrentRuns: 1 });
     // Occupy the single slot with a live run.
-    h.manager.start({
+    await h.manager.start({
       scriptSource: "export const meta = { name: 'x', description: 'y' }",
       args: {},
       manifest: { tools: [], hostFunctions: [], persona: false },
@@ -847,6 +850,8 @@ describe("WorkflowRunManager.resume", () => {
     });
     seedRun(h, { id: "run-x", status: "interrupted" });
 
-    expect(() => h.manager.resume("run-x")).toThrow(WorkflowRunCapError);
+    await expect(h.manager.resume("run-x")).rejects.toThrow(
+      WorkflowRunCapError,
+    );
   });
 });

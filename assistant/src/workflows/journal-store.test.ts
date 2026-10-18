@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { getDb, getSqlite } from "../persistence/db-connection.js";
+import { describePg } from "../__tests__/pg-test-db.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
-import { migrateWorkflowRuns } from "../persistence/migrations/284-workflow-runs.js";
 import {
   appendJournalEntry,
   createRun,
@@ -18,33 +18,33 @@ await initializeDb();
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function resetTables(): void {
-  getSqlite().exec("DELETE FROM workflow_journal");
-  getSqlite().exec("DELETE FROM workflow_runs");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM workflow_journal`);
+  await db.run(`DELETE FROM workflow_runs`);
 }
 
-describe("workflow journal store", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("workflow journal store", () => {
+  beforeEach(async () => {
+    await resetTables();
   });
 
-  test("the migration is idempotent (re-running is a no-op)", () => {
-    // initializeDb (called at module load) already ran the migration once.
-    // Running it directly a second and third time must not throw and must
-    // leave the tables intact and usable.
-    expect(() => migrateWorkflowRuns(getDb())).not.toThrow();
-    expect(() => migrateWorkflowRuns(getDb())).not.toThrow();
+  test("the migration is idempotent (re-running is a no-op)", async () => {
+    // initializeDb (called at module load) already applied the migrations.
+    // Running it again must not throw and must leave the tables usable.
+    await initializeDb();
+    await initializeDb();
 
-    createRun({
+    await createRun({
       id: "wf-idem",
       scriptSource: "console.log(1)",
       scriptHash: "h1",
     });
-    expect(getRun("wf-idem")?.id).toBe("wf-idem");
+    expect((await getRun("wf-idem"))?.id).toBe("wf-idem");
   });
 
-  test("createRun round-trips all fields with sane defaults", () => {
-    const run = createRun({
+  test("createRun round-trips all fields with sane defaults", async () => {
+    const run = await createRun({
       id: "wf-1",
       name: "nightly digest",
       scriptSource: "await agent('x')",
@@ -75,11 +75,11 @@ describe("workflow journal store", () => {
     expect(run.createdAt).toBeGreaterThan(0);
     expect(run.updatedAt).toBeGreaterThan(0);
 
-    expect(getRun("wf-1")).toEqual(run);
+    expect(await getRun("wf-1")).toEqual(run);
   });
 
-  test("optional fields default to null", () => {
-    const run = createRun({
+  test("optional fields default to null", async () => {
+    const run = await createRun({
       id: "wf-min",
       scriptSource: "noop",
       scriptHash: "h",
@@ -93,14 +93,14 @@ describe("workflow journal store", () => {
     });
   });
 
-  test("updateRun patches only provided fields and bumps updated_at", () => {
-    const created = createRun({
+  test("updateRun patches only provided fields and bumps updated_at", async () => {
+    const created = await createRun({
       id: "wf-2",
       scriptSource: "s",
       scriptHash: "h",
     });
 
-    const updated = updateRun("wf-2", {
+    const updated = await updateRun("wf-2", {
       status: "running",
       agentsSpawned: 3,
       inputTokens: 100,
@@ -120,14 +120,14 @@ describe("workflow journal store", () => {
     expect(updated!.updatedAt!).toBeGreaterThanOrEqual(created.updatedAt!);
   });
 
-  test("updateRun returns null for an unknown run", () => {
-    expect(updateRun("nope", { status: "failed" })).toBeNull();
+  test("updateRun returns null for an unknown run", async () => {
+    expect(await updateRun("nope", { status: "failed" })).toBeNull();
   });
 
-  test("finishRun stamps terminal status, result, and finished_at", () => {
-    createRun({ id: "wf-3", scriptSource: "s", scriptHash: "h" });
+  test("finishRun stamps terminal status, result, and finished_at", async () => {
+    await createRun({ id: "wf-3", scriptSource: "s", scriptHash: "h" });
 
-    const finished = finishRun("wf-3", {
+    const finished = await finishRun("wf-3", {
       status: "completed",
       result: { ok: true, count: 2 },
     });
@@ -140,19 +140,19 @@ describe("workflow journal store", () => {
     expect(finished!.finishedAt).toBeGreaterThan(0);
   });
 
-  test("finishRun records failure error text", () => {
-    createRun({ id: "wf-fail", scriptSource: "s", scriptHash: "h" });
-    const finished = finishRun("wf-fail", {
+  test("finishRun records failure error text", async () => {
+    await createRun({ id: "wf-fail", scriptSource: "s", scriptHash: "h" });
+    const finished = await finishRun("wf-fail", {
       status: "failed",
       error: "boom",
     });
     expect(finished).toMatchObject({ status: "failed", error: "boom" });
   });
 
-  test("appendJournalEntry + getJournal round-trips in seq order", () => {
-    createRun({ id: "wf-j", scriptSource: "s", scriptHash: "h" });
+  test("appendJournalEntry + getJournal round-trips in seq order", async () => {
+    await createRun({ id: "wf-j", scriptSource: "s", scriptHash: "h" });
 
-    appendJournalEntry({
+    await appendJournalEntry({
       runId: "wf-j",
       seq: 1,
       callHash: "c1",
@@ -161,7 +161,7 @@ describe("workflow journal store", () => {
       result: { text: "ra" },
       status: "completed",
     });
-    appendJournalEntry({
+    await appendJournalEntry({
       runId: "wf-j",
       seq: 0,
       callHash: "c0",
@@ -171,7 +171,7 @@ describe("workflow journal store", () => {
       status: "completed",
     });
 
-    const journal = getJournal("wf-j");
+    const journal = await getJournal("wf-j");
     expect(journal.map((e) => e.seq)).toEqual([0, 1]);
     expect(journal[0]).toMatchObject({
       runId: "wf-j",
@@ -189,10 +189,10 @@ describe("workflow journal store", () => {
     });
   });
 
-  test("appendJournalEntry round-trips per-leaf token usage", () => {
-    createRun({ id: "wf-tok", scriptSource: "s", scriptHash: "h" });
+  test("appendJournalEntry round-trips per-leaf token usage", async () => {
+    await createRun({ id: "wf-tok", scriptSource: "s", scriptHash: "h" });
 
-    appendJournalEntry({
+    await appendJournalEntry({
       runId: "wf-tok",
       seq: 0,
       callHash: "c0",
@@ -204,7 +204,7 @@ describe("workflow journal store", () => {
       outputTokens: 45,
     });
     // A leaf with no recorded usage stores NULL → reads back as undefined.
-    appendJournalEntry({
+    await appendJournalEntry({
       runId: "wf-tok",
       seq: 1,
       callHash: "c1",
@@ -214,7 +214,7 @@ describe("workflow journal store", () => {
       status: "failed",
     });
 
-    const journal = getJournal("wf-tok");
+    const journal = await getJournal("wf-tok");
     expect(journal[0]).toMatchObject({
       seq: 0,
       inputTokens: 120,
@@ -224,10 +224,14 @@ describe("workflow journal store", () => {
     expect(journal[1].outputTokens).toBeUndefined();
   });
 
-  test("appendJournalEntry upserts token usage on a changed-hash re-run", () => {
-    createRun({ id: "wf-tok-resume", scriptSource: "s", scriptHash: "h" });
+  test("appendJournalEntry upserts token usage on a changed-hash re-run", async () => {
+    await createRun({
+      id: "wf-tok-resume",
+      scriptSource: "s",
+      scriptHash: "h",
+    });
 
-    appendJournalEntry({
+    await appendJournalEntry({
       runId: "wf-tok-resume",
       seq: 0,
       callHash: "hash-old",
@@ -238,7 +242,7 @@ describe("workflow journal store", () => {
       outputTokens: 5,
     });
     // Resume re-runs the leaf with new usage; the upsert overwrites the tokens.
-    appendJournalEntry({
+    await appendJournalEntry({
       runId: "wf-tok-resume",
       seq: 0,
       callHash: "hash-new",
@@ -249,7 +253,7 @@ describe("workflow journal store", () => {
       outputTokens: 12,
     });
 
-    const journal = getJournal("wf-tok-resume");
+    const journal = await getJournal("wf-tok-resume");
     expect(journal).toHaveLength(1);
     expect(journal[0]).toMatchObject({
       seq: 0,
@@ -259,10 +263,10 @@ describe("workflow journal store", () => {
     });
   });
 
-  test("appendJournalEntry is idempotent on (run_id, seq)", () => {
-    createRun({ id: "wf-dup", scriptSource: "s", scriptHash: "h" });
+  test("appendJournalEntry is idempotent on (run_id, seq)", async () => {
+    await createRun({ id: "wf-dup", scriptSource: "s", scriptHash: "h" });
 
-    appendJournalEntry({
+    await appendJournalEntry({
       runId: "wf-dup",
       seq: 0,
       callHash: "c0",
@@ -270,7 +274,7 @@ describe("workflow journal store", () => {
       status: "completed",
     });
     // Replayed append for the same seq must not double-insert.
-    appendJournalEntry({
+    await appendJournalEntry({
       runId: "wf-dup",
       seq: 0,
       callHash: "c0",
@@ -278,14 +282,14 @@ describe("workflow journal store", () => {
       status: "completed",
     });
 
-    expect(getJournal("wf-dup")).toHaveLength(1);
+    expect(await getJournal("wf-dup")).toHaveLength(1);
   });
 
-  test("appendJournalEntry upserts a changed-hash re-run at the same seq", () => {
-    createRun({ id: "wf-resume", scriptSource: "s", scriptHash: "h" });
+  test("appendJournalEntry upserts a changed-hash re-run at the same seq", async () => {
+    await createRun({ id: "wf-resume", scriptSource: "s", scriptHash: "h" });
 
     // First run: leaf at seq 0 produces one (hash, result).
-    appendJournalEntry({
+    await appendJournalEntry({
       runId: "wf-resume",
       seq: 0,
       callHash: "hash-old",
@@ -297,7 +301,7 @@ describe("workflow journal store", () => {
 
     // Resume: the leaf's input CHANGED, so it re-runs and re-appends a new
     // (hash, result) at the SAME seq. The stale row must be overwritten.
-    appendJournalEntry({
+    await appendJournalEntry({
       runId: "wf-resume",
       seq: 0,
       callHash: "hash-new",
@@ -307,7 +311,7 @@ describe("workflow journal store", () => {
       status: "completed",
     });
 
-    const journal = getJournal("wf-resume");
+    const journal = await getJournal("wf-resume");
     // Still exactly one row at seq 0 (no duplicate).
     expect(journal).toHaveLength(1);
     expect(journal[0]).toMatchObject({
@@ -319,94 +323,98 @@ describe("workflow journal store", () => {
     });
   });
 
-  test("listRuns returns newest-first and honors limit + status filter", () => {
+  test("listRuns returns newest-first and honors limit + status filter", async () => {
     // created_at is wall-clock; force distinct ordering via direct timestamps.
-    createRun({ id: "old", scriptSource: "s", scriptHash: "h" });
-    getSqlite().exec(
+    await createRun({ id: "old", scriptSource: "s", scriptHash: "h" });
+    await requireMainDb().run(
       "UPDATE workflow_runs SET created_at = 1000 WHERE id = 'old'",
     );
-    createRun({ id: "mid", scriptSource: "s", scriptHash: "h" });
-    getSqlite().exec(
+    await createRun({ id: "mid", scriptSource: "s", scriptHash: "h" });
+    await requireMainDb().run(
       "UPDATE workflow_runs SET created_at = 2000 WHERE id = 'mid'",
     );
-    createRun({ id: "new", scriptSource: "s", scriptHash: "h" });
-    getSqlite().exec(
+    await createRun({ id: "new", scriptSource: "s", scriptHash: "h" });
+    await requireMainDb().run(
       "UPDATE workflow_runs SET created_at = 3000 WHERE id = 'new'",
     );
-    finishRun("new", { status: "completed" });
+    await finishRun("new", { status: "completed" });
 
-    expect(listRuns({ limit: 10 }).map((r) => r.id)).toEqual([
+    expect((await listRuns({ limit: 10 })).map((r) => r.id)).toEqual([
       "new",
       "mid",
       "old",
     ]);
-    expect(listRuns({ limit: 1 }).map((r) => r.id)).toEqual(["new"]);
+    expect((await listRuns({ limit: 1 })).map((r) => r.id)).toEqual(["new"]);
     expect(
-      listRuns({ limit: 10, status: "completed" }).map((r) => r.id),
+      (await listRuns({ limit: 10, status: "completed" })).map((r) => r.id),
     ).toEqual(["new"]);
   });
 
-  test("pruneRuns deletes finished runs past retention but keeps running ones", () => {
+  test("pruneRuns deletes finished runs past retention but keeps running ones", async () => {
     const now = Date.now();
 
     // Old finished run — should be pruned.
-    createRun({ id: "old-done", scriptSource: "s", scriptHash: "h" });
-    finishRun("old-done", { status: "completed" });
-    appendJournalEntry({
+    await createRun({ id: "old-done", scriptSource: "s", scriptHash: "h" });
+    await finishRun("old-done", { status: "completed" });
+    await appendJournalEntry({
       runId: "old-done",
       seq: 0,
       callHash: "c",
       kind: "agent",
       status: "completed",
     });
-    getSqlite().exec(
+    await requireMainDb().run(
       `UPDATE workflow_runs SET created_at = ${now - 10 * DAY_MS} WHERE id = 'old-done'`,
     );
 
     // Old but still running — must be kept.
-    createRun({ id: "old-running", scriptSource: "s", scriptHash: "h" });
-    getSqlite().exec(
+    await createRun({ id: "old-running", scriptSource: "s", scriptHash: "h" });
+    await requireMainDb().run(
       `UPDATE workflow_runs SET created_at = ${now - 10 * DAY_MS} WHERE id = 'old-running'`,
     );
 
     // Recent finished run — within retention, kept.
-    createRun({ id: "recent-done", scriptSource: "s", scriptHash: "h" });
-    finishRun("recent-done", { status: "completed" });
+    await createRun({ id: "recent-done", scriptSource: "s", scriptHash: "h" });
+    await finishRun("recent-done", { status: "completed" });
 
-    const deleted = pruneRuns(7);
+    const deleted = await pruneRuns(7);
     expect(deleted).toBe(1);
-    expect(getRun("old-done")).toBeNull();
-    expect(getJournal("old-done")).toHaveLength(0);
-    expect(getRun("old-running")).not.toBeNull();
-    expect(getRun("recent-done")).not.toBeNull();
+    expect(await getRun("old-done")).toBeNull();
+    expect(await getJournal("old-done")).toHaveLength(0);
+    expect(await getRun("old-running")).not.toBeNull();
+    expect(await getRun("recent-done")).not.toBeNull();
   });
 
-  test("pruneRuns never reaps a resumable 'interrupted' run, even past retention", () => {
+  test("pruneRuns never reaps a resumable 'interrupted' run, even past retention", async () => {
     const now = Date.now();
 
     // Old interrupted run (crash-orphaned, awaiting resume) with a journal —
     // pruning it would destroy resumability, so it MUST be kept.
-    createRun({ id: "old-interrupted", scriptSource: "s", scriptHash: "h" });
-    updateRun("old-interrupted", { status: "interrupted" });
-    appendJournalEntry({
+    await createRun({
+      id: "old-interrupted",
+      scriptSource: "s",
+      scriptHash: "h",
+    });
+    await updateRun("old-interrupted", { status: "interrupted" });
+    await appendJournalEntry({
       runId: "old-interrupted",
       seq: 0,
       callHash: "c",
       kind: "agent",
       status: "completed",
     });
-    getSqlite().exec(
+    await requireMainDb().run(
       `UPDATE workflow_runs SET created_at = ${now - 100 * DAY_MS} WHERE id = 'old-interrupted'`,
     );
 
-    const deleted = pruneRuns(7);
+    const deleted = await pruneRuns(7);
     expect(deleted).toBe(0);
-    expect(getRun("old-interrupted")).not.toBeNull();
+    expect(await getRun("old-interrupted")).not.toBeNull();
     // Its journal survives too, so resume can still replay.
-    expect(getJournal("old-interrupted")).toHaveLength(1);
+    expect(await getJournal("old-interrupted")).toHaveLength(1);
   });
 
-  test("pruneRuns reaps every TERMINAL status past retention", () => {
+  test("pruneRuns reaps every TERMINAL status past retention", async () => {
     const now = Date.now();
     const terminal = [
       "completed",
@@ -415,17 +423,21 @@ describe("workflow journal store", () => {
       "cap_exceeded",
     ] as const;
     for (const status of terminal) {
-      createRun({ id: `old-${status}`, scriptSource: "s", scriptHash: "h" });
-      finishRun(`old-${status}`, { status });
-      getSqlite().exec(
+      await createRun({
+        id: `old-${status}`,
+        scriptSource: "s",
+        scriptHash: "h",
+      });
+      await finishRun(`old-${status}`, { status });
+      await requireMainDb().run(
         `UPDATE workflow_runs SET created_at = ${now - 10 * DAY_MS} WHERE id = 'old-${status}'`,
       );
     }
 
-    const deleted = pruneRuns(7);
+    const deleted = await pruneRuns(7);
     expect(deleted).toBe(terminal.length);
     for (const status of terminal) {
-      expect(getRun(`old-${status}`)).toBeNull();
+      expect(await getRun(`old-${status}`)).toBeNull();
     }
   });
 });

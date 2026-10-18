@@ -5,9 +5,11 @@
  * are covered transitively by `conversation-sync-tags.test.ts`.
  */
 
-import { beforeEach, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, setDefaultTimeout, test } from "bun:test";
 
-import { describePg } from "../../__tests__/pg-test-db.js";
+setDefaultTimeout(30_000);
+
+import { describePg } from "../../../__tests__/pg-test-db.js";
 
 // Avoid spinning up the real event hub for the pinned/groups branches.
 mock.module("../../assistant-event-hub.js", () => ({
@@ -26,7 +28,6 @@ import {
 import { createConversation } from "../../../persistence/conversation-crud.js";
 import { requireMainDb } from "../../../persistence/db-facade.js";
 import { createGroup } from "../../../persistence/group-crud.js";
-import { rawExec } from "../../../persistence/raw-query.js";
 import { ROUTES as CONVERSATION_LIST_ROUTES } from "../conversation-list-routes.js";
 import { BadRequestError, NotFoundError } from "../errors.js";
 import type { RouteDefinition } from "../types.js";
@@ -678,7 +679,7 @@ describePg("GET /v1/conversations with foregroundOnly", () => {
     );
   }
 
-  function surface(conversationId: string): void {
+  async function surface(conversationId: string): Promise<void> {
     await requireMainDb().run(
       "UPDATE conversations SET surfaced_at = ? WHERE id = ?",
       [Date.now(), conversationId],
@@ -706,7 +707,7 @@ describePg("GET /v1/conversations with foregroundOnly", () => {
       title: "surfaced-bg",
       conversationType: "background",
     });
-    surface(surfacedBg.id);
+    await surface(surfacedBg.id);
 
     const unfiltered = await invoke();
     expect(unfiltered.conversations.map((c) => c.title).sort()).toEqual([
@@ -899,11 +900,11 @@ describePg("GET /v1/conversations/unread-count", () => {
    *
    * Keep the scenario names identical on both sides.
    */
-  describe("unread-count contract (daemon half)", () => {
+  describePg("unread-count contract (daemon half)", () => {
     const scenarios: Array<{
       name: string;
       counts: boolean;
-      seed: (groupId: string) => string;
+      seed: (groupId: string) => Promise<string>;
     }> = [
       {
         name: "unseen foreground row",
@@ -1001,7 +1002,7 @@ describePg("GET /v1/conversations/unread-count", () => {
     for (const scenario of scenarios) {
       test(`${scenario.name} ${scenario.counts ? "counts" : "does not count"}`, async () => {
         const group = await createGroup("unread-contract-group");
-        const conversationId = scenario.seed(group.id);
+        const conversationId = await scenario.seed(group.id);
         // The "seen" scenario seeds and clears its own attention row.
         if (scenario.name !== "seen foreground row") {
           await seedUnseen(conversationId);
@@ -1016,7 +1017,7 @@ describePg("GET /v1/conversations/unread-count", () => {
     test("the matrix totals across every scenario at once", async () => {
       const group = await createGroup("unread-contract-group");
       for (const scenario of scenarios) {
-        const conversationId = scenario.seed(group.id);
+        const conversationId = await scenario.seed(group.id);
         if (scenario.name !== "seen foreground row") {
           await seedUnseen(conversationId);
         }
@@ -1256,15 +1257,14 @@ describePg("GET /v1/conversations/sections", () => {
        swaps the SQLite file without running migrations in-process (the same
        window that lets legacy private rows exist transiently), so the
        fixture creates the state the way reality does, with enforcement off. */
-    rawExec("PRAGMA foreign_keys = OFF");
-    try {
-      await fileIntoGroup(
-        (await createConversation({ title: "dangling" })).id,
-        "00000000-0000-4000-8000-00000000dead",
-      );
-    } finally {
-      rawExec("PRAGMA foreign_keys = ON");
-    }
+    const db = requireMainDb();
+    await db.run(
+      `ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_group_id_fkey`,
+    );
+    await fileIntoGroup(
+      (await createConversation({ title: "dangling" })).id,
+      "00000000-0000-4000-8000-00000000dead",
+    );
 
     const sections = await invokeSections();
 
@@ -1295,7 +1295,7 @@ describePg("GET /v1/conversations, conversationType=all", () => {
     await clearConversations();
   });
 
-  function setLastMessageAt(id: string, at: number): void {
+  async function setLastMessageAt(id: string, at: number): Promise<void> {
     await requireMainDb().run(
       "UPDATE conversations SET last_message_at = ? WHERE id = ?",
       [at, id],
@@ -1353,9 +1353,9 @@ describePg("GET /v1/conversations, conversationType=all", () => {
       conversationType: "background",
     });
     const newest = await createConversation("newest-foreground");
-    setLastMessageAt(oldest.id, 1000);
-    setLastMessageAt(middle.id, 2000);
-    setLastMessageAt(newest.id, 3000);
+    await setLastMessageAt(oldest.id, 1000);
+    await setLastMessageAt(middle.id, 2000);
+    await setLastMessageAt(newest.id, 3000);
 
     const result = (await invoke({ conversationType: "all" })) as ListResponse;
 
@@ -1372,9 +1372,9 @@ describePg("GET /v1/conversations, conversationType=all", () => {
     const doneEarlier = await createConversation(
       "old-chat-done-before-a-reply",
     );
-    setLastMessageAt(recent.id, 2000);
-    setLastMessageAt(doneLater.id, 1000);
-    setLastMessageAt(doneEarlier.id, 1500);
+    await setLastMessageAt(recent.id, 2000);
+    await setLastMessageAt(doneLater.id, 1000);
+    await setLastMessageAt(doneEarlier.id, 1500);
     await requireMainDb().run(
       "UPDATE conversations SET archived_at = ? WHERE id = ?",
       [3000, doneLater.id],
@@ -1431,8 +1431,8 @@ describePg("GET /v1/conversations, conversationType=all", () => {
       [pinned.id],
     );
     const newer = await createConversation("newer-1");
-    setLastMessageAt(pinned.id, 1000);
-    setLastMessageAt(newer.id, 2000);
+    await setLastMessageAt(pinned.id, 1000);
+    await setLastMessageAt(newer.id, 2000);
 
     const result = (await invoke({
       conversationType: "all",

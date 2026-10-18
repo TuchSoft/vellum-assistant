@@ -59,8 +59,7 @@ class FakeSocket implements WatchStreamSocket {
     type: T,
   ): Extract<WatchStreamServerFrame, { type: T }> | undefined {
     return this.frames.find((frame) => frame.type === type) as
-      | Extract<WatchStreamServerFrame, { type: T }>
-      | undefined;
+      Extract<WatchStreamServerFrame, { type: T }> | undefined;
   }
 }
 
@@ -177,7 +176,7 @@ describe("watch stream session", () => {
     });
     const { ws, transcriber, session } = newSession({ manager });
     await session.start();
-    await Bun.sleep(5);
+    await Bun.sleep(1000);
 
     // The session's opening observation. Step past the floor it just spent so
     // the onset below is free to read the screen rather than being collapsed
@@ -186,7 +185,7 @@ describe("watch stream session", () => {
     nowMs += 6_000;
 
     transcriber!.emit({ type: "turn-start" });
-    await Bun.sleep(5);
+    await Bun.sleep(1000);
 
     expect(observeCalls).toHaveLength(2);
     // No `entry`: onset carries no text, and the final that follows is what
@@ -212,7 +211,7 @@ describe("watch stream session", () => {
       captureTarget: { kind: "display", displayId: 69734400 },
     });
     await session.start();
-    await Bun.sleep(5);
+    await Bun.sleep(1000);
 
     expect(targets).toEqual([{ kind: "display", displayId: 69734400 }]);
 
@@ -231,12 +230,12 @@ describe("watch stream session", () => {
 
     transcriber!.emit({ type: "final", text: "  opening the invoice  " });
     // The narration lands synchronously; the screen read it triggers does not.
-    await Bun.sleep(5);
+    await Bun.sleep(1000);
 
     expect(ws.lifecycle()).toEqual(["ready", "entry"]);
     expect(observeCalls).toEqual([PRINCIPAL_ID]);
 
-    const rendered = renderWatchTimeline(ready!.sessionId);
+    const rendered = await renderWatchTimeline(ready!.sessionId);
     expect(rendered.totalEntries).toBe(2);
     expect(rendered.text).toContain("opening the invoice");
 
@@ -264,7 +263,7 @@ describe("watch stream session", () => {
       });
       const { ws, transcriber, session } = newSession({ manager });
       await session.start();
-      await Bun.sleep(5);
+      await Bun.sleep(1000);
 
       // The session's own opening read, acknowledged after `ready`: the
       // manager is claimed before that frame goes out and the read behind it
@@ -275,7 +274,7 @@ describe("watch stream session", () => {
       // collapsed into the read above.
       nowMs += 6_000;
       transcriber!.emit({ type: "turn-start" });
-      await Bun.sleep(5);
+      await Bun.sleep(1000);
 
       expect(ws.types()).toEqual(["ready", "observation", "observation"]);
 
@@ -295,10 +294,10 @@ describe("watch stream session", () => {
       });
       const { ws, transcriber, session } = newSession({ manager });
       await session.start();
-      await Bun.sleep(5);
+      await Bun.sleep(1000);
 
       transcriber!.emit({ type: "final", text: "still narrating" });
-      await Bun.sleep(5);
+      await Bun.sleep(1000);
 
       // The narration is filed and acknowledged; the screen behind it was
       // never read, and nothing here says it was.
@@ -317,7 +316,7 @@ describe("watch stream session", () => {
       });
       const { ws, session } = newSession({ manager });
       await session.start();
-      await Bun.sleep(5);
+      await Bun.sleep(1000);
       expect(releases).toHaveLength(1);
 
       // The session ends while its opening read is still out. What comes back
@@ -325,7 +324,7 @@ describe("watch stream session", () => {
       // acknowledgement would land after `closed`.
       session.destroy();
       releases[0]!(observation());
-      await Bun.sleep(5);
+      await Bun.sleep(1000);
 
       expect(ws.types()).toEqual(["ready", "closed"]);
     });
@@ -459,7 +458,7 @@ describe("watch stream session", () => {
     const ready = ws.firstOfType("ready")!;
 
     transcriber!.emit({ type: "final", text: "renaming the export" });
-    await Bun.sleep(5);
+    await Bun.sleep(1000);
 
     expect(retros).toHaveLength(0);
 
@@ -496,7 +495,7 @@ describe("watch stream session", () => {
     const { transcriber, session, retros } = newSession({ manager });
     await session.start();
     transcriber!.emit({ type: "final", text: "renaming the export" });
-    await Bun.sleep(5);
+    await Bun.sleep(1000);
 
     session.destroy();
 

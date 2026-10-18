@@ -45,11 +45,11 @@ function channel(id: string): ChannelCapabilities {
 }
 
 describe("parallel-tasks system prompt section", () => {
-  beforeEach(() => {
-    ensurePromptFiles();
+  beforeEach(async () => {
+    await ensurePromptFiles();
   });
 
-  test("renders immediately before the parallel-tool-calls section", () => {
+  test("renders immediately before the parallel-tool-calls section", async () => {
     // The renderer sorts section ids, so adjacency in the rendered prompt is
     // adjacency in the sorted id list, not in the declaration order.
     const sortedIds = BUNDLED_SYSTEM_SECTIONS.map((section) => section.id)
@@ -60,26 +60,28 @@ describe("parallel-tasks system prompt section", () => {
     expect(sortedIds[index + 1]).toBe("01-parallel-tool-calls");
   });
 
-  test("renders for a turn that can spawn subagents", () => {
-    expect(buildSystemPrompt({ canSpawnSubagents: true })).toContain(HEADING);
+  test("renders for a turn that can spawn subagents", async () => {
+    expect(await buildSystemPrompt({ canSpawnSubagents: true })).toContain(
+      HEADING,
+    );
     expect(
-      buildSystemPrompt({ canSpawnSubagents: true, hasNoClient: true }),
+      await buildSystemPrompt({ canSpawnSubagents: true, hasNoClient: true }),
     ).toContain(HEADING);
     // Every first-party client folds onto the `vellum` channel.
     expect(
-      buildSystemPrompt({
+      await buildSystemPrompt({
         canSpawnSubagents: true,
         channelCapabilities: channel("vellum"),
       }),
     ).toContain(HEADING);
   });
 
-  test("renders off for a channel-delivered turn", () => {
+  test("renders off for a channel-delivered turn", async () => {
     // A subagent's terminal summary is injected through the conversation's
     // event sink, which app clients read and a channel does not, so a
     // delegated answer would never reach the person who asked for it.
     for (const id of ["slack", "telegram", "email", "plugin"]) {
-      const prompt = buildSystemPrompt({
+      const prompt = await buildSystemPrompt({
         canSpawnSubagents: true,
         channelCapabilities: channel(id),
       });
@@ -88,7 +90,7 @@ describe("parallel-tasks system prompt section", () => {
     }
   });
 
-  test("renders off unless the turn states it can spawn", () => {
+  test("renders off unless the turn states it can spawn", async () => {
     // Absent means no: a prompt built outside a turn (a tool-disabled
     // side-chain, a one-shot generator) never carries guidance it cannot act
     // on. The live turn answers from its resolved tool surface.
@@ -97,23 +99,25 @@ describe("parallel-tasks system prompt section", () => {
       { hasNoClient: true },
       { canSpawnSubagents: false },
     ]) {
-      expect(buildSystemPrompt(options)).not.toContain(HEADING);
+      expect(await buildSystemPrompt(options)).not.toContain(HEADING);
       // The rest of the prompt is untouched either way.
-      expect(buildSystemPrompt(options)).toContain("<use_parallel_tool_calls>");
+      expect(await buildSystemPrompt(options)).toContain(
+        "<use_parallel_tool_calls>",
+      );
     }
   });
 
-  test("an explicit rendered state replaces the derivation", () => {
+  test("an explicit rendered state replaces the derivation", async () => {
     // A fork wake replaying its source's recorded surface renders what the
     // source's live turn rendered, whatever its own scope could spawn.
     expect(
-      buildSystemPrompt({
+      await buildSystemPrompt({
         canSpawnSubagents: false,
         delegateIndependentTasks: true,
       }),
     ).toContain(HEADING);
     expect(
-      buildSystemPrompt({
+      await buildSystemPrompt({
         canSpawnSubagents: true,
         delegateIndependentTasks: false,
       }),
@@ -121,24 +125,24 @@ describe("parallel-tasks system prompt section", () => {
     // It is the rendered state, not a capability claim: the channel gate has
     // already been applied by the turn that recorded it.
     expect(
-      buildSystemPrompt({
+      await buildSystemPrompt({
         channelCapabilities: channel("slack"),
         delegateIndependentTasks: true,
       }),
     ).toContain(HEADING);
   });
 
-  test("delegates only independent tasks and keeps small requests inline", () => {
-    const prompt = buildSystemPrompt({ canSpawnSubagents: true });
+  test("delegates only independent tasks and keeps small requests inline", async () => {
+    const prompt = await buildSystemPrompt({ canSpawnSubagents: true });
     expect(prompt).toContain("several independent things at once");
     expect(prompt).toContain("subagent");
     expect(prompt).toContain("Keep small, quick requests inline");
   });
 
-  test("keeps approval-gated work on the assistant's own turn", () => {
+  test("keeps approval-gated work on the assistant's own turn", async () => {
     // A subagent runs non-interactive, so an operation that needs the user's
     // approval is denied there rather than prompting.
-    const prompt = buildSystemPrompt({ canSpawnSubagents: true });
+    const prompt = await buildSystemPrompt({ canSpawnSubagents: true });
     expect(prompt).toContain("may need the user's approval on your own turn");
   });
 });

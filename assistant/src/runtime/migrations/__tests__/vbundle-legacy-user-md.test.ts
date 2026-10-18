@@ -105,7 +105,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("DefaultPathResolver prompts/USER.md translation", () => {
-  test("rewrites prompts/USER.md to the guardian's users/<slug>.md", () => {
+  test("rewrites prompts/USER.md to the guardian's users/<slug>.md", async () => {
     const guardianPath = join(USERS_DIR, "captain.md");
     const resolver = new DefaultPathResolver(
       WORKSPACE_ROOT,
@@ -113,20 +113,20 @@ describe("DefaultPathResolver prompts/USER.md translation", () => {
       () => guardianPath,
     );
 
-    expect(resolver.resolve("prompts/USER.md")).toBe(guardianPath);
+    expect(await resolver.resolve("prompts/USER.md")).toBe(guardianPath);
   });
 
-  test("returns null when no guardian exists", () => {
+  test("returns null when no guardian exists", async () => {
     const resolver = new DefaultPathResolver(
       WORKSPACE_ROOT,
       undefined,
       () => null,
     );
 
-    expect(resolver.resolve("prompts/USER.md")).toBeNull();
+    expect(await resolver.resolve("prompts/USER.md")).toBeNull();
   });
 
-  test("rejects guardian paths outside the workspace (traversal guard)", () => {
+  test("rejects guardian paths outside the workspace (traversal guard)", async () => {
     // Stubbed resolver returns a path outside the workspace — the
     // analyzer resolver must reject it to prevent writing outside
     // the workspace root.
@@ -136,28 +136,28 @@ describe("DefaultPathResolver prompts/USER.md translation", () => {
       () => "/etc/passwd",
     );
 
-    expect(resolver.resolve("prompts/USER.md")).toBeNull();
+    expect(await resolver.resolve("prompts/USER.md")).toBeNull();
   });
 
-  test("still resolves other prompt files (IDENTITY.md) to workspace root", () => {
+  test("still resolves other prompt files (IDENTITY.md) to workspace root", async () => {
     const resolver = new DefaultPathResolver(WORKSPACE_ROOT, undefined, () =>
       join(USERS_DIR, "captain.md"),
     );
 
-    expect(resolver.resolve("prompts/IDENTITY.md")).toBe(
+    expect(await resolver.resolve("prompts/IDENTITY.md")).toBe(
       join(WORKSPACE_ROOT, "IDENTITY.md"),
     );
-    expect(resolver.resolve("prompts/SOUL.md")).toBe(
+    expect(await resolver.resolve("prompts/SOUL.md")).toBe(
       join(WORKSPACE_ROOT, "SOUL.md"),
     );
   });
 
-  test("skips unknown prompt filenames regardless of guardian state", () => {
+  test("skips unknown prompt filenames regardless of guardian state", async () => {
     const resolver = new DefaultPathResolver(WORKSPACE_ROOT, undefined, () =>
       join(USERS_DIR, "captain.md"),
     );
 
-    expect(resolver.resolve("prompts/SECRET.md")).toBeNull();
+    expect(await resolver.resolve("prompts/SECRET.md")).toBeNull();
   });
 });
 
@@ -166,7 +166,7 @@ describe("DefaultPathResolver prompts/USER.md translation", () => {
 // ---------------------------------------------------------------------------
 
 describe("analyzeImport for legacy prompts/USER.md", () => {
-  test("reports a `create` action on a fresh users/<slug>.md", () => {
+  test("reports a `create` action on a fresh users/<slug>.md", async () => {
     const guardianPath = join(USERS_DIR, "captain.md");
     const resolver = new DefaultPathResolver(
       WORKSPACE_ROOT,
@@ -189,7 +189,7 @@ describe("analyzeImport for legacy prompts/USER.md", () => {
     });
     expect(archive.length).toBeGreaterThan(0);
 
-    const report = analyzeImport({ manifest, pathResolver: resolver });
+    const report = await analyzeImport({ manifest, pathResolver: resolver });
 
     expect(report.can_import).toBe(true);
     const userMd = report.files.find((f) => f.path === "prompts/USER.md");
@@ -197,7 +197,7 @@ describe("analyzeImport for legacy prompts/USER.md", () => {
     expect(userMd!.action).toBe("create");
   });
 
-  test("non-blocking skip when no guardian is resolvable (can_import stays true)", () => {
+  test("non-blocking skip when no guardian is resolvable (can_import stays true)", async () => {
     const resolver = new DefaultPathResolver(
       WORKSPACE_ROOT,
       undefined,
@@ -218,7 +218,7 @@ describe("analyzeImport for legacy prompts/USER.md", () => {
       ...defaultV1Options(),
     });
 
-    const report = analyzeImport({ manifest, pathResolver: resolver });
+    const report = await analyzeImport({ manifest, pathResolver: resolver });
 
     // Guardian-less workspaces must not block preflight — the commit-time
     // path warns and skips, so preflight mirrors that behavior.
@@ -228,7 +228,7 @@ describe("analyzeImport for legacy prompts/USER.md", () => {
     expect(userMd!.action).toBe("skip");
   });
 
-  test("retired workspace/UPDATES.md (current format) is a non-blocking skip", () => {
+  test("retired workspace/UPDATES.md (current format) is a non-blocking skip", async () => {
     const resolver = new DefaultPathResolver(
       WORKSPACE_ROOT,
       undefined,
@@ -249,7 +249,7 @@ describe("analyzeImport for legacy prompts/USER.md", () => {
       ...defaultV1Options(),
     });
 
-    const report = analyzeImport({ manifest, pathResolver: resolver });
+    const report = await analyzeImport({ manifest, pathResolver: resolver });
 
     expect(report.can_import).toBe(true);
     expect(report.conflicts).toHaveLength(0);
@@ -260,7 +260,7 @@ describe("analyzeImport for legacy prompts/USER.md", () => {
     expect(updatesMd!.action).toBe("skip");
   });
 
-  test("retired prompts/UPDATES.md in a legacy bundle is a non-blocking skip", () => {
+  test("retired prompts/UPDATES.md in a legacy bundle is a non-blocking skip", async () => {
     const resolver = new DefaultPathResolver(
       WORKSPACE_ROOT,
       undefined,
@@ -281,7 +281,7 @@ describe("analyzeImport for legacy prompts/USER.md", () => {
       ...defaultV1Options(),
     });
 
-    const report = analyzeImport({ manifest, pathResolver: resolver });
+    const report = await analyzeImport({ manifest, pathResolver: resolver });
 
     // Bundles exported while the update-bulletin feature existed must stay
     // restorable — the retired file is dropped, never written back, and
@@ -299,7 +299,7 @@ describe("analyzeImport for legacy prompts/USER.md", () => {
 // ---------------------------------------------------------------------------
 
 describe("commitImport for legacy prompts/USER.md", () => {
-  test("writes legacy USER.md content into users/<slug>.md", () => {
+  test("writes legacy USER.md content into users/<slug>.md", async () => {
     const slug = "captain.md";
     const guardianPath = join(USERS_DIR, slug);
     const resolver = new DefaultPathResolver(
@@ -322,7 +322,7 @@ describe("commitImport for legacy prompts/USER.md", () => {
       ...defaultV1Options(),
     });
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: resolver,
     });
@@ -341,7 +341,7 @@ describe("commitImport for legacy prompts/USER.md", () => {
     expect(readFileSync(guardianPath, "utf-8")).toBe(LEGACY_USER_MD_CONTENT);
   });
 
-  test("overwrites a pristine scaffold users/<slug>.md", () => {
+  test("overwrites a pristine scaffold users/<slug>.md", async () => {
     const slug = "captain.md";
     const guardianPath = join(USERS_DIR, slug);
     writeFileSync(guardianPath, PRISTINE_SCAFFOLD, "utf-8");
@@ -366,7 +366,7 @@ describe("commitImport for legacy prompts/USER.md", () => {
       ...defaultV1Options(),
     });
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: resolver,
     });
@@ -380,7 +380,7 @@ describe("commitImport for legacy prompts/USER.md", () => {
     expect(readFileSync(guardianPath, "utf-8")).toBe(LEGACY_USER_MD_CONTENT);
   });
 
-  test("skips with a warning when no guardian exists (no crash)", () => {
+  test("skips with a warning when no guardian exists (no crash)", async () => {
     const resolver = new DefaultPathResolver(
       WORKSPACE_ROOT,
       undefined,
@@ -401,7 +401,7 @@ describe("commitImport for legacy prompts/USER.md", () => {
       ...defaultV1Options(),
     });
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: resolver,
     });
@@ -420,7 +420,7 @@ describe("commitImport for legacy prompts/USER.md", () => {
     expect(existsSync(join(USERS_DIR, "USER.md"))).toBe(false);
   });
 
-  test("retired workspace/UPDATES.md (current format) is never written back", () => {
+  test("retired workspace/UPDATES.md (current format) is never written back", async () => {
     const resolver = new DefaultPathResolver(
       WORKSPACE_ROOT,
       undefined,
@@ -441,7 +441,7 @@ describe("commitImport for legacy prompts/USER.md", () => {
       ...defaultV1Options(),
     });
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: resolver,
     });
@@ -462,7 +462,7 @@ describe("commitImport for legacy prompts/USER.md", () => {
     expect(existsSync(join(WORKSPACE_ROOT, "UPDATES.md"))).toBe(false);
   });
 
-  test("retired prompts/UPDATES.md skips silently — no warning, nothing written", () => {
+  test("retired prompts/UPDATES.md skips silently — no warning, nothing written", async () => {
     const resolver = new DefaultPathResolver(
       WORKSPACE_ROOT,
       undefined,
@@ -483,7 +483,7 @@ describe("commitImport for legacy prompts/USER.md", () => {
       ...defaultV1Options(),
     });
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: resolver,
     });
@@ -505,7 +505,7 @@ describe("commitImport for legacy prompts/USER.md", () => {
     expect(existsSync(join(WORKSPACE_ROOT, "UPDATES.md"))).toBe(false);
   });
 
-  test("does NOT overwrite a customized users/<slug>.md", () => {
+  test("does NOT overwrite a customized users/<slug>.md", async () => {
     const slug = "captain.md";
     const guardianPath = join(USERS_DIR, slug);
     writeFileSync(guardianPath, CUSTOMIZED_PERSONA, "utf-8");
@@ -530,7 +530,7 @@ describe("commitImport for legacy prompts/USER.md", () => {
       ...defaultV1Options(),
     });
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: resolver,
     });

@@ -5,7 +5,17 @@
  * are absent or the platform is disabled), watermark advancement, error
  * handling, batch recursion, device ID resolution, and payload shape.
  */
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+
+setDefaultTimeout(30_000);
 
 import type { ConsentState } from "../platform/consent-cache.js";
 
@@ -33,9 +43,11 @@ const fakeFlushCheckpointStore = {
 };
 
 const mockQueryUnreportedUsageEvents = mock(
-  () =>
-    [] as ReturnType<
-      typeof import("../persistence/llm-usage-store.js").queryUnreportedUsageEvents
+  async () =>
+    [] as Awaited<
+      ReturnType<
+        typeof import("../persistence/llm-usage-store.js").queryUnreportedUsageEvents
+      >
     >,
 );
 
@@ -44,7 +56,7 @@ mock.module("../persistence/llm-usage-store.js", () => ({
 }));
 
 const mockQueryUnreportedTurnEvents = mock(
-  () =>
+  async () =>
     [] as {
       id: string;
       createdAt: number;
@@ -191,7 +203,6 @@ mock.module("./turn-trace-store.js", () => ({
 // ---------------------------------------------------------------------------
 
 import {
-  seedToolInvocation as seedToolInvocationRow,
   TOOL_INVOCATION_PII_SENTINEL as TOOL_PII_SENTINEL,
   type ToolInvocationSeedSpec,
 } from "../__tests__/test-support/tool-invocation-seed.js";
@@ -199,11 +210,12 @@ import {
   recordActivationEvent,
   recordOnboardingEvent,
 } from "../onboarding/onboarding-events-store.js";
-import { getDb } from "../persistence/db-connection.js";
-import { getTelemetryAsyncDb } from "../persistence/db-facade.js";
+import {
+  getTelemetryAsyncDb,
+  requireMainDb,
+} from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { recordLifecycleEvent } from "../persistence/lifecycle-events-store.js";
-import { conversations, toolInvocations } from "../persistence/schema/index.js";
 import { recordAuthFallbackCounts } from "../security/auth-fallback-events-store.js";
 import type { UsageEvent } from "../usage/types.js";
 import {
@@ -302,12 +314,36 @@ function makeUsageEvent(
 
 const TOOL_CONVERSATION_ID = "conv-reporter-tool-executed";
 
-function seedToolInvocation(
+async function seedToolInvocation(
   spec: Omit<ToolInvocationSeedSpec, "conversationId">,
-): void {
-  seedToolInvocationRow(
-    { db: getDb(), conversations, toolInvocations },
-    { ...spec, conversationId: TOOL_CONVERSATION_ID },
+): Promise<void> {
+  const db = requireMainDb();
+  await db.run(
+    `INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, 'test', 1000, 1000) ON CONFLICT (id) DO NOTHING`,
+    [TOOL_CONVERSATION_ID],
+  );
+  await db.run(
+    `INSERT INTO tool_invocations (
+       id, conversation_id, tool_name, input, result, decision, risk_level,
+       duration_ms, created_at, arg_bytes, result_bytes, provider, model,
+       inference_profile, inference_profile_source
+     ) VALUES (?, ?, ?, ?, ?, ?, 'low', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      spec.id,
+      TOOL_CONVERSATION_ID,
+      spec.toolName ?? "calendar_list_events",
+      `{"secret":"raw tool args - ${TOOL_PII_SENTINEL}"}`,
+      `{"secret":"raw tool output - ${TOOL_PII_SENTINEL}"}`,
+      spec.decision ?? "allow",
+      spec.durationMs ?? 12,
+      spec.createdAt,
+      spec.argBytes !== undefined ? spec.argBytes : 2,
+      spec.resultBytes !== undefined ? spec.resultBytes : 9,
+      spec.provider ?? null,
+      spec.model ?? null,
+      spec.inferenceProfile ?? null,
+      spec.inferenceProfileSource ?? null,
+    ],
   );
 }
 
@@ -360,8 +396,8 @@ beforeEach(async () => {
   mockIsFlushCheckpointStoreAvailable.mockResolvedValue(true);
   mockQueryUnreportedUsageEvents.mockReset();
   mockQueryUnreportedTurnEvents.mockReset();
-  mockQueryUnreportedTurnEvents.mockReturnValue([]);
-  getDb().delete(toolInvocations).run();
+  mockQueryUnreportedTurnEvents.mockResolvedValue([]);
+  await requireMainDb().run("DELETE FROM tool_invocations");
   // Clear the telemetry outbox through the facade so the reset is
   // backend-portable (SQLite today, Postgres under the port).
   await getTelemetryAsyncDb()!.run("DELETE FROM telemetry_events");
@@ -418,7 +454,7 @@ describe("UsageTelemetryReporter", () => {
       fetch: clientFetchMock,
     };
     const events = [makeUsageEvent(), makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
 
     const reporter = makeReporter();
     await reporter.flush();
@@ -436,7 +472,7 @@ describe("UsageTelemetryReporter", () => {
     mockPlatformClient = null;
 
     const events = [makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
 
     const reporter = makeReporter();
     await reporter.flush();
@@ -455,7 +491,7 @@ describe("UsageTelemetryReporter", () => {
     process.env.VELLUM_DISABLE_PLATFORM = "true";
 
     const events = [makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
 
     const reporter = makeReporter();
     // The construction-time watermark backstop is async; let it settle.
@@ -477,7 +513,7 @@ describe("UsageTelemetryReporter", () => {
     process.env.VELLUM_DISABLE_PLATFORM = "true";
 
     const events = [makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
 
     const reporter = makeReporter();
     await reporter.flush();
@@ -490,7 +526,7 @@ describe("UsageTelemetryReporter", () => {
       makeUsageEvent({ id: "evt-w1", createdAt: 1700000001000 }),
       makeUsageEvent({ id: "evt-w2", createdAt: 1700000002000 }),
     ];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":2}', { status: 200 })),
     );
@@ -517,7 +553,7 @@ describe("UsageTelemetryReporter", () => {
 
   test("watermark stays on failed upload", async () => {
     const events = [makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response("error", { status: 500 })),
     );
@@ -533,7 +569,7 @@ describe("UsageTelemetryReporter", () => {
 
   test("installation ID comes from per-device getDeviceId", async () => {
     const events = [makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -549,7 +585,7 @@ describe("UsageTelemetryReporter", () => {
     expect(body1.device_id).toBe("test-device-id");
 
     // Second flush — should use the same value
-    mockQueryUnreportedUsageEvents.mockReturnValue([makeUsageEvent()]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([makeUsageEvent()]);
     await reporter.flush();
     expect(mockFetch).toHaveBeenCalledTimes(2);
     const body2 = JSON.parse(
@@ -559,7 +595,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("empty batch makes no HTTP call", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
 
     const reporter = makeReporter();
     await reporter.flush();
@@ -572,7 +608,7 @@ describe("UsageTelemetryReporter", () => {
     const fullBatch = Array.from({ length: 500 }, (_, i) =>
       makeUsageEvent({ id: `evt-batch-${i}`, createdAt: 1700000000000 + i }),
     );
-    mockQueryUnreportedUsageEvents.mockReturnValue(fullBatch);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(fullBatch);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":500}', { status: 200 })),
     );
@@ -585,7 +621,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("flush summary reports sent/persisted/dropped from the ingest response", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([
+    mockQueryUnreportedUsageEvents.mockResolvedValue([
       makeUsageEvent(),
       makeUsageEvent(),
       makeUsageEvent(),
@@ -612,7 +648,7 @@ describe("UsageTelemetryReporter", () => {
 
   test("flush summary falls back to persisted=sent when the body omits persisted", async () => {
     // Older platform returns only `accepted` — assume everything landed.
-    mockQueryUnreportedUsageEvents.mockReturnValue([
+    mockQueryUnreportedUsageEvents.mockResolvedValue([
       makeUsageEvent(),
       makeUsageEvent(),
     ]);
@@ -666,7 +702,7 @@ describe("UsageTelemetryReporter", () => {
     const reporter = makeReporter();
 
     // nothing-pending: no events across any source.
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     expect(await reporter.flush()).toEqual({
       flushed: false,
       reason: "nothing-pending",
@@ -674,7 +710,7 @@ describe("UsageTelemetryReporter", () => {
 
     // opted-out: confirmed share_analytics opt-out.
     mockGetRawShareAnalytics.mockReturnValue(false);
-    mockQueryUnreportedUsageEvents.mockReturnValue([makeUsageEvent()]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([makeUsageEvent()]);
     expect(await reporter.flush()).toEqual({
       flushed: false,
       reason: "opted-out",
@@ -692,7 +728,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("flush summary reports post-failed on a non-2xx response", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([makeUsageEvent()]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([makeUsageEvent()]);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response("error", { status: 500 })),
     );
@@ -706,7 +742,7 @@ describe("UsageTelemetryReporter", () => {
 
   test("stop() performs final flush", async () => {
     const events = [makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -740,7 +776,7 @@ describe("UsageTelemetryReporter", () => {
       llmCallCount: 3,
       createdAt: 1700000099000,
     });
-    mockQueryUnreportedUsageEvents.mockReturnValue([event]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([event]);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -809,7 +845,7 @@ describe("UsageTelemetryReporter", () => {
       cacheCreationInputTokens: 750,
       rawUsage,
     });
-    mockQueryUnreportedUsageEvents.mockReturnValue([event]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([event]);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -833,7 +869,7 @@ describe("UsageTelemetryReporter", () => {
       inferenceProfileSource: null,
       llmCallCount: null,
     });
-    mockQueryUnreportedUsageEvents.mockReturnValue([event]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([event]);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -860,7 +896,7 @@ describe("UsageTelemetryReporter", () => {
       estimatedCostUsd: null,
       pricingStatus: "unpriced",
     });
-    mockQueryUnreportedUsageEvents.mockReturnValue([event]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([event]);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -878,7 +914,7 @@ describe("UsageTelemetryReporter", () => {
     mockGetPlatformOrganizationId.mockReturnValue("org-123");
     mockGetPlatformUserId.mockReturnValue("user-456");
     const events = [makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -898,7 +934,7 @@ describe("UsageTelemetryReporter", () => {
     mockGetPlatformOrganizationId.mockReturnValue("");
     mockGetPlatformUserId.mockReturnValue("");
     const events = [makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -916,7 +952,7 @@ describe("UsageTelemetryReporter", () => {
 
   test("payload does not include assistant_id", async () => {
     const events = [makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -933,8 +969,8 @@ describe("UsageTelemetryReporter", () => {
 
   test("turn events are included in the events array with type discriminator", async () => {
     const usageEvent = makeUsageEvent({ id: "evt-mixed-usage" });
-    mockQueryUnreportedUsageEvents.mockReturnValue([usageEvent]);
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedUsageEvents.mockResolvedValue([usageEvent]);
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       {
         id: "evt-mixed-turn",
         createdAt: 1700000050000,
@@ -981,8 +1017,8 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("turn events carry conversation_type for background/scheduled conversations", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       {
         id: "evt-turn-standard",
         createdAt: 1700000100000,
@@ -1046,8 +1082,8 @@ describe("UsageTelemetryReporter", () => {
     //  - web turn with malformed client JSON (parsing guard: emit null,
     //    do not break the batch)
     //  - historical turn with no metadata at all (pre-rollout row)
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       {
         id: "evt-turn-macos",
         createdAt: 1700000400000,
@@ -1172,8 +1208,8 @@ describe("UsageTelemetryReporter", () => {
 
   test("attaches the assembled trace when share_diagnostics and an eligible consent version are both true", async () => {
     mockGetCachedShareDiagnostics.mockReturnValue(true);
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    mockQueryUnreportedTurnEvents.mockReturnValue(singleTurnEvent());
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
+    mockQueryUnreportedTurnEvents.mockResolvedValue(singleTurnEvent());
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -1208,8 +1244,8 @@ describe("UsageTelemetryReporter", () => {
 
   test("omits the trace when share_diagnostics is false (and still emits the turn event)", async () => {
     mockGetCachedShareDiagnostics.mockReturnValue(false);
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    mockQueryUnreportedTurnEvents.mockReturnValue(singleTurnEvent());
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
+    mockQueryUnreportedTurnEvents.mockResolvedValue(singleTurnEvent());
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -1237,8 +1273,8 @@ describe("UsageTelemetryReporter", () => {
     // Consent recorded under an older version that never disclosed trace
     // collection → gate closed, mirroring the platform ingest gate.
     mockGetCachedShareDiagnosticsVersion.mockReturnValue("2000-01-01");
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    mockQueryUnreportedTurnEvents.mockReturnValue(singleTurnEvent());
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
+    mockQueryUnreportedTurnEvents.mockResolvedValue(singleTurnEvent());
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -1262,8 +1298,8 @@ describe("UsageTelemetryReporter", () => {
     // Empty version (never accepted / no-row default where share_diagnostics is
     // true but unversioned) fails closed.
     mockGetCachedShareDiagnosticsVersion.mockReturnValue("");
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    mockQueryUnreportedTurnEvents.mockReturnValue(singleTurnEvent());
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
+    mockQueryUnreportedTurnEvents.mockResolvedValue(singleTurnEvent());
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -1283,8 +1319,8 @@ describe("UsageTelemetryReporter", () => {
     mockGetCachedShareDiagnostics.mockReturnValue(true);
     // Over-cap / assembly-failure path: the bounded assembler returns null.
     mockAssembleBoundedTurnTrace.mockReturnValueOnce(null);
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    mockQueryUnreportedTurnEvents.mockReturnValue(singleTurnEvent());
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
+    mockQueryUnreportedTurnEvents.mockResolvedValue(singleTurnEvent());
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -1306,7 +1342,7 @@ describe("UsageTelemetryReporter", () => {
     // (share_diagnostics true at an eligible version).
     mockGetRawShareAnalytics.mockReturnValue(false);
     mockGetCachedShareDiagnostics.mockReturnValue(true);
-    mockQueryUnreportedTurnEvents.mockReturnValue(singleTurnEvent());
+    mockQueryUnreportedTurnEvents.mockResolvedValue(singleTurnEvent());
 
     const reporter = makeReporter();
     await reporter.flush();
@@ -1348,9 +1384,9 @@ describe("UsageTelemetryReporter", () => {
 
   test("a flush during an in-progress turn defers it (no partial trace, watermark held)", async () => {
     mockGetCachedShareDiagnostics.mockReturnValue(true);
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     const checkpoints = useStatefulCheckpoints();
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       turnEvent("evt-inflight", 1700000050000, "conv-1"),
     ]);
     // The turn's response is still streaming — not settled.
@@ -1369,9 +1405,9 @@ describe("UsageTelemetryReporter", () => {
 
   test("a later flush emits the COMPLETE trace once the turn settles", async () => {
     mockGetCachedShareDiagnostics.mockReturnValue(true);
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     const checkpoints = useStatefulCheckpoints();
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       turnEvent("evt-inflight", 1700000050000, "conv-1"),
     ]);
 
@@ -1435,8 +1471,8 @@ describe("UsageTelemetryReporter", () => {
     // conversation is no longer processing. The trace must still be sent (not
     // deferred forever for lack of a next user turn).
     mockGetCachedShareDiagnostics.mockReturnValue(true);
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       turnEvent("evt-final", 1700000060000, "conv-final"),
     ]);
     mockIsTurnSettled.mockReturnValue(true);
@@ -1463,9 +1499,9 @@ describe("UsageTelemetryReporter", () => {
     // the deferred one. Both wait; the earlier complete turn (before the
     // barrier) is reported.
     mockGetCachedShareDiagnostics.mockReturnValue(true);
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     const checkpoints = useStatefulCheckpoints();
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       turnEvent("evt-a-complete", 1700000010000, "conv-a"),
       turnEvent("evt-b-inflight", 1700000020000, "conv-b"),
       turnEvent("evt-c-complete", 1700000030000, "conv-c"),
@@ -1505,9 +1541,9 @@ describe("UsageTelemetryReporter", () => {
     // conversation is still processing, and the watermark advances on ship,
     // so an in-flight turn reported early would be frozen without its stamp.
     mockGetCachedShareDiagnostics.mockReturnValue(false);
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     const checkpoints = useStatefulCheckpoints();
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       turnEvent("evt-inflight", 1700000050000, "conv-1"),
     ]);
     mockIsTurnSettled.mockReturnValue(false);
@@ -1526,9 +1562,9 @@ describe("UsageTelemetryReporter", () => {
 
   test("with tracing disabled, a settled turn ships trace-free and advances the watermark", async () => {
     mockGetCachedShareDiagnostics.mockReturnValue(false);
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     const checkpoints = useStatefulCheckpoints();
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       turnEvent("evt-settled", 1700000050000, "conv-1"),
     ]);
     mockIsTurnSettled.mockReturnValue(true);
@@ -1554,9 +1590,9 @@ describe("UsageTelemetryReporter", () => {
 
   test("outcome stamps ride the turn event: batched carries batched_into, failed carries failure_code", async () => {
     mockGetCachedShareDiagnostics.mockReturnValue(false);
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     useStatefulCheckpoints();
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       turnEvent("evt-batched-head", 1700000010000, "conv-1", {
         outcome: "batched",
         batchedInto: "evt-batch-final",
@@ -1608,9 +1644,9 @@ describe("UsageTelemetryReporter", () => {
     // diagnostics consent is OFF here: unlike `trace`, this field must ship
     // regardless: that independence is the entire point of the field.
     mockGetCachedShareDiagnostics.mockReturnValue(false);
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     useStatefulCheckpoints();
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       turnEvent("evt-scripted", 1700000010000, "conv-1", { scripted: true }),
       turnEvent("evt-typed", 1700000011000, "conv-1", { scripted: false }),
       turnEvent("evt-unknown", 1700000012000, "conv-2", { scripted: null }),
@@ -1647,9 +1683,9 @@ describe("UsageTelemetryReporter", () => {
 
   test("an unrecognized outcome value in metadata is dropped from the wire", async () => {
     mockGetCachedShareDiagnostics.mockReturnValue(false);
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     useStatefulCheckpoints();
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       turnEvent("evt-garbage", 1700000010000, "conv-1", {
         outcome: "exploded",
         batchedInto: "evt-other",
@@ -1678,7 +1714,7 @@ describe("UsageTelemetryReporter", () => {
     //  - tied to a background conversation spawned by a parent turn
     //    (subagent: parent linkage populated)
     //  - untied (memory consolidation: no conversation, no turn)
-    mockQueryUnreportedUsageEvents.mockReturnValue([
+    mockQueryUnreportedUsageEvents.mockResolvedValue([
       makeUsageEvent({
         id: "evt-fg-call",
         conversationId: "conv-fg",
@@ -1768,7 +1804,7 @@ describe("UsageTelemetryReporter", () => {
   test("flush is skipped and watermarks advanced when share_analytics consent is off", async () => {
     mockGetRawShareAnalytics.mockReturnValue(false);
     const events = [makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -1818,7 +1854,7 @@ describe("UsageTelemetryReporter", () => {
     // survives the cold-cache window.
     mockGetRawShareAnalytics.mockReturnValue("unknown");
     const events = [makeUsageEvent({ id: "evt-warmup-backlog" })];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
 
     const reporter = makeReporter();
     // The construction-time watermark backstop is async; let it settle.
@@ -1853,7 +1889,7 @@ describe("UsageTelemetryReporter", () => {
     process.env.VELLUM_DISABLE_PLATFORM = "true";
     mockGetRawShareAnalytics.mockReturnValue(false);
     const events = [makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
 
     const reporter = makeReporter();
     // The construction-time watermark backstop is async; let it settle.
@@ -1874,7 +1910,7 @@ describe("UsageTelemetryReporter", () => {
     // the cycle retries once the store is back.
     mockIsFlushCheckpointStoreAvailable.mockResolvedValue(false);
     const events = [makeUsageEvent()];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
 
     const reporter = makeReporter();
     // The construction-time watermark backstop is async; let it settle.
@@ -1901,7 +1937,7 @@ describe("UsageTelemetryReporter", () => {
     // Re-grant consent and flush with new events
     mockGetRawShareAnalytics.mockReturnValue(true);
     const events = [makeUsageEvent({ id: "evt-after-reenable" })];
-    mockQueryUnreportedUsageEvents.mockReturnValue(events);
+    mockQueryUnreportedUsageEvents.mockResolvedValue(events);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -1936,7 +1972,7 @@ describe("UsageTelemetryReporter", () => {
       id: "evt-version-llm",
       assistantVersion: "0.8.4",
     });
-    mockQueryUnreportedUsageEvents.mockReturnValue([event]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([event]);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -1960,7 +1996,7 @@ describe("UsageTelemetryReporter", () => {
       id: "evt-version-llm-null",
       assistantVersion: null,
     });
-    mockQueryUnreportedUsageEvents.mockReturnValue([event]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([event]);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":1}', { status: 200 })),
     );
@@ -1985,8 +2021,8 @@ describe("UsageTelemetryReporter", () => {
     // would have provided but per-event so it survives the platform
     // contract that treats present per-event values as winning over the
     // envelope.
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    mockQueryUnreportedTurnEvents.mockReturnValue([
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
+    mockQueryUnreportedTurnEvents.mockResolvedValue([
       {
         id: "evt-turn-version",
         createdAt: 1700000300000,
@@ -2026,7 +2062,7 @@ describe("UsageTelemetryReporter", () => {
       id: "evt-new",
       assistantVersion: "0.8.5",
     });
-    mockQueryUnreportedUsageEvents.mockReturnValue([oldEvent, newEvent]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([oldEvent, newEvent]);
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":2}', { status: 200 })),
     );
@@ -2050,7 +2086,7 @@ describe("UsageTelemetryReporter", () => {
   // -------------------------------------------------------------------------
 
   test("auth_fallback events are included in the events array with type discriminator", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     await recordAuthFallbackCounts(1700000740000, 1700000800000, [
       {
         guard: "edge",
@@ -2087,7 +2123,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("auth_fallback rows are deleted on success and never watermarked (ack mode)", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     await recordAuthFallbackCounts(1700000000000, 1700000001000, [
       {
         guard: "edge-scoped",
@@ -2130,7 +2166,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("auth_fallback rows survive a failed POST and re-ship on the next flush", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     await recordAuthFallbackCounts(1700000000000, 1700000001000, [
       {
         guard: "edge",
@@ -2163,7 +2199,7 @@ describe("UsageTelemetryReporter", () => {
   // -------------------------------------------------------------------------
 
   test("activation onboarding row flushes with funnel fields + deterministic daemon_event_id, then acks", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     const sessionId = "sess-activation-1";
     const stepName = "activation_moment_1_complete";
     const recorded = await recordActivationEvent({ stepName, sessionId });
@@ -2195,7 +2231,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("queued activation row recorded under an older funnel version ships its frozen payload verbatim", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     // The payload (including the deterministic daemon_event_id keyed on the
     // OLD funnel version) was frozen at record time; a flush after a version
     // bump must not restamp it with the new binary's constant.
@@ -2235,7 +2271,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("legacy onboarding row keeps daemon_event_id = row id and omits funnel fields", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     const recorded = await recordOnboardingEvent({
       screen: "tools",
       tools: ["calendar"],
@@ -2269,8 +2305,8 @@ describe("UsageTelemetryReporter", () => {
   // -------------------------------------------------------------------------
 
   test("tool_executed events project decision to status and never carry raw args/results", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    seedToolInvocation({
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
+    await seedToolInvocation({
       id: "ti-ok",
       createdAt: 1700000001000,
       toolName: "calendar_list_events",
@@ -2285,7 +2321,7 @@ describe("UsageTelemetryReporter", () => {
     });
     // Errored invocation without LLM attribution — the attribution columns
     // are null and must pass through as null.
-    seedToolInvocation({
+    await seedToolInvocation({
       id: "ti-err",
       createdAt: 1700000002000,
       toolName: "web_search",
@@ -2295,7 +2331,7 @@ describe("UsageTelemetryReporter", () => {
       resultBytes: 33,
     });
     // Permission-denied rows are filtered in the store and must never ship.
-    seedToolInvocation({
+    await seedToolInvocation({
       id: "ti-denied",
       createdAt: 1700000003000,
       decision: "denied",
@@ -2353,9 +2389,9 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("tool_executed watermark advances to the last reported row on success", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    seedToolInvocation({ id: "ti-w1", createdAt: 1700000001000 });
-    seedToolInvocation({ id: "ti-w2", createdAt: 1700000002000 });
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
+    await seedToolInvocation({ id: "ti-w1", createdAt: 1700000001000 });
+    await seedToolInvocation({ id: "ti-w2", createdAt: 1700000002000 });
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response('{"accepted":2}', { status: 200 })),
     );
@@ -2379,9 +2415,9 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("tool_executed resumes from a stored watermark — reported rows are not re-shipped", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
-    seedToolInvocation({ id: "ti-r1", createdAt: 1700000001000 });
-    seedToolInvocation({ id: "ti-r2", createdAt: 1700000002000 });
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
+    await seedToolInvocation({ id: "ti-r1", createdAt: 1700000001000 });
+    await seedToolInvocation({ id: "ti-r2", createdAt: 1700000002000 });
     // A previous flush already reported ti-r1.
     mockGetFlushCheckpoint.mockImplementation(async (key) => {
       if (key === "telemetry:tool_executed:last_reported_at") {
@@ -2409,7 +2445,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("rows recorded after construction but before the first flush are shipped", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     // Regression coverage for the review finding: the reporter delays its
     // first flush by 30s+, so a tool used right after daemon startup is
     // recorded before any flush has run. The construction-time watermark
@@ -2423,7 +2459,10 @@ describe("UsageTelemetryReporter", () => {
     const rowCreatedAt =
       Number(checkpoints.get("telemetry:tool_executed:last_reported_at")) +
       1000;
-    seedToolInvocation({ id: "ti-pre-first-flush", createdAt: rowCreatedAt });
+    await seedToolInvocation({
+      id: "ti-pre-first-flush",
+      createdAt: rowCreatedAt,
+    });
 
     await reporter.flush();
 
@@ -2446,14 +2485,14 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("absent tool_executed checkpoint is initialized at construction — rows predating the reporter never ship", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     const checkpoints = useStatefulCheckpoints();
 
     // Rows accumulated before any flush ever advanced the watermark — e.g.
     // an opt-out period under an older build that gated reporter
     // construction on the usage-data opt-out while the always-on audit
     // listener kept writing.
-    seedToolInvocation({
+    await seedToolInvocation({
       id: "ti-opt-out-window",
       createdAt: Date.now() - 60_000,
     });
@@ -2470,7 +2509,7 @@ describe("UsageTelemetryReporter", () => {
     expect(initialized).toBeDefined();
 
     // A tool that runs after construction ships normally.
-    seedToolInvocation({
+    await seedToolInvocation({
       id: "ti-post-construction",
       createdAt: Number(initialized) + 1000,
     });
@@ -2487,13 +2526,13 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("existing tool_executed checkpoint is respected — construction does not re-initialize", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     const checkpoints = useStatefulCheckpoints({
       "telemetry:tool_executed:last_reported_at": String(1700000001000),
       "telemetry:tool_executed:last_reported_id": "ti-already-reported",
     });
 
-    seedToolInvocation({
+    await seedToolInvocation({
       id: "ti-already-reported",
       createdAt: 1700000001000,
     });
@@ -2503,7 +2542,7 @@ describe("UsageTelemetryReporter", () => {
     // the watermark advancing via the opt-out flush branch (the reporter
     // runs even when collection is disabled), so the backlog can only hold
     // opted-in rows.
-    seedToolInvocation({ id: "ti-backlog", createdAt: 1700000002000 });
+    await seedToolInvocation({ id: "ti-backlog", createdAt: 1700000002000 });
 
     const reporter = makeReporter();
     expect(checkpoints.get("telemetry:tool_executed:last_reported_at")).toBe(
@@ -2522,7 +2561,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("opt-out window never ships across restarts — opted-out flushes keep the watermark ahead of audit rows", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     // A previous opted-in session shipped through this watermark.
     const checkpoints = useStatefulCheckpoints({
       "telemetry:tool_executed:last_reported_at": String(1700000001000),
@@ -2535,7 +2574,7 @@ describe("UsageTelemetryReporter", () => {
     // flush in stop()) advances the watermark past them without sending.
     mockGetRawShareAnalytics.mockReturnValue(false);
     const optOutRowCreatedAt = Date.now() - 5_000;
-    seedToolInvocation({
+    await seedToolInvocation({
       id: "ti-opt-out-window",
       createdAt: optOutRowCreatedAt,
     });
@@ -2550,7 +2589,10 @@ describe("UsageTelemetryReporter", () => {
     // Session 2: the user opts back in and restarts. Only rows recorded
     // after the opt-out epoch ship — the opt-out-window row never does.
     mockGetRawShareAnalytics.mockReturnValue(true);
-    seedToolInvocation({ id: "ti-after-opt-in", createdAt: advanced + 1000 });
+    await seedToolInvocation({
+      id: "ti-after-opt-in",
+      createdAt: advanced + 1000,
+    });
     const reporter = makeReporter();
     await reporter.flush();
 
@@ -2564,7 +2606,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("opt-out row written in the same millisecond as the opt-out flush never ships after re-opt-in", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     // A previous opted-in session left a low-sorting ID watermark behind.
     const checkpoints = useStatefulCheckpoints({
       "telemetry:tool_executed:last_reported_at": String(1700000001000),
@@ -2586,14 +2628,17 @@ describe("UsageTelemetryReporter", () => {
     // Date.now(), with a UUID sorting above the stale pre-opt-out ID
     // watermark. With only the timestamp watermark advanced, the compound
     // cursor's `createdAt == watermark AND id > afterId` arm would match it.
-    seedToolInvocation({
+    await seedToolInvocation({
       id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
       createdAt: watermark,
     });
 
     // Re-opt-in: only rows strictly after the opt-out epoch ship.
     mockGetRawShareAnalytics.mockReturnValue(true);
-    seedToolInvocation({ id: "ti-after-opt-in", createdAt: watermark + 1000 });
+    await seedToolInvocation({
+      id: "ti-after-opt-in",
+      createdAt: watermark + 1000,
+    });
     const reporter = makeReporter();
     await reporter.flush();
 
@@ -2672,7 +2717,7 @@ describe("UsageTelemetryReporter", () => {
   // -------------------------------------------------------------------------
 
   test("skill_loaded events ship metadata with attribution and null passthrough", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     await recordSkillLoadedEvent({
       conversationId: "conv-skill",
       skillName: "web-research",
@@ -2728,7 +2773,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("skill_loaded rows are deleted from the outbox after a 2xx, never via watermarks", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     await recordSkillLoadedEvent({ skillName: "web-research" });
     await recordSkillLoadedEvent({ skillName: "tasks" });
     expect(await queryTelemetryOutboxBatch("skill_loaded", 10)).toHaveLength(2);
@@ -2750,7 +2795,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("a full skill_loaded batch drives recursion until the outbox drains", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     // BATCH_SIZE (500) + 1 rows: the first flush ships and deletes a full
     // batch, and the fullBatch recursion ships the remaining row.
     for (let i = 0; i < 501; i++) {
@@ -2774,7 +2819,7 @@ describe("UsageTelemetryReporter", () => {
   // -------------------------------------------------------------------------
 
   test("config_setting events ship the key/value pair on the standard envelope", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     await recordConfigSettingEvent({
       configKey: "memory.enabled",
       configValue: "true",
@@ -2817,7 +2862,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("config_setting rows are deleted on success and no watermark is written", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     await recordConfigSettingEvent({
       configKey: "memory.enabled",
       configValue: "true",
@@ -2848,7 +2893,7 @@ describe("UsageTelemetryReporter", () => {
   });
 
   test("config_setting rows survive a failed POST for the next flush", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     await recordConfigSettingEvent({
       configKey: "memory.enabled",
       configValue: "true",
@@ -2870,7 +2915,7 @@ describe("UsageTelemetryReporter", () => {
   // -------------------------------------------------------------------------
 
   test("watchdog events ship the record-time payload with nested detail, then delete", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     await recordWatchdogEvent({
       checkName: "event_loop_blocked",
       value: 60000,
@@ -3445,7 +3490,7 @@ describe("UsageTelemetryReporter", () => {
   // -------------------------------------------------------------------------
 
   test("a recorded lifecycle event flushes once and its outbox row is deleted", async () => {
-    mockQueryUnreportedUsageEvents.mockReturnValue([]);
+    mockQueryUnreportedUsageEvents.mockResolvedValue([]);
     const recorded = await recordLifecycleEvent("app_open");
     expect(recorded).not.toBeNull();
     mockFetch.mockImplementation(() =>

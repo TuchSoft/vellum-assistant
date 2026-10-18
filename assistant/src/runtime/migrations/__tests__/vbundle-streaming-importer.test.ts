@@ -886,7 +886,7 @@ describe("streamCommitImport — report parity with commitImport", () => {
 
     // Buffer-based path.
     mkdirSync(bufferWorkspace, { recursive: true });
-    const bufferResult = commitImport({
+    const bufferResult = await commitImport({
       archiveData: archive,
       pathResolver: new DefaultPathResolver(bufferWorkspace),
       workspaceDir: bufferWorkspace,
@@ -1056,7 +1056,7 @@ describe("streamCommitImport — no workspace entries means no swap", () => {
       mkdtempSync(join(tmpdir(), "oow-target-")),
     );
     const externalResolver = {
-      resolve(archivePath: string): string | null {
+      async resolve(archivePath: string): Promise<string | null> {
         if (archivePath.startsWith("credentials/")) {
           return null;
         }

@@ -37,13 +37,20 @@
  * `ever-injected-store.test.ts`.
  */
 
-import { Database } from "bun:sqlite";
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
 import type { ContentBlock, Message } from "@vellumai/plugin-api";
-import { drizzle } from "drizzle-orm/bun-sqlite";
 
-import * as schema from "../../../../persistence/schema/index.js";
+import { describePg } from "../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
+import { initializeDb } from "../../../../persistence/db-init.js";
 import { wrapMemoryBlock, wrapMemoryPointerBlock } from "../memory-marker.js";
 import {
   escapeInjectedBody,
@@ -59,9 +66,6 @@ import {
   sectionRefId,
 } from "./types.js";
 
-const realDb = {
-  ...(await import("../../../../persistence/db-connection.js")),
-};
 const realMemoryConfig = { ...(await import("../config.js")) };
 
 let pruneMockActive = false;
@@ -70,44 +74,23 @@ let pruneConfig: {
   targetResidentBytes: number;
 } | null = null;
 
-let testSqlite: Database;
-// The section store, which carries `planPrune`'s candidates and recency,
-// lives on the dedicated memory connection, resolved via `getMemorySqlite`,
-// stubbed to a second in-memory DB carrying the store's schema.
-let memorySqlite: Database;
-let testDb = await makeDb();
-async function makeDb() {
-  testSqlite = new Database(":memory:");
-  const db = drizzle(testSqlite, { schema });
-  // Minimal `messages` shape, `collectPersistedV3Sections` reads only
-  // `conversation_id` and `metadata`.
-  testSqlite.run(/*sql*/ `
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      metadata TEXT,
-      created_at INTEGER NOT NULL
-    )
-  `);
-  memorySqlite = new Database(":memory:");
-  await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
-  return db;
-}
+await initializeDb();
+setDefaultTimeout(30_000);
 
-mock.module("../../../../persistence/db-connection.js", () => ({
-  ...realDb,
-  getDb: () => (pruneMockActive ? testDb : realDb.getDb()),
-  getSqliteFrom: (db: unknown) =>
-    pruneMockActive
-      ? testSqlite
-      : realDb.getSqliteFrom(db as Parameters<typeof realDb.getSqliteFrom>[0]),
-  getMemorySqlite: () =>
-    pruneMockActive ? memorySqlite : realDb.getMemorySqlite(),
-  getMemoryDb: () =>
-    pruneMockActive ? drizzle(memorySqlite, { schema }) : realDb.getMemoryDb(),
-}));
+let cachedDb: ReturnType<typeof requireMainDb> | null = null;
+function db(): ReturnType<typeof requireMainDb> {
+  cachedDb ??= requireMainDb();
+  return cachedDb;
+}
+let schemaEnsured = false;
+
+async function resetTables(): Promise<void> {
+  const d = db();
+  await d.run(`DELETE FROM memory_v3_injected_sections`);
+  await d.run(`DELETE FROM memory_v3_ever_injected`);
+  await d.run(`DELETE FROM messages`);
+  await d.run(`DELETE FROM conversations`);
+}
 
 // Memory code resolves its config through the plugin's own accessor
 // (`getMemoryConfig`), not `getConfig()`; the prune valve reads its bounds
@@ -211,50 +194,57 @@ function v3Block(
 
 /** Clear a row's selection stamp, as a row written before the column existed
  *  carries none. */
-function clearSelectionStamp(
+async function clearSelectionStamp(
   conversationId: string,
   slug: string,
   key: string,
-): void {
-  memorySqlite
-    .query(
-      /*sql*/ `
+): Promise<void> {
+  await db().run(
+    /*sql*/ `
       UPDATE memory_v3_injected_sections SET last_selected_at = NULL
       WHERE conversation_id = ? AND slug = ? AND section_key = ?
     `,
-    )
-    .run(conversationId, slug, key);
+    [conversationId, slug, key],
+  );
 }
 
-function insertUserRowWithV3Block(
+async function insertUserRowWithV3Block(
   conversationId: string,
   id: string,
   blockInner: string,
   format: InjectedBlockFormat = "current",
-): void {
+): Promise<void> {
   // The persisting build stamps the block's format beside it; a legacy row
   // (persisted before the stamp existed) carries the block alone.
-  testSqlite
-    .query(
-      /*sql*/ `
+  const d = db();
+  await d.run(
+    /*sql*/ `INSERT INTO conversations (id, created_at, updated_at) VALUES (?, 0, 0) ON CONFLICT (id) DO NOTHING`,
+    [conversationId],
+  );
+  await d.run(
+    /*sql*/ `
       INSERT INTO messages (id, conversation_id, role, content, metadata, created_at)
       VALUES (?, ?, 'user', '[]', ?, 0)
     `,
-    )
-    .run(
+    [
       id,
       conversationId,
       JSON.stringify({
         memoryV3InjectedBlock: blockInner,
         ...(format === "current" ? { memoryV3InjectedBlockFormat: 2 } : {}),
       }),
-    );
+    ],
+  );
 }
 
 beforeEach(async () => {
   pruneMockActive = true;
   pruneConfig = null;
-  testDb = await makeDb();
+  if (!schemaEnsured) {
+    await ensureMemoryV3InjectedSectionsSchema(db());
+    schemaEnsured = true;
+  }
+  await resetTables();
 });
 
 afterAll(async () => {
@@ -264,7 +254,7 @@ afterAll(async () => {
 
 // ─── parseInjectedSections / filterPrunedSections ────────────────────────────
 
-describe("parseInjectedSections / filterPrunedSections", () => {
+describePg("parseInjectedSections / filterPrunedSections", () => {
   const inner = renderInjectionBlockInner([
     lead("page-a"),
     section("page-a", "Notes"),
@@ -540,7 +530,7 @@ describe("parseInjectedSections / filterPrunedSections", () => {
 
 // ─── planPrune ───────────────────────────────────────────────────────────────
 
-describe("newestCopyIndexes / filterResidentSections", () => {
+describePg("newestCopyIndexes / filterResidentSections", () => {
   const oldA = renderInjectionBlockInner([lead("page-a"), lead("page-b")]);
   const newA = renderInjectionBlockInner([lead("page-a")]);
 
@@ -611,7 +601,7 @@ describe("newestCopyIndexes / filterResidentSections", () => {
   });
 });
 
-describe("filterResidentPointerEntries", () => {
+describePg("filterResidentPointerEntries", () => {
   const pointer = wrapMemoryPointerBlock(
     renderPointerInner([
       { slug: "page-a", key: "" },
@@ -695,16 +685,20 @@ describe("filterResidentPointerEntries", () => {
   });
 });
 
-describe("planPrune", () => {
+describePg("planPrune", () => {
   const deps = { maxResidentBytes: 300, targetResidentBytes: 200 };
 
   test("no-op below (or at) the cap", async () => {
-    recordInjected("conv-1", [{ slug: "page-a", key: "", bytes: 300 }], 1_000);
-    expect(planPrune(deps, "conv-1")).toBeNull();
+    await recordInjected(
+      "conv-1",
+      [{ slug: "page-a", key: "", bytes: 300 }],
+      1_000,
+    );
+    expect(await planPrune(deps, "conv-1")).toBeNull();
   });
 
   test("over the cap: prunes oldest-first by last selection recency down to the target", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [
         { slug: "page-a", key: "", bytes: 100 },
@@ -716,11 +710,11 @@ describe("planPrune", () => {
     );
     // Later turns re-select b, c, and d in that order; a keeps its record's
     // stamp (1_000).
-    touchSelected("conv-1", [{ slug: "page-b", key: "" }], 2_000);
-    touchSelected("conv-1", [{ slug: "page-c", key: "" }], 3_000);
-    touchSelected("conv-1", [{ slug: "page-d", key: "" }], 4_000);
+    await touchSelected("conv-1", [{ slug: "page-b", key: "" }], 2_000);
+    await touchSelected("conv-1", [{ slug: "page-c", key: "" }], 3_000);
+    await touchSelected("conv-1", [{ slug: "page-d", key: "" }], 4_000);
 
-    const plan = planPrune(deps, "conv-1");
+    const plan = await planPrune(deps, "conv-1");
     expect(plan).toEqual({
       sections: [
         { slug: "page-a", key: "" },
@@ -731,7 +725,7 @@ describe("planPrune", () => {
   });
 
   test("recency is per section row: two sections of one page selected on one turn both carry its stamp, and neither is evicted ahead of an older section", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [
         { slug: "page-a", key: "", bytes: 100 },
@@ -744,8 +738,8 @@ describe("planPrune", () => {
     // A later turn re-selects page-b's Notes, and the turn after it
     // re-selects page-a's Notes and Design together; page-a's lead keeps its
     // record's stamp.
-    touchSelected("conv-1", [{ slug: "page-b", key: "Notes" }], 3_000);
-    touchSelected(
+    await touchSelected("conv-1", [{ slug: "page-b", key: "Notes" }], 3_000);
+    await touchSelected(
       "conv-1",
       [
         { slug: "page-a", key: "Notes" },
@@ -756,49 +750,61 @@ describe("planPrune", () => {
 
     // Resident 400 > max 300: page-a's lead (1_000) goes first, then page-b's
     // Notes (3_000); both sections selected at 5_000 survive.
-    expect(planPrune(deps, "conv-1")!.sections).toEqual([
+    expect((await planPrune(deps, "conv-1"))!.sections).toEqual([
       { slug: "page-a", key: "" },
       { slug: "page-b", key: "Notes" },
     ]);
   });
 
   test("re-selection recency outranks injection order", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [{ slug: "page-old", key: "", bytes: 200 }],
       1_000,
     );
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [{ slug: "page-new", key: "", bytes: 200 }],
       2_000,
     );
     // page-old was injected first but re-selected most recently; page-new was
     // selected only at injection time.
-    touchSelected("conv-1", [{ slug: "page-old", key: "" }], 9_000);
+    await touchSelected("conv-1", [{ slug: "page-old", key: "" }], 9_000);
 
-    const plan = planPrune(deps, "conv-1");
+    const plan = await planPrune(deps, "conv-1");
     expect(plan!.sections).toEqual([{ slug: "page-new", key: "" }]);
   });
 
   test("a row with no selection stamp ranks by injected_at", async () => {
-    recordInjected("conv-1", [{ slug: "page-a", key: "", bytes: 200 }], 5_000);
-    recordInjected("conv-1", [{ slug: "page-b", key: "", bytes: 200 }], 1_000);
-    recordInjected("conv-1", [{ slug: "page-c", key: "", bytes: 200 }], 9_000);
-    clearSelectionStamp("conv-1", "page-b", "");
-    clearSelectionStamp("conv-1", "page-c", "");
+    await recordInjected(
+      "conv-1",
+      [{ slug: "page-a", key: "", bytes: 200 }],
+      5_000,
+    );
+    await recordInjected(
+      "conv-1",
+      [{ slug: "page-b", key: "", bytes: 200 }],
+      1_000,
+    );
+    await recordInjected(
+      "conv-1",
+      [{ slug: "page-c", key: "", bytes: 200 }],
+      9_000,
+    );
+    await clearSelectionStamp("conv-1", "page-b", "");
+    await clearSelectionStamp("conv-1", "page-c", "");
 
     // Resident 600 > max 300: page-b (injected 1_000, unstamped) goes first,
     // then page-a (stamped 5_000); page-c (injected 9_000, unstamped) is the
     // most recent and survives.
-    expect(planPrune(deps, "conv-1")!.sections).toEqual([
+    expect((await planPrune(deps, "conv-1"))!.sections).toEqual([
       { slug: "page-b", key: "" },
       { slug: "page-a", key: "" },
     ]);
   });
 
   test("no lane exemptions: the oldest section is pruned whatever page it belongs to", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [
         { slug: "core-page", key: "", bytes: 150 },
@@ -807,12 +813,12 @@ describe("planPrune", () => {
       ],
       1_000,
     );
-    touchSelected("conv-1", [{ slug: "page-b", key: "" }], 2_000);
-    touchSelected("conv-1", [{ slug: "page-c", key: "" }], 3_000);
+    await touchSelected("conv-1", [{ slug: "page-b", key: "" }], 2_000);
+    await touchSelected("conv-1", [{ slug: "page-c", key: "" }], 3_000);
 
     // Resident 450 > max 300: reaching the 200 target needs the two oldest,
     // and the core page's lead is simply the oldest.
-    const plan = planPrune(deps, "conv-1");
+    const plan = await planPrune(deps, "conv-1");
     expect(plan!.sections).toEqual([
       { slug: "core-page", key: "" },
       { slug: "page-b", key: "" },
@@ -820,7 +826,7 @@ describe("planPrune", () => {
   });
 
   test("zero-byte rows (capability slugs) are skipped (pruning them frees nothing)", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [
         { slug: "cli-commands/export", key: "", bytes: 0 },
@@ -830,13 +836,13 @@ describe("planPrune", () => {
       1_000,
     );
 
-    const plan = planPrune(deps, "conv-1");
+    const plan = await planPrune(deps, "conv-1");
     expect(plan!.sections).toEqual([{ slug: "page-b", key: "" }]);
   });
 
   test("a truncated fork's inherited sections are candidates carrying the bytes of their inherited spans", async () => {
     const entries = [lead("page-a"), section("page-a", "Notes")];
-    seedEverInjectedFromBlocks(
+    await seedEverInjectedFromBlocks(
       "conv-parent",
       "conv-1",
       [current(wrapMemoryBlock(renderInjectionBlockInner(entries)))],
@@ -844,7 +850,7 @@ describe("planPrune", () => {
     );
     const bytes = entries.map(renderedBytes);
     expect(
-      getInjected("conv-1").map(({ slug, key, bytes }) => ({
+      (await getInjected("conv-1")).map(({ slug, key, bytes }) => ({
         slug,
         key,
         bytes,
@@ -858,7 +864,7 @@ describe("planPrune", () => {
     // fall back to the seed's injected_at, so the key order breaks the tie).
     const total = bytes[0]! + bytes[1]!;
     expect(
-      planPrune(
+      await planPrune(
         { maxResidentBytes: total - 1, targetResidentBytes: 0 },
         "conv-1",
       ),
@@ -872,18 +878,18 @@ describe("planPrune", () => {
   });
 
   test("returns null when only zero-byte candidates remain over the cap", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [{ slug: "skills/meet-join", key: "", bytes: 0 }],
       1_000,
     );
-    expect(planPrune(deps, "conv-1")).toBeNull();
+    expect(await planPrune(deps, "conv-1")).toBeNull();
   });
 });
 
 // ─── live strip & v3-block identification ────────────────────────────────────
 
-describe("stripPrunedSectionsFromMessages", () => {
+describePg("stripPrunedSectionsFromMessages", () => {
   const innerAB = renderInjectionBlockInner([
     lead("page-a"),
     section("page-a", "Notes"),
@@ -1136,19 +1142,27 @@ describe("stripPrunedSectionsFromMessages", () => {
 
 // ─── runPruneValve (end-to-end against the temp DB) ──────────────────────────
 
-describe("runPruneValve", () => {
+describePg("runPruneValve", () => {
   test("below the cap: no-op, nothing marked pruned (idempotent)", async () => {
     pruneConfig = { maxResidentBytes: 1_000, targetResidentBytes: 500 };
-    recordInjected("conv-1", [{ slug: "page-a", key: "", bytes: 100 }], 1_000);
+    await recordInjected(
+      "conv-1",
+      [{ slug: "page-a", key: "", bytes: 100 }],
+      1_000,
+    );
 
     expect(await runPruneValve("conv-1")).toBeNull();
     expect(await runPruneValve("conv-1")).toBeNull();
-    expect(getPrunedSections("conv-1").size).toBe(0);
+    expect((await getPrunedSections("conv-1")).size).toBe(0);
   });
 
   test("missing prune config: bails before touching the store", async () => {
     pruneConfig = null;
-    recordInjected("conv-1", [{ slug: "page-a", key: "", bytes: 100 }], 1_000);
+    await recordInjected(
+      "conv-1",
+      [{ slug: "page-a", key: "", bytes: 100 }],
+      1_000,
+    );
     expect(await runPruneValve("conv-1")).toBeNull();
   });
 
@@ -1156,12 +1170,12 @@ describe("runPruneValve", () => {
     // Capability content can never be located/stripped by slug, so the
     // injector records capability slugs at zero bytes — they contribute
     // nothing to the resident measure and are never candidates.
-    insertUserRowWithV3Block(
+    await insertUserRowWithV3Block(
       "conv-1",
       "m1",
       renderInjectionBlockInner([lead("page-a"), CAPABILITY_CHUNK]),
     );
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [
         { slug: "page-a", key: "", bytes: 100 },
@@ -1172,7 +1186,7 @@ describe("runPruneValve", () => {
 
     pruneConfig = { maxResidentBytes: 300, targetResidentBytes: 200 };
     expect(await runPruneValve("conv-1")).toBeNull();
-    expect(getPrunedSections("conv-1").size).toBe(0);
+    expect((await getPrunedSections("conv-1")).size).toBe(0);
   });
 
   test("accounting drift (bytes recorded, no locatable section) is tombstoned in ONE pass — no loop-fire", async () => {
@@ -1183,8 +1197,8 @@ describe("runPruneValve", () => {
     // resident accounting, so the very next pass is a no-op rather than the
     // valve loop-firing against bytes it cannot free.
     const inner = renderInjectionBlockInner([lead("page-a")]);
-    insertUserRowWithV3Block("conv-1", "m1", inner);
-    recordInjected(
+    await insertUserRowWithV3Block("conv-1", "m1", inner);
+    await recordInjected(
       "conv-1",
       [
         { slug: "page-drifted", key: "", bytes: 500 }, // no persisted text anywhere
@@ -1194,7 +1208,7 @@ describe("runPruneValve", () => {
     );
     // page-a was re-selected after both were injected: the drifted row is
     // the oldest candidate.
-    touchSelected("conv-1", [{ slug: "page-a", key: "" }], 2_000);
+    await touchSelected("conv-1", [{ slug: "page-a", key: "" }], 2_000);
 
     const liveMessages: Message[] = [
       {
@@ -1217,7 +1231,7 @@ describe("runPruneValve", () => {
       sections: [{ slug: "page-drifted", key: "" }],
       bytesFreed: 500,
     });
-    expect(getActiveSections("conv-1")).toEqual(refSet(["page-a", ""]));
+    expect(await getActiveSections("conv-1")).toEqual(refSet(["page-a", ""]));
 
     // The live history is untouched, the drifted section had no text to
     // strip, and page-a was not pruned.
@@ -1231,7 +1245,9 @@ describe("runPruneValve", () => {
     expect(
       await runPruneValve("conv-1", { liveMessages: () => liveMessages }),
     ).toBeNull();
-    expect(getPrunedSections("conv-1")).toEqual(refSet(["page-drifted", ""]));
+    expect(await getPrunedSections("conv-1")).toEqual(
+      refSet(["page-drifted", ""]),
+    );
   });
 
   test("over the cap: marks pruned, strips the live history by header span, and converges with rehydration", async () => {
@@ -1240,10 +1256,10 @@ describe("runPruneValve", () => {
       section("page-a", "Notes"),
     ]);
     const innerTurn2 = renderInjectionBlockInner([lead("page-c")]);
-    insertUserRowWithV3Block("conv-1", "m1", innerTurn1);
-    insertUserRowWithV3Block("conv-1", "m2", innerTurn2);
+    await insertUserRowWithV3Block("conv-1", "m1", innerTurn1);
+    await insertUserRowWithV3Block("conv-1", "m2", innerTurn2);
 
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [
         { slug: "page-a", key: "", bytes: 100 },
@@ -1254,8 +1270,8 @@ describe("runPruneValve", () => {
     );
     // Turn 1 re-selected page-a's Notes and turn 2 selected page-c; page-a's
     // lead keeps its record's stamp, the oldest.
-    touchSelected("conv-1", [{ slug: "page-a", key: "Notes" }], 2_000);
-    touchSelected("conv-1", [{ slug: "page-c", key: "" }], 3_000);
+    await touchSelected("conv-1", [{ slug: "page-a", key: "Notes" }], 2_000);
+    await touchSelected("conv-1", [{ slug: "page-c", key: "" }], 3_000);
 
     // Live history as rehydration would build it, plus a v2-lookalike block
     // that must survive untouched.
@@ -1292,9 +1308,9 @@ describe("runPruneValve", () => {
       ],
       bytesFreed: 200,
     });
-    expect(getActiveSections("conv-1")).toEqual(refSet(["page-c", ""]));
+    expect(await getActiveSections("conv-1")).toEqual(refSet(["page-c", ""]));
     expect(
-      getInjected("conv-1").find(
+      (await getInjected("conv-1")).find(
         (row) => row.slug === "page-a" && row.key === "",
       )!.prunedAt,
     ).toBe(9_000);
@@ -1312,7 +1328,7 @@ describe("runPruneValve", () => {
 
     // Rehydration converges: the same filter over the persisted metadata
     // produces exactly what the live strip left in place.
-    const pruned = getPrunedSections("conv-1");
+    const pruned = await getPrunedSections("conv-1");
     expect(filterPrunedSections(innerTurn1, "current", pruned)).toBe("");
     expect(filterPrunedSections(innerTurn2, "current", pruned)).toBe(
       innerTurn2,
@@ -1327,12 +1343,12 @@ describe("runPruneValve", () => {
     const keptCard = legacyCard("kept");
     const legacyInner = [V3_INJECTION_HEADER, stubCard, keptCard].join("\n\n");
     const currentInner = renderInjectionBlockInner([lead("page-a")]);
-    insertUserRowWithV3Block("conv-1", "m1", legacyInner, "legacy");
-    insertUserRowWithV3Block("conv-1", "m2", currentInner);
+    await insertUserRowWithV3Block("conv-1", "m1", legacyInner, "legacy");
+    await insertUserRowWithV3Block("conv-1", "m2", currentInner);
     // The cards' rows are dedup-only (zero bytes, as the schema ensure copies
     // them in), stub's tombstoned before the upgrade; the current lead
     // carries its bytes.
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [
         { slug: "stub", key: "", bytes: 0 },
@@ -1341,7 +1357,11 @@ describe("runPruneValve", () => {
       1_000,
     );
     markPruned("conv-1", [{ slug: "stub", key: "" }], 1_500);
-    recordInjected("conv-1", [{ slug: "page-a", key: "", bytes: 300 }], 2_000);
+    await recordInjected(
+      "conv-1",
+      [{ slug: "page-a", key: "", bytes: 300 }],
+      2_000,
+    );
 
     const legacyBlock = v3Block(wrapMemoryBlock(legacyInner), "legacy");
     const liveMessages: Message[] = [
@@ -1381,7 +1401,7 @@ describe("runPruneValve", () => {
     expect(liveMessages[2]!.content).toEqual([
       { type: "text", text: "turn 2" },
     ]);
-    const pruned = getPrunedSections("conv-1");
+    const pruned = await getPrunedSections("conv-1");
     expect(pruned).toEqual(refSet(["stub", ""], ["page-a", ""]));
     expect(filterPrunedSections(legacyInner, "legacy", pruned)).toBe(remainder);
     expect(filterPrunedSections(currentInner, "current", pruned)).toBe("");
@@ -1389,8 +1409,8 @@ describe("runPruneValve", () => {
 
   test("a pruned section later re-selected re-injects and is kept by the filter again", async () => {
     const inner = renderInjectionBlockInner([section("page-a", "Notes")]);
-    insertUserRowWithV3Block("conv-1", "m1", inner);
-    recordInjected(
+    await insertUserRowWithV3Block("conv-1", "m1", inner);
+    await recordInjected(
       "conv-1",
       [{ slug: "page-a", key: "Notes", bytes: 300 }],
       1_000,
@@ -1403,28 +1423,30 @@ describe("runPruneValve", () => {
     });
     expect(plan!.sections).toEqual([{ slug: "page-a", key: "Notes" }]);
     expect(
-      filterPrunedSections(inner, "current", getPrunedSections("conv-1")),
+      filterPrunedSections(inner, "current", await getPrunedSections("conv-1")),
     ).toBe("");
 
     // Re-selection re-injects (recordInjected clears pruned_at), the section
     // is active again and the filter keeps it.
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [{ slug: "page-a", key: "Notes", bytes: 50 }],
       3_000,
     );
-    expect(getActiveSections("conv-1")).toEqual(refSet(["page-a", "Notes"]));
+    expect(await getActiveSections("conv-1")).toEqual(
+      refSet(["page-a", "Notes"]),
+    );
     expect(
-      filterPrunedSections(inner, "current", getPrunedSections("conv-1")),
+      filterPrunedSections(inner, "current", await getPrunedSections("conv-1")),
     ).toBe(inner);
   });
 });
 
-describe("schedulePruneValve", () => {
+describePg("schedulePruneValve", () => {
   test("defers the valve run; flush awaits completion", async () => {
     const inner = renderInjectionBlockInner([lead("page-a"), lead("page-b")]);
-    insertUserRowWithV3Block("conv-1", "m1", inner);
-    recordInjected(
+    await insertUserRowWithV3Block("conv-1", "m1", inner);
+    await recordInjected(
       "conv-1",
       [
         { slug: "page-a", key: "", bytes: 200 },
@@ -1432,25 +1454,29 @@ describe("schedulePruneValve", () => {
       ],
       1_000,
     );
-    touchSelected("conv-1", [{ slug: "page-b", key: "" }], 2_000);
+    await touchSelected("conv-1", [{ slug: "page-b", key: "" }], 2_000);
 
     pruneConfig = { maxResidentBytes: 300, targetResidentBytes: 200 };
     schedulePruneValve("conv-1", { liveMessages: () => null });
     // Synchronously after scheduling, nothing has been pruned yet.
-    expect(getPrunedSections("conv-1").size).toBe(0);
+    expect((await getPrunedSections("conv-1")).size).toBe(0);
 
     await flushPruneValveForTests();
-    expect(getPrunedSections("conv-1")).toEqual(refSet(["page-a", ""]));
+    expect(await getPrunedSections("conv-1")).toEqual(refSet(["page-a", ""]));
   });
 
   test("valve failures are swallowed (never affect the turn)", async () => {
     pruneConfig = { maxResidentBytes: 0, targetResidentBytes: 0 };
-    insertUserRowWithV3Block(
+    await insertUserRowWithV3Block(
       "conv-1",
       "m1",
       renderInjectionBlockInner([lead("page-a")]),
     );
-    recordInjected("conv-1", [{ slug: "page-a", key: "", bytes: 100 }], 1_000);
+    await recordInjected(
+      "conv-1",
+      [{ slug: "page-a", key: "", bytes: 100 }],
+      1_000,
+    );
     schedulePruneValve("conv-1", {
       liveMessages: () => {
         throw new Error("boom");
@@ -1459,44 +1485,42 @@ describe("schedulePruneValve", () => {
     await flushPruneValveForTests();
     // The markPruned preceding the failing strip still landed; the error
     // itself did not propagate.
-    expect(getPrunedSections("conv-1")).toEqual(refSet(["page-a", ""]));
+    expect(await getPrunedSections("conv-1")).toEqual(refSet(["page-a", ""]));
   });
 });
 
-describe("legacy card rows", () => {
+describePg("legacy card rows", () => {
   test("the schema ensure copies memory_v3_ever_injected rows in at zero bytes: dedup-only, never counted, never planned", async () => {
-    memorySqlite.run(/*sql*/ `
-      CREATE TABLE memory_v3_ever_injected (
-        conversation_id TEXT NOT NULL,
-        slug TEXT NOT NULL,
-        injected_at INTEGER NOT NULL,
-        bytes INTEGER NOT NULL DEFAULT 0,
-        pruned_at INTEGER,
-        PRIMARY KEY (conversation_id, slug)
-      )
-    `);
-    memorySqlite.run(/*sql*/ `
+    const d = db();
+    await d.run(/*sql*/ `
       INSERT INTO memory_v3_ever_injected
         (conversation_id, slug, injected_at, bytes, pruned_at)
       VALUES ('conv-1', 'page-a', 1000, 640, NULL)
     `);
     // The one-shot copy records itself in the checkpoint ledger; this suite
-    // runs on a bare memory database, so hand the ensure a map-backed one.
+    // hands the ensure a map-backed one.
     const values = new Map<string, string>();
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite, {
+    await ensureMemoryV3InjectedSectionsSchema(d, {
       get: async (key) => values.get(key) ?? null,
       set: async (key, value) => {
         values.set(key, value);
       },
     });
-    recordInjected("conv-1", [{ slug: "page-b", key: "", bytes: 100 }], 2_000);
+    await recordInjected(
+      "conv-1",
+      [{ slug: "page-b", key: "", bytes: 100 }],
+      2_000,
+    );
 
-    expect(getActiveSections("conv-1")).toEqual(
+    expect(await getActiveSections("conv-1")).toEqual(
       refSet(["page-a", ""], ["page-b", ""]),
     );
-    expect(residentBytes("conv-1")).toBe(100);
+    expect(await residentBytes("conv-1")).toBe(100);
     expect(
-      planPrune({ maxResidentBytes: 50, targetResidentBytes: 0 }, "conv-1"),
+      await planPrune(
+        { maxResidentBytes: 50, targetResidentBytes: 0 },
+        "conv-1",
+      ),
     ).toEqual({ sections: [{ slug: "page-b", key: "" }], bytesFreed: 100 });
   });
 });

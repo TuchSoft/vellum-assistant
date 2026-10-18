@@ -57,7 +57,7 @@ function makePathResolver(): DefaultPathResolver {
 }
 
 describe("commitImport — symlinks", () => {
-  test("round-trip: recreates a typeflag-2 entry as a real symlink", () => {
+  test("round-trip: recreates a typeflag-2 entry as a real symlink", async () => {
     const files = [
       {
         path: "workspace/data/db/assistant.db",
@@ -75,7 +75,7 @@ describe("commitImport — symlinks", () => {
     ];
     const { archive } = buildVBundle({ files, ...defaultV1Options() });
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: makePathResolver(),
       workspaceDir,
@@ -100,7 +100,7 @@ describe("commitImport — symlinks", () => {
     expect(fooReport!.backup_path).toBeNull();
   });
 
-  test("defense-in-depth: traversal link_target is skipped with warning", () => {
+  test("defense-in-depth: traversal link_target is skipped with warning", async () => {
     // Bypass `validateVBundle` (which would reject the traversal first) by
     // handing `commitImport` a hand-built manifest + entries map.
     const linkTarget = "../../../tmp/escape";
@@ -140,7 +140,7 @@ describe("commitImport — symlinks", () => {
       ],
     ]);
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: new Uint8Array(0),
       pathResolver: makePathResolver(),
       preValidatedManifest: manifest,
@@ -164,7 +164,7 @@ describe("commitImport — symlinks", () => {
     expect(() => lstatSync(join(workspaceDir, "skills/escape.md"))).toThrow();
   });
 
-  test("defense-in-depth: absolute link_target is skipped with warning", () => {
+  test("defense-in-depth: absolute link_target is skipped with warning", async () => {
     const linkTarget = "/etc/passwd";
     const archivePath = "workspace/skills/abs.md";
     const manifest = buildTestManifest({
@@ -202,7 +202,7 @@ describe("commitImport — symlinks", () => {
       ],
     ]);
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: new Uint8Array(0),
       pathResolver: makePathResolver(),
       preValidatedManifest: manifest,
@@ -225,7 +225,7 @@ describe("commitImport — symlinks", () => {
     expect(() => lstatSync(join(workspaceDir, "skills/abs.md"))).toThrow();
   });
 
-  test("overwrite: pre-existing regular file is backed up and replaced", () => {
+  test("overwrite: pre-existing regular file is backed up and replaced", async () => {
     // Hand-build the manifest and skip `workspaceDir` so the workspace
     // clear (Step 1b) doesn't wipe the regular file we plant below — that
     // way we exercise the in-loop overwrite branch directly.
@@ -272,7 +272,7 @@ describe("commitImport — symlinks", () => {
     mkdirSync(dirname(fooDiskPath), { recursive: true });
     writeFileSync(fooDiskPath, "old");
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: new Uint8Array(0),
       pathResolver: makePathResolver(),
       preValidatedManifest: manifest,
@@ -301,7 +301,7 @@ describe("commitImport — symlinks", () => {
     expect(backupContents).toBe("old");
   });
 
-  test("legacy prompts/USER.md symlink is skipped when guardian persona is already customized", () => {
+  test("legacy prompts/USER.md symlink is skipped when guardian persona is already customized", async () => {
     // Bundle ships prompts/USER.md as a symlink. The destination workspace
     // already has a customized guardian persona at users/<slug>.md, so the
     // import must skip the entry rather than clobber the user's content.
@@ -369,7 +369,7 @@ describe("commitImport — symlinks", () => {
       () => guardianPath,
     );
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: new Uint8Array(0),
       pathResolver: resolver,
       preValidatedManifest: manifest,
@@ -401,7 +401,7 @@ describe("commitImport — symlinks", () => {
     ).toBe(true);
   });
 
-  test("symlink-overwrites-symlink: replaces an existing symlink without EEXIST", () => {
+  test("symlink-overwrites-symlink: replaces an existing symlink without EEXIST", async () => {
     const archivePath = "workspace/skills/foo.md";
     const linkTarget = "bar.md";
 
@@ -445,7 +445,7 @@ describe("commitImport — symlinks", () => {
     mkdirSync(dirname(fooDiskPath), { recursive: true });
     symlinkSync("other.md", fooDiskPath);
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: new Uint8Array(0),
       pathResolver: makePathResolver(),
       preValidatedManifest: manifest,

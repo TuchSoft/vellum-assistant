@@ -130,7 +130,7 @@ describe("commitImport — credential metadata merge", () => {
     }
   });
 
-  test("target vellum:* entries survive; bundle user entries land", () => {
+  test("target vellum:* entries survive; bundle user entries land", async () => {
     const metadataPath = seedTargetMetadata(workspaceDir, vellumRecords());
 
     const bundleMetadata = metadataJson([
@@ -153,7 +153,7 @@ describe("commitImport — credential metadata merge", () => {
       ...defaultV1Options(),
     });
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: new DefaultPathResolver(workspaceDir),
       workspaceDir,
@@ -176,7 +176,7 @@ describe("commitImport — credential metadata merge", () => {
     }
   });
 
-  test("rogue vellum entries in the bundle are dropped", () => {
+  test("rogue vellum entries in the bundle are dropped", async () => {
     const metadataPath = seedTargetMetadata(workspaceDir, vellumRecords());
     const bundleMetadata = metadataJson([
       record("vellum", "assistant_api_key", "source-rogue"),
@@ -198,7 +198,7 @@ describe("commitImport — credential metadata merge", () => {
       ...defaultV1Options(),
     });
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: new DefaultPathResolver(workspaceDir),
       workspaceDir,
@@ -214,7 +214,7 @@ describe("commitImport — credential metadata merge", () => {
     expect(keys(merged.credentials).has("telegram:bot_token")).toBe(true);
   });
 
-  test("bundle without metadata.json still leaves target's vellum entries on disk", () => {
+  test("bundle without metadata.json still leaves target's vellum entries on disk", async () => {
     const metadataPath = seedTargetMetadata(workspaceDir, vellumRecords());
 
     const { archive } = buildVBundle({
@@ -225,7 +225,7 @@ describe("commitImport — credential metadata merge", () => {
       ...defaultV1Options(),
     });
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: new DefaultPathResolver(workspaceDir),
       workspaceDir,
@@ -240,7 +240,7 @@ describe("commitImport — credential metadata merge", () => {
     }
   });
 
-  test("target without existing metadata.json → bundle's file lands verbatim", () => {
+  test("target without existing metadata.json → bundle's file lands verbatim", async () => {
     const { archive } = buildVBundle({
       files: [
         {
@@ -258,7 +258,7 @@ describe("commitImport — credential metadata merge", () => {
       ...defaultV1Options(),
     });
 
-    const result = commitImport({
+    const result = await commitImport({
       archiveData: archive,
       pathResolver: new DefaultPathResolver(workspaceDir),
       workspaceDir,

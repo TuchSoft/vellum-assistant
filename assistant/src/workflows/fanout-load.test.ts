@@ -153,7 +153,7 @@ return results;
         // Summed cost over this run's `workflowLeaf` usage events stays within
         // a sane envelope. Filter by call site + the run's start time so we
         // only sum events this run produced (the table is shared).
-        const events = listUsageEvents({ limit: 10_000 });
+        const events = await listUsageEvents({ limit: 10_000 });
         const runCostUsd = events
           .filter(
             (e) => e.callSite === "workflowLeaf" && e.createdAt >= startedAt,

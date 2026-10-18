@@ -58,10 +58,10 @@ interface FakeManager {
   list: (opts?: {
     limit?: number;
     status?: WorkflowRun["status"];
-  }) => WorkflowRun[];
-  status: (id: string) => WorkflowRun | null;
-  abort: (id: string) => void;
-  resume: (id: string) => { runId: string };
+  }) => Promise<WorkflowRun[]>;
+  status: (id: string) => Promise<WorkflowRun | null>;
+  abort: (id: string) => Promise<void>;
+  resume: (id: string) => Promise<{ runId: string }>;
 }
 
 function makeJournalEntry(
@@ -84,7 +84,7 @@ function setup(opts: {
   runs?: WorkflowRun[];
   saved?: SavedWorkflowEntry[];
   /** Custom resume impl; defaults to a success that records the id. */
-  resume?: (id: string) => { runId: string };
+  resume?: (id: string) => Promise<{ runId: string }>;
   /** Resolved auto-approve threshold for the resume posture gate. */
   threshold?: "none" | "low" | "medium" | "high";
   /** Journal entries returned by getJournal, keyed by run id. */
@@ -111,7 +111,7 @@ function setup(opts: {
     cellQuery?: unknown;
   }> = [];
   const manager: FakeManager = {
-    list: (o) => {
+    list: async (o) => {
       listCalls.push({ limit: o?.limit, status: o?.status });
       let result = runs;
       if (o?.status) {
@@ -122,13 +122,13 @@ function setup(opts: {
       }
       return result;
     },
-    status: (id) => runs.find((r) => r.id === id) ?? null,
-    abort: (id) => {
+    status: async (id) => runs.find((r) => r.id === id) ?? null,
+    abort: async (id) => {
       aborted.push(id);
     },
     resume:
       opts.resume ??
-      ((id) => {
+      (async (id) => {
         resumed.push(id);
         return { runId: id };
       }),
@@ -151,7 +151,7 @@ function setup(opts: {
             externalChatId: opts.bindingExternalChatId,
           } as ExternalConversationBinding)
         : null,
-    getJournal: (runId) => opts.journal?.[runId] ?? [],
+    getJournal: async (runId) => opts.journal?.[runId] ?? [],
   });
   return { aborted, resumed, listCalls, thresholdCalls };
 }

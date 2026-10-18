@@ -136,8 +136,11 @@ function seedLiveWorkspace(workspaceDir: string, files: SeedFile[]): void {
   }
 }
 
-function runBufferImport(workspaceDir: string, archive: Uint8Array): void {
-  const result = commitImport({
+async function runBufferImport(
+  workspaceDir: string,
+  archive: Uint8Array,
+): Promise<void> {
+  const result = await commitImport({
     archiveData: archive,
     pathResolver: new DefaultPathResolver(workspaceDir),
     workspaceDir,
@@ -237,7 +240,7 @@ describe("vbundle import parity (buffer vs streaming)", () => {
     mkdirSync(bufferWs, { recursive: true });
     mkdirSync(streamWs, { recursive: true });
 
-    runBufferImport(bufferWs, archive);
+    await runBufferImport(bufferWs, archive);
     await runStreamImport(streamWs, archive, async () => {
       // parity test: credentials are intercepted but not persisted
     });
@@ -280,7 +283,7 @@ describe("vbundle import parity (buffer vs streaming)", () => {
       ...defaultV1Options(),
     });
 
-    runBufferImport(bufferWs, archive);
+    await runBufferImport(bufferWs, archive);
     await runStreamImport(streamWs, archive);
 
     const bufferMap = walkDiskTree(bufferWs);
@@ -339,7 +342,7 @@ describe("vbundle import parity (buffer vs streaming)", () => {
       () => streamGuardianPath,
     );
 
-    const bufferResult = commitImport({
+    const bufferResult = await commitImport({
       archiveData: archive,
       pathResolver: bufferResolver,
       workspaceDir: bufferWs,
@@ -379,7 +382,7 @@ describe("vbundle import parity (buffer vs streaming)", () => {
       ...defaultV1Options(),
     });
 
-    runBufferImport(bufferWs, archive);
+    await runBufferImport(bufferWs, archive);
     await runStreamImport(streamWs, archive);
 
     const bufferMap = walkDiskTree(bufferWs);
@@ -408,7 +411,7 @@ describe("vbundle import parity (buffer vs streaming)", () => {
       ...defaultV1Options(),
     });
 
-    runBufferImport(bufferWs, archive);
+    await runBufferImport(bufferWs, archive);
     await runStreamImport(streamWs, archive);
 
     const bufferMap = walkDiskTree(bufferWs);
@@ -439,7 +442,7 @@ describe("vbundle import parity (buffer vs streaming)", () => {
 
     // Preflight must not block on the gateway entry, or the CLI would
     // refuse the restore before either importer runs.
-    const preflight = analyzeImport({
+    const preflight = await analyzeImport({
       manifest,
       pathResolver: new DefaultPathResolver(bufferWs),
     });
@@ -449,7 +452,7 @@ describe("vbundle import parity (buffer vs streaming)", () => {
     mkdirSync(bufferWs, { recursive: true });
     mkdirSync(streamWs, { recursive: true });
 
-    const bufferResult = commitImport({
+    const bufferResult = await commitImport({
       archiveData: archive,
       pathResolver: new DefaultPathResolver(bufferWs),
       workspaceDir: bufferWs,

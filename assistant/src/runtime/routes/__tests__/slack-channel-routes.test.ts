@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, expect, mock, test } from "bun:test";
 
-import { describePg } from "../../__tests__/pg-test-db.js";
+import { describePg } from "../../../__tests__/pg-test-db.js";
 
 type MockSlackInfo = {
   id: string;

@@ -166,7 +166,7 @@ describe("serializeConversationSummary · enabledPlugins", () => {
 
 describe("serializeConversationSummary · title keys", () => {
   test("resolves a stored title key for the locale", async () => {
-    const summary = serializeConversationSummary({
+    const summary = await serializeConversationSummary({
       conversation: makeConversationRow({
         title: "conversation.title.generating",
       }),

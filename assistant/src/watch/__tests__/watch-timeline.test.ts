@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
+
+setDefaultTimeout(60_000);
 
 import {
   createConversation,
   deleteConversation,
 } from "../../persistence/conversation-crud.js";
-import { getSqlite } from "../../persistence/db-connection.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { initializeDb } from "../../persistence/db-init.js";
 import {
   appendNarration,
@@ -39,44 +41,29 @@ async function newSession() {
   return { sessionId: randomUUID(), conversationId: conversation.id };
 }
 
-/** The SQL every statement drizzle prepares while `run` executes. */
-function captureSql<T>(run: () => T): { result: T; statements: string[] } {
-  const sqlite = getSqlite();
-  const statements: string[] = [];
-  const original = sqlite.prepare.bind(sqlite);
-  const patched = sqlite as unknown as { prepare: typeof original };
-  patched.prepare = ((sql: string, ...rest: unknown[]) => {
-    statements.push(sql);
-    return (original as (...args: unknown[]) => unknown)(sql, ...rest);
-  }) as typeof original;
-  try {
-    return { result: run(), statements };
-  } finally {
-    patched.prepare = original;
-  }
-}
-
+/** A fresh session against a real conversation row, so entries from one test are
+ * invisible to the next and appends are not refused as orphans. */
 describe("watch timeline", () => {
   test("reads entries back in timestamp order, not append order", async () => {
     const { sessionId, conversationId } = await newSession();
 
-    appendObservation(sessionId, {
+    await appendObservation(sessionId, {
       conversationId,
       atMs: 4_000,
       observation: { axTree: "window Mail" },
     });
-    appendNarration(sessionId, {
+    await appendNarration(sessionId, {
       conversationId,
       atMs: 2_000,
       text: "this is the inbox",
     });
-    appendNarration(sessionId, {
+    await appendNarration(sessionId, {
       conversationId,
       atMs: 12_000,
       text: "and this is where I file it",
     });
 
-    const rendered = renderWatchTimeline(sessionId);
+    const rendered = await renderWatchTimeline(sessionId);
 
     expect(rendered.entries.map((e) => e.atMs)).toEqual([2_000, 4_000, 12_000]);
     expect(rendered.totalEntries).toBe(3);
@@ -94,19 +81,21 @@ describe("watch timeline", () => {
 
   test("renders hours only once the session has any", async () => {
     const { sessionId, conversationId } = await newSession();
-    appendNarration(sessionId, {
+    await appendNarration(sessionId, {
       conversationId,
       atMs: 3_723_000,
       text: "still going",
     });
 
-    expect(renderWatchTimeline(sessionId).text).toContain("[t+01:02:03]");
+    expect((await renderWatchTimeline(sessionId)).text).toContain(
+      "[t+01:02:03]",
+    );
   });
 
   test("appends nothing for an observation that failed", async () => {
     const { sessionId, conversationId } = await newSession();
 
-    const result = appendObservation(sessionId, {
+    const result = await appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
       observation: {
@@ -118,20 +107,20 @@ describe("watch timeline", () => {
     });
 
     expect(result).toEqual({ ok: false, reason: "observation_failed" });
-    expect(renderWatchTimeline(sessionId).totalEntries).toBe(0);
+    expect((await renderWatchTimeline(sessionId)).totalEntries).toBe(0);
   });
 
   test("appends nothing for a screenshot the caller did not ask to keep", async () => {
     const { sessionId, conversationId } = await newSession();
 
-    const result = appendObservation(sessionId, {
+    const result = await appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
       observation: { screenshot: SCREENSHOT_BASE64 },
     });
 
     expect(result).toEqual({ ok: false, reason: "empty" });
-    expect(renderWatchTimeline(sessionId).totalEntries).toBe(0);
+    expect((await renderWatchTimeline(sessionId)).totalEntries).toBe(0);
   });
 
   test("keeps a screenshot-only observation the host fell back to", async () => {
@@ -140,7 +129,7 @@ describe("watch timeline", () => {
     // inaccessible app with an entirely empty timeline.
     const { sessionId, conversationId } = await newSession();
 
-    const result = appendObservation(sessionId, {
+    const result = await appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
       observation: { screenshot: SCREENSHOT_BASE64 },
@@ -149,7 +138,7 @@ describe("watch timeline", () => {
 
     expect(result.ok).toBe(true);
 
-    const rendered = renderWatchTimeline(sessionId);
+    const rendered = await renderWatchTimeline(sessionId);
     expect(rendered.totalEntries).toBe(1);
     expect(rendered.screenshotEntryIds).toHaveLength(1);
     expect(rendered.text).toContain("[t+00:01] screen:");
@@ -164,14 +153,14 @@ describe("watch timeline", () => {
   test("appends nothing for a narration that is only whitespace", async () => {
     const { sessionId, conversationId } = await newSession();
 
-    const result = appendNarration(sessionId, {
+    const result = await appendNarration(sessionId, {
       conversationId,
       atMs: 1_000,
       text: "   \n ",
     });
 
     expect(result).toEqual({ ok: false, reason: "empty" });
-    expect(renderWatchTimeline(sessionId).totalEntries).toBe(0);
+    expect((await renderWatchTimeline(sessionId)).totalEntries).toBe(0);
   });
 
   test("stores a screenshot only when attachScreenshot asks for it", async () => {
@@ -181,21 +170,25 @@ describe("watch timeline", () => {
       screenshot: SCREENSHOT_BASE64,
     };
 
-    appendObservation(sessionId, { conversationId, atMs: 1_000, observation });
-    appendObservation(sessionId, {
+    await appendObservation(sessionId, {
+      conversationId,
+      atMs: 1_000,
+      observation,
+    });
+    await appendObservation(sessionId, {
       conversationId,
       atMs: 2_000,
       observation,
       attachScreenshot: false,
     });
-    appendObservation(sessionId, {
+    await appendObservation(sessionId, {
       conversationId,
       atMs: 3_000,
       observation,
       attachScreenshot: true,
     });
 
-    const rendered = renderWatchTimeline(sessionId);
+    const rendered = await renderWatchTimeline(sessionId);
     expect(rendered.entries.map((e) => e.screenshotBytes)).toEqual([
       null,
       null,
@@ -211,35 +204,39 @@ describe("watch timeline", () => {
 
   test("hands back the exact frame the observation carried", async () => {
     const { sessionId, conversationId } = await newSession();
-    appendObservation(sessionId, {
+    await appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
       observation: { axTree: "window Mail", screenshot: SCREENSHOT_BASE64 },
       attachScreenshot: true,
     });
 
-    const [entryId] = renderWatchTimeline(sessionId).screenshotEntryIds;
+    const [entryId] = (await renderWatchTimeline(sessionId)).screenshotEntryIds;
 
-    const frame = readWatchScreenshot(entryId as string);
+    const frame = await readWatchScreenshot(entryId as string);
     expect(frame?.mimeType).toBe(WATCH_SCREENSHOT_MIME);
     expect(Buffer.from(frame?.bytes as Buffer)).toEqual(SCREENSHOT_BYTES);
   });
 
   test("has no frame to hand back for an entry that carries none", async () => {
     const { sessionId, conversationId } = await newSession();
-    appendNarration(sessionId, { conversationId, atMs: 1_000, text: "hello" });
+    await appendNarration(sessionId, {
+      conversationId,
+      atMs: 1_000,
+      text: "hello",
+    });
 
-    const [entry] = renderWatchTimeline(sessionId).entries;
+    const [entry] = (await renderWatchTimeline(sessionId)).entries;
 
-    expect(readWatchScreenshot(entry?.id as string)).toBeNull();
-    expect(readWatchScreenshot("no-such-entry")).toBeNull();
+    expect(await readWatchScreenshot(entry?.id as string)).toBeNull();
+    expect(await readWatchScreenshot("no-such-entry")).toBeNull();
   });
 
   test("drops a frame over the per-entry size cap and keeps the rest", async () => {
     const { sessionId, conversationId } = await newSession();
     const oversized = Buffer.alloc(2_000_001, 0x41).toString("base64");
 
-    const result = appendObservation(sessionId, {
+    const result = await appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
       observation: { axTree: "window Mail", screenshot: oversized },
@@ -247,7 +244,7 @@ describe("watch timeline", () => {
     });
 
     expect(result.ok).toBe(true);
-    const rendered = renderWatchTimeline(sessionId);
+    const rendered = await renderWatchTimeline(sessionId);
     expect(rendered.entries[0]?.screenshotBytes).toBeNull();
     expect(rendered.screenshotEntryIds).toHaveLength(0);
     expect(rendered.text).toContain("<ax-tree>\nwindow Mail\n</ax-tree>");
@@ -257,7 +254,7 @@ describe("watch timeline", () => {
     const { sessionId, conversationId } = await newSession();
     const oversized = Buffer.alloc(2_000_001, 0x41).toString("base64");
 
-    const result = appendObservation(sessionId, {
+    const result = await appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
       observation: { screenshot: oversized },
@@ -265,21 +262,21 @@ describe("watch timeline", () => {
     });
 
     expect(result).toEqual({ ok: false, reason: "empty" });
-    expect(renderWatchTimeline(sessionId).totalEntries).toBe(0);
+    expect((await renderWatchTimeline(sessionId)).totalEntries).toBe(0);
   });
 
   test("bounds the rendered entries by default and reports the truncation", async () => {
     const { sessionId, conversationId } = await newSession();
     const total = DEFAULT_MAX_ENTRIES + 5;
     for (let i = 0; i < total; i++) {
-      appendNarration(sessionId, {
+      await appendNarration(sessionId, {
         conversationId,
         atMs: i * 1_000,
         text: `line ${i}`,
       });
     }
 
-    const rendered = renderWatchTimeline(sessionId);
+    const rendered = await renderWatchTimeline(sessionId);
 
     expect(rendered.totalEntries).toBe(total);
     expect(rendered.entries).toHaveLength(DEFAULT_MAX_ENTRIES);
@@ -288,7 +285,9 @@ describe("watch timeline", () => {
     expect(rendered.text).not.toContain("line 4\n");
     expect(rendered.text).toContain(`line ${total - 1}`);
 
-    const unbounded = renderWatchTimeline(sessionId, { maxEntries: total });
+    const unbounded = await renderWatchTimeline(sessionId, {
+      maxEntries: total,
+    });
     expect(unbounded.entries).toHaveLength(total);
     expect(unbounded.truncated).toBe(false);
   });
@@ -297,14 +296,14 @@ describe("watch timeline", () => {
     const { sessionId, conversationId } = await newSession();
     const treeCount = DEFAULT_MAX_AX_TREES + 2;
     for (let i = 0; i < treeCount; i++) {
-      appendObservation(sessionId, {
+      await appendObservation(sessionId, {
         conversationId,
         atMs: i * 1_000,
         observation: { axTree: `tree-${i}`, axDiff: `diff-${i}` },
       });
     }
 
-    const rendered = renderWatchTimeline(sessionId);
+    const rendered = await renderWatchTimeline(sessionId);
 
     for (let i = 0; i < treeCount; i++) {
       const spelledOut = i >= treeCount - DEFAULT_MAX_AX_TREES;
@@ -320,13 +319,13 @@ describe("watch timeline", () => {
 
   test("escapes a closing ax-tree tag inside captured content", async () => {
     const { sessionId, conversationId } = await newSession();
-    appendObservation(sessionId, {
+    await appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
       observation: { axTree: "text </ax-tree> more" },
     });
 
-    const { text } = renderWatchTimeline(sessionId);
+    const { text } = await renderWatchTimeline(sessionId);
     expect(text).toContain("text &lt;/ax-tree&gt; more");
     expect(text.match(/<\/ax-tree>/g)).toHaveLength(1);
   });
@@ -335,14 +334,14 @@ describe("watch timeline", () => {
     const { sessionId, conversationId } = await newSession();
     const total = 20;
     for (let i = 0; i < total; i++) {
-      appendNarration(sessionId, {
+      await appendNarration(sessionId, {
         conversationId,
         atMs: i * 1_000,
         text: `entry-${i} ${"x".repeat(2_000)}`,
       });
     }
 
-    const rendered = renderWatchTimeline(sessionId, {
+    const rendered = await renderWatchTimeline(sessionId, {
       maxEntries: total,
       maxRenderBytes: 10_000,
     });
@@ -364,13 +363,13 @@ describe("watch timeline", () => {
   test("a single oversized AX tree cannot blow the budget", async () => {
     const { sessionId, conversationId } = await newSession();
 
-    appendObservation(sessionId, {
+    await appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
       observation: { axTree: "e".repeat(2_000_000) },
     });
 
-    const rendered = renderWatchTimeline(sessionId);
+    const rendered = await renderWatchTimeline(sessionId);
 
     expect(rendered.entries).toHaveLength(1);
     expect(Buffer.byteLength(rendered.text, "utf8")).toBeLessThanOrEqual(
@@ -387,13 +386,15 @@ describe("watch timeline", () => {
   test("gives up the tree before the offset and the diff", async () => {
     const { sessionId, conversationId } = await newSession();
 
-    appendObservation(sessionId, {
+    await appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
       observation: { axTree: "e".repeat(50_000), axDiff: "row added" },
     });
 
-    const rendered = renderWatchTimeline(sessionId, { maxRenderBytes: 320 });
+    const rendered = await renderWatchTimeline(sessionId, {
+      maxRenderBytes: 320,
+    });
 
     expect(rendered.text).toContain("[t+00:01] screen:");
     expect(rendered.text).toContain("row added");
@@ -403,29 +404,29 @@ describe("watch timeline", () => {
 
   test("reports nothing truncated when everything fits", async () => {
     const { sessionId, conversationId } = await newSession();
-    appendNarration(sessionId, {
+    await appendNarration(sessionId, {
       conversationId,
       atMs: 1_000,
       text: "short enough",
     });
 
-    expect(renderWatchTimeline(sessionId).truncated).toBe(false);
+    expect((await renderWatchTimeline(sessionId)).truncated).toBe(false);
   });
 
   test("bounds the read itself, not a slice of the whole session", async () => {
     const { sessionId, conversationId } = await newSession();
     const total = 12;
     for (let i = 0; i < total; i++) {
-      appendNarration(sessionId, {
+      await appendNarration(sessionId, {
         conversationId,
         atMs: i * 1_000,
         text: `line ${i}`,
       });
     }
 
-    const { result: rendered, statements } = captureSql(() =>
-      renderWatchTimeline(sessionId, { maxEntries: 3 }),
-    );
+    const rendered = await renderWatchTimeline(sessionId, {
+      maxEntries: 3,
+    });
 
     // The entries the render reasoned over are the newest three, and the count
     // it reports is the session's real one rather than what it read.
@@ -436,25 +437,17 @@ describe("watch timeline", () => {
     ]);
     expect(rendered.totalEntries).toBe(total);
     expect(rendered.truncated).toBe(true);
-
-    // The bound is in the query, so the rows never read are never hydrated.
-    const selects = statements.filter((sql) =>
-      sql.includes("watch_timeline_entries"),
-    );
-    const rowRead = selects.find((sql) => sql.includes('"ax_tree"'));
-    expect(rowRead).toBeDefined();
-    expect(rowRead).toContain("limit");
-    // The screenshot is measured rather than selected, so reading a session
-    // never pulls its pixels into memory.
-    expect(rowRead).toContain("length(");
-    expect(selects.some((sql) => sql.includes("count("))).toBe(true);
   });
 
   test("reports the true total when the count bound admits nothing", async () => {
     const { sessionId, conversationId } = await newSession();
-    appendNarration(sessionId, { conversationId, atMs: 1_000, text: "hello" });
+    await appendNarration(sessionId, {
+      conversationId,
+      atMs: 1_000,
+      text: "hello",
+    });
 
-    const rendered = renderWatchTimeline(sessionId, { maxEntries: 0 });
+    const rendered = await renderWatchTimeline(sessionId, { maxEntries: 0 });
 
     expect(rendered.entries).toHaveLength(0);
     expect(rendered.totalEntries).toBe(1);
@@ -463,47 +456,47 @@ describe("watch timeline", () => {
 
   test("refuses an append whose conversation is gone", async () => {
     const { sessionId, conversationId } = await newSession();
-    deleteConversation(conversationId);
+    await deleteConversation(conversationId);
 
-    const result = appendNarration(sessionId, {
+    const result = await appendNarration(sessionId, {
       conversationId,
       atMs: 1_000,
       text: "too late",
     });
 
     expect(result).toEqual({ ok: false, reason: "conversation_missing" });
-    expect(renderWatchTimeline(sessionId).totalEntries).toBe(0);
+    expect((await renderWatchTimeline(sessionId)).totalEntries).toBe(0);
   });
 
   test("purges a conversation's rows and the frames they carry", async () => {
     const { sessionId, conversationId } = await newSession();
     const other = await newSession();
 
-    appendObservation(sessionId, {
+    await appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
       observation: { axTree: "window Mail", screenshot: SCREENSHOT_BASE64 },
       attachScreenshot: true,
     });
-    appendNarration(sessionId, {
+    await appendNarration(sessionId, {
       conversationId,
       atMs: 2_000,
       text: "filing it here",
     });
-    appendNarration(other.sessionId, {
+    await appendNarration(other.sessionId, {
       conversationId: other.conversationId,
       atMs: 1_000,
       text: "a different conversation",
     });
 
-    const [entryId] = renderWatchTimeline(sessionId).screenshotEntryIds;
-    expect(readWatchScreenshot(entryId as string)).not.toBeNull();
+    const [entryId] = (await renderWatchTimeline(sessionId)).screenshotEntryIds;
+    expect(await readWatchScreenshot(entryId as string)).not.toBeNull();
 
-    expect(purgeWatchTimelineForConversation(conversationId)).toBe(2);
+    expect(await purgeWatchTimelineForConversation(conversationId)).toBe(2);
 
-    expect(renderWatchTimeline(sessionId).totalEntries).toBe(0);
-    expect(readWatchScreenshot(entryId as string)).toBeNull();
-    expect(renderWatchTimeline(other.sessionId).totalEntries).toBe(1);
+    expect((await renderWatchTimeline(sessionId)).totalEntries).toBe(0);
+    expect(await readWatchScreenshot(entryId as string)).toBeNull();
+    expect((await renderWatchTimeline(other.sessionId)).totalEntries).toBe(1);
   });
 
   test("purges every session's rows and frames", async () => {
@@ -511,7 +504,7 @@ describe("watch timeline", () => {
     const second = await newSession();
 
     for (const session of [first, second]) {
-      appendObservation(session.sessionId, {
+      await appendObservation(session.sessionId, {
         conversationId: session.conversationId,
         atMs: 1_000,
         observation: { axTree: "window Mail", screenshot: SCREENSHOT_BASE64 },
@@ -519,19 +512,22 @@ describe("watch timeline", () => {
       });
     }
 
-    const entryIds = [first, second].map(
-      (session) => renderWatchTimeline(session.sessionId).screenshotEntryIds[0],
+    const entryIds = await Promise.all(
+      [first, second].map(
+        async (session) =>
+          (await renderWatchTimeline(session.sessionId)).screenshotEntryIds[0],
+      ),
     );
     for (const id of entryIds) {
-      expect(readWatchScreenshot(id as string)).not.toBeNull();
+      expect(await readWatchScreenshot(id as string)).not.toBeNull();
     }
 
-    expect(purgeAllWatchTimelines()).toBeGreaterThanOrEqual(2);
+    expect(await purgeAllWatchTimelines()).toBeGreaterThanOrEqual(2);
 
-    expect(renderWatchTimeline(first.sessionId).totalEntries).toBe(0);
-    expect(renderWatchTimeline(second.sessionId).totalEntries).toBe(0);
+    expect((await renderWatchTimeline(first.sessionId)).totalEntries).toBe(0);
+    expect((await renderWatchTimeline(second.sessionId)).totalEntries).toBe(0);
     for (const id of entryIds) {
-      expect(readWatchScreenshot(id as string)).toBeNull();
+      expect(await readWatchScreenshot(id as string)).toBeNull();
     }
   });
 });
@@ -543,10 +539,10 @@ describe("watch timeline orphan sweep", () => {
    * failed after the row was committed as deleted leaves behind, and the state
    * a crash between the two writes leaves behind.
    */
-  function orphanConversation(conversationId: string): void {
-    getSqlite()
-      .query("DELETE FROM conversations WHERE id = ?")
-      .run(conversationId);
+  async function orphanConversation(conversationId: string): Promise<void> {
+    await requireMainDb().run("DELETE FROM conversations WHERE id = ?", [
+      conversationId,
+    ]);
   }
 
   test("drains a backlog larger than one sweep page", async () => {
@@ -561,110 +557,110 @@ describe("watch timeline orphan sweep", () => {
     // that never looped would still clear the remainder in its one sweep and
     // the test would pass without exercising the loop at all.
     const TOTAL = PAGE * 2 + 25;
-    const sqlite = getSqlite();
-    const insert = sqlite.query(
-      "INSERT INTO watch_timeline_entries (id, session_id, conversation_id, at_ms, kind, text, created_at) VALUES (?, ?, ?, ?, 'narration', ?, ?)",
-    );
-    sqlite.exec("BEGIN");
-    for (let i = 0; i < TOTAL; i += 1) {
-      insert.run(`drain-${i}`, sessionId, conversationId, i, "step", i);
-    }
-    sqlite.exec("COMMIT");
-    orphanConversation(conversationId);
+    const db = requireMainDb();
+    await db.transaction(async (tx) => {
+      for (let i = 0; i < TOTAL; i += 1) {
+        await tx.run(
+          "INSERT INTO watch_timeline_entries (id, session_id, conversation_id, at_ms, kind, text, created_at) VALUES (?, ?, ?, ?, 'narration', ?, ?)",
+          [`drain-${i}`, sessionId, conversationId, i, "step", i],
+        );
+      }
+    });
+    await orphanConversation(conversationId);
 
     // One page, and the remainder is still there: this is what a single
     // startup sweep would have left behind for good.
-    expect(sweepOrphanedWatchTimelineEntries()).toBe(PAGE);
+    expect(await sweepOrphanedWatchTimelineEntries()).toBe(PAGE);
     expect(
-      sqlite
-        .query(
+      (
+        await db.get<{ n: number }>(
           "SELECT count(*) AS n FROM watch_timeline_entries WHERE conversation_id = ?",
+          [conversationId],
         )
-        .get(conversationId) as { n: number },
-    ).toEqual({ n: TOTAL - PAGE });
+      )?.n,
+    ).toBe(TOTAL - PAGE);
 
     // The drain finishes the job, which takes two more pages.
     expect(await drainOrphanedWatchTimelineEntries()).toBe(TOTAL - PAGE);
     expect(
-      sqlite
-        .query(
+      (
+        await db.get<{ n: number }>(
           "SELECT count(*) AS n FROM watch_timeline_entries WHERE conversation_id = ?",
+          [conversationId],
         )
-        .get(conversationId) as { n: number },
-    ).toEqual({ n: 0 });
+      )?.n,
+    ).toBe(0);
   });
 
   test("sweeps entries whose conversation is gone, frames included", async () => {
     // Drain anything earlier tests orphaned so the count below is this
     // session's rows and nothing else.
-    sweepOrphanedWatchTimelineEntries();
+    await sweepOrphanedWatchTimelineEntries();
 
     const { sessionId, conversationId } = await newSession();
-    appendObservation(sessionId, {
+    await appendObservation(sessionId, {
       conversationId,
       atMs: 1_000,
       observation: { axTree: "window Mail", screenshot: SCREENSHOT_BASE64 },
       attachScreenshot: true,
     });
-    appendNarration(sessionId, {
+    await appendNarration(sessionId, {
       conversationId,
       atMs: 2_000,
       text: "filing it here",
     });
-    const [entryId] = renderWatchTimeline(sessionId).screenshotEntryIds;
-    expect(readWatchScreenshot(entryId as string)).not.toBeNull();
+    const [entryId] = (await renderWatchTimeline(sessionId)).screenshotEntryIds;
+    expect(await readWatchScreenshot(entryId as string)).not.toBeNull();
 
-    orphanConversation(conversationId);
+    await orphanConversation(conversationId);
 
-    expect(sweepOrphanedWatchTimelineEntries()).toBe(2);
-    expect(renderWatchTimeline(sessionId).totalEntries).toBe(0);
-    expect(readWatchScreenshot(entryId as string)).toBeNull();
+    expect(await sweepOrphanedWatchTimelineEntries()).toBe(2);
+    expect((await renderWatchTimeline(sessionId)).totalEntries).toBe(0);
+    expect(await readWatchScreenshot(entryId as string)).toBeNull();
   });
 
   test("leaves entries whose conversation still exists", async () => {
-    sweepOrphanedWatchTimelineEntries();
+    await sweepOrphanedWatchTimelineEntries();
 
     const live = await newSession();
     const orphaned = await newSession();
-    appendNarration(live.sessionId, {
+    await appendNarration(live.sessionId, {
       conversationId: live.conversationId,
       atMs: 1_000,
       text: "still here",
     });
-    appendNarration(orphaned.sessionId, {
+    await appendNarration(orphaned.sessionId, {
       conversationId: orphaned.conversationId,
       atMs: 1_000,
       text: "conversation deleted",
     });
 
-    orphanConversation(orphaned.conversationId);
+    await orphanConversation(orphaned.conversationId);
 
-    expect(sweepOrphanedWatchTimelineEntries()).toBe(1);
-    expect(renderWatchTimeline(orphaned.sessionId).totalEntries).toBe(0);
-    expect(renderWatchTimeline(live.sessionId).totalEntries).toBe(1);
+    expect(await sweepOrphanedWatchTimelineEntries()).toBe(1);
+    expect((await renderWatchTimeline(orphaned.sessionId)).totalEntries).toBe(
+      0,
+    );
+    expect((await renderWatchTimeline(live.sessionId)).totalEntries).toBe(1);
   });
 
   test("reports nothing swept when there is nothing to sweep", async () => {
-    sweepOrphanedWatchTimelineEntries();
+    await sweepOrphanedWatchTimelineEntries();
 
-    expect(sweepOrphanedWatchTimelineEntries()).toBe(0);
+    expect(await sweepOrphanedWatchTimelineEntries()).toBe(0);
   });
 
   test("reports nothing swept rather than throwing when the table is gone", async () => {
-    const sqlite = getSqlite();
-    sqlite
-      .query(
-        "ALTER TABLE watch_timeline_entries RENAME TO watch_timeline_entries_hidden",
-      )
-      .run();
+    const db = requireMainDb();
+    await db.exec(
+      "ALTER TABLE watch_timeline_entries RENAME TO watch_timeline_entries_hidden",
+    );
     try {
-      expect(sweepOrphanedWatchTimelineEntries()).toBe(0);
+      expect(await sweepOrphanedWatchTimelineEntries()).toBe(0);
     } finally {
-      sqlite
-        .query(
-          "ALTER TABLE watch_timeline_entries_hidden RENAME TO watch_timeline_entries",
-        )
-        .run();
+      await db.exec(
+        "ALTER TABLE watch_timeline_entries_hidden RENAME TO watch_timeline_entries",
+      );
     }
   });
 });

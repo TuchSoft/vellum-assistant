@@ -486,7 +486,7 @@ describe("streamCommitImport — buffer/streaming parity for symlinks", () => {
 
     // Buffer path.
     mkdirSync(bufferWs, { recursive: true });
-    const bufferResult = commitImport({
+    const bufferResult = await commitImport({
       archiveData: archive,
       pathResolver: new DefaultPathResolver(bufferWs, undefined, () => null),
       workspaceDir: bufferWs,

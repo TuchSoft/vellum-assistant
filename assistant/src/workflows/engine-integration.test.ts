@@ -37,7 +37,14 @@
  *    `(seq, call_hash)` sequences.
  */
 
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
 // ---------------------------------------------------------------------------
 // Mocks — defined before importing the module under test.
@@ -166,9 +173,10 @@ mock.module("../providers/provider-send-message.js", () => ({
 // Module under test (after mocks).
 // ---------------------------------------------------------------------------
 
+import { describePg } from "../__tests__/pg-test-db.js";
 import { WorkflowsConfigSchema } from "../config/schemas/workflows.js";
 import type { TrustContext } from "../daemon/trust-context-types.js";
-import { getSqlite } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { registerTool } from "../tools/registry.js";
 import type { ToolContext, ToolExecutionResult } from "../tools/types.js";
@@ -183,6 +191,7 @@ import {
 import { runLeaf } from "./leaf-runner.js";
 
 await initializeDb();
+setDefaultTimeout(60_000);
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -251,13 +260,14 @@ function baseOptions(
   };
 }
 
-function resetTables(): void {
-  getSqlite().exec("DELETE FROM workflow_journal");
-  getSqlite().exec("DELETE FROM workflow_runs");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM workflow_journal`);
+  await db.run(`DELETE FROM workflow_runs`);
 }
 
-beforeEach(() => {
-  resetTables();
+beforeEach(async () => {
+  await resetTables();
   sendMessage.mockClear();
   getConfiguredProvider.mockClear();
   inFlight = 0;
@@ -266,276 +276,278 @@ beforeEach(() => {
   sendDelayMs = 0;
 });
 
-afterAll(() => {
-  resetTables();
+afterAll(async () => {
+  await resetTables();
 });
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("workflow engine integration (real sandbox + leaf runner + agent loop + journal)", () => {
-  test("map/parallel fan-out: each leaf returns its echoed output, in order", async () => {
-    // The script is SYNCHRONOUS from its own view (asyncify) — no `await`.
-    const scriptSource = `
+describePg(
+  "workflow engine integration (real sandbox + leaf runner + agent loop + journal)",
+  () => {
+    test("map/parallel fan-out: each leaf returns its echoed output, in order", async () => {
+      // The script is SYNCHRONOUS from its own view (asyncify) — no `await`.
+      const scriptSource = `
 export const meta = { name: "fanout", description: "map over items" };
 const items = args.items;
 const results = map(items, (it) => leaf("item-" + it, { label: "leaf-" + it }));
 return results;
 `;
-    const result = await executeWorkflow({
-      ...baseOptions("wf-fanout", scriptSource),
-      args: { items: ["a", "b", "c"] },
-      config: makeConfig(),
+      const result = await executeWorkflow({
+        ...baseOptions("wf-fanout", scriptSource),
+        args: { items: ["a", "b", "c"] },
+        config: makeConfig(),
+      });
+
+      expect(result.status).toBe("completed");
+      // Each leaf's output is its echoed final text, in spec-array order.
+      expect(result.result).toEqual([
+        "processed:item-a",
+        "processed:item-b",
+        "processed:item-c",
+      ]);
+      expect(result.agentsSpawned).toBe(3);
+      // Real provider mock was hit once per leaf through the real agent loop.
+      expect(sendCallCount).toBe(3);
+      // Usage flowed back from the provider through the leaf runner and engine.
+      expect(result.inputTokens).toBe(21);
+      expect(result.outputTokens).toBe(9);
+
+      // The journal persisted one completed agent entry per leaf, in seq order.
+      const journal = await getJournal("wf-fanout");
+      expect(journal.map((e) => e.seq)).toEqual([0, 1, 2]);
+      expect(journal.every((e) => e.status === "completed")).toBe(true);
+      expect(journal.map((e) => e.result)).toEqual([
+        "processed:item-a",
+        "processed:item-b",
+        "processed:item-c",
+      ]);
     });
 
-    expect(result.status).toBe("completed");
-    // Each leaf's output is its echoed final text, in spec-array order.
-    expect(result.result).toEqual([
-      "processed:item-a",
-      "processed:item-b",
-      "processed:item-c",
-    ]);
-    expect(result.agentsSpawned).toBe(3);
-    // Real provider mock was hit once per leaf through the real agent loop.
-    expect(sendCallCount).toBe(3);
-    // Usage flowed back from the provider through the leaf runner and engine.
-    expect(result.inputTokens).toBe(21);
-    expect(result.outputTokens).toBe(9);
-
-    // The journal persisted one completed agent entry per leaf, in seq order.
-    const journal = getJournal("wf-fanout");
-    expect(journal.map((e) => e.seq)).toEqual([0, 1, 2]);
-    expect(journal.every((e) => e.status === "completed")).toBe(true);
-    expect(journal.map((e) => e.result)).toEqual([
-      "processed:item-a",
-      "processed:item-b",
-      "processed:item-c",
-    ]);
-  });
-
-  test("in-process resume: unchanged prefix replays from journal with ZERO duplicate provider calls", async () => {
-    // A script that journals N sequential agent() calls. `args.tail` is the
-    // text of the FINAL call; changing it between runs leaves the prefix
-    // unchanged (same prompt → same call_hash) and changes only the last seq.
-    const scriptSource = `
+    test("in-process resume: unchanged prefix replays from journal with ZERO duplicate provider calls", async () => {
+      // A script that journals N sequential agent() calls. `args.tail` is the
+      // text of the FINAL call; changing it between runs leaves the prefix
+      // unchanged (same prompt → same call_hash) and changes only the last seq.
+      const scriptSource = `
 export const meta = { name: "resume", description: "sequential agents" };
 const a = agent("step-1");
 const b = agent("step-2");
 const c = agent(args.tail);
 return [a, b, c];
 `;
-    // First run: 3 fresh leaves → 3 provider calls.
-    const first = await executeWorkflow({
-      ...baseOptions("wf-resume", scriptSource),
-      args: { tail: "step-3" },
-      config: makeConfig(),
+      // First run: 3 fresh leaves → 3 provider calls.
+      const first = await executeWorkflow({
+        ...baseOptions("wf-resume", scriptSource),
+        args: { tail: "step-3" },
+        config: makeConfig(),
+      });
+      expect(first.status).toBe("completed");
+      expect(sendCallCount).toBe(3);
+      const firstJournal = await getJournal("wf-resume");
+      expect(firstJournal.map((e) => e.seq)).toEqual([0, 1, 2]);
+
+      // Reset the in-test provider counter so we count ONLY the resume's calls.
+      sendCallCount = 0;
+      sendMessage.mockClear();
+
+      // Second run: SAME runId, SAME DB, but the last call's prompt changes.
+      // seq 0 and 1 are unchanged (hash match) and MUST replay from the journal
+      // without touching the provider; seq 2's hash changes and re-runs.
+      const second = await executeWorkflow({
+        ...baseOptions("wf-resume", scriptSource),
+        args: { tail: "step-3-CHANGED" },
+        config: makeConfig(),
+      });
+
+      expect(second.status).toBe("completed");
+      // THE HEADLINE ACCEPTANCE CRITERION: exactly ONE provider call — only the
+      // changed tail. Zero duplicate provider calls for the unchanged prefix,
+      // verified THROUGH the real sandbox + leaf runner + agent loop + journal
+      // stack (not a fake runner).
+      expect(sendCallCount).toBe(1);
+      // The engine returns the correct values: the prefix replayed from the
+      // journal, the changed tail re-ran and produced its new output.
+      expect(second.result).toEqual([
+        "processed:step-1",
+        "processed:step-2",
+        "processed:step-3-CHANGED",
+      ]);
+
+      // The prefix journal entries are untouched (same call_hash as the first
+      // run) and there is still exactly one entry per seq.
+      const secondJournal = await getJournal("wf-resume");
+      expect(secondJournal.map((e) => e.seq)).toEqual([0, 1, 2]);
+      expect(secondJournal[0]!.callHash).toBe(firstJournal[0]!.callHash);
+      expect(secondJournal[1]!.callHash).toBe(firstJournal[1]!.callHash);
+      // NOTE: seq 2's journal row is NOT rewritten on resume — see the
+      // `resume rewrites a changed leaf's journal entry` test.todo below for the
+      // known `INSERT OR IGNORE` staleness bug. The engine's returned value
+      // (asserted above) is correct; only the persisted journal row is stale.
     });
-    expect(first.status).toBe("completed");
-    expect(sendCallCount).toBe(3);
-    const firstJournal = getJournal("wf-resume");
-    expect(firstJournal.map((e) => e.seq)).toEqual([0, 1, 2]);
 
-    // Reset the in-test provider counter so we count ONLY the resume's calls.
-    sendCallCount = 0;
-    sendMessage.mockClear();
-
-    // Second run: SAME runId, SAME DB, but the last call's prompt changes.
-    // seq 0 and 1 are unchanged (hash match) and MUST replay from the journal
-    // without touching the provider; seq 2's hash changes and re-runs.
-    const second = await executeWorkflow({
-      ...baseOptions("wf-resume", scriptSource),
-      args: { tail: "step-3-CHANGED" },
-      config: makeConfig(),
-    });
-
-    expect(second.status).toBe("completed");
-    // THE HEADLINE ACCEPTANCE CRITERION: exactly ONE provider call — only the
-    // changed tail. Zero duplicate provider calls for the unchanged prefix,
-    // verified THROUGH the real sandbox + leaf runner + agent loop + journal
-    // stack (not a fake runner).
-    expect(sendCallCount).toBe(1);
-    // The engine returns the correct values: the prefix replayed from the
-    // journal, the changed tail re-ran and produced its new output.
-    expect(second.result).toEqual([
-      "processed:step-1",
-      "processed:step-2",
-      "processed:step-3-CHANGED",
-    ]);
-
-    // The prefix journal entries are untouched (same call_hash as the first
-    // run) and there is still exactly one entry per seq.
-    const secondJournal = getJournal("wf-resume");
-    expect(secondJournal.map((e) => e.seq)).toEqual([0, 1, 2]);
-    expect(secondJournal[0]!.callHash).toBe(firstJournal[0]!.callHash);
-    expect(secondJournal[1]!.callHash).toBe(firstJournal[1]!.callHash);
-    // NOTE: seq 2's journal row is NOT rewritten on resume — see the
-    // `resume rewrites a changed leaf's journal entry` test.todo below for the
-    // known `INSERT OR IGNORE` staleness bug. The engine's returned value
-    // (asserted above) is correct; only the persisted journal row is stale.
-  });
-
-  test("restart→reconcile→resume: an interrupted run replays its prefix and carries accounting", async () => {
-    // Stage 1 — a first pass that journals a 2-leaf prefix, mirroring a run that
-    // got partway before the process died.
-    const scriptSource = `
+    test("restart→reconcile→resume: an interrupted run replays its prefix and carries accounting", async () => {
+      // Stage 1 — a first pass that journals a 2-leaf prefix, mirroring a run that
+      // got partway before the process died.
+      const scriptSource = `
 export const meta = { name: "reconcile-resume", description: "sequential agents" };
 const a = agent("step-1");
 const b = agent("step-2");
 const c = agent(args.tail);
 return [a, b, c];
 `;
-    const first = await executeWorkflow({
-      ...baseOptions("wf-reconcile", scriptSource),
-      args: { tail: "step-3" },
-      config: makeConfig(),
+      const first = await executeWorkflow({
+        ...baseOptions("wf-reconcile", scriptSource),
+        args: { tail: "step-3" },
+        config: makeConfig(),
+      });
+      expect(first.status).toBe("completed");
+      expect(first.agentsSpawned).toBe(3);
+      const agentsBefore = (await getRun("wf-reconcile"))!.agentsSpawned;
+      expect(agentsBefore).toBe(3);
+
+      // Simulate a crash: force the persisted row back to `running` (the state a
+      // mid-flight run leaves on disk), then run startup reconciliation.
+      await journalStore.updateRun("wf-reconcile", { status: "running" });
+      const reconciled = await markRunningAsInterrupted();
+      expect(reconciled).toBeGreaterThanOrEqual(1);
+      const interrupted = (await getRun("wf-reconcile"))!;
+      expect(interrupted.status).toBe("interrupted");
+      // Reconciliation is STATUS ONLY — the accounting total is untouched.
+      expect(interrupted.agentsSpawned).toBe(agentsBefore);
+
+      sendCallCount = 0;
+      sendMessage.mockClear();
+
+      // Stage 2 — resume re-invokes the engine with the SAME runId. The unchanged
+      // prefix (seq 0,1) replays from the journal with ZERO provider calls; only
+      // the changed tail re-runs. Accounting SEEDS from the persisted total (3)
+      // and grows — it does not reset to 0.
+      const resumed = await executeWorkflow({
+        ...baseOptions("wf-reconcile", scriptSource),
+        args: { tail: "step-3-CHANGED" },
+        config: makeConfig(),
+      });
+
+      expect(resumed.status).toBe("completed");
+      // Only the changed tail hit the provider — the prefix replayed.
+      expect(sendCallCount).toBe(1);
+      expect(resumed.result).toEqual([
+        "processed:step-1",
+        "processed:step-2",
+        "processed:step-3-CHANGED",
+      ]);
+      // Accounting carried: seeded from 3, the single re-run tail makes it 4.
+      expect(resumed.agentsSpawned).toBe(4);
+      expect((await getRun("wf-reconcile"))!.agentsSpawned).toBe(4);
     });
-    expect(first.status).toBe("completed");
-    expect(first.agentsSpawned).toBe(3);
-    const agentsBefore = getRun("wf-reconcile")!.agentsSpawned;
-    expect(agentsBefore).toBe(3);
 
-    // Simulate a crash: force the persisted row back to `running` (the state a
-    // mid-flight run leaves on disk), then run startup reconciliation.
-    journalStore.updateRun("wf-reconcile", { status: "running" });
-    const reconciled = markRunningAsInterrupted();
-    expect(reconciled).toBeGreaterThanOrEqual(1);
-    const interrupted = getRun("wf-reconcile")!;
-    expect(interrupted.status).toBe("interrupted");
-    // Reconciliation is STATUS ONLY — the accounting total is untouched.
-    expect(interrupted.agentsSpawned).toBe(agentsBefore);
-
-    sendCallCount = 0;
-    sendMessage.mockClear();
-
-    // Stage 2 — resume re-invokes the engine with the SAME runId. The unchanged
-    // prefix (seq 0,1) replays from the journal with ZERO provider calls; only
-    // the changed tail re-runs. Accounting SEEDS from the persisted total (3)
-    // and grows — it does not reset to 0.
-    const resumed = await executeWorkflow({
-      ...baseOptions("wf-reconcile", scriptSource),
-      args: { tail: "step-3-CHANGED" },
-      config: makeConfig(),
-    });
-
-    expect(resumed.status).toBe("completed");
-    // Only the changed tail hit the provider — the prefix replayed.
-    expect(sendCallCount).toBe(1);
-    expect(resumed.result).toEqual([
-      "processed:step-1",
-      "processed:step-2",
-      "processed:step-3-CHANGED",
-    ]);
-    // Accounting carried: seeded from 3, the single re-run tail makes it 4.
-    expect(resumed.agentsSpawned).toBe(4);
-    expect(getRun("wf-reconcile")!.agentsSpawned).toBe(4);
-  });
-
-  test("cap abort: a low maxAgentsPerRun yields cap_exceeded with partials persisted", async () => {
-    const scriptSource = `
+    test("cap abort: a low maxAgentsPerRun yields cap_exceeded with partials persisted", async () => {
+      const scriptSource = `
 export const meta = { name: "cap", description: "more leaves than the cap" };
 const a = agent("c-1");
 const b = agent("c-2");
 const c = agent("c-3");
 return [a, b, c];
 `;
-    const result = await executeWorkflow({
-      ...baseOptions("wf-cap", scriptSource),
-      // Cap at 2 — the third sequential agent() trips the cap before launching.
-      config: makeConfig({ maxAgentsPerRun: 2 }),
+      const result = await executeWorkflow({
+        ...baseOptions("wf-cap", scriptSource),
+        // Cap at 2 — the third sequential agent() trips the cap before launching.
+        config: makeConfig({ maxAgentsPerRun: 2 }),
+      });
+
+      expect(result.status).toBe("cap_exceeded");
+      expect(result.result).toBeNull();
+      // Exactly 2 leaves ran before the cap tripped on the 3rd.
+      expect(result.agentsSpawned).toBe(2);
+      expect(sendCallCount).toBe(2);
+
+      // Partial counters and terminal status are persisted on the run row.
+      const run = await getRun("wf-cap");
+      expect(run?.status).toBe("cap_exceeded");
+      expect(run?.agentsSpawned).toBe(2);
+      expect(run?.error).toContain("Agent cap of 2 exceeded");
+      // Two completed journal entries were persisted before the abort.
+      expect((await getJournal("wf-cap")).length).toBe(2);
     });
 
-    expect(result.status).toBe("cap_exceeded");
-    expect(result.result).toBeNull();
-    // Exactly 2 leaves ran before the cap tripped on the 3rd.
-    expect(result.agentsSpawned).toBe(2);
-    expect(sendCallCount).toBe(2);
-
-    // Partial counters and terminal status are persisted on the run row.
-    const run = getRun("wf-cap");
-    expect(run?.status).toBe("cap_exceeded");
-    expect(run?.agentsSpawned).toBe(2);
-    expect(run?.error).toContain("Agent cap of 2 exceeded");
-    // Two completed journal entries were persisted before the abort.
-    expect(getJournal("wf-cap").length).toBe(2);
-  });
-
-  test("concurrency high-water: never exceeds maxConcurrentLeaves", async () => {
-    // Delay each provider call so a wide fan-out genuinely overlaps; the mock
-    // tracks the live in-flight count.
-    sendDelayMs = 15;
-    const scriptSource = `
+    test("concurrency high-water: never exceeds maxConcurrentLeaves", async () => {
+      // Delay each provider call so a wide fan-out genuinely overlaps; the mock
+      // tracks the live in-flight count.
+      sendDelayMs = 15;
+      const scriptSource = `
 export const meta = { name: "concurrency", description: "wide parallel fan-out" };
 const items = args.items;
 const results = parallel(items.map((it) => leaf("p-" + it)));
 return results;
 `;
-    const items = Array.from({ length: 12 }, (_, i) => i);
-    const result = await executeWorkflow({
-      ...baseOptions("wf-conc", scriptSource),
-      args: { items },
-      config: makeConfig({ maxConcurrentLeaves: 3 }),
+      const items = Array.from({ length: 12 }, (_, i) => i);
+      const result = await executeWorkflow({
+        ...baseOptions("wf-conc", scriptSource),
+        args: { items },
+        config: makeConfig({ maxConcurrentLeaves: 3 }),
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.agentsSpawned).toBe(12);
+      expect(sendCallCount).toBe(12);
+      // The engine's worker pool capped live concurrency at the configured limit.
+      expect(maxInFlight).toBeGreaterThan(1);
+      expect(maxInFlight).toBeLessThanOrEqual(3);
     });
 
-    expect(result.status).toBe("completed");
-    expect(result.agentsSpawned).toBe(12);
-    expect(sendCallCount).toBe(12);
-    // The engine's worker pool capped live concurrency at the configured limit.
-    expect(maxInFlight).toBeGreaterThan(1);
-    expect(maxInFlight).toBeLessThanOrEqual(3);
-  });
-
-  test("hash stability: the same script run twice journals identical (seq, call_hash) sequences", async () => {
-    const scriptSource = `
+    test("hash stability: the same script run twice journals identical (seq, call_hash) sequences", async () => {
+      const scriptSource = `
 export const meta = { name: "stable", description: "deterministic hashes" };
 const items = args.items;
 const results = map(items, (it) => leaf("h-" + it));
 const tail = agent("final");
 return { results, tail };
 `;
-    const args = { items: ["x", "y", "z"] };
+      const args = { items: ["x", "y", "z"] };
 
-    await executeWorkflow({
-      ...baseOptions("wf-hash-1", scriptSource),
-      args,
-      config: makeConfig(),
+      await executeWorkflow({
+        ...baseOptions("wf-hash-1", scriptSource),
+        args,
+        config: makeConfig(),
+      });
+      await executeWorkflow({
+        ...baseOptions("wf-hash-2", scriptSource),
+        args,
+        config: makeConfig(),
+      });
+
+      const seqHashes = async (runId: string) =>
+        (await getJournal(runId)).map((e) => [e.seq, e.callHash] as const);
+
+      const a = await seqHashes("wf-hash-1");
+      const b = await seqHashes("wf-hash-2");
+      expect(a.length).toBe(4);
+      expect(a).toEqual(b);
     });
-    await executeWorkflow({
-      ...baseOptions("wf-hash-2", scriptSource),
-      args,
-      config: makeConfig(),
-    });
 
-    const seqHashes = (runId: string) =>
-      getJournal(runId).map((e) => [e.seq, e.callHash] as const);
-
-    const a = seqHashes("wf-hash-1");
-    const b = seqHashes("wf-hash-2");
-    expect(a.length).toBe(4);
-    expect(a).toEqual(b);
-  });
-
-  // ---------------------------------------------------------------------------
-  // FIXED ENGINE↔LEAF-RUNNER GAP (schema-path marshaling + tool forwarding).
-  //
-  // A workflow script declares a per-leaf output `schema` via
-  // `leaf(prompt, { schema })`. That schema crosses the QuickJS sandbox boundary
-  // as a JSON-marshaled plain object (a JSON Schema). The leaf runner's schema
-  // path now duck-types its input: a plain JSON Schema object is used directly as
-  // the forced-tool `input_schema` and validated via `z.fromJSONSchema`, while a
-  // host-side Zod schema keeps the original behavior.
-  //
-  // This run uses the FULL capability set (non-empty `capabilities.tools`, which
-  // every real run carries via the read-only baseline). A schema leaf must NOT
-  // receive those tools — `runLeaf` hard-errors on `schema` + non-empty `tools`.
-  // The engine now omits `tools` for schema leaves, so the structured-output path
-  // works end-to-end even when the run carries baseline tools (the real case).
-  // ---------------------------------------------------------------------------
-  test("schema-path leaves run with the read-only baseline present (tools not forwarded)", async () => {
-    // The script passes a JSON Schema OBJECT LITERAL (the only shape a sandbox
-    // script can produce — Zod is host-side). It marshals across the boundary
-    // and reaches the leaf runner verbatim.
-    const scriptSource = `
+    // ---------------------------------------------------------------------------
+    // FIXED ENGINE↔LEAF-RUNNER GAP (schema-path marshaling + tool forwarding).
+    //
+    // A workflow script declares a per-leaf output `schema` via
+    // `leaf(prompt, { schema })`. That schema crosses the QuickJS sandbox boundary
+    // as a JSON-marshaled plain object (a JSON Schema). The leaf runner's schema
+    // path now duck-types its input: a plain JSON Schema object is used directly as
+    // the forced-tool `input_schema` and validated via `z.fromJSONSchema`, while a
+    // host-side Zod schema keeps the original behavior.
+    //
+    // This run uses the FULL capability set (non-empty `capabilities.tools`, which
+    // every real run carries via the read-only baseline). A schema leaf must NOT
+    // receive those tools — `runLeaf` hard-errors on `schema` + non-empty `tools`.
+    // The engine now omits `tools` for schema leaves, so the structured-output path
+    // works end-to-end even when the run carries baseline tools (the real case).
+    // ---------------------------------------------------------------------------
+    test("schema-path leaves run with the read-only baseline present (tools not forwarded)", async () => {
+      // The script passes a JSON Schema OBJECT LITERAL (the only shape a sandbox
+      // script can produce — Zod is host-side). It marshals across the boundary
+      // and reaches the leaf runner verbatim.
+      const scriptSource = `
 export const meta = { name: "schema", description: "structured leaf output" };
 const schema = {
   type: "object",
@@ -547,106 +559,107 @@ const items = args.items;
 const results = map(items, (it) => leaf("item-" + it, { schema }));
 return results;
 `;
-    // `capabilities` carries a non-empty toolset (the echo tool); a real run's
-    // resolved baseline is likewise non-empty. The schema leaf still succeeds,
-    // proving the engine omits `tools` on the schema path.
-    expect(capabilities.tools.length).toBeGreaterThan(0);
-    const result = await executeWorkflow({
-      ...baseOptions("wf-schema", scriptSource, capabilities),
-      args: { items: ["a", "b"] },
-      config: makeConfig(),
+      // `capabilities` carries a non-empty toolset (the echo tool); a real run's
+      // resolved baseline is likewise non-empty. The schema leaf still succeeds,
+      // proving the engine omits `tools` on the schema path.
+      expect(capabilities.tools.length).toBeGreaterThan(0);
+      const result = await executeWorkflow({
+        ...baseOptions("wf-schema", scriptSource, capabilities),
+        args: { items: ["a", "b"] },
+        config: makeConfig(),
+      });
+
+      expect(result.status).toBe("completed");
+      // Each leaf returned the validated structured object (forced-tool path),
+      // NOT the tool-path's plain echoed text.
+      expect(result.result).toEqual([
+        { answer: "processed:item-a" },
+        { answer: "processed:item-b" },
+      ]);
+      expect(result.agentsSpawned).toBe(2);
+      expect(sendCallCount).toBe(2);
+
+      // The journal persisted the structured outputs.
+      const journal = await getJournal("wf-schema");
+      expect(journal.map((e) => e.result)).toEqual([
+        { answer: "processed:item-a" },
+        { answer: "processed:item-b" },
+      ]);
     });
 
-    expect(result.status).toBe("completed");
-    // Each leaf returned the validated structured object (forced-tool path),
-    // NOT the tool-path's plain echoed text.
-    expect(result.result).toEqual([
-      { answer: "processed:item-a" },
-      { answer: "processed:item-b" },
-    ]);
-    expect(result.agentsSpawned).toBe(2);
-    expect(sendCallCount).toBe(2);
-
-    // The journal persisted the structured outputs.
-    const journal = getJournal("wf-schema");
-    expect(journal.map((e) => e.result)).toEqual([
-      { answer: "processed:item-a" },
-      { answer: "processed:item-b" },
-    ]);
-  });
-
-  // ---------------------------------------------------------------------------
-  // PERSONA MANIFEST GATE (consent-gated, like tools).
-  //
-  // A leaf may request `persona: true` only if the run's capability manifest
-  // declared `persona`. An undeclared request fails the run loudly through the
-  // real engine + sandbox stack — it must NOT silently downgrade to anonymous.
-  // ---------------------------------------------------------------------------
-  test("a persona leaf in a run WITHOUT declared persona fails the run", async () => {
-    const scriptSource = `
+    // ---------------------------------------------------------------------------
+    // PERSONA MANIFEST GATE (consent-gated, like tools).
+    //
+    // A leaf may request `persona: true` only if the run's capability manifest
+    // declared `persona`. An undeclared request fails the run loudly through the
+    // real engine + sandbox stack — it must NOT silently downgrade to anonymous.
+    // ---------------------------------------------------------------------------
+    test("a persona leaf in a run WITHOUT declared persona fails the run", async () => {
+      const scriptSource = `
 export const meta = { name: "persona-denied", description: "undeclared persona" };
 return agent("draft in voice", { persona: true });
 `;
-    // `capabilities` (the shared fixture) declares persona:false.
-    expect(capabilities.persona).toBe(false);
-    const result = await executeWorkflow({
-      ...baseOptions("wf-persona-denied", scriptSource),
-      config: makeConfig(),
+      // `capabilities` (the shared fixture) declares persona:false.
+      expect(capabilities.persona).toBe(false);
+      const result = await executeWorkflow({
+        ...baseOptions("wf-persona-denied", scriptSource),
+        config: makeConfig(),
+      });
+
+      expect(result.status).toBe("failed");
+      // The gate trips before any provider call — nothing was spawned.
+      expect(sendCallCount).toBe(0);
+      expect(result.agentsSpawned).toBe(0);
     });
 
-    expect(result.status).toBe("failed");
-    // The gate trips before any provider call — nothing was spawned.
-    expect(sendCallCount).toBe(0);
-    expect(result.agentsSpawned).toBe(0);
-  });
-
-  // ---------------------------------------------------------------------------
-  // FIXED RESUME JOURNAL-STALENESS GAP.
-  //
-  // On resume, a leaf whose input CHANGED (new `call_hash`) re-runs and the
-  // engine returns the new value. `appendJournalEntry` now UPSERTs on
-  // `(run_id, seq)`, so the stale first-run row is rewritten with the new hash
-  // and result — the persisted journal agrees with the engine's returned value.
-  // ---------------------------------------------------------------------------
-  test("resume rewrites a changed leaf's journal entry (hash + result) instead of keeping the stale row", async () => {
-    const scriptSource = `
+    // ---------------------------------------------------------------------------
+    // FIXED RESUME JOURNAL-STALENESS GAP.
+    //
+    // On resume, a leaf whose input CHANGED (new `call_hash`) re-runs and the
+    // engine returns the new value. `appendJournalEntry` now UPSERTs on
+    // `(run_id, seq)`, so the stale first-run row is rewritten with the new hash
+    // and result — the persisted journal agrees with the engine's returned value.
+    // ---------------------------------------------------------------------------
+    test("resume rewrites a changed leaf's journal entry (hash + result) instead of keeping the stale row", async () => {
+      const scriptSource = `
 export const meta = { name: "resume-rewrite", description: "sequential agents" };
 const a = agent("step-1");
 const b = agent(args.tail);
 return [a, b];
 `;
-    // First run: 2 fresh leaves.
-    await executeWorkflow({
-      ...baseOptions("wf-resume-rewrite", scriptSource),
-      args: { tail: "step-2" },
-      config: makeConfig(),
+      // First run: 2 fresh leaves.
+      await executeWorkflow({
+        ...baseOptions("wf-resume-rewrite", scriptSource),
+        args: { tail: "step-2" },
+        config: makeConfig(),
+      });
+      const firstJournal = await getJournal("wf-resume-rewrite");
+      expect(firstJournal.map((e) => e.seq)).toEqual([0, 1]);
+      const seq1HashBefore = firstJournal[1]!.callHash;
+      expect(firstJournal[1]!.result).toBe("processed:step-2");
+
+      sendCallCount = 0;
+      sendMessage.mockClear();
+
+      // Resume: seq 1's input changes, so it re-runs; seq 0 replays from journal.
+      const second = await executeWorkflow({
+        ...baseOptions("wf-resume-rewrite", scriptSource),
+        args: { tail: "step-2-CHANGED" },
+        config: makeConfig(),
+      });
+      expect(second.status).toBe("completed");
+      expect(sendCallCount).toBe(1);
+
+      // The persisted journal row for seq 1 was REWRITTEN (new hash + result),
+      // agreeing with the value the engine returned — not the stale first-run row.
+      const secondJournal = await getJournal("wf-resume-rewrite");
+      expect(secondJournal.map((e) => e.seq)).toEqual([0, 1]);
+      expect(secondJournal[1]!.callHash).not.toBe(seq1HashBefore);
+      expect(secondJournal[1]!.result).toBe("processed:step-2-CHANGED");
+      expect(second.result).toEqual([
+        "processed:step-1",
+        "processed:step-2-CHANGED",
+      ]);
     });
-    const firstJournal = getJournal("wf-resume-rewrite");
-    expect(firstJournal.map((e) => e.seq)).toEqual([0, 1]);
-    const seq1HashBefore = firstJournal[1]!.callHash;
-    expect(firstJournal[1]!.result).toBe("processed:step-2");
-
-    sendCallCount = 0;
-    sendMessage.mockClear();
-
-    // Resume: seq 1's input changes, so it re-runs; seq 0 replays from journal.
-    const second = await executeWorkflow({
-      ...baseOptions("wf-resume-rewrite", scriptSource),
-      args: { tail: "step-2-CHANGED" },
-      config: makeConfig(),
-    });
-    expect(second.status).toBe("completed");
-    expect(sendCallCount).toBe(1);
-
-    // The persisted journal row for seq 1 was REWRITTEN (new hash + result),
-    // agreeing with the value the engine returned — not the stale first-run row.
-    const secondJournal = getJournal("wf-resume-rewrite");
-    expect(secondJournal.map((e) => e.seq)).toEqual([0, 1]);
-    expect(secondJournal[1]!.callHash).not.toBe(seq1HashBefore);
-    expect(secondJournal[1]!.result).toBe("processed:step-2-CHANGED");
-    expect(second.result).toEqual([
-      "processed:step-1",
-      "processed:step-2-CHANGED",
-    ]);
-  });
-});
+  },
+);

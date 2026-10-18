@@ -30,25 +30,25 @@ const { buildSystemPrompt, ensurePromptFiles } =
   await import("../system-prompt.js");
 
 describe("task_progress hint in progress-surface section", () => {
-  beforeEach(() => {
-    ensurePromptFiles();
+  beforeEach(async () => {
+    await ensurePromptFiles();
   });
 
-  test("buildSystemPrompt() includes task_progress guidance", () => {
-    const result = buildSystemPrompt();
+  test("await buildSystemPrompt() includes task_progress guidance", async () => {
+    const result = await buildSystemPrompt();
     expect(result).toContain("task_progress");
     expect(result).toContain("Show Progress on Long Turns");
   });
 
-  test("renders unconditionally — no options required", () => {
-    const result = buildSystemPrompt(undefined);
+  test("renders unconditionally — no options required", async () => {
+    const result = await buildSystemPrompt(undefined);
     expect(result).toContain("task_progress");
   });
 
-  test("renders regardless of options passed", () => {
-    const withClientFlag = buildSystemPrompt({ hasNoClient: true });
-    const withoutClientFlag = buildSystemPrompt({ hasNoClient: false });
-    const withExcludePrefix = buildSystemPrompt({
+  test("renders regardless of options passed", async () => {
+    const withClientFlag = await buildSystemPrompt({ hasNoClient: true });
+    const withoutClientFlag = await buildSystemPrompt({ hasNoClient: false });
+    const withExcludePrefix = await buildSystemPrompt({
       excludeCustomPrefix: true,
     });
 

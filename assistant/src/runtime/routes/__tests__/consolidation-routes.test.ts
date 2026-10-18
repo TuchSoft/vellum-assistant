@@ -29,36 +29,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import { invalidateConfigCache } from "../../../config/loader.js";
 import { createConversation } from "../../../persistence/conversation-crud.js";
-import { getDb, getMemorySqlite } from "../../../persistence/db-connection.js";
 import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import { recordUsageEvent } from "../../../persistence/llm-usage-store.js";
-import { rawRun } from "../../../persistence/raw-query.js";
-import { describePg } from "../../__tests__/pg-test-db.js";
 import { ROUTES } from "../consolidation-routes.js";
 import type { RouteDefinition } from "../types.js";
 
 await initializeDb();
-
-// Open the memory connection now, while VELLUM_WORKSPACE_DIR still points at the
-// migrated per-process workspace. The per-test blocks below swap it to a fresh
-// dir for config isolation; without pinning here, resetTables()'s first
-// getMemorySqlite() would lazily open assistant-memory.db in the swapped (empty)
-// workspace and fail with "no such table: memory_jobs".
-getMemorySqlite();
 
 let workspaceDir: string;
 let origWorkspaceDir: string | undefined;
 let configPath: string;
 
 async function resetTables(): Promise<void> {
-  const db = getDb();
-  db.run(`DELETE FROM llm_usage_events`);
-  await requireMainDb().run(`DELETE FROM messages`);
-  await requireMainDb().run(`DELETE FROM conversations`);
-  getMemorySqlite()!.run(`DELETE FROM memory_jobs`);
+  const db = requireMainDb();
+  await db.run(`DELETE FROM llm_usage_events`);
+  await db.run(`DELETE FROM messages`);
+  await db.run(`DELETE FROM conversations`);
+  await db.run(`DELETE FROM memory_jobs`);
 }
 
 function findHandler(operationId: string): RouteDefinition["handler"] {
@@ -86,13 +77,13 @@ async function insertMessage(
   );
 }
 
-function recordUsageCostAt(
+async function recordUsageCostAt(
   conversationId: string,
   requestId: string,
   createdAt: number,
   estimatedCostUsd: number,
-): void {
-  const event = recordUsageEvent(
+): Promise<void> {
+  const event = await recordUsageEvent(
     {
       conversationId,
       runId: null,
@@ -110,34 +101,30 @@ function recordUsageCostAt(
     },
     { estimatedCostUsd, pricingStatus: "priced" },
   );
-  rawRun(
-    "test:setUsageCreatedAt",
+  await requireMainDb().run(
     "UPDATE llm_usage_events SET created_at = ? WHERE id = ?",
-    createdAt,
-    event.id,
+    [createdAt, event.id],
   );
 }
 
-function readMemoryJobRows(): Array<{
-  id: string;
-  status: string;
-  lastError: string | null;
-  payload: string;
-}> {
-  return getMemorySqlite()!
-    .query(
-      `
-    SELECT id, status, last_error AS lastError, payload
-    FROM memory_jobs
-    ORDER BY id
-  `,
-    )
-    .all() as Array<{
+async function readMemoryJobRows(): Promise<
+  Array<{
     id: string;
     status: string;
     lastError: string | null;
     payload: string;
-  }>;
+  }>
+> {
+  return requireMainDb().all<{
+    id: string;
+    status: string;
+    lastError: string | null;
+    payload: string;
+  }>(`
+    SELECT id, status, last_error AS lastError, payload
+    FROM memory_jobs
+    ORDER BY id
+  `);
 }
 
 interface RunRecord {
@@ -237,7 +224,7 @@ describePg("listConsolidationRuns handler", () => {
       [1000, 0.42, conv.id],
     );
     await insertMessage(conv.id, "assistant", 2000);
-    recordUsageCostAt(conv.id, "consolidation-fallback-cost", 1500, 0.99);
+    await recordUsageCostAt(conv.id, "consolidation-fallback-cost", 1500, 0.99);
 
     const handler = findHandler("listConsolidationRuns");
     const result = (await handler({})) as ListRunsResponse;
@@ -255,9 +242,9 @@ describePg("listConsolidationRuns handler", () => {
       [1000, conv.id],
     );
     await insertMessage(conv.id, "assistant", 2000);
-    recordUsageCostAt(conv.id, "consolidation-before", 999, 0.4);
-    recordUsageCostAt(conv.id, "consolidation-inside", 1500, 0.07);
-    recordUsageCostAt(conv.id, "consolidation-after", 2001, 0.5);
+    await recordUsageCostAt(conv.id, "consolidation-before", 999, 0.4);
+    await recordUsageCostAt(conv.id, "consolidation-inside", 1500, 0.07);
+    await recordUsageCostAt(conv.id, "consolidation-after", 2001, 0.5);
 
     const handler = findHandler("listConsolidationRuns");
     const result = (await handler({})) as ListRunsResponse;
@@ -394,7 +381,7 @@ describePg("listConsolidationRuns handler", () => {
   });
 });
 
-describe("consolidation config and run-now handlers", () => {
+describePg("consolidation config and run-now handlers", () => {
   beforeEach(async () => {
     workspaceDir = mkdtempSync(join(tmpdir(), "vellum-consolidation-routes-"));
     origWorkspaceDir = process.env.VELLUM_WORKSPACE_DIR;
@@ -497,7 +484,9 @@ describe("consolidation config and run-now handlers", () => {
     expect(result.success).toBe(true);
     expect(result.ran).toBe(true);
     expect(result.jobId).toBeString();
-    const row = readMemoryJobRows().find((job) => job.id === result.jobId);
+    const row = (await readMemoryJobRows()).find(
+      (job) => job.id === result.jobId,
+    );
     expect(row?.payload).toBe(JSON.stringify({ trigger: "manual" }));
   });
 });

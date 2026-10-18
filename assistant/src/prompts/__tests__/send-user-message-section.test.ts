@@ -30,23 +30,25 @@ const { buildSystemPrompt, ensurePromptFiles } =
 const HEADING = "Your Plain Text Is Private";
 
 describe("send_user_message system prompt section", () => {
-  beforeEach(() => {
-    ensurePromptFiles();
+  beforeEach(async () => {
+    await ensurePromptFiles();
   });
 
-  test("is absent by default", () => {
-    expect(buildSystemPrompt()).not.toContain(HEADING);
-    expect(buildSystemPrompt({ hasNoClient: true })).not.toContain(HEADING);
-  });
-
-  test("is absent when the option is explicitly false", () => {
-    expect(buildSystemPrompt({ sendUserMessageTool: false })).not.toContain(
+  test("is absent by default", async () => {
+    expect(await buildSystemPrompt()).not.toContain(HEADING);
+    expect(await buildSystemPrompt({ hasNoClient: true })).not.toContain(
       HEADING,
     );
   });
 
-  test("renders when the turn routes its text through the tool", () => {
-    const prompt = buildSystemPrompt({ sendUserMessageTool: true });
+  test("is absent when the option is explicitly false", async () => {
+    expect(
+      await buildSystemPrompt({ sendUserMessageTool: false }),
+    ).not.toContain(HEADING);
+  });
+
+  test("renders when the turn routes its text through the tool", async () => {
+    const prompt = await buildSystemPrompt({ sendUserMessageTool: true });
     expect(prompt).toContain(HEADING);
     expect(prompt).toContain("private scratchpad");
     expect(prompt).toContain("send_user_message");

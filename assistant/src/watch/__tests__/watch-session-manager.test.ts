@@ -1,5 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, jest, test } from "bun:test";
+import { readFile } from "node:fs/promises";
+import {
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+
+setDefaultTimeout(30_000);
 
 import { getConversation } from "../../persistence/conversation-crud.js";
 import { initializeDb } from "../../persistence/db-init.js";
@@ -99,9 +109,32 @@ async function start(manager: WatchSessionManager) {
  * timer kicks off lands here.
  */
 async function settle(): Promise<void> {
-  for (let i = 0; i < 20; i += 1) {
+  for (let i = 0; i < 50; i += 1) {
     await Promise.resolve();
+    // A real filesystem read yields to the event loop without using the
+    // fake timers these tests install, letting Postgres I/O callbacks run.
+    await readFile(new URL(import.meta.url));
   }
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    if (predicate()) {
+      return;
+    }
+    await readFile(new URL(import.meta.url));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
+async function waitForEntries(sessionId: string, count: number): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    if ((await renderWatchTimeline(sessionId)).totalEntries >= count) {
+      return;
+    }
+    await readFile(new URL(import.meta.url));
+  }
+  throw new Error(`Timed out waiting for ${count} timeline entries`);
 }
 
 /** Advance the session's clock and the timers armed against it together. */
@@ -135,7 +168,9 @@ describe("watch session manager", () => {
     const { manager } = newManager();
     const started = await start(manager);
 
-    const second = manager.start({ sourceActorPrincipalId: PRINCIPAL_ID });
+    const second = await manager.start({
+      sourceActorPrincipalId: PRINCIPAL_ID,
+    });
     expect(second).toEqual({
       status: "busy",
       sessionId: started.sessionId,
@@ -143,16 +178,16 @@ describe("watch session manager", () => {
     });
 
     manager.stop();
-    expect(manager.start({ sourceActorPrincipalId: PRINCIPAL_ID }).status).toBe(
-      "started",
-    );
+    expect(
+      (await manager.start({ sourceActorPrincipalId: PRINCIPAL_ID })).status,
+    ).toBe("started");
     manager.stop();
   });
 
   test("fails closed without an actor principal to observe for", async () => {
     const { manager, calls } = newManager();
 
-    const result = manager.start({
+    const result = await manager.start({
       sourceActorPrincipalId: undefined as unknown as string,
     });
 
@@ -164,7 +199,7 @@ describe("watch session manager", () => {
   test("refuses a conversation id whose row does not exist", async () => {
     const { manager } = newManager();
 
-    const result = manager.start({
+    const result = await manager.start({
       sourceActorPrincipalId: PRINCIPAL_ID,
       conversationId: randomUUID(),
     });
@@ -200,8 +235,8 @@ describe("watch session manager", () => {
     // somewhere, and where that is decides whether the first narrated step is
     // navigating there or working there.
     expect(calls).toHaveLength(1);
-    await settle();
-    expect(renderWatchTimeline(started.sessionId).totalEntries).toBe(1);
+    await waitForEntries(started.sessionId, 1);
+    expect((await renderWatchTimeline(started.sessionId)).totalEntries).toBe(1);
 
     manager.stop();
   });
@@ -220,7 +255,7 @@ describe("watch session manager", () => {
       },
     });
     const target: HostCaptureTarget = { kind: "window", windowId: 4211 };
-    const result = manager.start({
+    const result = await manager.start({
       sourceActorPrincipalId: PRINCIPAL_ID,
       captureTarget: target,
     });
@@ -302,7 +337,7 @@ describe("watch session manager", () => {
     // An entry at onset would make a second, emptier record of one utterance.
     const summary = manager.stop();
     expect(summary?.entryCount).toBe(3);
-    expect(renderWatchTimeline(started.sessionId).totalEntries).toBe(3);
+    expect((await renderWatchTimeline(started.sessionId)).totalEntries).toBe(3);
   });
 
   test("holds speech onset to the same floor as a final", async () => {
@@ -365,6 +400,7 @@ describe("watch session manager", () => {
     // spoken, so the ceiling's own ticks are the ones after it. Settled first
     // because the ceiling is armed when a read finishes, not when it is sent.
     expect(calls).toHaveLength(1);
+    await waitForEntries(started.sessionId, 1);
     await settle();
 
     // Not a word spoken for the next three quarters of a minute.
@@ -375,7 +411,7 @@ describe("watch session manager", () => {
     await elapse(15_000);
     expect(calls).toHaveLength(4);
 
-    const rendered = renderWatchTimeline(started.sessionId);
+    const rendered = await renderWatchTimeline(started.sessionId);
     expect(rendered.totalEntries).toBe(4);
 
     manager.stop();
@@ -401,7 +437,7 @@ describe("watch session manager", () => {
     const summary = manager.stop();
     // Four narrations landed; only the fourth observation had anything to file.
     expect(summary?.entryCount).toBe(5);
-    expect(renderWatchTimeline(started.sessionId).totalEntries).toBe(5);
+    expect((await renderWatchTimeline(started.sessionId)).totalEntries).toBe(5);
   });
 
   test("stop is idempotent and ends the cadence", async () => {
@@ -445,9 +481,9 @@ describe("watch session manager", () => {
       release(richObservation());
     }
     await Promise.all([first, second]);
-    await settle();
+    await waitForEntries(started.sessionId, 2);
 
-    expect(renderWatchTimeline(started.sessionId).totalEntries).toBe(2);
+    expect((await renderWatchTimeline(started.sessionId)).totalEntries).toBe(2);
   });
 
   test("a slow read spends the interval it belongs to rather than extending it", async () => {
@@ -492,6 +528,7 @@ describe("watch session manager", () => {
     await narration;
     await settle();
     await elapse(1);
+    await waitFor(() => releases.length === 2);
     expect(releases).toHaveLength(2);
 
     manager.stop();
@@ -504,11 +541,11 @@ describe("watch session manager", () => {
    */
   describe("observation listener", () => {
     /** Start a session with a listener, and count what it hears. */
-    function startWithListener(
+    async function startWithListener(
       manager: WatchSessionManager,
       onObservation: () => void = () => undefined,
     ) {
-      const result = manager.start({
+      const result = await manager.start({
         sourceActorPrincipalId: PRINCIPAL_ID,
         onObservation,
       });
@@ -521,10 +558,10 @@ describe("watch session manager", () => {
     test("fires once for every read that reached the timeline", async () => {
       const { manager, calls } = newManager();
       let heard = 0;
-      startWithListener(manager, () => {
+      await startWithListener(manager, () => {
         heard += 1;
       });
-      await settle();
+      await waitFor(() => heard === 1);
 
       // The session's opening read.
       expect(calls).toHaveLength(1);
@@ -532,6 +569,7 @@ describe("watch session manager", () => {
 
       await elapse(6_000);
       await manager.handleNarrationFinal("dragging it into the folder");
+      await waitFor(() => heard === 2);
       expect(calls).toHaveLength(2);
       expect(heard).toBe(2);
 
@@ -547,7 +585,7 @@ describe("watch session manager", () => {
         timedOut: true,
       }));
       let heard = 0;
-      startWithListener(manager, () => {
+      await startWithListener(manager, () => {
         heard += 1;
       });
       await settle();
@@ -564,13 +602,15 @@ describe("watch session manager", () => {
       // there is no record of the screen and nothing to confirm.
       const { manager } = newManager(() => ({ ok: true }));
       let heard = 0;
-      const started = startWithListener(manager, () => {
+      const started = await startWithListener(manager, () => {
         heard += 1;
       });
       await settle();
 
       expect(heard).toBe(0);
-      expect(renderWatchTimeline(started.sessionId).totalEntries).toBe(0);
+      expect((await renderWatchTimeline(started.sessionId)).totalEntries).toBe(
+        0,
+      );
 
       manager.stop();
     });
@@ -578,7 +618,7 @@ describe("watch session manager", () => {
     test("stays silent for a read the session ended underneath", async () => {
       const { manager, releases } = newDeferredManager();
       let heard = 0;
-      startWithListener(manager, () => {
+      await startWithListener(manager, () => {
         heard += 1;
       });
       await settle();
@@ -596,7 +636,7 @@ describe("watch session manager", () => {
     test("drops the listener with the session that carried it", async () => {
       const { manager } = newManager();
       let heard = 0;
-      startWithListener(manager, () => {
+      await startWithListener(manager, () => {
         heard += 1;
       });
       await settle();
@@ -620,7 +660,7 @@ describe("watch session manager", () => {
       const started = await start(manager);
       await manager.handleNarrationFinal("look at this");
       manager.stop();
-      return renderWatchTimeline(started.sessionId);
+      return await renderWatchTimeline(started.sessionId);
     }
 
     test("keeps no frame when the accessibility tree carried the screen", async () => {

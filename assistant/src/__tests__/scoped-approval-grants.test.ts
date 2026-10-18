@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import {
   _internal,
@@ -6,9 +6,8 @@ import {
   expireScopedApprovalGrants,
   revokeScopedApprovalGrantsForContext,
 } from "../approvals/scoped-approval-grants.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { scopedApprovalGrants } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
+import { describePg } from "./pg-test-db.js";
 
 const {
   consumeScopedApprovalGrantByRequestId,
@@ -20,11 +19,9 @@ import {
   computeToolApprovalDigest,
 } from "../security/tool-approval-digest.js";
 
-await initializeDb();
-
-function clearTables(): void {
-  const db = getDb();
-  db.delete(scopedApprovalGrants).run();
+async function clearTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.delete(db.schema.scopedApprovalGrants);
 }
 
 // ---------------------------------------------------------------------------
@@ -48,47 +45,58 @@ function grantParams(
 // SCOPE MODE: request_id
 // ===========================================================================
 
-describe("scoped-approval-grants / request_id scope", () => {
-  beforeEach(() => clearTables());
+describePg("scoped-approval-grants / request_id scope", () => {
+  beforeEach(async () => {
+    await clearTables();
+  });
 
-  test("create and consume by request_id succeeds", () => {
-    const grant = createScopedApprovalGrant(
+  test("create and consume by request_id succeeds", async () => {
+    const grant = await createScopedApprovalGrant(
       grantParams({ scopeMode: "request_id", requestId: "req-1" }),
     );
     expect(grant.status).toBe("active");
     expect(grant.requestId).toBe("req-1");
 
-    const result = consumeScopedApprovalGrantByRequestId("req-1", "consumer-1");
+    const result = await consumeScopedApprovalGrantByRequestId(
+      "req-1",
+      "consumer-1",
+    );
     expect(result.ok).toBe(true);
     expect(result.grant).not.toBeNull();
     expect(result.grant!.status).toBe("consumed");
     expect(result.grant!.consumedByRequestId).toBe("consumer-1");
   });
 
-  test("second consume of same grant fails (one-time use)", () => {
-    createScopedApprovalGrant(
+  test("second consume of same grant fails (one-time use)", async () => {
+    await createScopedApprovalGrant(
       grantParams({ scopeMode: "request_id", requestId: "req-2" }),
     );
 
-    const first = consumeScopedApprovalGrantByRequestId("req-2", "consumer-a");
+    const first = await consumeScopedApprovalGrantByRequestId(
+      "req-2",
+      "consumer-a",
+    );
     expect(first.ok).toBe(true);
 
-    const second = consumeScopedApprovalGrantByRequestId("req-2", "consumer-b");
+    const second = await consumeScopedApprovalGrantByRequestId(
+      "req-2",
+      "consumer-b",
+    );
     expect(second.ok).toBe(false);
     expect(second.grant).toBeNull();
   });
 
-  test("consume fails when no matching grant exists", () => {
-    const result = consumeScopedApprovalGrantByRequestId(
+  test("consume fails when no matching grant exists", async () => {
+    const result = await consumeScopedApprovalGrantByRequestId(
       "nonexistent",
       "consumer-x",
     );
     expect(result.ok).toBe(false);
   });
 
-  test("expired grant cannot be consumed", () => {
+  test("expired grant cannot be consumed", async () => {
     const pastExpiry = Date.now() - 1_000;
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "request_id",
         requestId: "req-expired",
@@ -96,7 +104,7 @@ describe("scoped-approval-grants / request_id scope", () => {
       }),
     );
 
-    const result = consumeScopedApprovalGrantByRequestId(
+    const result = await consumeScopedApprovalGrantByRequestId(
       "req-expired",
       "consumer-1",
     );
@@ -108,12 +116,14 @@ describe("scoped-approval-grants / request_id scope", () => {
 // SCOPE MODE: tool_signature
 // ===========================================================================
 
-describe("scoped-approval-grants / tool_signature scope", () => {
-  beforeEach(() => clearTables());
+describePg("scoped-approval-grants / tool_signature scope", () => {
+  beforeEach(async () => {
+    await clearTables();
+  });
 
-  test("create and consume by tool signature succeeds", () => {
+  test("create and consume by tool signature succeeds", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
-    const grant = createScopedApprovalGrant(
+    const grant = await createScopedApprovalGrant(
       grantParams({
         scopeMode: "tool_signature",
         toolName: "bash",
@@ -123,7 +133,7 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     expect(grant.status).toBe("active");
     expect(grant.toolName).toBe("bash");
 
-    const result = consumeScopedApprovalGrantByToolSignature({
+    const result = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "consumer-1",
@@ -132,9 +142,9 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     expect(result.grant!.status).toBe("consumed");
   });
 
-  test("second consume of tool_signature grant fails", () => {
+  test("second consume of tool_signature grant fails", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "rm -rf" });
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "tool_signature",
         toolName: "bash",
@@ -142,14 +152,14 @@ describe("scoped-approval-grants / tool_signature scope", () => {
       }),
     );
 
-    const first = consumeScopedApprovalGrantByToolSignature({
+    const first = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c1",
     });
     expect(first.ok).toBe(true);
 
-    const second = consumeScopedApprovalGrantByToolSignature({
+    const second = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c2",
@@ -157,9 +167,9 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     expect(second.ok).toBe(false);
   });
 
-  test("mismatched input digest fails consume", () => {
+  test("mismatched input digest fails consume", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "tool_signature",
         toolName: "bash",
@@ -168,7 +178,7 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     );
 
     const wrongDigest = computeToolApprovalDigest("bash", { cmd: "pwd" });
-    const result = consumeScopedApprovalGrantByToolSignature({
+    const result = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: wrongDigest,
       consumingRequestId: "c1",
@@ -176,9 +186,9 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("mismatched tool name fails consume", () => {
+  test("mismatched tool name fails consume", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "tool_signature",
         toolName: "bash",
@@ -186,7 +196,7 @@ describe("scoped-approval-grants / tool_signature scope", () => {
       }),
     );
 
-    const result = consumeScopedApprovalGrantByToolSignature({
+    const result = await consumeScopedApprovalGrantByToolSignature({
       toolName: "python",
       inputDigest: digest,
       consumingRequestId: "c1",
@@ -194,9 +204,9 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("context constraint: executionChannel must match non-null grant field", () => {
+  test("context constraint: executionChannel must match non-null grant field", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "tool_signature",
         toolName: "bash",
@@ -206,7 +216,7 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     );
 
     // Wrong channel
-    const wrong = consumeScopedApprovalGrantByToolSignature({
+    const wrong = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c1",
@@ -215,7 +225,7 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     expect(wrong.ok).toBe(false);
 
     // Correct channel
-    const correct = consumeScopedApprovalGrantByToolSignature({
+    const correct = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c2",
@@ -224,9 +234,9 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     expect(correct.ok).toBe(true);
   });
 
-  test("null executionChannel on grant means any channel matches", () => {
+  test("null executionChannel on grant means any channel matches", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "tool_signature",
         toolName: "bash",
@@ -235,7 +245,7 @@ describe("scoped-approval-grants / tool_signature scope", () => {
       }),
     );
 
-    const result = consumeScopedApprovalGrantByToolSignature({
+    const result = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c1",
@@ -244,9 +254,9 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("context constraint: conversationId must match non-null grant field", () => {
+  test("context constraint: conversationId must match non-null grant field", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "tool_signature",
         toolName: "bash",
@@ -256,7 +266,7 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     );
 
     // Mismatched
-    const wrong = consumeScopedApprovalGrantByToolSignature({
+    const wrong = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c1",
@@ -265,7 +275,7 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     expect(wrong.ok).toBe(false);
 
     // Matched
-    const correct = consumeScopedApprovalGrantByToolSignature({
+    const correct = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c2",
@@ -274,10 +284,10 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     expect(correct.ok).toBe(true);
   });
 
-  test("expired tool_signature grant cannot be consumed", () => {
+  test("expired tool_signature grant cannot be consumed", async () => {
     const pastExpiry = Date.now() - 1_000;
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "tool_signature",
         toolName: "bash",
@@ -286,7 +296,7 @@ describe("scoped-approval-grants / tool_signature scope", () => {
       }),
     );
 
-    const result = consumeScopedApprovalGrantByToolSignature({
+    const result = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c1",
@@ -294,12 +304,12 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("consume by tool signature only consumes one grant when multiple match", () => {
+  test("consume by tool signature only consumes one grant when multiple match", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
 
     // Create a wildcard grant (no executionChannel) and a channel-specific grant.
     // Both match when executionChannel='telegram', but only one should be consumed.
-    const wildcardGrant = createScopedApprovalGrant(
+    const wildcardGrant = await createScopedApprovalGrant(
       grantParams({
         scopeMode: "tool_signature",
         toolName: "bash",
@@ -307,7 +317,7 @@ describe("scoped-approval-grants / tool_signature scope", () => {
         executionChannel: null,
       }),
     );
-    const specificGrant = createScopedApprovalGrant(
+    const specificGrant = await createScopedApprovalGrant(
       grantParams({
         scopeMode: "tool_signature",
         toolName: "bash",
@@ -316,7 +326,7 @@ describe("scoped-approval-grants / tool_signature scope", () => {
       }),
     );
 
-    const result = consumeScopedApprovalGrantByToolSignature({
+    const result = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c1",
@@ -327,7 +337,7 @@ describe("scoped-approval-grants / tool_signature scope", () => {
     expect(result.grant!.id).toBe(specificGrant.id);
 
     // The wildcard grant should still be active and consumable
-    const second = consumeScopedApprovalGrantByToolSignature({
+    const second = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c2",
@@ -342,19 +352,21 @@ describe("scoped-approval-grants / tool_signature scope", () => {
 // Expiry semantics
 // ===========================================================================
 
-describe("scoped-approval-grants / expiry", () => {
-  beforeEach(() => clearTables());
+describePg("scoped-approval-grants / expiry", () => {
+  beforeEach(async () => {
+    await clearTables();
+  });
 
-  test("expireScopedApprovalGrants transitions active past-TTL grants to expired", () => {
+  test("expireScopedApprovalGrants transitions active past-TTL grants to expired", async () => {
     const pastExpiry = Date.now() - 1_000;
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "request_id",
         requestId: "req-e1",
         expiresAt: pastExpiry,
       }),
     );
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "request_id",
         requestId: "req-e2",
@@ -362,28 +374,31 @@ describe("scoped-approval-grants / expiry", () => {
       }),
     );
     // Still active (future expiry)
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({ scopeMode: "request_id", requestId: "req-alive" }),
     );
 
-    const count = expireScopedApprovalGrants();
+    const count = await expireScopedApprovalGrants();
     expect(count).toBe(2);
 
     // Verify the alive grant is still active
-    const alive = consumeScopedApprovalGrantByRequestId("req-alive", "c1");
+    const alive = await consumeScopedApprovalGrantByRequestId(
+      "req-alive",
+      "c1",
+    );
     expect(alive.ok).toBe(true);
   });
 
-  test("already-consumed grants are not affected by expiry sweep", () => {
+  test("already-consumed grants are not affected by expiry sweep", async () => {
     const expiresAt = Date.now() + 60_000;
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "request_id",
         requestId: "req-consumed",
         expiresAt,
       }),
     );
-    const consumed = consumeScopedApprovalGrantByRequestId(
+    const consumed = await consumeScopedApprovalGrantByRequestId(
       "req-consumed",
       "c1",
       expiresAt - 1,
@@ -392,7 +407,7 @@ describe("scoped-approval-grants / expiry", () => {
 
     // Sweep after the grant's expiresAt. Status is consumed, so the active-only
     // expiry update must leave it alone.
-    const count = expireScopedApprovalGrants(expiresAt);
+    const count = await expireScopedApprovalGrants(expiresAt);
     expect(count).toBe(0);
   });
 });
@@ -401,25 +416,27 @@ describe("scoped-approval-grants / expiry", () => {
 // Revoke semantics
 // ===========================================================================
 
-describe("scoped-approval-grants / revoke", () => {
-  beforeEach(() => clearTables());
+describePg("scoped-approval-grants / revoke", () => {
+  beforeEach(async () => {
+    await clearTables();
+  });
 
-  test("revokeScopedApprovalGrantsForContext revokes active grants matching context", () => {
-    createScopedApprovalGrant(
+  test("revokeScopedApprovalGrantsForContext revokes active grants matching context", async () => {
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "request_id",
         requestId: "req-r1",
         callSessionId: "call-1",
       }),
     );
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "request_id",
         requestId: "req-r2",
         callSessionId: "call-1",
       }),
     );
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "request_id",
         requestId: "req-r3",
@@ -427,22 +444,22 @@ describe("scoped-approval-grants / revoke", () => {
       }),
     );
 
-    const count = revokeScopedApprovalGrantsForContext({
+    const count = await revokeScopedApprovalGrantsForContext({
       callSessionId: "call-1",
     });
     expect(count).toBe(2);
 
     // Revoked grant cannot be consumed
-    const revoked = consumeScopedApprovalGrantByRequestId("req-r1", "c1");
+    const revoked = await consumeScopedApprovalGrantByRequestId("req-r1", "c1");
     expect(revoked.ok).toBe(false);
 
     // Unaffected grant is still consumable
-    const alive = consumeScopedApprovalGrantByRequestId("req-r3", "c1");
+    const alive = await consumeScopedApprovalGrantByRequestId("req-r3", "c1");
     expect(alive.ok).toBe(true);
   });
 
-  test("revoked grants cannot be consumed", () => {
-    createScopedApprovalGrant(
+  test("revoked grants cannot be consumed", async () => {
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "request_id",
         requestId: "req-revoke",
@@ -450,15 +467,18 @@ describe("scoped-approval-grants / revoke", () => {
       }),
     );
 
-    revokeScopedApprovalGrantsForContext({ conversationId: "conv-1" });
+    await revokeScopedApprovalGrantsForContext({ conversationId: "conv-1" });
 
-    const result = consumeScopedApprovalGrantByRequestId("req-revoke", "c1");
+    const result = await consumeScopedApprovalGrantByRequestId(
+      "req-revoke",
+      "c1",
+    );
     expect(result.ok).toBe(false);
   });
 
-  test("revokeScopedApprovalGrantsForContext throws when no context filters are provided", () => {
+  test("revokeScopedApprovalGrantsForContext throws when no context filters are provided", async () => {
     // Create a grant to ensure the guard is not based on empty results
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         scopeMode: "request_id",
         requestId: "req-guard",
@@ -467,12 +487,15 @@ describe("scoped-approval-grants / revoke", () => {
     );
 
     // Empty object: all fields undefined
-    expect(() => revokeScopedApprovalGrantsForContext({})).toThrow(
+    await expect(revokeScopedApprovalGrantsForContext({})).rejects.toThrow(
       "revokeScopedApprovalGrantsForContext requires at least one context filter",
     );
 
     // The grant should still be active (not revoked)
-    const result = consumeScopedApprovalGrantByRequestId("req-guard", "c1");
+    const result = await consumeScopedApprovalGrantByRequestId(
+      "req-guard",
+      "c1",
+    );
     expect(result.ok).toBe(true);
   });
 });
@@ -481,26 +504,26 @@ describe("scoped-approval-grants / revoke", () => {
 // tool-approval-digest: canonical serialization + hash
 // ===========================================================================
 
-describe("tool-approval-digest", () => {
-  test("canonicalJsonSerialize sorts keys recursively", () => {
+describePg("tool-approval-digest", () => {
+  test("canonicalJsonSerialize sorts keys recursively", async () => {
     const obj = { z: 1, a: { c: 3, b: 2 } };
     const serialized = canonicalJsonSerialize(obj);
     expect(serialized).toBe('{"a":{"b":2,"c":3},"z":1}');
   });
 
-  test("canonicalJsonSerialize handles arrays (order preserved)", () => {
+  test("canonicalJsonSerialize handles arrays (order preserved)", async () => {
     const obj = { items: [3, 1, 2], name: "test" };
     const serialized = canonicalJsonSerialize(obj);
     expect(serialized).toBe('{"items":[3,1,2],"name":"test"}');
   });
 
-  test("canonicalJsonSerialize handles null values", () => {
+  test("canonicalJsonSerialize handles null values", async () => {
     const obj = { a: null, b: "hello" };
     const serialized = canonicalJsonSerialize(obj);
     expect(serialized).toBe('{"a":null,"b":"hello"}');
   });
 
-  test("canonicalJsonSerialize handles nested arrays of objects", () => {
+  test("canonicalJsonSerialize handles nested arrays of objects", async () => {
     const obj = {
       list: [
         { z: 1, a: 2 },
@@ -511,7 +534,7 @@ describe("tool-approval-digest", () => {
     expect(serialized).toBe('{"list":[{"a":2,"z":1},{"b":4,"y":3}]}');
   });
 
-  test("computeToolApprovalDigest is deterministic", () => {
+  test("computeToolApprovalDigest is deterministic", async () => {
     const d1 = computeToolApprovalDigest("bash", {
       cmd: "ls -la",
       cwd: "/tmp",
@@ -523,19 +546,19 @@ describe("tool-approval-digest", () => {
     expect(d1).toBe(d2);
   });
 
-  test("computeToolApprovalDigest differs for different inputs", () => {
+  test("computeToolApprovalDigest differs for different inputs", async () => {
     const d1 = computeToolApprovalDigest("bash", { cmd: "ls" });
     const d2 = computeToolApprovalDigest("bash", { cmd: "pwd" });
     expect(d1).not.toBe(d2);
   });
 
-  test("computeToolApprovalDigest differs for different tool names", () => {
+  test("computeToolApprovalDigest differs for different tool names", async () => {
     const d1 = computeToolApprovalDigest("bash", { cmd: "ls" });
     const d2 = computeToolApprovalDigest("python", { cmd: "ls" });
     expect(d1).not.toBe(d2);
   });
 
-  test("computeToolApprovalDigest is stable across key orderings (deeply nested)", () => {
+  test("computeToolApprovalDigest is stable across key orderings (deeply nested)", async () => {
     const d1 = computeToolApprovalDigest("tool", {
       config: { nested: { z: 1, a: 2 }, top: true },
       name: "test",

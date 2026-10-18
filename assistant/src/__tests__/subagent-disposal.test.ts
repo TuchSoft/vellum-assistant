@@ -1,11 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import type { AssistantEvent } from "../api/index.js";
-import { getDb } from "../persistence/db-connection.js";
-import { migrateCreateSubagentsTable } from "../persistence/migrations/311-create-subagents-table.js";
-import { migrateAddSubagentParentToolUseId } from "../persistence/migrations/356-add-subagent-parent-tool-use-id.js";
-import { migrateAddSubagentBudgetStopReason } from "../persistence/migrations/377-add-subagent-budget-stop-reason.js";
-import { resetTestTables } from "../persistence/raw-query.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   getSubagentRecordById,
   loadAllSubagentRecords,
@@ -14,6 +10,7 @@ import {
 } from "../persistence/subagent-store.js";
 import { SubagentManager } from "../subagent/manager.js";
 import type { SubagentState } from "../subagent/types.js";
+import { describePg } from "./pg-test-db.js";
 
 /** Minimal shape matching the private ManagedSubagent interface for test injection. */
 interface FakeManagedSubagent {
@@ -379,19 +376,24 @@ describe("SubagentManager terminal disposal", () => {
   });
 });
 
-describe("durable record lifetime across disposal paths", () => {
-  beforeEach(() => {
-    // Idempotent; the table may already exist from a prior run.
-    migrateCreateSubagentsTable();
-    migrateAddSubagentParentToolUseId(getDb());
-    migrateAddSubagentBudgetStopReason(getDb());
-    resetTestTables("subagents");
+describePg("durable record lifetime across disposal paths", () => {
+  beforeEach(async () => {
+    await requireMainDb().run("DELETE FROM subagents");
   });
 
-  function seedRecord(
+  async function waitFor(check: () => Promise<boolean>): Promise<void> {
+    for (let i = 0; i < 100; i++) {
+      if (await check()) {
+        return;
+      }
+      await Bun.sleep(20);
+    }
+  }
+
+  async function seedRecord(
     id: string,
     parentConversationId = "parent-sess-1",
-  ): void {
+  ): Promise<void> {
     const rec: SubagentRecord = {
       id,
       parentConversationId,
@@ -411,12 +413,12 @@ describe("durable record lifetime across disposal paths", () => {
       outputTokens: 7,
       estimatedCost: 0.01,
     };
-    upsertSubagentRecord(rec);
+    await upsertSubagentRecord(rec);
   }
 
-  test("TTL sweep frees in-memory metadata but keeps the durable row", () => {
+  test("TTL sweep frees in-memory metadata but keeps the durable row", async () => {
     const manager = new SubagentManager();
-    seedRecord("sub-swept");
+    await seedRecord("sub-swept");
     injectFakeSubagent(
       manager,
       "sub-swept",
@@ -433,16 +435,16 @@ describe("durable record lifetime across disposal paths", () => {
     expect(manager.getState("sub-swept")).toBeUndefined();
     // …but the row survives, so getSubagentDetail can still resolve the child
     // conversation for a client that missed `subagent_spawned`.
-    expect(getSubagentRecordById("sub-swept")?.conversationId).toBe(
+    expect((await getSubagentRecordById("sub-swept"))?.conversationId).toBe(
       "conv-sub-1",
     );
 
     asInternals(manager).stopSweep();
   });
 
-  test("disposeAllForParent deletes the durable row", () => {
+  test("disposeAllForParent deletes the durable row", async () => {
     const manager = new SubagentManager();
-    seedRecord("sub-parent-gone");
+    await seedRecord("sub-parent-gone");
     injectFakeSubagent(
       manager,
       "sub-parent-gone",
@@ -453,17 +455,21 @@ describe("durable record lifetime across disposal paths", () => {
 
     // The parent conversation's data is going away. the child goes with it.
     manager.disposeAllForParent("parent-sess-1");
+    await waitFor(
+      async () =>
+        (await getSubagentRecordById("sub-parent-gone")) === undefined,
+    );
 
     expect(manager.getState("sub-parent-gone")).toBeUndefined();
-    expect(getSubagentRecordById("sub-parent-gone")).toBeUndefined();
+    expect(await getSubagentRecordById("sub-parent-gone")).toBeUndefined();
 
     asInternals(manager).stopSweep();
   });
 
-  test("disposeAllForParent deletes rows the sweep already evicted", () => {
+  test("disposeAllForParent deletes rows the sweep already evicted", async () => {
     const manager = new SubagentManager();
-    seedRecord("sub-swept-then-deleted");
-    seedRecord("sub-other-parent", "parent-sess-2");
+    await seedRecord("sub-swept-then-deleted");
+    await seedRecord("sub-other-parent", "parent-sess-2");
     injectFakeSubagent(
       manager,
       "sub-swept-then-deleted",
@@ -478,31 +484,38 @@ describe("durable record lifetime across disposal paths", () => {
     // The sweep frees the in-memory entry, so `parentToChildren` no longer
     // names this child: only a by-parent delete can still reach its row.
     asInternals(manager).sweepTerminal();
-    expect(getSubagentRecordById("sub-swept-then-deleted")).toBeDefined();
+    expect(await getSubagentRecordById("sub-swept-then-deleted")).toBeDefined();
 
     manager.disposeAllForParent("parent-sess-1");
+    await waitFor(
+      async () =>
+        (await getSubagentRecordById("sub-swept-then-deleted")) === undefined,
+    );
 
-    expect(getSubagentRecordById("sub-swept-then-deleted")).toBeUndefined();
+    expect(
+      await getSubagentRecordById("sub-swept-then-deleted"),
+    ).toBeUndefined();
     // Another parent's rows are untouched.
-    expect(getSubagentRecordById("sub-other-parent")).toBeDefined();
+    expect(await getSubagentRecordById("sub-other-parent")).toBeDefined();
 
     asInternals(manager).stopSweep();
   });
 
-  test("clear-all deletes rows for a parent with no live children", () => {
+  test("clear-all deletes rows for a parent with no live children", async () => {
     const manager = new SubagentManager();
-    seedRecord("sub-orphan-row", "parent-sess-3");
+    await seedRecord("sub-orphan-row", "parent-sess-3");
 
     // No in-memory entry at all, so `parentToChildren` holds no key for this
     // parent and iterating it would skip the row entirely.
     manager.disposeAllForAllParents();
+    await waitFor(async () => (await loadAllSubagentRecords()).length === 0);
 
-    expect(loadAllSubagentRecords()).toHaveLength(0);
+    expect(await loadAllSubagentRecords()).toHaveLength(0);
   });
 
-  test("shutdown disposal keeps the row for rehydration", () => {
+  test("shutdown disposal keeps the row for rehydration", async () => {
     const manager = new SubagentManager();
-    seedRecord("sub-shutdown");
+    await seedRecord("sub-shutdown");
     injectFakeSubagent(
       manager,
       "sub-shutdown",
@@ -514,7 +527,7 @@ describe("durable record lifetime across disposal paths", () => {
     manager.disposeAll();
 
     expect(manager.getState("sub-shutdown")).toBeUndefined();
-    expect(getSubagentRecordById("sub-shutdown")).toBeDefined();
+    expect(await getSubagentRecordById("sub-shutdown")).toBeDefined();
   });
 });
 

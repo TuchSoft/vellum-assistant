@@ -666,7 +666,9 @@ describePg("runConversationTurn inbound admission", () => {
     ).rejects.toBeInstanceOf(PluginTurnNotAdmittedError);
 
     expect(
-      await requireMainDb().get("SELECT COUNT(*) AS n FROM messages"),
+      await requireMainDb().get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM messages",
+      ),
     ).toEqual({ n: 0 });
   });
 

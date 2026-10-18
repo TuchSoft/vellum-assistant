@@ -52,14 +52,14 @@ describePg("findMostRecentRetrospectiveFor", () => {
 
   test("returns null when no retrospective exists anywhere in the fork chain", async () => {
     const conv = await createConversation("conv");
-    expect(findMostRecentRetrospectiveFor(conv.id)).toBeNull();
+    expect(await findMostRecentRetrospectiveFor(conv.id)).toBeNull();
   });
 
   test("returns a direct retrospective rooted at the conversation", async () => {
     const conv = await createConversation("conv");
     const retro = await createRetro(conv.id, 1_000);
 
-    expect(findMostRecentRetrospectiveFor(conv.id)).toEqual({
+    expect(await findMostRecentRetrospectiveFor(conv.id)).toEqual({
       id: retro.id,
       forkParentConversationId: conv.id,
     });
@@ -71,7 +71,7 @@ describePg("findMostRecentRetrospectiveFor", () => {
     const newer = await createRetro(conv.id, 2_000);
     await createRetro(conv.id, 500);
 
-    expect(findMostRecentRetrospectiveFor(conv.id)).toEqual({
+    expect(await findMostRecentRetrospectiveFor(conv.id)).toEqual({
       id: newer.id,
       forkParentConversationId: conv.id,
     });
@@ -84,7 +84,7 @@ describePg("findMostRecentRetrospectiveFor", () => {
     const fork = await createConversation("fork");
     await setForkParent(fork.id, parent.id);
 
-    expect(findMostRecentRetrospectiveFor(fork.id)).toEqual({
+    expect(await findMostRecentRetrospectiveFor(fork.id)).toEqual({
       id: parentRetro.id,
       // Owned by the PARENT — callers must not GC it on the fork's behalf.
       forkParentConversationId: parent.id,
@@ -99,7 +99,7 @@ describePg("findMostRecentRetrospectiveFor", () => {
     await setForkParent(fork.id, parent.id);
     const forkRetro = await createRetro(fork.id, 1_000);
 
-    expect(findMostRecentRetrospectiveFor(fork.id)).toEqual({
+    expect(await findMostRecentRetrospectiveFor(fork.id)).toEqual({
       id: forkRetro.id,
       forkParentConversationId: fork.id,
     });
@@ -115,7 +115,7 @@ describePg("findMostRecentRetrospectiveFor", () => {
     const fork = await createConversation("fork");
     await setForkParent(fork.id, parent.id);
 
-    expect(findMostRecentRetrospectiveFor(fork.id)).toEqual({
+    expect(await findMostRecentRetrospectiveFor(fork.id)).toEqual({
       id: grandparentRetro.id,
       forkParentConversationId: grandparent.id,
     });
@@ -128,6 +128,6 @@ describePg("findMostRecentRetrospectiveFor", () => {
     const fork = await createConversation("fork");
     await setForkParent(fork.id, parent.id);
 
-    expect(findMostRecentRetrospectiveFor(fork.id)).toBeNull();
+    expect(await findMostRecentRetrospectiveFor(fork.id)).toBeNull();
   });
 });

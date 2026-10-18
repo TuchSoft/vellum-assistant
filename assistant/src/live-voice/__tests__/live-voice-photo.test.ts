@@ -963,7 +963,7 @@ describePg("standalone image persists are serialized per conversation", () => {
       expect(await getMessages(live.id)).toHaveLength(0);
       expect(_pendingFrameReclaimCountForTests()).toBe(1);
       // The clone outlived the failed cleanup, so something still owes it.
-      const clones = await allAttachmentIds().filter(
+      const clones = (await allAttachmentIds()).filter(
         (id) => !beforePersist.has(id),
       );
       expect(clones).toHaveLength(1);
@@ -1297,7 +1297,7 @@ describePg("standalone image persists are serialized per conversation", () => {
       expect(await holderKeep).toEqual({ ok: false });
       expect(await queuedKeep).toEqual({ ok: false });
 
-      expect(getConversation(live.id)).toBeNull();
+      expect(await getConversation(live.id)).toBeNull();
       expect(await conversationCount()).toBe(countAfterDelete);
       expect(await getMessages(live.id)).toHaveLength(0);
       expect(await frameStored(queued)).toBe(false);
@@ -1377,7 +1377,7 @@ describePg("standalone image persists are serialized per conversation", () => {
     const live = await liveConversation("Live voice same millisecond recreate");
     try {
       const frame = await uploadFrame("same-millisecond.png");
-      const takenIn = getConversation(live.id)!.createdAt;
+      const takenIn = (await getConversation(live.id))!.createdAt;
 
       live.activeConversation.setProcessing(true);
       const keep = persistAmbientSightFrame(live.id, frame, "voice");
@@ -1390,7 +1390,7 @@ describePg("standalone image persists are serialized per conversation", () => {
       } finally {
         clock.mockRestore();
       }
-      expect(getConversation(live.id)!.createdAt).not.toBe(takenIn);
+      expect((await getConversation(live.id))!.createdAt).not.toBe(takenIn);
 
       live.activeConversation.setProcessing(false);
 
@@ -1645,7 +1645,7 @@ describePg("newestPersistedSightFrame", () => {
   test("is null for a conversation that carries no frame", async () => {
     const live = await liveConversation("Sight newest none");
     try {
-      expect(newestPersistedSightFrame(live.id)).toBeNull();
+      expect(await newestPersistedSightFrame(live.id)).toBeNull();
     } finally {
       live.dispose();
     }
@@ -1669,7 +1669,7 @@ describePg("newestPersistedSightFrame", () => {
       const storedSecond = sightFrameAttachmentIdsFromMetadata(
         metadataOf(rows[1]),
       )[0];
-      expect(newestPersistedSightFrame(live.id)).toEqual({
+      expect(await newestPersistedSightFrame(live.id)).toEqual({
         attachmentId: storedSecond,
         capturedAt: rows[1].createdAt,
       });

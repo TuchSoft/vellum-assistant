@@ -382,7 +382,7 @@ describe("voice bridge confirmation handling (grant consumption via primitive)",
     expect(allActive.length).toBe(2);
 
     // Revoke grants for the specific call session (simulates call end)
-    const revokedCount = revokeScopedApprovalGrantsForContext({
+    const revokedCount = await revokeScopedApprovalGrantsForContext({
       callSessionId: testCallSessionId,
     });
     expect(revokedCount).toBe(1);
@@ -455,13 +455,13 @@ describe("voice bridge confirmation handling (grant consumption via primitive)",
 
     // callSessionId-based revocation should miss grants with null callSessionId
     // because the filter matches on the column value, not NULL
-    const revokedByCallSession = revokeScopedApprovalGrantsForContext({
+    const revokedByCallSession = await revokeScopedApprovalGrantsForContext({
       callSessionId: CALL_SESSION_ID,
     });
     expect(revokedByCallSession).toBe(0);
 
     // conversationId-based revocation catches the grant
-    const revokedByConversation = revokeScopedApprovalGrantsForContext({
+    const revokedByConversation = await revokeScopedApprovalGrantsForContext({
       conversationId: testConversationId,
     });
     expect(revokedByConversation).toBe(1);

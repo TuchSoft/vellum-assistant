@@ -23,15 +23,15 @@
  *  11. Guardian identity mismatch cannot mint grant — guardian-grant-minting.test.ts
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
 import {
   _internal,
   type CreateScopedApprovalGrantParams,
 } from "../approvals/scoped-approval-grants.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
-import { scopedApprovalGrants } from "../persistence/schema/index.js";
+import { describePg } from "./pg-test-db.js";
 
 const { consumeScopedApprovalGrantByToolSignature, createScopedApprovalGrant } =
   _internal;
@@ -39,9 +39,9 @@ import { computeToolApprovalDigest } from "../security/tool-approval-digest.js";
 
 await initializeDb();
 
-function clearTables(): void {
-  const db = getDb();
-  db.delete(scopedApprovalGrants).run();
+async function clearTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.delete(db.schema.scopedApprovalGrants);
 }
 
 // ---------------------------------------------------------------------------
@@ -67,12 +67,14 @@ function grantParams(
 // 6. Requester identity mismatch denied
 // ===========================================================================
 
-describe("security matrix: requester identity mismatch", () => {
-  beforeEach(() => clearTables());
+describePg("security matrix: requester identity mismatch", () => {
+  beforeEach(async () => {
+    await clearTables();
+  });
 
-  test("grant scoped to a specific requester cannot be consumed by a different requester", () => {
+  test("grant scoped to a specific requester cannot be consumed by a different requester", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         toolName: "bash",
         inputDigest: digest,
@@ -81,7 +83,7 @@ describe("security matrix: requester identity mismatch", () => {
     );
 
     // Attempt to consume as a different user
-    const wrongUser = consumeScopedApprovalGrantByToolSignature({
+    const wrongUser = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c1",
@@ -90,7 +92,7 @@ describe("security matrix: requester identity mismatch", () => {
     expect(wrongUser.ok).toBe(false);
 
     // Correct user succeeds
-    const correctUser = consumeScopedApprovalGrantByToolSignature({
+    const correctUser = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c2",
@@ -99,9 +101,9 @@ describe("security matrix: requester identity mismatch", () => {
     expect(correctUser.ok).toBe(true);
   });
 
-  test("grant with null requesterExternalUserId allows any requester (wildcard)", () => {
+  test("grant with null requesterExternalUserId allows any requester (wildcard)", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         toolName: "bash",
         inputDigest: digest,
@@ -110,7 +112,7 @@ describe("security matrix: requester identity mismatch", () => {
     );
 
     // Any user can consume when requester is null (wildcard)
-    const result = consumeScopedApprovalGrantByToolSignature({
+    const result = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c1",
@@ -119,11 +121,11 @@ describe("security matrix: requester identity mismatch", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("consume without providing requester only matches grants with null requester", () => {
+  test("consume without providing requester only matches grants with null requester", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
 
     // Grant scoped to a specific requester
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         toolName: "bash",
         inputDigest: digest,
@@ -132,7 +134,7 @@ describe("security matrix: requester identity mismatch", () => {
     );
 
     // Consume without specifying requester — should NOT match a requester-scoped grant
-    const result = consumeScopedApprovalGrantByToolSignature({
+    const result = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "c1",
@@ -146,12 +148,14 @@ describe("security matrix: requester identity mismatch", () => {
 // 8. Concurrent consume attempts: only one succeeds
 // ===========================================================================
 
-describe("security matrix: concurrent consume (CAS)", () => {
-  beforeEach(() => clearTables());
+describePg("security matrix: concurrent consume (CAS)", () => {
+  beforeEach(async () => {
+    await clearTables();
+  });
 
-  test("only one of multiple concurrent consumers succeeds for the same grant", () => {
+  test("only one of multiple concurrent consumers succeeds for the same grant", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "rm -rf /" });
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         toolName: "bash",
         inputDigest: digest,
@@ -164,7 +168,7 @@ describe("security matrix: concurrent consume (CAS)", () => {
     // first succeeds.
     const results: boolean[] = [];
     for (let i = 0; i < 5; i++) {
-      const result = consumeScopedApprovalGrantByToolSignature({
+      const result = await consumeScopedApprovalGrantByToolSignature({
         toolName: "bash",
         inputDigest: digest,
         consumingRequestId: `concurrent-consumer-${i}`,
@@ -180,12 +184,12 @@ describe("security matrix: concurrent consume (CAS)", () => {
     expect(results[0]).toBe(true);
   });
 
-  test("with multiple matching grants, each consumer gets at most one grant", () => {
+  test("with multiple matching grants, each consumer gets at most one grant", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
 
     // Create 3 grants for the same tool signature
     for (let i = 0; i < 3; i++) {
-      createScopedApprovalGrant(
+      await createScopedApprovalGrant(
         grantParams({
           toolName: "bash",
           inputDigest: digest,
@@ -196,7 +200,7 @@ describe("security matrix: concurrent consume (CAS)", () => {
     // 5 consumers compete for 3 grants
     const results: boolean[] = [];
     for (let i = 0; i < 5; i++) {
-      const result = consumeScopedApprovalGrantByToolSignature({
+      const result = await consumeScopedApprovalGrantByToolSignature({
         toolName: "bash",
         inputDigest: digest,
         consumingRequestId: `consumer-${i}`,
@@ -218,14 +222,16 @@ describe("security matrix: concurrent consume (CAS)", () => {
 // 12. Restart behavior remains fail-closed — grants stored in persistent DB
 // ===========================================================================
 
-describe("security matrix: persistence and fail-closed behavior", () => {
-  beforeEach(() => clearTables());
+describePg("security matrix: persistence and fail-closed behavior", () => {
+  beforeEach(async () => {
+    await clearTables();
+  });
 
   test("grants survive DB re-initialization (simulating daemon restart)", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
 
     // Create a grant
-    const grant = createScopedApprovalGrant(
+    const grant = await createScopedApprovalGrant(
       grantParams({
         toolName: "bash",
         inputDigest: digest,
@@ -237,7 +243,7 @@ describe("security matrix: persistence and fail-closed behavior", () => {
     await initializeDb();
 
     // The grant should still be consumable after restart
-    const result = consumeScopedApprovalGrantByToolSignature({
+    const result = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "post-restart-consumer",
@@ -249,7 +255,7 @@ describe("security matrix: persistence and fail-closed behavior", () => {
   test("consumed grants remain consumed after DB re-initialization", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
 
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         toolName: "bash",
         inputDigest: digest,
@@ -257,7 +263,7 @@ describe("security matrix: persistence and fail-closed behavior", () => {
     );
 
     // Consume the grant
-    const first = consumeScopedApprovalGrantByToolSignature({
+    const first = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "pre-restart-consumer",
@@ -268,7 +274,7 @@ describe("security matrix: persistence and fail-closed behavior", () => {
     await initializeDb();
 
     // The consumed grant must NOT be consumable again after restart
-    const second = consumeScopedApprovalGrantByToolSignature({
+    const second = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "post-restart-consumer",
@@ -276,13 +282,13 @@ describe("security matrix: persistence and fail-closed behavior", () => {
     expect(second.ok).toBe(false);
   });
 
-  test("no grants means fail-closed (deny by default)", () => {
+  test("no grants means fail-closed (deny by default)", async () => {
     // Empty grant table — no grants at all
     const digest = computeToolApprovalDigest("bash", {
       cmd: "dangerous-command",
     });
 
-    const result = consumeScopedApprovalGrantByToolSignature({
+    const result = await consumeScopedApprovalGrantByToolSignature({
       toolName: "bash",
       inputDigest: digest,
       consumingRequestId: "consumer-1",
@@ -298,14 +304,16 @@ describe("security matrix: persistence and fail-closed behavior", () => {
 // Combined cross-scope invariants
 // ===========================================================================
 
-describe("security matrix: cross-scope invariants", () => {
-  beforeEach(() => clearTables());
+describePg("security matrix: cross-scope invariants", () => {
+  beforeEach(async () => {
+    await clearTables();
+  });
 
-  test("all scope fields must match simultaneously for consumption", () => {
+  test("all scope fields must match simultaneously for consumption", async () => {
     const digest = computeToolApprovalDigest("bash", { cmd: "ls" });
 
     // Create a maximally-scoped grant
-    createScopedApprovalGrant(
+    await createScopedApprovalGrant(
       grantParams({
         toolName: "bash",
         inputDigest: digest,
@@ -320,67 +328,77 @@ describe("security matrix: cross-scope invariants", () => {
 
     // Wrong execution channel
     expect(
-      consumeScopedApprovalGrantByToolSignature({
-        toolName: "bash",
-        inputDigest: digest,
-        consumingRequestId: "c-chan",
-        executionChannel: "telegram",
-        conversationId: "conv-123",
-        callSessionId: "call-456",
-        requesterExternalUserId: "user-alice",
-      }).ok,
+      (
+        await consumeScopedApprovalGrantByToolSignature({
+          toolName: "bash",
+          inputDigest: digest,
+          consumingRequestId: "c-chan",
+          executionChannel: "telegram",
+          conversationId: "conv-123",
+          callSessionId: "call-456",
+          requesterExternalUserId: "user-alice",
+        })
+      ).ok,
     ).toBe(false);
 
     // Wrong conversation
     expect(
-      consumeScopedApprovalGrantByToolSignature({
-        toolName: "bash",
-        inputDigest: digest,
-        consumingRequestId: "c-conv",
-        executionChannel: "phone",
-        conversationId: "conv-999",
-        callSessionId: "call-456",
-        requesterExternalUserId: "user-alice",
-      }).ok,
+      (
+        await consumeScopedApprovalGrantByToolSignature({
+          toolName: "bash",
+          inputDigest: digest,
+          consumingRequestId: "c-conv",
+          executionChannel: "phone",
+          conversationId: "conv-999",
+          callSessionId: "call-456",
+          requesterExternalUserId: "user-alice",
+        })
+      ).ok,
     ).toBe(false);
 
     // Wrong call session
     expect(
-      consumeScopedApprovalGrantByToolSignature({
-        toolName: "bash",
-        inputDigest: digest,
-        consumingRequestId: "c-call",
-        executionChannel: "phone",
-        conversationId: "conv-123",
-        callSessionId: "call-999",
-        requesterExternalUserId: "user-alice",
-      }).ok,
+      (
+        await consumeScopedApprovalGrantByToolSignature({
+          toolName: "bash",
+          inputDigest: digest,
+          consumingRequestId: "c-call",
+          executionChannel: "phone",
+          conversationId: "conv-123",
+          callSessionId: "call-999",
+          requesterExternalUserId: "user-alice",
+        })
+      ).ok,
     ).toBe(false);
 
     // Wrong requester
     expect(
-      consumeScopedApprovalGrantByToolSignature({
-        toolName: "bash",
-        inputDigest: digest,
-        consumingRequestId: "c-user",
-        executionChannel: "phone",
-        conversationId: "conv-123",
-        callSessionId: "call-456",
-        requesterExternalUserId: "user-bob",
-      }).ok,
+      (
+        await consumeScopedApprovalGrantByToolSignature({
+          toolName: "bash",
+          inputDigest: digest,
+          consumingRequestId: "c-user",
+          executionChannel: "phone",
+          conversationId: "conv-123",
+          callSessionId: "call-456",
+          requesterExternalUserId: "user-bob",
+        })
+      ).ok,
     ).toBe(false);
 
     // All fields match — succeeds
     expect(
-      consumeScopedApprovalGrantByToolSignature({
-        toolName: "bash",
-        inputDigest: digest,
-        consumingRequestId: "c-all",
-        executionChannel: "phone",
-        conversationId: "conv-123",
-        callSessionId: "call-456",
-        requesterExternalUserId: "user-alice",
-      }).ok,
+      (
+        await consumeScopedApprovalGrantByToolSignature({
+          toolName: "bash",
+          inputDigest: digest,
+          consumingRequestId: "c-all",
+          executionChannel: "phone",
+          conversationId: "conv-123",
+          callSessionId: "call-456",
+          requesterExternalUserId: "user-alice",
+        })
+      ).ok,
     ).toBe(true);
   });
 });

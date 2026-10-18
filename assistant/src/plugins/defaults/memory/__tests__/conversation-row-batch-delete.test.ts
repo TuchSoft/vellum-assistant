@@ -13,17 +13,12 @@ import {
   deleteConversationGently,
   getMessages,
 } from "../../../../persistence/conversation-crud.js";
-import {
-  buildBatchDeleteScript,
-  deleteConversationRowsInBatches,
-} from "../../../../persistence/conversation-row-batch-delete.js";
-import { getMemorySqlite } from "../../../../persistence/db-connection.js";
+import { deleteConversationRowsInBatches } from "../../../../persistence/conversation-row-batch-delete.js";
 import { requireMainDb } from "../../../../persistence/db-facade.js";
 
 async function resetTables(): Promise<void> {
-  // memory_segments lives on the dedicated memory connection.
-  getMemorySqlite()?.run("DELETE FROM memory_segments");
   const db = requireMainDb();
+  await db.run("DELETE FROM memory_segments");
   await db.run("DELETE FROM messages");
   await db.run("DELETE FROM conversations");
 }
@@ -47,9 +42,7 @@ describePg("deleteConversationRowsInBatches", () => {
     const result = await deleteConversationRowsInBatches({
       conversationId: conv.id,
       table: "messages",
-      enableForeignKeys: true,
       batchSize: 2,
-      forceInProcess: true,
     });
     expect(result.ok).toBe(true);
     expect(await countMessages(conv.id)).toBe(0);
@@ -60,8 +53,6 @@ describePg("deleteConversationRowsInBatches", () => {
     const result = await deleteConversationRowsInBatches({
       conversationId: conv.id,
       table: "messages",
-      enableForeignKeys: true,
-      forceInProcess: true,
     });
     expect(result.ok).toBe(true);
     expect(await countMessages(conv.id)).toBe(0);
@@ -76,8 +67,6 @@ describePg("deleteConversationRowsInBatches", () => {
     const result = await deleteConversationRowsInBatches({
       conversationId: target.id,
       table: "messages",
-      enableForeignKeys: true,
-      forceInProcess: true,
     });
     expect(result.ok).toBe(true);
     expect(await countMessages(target.id)).toBe(0);
@@ -102,11 +91,11 @@ describePg("deleteConversationGently", () => {
       skipIndexing: true,
     });
     const now = Date.now();
-    // memory_segments lives on the memory connection, so seed it there.
-    getMemorySqlite()!.run(
+    await requireMainDb().run(
       `INSERT INTO memory_segments
         (id, message_id, conversation_id, role, segment_index, text, token_estimate, created_at, updated_at)
-       VALUES ('seg-gentle', '${msg.id}', '${conv.id}', 'user', 0, 'bye', 1, ${now}, ${now})`,
+       VALUES (?, ?, ?, 'user', 0, 'bye', 1, ?, ?)`,
+      ["seg-gentle", msg.id, conv.id, now, now],
     );
 
     const result = await deleteConversationGently(conv.id);
@@ -117,51 +106,9 @@ describePg("deleteConversationGently", () => {
     expect(result.segmentIds).toEqual(["seg-gentle"]);
     expect(await countMessages(conv.id)).toBe(0);
     expect(
-      await requireMainDb().get(`SELECT COUNT(*) AS c FROM conversations`),
+      await requireMainDb().get<{ c: number }>(
+        `SELECT COUNT(*) AS c FROM conversations`,
+      ),
     ).toEqual({ c: 0 });
-  });
-});
-
-describe("buildBatchDeleteScript", () => {
-  test("rejects an unsafe conversation id", () => {
-    expect(() =>
-      buildBatchDeleteScript({
-        conversationId: "abc'); DROP TABLE messages;--",
-        table: "messages",
-        batchSize: 50,
-      }),
-    ).toThrow(/unsafe id/);
-  });
-
-  test("rejects an unsafe table identifier", () => {
-    expect(() =>
-      buildBatchDeleteScript({
-        conversationId: "conv-123",
-        table: "messages; DROP TABLE conversations;--",
-        batchSize: 50,
-      }),
-    ).toThrow(/unsafe table/);
-  });
-
-  test("enables foreign keys only when requested and bounds the batch", () => {
-    const withFk = buildBatchDeleteScript({
-      conversationId: "conv-123",
-      table: "messages",
-      enableForeignKeys: true,
-      batchSize: 50,
-    });
-    expect(withFk).toContain("PRAGMA foreign_keys=ON;");
-    expect(withFk).toContain("DELETE FROM messages");
-    expect(withFk).toContain("LIMIT 50");
-    expect(withFk).toContain("SELECT changes();");
-
-    const withoutFk = buildBatchDeleteScript({
-      conversationId: "conv-123",
-      table: "llm_request_logs",
-      batchSize: 25,
-    });
-    expect(withoutFk).not.toContain("PRAGMA foreign_keys=ON;");
-    expect(withoutFk).toContain("DELETE FROM llm_request_logs");
-    expect(withoutFk).toContain("LIMIT 25");
   });
 });

@@ -9,7 +9,7 @@
  * row however many writes follow it, and a call nobody spoke on has to say so.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 const recordPhoneCallStarted = mock(async () => null);
 const recordPhoneCallEnded = mock(async () => null);
@@ -24,11 +24,8 @@ mock.module("../../onboarding/onboarding-events-store.js", () => ({
   recordPhoneCallEnded,
 }));
 
-import { getDb } from "../../persistence/db-connection.js";
-import { initializeDb } from "../../persistence/db-init.js";
-import { conversations } from "../../persistence/schema/index.js";
-
-await initializeDb();
+import { describePg } from "../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 
 // Values load after `mock.module` so the store picks up the mocked recorder.
 const { createCallSession, recordCallEvent, updateCallSession } =
@@ -36,27 +33,25 @@ const { createCallSession, recordCallEvent, updateCallSession } =
 
 let conversationSeq = 0;
 
-function makeConversation(): string {
+async function makeConversation(): Promise<string> {
   const id = `conv-funnel-${++conversationSeq}`;
   const now = Date.now();
-  getDb()
-    .insert(conversations)
-    .values({
-      id,
-      title: `Test conversation ${id}`,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  const db = requireMainDb();
+  await db.orm.insert(db.schema.conversations).values({
+    id,
+    title: `Test conversation ${id}`,
+    createdAt: now,
+    updatedAt: now,
+  });
   return id;
 }
 
-function startCall(opts?: {
+async function startCall(opts?: {
   direction?: "inbound" | "outbound";
   callMode?: string;
-}): string {
-  const session = createCallSession({
-    conversationId: makeConversation(),
+}): Promise<string> {
+  const session = await createCallSession({
+    conversationId: await makeConversation(),
     provider: "twilio",
     direction: opts?.direction ?? "inbound",
     fromNumber: "+15550100",
@@ -66,16 +61,16 @@ function startCall(opts?: {
   return session.id;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   recordPhoneCallStarted.mockClear();
   recordPhoneCallEnded.mockClear();
 });
 
-describe("call funnel start rows", () => {
-  test("an inbound call counts the moment its session row exists", () => {
+describePg("call funnel start rows", () => {
+  test("an inbound call counts the moment its session row exists", async () => {
     // Before the provider has dialled and before any preflight can reject it:
     // a call that never connects is the one the funnel most needs to count.
-    const callSessionId = startCall({ callMode: "normal" });
+    const callSessionId = await startCall({ callMode: "normal" });
 
     expect(recordPhoneCallStarted).toHaveBeenCalledTimes(1);
     expect(recordPhoneCallStarted).toHaveBeenCalledWith({
@@ -84,20 +79,20 @@ describe("call funnel start rows", () => {
     });
   });
 
-  test("an outbound call is stamped by the direction it states", () => {
+  test("an outbound call is stamped by the direction it states", async () => {
     // Stated, not inferred: a verification or invite call dials out and
     // carries no task, so task presence would misread as inbound.
-    startCall({ direction: "outbound", callMode: "verification" });
+    await startCall({ direction: "outbound", callMode: "verification" });
 
     expect(recordPhoneCallStarted).toHaveBeenCalledWith(
       expect.objectContaining({ screen: "started_outbound:verification" }),
     );
   });
 
-  test("an ordinary call stamps the normal mode it never writes", () => {
+  test("an ordinary call stamps the normal mode it never writes", async () => {
     // createInboundVoiceSession and startCall leave callMode null; only the
     // verification and invite flows set one.
-    startCall();
+    await startCall();
 
     expect(recordPhoneCallStarted).toHaveBeenCalledWith(
       expect.objectContaining({ screen: "started_inbound:normal" }),
@@ -105,17 +100,17 @@ describe("call funnel start rows", () => {
   });
 });
 
-describe("call funnel end rows", () => {
-  test("a completed call that took a turn reports no silence", () => {
-    const callSessionId = startCall({ callMode: "normal" });
-    updateCallSession(callSessionId, { status: "in_progress" });
-    recordCallEvent(callSessionId, "call_connected");
-    recordCallEvent(callSessionId, "caller_spoke", {
+describePg("call funnel end rows", () => {
+  test("a completed call that took a turn reports no silence", async () => {
+    const callSessionId = await startCall({ callMode: "normal" });
+    await updateCallSession(callSessionId, { status: "in_progress" });
+    await recordCallEvent(callSessionId, "call_connected");
+    await recordCallEvent(callSessionId, "caller_spoke", {
       transcript: "hello",
       transport: "media-stream",
     });
 
-    updateCallSession(callSessionId, { status: "completed" });
+    await updateCallSession(callSessionId, { status: "completed" });
 
     expect(recordPhoneCallEnded).toHaveBeenCalledTimes(1);
     expect(recordPhoneCallEnded).toHaveBeenCalledWith({
@@ -125,10 +120,10 @@ describe("call funnel end rows", () => {
     });
   });
 
-  test("a call that never connected is silent for that reason", () => {
-    const callSessionId = startCall({ callMode: "normal" });
+  test("a call that never connected is silent for that reason", async () => {
+    const callSessionId = await startCall({ callMode: "normal" });
 
-    updateCallSession(callSessionId, { status: "failed" });
+    await updateCallSession(callSessionId, { status: "failed" });
 
     expect(recordPhoneCallEnded).toHaveBeenCalledWith({
       callSessionId,
@@ -137,56 +132,56 @@ describe("call funnel end rows", () => {
     });
   });
 
-  test("a connected call nobody spoke on is silent on the line", () => {
+  test("a connected call nobody spoke on is silent on the line", async () => {
     // The distinction the rate lives on: the telephony leg worked and the
     // conversation still never started.
-    const callSessionId = startCall({ callMode: "normal" });
-    updateCallSession(callSessionId, { status: "in_progress" });
-    recordCallEvent(callSessionId, "call_connected");
+    const callSessionId = await startCall({ callMode: "normal" });
+    await updateCallSession(callSessionId, { status: "in_progress" });
+    await recordCallEvent(callSessionId, "call_connected");
 
-    updateCallSession(callSessionId, { status: "completed" });
+    await updateCallSession(callSessionId, { status: "completed" });
 
     expect(recordPhoneCallEnded).toHaveBeenCalledWith(
       expect.objectContaining({ screen: "ended_completed:silent_no_turn" }),
     );
   });
 
-  test("a call where only digits were pressed took no turn", () => {
+  test("a call where only digits were pressed took no turn", async () => {
     // DTMF digits ride `caller_spoke` too; only a transcript is a turn.
-    const callSessionId = startCall({ callMode: "normal" });
-    updateCallSession(callSessionId, { status: "in_progress" });
-    recordCallEvent(callSessionId, "call_connected");
-    recordCallEvent(callSessionId, "caller_spoke", {
+    const callSessionId = await startCall({ callMode: "normal" });
+    await updateCallSession(callSessionId, { status: "in_progress" });
+    await recordCallEvent(callSessionId, "call_connected");
+    await recordCallEvent(callSessionId, "caller_spoke", {
       dtmfDigit: "4",
       transport: "media-stream",
     });
 
-    updateCallSession(callSessionId, { status: "completed" });
+    await updateCallSession(callSessionId, { status: "completed" });
 
     expect(recordPhoneCallEnded).toHaveBeenCalledWith(
       expect.objectContaining({ screen: "ended_completed:silent_no_turn" }),
     );
   });
 
-  test("a cancelled call completed its course", () => {
+  test("a cancelled call completed its course", async () => {
     // Only an error is a failure; a call cancelled before it connected ran
     // exactly as far as it was asked to.
-    const callSessionId = startCall({ callMode: "normal" });
+    const callSessionId = await startCall({ callMode: "normal" });
 
-    updateCallSession(callSessionId, { status: "cancelled" });
+    await updateCallSession(callSessionId, { status: "cancelled" });
 
     expect(recordPhoneCallEnded).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "completed" }),
     );
   });
 
-  test("only the first terminal write records an end", () => {
+  test("only the first terminal write records an end", async () => {
     // Terminal states are immutable, so the rejected second write must not
     // produce a second row to pair with the one start.
-    const callSessionId = startCall({ callMode: "normal" });
-    updateCallSession(callSessionId, { status: "completed" });
+    const callSessionId = await startCall({ callMode: "normal" });
+    await updateCallSession(callSessionId, { status: "completed" });
 
-    updateCallSession(callSessionId, { status: "failed" });
+    await updateCallSession(callSessionId, { status: "failed" });
 
     expect(recordPhoneCallEnded).toHaveBeenCalledTimes(1);
     expect(recordPhoneCallEnded).toHaveBeenCalledWith(
@@ -194,10 +189,10 @@ describe("call funnel end rows", () => {
     );
   });
 
-  test("a non-status update records nothing", () => {
-    const callSessionId = startCall({ callMode: "normal" });
+  test("a non-status update records nothing", async () => {
+    const callSessionId = await startCall({ callMode: "normal" });
 
-    updateCallSession(callSessionId, { providerCallSid: "CA-test" });
+    await updateCallSession(callSessionId, { providerCallSid: "CA-test" });
 
     expect(recordPhoneCallEnded).not.toHaveBeenCalled();
   });

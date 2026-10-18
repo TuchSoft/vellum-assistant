@@ -96,7 +96,7 @@ describePg("recoverInflightContent — folding stranded rows", () => {
     expect(existsSync(writer.absPath)).toBe(true);
     backdateDeltaFile(writer.absPath);
 
-    const result = recoverInflightContent({ minAgeMs: 0 });
+    const result = await recoverInflightContent({ minAgeMs: 0 });
 
     expect(result.finalized).toBeGreaterThanOrEqual(1);
     const row = await rawRow(messageId);
@@ -112,7 +112,7 @@ describePg("recoverInflightContent — folding stranded rows", () => {
     const { conversationId, messageId, writer } = await reserveInflight();
     expect(existsSync(writer.absPath)).toBe(false);
 
-    recoverInflightContent({ minAgeMs: 0 });
+    await recoverInflightContent({ minAgeMs: 0 });
 
     expect((await rawRow(messageId)).finalized).toBe(1);
     expect((await getMessageById(messageId, conversationId))?.content).toEqual(
@@ -127,7 +127,7 @@ describePg("recoverInflightContent — ownership guards", () => {
     appendInflightSnapshot(writer, [textBlock("live")], 1, rlog);
     await setProcessing(conversationId);
 
-    const result = recoverInflightContent({ minAgeMs: 0 });
+    const result = await recoverInflightContent({ minAgeMs: 0 });
 
     expect(result.skippedProcessing).toBeGreaterThanOrEqual(1);
     expect((await rawRow(messageId)).finalized).toBe(0);
@@ -142,7 +142,7 @@ describePg("recoverInflightContent — ownership guards", () => {
     expect(existsSync(writer.absPath)).toBe(true);
 
     // Default age floor treats the just-written file as possibly live.
-    const result = recoverInflightContent();
+    const result = await recoverInflightContent();
 
     expect(result.filesDeleted).toBe(0);
     expect(existsSync(writer.absPath)).toBe(true);
@@ -159,7 +159,7 @@ describePg("recoverInflightContent — orphan file GC", () => {
     expect(existsSync(writer.absPath)).toBe(true);
     backdateDeltaFile(writer.absPath);
 
-    const result = recoverInflightContent({ minAgeMs: 0 });
+    const result = await recoverInflightContent({ minAgeMs: 0 });
 
     expect(result.filesDeleted).toBeGreaterThanOrEqual(1);
     expect(existsSync(writer.absPath)).toBe(false);

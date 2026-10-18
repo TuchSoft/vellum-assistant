@@ -99,84 +99,84 @@ beforeEach(() => {
   wakeQueued = false;
 });
 
-test("internal advisor and silent-fork work cannot suppress the user's reply", () => {
+test("internal advisor and silent-fork work cannot suppress the user's reply", async () => {
   tasks = [
     { role: "advisor", isFork: false, sendResultToUser: null },
     { role: "worker", isFork: true, sendResultToUser: null },
     { role: "worker", isFork: false, sendResultToUser: false },
   ];
-  expect(hasPendingBackgroundWork("conv-123")).toBe(false);
+  expect(await hasPendingBackgroundWork("conv-123")).toBe(false);
 });
-test("a pending user-facing child, command, or parent continuation delays completion", () => {
+test("a pending user-facing child, command, or parent continuation delays completion", async () => {
   tasks = [{ role: "worker", isFork: false, sendResultToUser: null }];
-  expect(hasPendingBackgroundWork("conv-123")).toBe(true);
+  expect(await hasPendingBackgroundWork("conv-123")).toBe(true);
   tasks = [{ role: "worker", isFork: true, sendResultToUser: true }];
-  expect(hasPendingBackgroundWork("conv-123")).toBe(true);
+  expect(await hasPendingBackgroundWork("conv-123")).toBe(true);
   tasks = [];
   tools = [{}];
-  expect(hasPendingBackgroundWork("conv-123")).toBe(true);
+  expect(await hasPendingBackgroundWork("conv-123")).toBe(true);
   tools = [];
   queued = true;
-  expect(hasPendingBackgroundWork("conv-123")).toBe(true);
+  expect(await hasPendingBackgroundWork("conv-123")).toBe(true);
   queued = false;
   processing = true;
-  expect(hasPendingBackgroundWork("conv-123")).toBe(true);
+  expect(await hasPendingBackgroundWork("conv-123")).toBe(true);
   processing = false;
-  expect(hasPendingBackgroundWork("conv-123")).toBe(false);
+  expect(await hasPendingBackgroundWork("conv-123")).toBe(false);
   wakeQueued = true;
-  expect(hasPendingBackgroundWork("conv-123")).toBe(true);
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 200 })).toBe(
-    false,
-  );
+  expect(await hasPendingBackgroundWork("conv-123")).toBe(true);
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 200 }),
+  ).toBe(false);
 });
 
-test("a later ordinary reply ignores pending work from an earlier turn", () => {
+test("a later ordinary reply ignores pending work from an earlier turn", async () => {
   tasks = [
     { role: "worker", isFork: false, sendResultToUser: true, createdAt: 100 },
   ];
   tools = [{ startedAt: 100 }];
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 200 })).toBe(
-    false,
-  );
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 200 }),
+  ).toBe(false);
   tasks[0].createdAt = 200;
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 200 })).toBe(
-    true,
-  );
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 200 }),
+  ).toBe(true);
   tasks = [];
   tools = [{ startedAt: 200 }];
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 200 })).toBe(
-    true,
-  );
-  expect(hasPendingBackgroundWork("conv-123")).toBe(true);
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 200 }),
+  ).toBe(true);
+  expect(await hasPendingBackgroundWork("conv-123")).toBe(true);
 });
 
-test("a terminal child's queued follow-up must settle before completion", () => {
+test("a terminal child's queued follow-up must settle before completion", async () => {
   liveChild = true;
-  expect(hasPendingBackgroundWork("conv-123")).toBe(true);
-  expect(hasPendingBackgroundWork("conv-other")).toBe(false);
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 200 })).toBe(
-    false,
-  );
+  expect(await hasPendingBackgroundWork("conv-123")).toBe(true);
+  expect(await hasPendingBackgroundWork("conv-other")).toBe(false);
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 200 }),
+  ).toBe(false);
 });
 
-test("a dequeued unscheduled continuation suppresses kickoff alerts before its processing claim", () => {
+test("a dequeued unscheduled continuation suppresses kickoff alerts before its processing claim", async () => {
   parentDispatches.set(
     null,
     new Set([
       { controller: new AbortController(), messages: [queuedMessage(100)] },
     ]),
   );
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 100 })).toBe(
-    true,
-  );
-  expect(hasPendingBackgroundWork("conv-123")).toBe(true);
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 100 }),
+  ).toBe(true);
+  expect(await hasPendingBackgroundWork("conv-123")).toBe(true);
   parentDispatches.clear();
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 100 })).toBe(
-    false,
-  );
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 100 }),
+  ).toBe(false);
 });
 
-test("a terminal child's dequeued continuation remains pending before its claim", () => {
+test("a terminal child's dequeued continuation remains pending before its claim", async () => {
   liveChild = true;
   childProcessing = false;
   childDispatches.set(
@@ -185,14 +185,14 @@ test("a terminal child's dequeued continuation remains pending before its claim"
       { controller: new AbortController(), messages: [queuedMessage(100)] },
     ]),
   );
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 100 })).toBe(
-    true,
-  );
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 200 })).toBe(
-    false,
-  );
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 100 }),
+  ).toBe(true);
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 200 }),
+  ).toBe(false);
   childDispatches.clear();
-  expect(hasPendingBackgroundWork("conv-123")).toBe(false);
+  expect(await hasPendingBackgroundWork("conv-123")).toBe(false);
 });
 
 function queuedMessage(
@@ -211,7 +211,7 @@ function queuedMessage(
 
 for (const state of ["queued", "dispatch", "active"] as const) {
   for (const source of ["user", "subagent", "command"] as const) {
-    test(`a newer reply ignores older ${source} work while ${state}`, () => {
+    test(`a newer reply ignores older ${source} work while ${state}`, async () => {
       const metadata =
         source === "subagent"
           ? { subagentNotification: { subagentId: "task-123" } }
@@ -233,18 +233,18 @@ for (const state of ["queued", "dispatch", "active"] as const) {
           new Set([{ controller: new AbortController(), messages: [message] }]),
         );
       }
-      expect(hasPendingBackgroundWork("conv-123")).toBe(true);
-      expect(hasPendingBackgroundWork("conv-123", { startedAfter: 200 })).toBe(
-        false,
-      );
-      expect(hasPendingBackgroundWork("conv-123", { startedAfter: 100 })).toBe(
-        true,
-      );
+      expect(await hasPendingBackgroundWork("conv-123")).toBe(true);
+      expect(
+        await hasPendingBackgroundWork("conv-123", { startedAfter: 200 }),
+      ).toBe(false);
+      expect(
+        await hasPendingBackgroundWork("conv-123", { startedAfter: 100 }),
+      ).toBe(true);
     });
   }
 }
 
-test("a mixed dispatch still suppresses the kickoff alert for newer work", () => {
+test("a mixed dispatch still suppresses the kickoff alert for newer work", async () => {
   parentDispatches.set(
     null,
     new Set([
@@ -254,28 +254,28 @@ test("a mixed dispatch still suppresses the kickoff alert for newer work", () =>
       },
     ]),
   );
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 200 })).toBe(
-    true,
-  );
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 200 }),
+  ).toBe(true);
 });
 
-test("pending command wakes use their originating work time", () => {
+test("pending command wakes use their originating work time", async () => {
   wakeQueued = true;
   wakeStartedAt = 100;
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 200 })).toBe(
-    false,
-  );
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 200 }),
+  ).toBe(false);
   wakeStartedAt = 200;
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 200 })).toBe(
-    true,
-  );
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 200 }),
+  ).toBe(true);
 });
 
-test("an older active turn does not hide newer queued work", () => {
+test("an older active turn does not hide newer queued work", async () => {
   processing = true;
   activeOrigins = [queuedMessage(100)];
   queuedMessages = [queuedMessage(200)];
-  expect(hasPendingBackgroundWork("conv-123", { startedAfter: 200 })).toBe(
-    true,
-  );
+  expect(
+    await hasPendingBackgroundWork("conv-123", { startedAfter: 200 }),
+  ).toBe(true);
 });

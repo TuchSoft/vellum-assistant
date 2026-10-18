@@ -71,15 +71,12 @@ import {
   archiveConversation,
   createConversation,
 } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
 import { requireMainDb } from "../persistence/db-facade.js";
-import { initializeDb } from "../persistence/db-init.js";
 import {
   clearLifecycleQuiesce,
   setLifecycleQuiesce,
 } from "../persistence/lifecycle-quiesce.js";
 import { recordUsageEvent } from "../persistence/llm-usage-store.js";
-import { rawRun } from "../persistence/raw-query.js";
 import { assistantEventHub } from "../runtime/assistant-event-hub.js";
 import {
   BadRequestError,
@@ -102,12 +99,9 @@ import { getWorkspacePluginsDir } from "../util/platform.js";
 import { setOverridesForTesting } from "./feature-flag-test-helpers.js";
 import { describePg } from "./pg-test-db.js";
 
-await initializeDb();
-
 async function clearTables(): Promise<void> {
   const db = requireMainDb();
-  // `llm_usage_events` is still served by the SQLite usage store.
-  getDb().run("DELETE FROM llm_usage_events");
+  await db.run("DELETE FROM llm_usage_events");
   await db.run("DELETE FROM heartbeat_runs");
   await db.run("DELETE FROM cron_runs");
   await db.run("DELETE FROM cron_jobs");
@@ -143,7 +137,7 @@ async function recordUsageCostAt(
   createdAt: number,
   estimatedCostUsd: number,
 ): Promise<void> {
-  const event = recordUsageEvent(
+  const event = await recordUsageEvent(
     {
       conversationId,
       runId: null,
@@ -161,11 +155,9 @@ async function recordUsageCostAt(
     },
     { estimatedCostUsd, pricingStatus: "priced" },
   );
-  rawRun(
-    "test:setUsageCreatedAt",
+  await requireMainDb().run(
     "UPDATE llm_usage_events SET created_at = ? WHERE id = ?",
-    createdAt,
-    event.id,
+    [createdAt, event.id],
   );
 }
 

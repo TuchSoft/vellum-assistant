@@ -70,9 +70,9 @@ async function readPersistedBlocks(): Promise<Array<Record<string, unknown>>> {
 describePg("a surface behind the context-compaction boundary", () => {
   beforeEach(seedCompactedConversation);
 
-  test("is invisible to the compaction-bounded read", () => {
+  test("is invisible to the compaction-bounded read", async () => {
     expect(
-      findPersistedSurfaceState(CONVERSATION_ID, SURFACE_ID, {
+      await findPersistedSurfaceState(CONVERSATION_ID, SURFACE_ID, {
         liveHistoryStartRow: COMPACTED_MESSAGE_COUNT,
         ...GUARDIAN,
       }),
@@ -81,10 +81,12 @@ describePg("a surface behind the context-compaction boundary", () => {
 
   test("is found by the same read once the boundary is lifted", async () => {
     expect(
-      findPersistedSurfaceState(CONVERSATION_ID, SURFACE_ID, {
-        liveHistoryStartRow: 0,
-        ...GUARDIAN,
-      })?.surfaceType,
+      (
+        await findPersistedSurfaceState(CONVERSATION_ID, SURFACE_ID, {
+          liveHistoryStartRow: 0,
+          ...GUARDIAN,
+        })
+      )?.surfaceType,
     ).toBe("choice");
   });
 

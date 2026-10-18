@@ -60,8 +60,8 @@ describe("system prompt no longer injects ask-before-acting mode", () => {
     }
   });
 
-  test("includes SOUL.md and does not inject action confirmation copy", () => {
-    const prompt = buildSystemPrompt();
+  test("includes SOUL.md and does not inject action confirmation copy", async () => {
+    const prompt = await buildSystemPrompt();
 
     expect(prompt).toContain("SOUL guidance survives.");
     expect(prompt).not.toContain("Action Confirmation Mode");

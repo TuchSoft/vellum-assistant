@@ -805,13 +805,13 @@ describe("ConversationModeSessionCoordinator", () => {
       "conv-123",
       store.dependencies,
     );
-    const handle = await coordinator.activateSource({
+    const handle = (await coordinator.activateSource({
       sourceId: "camera-source",
       generation: 1,
       mode: "live_vision",
       sourceStartedAt: 100,
       lifetime: "source",
-    })!;
+    }))!;
     await coordinator.claimTurn("camera-run", handle, 110);
     await coordinator.recordStructuralWait("camera-run", {
       kind: "surface",

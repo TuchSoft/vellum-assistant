@@ -1,7 +1,8 @@
-import { describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
-// Entry-name folds are gated on the named row existing with an agreeing
-// kind, so the tests control the row store directly.
+// The synchronous entry-name fold reads connections through the legacy
+// drizzle handle, so this map backs that path while provider_connections
+// rows back the async binding lookup.
 const connectionRows = new Map<string, { name: string; provider: string }>([
   ["anthropic-personal", { name: "anthropic-personal", provider: "anthropic" }],
   ["local-ollama", { name: "local-ollama", provider: "ollama" }],
@@ -14,9 +15,27 @@ mock.module("../../providers/inference/connections.js", () => ({
     connectionRows.get(name) ?? null,
 }));
 
+import { describePg } from "../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { VELLUM_MANAGED_CONNECTION_NAME } from "../../providers/vellum-model-routing.js";
 import { completeCustomProfile } from "../profile-materialization.js";
 import { LLMConfigBase, ProfileEntry } from "../schemas/llm.js";
+
+async function seedConnection(name: string, provider: string): Promise<void> {
+  const now = Date.now();
+  await requireMainDb().run(
+    `INSERT INTO provider_connections (name, provider, auth, created_at, updated_at)
+     VALUES (?, ?, 'api_key', ?, ?)
+     ON CONFLICT (name) DO UPDATE SET provider = excluded.provider`,
+    [name, provider, now, now],
+  );
+}
+
+beforeEach(async () => {
+  await requireMainDb().run("DELETE FROM provider_connections");
+  await seedConnection("anthropic-personal", "anthropic");
+  await seedConnection("local-ollama", "ollama");
+});
 
 const fullDefault = LLMConfigBase.parse({
   provider: "anthropic",
@@ -36,25 +55,25 @@ const fullDefault = LLMConfigBase.parse({
   },
 });
 
-describe("completeCustomProfile", () => {
-  test("clamps a filled maxTokens to the model's catalog output cap", () => {
-    const completed = completeCustomProfile(fullDefault, {
+describePg("completeCustomProfile", () => {
+  test("clamps a filled maxTokens to the model's catalog output cap", async () => {
+    const completed = await completeCustomProfile(fullDefault, {
       provider: "ollama",
       model: "llama3.2",
     });
     expect(completed.maxTokens).toBe(4096);
   });
 
-  test("clamps a filled maxTokens for an entry-name provider via its row's kind", () => {
-    const completed = completeCustomProfile(fullDefault, {
+  test("clamps a filled maxTokens for an entry-name provider via its row's kind", async () => {
+    const completed = await completeCustomProfile(fullDefault, {
       provider: "local-ollama",
       model: "llama3.2",
     });
     expect(completed.maxTokens).toBe(4096);
   });
 
-  test("never clamps an explicit maxTokens", () => {
-    const completed = completeCustomProfile(fullDefault, {
+  test("never clamps an explicit maxTokens", async () => {
+    const completed = await completeCustomProfile(fullDefault, {
       provider: "ollama",
       model: "llama3.2",
       maxTokens: 64000,
@@ -62,8 +81,8 @@ describe("completeCustomProfile", () => {
     expect(completed.maxTokens).toBe(64000);
   });
 
-  test("inherits omitted scalar fields from the default", () => {
-    const completed = completeCustomProfile(fullDefault, {
+  test("inherits omitted scalar fields from the default", async () => {
+    const completed = await completeCustomProfile(fullDefault, {
       model: "claude-fable-5",
     });
     expect(completed.model).toBe("claude-fable-5");
@@ -77,31 +96,35 @@ describe("completeCustomProfile", () => {
     expect(completed.verbosity).toBe("medium");
   });
 
-  test("inherits non-null default sampling; never inherits logitBias or null sampling", () => {
+  test("inherits non-null default sampling; never inherits logitBias or null sampling", async () => {
     const dflt = LLMConfigBase.parse({
       ...fullDefault,
       temperature: 0.7,
       topP: 0.9,
       logitBias: "suppress-cjk",
     });
-    const completed = completeCustomProfile(dflt, { model: "claude-fable-5" });
+    const completed = await completeCustomProfile(dflt, {
+      model: "claude-fable-5",
+    });
     expect(completed.temperature).toBe(0.7);
     expect(completed.topP).toBe(0.9);
     // The resolver deletes non-profile logitBias post-merge, unlike sampling.
     expect(completed.logitBias).toBeUndefined();
-    const own = completeCustomProfile(dflt, { temperature: 0.2 });
+    const own = await completeCustomProfile(dflt, { temperature: 0.2 });
     expect(own.temperature).toBe(0.2);
     expect(own.topP).toBe(0.9);
-    const nullDefaults = completeCustomProfile(fullDefault, {});
+    const nullDefaults = await completeCustomProfile(fullDefault, {});
     expect(nullDefaults.temperature).toBeUndefined();
     expect(nullDefaults.topP).toBeUndefined();
     // Explicit null differs from undefined: it clears the default's value.
-    const explicitNull = completeCustomProfile(dflt, { temperature: null });
+    const explicitNull = await completeCustomProfile(dflt, {
+      temperature: null,
+    });
     expect(explicitNull.temperature).toBeNull();
   });
 
-  test("merges partial nested thinking leaf-by-leaf", () => {
-    const completed = completeCustomProfile(fullDefault, {
+  test("merges partial nested thinking leaf-by-leaf", async () => {
+    const completed = await completeCustomProfile(fullDefault, {
       thinking: { enabled: false },
     });
     expect(completed.thinking).toEqual({
@@ -110,8 +133,8 @@ describe("completeCustomProfile", () => {
     });
   });
 
-  test("merges nested contextWindow leaves including overflowRecovery", () => {
-    const completed = completeCustomProfile(fullDefault, {
+  test("merges nested contextWindow leaves including overflowRecovery", async () => {
+    const completed = await completeCustomProfile(fullDefault, {
       contextWindow: { overflowRecovery: { maxAttempts: 5 } },
     });
     expect(completed.contextWindow?.maxInputTokens).toBe(200000);
@@ -119,25 +142,27 @@ describe("completeCustomProfile", () => {
     expect(completed.contextWindow?.overflowRecovery?.enabled).toBe(true);
   });
 
-  test("inherits the default's binding as the entry name when the provider serves the model", () => {
-    const completed = completeCustomProfile(fullDefault, {
+  test("inherits the default's binding as the entry name when the provider serves the model", async () => {
+    const completed = await completeCustomProfile(fullDefault, {
       model: "claude-fable-5",
     });
     expect(completed.provider).toBe("anthropic-personal");
     expect(completed.provider_connection).toBeUndefined();
   });
 
-  test("stamps the catalog owner for a model the default provider does not serve, and drops the default's connection", () => {
-    const completed = completeCustomProfile(fullDefault, { model: "gpt-5.5" });
+  test("stamps the catalog owner for a model the default provider does not serve, and drops the default's connection", async () => {
+    const completed = await completeCustomProfile(fullDefault, {
+      model: "gpt-5.5",
+    });
     expect(completed.provider).toBe("openai");
     // Provider-specific connections don't cross providers; dispatch
     // auto-resolves an absent connection.
     expect(completed.provider_connection).toBeUndefined();
   });
 
-  test("routing-identity providers never receive a connection stamp", () => {
+  test("routing-identity providers never receive a connection stamp", async () => {
     for (const provider of ["vellum", "chatgpt"] as const) {
-      const completed = completeCustomProfile(fullDefault, {
+      const completed = await completeCustomProfile(fullDefault, {
         provider,
         model: "claude-fable-5",
       });
@@ -146,8 +171,8 @@ describe("completeCustomProfile", () => {
     }
   });
 
-  test("keeps an explicit provider_connection even when the provider is implied", () => {
-    const completed = completeCustomProfile(fullDefault, {
+  test("keeps an explicit provider_connection even when the provider is implied", async () => {
+    const completed = await completeCustomProfile(fullDefault, {
       model: "gpt-5.5",
       provider_connection: "my-openai",
     });
@@ -155,8 +180,8 @@ describe("completeCustomProfile", () => {
     expect(completed.provider_connection).toBe("my-openai");
   });
 
-  test("does not inherit the default's connection onto an explicit different provider", () => {
-    const completed = completeCustomProfile(fullDefault, {
+  test("does not inherit the default's connection onto an explicit different provider", async () => {
+    const completed = await completeCustomProfile(fullDefault, {
       provider: "openai",
       model: "gpt-5.4",
     });
@@ -164,16 +189,18 @@ describe("completeCustomProfile", () => {
     expect(completed.provider_connection).toBeUndefined();
   });
 
-  test("a managed default's binding becomes the routing identity, never a stamped field", () => {
+  test("a managed default's binding becomes the routing identity, never a stamped field", async () => {
     const managedDefault = LLMConfigBase.parse({
       ...fullDefault,
       provider_connection: VELLUM_MANAGED_CONNECTION_NAME,
     });
-    const implied = completeCustomProfile(managedDefault, { model: "gpt-5.5" });
+    const implied = await completeCustomProfile(managedDefault, {
+      model: "gpt-5.5",
+    });
     expect(implied.provider).toBe("vellum");
     expect(implied.provider_connection).toBeUndefined();
 
-    const explicit = completeCustomProfile(managedDefault, {
+    const explicit = await completeCustomProfile(managedDefault, {
       provider: "openai",
       model: "gpt-5.4",
     });
@@ -181,20 +208,20 @@ describe("completeCustomProfile", () => {
     expect(explicit.provider_connection).toBeUndefined();
   });
 
-  test("inherits the binding as the entry name even for a model unknown to the catalog", () => {
-    const completed = completeCustomProfile(fullDefault, {
+  test("inherits the binding as the entry name even for a model unknown to the catalog", async () => {
+    const completed = await completeCustomProfile(fullDefault, {
       model: "totally-custom-model",
     });
     expect(completed.provider).toBe("anthropic-personal");
     expect(completed.provider_connection).toBeUndefined();
   });
 
-  test("a dangling default binding passes through as the legacy field", () => {
+  test("a dangling default binding passes through as the legacy field", async () => {
     const dangling = LLMConfigBase.parse({
       ...fullDefault,
       provider_connection: "deleted-row",
     });
-    const completed = completeCustomProfile(dangling, {
+    const completed = await completeCustomProfile(dangling, {
       model: "claude-fable-5",
     });
     // Folding an unverifiable binding would hide it from the collapse
@@ -203,32 +230,37 @@ describe("completeCustomProfile", () => {
     expect(completed.provider_connection).toBe("deleted-row");
   });
 
-  test("a kind-disagreeing default binding passes through as the legacy field", () => {
+  test("a kind-disagreeing default binding passes through as the legacy field", async () => {
     connectionRows.set("mislabeled", {
       name: "mislabeled",
       provider: "openai",
     });
+    await seedConnection("mislabeled", "openai");
     try {
       const mismatched = LLMConfigBase.parse({
         ...fullDefault,
         provider_connection: "mislabeled",
       });
-      const completed = completeCustomProfile(mismatched, {
+      const completed = await completeCustomProfile(mismatched, {
         model: "claude-fable-5",
       });
       expect(completed.provider).toBe("anthropic");
       expect(completed.provider_connection).toBe("mislabeled");
     } finally {
       connectionRows.delete("mislabeled");
+      await requireMainDb().run(
+        "DELETE FROM provider_connections WHERE name = ?",
+        ["mislabeled"],
+      );
     }
   });
 
-  test("a managed default binding is not inherited when the identity cannot serve the model", () => {
+  test("a managed default binding is not inherited when the identity cannot serve the model", async () => {
     const managedDefault = LLMConfigBase.parse({
       ...fullDefault,
       provider_connection: VELLUM_MANAGED_CONNECTION_NAME,
     });
-    const completed = completeCustomProfile(managedDefault, {
+    const completed = await completeCustomProfile(managedDefault, {
       model: "totally-custom-model",
     });
     // Dispatch auto-resolves by vendor instead of pinning an unservable
@@ -237,7 +269,7 @@ describe("completeCustomProfile", () => {
     expect(completed.provider_connection).toBeUndefined();
   });
 
-  test("passes mix profiles through untouched", () => {
+  test("passes mix profiles through untouched", async () => {
     const mix: ProfileEntry = {
       label: "A/B",
       mix: [
@@ -245,16 +277,16 @@ describe("completeCustomProfile", () => {
         { profile: "b", weight: 1 },
       ],
     };
-    expect(completeCustomProfile(fullDefault, mix)).toBe(mix);
+    expect(await completeCustomProfile(fullDefault, mix)).toBe(mix);
   });
 
-  test("passes managed profiles through untouched", () => {
+  test("passes managed profiles through untouched", async () => {
     const managed: ProfileEntry = { source: "managed", topP: 0.9 };
-    expect(completeCustomProfile(fullDefault, managed)).toBe(managed);
+    expect(await completeCustomProfile(fullDefault, managed)).toBe(managed);
   });
 
-  test("preserves metadata fields", () => {
-    const completed = completeCustomProfile(fullDefault, {
+  test("preserves metadata fields", async () => {
+    const completed = await completeCustomProfile(fullDefault, {
       source: "user",
       label: "Fast drafts",
       description: "cheap and quick",
@@ -267,7 +299,7 @@ describe("completeCustomProfile", () => {
     expect(completed.status).toBe("disabled");
   });
 
-  test("is idempotent", () => {
+  test("is idempotent", async () => {
     const partials: ProfileEntry[] = [
       {},
       { model: "gpt-5.5" },
@@ -275,13 +307,13 @@ describe("completeCustomProfile", () => {
       { thinking: { enabled: false }, maxTokens: 1234 },
     ];
     for (const partial of partials) {
-      const once = completeCustomProfile(fullDefault, partial);
-      const twice = completeCustomProfile(fullDefault, once);
+      const once = await completeCustomProfile(fullDefault, partial);
+      const twice = await completeCustomProfile(fullDefault, once);
       expect(twice).toEqual(once);
     }
   });
 
-  test("completed entries still parse as ProfileEntry", () => {
+  test("completed entries still parse as ProfileEntry", async () => {
     const partials: ProfileEntry[] = [
       {},
       { model: "gpt-5.5" },
@@ -289,13 +321,13 @@ describe("completeCustomProfile", () => {
       { thinking: { enabled: false } },
     ];
     for (const partial of partials) {
-      const completed = completeCustomProfile(fullDefault, partial);
+      const completed = await completeCustomProfile(fullDefault, partial);
       expect(() => ProfileEntry.parse(completed)).not.toThrow();
     }
   });
 
-  test("does not alias the default's nested objects", () => {
-    const completed = completeCustomProfile(fullDefault, {});
+  test("does not alias the default's nested objects", async () => {
+    const completed = await completeCustomProfile(fullDefault, {});
     expect(completed.thinking).toEqual(fullDefault.thinking);
     expect(completed.thinking).not.toBe(fullDefault.thinking);
     expect(completed.contextWindow).not.toBe(fullDefault.contextWindow);

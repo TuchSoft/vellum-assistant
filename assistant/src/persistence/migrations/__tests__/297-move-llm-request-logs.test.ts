@@ -23,6 +23,7 @@ const { migrateMoveLlmRequestLogsToLogsDb } =
   await import("../297-move-llm-request-logs-to-logs-db.js");
 const { recordRequestLog, getRequestLogById } =
   await import("../../llm-request-log-store.js");
+const { requireMainDb } = await import("../../db-facade.js");
 
 await initializeDb();
 
@@ -54,8 +55,8 @@ describe("migration 297 — llm_request_logs lives in the logs database", () => 
     expect(existsInMain("llm_request_logs")).toBe(false);
   });
 
-  test("the store round-trips against the relocated table", () => {
-    const id = recordRequestLog(
+  test("the store round-trips against the relocated table", async () => {
+    const id = await recordRequestLog(
       "conv-297",
       JSON.stringify({ req: 1 }),
       JSON.stringify({ res: 1 }),
@@ -63,19 +64,17 @@ describe("migration 297 — llm_request_logs lives in the logs database", () => 
       "anthropic",
       "mainAgent",
     );
-    const row = getRequestLogById(id!);
+    const row = await getRequestLogById(id!);
     expect(row?.conversationId).toBe("conv-297");
     expect(row?.messageId).toBe("msg-297");
     expect(row?.provider).toBe("anthropic");
     expect(row?.callSite).toBe("mainAgent");
 
-    // The written row physically lives in the logs database.
-    const inLogs = getLogsSqlite()!
-      .query<
-        { c: number },
-        [string]
-      >(`SELECT COUNT(*) AS c FROM llm_request_logs WHERE id = ?`)
-      .get(id!);
+    // The written row is readable through the logs store's connection.
+    const inLogs = await requireMainDb().get<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM llm_request_logs WHERE id = ?`,
+      [id!],
+    );
     expect(inLogs?.c).toBe(1);
   });
 

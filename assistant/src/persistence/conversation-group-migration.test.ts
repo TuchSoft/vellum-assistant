@@ -1,6 +1,6 @@
 import { beforeAll, expect, test } from "bun:test";
 
-import { describePg } from "./__tests__/pg-test-db.js";
+import { describePg } from "../__tests__/pg-test-db.js";
 import { ensureGroupMigrationAsync } from "./conversation-group-migration.js";
 import { requireMainDb } from "./db-facade.js";
 

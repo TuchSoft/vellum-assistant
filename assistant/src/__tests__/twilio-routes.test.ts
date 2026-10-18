@@ -330,9 +330,7 @@ import {
   handleVoiceWebhook,
 } from "../calls/twilio-routes.js";
 import { loadRawConfig } from "../config/loader.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
-import { conversations } from "../persistence/schema/index.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   handleAssignTwilioNumber,
   handleClearTwilioCredentials,
@@ -342,51 +340,48 @@ import {
 import { credentialKey } from "../security/credential-key.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
 import { setConfig } from "./helpers/set-config.js";
-
-await initializeDb();
+import { describePg } from "./pg-test-db.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
 let ensuredConvIds = new Set<string>();
 
-function ensureConversation(id: string): void {
+async function ensureConversation(id: string): Promise<void> {
   if (ensuredConvIds.has(id)) {
     return;
   }
-  const db = getDb();
+  const db = requireMainDb();
   const now = Date.now();
-  db.insert(conversations)
-    .values({
-      id,
-      title: `Test conversation ${id}`,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  await db.orm.insert(db.schema.conversations).values({
+    id,
+    title: `Test conversation ${id}`,
+    createdAt: now,
+    updatedAt: now,
+  });
   ensuredConvIds.add(id);
 }
 
-function resetTables() {
-  const db = getDb();
-  db.run("DELETE FROM processed_callbacks");
-  db.run("DELETE FROM call_pending_questions");
-  db.run("DELETE FROM call_events");
-  db.run("DELETE FROM call_sessions");
-  db.run("DELETE FROM external_conversation_bindings");
-  db.run("DELETE FROM conversation_keys");
-  db.run("DELETE FROM tool_invocations");
-  db.run("DELETE FROM messages");
-  db.run("DELETE FROM conversations");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM processed_callbacks");
+  await db.run("DELETE FROM call_pending_questions");
+  await db.run("DELETE FROM call_events");
+  await db.run("DELETE FROM call_sessions");
+  await db.run("DELETE FROM external_conversation_bindings");
+  await db.run("DELETE FROM conversation_keys");
+  await db.run("DELETE FROM tool_invocations");
+  await db.run("DELETE FROM messages");
+  await db.run("DELETE FROM conversations");
   ensuredConvIds = new Set();
 }
 
-function createTestSession(
+async function createTestSession(
   convId: string,
   callSid: string,
   task = "test task",
 ) {
-  ensureConversation(convId);
-  const session = createCallSession({
+  await ensureConversation(convId);
+  const session = await createCallSession({
     direction: "inbound",
     conversationId: convId,
     provider: "twilio",
@@ -394,8 +389,23 @@ function createTestSession(
     toNumber: "+15559998888",
     task,
   });
-  updateCallSession(session.id, { providerCallSid: callSid });
+  await updateCallSession(session.id, { providerCallSid: callSid });
   return session;
+}
+
+/** Poll for a fire-and-forget call event to land. */
+async function waitForCallEvent(
+  sessionId: string,
+  eventType: string,
+): Promise<Awaited<ReturnType<typeof getCallEvents>>> {
+  for (let i = 0; i < 100; i++) {
+    const events = await getCallEvents(sessionId);
+    if (events.some((event) => event.eventType === eventType)) {
+      return events;
+    }
+    await Bun.sleep(20);
+  }
+  return await getCallEvents(sessionId);
 }
 
 function makeStatusRequest(params: Record<string, string>): Request {
@@ -430,9 +440,9 @@ function makeInboundVoiceRequest(params: Record<string, string>): Request {
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
-describe("twilio webhook routes", () => {
-  beforeEach(() => {
-    resetTables();
+describePg("twilio webhook routes", () => {
+  beforeEach(async () => {
+    await resetTables();
     clearActiveCallLeases();
     mockIngressPublicBaseUrl = "https://ingress.example.com";
     setConfig("twilio", {
@@ -499,7 +509,7 @@ describe("twilio webhook routes", () => {
 
   describe("callback idempotency", () => {
     test("replaying the same status callback does not create duplicate events", async () => {
-      const session = createTestSession("conv-idem-1", "CA_idem_1");
+      const session = await createTestSession("conv-idem-1", "CA_idem_1");
       const params = {
         CallSid: "CA_idem_1",
         CallStatus: "in-progress",
@@ -515,15 +525,15 @@ describe("twilio webhook routes", () => {
       expect(res2.status).toBe(200);
 
       // Verify only one event was recorded
-      const events = getCallEvents(session.id);
+      const events = await waitForCallEvent(session.id, "call_connected");
       const connectedEvents = events.filter(
         (e) => e.eventType === "call_connected",
       );
       expect(connectedEvents.length).toBe(1);
-    });
+    }, 30_000);
 
     test("different statuses for the same call create separate events", async () => {
-      const session = createTestSession("conv-idem-2", "CA_idem_2");
+      const session = await createTestSession("conv-idem-2", "CA_idem_2");
 
       // First: ringing
       await handleStatusCallback(
@@ -543,12 +553,12 @@ describe("twilio webhook routes", () => {
         }),
       );
 
-      const events = getCallEvents(session.id);
+      const events = await getCallEvents(session.id);
       expect(events.length).toBe(2);
     });
 
     test("third replay of same callback is still no-op", async () => {
-      const session = createTestSession("conv-idem-3", "CA_idem_3");
+      const session = await createTestSession("conv-idem-3", "CA_idem_3");
       const params = {
         CallSid: "CA_idem_3",
         CallStatus: "completed",
@@ -560,10 +570,10 @@ describe("twilio webhook routes", () => {
       await handleStatusCallback(makeStatusRequest(params));
       await handleStatusCallback(makeStatusRequest(params));
 
-      const events = getCallEvents(session.id);
+      const events = await getCallEvents(session.id);
       const endedEvents = events.filter((e) => e.eventType === "call_ended");
       expect(endedEvents.length).toBe(1);
-    });
+    }, 30_000);
   });
 
   // ── Unknown status + malformed payload tests ──────────────────────
@@ -571,7 +581,7 @@ describe("twilio webhook routes", () => {
 
   describe("unknown status and malformed payloads", () => {
     test("unknown Twilio status returns 200 but does not record event", async () => {
-      const session = createTestSession("conv-unknown-1", "CA_unknown_1");
+      const session = await createTestSession("conv-unknown-1", "CA_unknown_1");
       const params = {
         CallSid: "CA_unknown_1",
         CallStatus: "some-future-status",
@@ -581,7 +591,7 @@ describe("twilio webhook routes", () => {
       const res = await handleStatusCallback(makeStatusRequest(params));
       expect(res.status).toBe(200);
 
-      const events = getCallEvents(session.id);
+      const events = await getCallEvents(session.id);
       expect(events.length).toBe(0);
     });
 
@@ -613,7 +623,7 @@ describe("twilio webhook routes", () => {
 
   describe("status mapping and completion notifications", () => {
     test("initiated status callback is accepted and recorded as call_started", async () => {
-      const session = createTestSession(
+      const session = await createTestSession(
         "conv-status-init-1",
         "CA_status_init_1",
       );
@@ -631,17 +641,17 @@ describe("twilio webhook routes", () => {
       const res = await handleStatusCallback(req);
       expect(res.status).toBe(200);
 
-      const updated = getCallSession(session.id);
+      const updated = await getCallSession(session.id);
       expect(updated).not.toBeNull();
       expect(updated!.status).toBe("initiated");
-      const events = getCallEvents(session.id);
+      const events = await getCallEvents(session.id);
       expect(events.filter((e) => e.eventType === "call_started").length).toBe(
         1,
       );
     });
 
     test("answered status callback transitions to in_progress", async () => {
-      const session = createTestSession(
+      const session = await createTestSession(
         "conv-status-answered-1",
         "CA_status_answered_1",
       );
@@ -659,18 +669,18 @@ describe("twilio webhook routes", () => {
       const res = await handleStatusCallback(req);
       expect(res.status).toBe(200);
 
-      const updated = getCallSession(session.id);
+      const updated = await getCallSession(session.id);
       expect(updated).not.toBeNull();
       expect(updated!.status).toBe("in_progress");
       expect(updated!.startedAt).not.toBeNull();
-      const events = getCallEvents(session.id);
+      const events = await getCallEvents(session.id);
       expect(
         events.filter((e) => e.eventType === "call_connected").length,
       ).toBe(1);
     });
 
     test("completed status callback fires completion notifier when first entering terminal state", async () => {
-      const session = createTestSession(
+      const session = await createTestSession(
         "conv-status-complete-1",
         "CA_status_complete_1",
       );
@@ -678,7 +688,7 @@ describe("twilio webhook routes", () => {
         callSessionId: session.id,
         providerCallSid: "CA_status_complete_1",
       });
-      updateCallSession(session.id, {
+      await updateCallSession(session.id, {
         status: "in_progress",
         startedAt: Date.now() - 20_000,
       });
@@ -701,7 +711,7 @@ describe("twilio webhook routes", () => {
       const res = await handleStatusCallback(req);
       expect(res.status).toBe(200);
 
-      const updated = getCallSession(session.id);
+      const updated = await getCallSession(session.id);
       expect(updated).not.toBeNull();
       expect(updated!.status).toBe("completed");
       expect(updated!.endedAt).not.toBeNull();
@@ -712,7 +722,7 @@ describe("twilio webhook routes", () => {
     });
 
     test("terminal callback preserves lease when recordCallEvent throws", async () => {
-      const session = createTestSession(
+      const session = await createTestSession(
         "conv-status-lease-fail",
         "CA_status_lease_fail",
       );
@@ -720,7 +730,7 @@ describe("twilio webhook routes", () => {
         callSessionId: session.id,
         providerCallSid: "CA_status_lease_fail",
       });
-      updateCallSession(session.id, {
+      await updateCallSession(session.id, {
         status: "in_progress",
         startedAt: Date.now() - 20_000,
       });
@@ -756,17 +766,17 @@ describe("twilio webhook routes", () => {
       // Session is terminal; DB update runs before beforeLeaseSync, so the
       // status write succeeded. Claim was released on throw; retry will
       // record the event and sync the lease.
-      const updated = getCallSession(session.id);
+      const updated = await getCallSession(session.id);
       expect(updated).not.toBeNull();
       expect(updated!.status).toBe("completed");
     });
 
     test("completed callback does not re-fire completion notifier for already terminal call", async () => {
-      const session = createTestSession(
+      const session = await createTestSession(
         "conv-status-complete-2",
         "CA_status_complete_2",
       );
-      updateCallSession(session.id, {
+      await updateCallSession(session.id, {
         status: "completed",
         startedAt: Date.now() - 20_000,
         endedAt: Date.now() - 5_000,
@@ -800,7 +810,7 @@ describe("twilio webhook routes", () => {
 
   describe("voice webhook TwiML stream URL", () => {
     test("TwiML stream URL uses placeholder for gateway resolution", async () => {
-      const session = createTestSession("conv-twiml-1", "CA_twiml_1");
+      const session = await createTestSession("conv-twiml-1", "CA_twiml_1");
       const req = makeVoiceRequest(session.id, { CallSid: "CA_twiml_1" });
 
       const res = await handleVoiceWebhook(req);
@@ -813,7 +823,7 @@ describe("twilio webhook routes", () => {
     });
 
     test("TwiML omits welcome greeting by default so call opener is model-driven", async () => {
-      const session = createTestSession(
+      const session = await createTestSession(
         "conv-twiml-3",
         "CA_twiml_3",
         "confirm appointment time\n\nContext: Prior email thread",
@@ -833,7 +843,7 @@ describe("twilio webhook routes", () => {
 
   describe("handler-level idempotency concurrency", () => {
     test("two concurrent identical status callbacks produce exactly one event", async () => {
-      const session = createTestSession("conv-conc-1", "CA_conc_1");
+      const session = await createTestSession("conv-conc-1", "CA_conc_1");
       const params = {
         CallSid: "CA_conc_1",
         CallStatus: "in-progress",
@@ -851,7 +861,7 @@ describe("twilio webhook routes", () => {
       expect(res2.status).toBe(200);
 
       // Only one event should be recorded despite two concurrent requests
-      const events = getCallEvents(session.id);
+      const events = await getCallEvents(session.id);
       const connectedEvents = events.filter(
         (e) => e.eventType === "call_connected",
       );
@@ -859,7 +869,7 @@ describe("twilio webhook routes", () => {
     });
 
     test("three concurrent identical status callbacks still produce exactly one event", async () => {
-      const session = createTestSession("conv-conc-2", "CA_conc_2");
+      const session = await createTestSession("conv-conc-2", "CA_conc_2");
       const params = {
         CallSid: "CA_conc_2",
         CallStatus: "completed",
@@ -877,13 +887,13 @@ describe("twilio webhook routes", () => {
       expect(res2.status).toBe(200);
       expect(res3.status).toBe(200);
 
-      const events = getCallEvents(session.id);
+      const events = await getCallEvents(session.id);
       const endedEvents = events.filter((e) => e.eventType === "call_ended");
       expect(endedEvents.length).toBe(1);
     });
 
     test("processing failure releases claim and allows successful retry", async () => {
-      const session = createTestSession("conv-conc-3", "CA_conc_3");
+      const session = await createTestSession("conv-conc-3", "CA_conc_3");
       const params = {
         CallSid: "CA_conc_3",
         CallStatus: "in-progress",
@@ -922,7 +932,7 @@ describe("twilio webhook routes", () => {
       expect(handlerThrew).toBe(true);
 
       // No events recorded (the failed attempt rolled back via releaseCallbackClaim)
-      const eventsAfterFailure = getCallEvents(session.id);
+      const eventsAfterFailure = await getCallEvents(session.id);
       expect(eventsAfterFailure.length).toBe(0);
 
       // Retry — should succeed because the catch block released the claim
@@ -930,7 +940,7 @@ describe("twilio webhook routes", () => {
       expect(retryRes.status).toBe(200);
 
       // Now exactly one event should exist from the successful retry
-      const eventsAfterRetry = getCallEvents(session.id);
+      const eventsAfterRetry = await getCallEvents(session.id);
       const connectedEvents = eventsAfterRetry.filter(
         (e) => e.eventType === "call_connected",
       );
@@ -938,7 +948,7 @@ describe("twilio webhook routes", () => {
     });
 
     test("permanently claimed callback cannot be retried", async () => {
-      const session = createTestSession("conv-conc-4", "CA_conc_4");
+      const session = await createTestSession("conv-conc-4", "CA_conc_4");
       const params = {
         CallSid: "CA_conc_4",
         CallStatus: "completed",
@@ -949,7 +959,7 @@ describe("twilio webhook routes", () => {
       const res1 = await handleStatusCallback(makeStatusRequest(params));
       expect(res1.status).toBe(200);
 
-      const events1 = getCallEvents(session.id);
+      const events1 = await getCallEvents(session.id);
       expect(events1.filter((e) => e.eventType === "call_ended").length).toBe(
         1,
       );
@@ -958,7 +968,7 @@ describe("twilio webhook routes", () => {
       const res2 = await handleStatusCallback(makeStatusRequest(params));
       expect(res2.status).toBe(200);
 
-      const events2 = getCallEvents(session.id);
+      const events2 = await getCallEvents(session.id);
       expect(events2.filter((e) => e.eventType === "call_ended").length).toBe(
         1,
       );
@@ -985,7 +995,7 @@ describe("twilio webhook routes", () => {
       expect(twiml).toContain('<Parameter name="callSessionId"');
 
       // Verify session was created with the CallSid
-      const session = getCallSessionByCallSid("CA_inbound_new_1");
+      const session = await getCallSessionByCallSid("CA_inbound_new_1");
       expect(session).not.toBeNull();
       expect(session!.fromNumber).toBe("+14155550134");
       expect(session!.toNumber).toBe("+14155550111");
@@ -1003,14 +1013,14 @@ describe("twilio webhook routes", () => {
       const res1 = await handleVoiceWebhook(makeInboundVoiceRequest(params));
       expect(res1.status).toBe(200);
 
-      const session1 = getCallSessionByCallSid("CA_inbound_replay_1");
+      const session1 = await getCallSessionByCallSid("CA_inbound_replay_1");
       expect(session1).not.toBeNull();
 
       // Second call (replay) — reuses the same session
       const res2 = await handleVoiceWebhook(makeInboundVoiceRequest(params));
       expect(res2.status).toBe(200);
 
-      const session2 = getCallSessionByCallSid("CA_inbound_replay_1");
+      const session2 = await getCallSessionByCallSid("CA_inbound_replay_1");
       expect(session2).not.toBeNull();
       expect(session2!.id).toBe(session1!.id);
     });
@@ -1035,14 +1045,14 @@ describe("twilio webhook routes", () => {
       const res = await handleVoiceWebhook(req);
 
       expect(res.status).toBe(200);
-      const session = getCallSessionByCallSid("CA_inbound_assist_1");
+      const session = await getCallSessionByCallSid("CA_inbound_assist_1");
       expect(session).not.toBeNull();
       // Session was created for the inbound call.
       expect(session!.status).toBe("initiated");
     });
 
     test("outbound call flow remains non-regressed with callSessionId present", async () => {
-      const session = createTestSession(
+      const session = await createTestSession(
         "conv-outbound-compat-1",
         "CA_outbound_compat_1",
       );
@@ -1073,7 +1083,7 @@ describe("twilio webhook routes", () => {
 
     for (const provider of providers) {
       test(`outbound: ${provider} -> Stream TwiML`, async () => {
-        const session = createTestSession(
+        const session = await createTestSession(
           `conv-stt-${provider}-1`,
           `CA_stt_${provider}_1`,
         );
@@ -1111,7 +1121,10 @@ describe("twilio webhook routes", () => {
     }
 
     test("Stream TwiML includes auth token as Parameter", async () => {
-      const session = createTestSession("conv-stt-token-1", "CA_stt_token_1");
+      const session = await createTestSession(
+        "conv-stt-token-1",
+        "CA_stt_token_1",
+      );
       const req = makeVoiceRequest(session.id, {
         CallSid: "CA_stt_token_1",
       });
@@ -1170,7 +1183,7 @@ describe("twilio webhook routes", () => {
           },
         };
 
-        const session = createTestSession(
+        const session = await createTestSession(
           `conv-outcome-${outcome.action as string}`,
           `CA_outcome_${outcome.action as string}`,
         );
@@ -1250,9 +1263,9 @@ describe("twilio webhook routes", () => {
       expect(twiml).toContain("speech-to-text provider");
       expect(twiml).not.toContain("<Stream");
 
-      const session = getCallSessionByCallSid("CA_preflight_inbound_1");
+      const session = await getCallSessionByCallSid("CA_preflight_inbound_1");
       expect(session).not.toBeNull();
-      const events = getCallEvents(session!.id);
+      const events = await getCallEvents(session!.id);
       const preflightEvents = events.filter(
         (e) => e.eventType === "telephony_credential_preflight_failed",
       );
@@ -1268,7 +1281,7 @@ describe("twilio webhook routes", () => {
     test("outbound webhook not-ready returns <Say> + <Hangup/> and records the preflight event", async () => {
       mockCredentialReadiness = notReady;
 
-      const session = createTestSession(
+      const session = await createTestSession(
         "conv-preflight-out-1",
         "CA_preflight_out_1",
       );
@@ -1284,16 +1297,19 @@ describe("twilio webhook routes", () => {
       expect(twiml).toContain("<Hangup/>");
       expect(twiml).not.toContain("<Stream");
 
-      const events = getCallEvents(session.id);
+      const events = await waitForCallEvent(
+        session.id,
+        "telephony_credential_preflight_failed",
+      );
       expect(
         events.filter(
           (e) => e.eventType === "telephony_credential_preflight_failed",
         ).length,
       ).toBe(1);
-    });
+    }, 30_000);
 
     test("ready readiness produces Stream TwiML with no preflight event", async () => {
-      const session = createTestSession(
+      const session = await createTestSession(
         "conv-preflight-ready-1",
         "CA_preflight_ready_1",
       );
@@ -1308,7 +1324,7 @@ describe("twilio webhook routes", () => {
       expect(twiml).toContain("<Stream");
       expect(twiml).not.toContain("<Say>");
 
-      const events = getCallEvents(session.id);
+      const events = await getCallEvents(session.id);
       expect(
         events.filter(
           (e) => e.eventType === "telephony_credential_preflight_failed",
@@ -1339,7 +1355,7 @@ describe("twilio webhook routes", () => {
     });
 
     test("outbound forward (callSessionId in originalUrl) yields Stream TwiML", async () => {
-      const session = createTestSession(
+      const session = await createTestSession(
         "conv-internal-fwd-2",
         "CA_internal_fwd_2",
       );

@@ -33,12 +33,12 @@ describe("resolveUserReference", () => {
     mockGuardianPersona = null;
   });
 
-  test('returns "my human" when no guardian persona exists', () => {
+  test('returns "my human" when no guardian persona exists', async () => {
     mockGuardianPersona = null;
-    expect(resolveUserReference()).toBe("my human");
+    expect(await resolveUserReference()).toBe("my human");
   });
 
-  test('returns "my human" when preferred name field is empty', () => {
+  test('returns "my human" when preferred name field is empty', async () => {
     mockGuardianPersona = [
       "## Onboarding Snapshot",
       "",
@@ -46,10 +46,10 @@ describe("resolveUserReference", () => {
       "- Goals:",
       "- Locale:",
     ].join("\n");
-    expect(resolveUserReference()).toBe("my human");
+    expect(await resolveUserReference()).toBe("my human");
   });
 
-  test("returns the configured name when it is set", () => {
+  test("returns the configured name when it is set", async () => {
     mockGuardianPersona = [
       "## Onboarding Snapshot",
       "",
@@ -57,12 +57,12 @@ describe("resolveUserReference", () => {
       "- Goals: ship fast",
       "- Locale: en-US",
     ].join("\n");
-    expect(resolveUserReference()).toBe("John");
+    expect(await resolveUserReference()).toBe("John");
   });
 
-  test("trims whitespace around the configured name", () => {
+  test("trims whitespace around the configured name", async () => {
     mockGuardianPersona = "- Preferred name/reference:   Alice   \n";
-    expect(resolveUserReference()).toBe("Alice");
+    expect(await resolveUserReference()).toBe("Alice");
   });
 });
 
@@ -71,12 +71,12 @@ describe("resolveUserPronouns", () => {
     mockGuardianPersona = null;
   });
 
-  test("returns null when no guardian persona exists", () => {
+  test("returns null when no guardian persona exists", async () => {
     mockGuardianPersona = null;
-    expect(resolveUserPronouns()).toBeNull();
+    expect(await resolveUserPronouns()).toBeNull();
   });
 
-  test("returns pronouns from flat persona file (no Onboarding Snapshot)", () => {
+  test("returns pronouns from flat persona file (no Onboarding Snapshot)", async () => {
     mockGuardianPersona = [
       "# User Profile",
       "",
@@ -84,10 +84,10 @@ describe("resolveUserPronouns", () => {
       "- Pronouns: she/her",
       "- Locale: en-US",
     ].join("\n");
-    expect(resolveUserPronouns()).toBe("she/her");
+    expect(await resolveUserPronouns()).toBe("she/her");
   });
 
-  test("returns null when pronouns field is empty in flat format", () => {
+  test("returns null when pronouns field is empty in flat format", async () => {
     mockGuardianPersona = [
       "# User Profile",
       "",
@@ -95,19 +95,19 @@ describe("resolveUserPronouns", () => {
       "- Pronouns:",
       "- Locale: en-US",
     ].join("\n");
-    expect(resolveUserPronouns()).toBeNull();
+    expect(await resolveUserPronouns()).toBeNull();
   });
 
-  test("returns pronouns from legacy Onboarding Snapshot section", () => {
+  test("returns pronouns from legacy Onboarding Snapshot section", async () => {
     mockGuardianPersona = [
       "## Onboarding Snapshot",
       "",
       "- Pronouns: they/them",
     ].join("\n");
-    expect(resolveUserPronouns()).toBe("they/them");
+    expect(await resolveUserPronouns()).toBe("they/them");
   });
 
-  test("prefers pronouns above Onboarding Snapshot over inside it", () => {
+  test("prefers pronouns above Onboarding Snapshot over inside it", async () => {
     mockGuardianPersona = [
       "Pronouns: he/him",
       "",
@@ -115,23 +115,23 @@ describe("resolveUserPronouns", () => {
       "",
       "- Pronouns: she/her",
     ].join("\n");
-    expect(resolveUserPronouns()).toBe("he/him");
+    expect(await resolveUserPronouns()).toBe("he/him");
   });
 
-  test("returns null for declined_by_user", () => {
+  test("returns null for declined_by_user", async () => {
     mockGuardianPersona = [
       "- Preferred name/reference: Alice",
       "- Pronouns: declined_by_user",
     ].join("\n");
-    expect(resolveUserPronouns()).toBeNull();
+    expect(await resolveUserPronouns()).toBeNull();
   });
 
-  test("strips inferred: prefix", () => {
+  test("strips inferred: prefix", async () => {
     mockGuardianPersona = [
       "- Preferred name/reference: Alice",
       "- Pronouns: inferred: she/her",
     ].join("\n");
-    expect(resolveUserPronouns()).toBe("she/her");
+    expect(await resolveUserPronouns()).toBe("she/her");
   });
 });
 
@@ -140,39 +140,39 @@ describe("resolveGuardianName", () => {
     mockGuardianPersona = null;
   });
 
-  test("returns persona name when present, ignoring guardianDisplayName", () => {
+  test("returns persona name when present, ignoring guardianDisplayName", async () => {
     mockGuardianPersona = [
       "## Onboarding Snapshot",
       "",
       "- Preferred name/reference: John",
     ].join("\n");
-    expect(resolveGuardianName("Jane")).toBe("John");
+    expect(await resolveGuardianName("Jane")).toBe("John");
   });
 
-  test('returns "my human" when persona explicitly sets name to default value', () => {
+  test('returns "my human" when persona explicitly sets name to default value', async () => {
     mockGuardianPersona = [
       "## Onboarding Snapshot",
       "",
       "- Preferred name/reference: my human",
     ].join("\n");
     // The user's explicit choice must be respected even though it matches the default sentinel
-    expect(resolveGuardianName("Jane")).toBe("my human");
+    expect(await resolveGuardianName("Jane")).toBe("my human");
   });
 
-  test("falls back to guardianDisplayName when persona is empty", () => {
+  test("falls back to guardianDisplayName when persona is empty", async () => {
     mockGuardianPersona = null;
-    expect(resolveGuardianName("Jane")).toBe("Jane");
+    expect(await resolveGuardianName("Jane")).toBe("Jane");
   });
 
-  test("falls back to DEFAULT_USER_REFERENCE when both are empty", () => {
+  test("falls back to DEFAULT_USER_REFERENCE when both are empty", async () => {
     mockGuardianPersona = null;
-    expect(resolveGuardianName()).toBe(DEFAULT_USER_REFERENCE);
-    expect(resolveGuardianName(null)).toBe(DEFAULT_USER_REFERENCE);
-    expect(resolveGuardianName("")).toBe(DEFAULT_USER_REFERENCE);
+    expect(await resolveGuardianName()).toBe(DEFAULT_USER_REFERENCE);
+    expect(await resolveGuardianName(null)).toBe(DEFAULT_USER_REFERENCE);
+    expect(await resolveGuardianName("")).toBe(DEFAULT_USER_REFERENCE);
   });
 
-  test("trims whitespace on guardianDisplayName fallback", () => {
+  test("trims whitespace on guardianDisplayName fallback", async () => {
     mockGuardianPersona = null;
-    expect(resolveGuardianName("  Jane  ")).toBe("Jane");
+    expect(await resolveGuardianName("  Jane  ")).toBe("Jane");
   });
 });

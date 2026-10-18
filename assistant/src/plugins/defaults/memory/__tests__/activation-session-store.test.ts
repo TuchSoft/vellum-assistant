@@ -1,76 +1,73 @@
-import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
-
-import { getMemorySqlite } from "../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../persistence/db-init.js";
-import {
-  clearStoredDb,
-  setStoredDb,
-} from "../../../../persistence/db-singleton.js";
-import * as schema from "../../../../persistence/schema/index.js";
+import { describePg } from "../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import {
   isActivationSession,
   markActivationSession,
 } from "../activation-session-store.js";
 
-await initializeDb();
-
-describe("activation-session-store", () => {
-  beforeEach(() => {
-    getMemorySqlite()!.exec("DELETE FROM activation_sessions");
+describePg("activation-session-store", () => {
+  beforeEach(async () => {
+    await requireMainDb().run("DELETE FROM activation_sessions");
   });
 
-  test("marks a conversation and reports it as an activation session", () => {
-    markActivationSession("c1");
-    expect(isActivationSession("c1")).toBe(true);
+  test("marks a conversation and reports it as an activation session", async () => {
+    await markActivationSession("c1");
+    expect(await isActivationSession("c1")).toBe(true);
   });
 
-  test("unmarked conversations are not activation sessions", () => {
-    expect(isActivationSession("nope")).toBe(false);
+  test("unmarked conversations are not activation sessions", async () => {
+    expect(await isActivationSession("nope")).toBe(false);
   });
 
-  test("marking the same conversation twice is idempotent", () => {
-    markActivationSession("c1");
-    markActivationSession("c1");
-    expect(isActivationSession("c1")).toBe(true);
-    const { n } = getMemorySqlite()!
-      .query("SELECT COUNT(*) AS n FROM activation_sessions")
-      .get() as { n: number };
-    expect(n).toBe(1);
+  test("marking the same conversation twice is idempotent", async () => {
+    await markActivationSession("c1");
+    await markActivationSession("c1");
+    expect(await isActivationSession("c1")).toBe(true);
+    const count = await requireMainDb().get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM activation_sessions",
+    );
+    expect(count?.n).toBe(1);
   });
 
-  test("rows land in the memory database, not main", () => {
-    markActivationSession("c-placement");
-    const inMemory = getMemorySqlite()!
-      .query(
-        "SELECT conversation_id FROM activation_sessions WHERE conversation_id = 'c-placement'",
-      )
-      .get() as { conversation_id: string } | null;
+  test("rows land in the memory database, not main", async () => {
+    await markActivationSession("c-placement");
+    const inMemory = await requireMainDb().get<{ conversation_id: string }>(
+      "SELECT conversation_id FROM activation_sessions WHERE conversation_id = 'c-placement'",
+    );
     expect(inMemory?.conversation_id).toBe("c-placement");
   });
 });
 
-describe("activation-session-store — degraded memory database", () => {
-  // Install a memory DB WITHOUT the activation_sessions table: the store's
-  // catch paths must swallow the failure (write no-ops, read reports false)
-  // rather than throw into the turn.
-  let brokenSqlite: Database;
-
-  beforeEach(() => {
-    brokenSqlite = new Database(":memory:");
-    setStoredDb("memory", drizzle(brokenSqlite, { schema }), () =>
-      brokenSqlite.close(),
+describePg("activation-session-store — degraded memory database", () => {
+  // Shadow the table with a view over a missing relation: every read and write
+  // fails, so the store's catch paths must swallow the failure (write no-ops,
+  // read reports false) rather than throw into the turn.
+  beforeEach(async () => {
+    const db = requireMainDb();
+    const schema = (await db.get<{ s: string }>(
+      "SELECT current_schema() AS s",
+    ))!.s;
+    await db.exec(`DROP TABLE IF EXISTS "${schema}".activation_sessions`);
+    await db.exec(
+      `CREATE VIEW "${schema}".activation_sessions AS SELECT DISTINCT ''::text AS conversation_id, 0::bigint AS created_at`,
     );
   });
 
-  afterEach(() => {
-    clearStoredDb("memory");
+  afterEach(async () => {
+    const db = requireMainDb();
+    const schema = (await db.get<{ s: string }>(
+      "SELECT current_schema() AS s",
+    ))!.s;
+    await db.exec(`DROP VIEW IF EXISTS "${schema}".activation_sessions`);
+    await db.exec(
+      `CREATE TABLE IF NOT EXISTS "${schema}".activation_sessions (conversation_id text PRIMARY KEY, created_at bigint NOT NULL)`,
+    );
   });
 
-  test("mark is a no-op and read reports false", () => {
-    expect(() => markActivationSession("c1")).not.toThrow();
-    expect(isActivationSession("c1")).toBe(false);
+  test("mark is a no-op and read reports false", async () => {
+    await markActivationSession("c1");
+    expect(await isActivationSession("c1")).toBe(false);
   });
 });

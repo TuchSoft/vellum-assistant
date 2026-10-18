@@ -1,9 +1,6 @@
-import { rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
-import { assertNotLiveDb } from "../../__tests__/assert-not-live-db.js";
+import { describePg } from "../../__tests__/pg-test-db.js";
 import { bulkWriteGateHolder, withBulkWriteGate } from "../bulk-write-gate.js";
 import { deleteConversationRowsInBatches } from "../conversation-row-batch-delete.js";
 
@@ -71,7 +68,7 @@ describe("withBulkWriteGate", () => {
   });
 });
 
-describe("gated bulk writers", () => {
+describePg("gated bulk writers", () => {
   test("main-DB batched delete queues behind a held gate", async () => {
     const holder = deferred();
     const holding = withBulkWriteGate("holder", () => holder.promise);
@@ -80,7 +77,6 @@ describe("gated bulk writers", () => {
     const del = deleteConversationRowsInBatches({
       conversationId: "conv-1",
       table: "messages",
-      forceInProcess: true,
     }).then((result) => {
       deleteSettled = true;
       return result;
@@ -93,29 +89,5 @@ describe("gated bulk writers", () => {
     await holding;
     await del;
     expect(deleteSettled).toBe(true);
-  });
-
-  test("dedicated-file batched delete bypasses the gate", async () => {
-    const dbPath = join(tmpdir(), `bulk-write-gate-test-${Date.now()}.db`);
-    const holder = deferred();
-    const holding = withBulkWriteGate("holder", () => holder.promise);
-
-    try {
-      // Must settle while the gate is still held — a dedicated file has its
-      // own write lock, so its drain never queues behind main-DB streams.
-      const result = await deleteConversationRowsInBatches({
-        conversationId: "conv-1",
-        table: "some_table",
-        dbPath,
-        forceInProcess: true,
-      });
-      expect(bulkWriteGateHolder()).toBe("holder");
-      expect(result.backend).toBe("in-process-blocking");
-    } finally {
-      holder.release();
-      await holding;
-      assertNotLiveDb(dbPath);
-      rmSync(dbPath, { force: true });
-    }
   });
 });

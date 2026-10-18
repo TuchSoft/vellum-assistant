@@ -423,34 +423,38 @@ describe("executeSubagentNotifyParent", () => {
 // ── notifyParentFromChild ──────────────────────────────────────────
 
 describe("notifyParentFromChild", () => {
-  test("returns false when the conversation is not a subagent", () => {
-    expect(notifyParentFromChild("unknown-conversation", "hi", "info")).toBe(
-      false,
-    );
+  test("returns false when the conversation is not a subagent", async () => {
+    expect(
+      await notifyParentFromChild("unknown-conversation", "hi", "info"),
+    ).toBe(false);
   });
 
-  test("returns false for terminal subagents", () => {
+  test("returns false for terminal subagents", async () => {
     for (const status of ["completed", "failed", "aborted"] as const) {
       const conversationId = `conv-terminal-${status}`;
       seedSubagent(conversationId, { status });
       expect(
-        notifyParentFromChild(conversationId, "Should not arrive", "info"),
+        await notifyParentFromChild(
+          conversationId,
+          "Should not arrive",
+          "info",
+        ),
       ).toBe(false);
     }
   });
 
-  test("returns true for a running subagent and injects into the parent", () => {
+  test("returns true for a running subagent and injects into the parent", async () => {
     clearCaptured();
     const conversationId = "conv-running-1";
     seedSubagent(conversationId);
 
-    expect(notifyParentFromChild(conversationId, "Test message", "info")).toBe(
-      true,
-    );
+    expect(
+      await notifyParentFromChild(conversationId, "Test message", "info"),
+    ).toBe(true);
     expect(lastCapturedMessage()).toContain("Test message");
   });
 
-  test("returns false for a synchronous child that suppresses parent notifications", () => {
+  test("returns false for a synchronous child that suppresses parent notifications", async () => {
     clearCaptured();
     const conversationId = "conv-suppressed-1";
     seedSubagent(conversationId);
@@ -462,21 +466,21 @@ describe("notifyParentFromChild", () => {
     }
 
     expect(
-      notifyParentFromChild(conversationId, "Should not arrive", "info"),
+      await notifyParentFromChild(conversationId, "Should not arrive", "info"),
     ).toBe(false);
     expect(capturedMessages).toHaveLength(0);
   });
 
-  test("labels forks as Fork", () => {
+  test("labels forks as Fork", async () => {
     clearCaptured();
     const conversationId = "conv-fork-1";
     seedSubagent(conversationId, { isFork: true, label: "Explore" });
 
-    notifyParentFromChild(conversationId, "branch result", "info");
+    await notifyParentFromChild(conversationId, "branch result", "info");
     expect(lastCapturedMessage()).toBe('[Fork "Explore" — info] branch result');
   });
 
-  test("routes to the live parent, ignoring a tampered record parent", () => {
+  test("routes to the live parent, ignoring a tampered record parent", async () => {
     clearCaptured();
     capturedParentIds.length = 0;
     const conversationId = "conv-tamper-1";
@@ -488,9 +492,9 @@ describe("notifyParentFromChild", () => {
       "real-parent-conversation",
     );
 
-    expect(notifyParentFromChild(conversationId, "injected", "info")).toBe(
-      true,
-    );
+    expect(
+      await notifyParentFromChild(conversationId, "injected", "info"),
+    ).toBe(true);
     expect(capturedParentIds).toContain("real-parent-conversation");
     expect(capturedParentIds).not.toContain("victim-conversation");
   });

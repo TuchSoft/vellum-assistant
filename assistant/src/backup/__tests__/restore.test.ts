@@ -61,7 +61,7 @@ afterEach(() => {
  * need a value of the right shape for the type-checker.
  */
 const NULL_RESOLVER: PathResolver = {
-  resolve() {
+  async resolve() {
     return null;
   },
 };
@@ -105,11 +105,13 @@ interface RecordedCall {
 }
 
 function makeStubCommitImpl(): {
-  commitImpl: (options: ImportCommitOptions) => ImportCommitResult;
+  commitImpl: (options: ImportCommitOptions) => Promise<ImportCommitResult>;
   calls: RecordedCall[];
 } {
   const calls: RecordedCall[] = [];
-  const commitImpl = (options: ImportCommitOptions): ImportCommitResult => {
+  const commitImpl = async (
+    options: ImportCommitOptions,
+  ): Promise<ImportCommitResult> => {
     calls.push({ options });
     const manifest: ManifestType =
       options.preValidatedManifest ??
@@ -344,7 +346,9 @@ describe("restoreFromSnapshot", () => {
   test("commit returning a write_failed result is surfaced as an error", async () => {
     const { path } = writeTinyPlaintextBundle("plain.vbundle");
 
-    const failingCommit = (_opts: ImportCommitOptions): ImportCommitResult => ({
+    const failingCommit = async (
+      _opts: ImportCommitOptions,
+    ): Promise<ImportCommitResult> => ({
       ok: false,
       reason: "write_failed",
       message: "disk full",

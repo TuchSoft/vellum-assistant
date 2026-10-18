@@ -1,10 +1,8 @@
-import type { Database } from "bun:sqlite";
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, expect, test } from "bun:test";
 
 import { RiskLevel } from "../permissions/types.js";
-import { ensureGroupMigration } from "../persistence/conversation-group-migration.js";
-import { getDb } from "../persistence/db-connection.js";
-import { initializeDb } from "../persistence/db-init.js";
+import { ensureGroupMigrationAsync } from "../persistence/conversation-group-migration.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { createGroup, deleteGroup } from "../persistence/group-crud.js";
 import {
   getSchedule,
@@ -22,12 +20,7 @@ import { executeScheduleList } from "../tools/schedule/list.js";
 import { executeScheduleUpdate } from "../tools/schedule/update.js";
 import type { Tool, ToolContext } from "../tools/types.js";
 import { setOverridesForTesting } from "./feature-flag-test-helpers.js";
-
-await initializeDb();
-
-function getRawDb(): Database {
-  return (getDb() as unknown as { $client: Database }).$client;
-}
+import { describePg } from "./pg-test-db.js";
 
 const ctx: ToolContext = {
   workingDir: "/tmp",
@@ -52,10 +45,10 @@ function executeScheduleCreate(
 
 // ── schedule_create ─────────────────────────────────────────────────
 
-describe("schedule_create tool", () => {
+describePg("schedule_create tool", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("creates a schedule with valid cron expression", async () => {
@@ -78,9 +71,9 @@ describe("schedule_create tool", () => {
     expect(result.content).toContain("Every weekday at 9:00 AM");
     expect(result.content).toContain("Enabled: true");
 
-    const row = getRawDb()
-      .query("SELECT description FROM cron_jobs LIMIT 1")
-      .get() as { description: string };
+    const row = (await requireMainDb()
+      .get("SELECT description FROM cron_jobs LIMIT 1")
+      .get()) as { description: string };
     expect(row.description).toBe("Remind the team to join the daily standup.");
   });
 
@@ -95,9 +88,9 @@ describe("schedule_create tool", () => {
     );
 
     expect(result.isError).toBe(false);
-    const row = getRawDb()
-      .query("SELECT created_from_conversation_id FROM cron_jobs LIMIT 1")
-      .get() as { created_from_conversation_id: string | null };
+    const row = (await requireMainDb().get(
+      "SELECT created_from_conversation_id FROM cron_jobs LIMIT 1",
+    )) as { created_from_conversation_id: string | null };
     expect(row.created_from_conversation_id).toBe(ctx.conversationId);
   });
 
@@ -231,10 +224,10 @@ describe("schedule_create tool", () => {
 
 // ── schedule_create with fire_at (one-shot) ──────────────────────────
 
-describe("schedule_create with fire_at (one-shot)", () => {
+describePg("schedule_create with fire_at (one-shot)", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("creates a one-shot schedule with fire_at", async () => {
@@ -259,9 +252,9 @@ describe("schedule_create with fire_at (one-shot)", () => {
     );
     expect(result.content).toContain("Status: active");
 
-    const row = getRawDb()
-      .query("SELECT description FROM cron_jobs LIMIT 1")
-      .get() as { description: string };
+    const row = (await requireMainDb().get(
+      "SELECT description FROM cron_jobs LIMIT 1",
+    )) as { description: string };
     expect(row.description).toBe("Remind the user about a one-time event.");
   });
 
@@ -277,9 +270,9 @@ describe("schedule_create with fire_at (one-shot)", () => {
     );
 
     expect(result.isError).toBe(false);
-    const row = getRawDb()
-      .query("SELECT created_from_conversation_id FROM cron_jobs LIMIT 1")
-      .get() as { created_from_conversation_id: string | null };
+    const row = (await requireMainDb().get(
+      "SELECT created_from_conversation_id FROM cron_jobs LIMIT 1",
+    )) as { created_from_conversation_id: string | null };
     expect(row.created_from_conversation_id).toBe(ctx.conversationId);
   });
 
@@ -332,10 +325,10 @@ describe("schedule_create with fire_at (one-shot)", () => {
 
 // ── schedule_create with mode and routing ──────────────────────────
 
-describe("schedule_create with mode and routing", () => {
+describePg("schedule_create with mode and routing", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("passes mode through to schedule", async () => {
@@ -399,9 +392,9 @@ describe("schedule_create with mode and routing", () => {
     expect(result.content).toContain("One-shot schedule created successfully");
 
     // Verify in DB
-    const row = getRawDb()
-      .query("SELECT routing_intent, routing_hints_json FROM cron_jobs LIMIT 1")
-      .get() as { routing_intent: string; routing_hints_json: string };
+    const row = (await requireMainDb().get(
+      "SELECT routing_intent, routing_hints_json FROM cron_jobs LIMIT 1",
+    )) as { routing_intent: string; routing_hints_json: string };
     expect(row.routing_intent).toBe("single_channel");
     expect(JSON.parse(row.routing_hints_json)).toEqual({ channel: "slack" });
   });
@@ -409,10 +402,10 @@ describe("schedule_create with mode and routing", () => {
 
 // ── schedule_create / schedule_update workflow mode ─────────────────
 
-describe("schedule tools — workflow mode", () => {
+describePg("schedule tools — workflow mode", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
     setOverridesForTesting({});
   });
   afterAll(() => {
@@ -434,11 +427,9 @@ describe("schedule tools — workflow mode", () => {
     expect(result.isError).toBe(false);
     expect(result.content).toContain("Mode: workflow");
 
-    const row = getRawDb()
-      .query(
-        "SELECT mode, workflow_name, workflow_args_json FROM cron_jobs LIMIT 1",
-      )
-      .get() as {
+    const row = (await requireMainDb().get(
+      "SELECT mode, workflow_name, workflow_args_json FROM cron_jobs LIMIT 1",
+    )) as {
       mode: string;
       workflow_name: string;
       workflow_args_json: string;
@@ -463,9 +454,9 @@ describe("schedule tools — workflow mode", () => {
       { name: "To workflow", expression: "0 9 * * *", message: "test" },
       ctx,
     );
-    const { id } = getRawDb()
-      .query("SELECT id FROM cron_jobs LIMIT 1")
-      .get() as { id: string };
+    const { id } = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as { id: string };
 
     const result = await executeScheduleUpdate(
       { job_id: id, mode: "workflow" },
@@ -481,9 +472,9 @@ describe("schedule tools — workflow mode", () => {
       { name: "To workflow ok", expression: "0 9 * * *", message: "test" },
       ctx,
     );
-    const { id } = getRawDb()
-      .query("SELECT id FROM cron_jobs LIMIT 1")
-      .get() as { id: string };
+    const { id } = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as { id: string };
 
     const result = await executeScheduleUpdate(
       { job_id: id, mode: "workflow", workflow_name: "nightly-report" },
@@ -492,9 +483,10 @@ describe("schedule tools — workflow mode", () => {
 
     expect(result.isError).toBe(false);
     expect(result.content).toContain("Mode: workflow");
-    const dbRow = getRawDb()
-      .query("SELECT mode, workflow_name FROM cron_jobs WHERE id = ?")
-      .get(id) as { mode: string; workflow_name: string };
+    const dbRow = (await requireMainDb().get(
+      "SELECT mode, workflow_name FROM cron_jobs WHERE id = ?",
+      [id],
+    )) as { mode: string; workflow_name: string };
     expect(dbRow.mode).toBe("workflow");
     expect(dbRow.workflow_name).toBe("nightly-report");
   });
@@ -502,7 +494,7 @@ describe("schedule tools — workflow mode", () => {
 
 // ── schedule_create workflow capability manifest ────────────────────
 
-describe("schedule_create — workflow capability manifest", () => {
+describePg("schedule_create — workflow capability manifest", () => {
   function makeFakeTool(name: string): Tool {
     return {
       name,
@@ -518,8 +510,8 @@ describe("schedule_create — workflow capability manifest", () => {
   }
 
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
     setOverridesForTesting({});
     // Deterministic registry so a declared side-effecting tool resolves.
     __clearRegistryForTesting();
@@ -543,9 +535,9 @@ describe("schedule_create — workflow capability manifest", () => {
     );
 
     expect(result.isError).toBe(false);
-    const row = getRawDb()
-      .query("SELECT capabilities_json FROM cron_jobs LIMIT 1")
-      .get() as { capabilities_json: string };
+    const row = (await requireMainDb().get(
+      "SELECT capabilities_json FROM cron_jobs LIMIT 1",
+    )) as { capabilities_json: string };
     expect(JSON.parse(row.capabilities_json)).toEqual({
       tools: ["file_write"],
       hostFunctions: [],
@@ -567,7 +559,9 @@ describe("schedule_create — workflow capability manifest", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("invalid capabilities manifest");
-    expect(getRawDb().query("SELECT id FROM cron_jobs").all()).toHaveLength(0);
+    expect(
+      await requireMainDb().get("SELECT id FROM cron_jobs").all(),
+    ).toHaveLength(0);
   });
 
   test("rejects an unknown tool in the manifest at creation", async () => {
@@ -584,7 +578,9 @@ describe("schedule_create — workflow capability manifest", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("invalid capabilities manifest");
-    expect(getRawDb().query("SELECT id FROM cron_jobs").all()).toHaveLength(0);
+    expect(await requireMainDb().all("SELECT id FROM cron_jobs")).toHaveLength(
+      0,
+    );
   });
 
   test("a read-only manifest persists as a baseline grant", async () => {
@@ -600,9 +596,9 @@ describe("schedule_create — workflow capability manifest", () => {
     );
 
     expect(result.isError).toBe(false);
-    const row = getRawDb()
-      .query("SELECT capabilities_json FROM cron_jobs LIMIT 1")
-      .get() as { capabilities_json: string };
+    const row = (await requireMainDb().get(
+      "SELECT capabilities_json FROM cron_jobs LIMIT 1",
+    )) as { capabilities_json: string };
     expect(JSON.parse(row.capabilities_json)).toEqual({
       tools: [],
       hostFunctions: [],
@@ -622,19 +618,19 @@ describe("schedule_create — workflow capability manifest", () => {
     );
 
     expect(result.isError).toBe(false);
-    const row = getRawDb()
-      .query("SELECT capabilities_json FROM cron_jobs LIMIT 1")
-      .get() as { capabilities_json: string | null };
+    const row = (await requireMainDb().get(
+      "SELECT capabilities_json FROM cron_jobs LIMIT 1",
+    )) as { capabilities_json: string | null };
     expect(row.capabilities_json).toBeNull();
   });
 });
 
 // ── script timeout override ─────────────────────────────────────────
 
-describe("schedule_create / schedule_update timeout_ms", () => {
+describePg("schedule_create / schedule_update timeout_ms", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("persists timeout_ms when creating a script schedule", async () => {
@@ -653,9 +649,9 @@ describe("schedule_create / schedule_update timeout_ms", () => {
 
     // THEN the override is stored on the row
     expect(result.isError).toBe(false);
-    const row = getRawDb()
-      .query("SELECT timeout_ms FROM cron_jobs LIMIT 1")
-      .get() as { timeout_ms: number | null };
+    const row = (await requireMainDb().get(
+      "SELECT timeout_ms FROM cron_jobs LIMIT 1",
+    )) as { timeout_ms: number | null };
     expect(row.timeout_ms).toBe(120_000);
   });
 
@@ -676,9 +672,9 @@ describe("schedule_create / schedule_update timeout_ms", () => {
     // THEN the tool returns a validation error and stores nothing
     expect(result.isError).toBe(true);
     expect(result.content).toContain("timeout_ms must be between");
-    const count = getRawDb()
-      .query("SELECT COUNT(*) AS n FROM cron_jobs")
-      .get() as { n: number };
+    const count = (await requireMainDb().get(
+      "SELECT COUNT(*) AS n FROM cron_jobs",
+    )) as { n: number };
     expect(count.n).toBe(0);
   });
 
@@ -695,9 +691,9 @@ describe("schedule_create / schedule_update timeout_ms", () => {
       },
       ctx,
     );
-    const { id } = getRawDb()
-      .query("SELECT id FROM cron_jobs LIMIT 1")
-      .get() as { id: string };
+    const { id } = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as { id: string };
 
     // WHEN the timeout is updated
     const updated = await executeScheduleUpdate(
@@ -707,9 +703,10 @@ describe("schedule_create / schedule_update timeout_ms", () => {
 
     // THEN the new value is stored
     expect(updated.isError).toBe(false);
-    const afterUpdate = getRawDb()
-      .query("SELECT timeout_ms FROM cron_jobs WHERE id = ?")
-      .get(id) as { timeout_ms: number | null };
+    const afterUpdate = (await requireMainDb().get(
+      "SELECT timeout_ms FROM cron_jobs WHERE id = ?",
+      [id],
+    )) as { timeout_ms: number | null };
     expect(afterUpdate.timeout_ms).toBe(5_000);
 
     // AND WHEN the timeout is cleared with null
@@ -720,9 +717,10 @@ describe("schedule_create / schedule_update timeout_ms", () => {
 
     // THEN the override reverts to null
     expect(cleared.isError).toBe(false);
-    const afterClear = getRawDb()
-      .query("SELECT timeout_ms FROM cron_jobs WHERE id = ?")
-      .get(id) as { timeout_ms: number | null };
+    const afterClear = (await requireMainDb().get(
+      "SELECT timeout_ms FROM cron_jobs WHERE id = ?",
+      [id],
+    )) as { timeout_ms: number | null };
     expect(afterClear.timeout_ms).toBeNull();
   });
 
@@ -738,9 +736,9 @@ describe("schedule_create / schedule_update timeout_ms", () => {
       },
       ctx,
     );
-    const { id } = getRawDb()
-      .query("SELECT id FROM cron_jobs LIMIT 1")
-      .get() as { id: string };
+    const { id } = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as { id: string };
 
     // WHEN updating with a timeout above the maximum
     const result = await executeScheduleUpdate(
@@ -756,10 +754,10 @@ describe("schedule_create / schedule_update timeout_ms", () => {
 
 // ── schedule_list ───────────────────────────────────────────────────
 
-describe("schedule_list tool", () => {
+describePg("schedule_list tool", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("returns empty message when no schedules exist", async () => {
@@ -832,7 +830,9 @@ describe("schedule_list tool", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
 
@@ -859,10 +859,10 @@ describe("schedule_list tool", () => {
 
 // ── schedule_list with one-shot schedules ────────────────────────────
 
-describe("schedule_list with one-shot schedules", () => {
+describePg("schedule_list with one-shot schedules", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("shows one-shot schedule with fire time in list mode", async () => {
@@ -898,7 +898,9 @@ describe("schedule_list with one-shot schedules", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleList({ job_id: row.id }, ctx);
@@ -939,7 +941,9 @@ describe("schedule_list with one-shot schedules", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleList({ job_id: row.id }, ctx);
@@ -958,7 +962,9 @@ describe("schedule_list with one-shot schedules", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleList({ job_id: row.id }, ctx);
@@ -970,10 +976,10 @@ describe("schedule_list with one-shot schedules", () => {
 
 // ── schedule_update ─────────────────────────────────────────────────
 
-describe("schedule_update tool", () => {
+describePg("schedule_update tool", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("updates the name of a schedule", async () => {
@@ -986,7 +992,9 @@ describe("schedule_update tool", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1013,7 +1021,9 @@ describe("schedule_update tool", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1027,9 +1037,10 @@ describe("schedule_update tool", () => {
     expect(result.isError).toBe(false);
     expect(result.content).toContain("Description: Updated purpose.");
 
-    const dbRow = getRawDb()
-      .query("SELECT description FROM cron_jobs WHERE id = ?")
-      .get(row.id) as { description: string };
+    const dbRow = (await requireMainDb().get(
+      "SELECT description FROM cron_jobs WHERE id = ?",
+      [row.id],
+    )) as { description: string };
     expect(dbRow.description).toBe("Updated purpose.");
   });
 
@@ -1043,7 +1054,9 @@ describe("schedule_update tool", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1068,7 +1081,9 @@ describe("schedule_update tool", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1101,7 +1116,9 @@ describe("schedule_update tool", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate({ job_id: row.id }, ctx);
@@ -1133,7 +1150,9 @@ describe("schedule_update tool", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1165,10 +1184,10 @@ describe("schedule_update tool", () => {
 
 // ── schedule_update with mode and routing ────────────────────────────
 
-describe("schedule_update with mode and routing", () => {
+describePg("schedule_update with mode and routing", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("updates mode", async () => {
@@ -1181,7 +1200,9 @@ describe("schedule_update with mode and routing", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1206,7 +1227,9 @@ describe("schedule_update with mode and routing", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1221,9 +1244,10 @@ describe("schedule_update with mode and routing", () => {
     expect(result.content).toContain("Schedule updated successfully");
 
     // Verify in DB
-    const dbRow = getRawDb()
-      .query("SELECT routing_intent FROM cron_jobs WHERE id = ?")
-      .get(row.id) as { routing_intent: string };
+    const dbRow = (await requireMainDb().get(
+      "SELECT routing_intent FROM cron_jobs WHERE id = ?",
+      [row.id],
+    )) as { routing_intent: string };
     expect(dbRow.routing_intent).toBe("single_channel");
   });
 
@@ -1237,7 +1261,9 @@ describe("schedule_update with mode and routing", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1250,9 +1276,10 @@ describe("schedule_update with mode and routing", () => {
 
     expect(result.isError).toBe(false);
 
-    const dbRow = getRawDb()
-      .query("SELECT routing_hints_json FROM cron_jobs WHERE id = ?")
-      .get(row.id) as { routing_hints_json: string };
+    const dbRow = (await requireMainDb().get(
+      "SELECT routing_hints_json FROM cron_jobs WHERE id = ?",
+      [row.id],
+    )) as { routing_hints_json: string };
     expect(JSON.parse(dbRow.routing_hints_json)).toEqual({
       channel: "telegram",
     });
@@ -1268,7 +1295,9 @@ describe("schedule_update with mode and routing", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1293,7 +1322,9 @@ describe("schedule_update with mode and routing", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1319,7 +1350,9 @@ describe("schedule_update with mode and routing", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1346,7 +1379,9 @@ describe("schedule_update with mode and routing", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1366,10 +1401,10 @@ describe("schedule_update with mode and routing", () => {
 
 // ── RRULE support in schedule tools ─────────────────────────────────
 
-describe("schedule_create with RRULE", () => {
+describePg("schedule_create with RRULE", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("creates a schedule with RRULE syntax + expression", async () => {
@@ -1421,10 +1456,10 @@ describe("schedule_create with RRULE", () => {
   });
 });
 
-describe("schedule_update with RRULE", () => {
+describePg("schedule_update with RRULE", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("switches a cron schedule to rrule", async () => {
@@ -1437,7 +1472,9 @@ describe("schedule_update with RRULE", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1465,7 +1502,9 @@ describe("schedule_update with RRULE", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1491,7 +1530,9 @@ describe("schedule_update with RRULE", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleUpdate(
@@ -1507,10 +1548,10 @@ describe("schedule_update with RRULE", () => {
   });
 });
 
-describe("schedule_list with RRULE", () => {
+describePg("schedule_list with RRULE", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("shows syntax-aware output for cron schedules", async () => {
@@ -1559,7 +1600,9 @@ describe("schedule_list with RRULE", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleList({ job_id: row.id }, ctx);
@@ -1573,10 +1616,10 @@ describe("schedule_list with RRULE", () => {
 
 // ── RRULE set support in schedule tools ──────────────────────────────
 
-describe("schedule_create with RRULE set (EXDATE)", () => {
+describePg("schedule_create with RRULE set (EXDATE)", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("creates a schedule with RRULE + EXDATE", async () => {
@@ -1664,10 +1707,10 @@ describe("schedule_create with RRULE set (EXDATE)", () => {
   });
 });
 
-describe("schedule_update with RRULE set", () => {
+describePg("schedule_update with RRULE set", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("updates a cron schedule to RRULE set with EXDATE", async () => {
@@ -1680,7 +1723,9 @@ describe("schedule_update with RRULE set", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
 
@@ -1714,7 +1759,9 @@ describe("schedule_update with RRULE set", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
 
@@ -1739,10 +1786,10 @@ describe("schedule_update with RRULE set", () => {
   });
 });
 
-describe("schedule_list with RRULE set", () => {
+describePg("schedule_list with RRULE set", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("shows [RRULE set] label for schedules with EXDATE", async () => {
@@ -1788,10 +1835,10 @@ describe("schedule_list with RRULE set", () => {
 
 // ── EXRULE support in schedule tools ──────────────────────────────────
 
-describe("schedule_create with RRULE + EXRULE", () => {
+describePg("schedule_create with RRULE + EXRULE", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("creates a schedule with RRULE + EXRULE", async () => {
@@ -1842,10 +1889,10 @@ describe("schedule_create with RRULE + EXRULE", () => {
 
 // ── schedule_delete ─────────────────────────────────────────────────
 
-describe("schedule_delete tool", () => {
+describePg("schedule_delete tool", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("deletes a schedule", async () => {
@@ -1858,7 +1905,9 @@ describe("schedule_delete tool", () => {
       ctx,
     );
 
-    const row = getRawDb().query("SELECT id FROM cron_jobs LIMIT 1").get() as {
+    const row = (await requireMainDb().get(
+      "SELECT id FROM cron_jobs LIMIT 1",
+    )) as {
       id: string;
     };
     const result = await executeScheduleDelete({ job_id: row.id }, ctx);
@@ -1868,9 +1917,9 @@ describe("schedule_delete tool", () => {
     expect(result.content).toContain("Delete Me");
 
     // Verify it's actually gone
-    const count = getRawDb()
-      .query("SELECT COUNT(*) as c FROM cron_jobs")
-      .get() as { c: number };
+    const count = (await requireMainDb().get(
+      "SELECT COUNT(*) as c FROM cron_jobs",
+    )) as { c: number };
     expect(count.c).toBe(0);
   });
 
@@ -1891,10 +1940,10 @@ describe("schedule_delete tool", () => {
 
 // ── plugin-sourced schedules ────────────────────────────────────────
 
-describe("schedule tools on plugin-sourced schedules", () => {
+describePg("schedule tools on plugin-sourced schedules", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   function createSourcedSchedule() {
@@ -1921,9 +1970,10 @@ describe("schedule tools on plugin-sourced schedules", () => {
     expect(result.content).toContain("Schedule updated successfully");
     expect(result.content).toContain("Enabled: false");
 
-    const row = getRawDb()
-      .query("SELECT enabled, user_enabled FROM cron_jobs WHERE id = ?")
-      .get(job.id) as { enabled: number; user_enabled: number };
+    const row = (await requireMainDb().get(
+      "SELECT enabled, user_enabled FROM cron_jobs WHERE id = ?",
+      [job.id],
+    )) as { enabled: number; user_enabled: number };
     expect(row.enabled).toBe(0);
     expect(row.user_enabled).toBe(0);
   });
@@ -1993,10 +2043,10 @@ describe("schedule tools on plugin-sourced schedules", () => {
 
 // ── model-input schema validation (LUM-2853) ────────────────────────
 
-describe("schedule tools — model-input schema validation", () => {
+describePg("schedule tools — model-input schema validation", () => {
   beforeEach(async () => {
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
   });
 
   test("schedule_create rejects a mistyped field instead of persisting it", async () => {
@@ -2015,9 +2065,9 @@ describe("schedule tools — model-input schema validation", () => {
       'Invalid input for tool "schedule_create"',
     );
     expect(result.content).toContain("timezone");
-    const count = getRawDb()
-      .query("SELECT COUNT(*) as n FROM cron_jobs")
-      .get() as { n: number };
+    const count = (await requireMainDb().get(
+      "SELECT COUNT(*) as n FROM cron_jobs",
+    )) as { n: number };
     expect(count.n).toBe(0);
   });
 
@@ -2104,7 +2154,7 @@ describe("schedule tools — model-input schema validation", () => {
     );
     expect(create.isError).toBeFalsy();
     const jobId = (
-      getRawDb().query("SELECT id FROM cron_jobs").get() as { id: string }
+      (await requireMainDb().get("SELECT id FROM cron_jobs")) as { id: string }
     ).id;
 
     const result = await executeScheduleUpdate(
@@ -2131,7 +2181,7 @@ describe("schedule tools — model-input schema validation", () => {
     );
     expect(create.isError).toBeFalsy();
     const jobId = (
-      getRawDb().query("SELECT id FROM cron_jobs").get() as { id: string }
+      (await requireMainDb().get("SELECT id FROM cron_jobs")) as { id: string }
     ).id;
 
     const result = await executeScheduleUpdate(
@@ -2140,9 +2190,10 @@ describe("schedule tools — model-input schema validation", () => {
     );
 
     expect(result.isError).toBeFalsy();
-    const row = getRawDb()
-      .query("SELECT timezone FROM cron_jobs WHERE id = ?")
-      .get(jobId) as { timezone: string | null };
+    const row = (await requireMainDb().get(
+      "SELECT timezone FROM cron_jobs WHERE id = ?",
+      [jobId],
+    )) as { timezone: string | null };
     expect(row.timezone).toBeNull();
   });
 
@@ -2169,12 +2220,14 @@ describe("schedule tools — model-input schema validation", () => {
 
 // ── schedule_create / schedule_update group ─────────────────────────
 
-describe("schedule_create / schedule_update group", () => {
+describePg("schedule_create / schedule_update group", () => {
   beforeEach(async () => {
-    ensureGroupMigration();
-    getRawDb().run("DELETE FROM cron_runs");
-    getRawDb().run("DELETE FROM cron_jobs");
-    getRawDb().run("DELETE FROM conversation_groups WHERE is_system_group = 0");
+    await ensureGroupMigrationAsync();
+    await requireMainDb().run("DELETE FROM cron_runs");
+    await requireMainDb().run("DELETE FROM cron_jobs");
+    await requireMainDb().run(
+      "DELETE FROM conversation_groups WHERE is_system_group = 0",
+    );
   });
 
   function extractJobId(content: string): string {

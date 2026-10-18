@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 
 import { describePg } from "../../../../__tests__/pg-test-db.js";
 import { createConversation } from "../../../../persistence/conversation-crud.js";

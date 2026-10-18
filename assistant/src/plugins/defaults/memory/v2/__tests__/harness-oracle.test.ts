@@ -4,10 +4,6 @@ setDefaultTimeout(30_000);
 
 import { describePg } from "../../../../../__tests__/pg-test-db.js";
 import { requireMainDb } from "../../../../../persistence/db-facade.js";
-import {
-  conversations,
-  messages,
-} from "../../../../../persistence/schema/index.js";
 import type { MemoryV2ConceptRowRecord } from "../activation-log-store.js";
 import { extractOracleTurns } from "../harness/oracle.js";
 
@@ -25,8 +21,10 @@ const CONFIG_JSON = JSON.stringify({
 let seq = 0;
 
 async function ensureConversation(id: string): Promise<void> {
-  await requireMainDb()
-    .orm.insert(conversations)
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  await db.orm
+    .insert(conversations)
     .values({ id, createdAt: 0, updatedAt: 0 })
     .onConflictDoNothing();
 }
@@ -85,15 +83,15 @@ async function insertMessage(
   createdAt: number,
 ): Promise<void> {
   await ensureConversation(conversationId);
-  await requireMainDb()
-    .orm.insert(messages)
-    .values({
-      id,
-      conversationId,
-      role: "assistant",
-      content: JSON.stringify([{ type: "text", text: "reply" }]),
-      createdAt,
-    });
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  await db.orm.insert(messages).values({
+    id,
+    conversationId,
+    role: "assistant",
+    content: JSON.stringify([{ type: "text", text: "reply" }]),
+    createdAt,
+  });
 }
 
 async function reset(): Promise<void> {

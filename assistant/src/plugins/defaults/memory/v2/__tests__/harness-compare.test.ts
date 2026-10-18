@@ -3,10 +3,6 @@ import { beforeEach, expect, test } from "bun:test";
 import { describePg } from "../../../../../__tests__/pg-test-db.js";
 import type { AssistantConfig } from "../../../../../config/types.js";
 import { requireMainDb } from "../../../../../persistence/db-facade.js";
-import {
-  conversations,
-  messages,
-} from "../../../../../persistence/schema/index.js";
 import type { MemoryV2ConceptRowRecord } from "../activation-log-store.js";
 import { runComparisonOverHistory } from "../harness/compare.js";
 import type { RetrievalOutput, Retriever } from "../harness/retriever.js";
@@ -34,8 +30,10 @@ function config(historicalPairs: number): AssistantConfig {
 }
 
 async function ensureConversation(id: string): Promise<void> {
-  await requireMainDb()
-    .orm.insert(conversations)
+  const db = requireMainDb();
+  const conversations = db.schema.conversations;
+  await db.orm
+    .insert(conversations)
     .values({ id, createdAt: 0, updatedAt: 0 })
     .onConflictDoNothing();
 }
@@ -48,15 +46,15 @@ async function insertMessage(
   createdAt: number,
 ): Promise<void> {
   await ensureConversation(conversationId);
-  await requireMainDb()
-    .orm.insert(messages)
-    .values({
-      id,
-      conversationId,
-      role,
-      content: JSON.stringify([{ type: "text", text }]),
-      createdAt,
-    });
+  const db = requireMainDb();
+  const messages = db.schema.messages;
+  await db.orm.insert(messages).values({
+    id,
+    conversationId,
+    role,
+    content: JSON.stringify([{ type: "text", text }]),
+    createdAt,
+  });
 }
 
 function makeConcept(

@@ -25,15 +25,16 @@ import {
   clearLifecycleQuiesce,
   setLifecycleQuiesce,
 } from "../../../../persistence/lifecycle-quiesce.js";
-import { memoryJobs } from "../../../../persistence/schema/index.js";
 import { runMemoryJobsOnce } from "../jobs-worker.js";
 
 const QUIESCE_KEY = "lifecycle:quiesce_until";
 const ALL_LANES = { slowLlm: 1, fast: 1, embed: 1 };
 
 async function jobStatus(id: string): Promise<string | undefined> {
-  const rows = await requireMainDb()
-    .orm.select({ status: memoryJobs.status })
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const rows = await db.orm
+    .select({ status: memoryJobs.status })
     .from(memoryJobs)
     .where(eq(memoryJobs.id, id));
   return rows[0]?.status;

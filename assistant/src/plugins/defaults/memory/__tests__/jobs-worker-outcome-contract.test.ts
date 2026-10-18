@@ -82,13 +82,14 @@ import {
   enqueueMemoryJob,
   failStalledJobs,
 } from "../../../../persistence/jobs-store.js";
-import { memoryJobs } from "../../../../persistence/schema/index.js";
 import { registerMemoryPluginJobHandlers } from "../job-handler-registration.js";
 import { runMemoryJobsOnce } from "../jobs-worker.js";
 
 async function jobRow(jobId: string) {
-  const rows = await requireMainDb()
-    .orm.select()
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const rows = await db.orm
+    .select()
     .from(memoryJobs)
     .where(eq(memoryJobs.id, jobId));
   return rows[0];
@@ -160,8 +161,10 @@ describePg("job outcome truthfulness", () => {
     expect(row?.attempts).toBe(0);
     expect(row!.runAfter).toBeGreaterThan(before);
     // Exactly one row for the conversation: no fresh row minted per attempt.
-    const rows = await requireMainDb()
-      .orm.select()
+    const db = requireMainDb();
+    const memoryJobs = db.schema.memoryJobs;
+    const rows = await db.orm
+      .select()
       .from(memoryJobs)
       .where(eq(memoryJobs.type, "memory_retrospective"));
     expect(rows).toHaveLength(1);
@@ -173,10 +176,12 @@ describePg("job outcome truthfulness", () => {
       conversationId: "conv-1",
     });
     // Spend 49 of the 50 deferrals up front; the next pass is the last one.
-    await requireMainDb()
-      .orm.update(memoryJobs)
+    const deferralDb = requireMainDb();
+    const deferralJobs = deferralDb.schema.memoryJobs;
+    await deferralDb.orm
+      .update(deferralJobs)
       .set({ deferrals: 49 })
-      .where(eq(memoryJobs.id, jobId));
+      .where(eq(deferralJobs.id, jobId));
 
     await runMemoryJobsOnce();
 
@@ -223,10 +228,12 @@ describePg("job outcome truthfulness", () => {
     });
     // Simulate a claimed row whose execution went silent long enough for the
     // stalled-job watchdog to fail it.
-    await requireMainDb()
-      .orm.update(memoryJobs)
+    const stallDb = requireMainDb();
+    const stallJobs = stallDb.schema.memoryJobs;
+    await stallDb.orm
+      .update(stallJobs)
       .set({ status: "running", startedAt: Date.now() - 60 * 60 * 1000 })
-      .where(eq(memoryJobs.id, jobId));
+      .where(eq(stallJobs.id, jobId));
     expect(await failStalledJobs(30 * 60 * 1000)).toBe(1);
     expect((await jobRow(jobId))?.status).toBe("failed");
 

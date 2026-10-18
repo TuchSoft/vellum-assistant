@@ -412,9 +412,10 @@ describePg("writePool / readPoolForTurn", () => {
     await writePool(db, "conv-1", 4, smaller);
 
     expect(await readPoolForTurn("conv-1", 4)).toEqual(smaller);
-    expect(await db.get(`SELECT COUNT(*) AS n FROM memory_v3_pools`)).toEqual({
-      n: 1,
-    });
+    const count = await db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM memory_v3_pools`,
+    );
+    expect(count).toEqual({ n: 1 });
   });
 
   test("throws on a failed statement so the caller's transaction can roll back", async () => {

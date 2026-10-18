@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import type { Mock } from "bun:test";
 import {
   afterAll,
   beforeEach,
@@ -154,8 +155,7 @@ mock.module("../context/token-estimator.js", () => ({
 
 // Reducer: by default returns the input untouched and marks exhausted
 let mockReducerStepFn:
-  | ((msgs: Message[], cfg: unknown, state: unknown) => unknown)
-  | null = null;
+  ((msgs: Message[], cfg: unknown, state: unknown) => unknown) | null = null;
 const makeInitialReducerState = () => ({
   appliedTiers: [] as string[],
   injectionMode: "full" as const,
@@ -1704,8 +1704,7 @@ describe("session-agent-loop", () => {
 
       expect(runSpy).toHaveBeenCalledTimes(1);
       const call = runSpy.mock.calls[0]?.[0] as
-        | { messages: Message[] }
-        | undefined;
+        { messages: Message[] } | undefined;
       expect(call?.messages[0]?.content).toEqual([
         { type: "text", text: "rewritten prompt" },
       ]);
@@ -6150,7 +6149,11 @@ describe("session-agent-loop", () => {
      *  re-injection ran. */
     async function arrangeResidentSectionAndObservers(
       conversationId: string,
-    ): Promise<void> {
+    ): Promise<{
+      graphMemory: ConversationGraphMemory;
+      onCompacted: Mock<(compactedMessageCount: number) => Promise<boolean>>;
+      order: string[];
+    }> {
       await recordV3Injected(conversationId, [
         { slug: "page-a", key: "", bytes: 100 },
       ]);

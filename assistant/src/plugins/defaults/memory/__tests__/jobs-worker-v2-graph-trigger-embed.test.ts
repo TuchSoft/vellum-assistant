@@ -62,7 +62,6 @@ import { describePg } from "../../../../__tests__/pg-test-db.js";
 import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { _resetQdrantBreaker } from "../../../../persistence/embeddings/qdrant-circuit-breaker.js";
 import { enqueueMemoryJob } from "../../../../persistence/jobs-store.js";
-import { memoryJobs } from "../../../../persistence/schema/index.js";
 import { registerMemoryPluginJobHandlers } from "../job-handler-registration.js";
 import { runMemoryJobsOnce } from "../jobs-worker.js";
 
@@ -95,8 +94,10 @@ describePg("graph_trigger_embed under memory v2", () => {
 
     expect(triggerHandlerCalls).toBe(1);
 
-    const rows = await requireMainDb()
-      .orm.select()
+    const db = requireMainDb();
+    const memoryJobs = db.schema.memoryJobs;
+    const rows = await db.orm
+      .select()
       .from(memoryJobs)
       .where(eq(memoryJobs.id, jobId));
     expect(rows[0]?.status).toBe("completed");

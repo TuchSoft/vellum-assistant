@@ -129,7 +129,6 @@ const { _resetQdrantBreaker } =
   await import("../../../../persistence/embeddings/qdrant-circuit-breaker.js");
 const { enqueueMemoryJob } =
   await import("../../../../persistence/jobs-store.js");
-const { memoryJobs } = await import("../../../../persistence/schema/index.js");
 const { memoryJobHandlers } = await import("../job-handlers.js");
 const { registerMemoryPluginJobHandlers } =
   await import("../job-handler-registration.js");
@@ -145,8 +144,10 @@ function resetCallCounts(): void {
 }
 
 async function jobStatus(jobId: string): Promise<string | undefined> {
-  const rows = await requireMainDb()
-    .orm.select()
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const rows = await db.orm
+    .select()
     .from(memoryJobs)
     .where(eq(memoryJobs.id, jobId));
   return rows[0]?.status;

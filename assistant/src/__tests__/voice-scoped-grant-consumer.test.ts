@@ -361,7 +361,7 @@ describe("voice bridge confirmation handling (grant consumption via primitive)",
     expect(decision!.reason).toContain("guardian voice call");
   });
 
-  test("grants revoked when revokeScopedApprovalGrantsForContext is called with callSessionId", () => {
+  test("grants revoked when revokeScopedApprovalGrantsForContext is called with callSessionId", async () => {
     const db = getDb();
     const testCallSessionId = "call-session-revoke-test";
 
@@ -426,7 +426,7 @@ describe("voice bridge confirmation handling (grant consumption via primitive)",
     expect(otherActive.length).toBe(1);
   });
 
-  test("grants with null callSessionId are revoked by conversationId", () => {
+  test("grants with null callSessionId are revoked by conversationId", async () => {
     const db = getDb();
     const testConversationId = "conv-revoke-by-conversation";
 

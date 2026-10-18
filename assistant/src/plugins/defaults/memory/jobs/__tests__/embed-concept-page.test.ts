@@ -144,8 +144,6 @@ const { DEFAULT_CONFIG } = await import("../../../../../config/defaults.js");
 const { describePg } = await import("../../../../../__tests__/pg-test-db.js");
 const { requireMainDb } =
   await import("../../../../../persistence/db-facade.js");
-const { memoryEmbeddings, memoryJobs } =
-  await import("../../../../../persistence/schema/index.js");
 const { claimMemoryJobs, enqueueMemoryJob } =
   await import("../../../../../persistence/jobs-store.js");
 type MemoryJobMod = typeof import("../../../../../persistence/jobs-store.js");
@@ -246,9 +244,11 @@ describePg("embedConceptPageJob — happy path", () => {
 
     await embedConceptPageJob(makeJob({ slug: "bob-uses-zsh" }), TEST_CONFIG);
 
-    const row = (
-      await requireMainDb().orm.select().from(memoryEmbeddings)
-    ).find((r) => r.targetId === "bob-uses-zsh");
+    const db = requireMainDb();
+    const memoryEmbeddings = db.schema.memoryEmbeddings;
+    const row = (await db.orm.select().from(memoryEmbeddings)).find(
+      (r) => r.targetId === "bob-uses-zsh",
+    );
 
     expect(row).toBeDefined();
     expect(row!.targetType).toBe("concept_page");
@@ -549,7 +549,9 @@ describePg("enqueueEmbedConceptPageJob", () => {
   test("inserted job row carries the right type and slug payload", async () => {
     const id = await enqueueEmbedConceptPageJob({ slug: "row-check" });
 
-    const row = (await requireMainDb().orm.select().from(memoryJobs)).find(
+    const db = requireMainDb();
+    const memoryJobs = db.schema.memoryJobs;
+    const row = (await db.orm.select().from(memoryJobs)).find(
       (r) => r.id === id,
     );
     expect(row).toBeDefined();
@@ -562,7 +564,9 @@ describePg("enqueueEmbedConceptPageJob", () => {
     const secondId = await enqueueEmbedConceptPageJob({ slug: "dup-slug" });
 
     expect(secondId).toBe(firstId);
-    const rows = (await requireMainDb().orm.select().from(memoryJobs)).filter(
+    const db = requireMainDb();
+    const memoryJobs = db.schema.memoryJobs;
+    const rows = (await db.orm.select().from(memoryJobs)).filter(
       (r) => r.type === "embed_concept_page",
     );
     expect(rows).toHaveLength(1);
@@ -572,7 +576,9 @@ describePg("enqueueEmbedConceptPageJob", () => {
     await enqueueEmbedConceptPageJob({ slug: "slug-a" });
     await enqueueEmbedConceptPageJob({ slug: "slug-b" });
 
-    const slugs = (await requireMainDb().orm.select().from(memoryJobs))
+    const db = requireMainDb();
+    const memoryJobs = db.schema.memoryJobs;
+    const slugs = (await db.orm.select().from(memoryJobs))
       .filter((r) => r.type === "embed_concept_page")
       .map((r) => JSON.parse(r.payload).slug)
       .sort();
@@ -595,7 +601,9 @@ describePg("enqueueEmbedConceptPageJob", () => {
     });
 
     expect(coalescedId).toBe(id);
-    const row = (await requireMainDb().orm.select().from(memoryJobs)).find(
+    const db = requireMainDb();
+    const memoryJobs = db.schema.memoryJobs;
+    const row = (await db.orm.select().from(memoryJobs)).find(
       (r) => r.id === id,
     );
     expect(row!.runAfter).toBe(futureRunAfter);
@@ -611,7 +619,9 @@ describePg("enqueueEmbedConceptPageJob", () => {
     const secondId = await enqueueEmbedConceptPageJob({ slug: "in-flight" });
 
     expect(secondId).not.toBe(firstId);
-    const rows = (await requireMainDb().orm.select().from(memoryJobs)).filter(
+    const db = requireMainDb();
+    const memoryJobs = db.schema.memoryJobs;
+    const rows = (await db.orm.select().from(memoryJobs)).filter(
       (r) => r.type === "embed_concept_page",
     );
     expect(rows.map((r) => r.status).sort()).toEqual(["pending", "running"]);

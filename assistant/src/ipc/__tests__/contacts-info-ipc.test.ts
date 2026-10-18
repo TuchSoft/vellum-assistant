@@ -278,9 +278,9 @@ describePg("handleContactChannelIdentityLookup", () => {
 
 describePg("handleContactMirrorProbe", () => {
   test("reports absence when the contact is not mirrored", async () => {
-    const result = await handleContactMirrorProbe({
+    const result = (await handleContactMirrorProbe({
       body: { contactId: "gone" },
-    });
+    })) as Record<string, unknown>;
     expect(result).toEqual({
       exists: false,
       hasChannels: false,

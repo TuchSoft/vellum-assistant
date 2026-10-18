@@ -71,9 +71,9 @@ describePg("schedule_create tool", () => {
     expect(result.content).toContain("Every weekday at 9:00 AM");
     expect(result.content).toContain("Enabled: true");
 
-    const row = (await requireMainDb()
-      .get("SELECT description FROM cron_jobs LIMIT 1")
-      .get()) as { description: string };
+    const row = (await requireMainDb().get<{ description: string }>(
+      "SELECT description FROM cron_jobs LIMIT 1",
+    ))!;
     expect(row.description).toBe("Remind the team to join the daily standup.");
   });
 
@@ -560,7 +560,7 @@ describePg("schedule_create — workflow capability manifest", () => {
     expect(result.isError).toBe(true);
     expect(result.content).toContain("invalid capabilities manifest");
     expect(
-      await requireMainDb().get("SELECT id FROM cron_jobs").all(),
+      await requireMainDb().all<{ id: string }>("SELECT id FROM cron_jobs"),
     ).toHaveLength(0);
   });
 

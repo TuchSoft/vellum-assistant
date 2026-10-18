@@ -673,8 +673,8 @@ describe("UsageTelemetryReporter", () => {
     );
     // First collect fills a batch (recurse); second returns a short batch (stop).
     mockQueryUnreportedUsageEvents
-      .mockReturnValueOnce(fullBatch)
-      .mockReturnValue([makeUsageEvent({ id: "evt-acc-tail" })]);
+      .mockResolvedValueOnce(fullBatch)
+      .mockResolvedValue([makeUsageEvent({ id: "evt-acc-tail" })]);
     // First POST drops 10; second persists its single event.
     mockFetch
       .mockImplementationOnce(() =>

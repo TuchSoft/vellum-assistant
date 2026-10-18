@@ -610,10 +610,10 @@ describePg("call-store", () => {
     });
 
     // Claim and finalize
-    const claimId = await claimCallback(
+    const claimId = (await claimCallback(
       "test-dedupe-key-permanent",
       session.id,
-    )!;
+    ))!;
     await finalizeCallbackClaim("test-dedupe-key-permanent", claimId);
 
     // Verify the created_at is set far in the future
@@ -665,10 +665,10 @@ describePg("call-store", () => {
     });
 
     // Handler A claims
-    const claimA = await claimCallback(
+    const claimA = (await claimCallback(
       "test-dedupe-key-ownership",
       session.id,
-    )!;
+    ))!;
     expect(claimA).toBeTypeOf("string");
 
     // Simulate handler A taking too long: backdate the claim so it expires
@@ -680,10 +680,10 @@ describePg("call-store", () => {
     );
 
     // Handler B reclaims (succeeds because the old claim expired)
-    const claimB = await claimCallback(
+    const claimB = (await claimCallback(
       "test-dedupe-key-ownership",
       session.id,
-    )!;
+    ))!;
     expect(claimB).toBeTypeOf("string");
     expect(claimB).not.toBe(claimA);
 

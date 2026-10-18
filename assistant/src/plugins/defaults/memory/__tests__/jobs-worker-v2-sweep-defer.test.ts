@@ -62,15 +62,16 @@ import { describePg } from "../../../../__tests__/pg-test-db.js";
 import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { _resetQdrantBreaker } from "../../../../persistence/embeddings/qdrant-circuit-breaker.js";
 import { enqueueMemoryJob } from "../../../../persistence/jobs-store.js";
-import { memoryJobs } from "../../../../persistence/schema/index.js";
 import { registerMemoryPluginJobHandlers } from "../job-handler-registration.js";
 import { runMemoryJobsOnce } from "../jobs-worker.js";
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
 async function jobRow(jobId: string) {
-  const rows = await requireMainDb()
-    .orm.select()
+  const db = requireMainDb();
+  const memoryJobs = db.schema.memoryJobs;
+  const rows = await db.orm
+    .select()
     .from(memoryJobs)
     .where(eq(memoryJobs.id, jobId));
   return rows[0];

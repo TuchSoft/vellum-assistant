@@ -11,7 +11,14 @@
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { createRef, type FormEvent } from "react";
-import { act, cleanup, fireEvent, render } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 
 import {
   type ChatAttachment,
@@ -210,8 +217,8 @@ mock.module("@/domains/chat/voice/live-voice/live-voice-preflight-api", () => ({
 // Out-of-band session end, behind the failure notice's reclaim action. Mocked
 // so the action can be driven without a daemon; the wrapper's own shape mirrors
 // `preflightLiveVoice` above.
-const sessionEndSpy = mock(
-  (_assistantId: string): Promise<boolean> => Promise.resolve(true),
+const sessionEndSpy = mock((_assistantId: string): Promise<boolean> =>
+  Promise.resolve(true),
 );
 mock.module(
   "@/domains/chat/voice/live-voice/live-voice-session-end-api",
@@ -1451,6 +1458,82 @@ describe("ChatComposer — Stop button click invokes onStopGenerating", () => {
     });
     onStopGenerating();
     expect(onStopGenerating).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ChatComposer — stop modes", () => {
+  function openStopMenu() {
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Stop options" }),
+      { button: 0, ctrlKey: false },
+    );
+  }
+
+  test("the primary Stop button requests a hard stop", () => {
+    const onStopGenerating = mock(() => {});
+    const { getByLabelText } = renderComposerView({
+      isAssistantBusy: true,
+      onStopGenerating,
+    });
+
+    fireEvent.click(getByLabelText("Stop generating"));
+
+    expect(onStopGenerating).toHaveBeenCalledWith("hard");
+  });
+
+  test("the menu requests graceful, main-only, and hard", async () => {
+    const onStopGenerating = mock(() => {});
+    renderComposerView({ isAssistantBusy: true, onStopGenerating });
+
+    openStopMenu();
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Stop after current step" }),
+    );
+    expect(onStopGenerating).toHaveBeenLastCalledWith("graceful");
+
+    openStopMenu();
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Stop main reply only" }),
+    );
+    expect(onStopGenerating).toHaveBeenLastCalledWith("main-only");
+
+    openStopMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Stop now" }));
+    expect(onStopGenerating).toHaveBeenLastCalledWith("hard");
+  });
+
+  test("Stop everything confirms before calling the global stop", async () => {
+    const onStopAll = mock(() => {});
+    renderComposerView({ isAssistantBusy: true, onStopAll });
+
+    openStopMenu();
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Stop everything" }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Stop everything?")).toBeTruthy();
+    expect(onStopAll).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Stop everything" }),
+    );
+    expect(onStopAll).toHaveBeenCalledTimes(1);
+  });
+
+  test("the global stop row is hidden when the composer cannot stop globally", () => {
+    renderComposer({ isAssistantBusy: true });
+
+    expect(
+      screen.queryByRole("button", { name: "Stop options" }),
+    ).not.toBeNull();
+    openStopMenu();
+
+    return screen.findByRole("menuitem", { name: "Stop now" }).then(() => {
+      expect(
+        screen.queryByRole("menuitem", { name: "Stop everything" }),
+      ).toBeNull();
+    });
   });
 });
 

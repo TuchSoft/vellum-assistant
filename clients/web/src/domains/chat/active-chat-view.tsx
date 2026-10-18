@@ -336,6 +336,7 @@ export function ActiveChatView() {
   const {
     sendMessage,
     handleStopGenerating,
+    handleStopAll,
     queuedMessages,
     handleCancelQueuedMessage,
     handleCancelAllQueued,
@@ -645,6 +646,7 @@ export function ActiveChatView() {
     // Send message (orchestration owns SSE / queue lifecycle)
     sendMessage,
     handleStopGenerating,
+    handleStopAll,
     queuedMessages,
     handleCancelQueuedMessage,
     handleCancelAllQueued,

@@ -1,4 +1,12 @@
-import { ArrowUp, Square } from "lucide-react";
+import {
+  ArrowUp,
+  Clock,
+  EllipsisVertical,
+  MessageSquare,
+  OctagonX,
+  Square,
+  Zap,
+} from "lucide-react";
 import {
   type FormEvent,
   type ReactNode,
@@ -90,6 +98,9 @@ import { routes } from "@/utils/routes";
 import { usePlatformGate } from "@/hooks/use-platform-gate";
 import { useTranslation } from "@/i18n";
 import { Button, cn, Notice, Popover } from "@vellumai/design-library";
+import { ActionMenu } from "@vellumai/design-library/components/action-menu";
+import { ConfirmDialog } from "@vellumai/design-library/components/confirm-dialog";
+import type { StopMode } from "@/domains/chat/utils/stop-mode";
 
 import {
   computeGhostSuffix,
@@ -161,7 +172,13 @@ export interface ChatComposerProps {
   /** Prepare the conversation's visible context before live voice can start a turn. */
   onBeforeLiveVoiceStart?: () => Promise<boolean>;
 
-  onStopGenerating: () => void;
+  onStopGenerating: (mode?: StopMode) => void;
+  /**
+   * Stop every category of in-flight work. Omitted by variants that only own a
+   * single conversation (document chat, onboarding); the "Stop everything"
+   * menu row is hidden when this is absent.
+   */
+  onStopAll?: () => void;
   /**
    * Whether the assistant is actively working (not waiting for user input).
    * Single source of truth shared with the avatar spinner. The composer must
@@ -318,6 +335,7 @@ export function ChatComposer({
   onVoiceBeforeStart,
   onBeforeLiveVoiceStart,
   onStopGenerating,
+  onStopAll,
   isAssistantBusy,
   assistantId,
   conversationId,
@@ -883,6 +901,7 @@ export function ChatComposer({
   );
 
   const [addSheetOpen, setAddSheetOpen] = useState(false);
+  const [stopAllConfirmOpen, setStopAllConfirmOpen] = useState(false);
   // Latched on the first open and never reset. The sheet closes itself before
   // it hands off to the OS picker, so a shell that crossed the breakpoint while
   // that picker was up would take the sheet's hidden inputs with it.
@@ -1111,7 +1130,8 @@ export function ChatComposer({
 
   // The row's one Stop, in the chrome the slot it stands in wears: the busy
   // row's default control with the flag off, and the send slot's occupant
-  // while `interrupt-on-send` leaves no send to press.
+  // while `interrupt-on-send` leaves no send to press. The menu beside it
+  // carries the other stop modes plus the global stop.
   const stopControl = (
     <Button
       variant="primary"
@@ -1119,10 +1139,70 @@ export function ChatComposer({
       iconOnlyGlyphClassName={isMobile ? MOBILE_GLYPH_CLASS : undefined}
       expandOnMobile={!isMobile}
       onMouseDown={rowPressGuard}
-      onClick={onStopGenerating}
+      onClick={() => onStopGenerating("hard")}
       aria-label={t("chatComposer.stopGenerating")}
       className={isMobile ? MOBILE_CONTROL_CLASS : undefined}
     />
+  );
+
+  const stopMenu = (
+    <ActionMenu.Root>
+      <ActionMenu.Trigger asChild>
+        <Button
+          variant="ghost"
+          iconOnly={<EllipsisVertical className="h-4 w-4" />}
+          iconOnlyGlyphClassName={isMobile ? MOBILE_GLYPH_CLASS : undefined}
+          expandOnMobile={false}
+          onMouseDown={rowPressGuard}
+          aria-label={t("chatComposer.stopOptions")}
+          aria-haspopup="menu"
+          className={cn(
+            isMobile && MOBILE_CONTROL_CLASS,
+            isMobile && MOBILE_GHOST_WASH_CLASS,
+            "shrink-0 [--vbtn-fg:var(--content-tertiary)]",
+          )}
+        />
+      </ActionMenu.Trigger>
+      <ActionMenu.Content
+        title={t("chatComposer.stopOptions")}
+        closeLabel={t("chatComposer.closeMenu")}
+        align="end"
+      >
+        <ActionMenu.Item
+          icon={Zap}
+          label={t("chatComposer.stopHard")}
+          onSelect={() => onStopGenerating("hard")}
+        />
+        <ActionMenu.Item
+          icon={Clock}
+          label={t("chatComposer.stopGraceful")}
+          onSelect={() => onStopGenerating("graceful")}
+        />
+        <ActionMenu.Item
+          icon={MessageSquare}
+          label={t("chatComposer.stopMainOnly")}
+          onSelect={() => onStopGenerating("main-only")}
+        />
+        {onStopAll ? (
+          <>
+            <ActionMenu.Separator />
+            <ActionMenu.Item
+              icon={OctagonX}
+              tone="destructive"
+              label={t("chatComposer.stopAll")}
+              onSelect={() => setStopAllConfirmOpen(true)}
+            />
+          </>
+        ) : null}
+      </ActionMenu.Content>
+    </ActionMenu.Root>
+  );
+
+  const stopControls = (
+    <>
+      {stopControl}
+      {stopMenu}
+    </>
   );
 
   // The send arrow stays through a dictation session, where pressing it means
@@ -1138,7 +1218,7 @@ export function ChatComposer({
   // the slot: a running turn the row cannot send into leaves ending that turn
   // as the move the user is reaching for.
   const sendSlot = showStopInSendSlot ? (
-    stopControl
+    stopControls
   ) : showVoiceModeInSendSlot ? (
     // Session entry point: once a session starts here the slot gives way to
     // the send arrow and the bar above the card owns stopping. Disabled while
@@ -1189,7 +1269,7 @@ export function ChatComposer({
       className={isMobile ? MOBILE_CONTROL_CLASS : undefined}
     />
   ) : (
-    stopControl
+    stopControls
   );
 
   const inlineVoicePreview = showInlineVoicePreview ? (
@@ -1783,6 +1863,19 @@ export function ChatComposer({
           )}
         </>
       </div>
+      <ConfirmDialog
+        open={stopAllConfirmOpen}
+        title={t("chatComposer.stopAllConfirmTitle")}
+        message={t("chatComposer.stopAllConfirmMessage")}
+        confirmLabel={t("chatComposer.stopAllConfirmLabel")}
+        cancelLabel={t("chatComposer.cancel")}
+        destructive
+        onConfirm={() => {
+          setStopAllConfirmOpen(false);
+          onStopAll?.();
+        }}
+        onCancel={() => setStopAllConfirmOpen(false)}
+      />
     </>
   );
 }

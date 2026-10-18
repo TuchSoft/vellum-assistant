@@ -73,6 +73,7 @@ import {
 
 import { clearQueueStatus } from "@/domains/chat/utils/stream-updaters/shared";
 import type { ChatError } from "@/domains/chat/types";
+import type { StopMode } from "@/domains/chat/utils/stop-mode";
 
 import {
   clearPendingConfirmationsFromMessages,
@@ -90,7 +91,10 @@ import { getSoundManager } from "@/lib/sounds/sound-manager";
 import { getInterruptOnSend } from "@/domains/chat/hooks/use-interrupt-on-send";
 import { useMessageQueue } from "@/domains/chat/hooks/use-message-queue";
 import { confirmQueuedMessageDeletion } from "@/domains/chat/queue-cancellation";
-import { conversationsByIdCancelPost } from "@/generated/daemon/sdk.gen";
+import {
+  conversationsByIdCancelPost,
+  lifecycleStopallPost,
+} from "@/generated/daemon/sdk.gen";
 import type { Conversation } from "@/types/conversation-types";
 import { postChatMessage } from "@/domains/chat/api/messages";
 import { surfaceConversation } from "@/domains/chat/api/conversations";
@@ -1410,36 +1414,139 @@ export function useSendMessage({
   );
 
   // -------------------------------------------------------------------------
-  // handleStopGenerating — cancel the active generation
+  // Stop UI
   // -------------------------------------------------------------------------
-  const handleStopGenerating = useCallback(async () => {
-    if (!assistantId || !activeConversationId) {
-      return;
-    }
+
+  /**
+   * Drop the local busy signals for the active conversation. Shared by the
+   * per-conversation Stop and the global stop so both leave the same UI state.
+   */
+  const resetStoppedTurnUi = useCallback(() => {
     useStreamStore.getState().bumpEpoch();
-    patchConversation(queryClient, assistantId, activeConversationId, {
-      isProcessing: false,
-    });
-    endTurn({ conversationId: activeConversationId, reason: "cancelled" });
-    // Per-row clear (no-op for non-matching rows) → snapshot + history cache.
-    patchTranscriptMessages(clearPendingConfirmationsFromMessages);
+    if (assistantId && activeConversationId) {
+      patchConversation(queryClient, assistantId, activeConversationId, {
+        isProcessing: false,
+      });
+      endTurn({ conversationId: activeConversationId, reason: "cancelled" });
+      // Per-row clear (no-op for non-matching rows) → snapshot + history cache.
+      patchTranscriptMessages(clearPendingConfirmationsFromMessages);
+    }
     useInteractionStore.getState().resetAll();
     useSubagentStore.getState().reset();
     useWorkflowStore.getState().reset();
     useChatSessionStore.getState().clearConfirmationToolCallMap();
+  }, [assistantId, activeConversationId, queryClient]);
+
+  /**
+   * Re-read the active conversation after a Stop the daemon reported as not
+   * applied, so the optimistic idle patch cannot outlive the server's answer.
+   */
+  const restoreActiveConversationState = useCallback(async () => {
+    if (!assistantId || !activeConversationId) {
+      return;
+    }
+    await refreshConversations();
     try {
-      await conversationsByIdCancelPost({
-        path: { assistant_id: assistantId, id: activeConversationId },
-        throwOnError: true,
+      const conversation = await fetchConversationDetail(
+        queryClient,
+        assistantId,
+        activeConversationId,
+      );
+      patchConversation(queryClient, assistantId, activeConversationId, {
+        isProcessing: conversation.isProcessing,
       });
     } catch {
-      // Best-effort — the daemon may have already finished
+      // A deleted conversation or a failed read leaves the sync invalidation
+      // as the source of truth; there is nothing local to restore.
     }
-  }, [assistantId, activeConversationId, queryClient]);
+  }, [activeConversationId, assistantId, queryClient, refreshConversations]);
+
+  // -------------------------------------------------------------------------
+  // handleStopGenerating — cancel the active generation
+  // -------------------------------------------------------------------------
+  const handleStopGenerating = useCallback(
+    async (mode: StopMode = "hard") => {
+      if (!assistantId || !activeConversationId) {
+        return;
+      }
+      resetStoppedTurnUi();
+      try {
+        const { data } = await conversationsByIdCancelPost({
+          path: { assistant_id: assistantId, id: activeConversationId },
+          body: { mode },
+          throwOnError: true,
+        });
+        if (data?.cancelled === false) {
+          await restoreActiveConversationState();
+        }
+      } catch {
+        // Best-effort — the daemon may have already finished
+      }
+    },
+    [
+      assistantId,
+      activeConversationId,
+      resetStoppedTurnUi,
+      restoreActiveConversationState,
+    ],
+  );
+
+  // -------------------------------------------------------------------------
+  // handleStopAll — stop every category of in-flight work
+  // -------------------------------------------------------------------------
+  const handleStopAll = useCallback(async () => {
+    if (!assistantId) {
+      return;
+    }
+    try {
+      const { data } = await lifecycleStopallPost({
+        path: { assistant_id: assistantId },
+        body: { mode: "hard" },
+        throwOnError: true,
+      });
+      if (!data) {
+        throw new Error("Empty stop-all response");
+      }
+
+      resetStoppedTurnUi();
+      // Every conversation the server stopped is idle now. Clear the local
+      // processing set so the sidebar does not keep showing busy rows while
+      // the list refetch lands.
+      const processingIds = [
+        ...useConversationStore.getState().processingConversationIds,
+      ];
+      if (processingIds.length > 0) {
+        useConversationStore
+          .getState()
+          .removeMultipleProcessingConversationIds(processingIds);
+      }
+
+      toast.success(
+        t("chat:chatComposer.stopAllToast", {
+          conversations: data.conversations,
+          subagents: data.subagents,
+          acpSessions: data.acpSessions,
+          backgroundTools: data.backgroundTools,
+          scheduleRuns: data.scheduleRuns,
+          workflowRuns: data.workflowRuns,
+          heartbeatRuns: data.heartbeatRuns,
+          memoryJobs: data.memoryJobs,
+        }),
+      );
+      if (data.unsupported.includes("memoryJobs")) {
+        toast.warning(t("chat:chatComposer.stopAllMemoryJobsUnsupported"));
+      }
+
+      await restoreActiveConversationState();
+    } catch {
+      toast.error(t("chat:chatComposer.stopAllFailed"));
+    }
+  }, [assistantId, resetStoppedTurnUi, restoreActiveConversationState]);
 
   return {
     sendMessage,
     handleStopGenerating,
+    handleStopAll,
     queuedMessages,
     handleCancelQueuedMessage,
     handleCancelAllQueued,

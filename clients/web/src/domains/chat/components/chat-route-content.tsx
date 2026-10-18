@@ -51,6 +51,7 @@ import {
 } from "../document-conversation-navigation";
 import { useDraftSecretDetection } from "@/domains/chat/hooks/use-draft-secret-detection";
 import type { SendChatMessageOptions } from "@/domains/chat/hooks/use-send-message";
+import type { StopMode } from "@/domains/chat/utils/stop-mode";
 import {
   DiskPressureBannerSlot,
   useDiskPressureBannerVisibility,
@@ -204,7 +205,8 @@ export interface ChatMainPanelProps {
     attachments?: DisplayAttachment[],
     opts?: SendChatMessageOptions,
   ) => Promise<void>;
-  handleStopGenerating: () => Promise<void>;
+  handleStopGenerating: (mode?: StopMode) => Promise<void>;
+  handleStopAll: () => Promise<void>;
   queuedMessages: DisplayMessage[];
   handleCancelQueuedMessage: (messageId: string) => void;
   handleCancelAllQueued: () => void;
@@ -305,6 +307,7 @@ const REPROVISION_ASSISTANT_KEY_COMMAND =
 export function ChatMainPanel({
   sendMessage,
   handleStopGenerating,
+  handleStopAll,
   queuedMessages,
   handleCancelQueuedMessage,
   handleCancelAllQueued,
@@ -1423,6 +1426,7 @@ export function ChatMainPanel({
         onVoiceBeforeStart={handleVoiceBeforeStart}
         onBeforeLiveVoiceStart={documentPreparation?.prepareVoice}
         onStopGenerating={handleStopGenerating}
+        onStopAll={handleStopAll}
         isAssistantBusy={isAssistantBusy}
         assistantId={assistantId}
         // Routing-truth id (NOT `activeConversation?.conversationId`, which is

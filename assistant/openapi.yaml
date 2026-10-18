@@ -8864,7 +8864,11 @@ paths:
     post:
       operationId: conversations_by_id_cancel_post
       summary: Cancel generation
-      description: Abort the in-progress assistant response for a conversation.
+      description:
+        Abort the in-progress assistant response for a conversation. The optional mode defaults to `hard`;
+        `graceful` waits for the turn's own teardown and lets the queue drain, while `main-only` leaves child subagents
+        and ACP sessions running. `main-only` uses the `user_cancel` reason, so queued messages drain exactly as they do
+        for `graceful`.
       tags:
         - conversations
       parameters:
@@ -8873,6 +8877,20 @@ paths:
           required: true
           schema:
             type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  description: Stop mode. Defaults to hard when omitted, preserving the existing client contract.
+                  type: string
+                  enum:
+                    - hard
+                    - graceful
+                    - main-only
       responses:
         "202":
           description: Successful response
@@ -19487,6 +19505,70 @@ paths:
                     description: Epoch ms when the quiesce lease expires.
                 required:
                   - quiescedUntil
+                additionalProperties: false
+  /v1/lifecycle/stop-all:
+    post:
+      operationId: lifecycle_stopall_post
+      summary: Stop all in-flight work
+      description:
+        "Stops every category of in-flight work the drain snapshot enumerates: processing conversations (plus their
+        subagents and ACP sessions), background tools, running schedule/heartbeat runs, and in-flight workflow runs.
+        Memory jobs are reported in `unsupported` and left untouched. The optional mode defaults to hard. `main-only`
+        acts only on processing conversations: background tools and scheduled work stay alive."
+      tags:
+        - system
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  description: Stop mode applied to conversations. Defaults to hard.
+                  type: string
+                  enum:
+                    - hard
+                    - graceful
+                    - main-only
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversations:
+                    type: number
+                  subagents:
+                    type: number
+                  acpSessions:
+                    type: number
+                  backgroundTools:
+                    type: number
+                  scheduleRuns:
+                    type: number
+                  workflowRuns:
+                    type: number
+                  heartbeatRuns:
+                    type: number
+                  memoryJobs:
+                    type: number
+                  unsupported:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - conversations
+                  - subagents
+                  - acpSessions
+                  - backgroundTools
+                  - scheduleRuns
+                  - workflowRuns
+                  - heartbeatRuns
+                  - memoryJobs
+                  - unsupported
                 additionalProperties: false
   /v1/live-voice/preflight:
     post:

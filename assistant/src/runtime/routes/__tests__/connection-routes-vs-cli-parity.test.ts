@@ -4,17 +4,17 @@
  * Runs a CLI `createConnection` call and an HTTP-route `handleCreateConnection`
  * call with the same payload, then asserts the resulting DB rows are identical
  * (after normalizing timestamps). This proves the HTTP route wraps the same
- * store path the CLI uses — no divergent code path.
+ * store path the CLI uses, no divergent code path.
  *
  * Rule: cc-cutover-proof (see PR_B_TASK.md).
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-// ── Real imports ──────────────────────────────────────────────────────────────
-import { getDb } from "../../../persistence/db-connection.js";
+import { describePg } from "../../../__tests__/pg-test-db.js";
+// Real imports
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
-import { providerConnections } from "../../../persistence/schema/inference.js";
 import {
   createConnection,
   getConnection,
@@ -22,11 +22,11 @@ import {
 import { ROUTES } from "../inference-provider-connection-routes.js";
 import type { RouteDefinition } from "../types.js";
 
-// ── DB bootstrap ──────────────────────────────────────────────────────────────
+// DB bootstrap
 
 await initializeDb();
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
 function findHandler(operationId: string): RouteDefinition["handler"] {
   const route = ROUTES.find((r) => r.operationId === operationId);
@@ -36,8 +36,9 @@ function findHandler(operationId: string): RouteDefinition["handler"] {
   return route.handler;
 }
 
-function clearConnections(): void {
-  getDb().delete(providerConnections).run();
+async function clearConnections(): Promise<void> {
+  const db = requireMainDb();
+  await db.orm.delete(db.schema.providerConnections);
 }
 
 function normalizeTimestamps<T extends object>(
@@ -51,13 +52,13 @@ function normalizeTimestamps<T extends object>(
   return rest as Omit<T, "createdAt" | "updatedAt">;
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// Tests
 
-beforeEach(() => {
-  clearConnections();
-});
+describePg("CLI vs HTTP route parity", () => {
+  beforeEach(async () => {
+    await clearConnections();
+  });
 
-describe("CLI vs HTTP route parity", () => {
   test("api_key connection: CLI createConnection and HTTP POST produce identical DB rows", async () => {
     const payload = {
       name: "parity-anthropic",
@@ -65,19 +66,19 @@ describe("CLI vs HTTP route parity", () => {
       auth: { type: "api_key" as const, credential: "vault/anthropic/key" },
     };
 
-    // ── CLI path ──────────────────────────────────────────────────────────────
-    const cliResult = createConnection(getDb(), payload);
+    // CLI path
+    const cliResult = await createConnection(requireMainDb(), payload);
     expect(cliResult.ok).toBe(true);
     if (!cliResult.ok) {
       throw new Error("CLI create failed");
     }
-    const cliRow = getConnection(getDb(), payload.name);
+    const cliRow = await getConnection(requireMainDb(), payload.name);
     expect(cliRow).not.toBeNull();
 
     // Clean up CLI row before HTTP create so names don't collide.
-    clearConnections();
+    await clearConnections();
 
-    // ── HTTP route path ───────────────────────────────────────────────────────
+    // HTTP route path
     const httpResult = (await findHandler(
       "inference_provider_connections_create",
     )({
@@ -89,10 +90,10 @@ describe("CLI vs HTTP route parity", () => {
     })) as { name: string; provider: string; auth: object };
 
     expect(httpResult.name).toBe(payload.name);
-    const httpRow = getConnection(getDb(), payload.name);
+    const httpRow = await getConnection(requireMainDb(), payload.name);
     expect(httpRow).not.toBeNull();
 
-    // ── Compare ───────────────────────────────────────────────────────────────
+    // Compare
     // Both rows should have identical non-timestamp fields.
     expect(normalizeTimestamps(httpRow!)).toEqual(normalizeTimestamps(cliRow!));
   });
@@ -104,14 +105,14 @@ describe("CLI vs HTTP route parity", () => {
       auth: { type: "platform" as const },
     };
 
-    const cliResult = createConnection(getDb(), payload);
+    const cliResult = await createConnection(requireMainDb(), payload);
     expect(cliResult.ok).toBe(true);
     if (!cliResult.ok) {
       throw new Error("CLI create failed");
     }
-    const cliRow = getConnection(getDb(), payload.name);
+    const cliRow = await getConnection(requireMainDb(), payload.name);
 
-    clearConnections();
+    await clearConnections();
 
     await findHandler("inference_provider_connections_create")({
       body: {
@@ -120,7 +121,7 @@ describe("CLI vs HTTP route parity", () => {
         auth: payload.auth,
       },
     });
-    const httpRow = getConnection(getDb(), payload.name);
+    const httpRow = await getConnection(requireMainDb(), payload.name);
 
     expect(normalizeTimestamps(httpRow!)).toEqual(normalizeTimestamps(cliRow!));
   });
@@ -132,14 +133,14 @@ describe("CLI vs HTTP route parity", () => {
       auth: { type: "none" as const },
     };
 
-    const cliResult = createConnection(getDb(), payload);
+    const cliResult = await createConnection(requireMainDb(), payload);
     expect(cliResult.ok).toBe(true);
     if (!cliResult.ok) {
       throw new Error("CLI create failed");
     }
-    const cliRow = getConnection(getDb(), payload.name);
+    const cliRow = await getConnection(requireMainDb(), payload.name);
 
-    clearConnections();
+    await clearConnections();
 
     await findHandler("inference_provider_connections_create")({
       body: {
@@ -148,7 +149,7 @@ describe("CLI vs HTTP route parity", () => {
         auth: payload.auth,
       },
     });
-    const httpRow = getConnection(getDb(), payload.name);
+    const httpRow = await getConnection(requireMainDb(), payload.name);
 
     expect(normalizeTimestamps(httpRow!)).toEqual(normalizeTimestamps(cliRow!));
   });

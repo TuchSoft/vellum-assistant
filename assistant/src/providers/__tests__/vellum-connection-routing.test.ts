@@ -1,13 +1,7 @@
-import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
-
-import type { DrizzleDb } from "../../persistence/db-connection.js";
-import { migrateCreateProviderConnections } from "../../persistence/migrations/243-provider-connections.js";
-import { migrateProviderConnectionStatusLabel } from "../../persistence/migrations/244-provider-connection-status-label.js";
-import { migrateProviderConnectionBaseUrlAndModels } from "../../persistence/migrations/250-provider-connection-base-url-and-models.js";
-import * as schema from "../../persistence/schema/index.js";
+import { describePg } from "../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { createAdapterFromConnection } from "../inference/adapter-factory.js";
 import type { Auth, ProviderConnection } from "../inference/auth.js";
 import type { ResolvedAuth } from "../inference/auth.js";
@@ -18,16 +12,6 @@ import {
   listConnections,
 } from "../inference/connections.js";
 import { isVellumManagedConnection } from "../vellum-model-routing.js";
-
-function setupDb(): DrizzleDb {
-  const sqlite = new Database(":memory:");
-  sqlite.exec("PRAGMA journal_mode=WAL");
-  const db = drizzle(sqlite, { schema });
-  migrateCreateProviderConnections(db);
-  migrateProviderConnectionStatusLabel(db);
-  migrateProviderConnectionBaseUrlAndModels(db);
-  return db;
-}
 
 const vellumConnection = {
   name: "vellum",
@@ -131,14 +115,18 @@ describe("effectiveConnectionAuth", () => {
   });
 });
 
-describe("vellum connection persistence (DB round-trip)", () => {
+describePg("vellum connection persistence (DB round-trip)", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.orm.delete(db.schema.providerConnections);
+  });
+
   // Guards the P1: a persisted `provider: "vellum"` row must survive the DB
   // loaders and create route, which validate against VALID_CONNECTION_PROVIDERS.
   // Without the sentinel on that allowlist these all reject the row and the
   // routing above never runs on a real config.
-  test("createConnection accepts a vellum sentinel row", () => {
-    const db = setupDb();
-    const result = createConnection(db, {
+  test("createConnection accepts a vellum sentinel row", async () => {
+    const result = await createConnection(requireMainDb(), {
       name: "vellum",
       provider: "vellum",
       auth: { type: "platform" },
@@ -147,27 +135,25 @@ describe("vellum connection persistence (DB round-trip)", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("getConnection loads a persisted vellum row (not dropped as invalid)", () => {
-    const db = setupDb();
-    createConnection(db, {
+  test("getConnection loads a persisted vellum row (not dropped as invalid)", async () => {
+    await createConnection(requireMainDb(), {
       name: "vellum",
       provider: "vellum",
       auth: { type: "platform" },
     });
-    const loaded = getConnection(db, "vellum");
+    const loaded = await getConnection(requireMainDb(), "vellum");
     expect(loaded).not.toBeNull();
     expect(loaded?.provider).toBe("vellum");
     expect(isVellumManagedConnection(loaded!)).toBe(true);
   });
 
-  test("listConnections includes a persisted vellum row", () => {
-    const db = setupDb();
-    createConnection(db, {
+  test("listConnections includes a persisted vellum row", async () => {
+    await createConnection(requireMainDb(), {
       name: "vellum",
       provider: "vellum",
       auth: { type: "platform" },
     });
-    const names = listConnections(db).map((c) => c.name);
+    const names = (await listConnections(requireMainDb())).map((c) => c.name);
     expect(names).toContain("vellum");
   });
 });

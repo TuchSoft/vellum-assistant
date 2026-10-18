@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
-// ── Vault mock (must precede imports) ───────────────────────────────────────
+// Vault mock (must precede imports)
 
 let vault: Record<string, string>;
 let vaultUnreachable: boolean;
@@ -20,11 +20,11 @@ mock.module("../../../security/secure-keys.js", () => ({
   },
 }));
 
-// ── Real imports (after mocks) ──────────────────────────────────────────────
+// Real imports (after mocks)
 
-import { getDb } from "../../../persistence/db-connection.js";
+import { describePg } from "../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
-import { providerConnections } from "../../../persistence/schema/inference.js";
 import { getConnection } from "../connections.js";
 import { repairSharedCredentialSlots } from "../credential-slot-repair.js";
 
@@ -32,46 +32,48 @@ await initializeDb();
 
 const LEGACY = "credential/openai-compatible/api_key";
 
-function seedRow(name: string, credential: string): void {
+async function seedRow(name: string, credential: string): Promise<void> {
+  const db = requireMainDb();
   const now = Date.now();
-  getDb()
-    .insert(providerConnections)
-    .values({
+  await db.run(
+    `INSERT INTO provider_connections (name, provider, auth, base_url, models, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
       name,
-      provider: "openai-compatible",
-      auth: JSON.stringify({ type: "api_key", credential }),
-      baseUrl: `https://${name}.example/v1`,
-      models: JSON.stringify([{ id: "model-1" }]),
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+      "openai-compatible",
+      JSON.stringify({ type: "api_key", credential }),
+      `https://${name}.example/v1`,
+      JSON.stringify([{ id: "model-1" }]),
+      now,
+      now,
+    ],
+  );
 }
 
-function refOf(name: string): string | undefined {
-  const row = getConnection(getDb(), name);
+async function refOf(name: string): Promise<string | undefined> {
+  const row = await getConnection(requireMainDb(), name);
   return row?.auth.type === "api_key" ? row.auth.credential : undefined;
 }
 
-beforeEach(() => {
-  getDb().delete(providerConnections).run();
-  vault = {};
-  vaultUnreachable = false;
-  setCalls.length = 0;
-});
+describePg("repairSharedCredentialSlots", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.orm.delete(db.schema.providerConnections);
+    vault = {};
+    vaultUnreachable = false;
+    setCalls.length = 0;
+  });
 
-describe("repairSharedCredentialSlots", () => {
   test("repoints sharing rows to per-connection slots and copies the shared value", async () => {
-    seedRow("openai-compatible-personal", LEGACY);
-    seedRow("openai-compatible-personal-2", LEGACY);
+    await seedRow("openai-compatible-personal", LEGACY);
+    await seedRow("openai-compatible-personal-2", LEGACY);
     vault[LEGACY] = "sk-last-saved";
 
-    await repairSharedCredentialSlots(getDb());
+    await repairSharedCredentialSlots();
 
-    expect(refOf("openai-compatible-personal")).toBe(
+    expect(await refOf("openai-compatible-personal")).toBe(
       "credential/openai-compatible-personal/api_key",
     );
-    expect(refOf("openai-compatible-personal-2")).toBe(
+    expect(await refOf("openai-compatible-personal-2")).toBe(
       "credential/openai-compatible-personal-2/api_key",
     );
     // Behavior-preserving: each new slot holds the value the row resolved
@@ -85,53 +87,55 @@ describe("repairSharedCredentialSlots", () => {
   });
 
   test("an empty shared slot still repoints the refs without writing secrets", async () => {
-    seedRow("openai-compatible-personal", LEGACY);
+    await seedRow("openai-compatible-personal", LEGACY);
 
-    await repairSharedCredentialSlots(getDb());
+    await repairSharedCredentialSlots();
 
-    expect(refOf("openai-compatible-personal")).toBe(
+    expect(await refOf("openai-compatible-personal")).toBe(
       "credential/openai-compatible-personal/api_key",
     );
     expect(setCalls).toEqual([]);
   });
 
   test("defers everything when the vault is unreachable", async () => {
-    seedRow("openai-compatible-personal", LEGACY);
+    await seedRow("openai-compatible-personal", LEGACY);
     vaultUnreachable = true;
 
-    await repairSharedCredentialSlots(getDb());
+    await repairSharedCredentialSlots();
 
-    expect(refOf("openai-compatible-personal")).toBe(LEGACY);
+    expect(await refOf("openai-compatible-personal")).toBe(LEGACY);
   });
 
   test("leaves per-connection and custom refs untouched; idempotent", async () => {
-    seedRow(
+    await seedRow(
       "openai-compatible-personal",
       "credential/openai-compatible-personal/api_key",
     );
-    seedRow("my-endpoint", "credential/shared-team-key/api_key");
+    await seedRow("my-endpoint", "credential/shared-team-key/api_key");
 
-    await repairSharedCredentialSlots(getDb());
-    await repairSharedCredentialSlots(getDb());
+    await repairSharedCredentialSlots();
+    await repairSharedCredentialSlots();
 
-    expect(refOf("openai-compatible-personal")).toBe(
+    expect(await refOf("openai-compatible-personal")).toBe(
       "credential/openai-compatible-personal/api_key",
     );
-    expect(refOf("my-endpoint")).toBe("credential/shared-team-key/api_key");
+    expect(await refOf("my-endpoint")).toBe(
+      "credential/shared-team-key/api_key",
+    );
     expect(setCalls).toEqual([]);
   });
 
   test("does not overwrite a value already present in a per-connection slot", async () => {
-    seedRow("openai-compatible-personal", LEGACY);
+    await seedRow("openai-compatible-personal", LEGACY);
     vault[LEGACY] = "sk-shared";
     vault["credential/openai-compatible-personal/api_key"] = "sk-already-mine";
 
-    await repairSharedCredentialSlots(getDb());
+    await repairSharedCredentialSlots();
 
     expect(vault["credential/openai-compatible-personal/api_key"]).toBe(
       "sk-already-mine",
     );
-    expect(refOf("openai-compatible-personal")).toBe(
+    expect(await refOf("openai-compatible-personal")).toBe(
       "credential/openai-compatible-personal/api_key",
     );
   });

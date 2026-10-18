@@ -5,11 +5,11 @@
  * comes back empty.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { getDb } from "../../../persistence/db-connection.js";
+import { describePg } from "../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
-import { providerConnections } from "../../../persistence/schema/inference.js";
 import { createConnection } from "../../../providers/inference/connections.js";
 import { credentialKey } from "../../../security/credential-key.js";
 import {
@@ -55,8 +55,11 @@ async function rejection(run: () => unknown): Promise<unknown> {
 }
 
 /** Point an api_key connection at the credential under test. */
-function createConnectionUsing(name: string, credential: string): void {
-  const result = createConnection(getDb(), {
+async function createConnectionUsing(
+  name: string,
+  credential: string,
+): Promise<void> {
+  const result = await createConnection(requireMainDb(), {
     name,
     provider: "openai",
     auth: { type: "api_key", credential },
@@ -66,19 +69,19 @@ function createConnectionUsing(name: string, credential: string): void {
   }
 }
 
-beforeEach(async () => {
-  getDb().delete(providerConnections).run();
-  await deleteSecureKeyAsync(ACCOUNT);
-});
-
-describe("credential delete in-use guard", () => {
+describePg("credential delete in-use guard", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.orm.delete(db.schema.providerConnections);
+    await deleteSecureKeyAsync(ACCOUNT);
+  });
   test("refuses a delete while a connection resolves auth through the credential", async () => {
     // GIVEN a stored credential
     await setSecureKeyAsync(ACCOUNT, "sk-test-value");
 
     // AND two LLM connections that dispatch with it
-    createConnectionUsing("router-primary", `${SERVICE}:${FIELD}`);
-    createConnectionUsing("router-fallback", ACCOUNT);
+    await createConnectionUsing("router-primary", `${SERVICE}:${FIELD}`);
+    await createConnectionUsing("router-fallback", ACCOUNT);
 
     // WHEN the credential is deleted without confirmation
     const error = await rejection(() =>
@@ -100,7 +103,7 @@ describe("credential delete in-use guard", () => {
   test("deletes the credential when the caller confirms with force", async () => {
     // GIVEN a stored credential a connection dispatches with
     await setSecureKeyAsync(ACCOUNT, "sk-test-value");
-    createConnectionUsing("router-primary", `${SERVICE}:${FIELD}`);
+    await createConnectionUsing("router-primary", `${SERVICE}:${FIELD}`);
 
     // WHEN the delete is retried with force
     const result = await deleteCredential({
@@ -121,7 +124,10 @@ describe("credential delete in-use guard", () => {
   test("deletes an unreferenced credential without confirmation", async () => {
     // GIVEN a stored credential no connection references
     await setSecureKeyAsync(ACCOUNT, "sk-test-value");
-    createConnectionUsing("other-connection", "credential/openai/api_key");
+    await createConnectionUsing(
+      "other-connection",
+      "credential/openai/api_key",
+    );
 
     // WHEN it is deleted without force
     const result = await deleteCredential({
@@ -137,7 +143,7 @@ describe("credential delete in-use guard", () => {
     // GIVEN a provider API key a connection dispatches with
     const apiKeyAccount = credentialKey("openrouter", FIELD);
     await setSecureKeyAsync(apiKeyAccount, "sk-test-value");
-    createConnectionUsing("router-primary", apiKeyAccount);
+    await createConnectionUsing("router-primary", apiKeyAccount);
 
     // WHEN it is deleted through the secrets route without confirmation
     const error = await rejection(() =>

@@ -1,12 +1,7 @@
-import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
-
-import { migrateCreateProviderConnections } from "../../../persistence/migrations/243-provider-connections.js";
-import { migrateProviderConnectionStatusLabel } from "../../../persistence/migrations/244-provider-connection-status-label.js";
-import { migrateProviderConnectionBaseUrlAndModels } from "../../../persistence/migrations/250-provider-connection-base-url-and-models.js";
-import * as schema from "../../../persistence/schema/index.js";
+import { describePg } from "../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import {
   createConnection,
   getConnection,
@@ -14,24 +9,14 @@ import {
   updateConnection,
 } from "../connections.js";
 
-function createTestDb() {
-  const sqlite = new Database(":memory:");
-  sqlite.exec("PRAGMA journal_mode=WAL");
-  return drizzle(sqlite, { schema });
-}
+describePg("openai-compatible connection CRUD", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.orm.delete(db.schema.providerConnections);
+  });
 
-function bootDb() {
-  const db = createTestDb();
-  migrateCreateProviderConnections(db);
-  migrateProviderConnectionStatusLabel(db);
-  migrateProviderConnectionBaseUrlAndModels(db);
-  return db;
-}
-
-describe("openai-compatible connection CRUD", () => {
-  test("create requires base_url", () => {
-    const db = bootDb();
-    const result = createConnection(db, {
+  test("create requires base_url", async () => {
+    const result = await createConnection(requireMainDb(), {
       name: "my-vllm",
       provider: "openai-compatible",
       auth: { type: "api_key", credential: "cred-vllm" },
@@ -43,9 +28,8 @@ describe("openai-compatible connection CRUD", () => {
     }
   });
 
-  test("create requires at least one model", () => {
-    const db = bootDb();
-    const result = createConnection(db, {
+  test("create requires at least one model", async () => {
+    const result = await createConnection(requireMainDb(), {
       name: "my-vllm",
       provider: "openai-compatible",
       auth: { type: "api_key", credential: "cred-vllm" },
@@ -57,9 +41,8 @@ describe("openai-compatible connection CRUD", () => {
     }
   });
 
-  test("create rejects empty models array", () => {
-    const db = bootDb();
-    const result = createConnection(db, {
+  test("create rejects empty models array", async () => {
+    const result = await createConnection(requireMainDb(), {
       name: "my-vllm",
       provider: "openai-compatible",
       auth: { type: "api_key", credential: "cred-vllm" },
@@ -72,13 +55,12 @@ describe("openai-compatible connection CRUD", () => {
     }
   });
 
-  test("create persists baseUrl and models; round-trips via getConnection", () => {
-    const db = bootDb();
+  test("create persists baseUrl and models; round-trips via getConnection", async () => {
     const models = [
       { id: "llama-3-70b" },
       { id: "mistral-7b", displayName: "Mistral 7B" },
     ];
-    const result = createConnection(db, {
+    const result = await createConnection(requireMainDb(), {
       name: "my-vllm",
       provider: "openai-compatible",
       auth: { type: "api_key", credential: "cred-vllm" },
@@ -91,15 +73,14 @@ describe("openai-compatible connection CRUD", () => {
       expect(result.connection.models).toEqual(models);
     }
 
-    const fetched = getConnection(db, "my-vllm");
+    const fetched = await getConnection(requireMainDb(), "my-vllm");
     expect(fetched).not.toBeNull();
     expect(fetched!.baseUrl).toBe("http://localhost:8080/v1");
     expect(fetched!.models).toEqual(models);
   });
 
-  test("non-openai-compatible providers leave baseUrl/models null", () => {
-    const db = bootDb();
-    const result = createConnection(db, {
+  test("non-openai-compatible providers leave baseUrl/models null", async () => {
+    const result = await createConnection(requireMainDb(), {
       name: "my-anthropic",
       provider: "anthropic",
       auth: { type: "api_key", credential: "cred-anthropic" },
@@ -111,9 +92,8 @@ describe("openai-compatible connection CRUD", () => {
     }
   });
 
-  test("updateConnection can change models without re-supplying baseUrl", () => {
-    const db = bootDb();
-    createConnection(db, {
+  test("updateConnection can change models without re-supplying baseUrl", async () => {
+    await createConnection(requireMainDb(), {
       name: "my-vllm",
       provider: "openai-compatible",
       auth: { type: "api_key", credential: "cred-vllm" },
@@ -121,7 +101,7 @@ describe("openai-compatible connection CRUD", () => {
       models: [{ id: "llama-3-70b" }],
     });
 
-    const result = updateConnection(db, "my-vllm", {
+    const result = await updateConnection(requireMainDb(), "my-vllm", {
       auth: { type: "api_key", credential: "cred-vllm" },
       models: [{ id: "llama-3-70b" }, { id: "mistral-7b" }],
     });
@@ -135,9 +115,8 @@ describe("openai-compatible connection CRUD", () => {
     }
   });
 
-  test("updateConnection rejects clearing models on openai-compatible", () => {
-    const db = bootDb();
-    createConnection(db, {
+  test("updateConnection rejects clearing models on openai-compatible", async () => {
+    await createConnection(requireMainDb(), {
       name: "my-vllm",
       provider: "openai-compatible",
       auth: { type: "api_key", credential: "cred-vllm" },
@@ -145,7 +124,7 @@ describe("openai-compatible connection CRUD", () => {
       models: [{ id: "llama-3-70b" }],
     });
 
-    const result = updateConnection(db, "my-vllm", {
+    const result = await updateConnection(requireMainDb(), "my-vllm", {
       auth: { type: "api_key", credential: "cred-vllm" },
       models: [],
     });
@@ -155,9 +134,8 @@ describe("openai-compatible connection CRUD", () => {
     }
   });
 
-  test("listConnections includes baseUrl and models", () => {
-    const db = bootDb();
-    createConnection(db, {
+  test("listConnections includes baseUrl and models", async () => {
+    await createConnection(requireMainDb(), {
       name: "my-vllm",
       provider: "openai-compatible",
       auth: { type: "api_key", credential: "cred-vllm" },
@@ -165,7 +143,7 @@ describe("openai-compatible connection CRUD", () => {
       models: [{ id: "llama-3-70b" }],
     });
 
-    const connections = listConnections(db, {
+    const connections = await listConnections(requireMainDb(), {
       provider: "openai-compatible",
     });
     expect(connections.length).toBe(1);

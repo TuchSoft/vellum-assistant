@@ -1,13 +1,7 @@
-import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
-
-import { migrateCreateProviderConnections } from "../../../persistence/migrations/243-provider-connections.js";
-import { migrateProviderConnectionStatusLabel } from "../../../persistence/migrations/244-provider-connection-status-label.js";
-import { migrateProviderConnectionBaseUrlAndModels } from "../../../persistence/migrations/250-provider-connection-base-url-and-models.js";
-import { migrateDropProviderConnectionStatus } from "../../../persistence/migrations/265-drop-provider-connection-status.js";
-import * as schema from "../../../persistence/schema/index.js";
+import { describePg } from "../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import {
   createConnection,
   getConnection,
@@ -16,28 +10,14 @@ import {
   updateConnection,
 } from "../connections.js";
 
-function createTestDb() {
-  const sqlite = new Database(":memory:");
-  sqlite.exec("PRAGMA journal_mode=WAL");
-  return drizzle(sqlite, { schema });
-}
+describePg("connection CRUD label defaults", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.orm.delete(db.schema.providerConnections);
+  });
 
-function bootDb() {
-  const db = createTestDb();
-  migrateCreateProviderConnections(db);
-  // 244 adds status + label columns. 265 drops status. This mirrors the
-  // production migration sequence so the Drizzle schema (which no longer
-  // declares status) stays consistent with the DB shape.
-  migrateProviderConnectionStatusLabel(db);
-  migrateDropProviderConnectionStatus(db);
-  migrateProviderConnectionBaseUrlAndModels(db);
-  return db;
-}
-
-describe("connection CRUD label defaults", () => {
-  test("new connection without label gets label=null", () => {
-    const db = bootDb();
-    const result = createConnection(db, {
+  test("new connection without label gets label=null", async () => {
+    const result = await createConnection(requireMainDb(), {
       name: "my-conn",
       provider: "anthropic",
       auth: { type: "platform" },
@@ -48,9 +28,8 @@ describe("connection CRUD label defaults", () => {
     }
   });
 
-  test("createConnection passes explicit label", () => {
-    const db = bootDb();
-    const result = createConnection(db, {
+  test("createConnection passes explicit label", async () => {
+    const result = await createConnection(requireMainDb(), {
       name: "labeled-conn",
       provider: "openai",
       auth: { type: "platform" },
@@ -62,30 +41,28 @@ describe("connection CRUD label defaults", () => {
     }
   });
 
-  test("getConnection returns label from DB", () => {
-    const db = bootDb();
-    createConnection(db, {
+  test("getConnection returns label from DB", async () => {
+    await createConnection(requireMainDb(), {
       name: "get-me",
       provider: "gemini",
       auth: { type: "platform" },
       label: "Gemini Pro",
     });
 
-    const conn = getConnection(db, "get-me");
+    const conn = await getConnection(requireMainDb(), "get-me");
     expect(conn).not.toBeNull();
     expect(conn!.label).toBe("Gemini Pro");
   });
 
-  test("updateConnection clears label when set to null", () => {
-    const db = bootDb();
-    createConnection(db, {
+  test("updateConnection clears label when set to null", async () => {
+    await createConnection(requireMainDb(), {
       name: "clear-label",
       provider: "openai",
       auth: { type: "platform" },
       label: "Old Label",
     });
 
-    const result = updateConnection(db, "clear-label", {
+    const result = await updateConnection(requireMainDb(), "clear-label", {
       auth: { type: "platform" },
       label: null,
     });
@@ -96,52 +73,54 @@ describe("connection CRUD label defaults", () => {
   });
 });
 
-describe("seedCanonicalConnections labels", () => {
-  test("first boot seeds the default label on the vellum connection", () => {
-    const db = bootDb();
-    seedCanonicalConnections(db);
+describePg("seedCanonicalConnections labels", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.orm.delete(db.schema.providerConnections);
+  });
 
-    const conns = listConnections(db);
+  test("first boot seeds the default label on the vellum connection", async () => {
+    await seedCanonicalConnections(requireMainDb());
+
+    const conns = await listConnections(requireMainDb());
     const byName = Object.fromEntries(conns.map((c) => [c.name, c]));
 
     expect(byName["vellum"]?.label).toBe("Vellum");
   });
 
-  test("second boot preserves user-customized label", () => {
-    const db = bootDb();
-    seedCanonicalConnections(db);
+  test("second boot preserves user-customized label", async () => {
+    await seedCanonicalConnections(requireMainDb());
 
     // User customizes the label.
-    updateConnection(db, "vellum", {
+    await updateConnection(requireMainDb(), "vellum", {
       auth: { type: "platform" },
       label: "Work Vellum",
     });
 
     // Reboot.
-    seedCanonicalConnections(db);
+    await seedCanonicalConnections(requireMainDb());
 
-    const conn = getConnection(db, "vellum");
+    const conn = await getConnection(requireMainDb(), "vellum");
     expect(conn?.label).toBe("Work Vellum");
   });
 
-  test("backfill fills null label on subsequent boot", () => {
-    const db = bootDb();
-    seedCanonicalConnections(db);
+  test("backfill fills null label on subsequent boot", async () => {
+    await seedCanonicalConnections(requireMainDb());
 
     // User clears the label (PATCH label: null).
-    updateConnection(db, "vellum", {
+    await updateConnection(requireMainDb(), "vellum", {
       auth: { type: "platform" },
       label: null,
     });
 
-    // Subsequent boots refill it — there's no distinction between "user
+    // Subsequent boots refill it, there's no distinction between "user
     // explicitly cleared" and "pre-seed row that never had one". Treating
     // both as "fill with default" is intentional; users who want a blank
     // label aren't a real cohort and we'd rather guarantee the default is
     // present for everyone.
-    seedCanonicalConnections(db);
+    await seedCanonicalConnections(requireMainDb());
 
-    const conn = getConnection(db, "vellum");
+    const conn = await getConnection(requireMainDb(), "vellum");
     expect(conn?.label).toBe("Vellum");
   });
 });

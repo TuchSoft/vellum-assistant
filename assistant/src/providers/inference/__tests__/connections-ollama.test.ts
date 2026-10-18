@@ -1,36 +1,21 @@
-import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
-
-import { migrateCreateProviderConnections } from "../../../persistence/migrations/243-provider-connections.js";
-import { migrateProviderConnectionStatusLabel } from "../../../persistence/migrations/244-provider-connection-status-label.js";
-import { migrateProviderConnectionBaseUrlAndModels } from "../../../persistence/migrations/250-provider-connection-base-url-and-models.js";
-import * as schema from "../../../persistence/schema/index.js";
+import { describePg } from "../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import {
   createConnection,
   getConnection,
   updateConnection,
 } from "../connections.js";
 
-function createTestDb() {
-  const sqlite = new Database(":memory:");
-  sqlite.exec("PRAGMA journal_mode=WAL");
-  return drizzle(sqlite, { schema });
-}
+describePg("ollama connection CRUD", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.orm.delete(db.schema.providerConnections);
+  });
 
-function bootDb() {
-  const db = createTestDb();
-  migrateCreateProviderConnections(db);
-  migrateProviderConnectionStatusLabel(db);
-  migrateProviderConnectionBaseUrlAndModels(db);
-  return db;
-}
-
-describe("ollama connection CRUD", () => {
-  test("create without baseUrl leaves it null and does not require models", () => {
-    const db = bootDb();
-    const result = createConnection(db, {
+  test("create without baseUrl leaves it null and does not require models", async () => {
+    const result = await createConnection(requireMainDb(), {
       name: "ollama-local",
       provider: "ollama",
       auth: { type: "none" },
@@ -42,9 +27,8 @@ describe("ollama connection CRUD", () => {
     }
   });
 
-  test("create persists an optional baseUrl", () => {
-    const db = bootDb();
-    const result = createConnection(db, {
+  test("create persists an optional baseUrl", async () => {
+    const result = await createConnection(requireMainDb(), {
       name: "ollama-remote",
       provider: "ollama",
       auth: { type: "none" },
@@ -56,20 +40,19 @@ describe("ollama connection CRUD", () => {
       expect(result.connection.models).toBeNull();
     }
 
-    const fetched = getConnection(db, "ollama-remote");
+    const fetched = await getConnection(requireMainDb(), "ollama-remote");
     expect(fetched).not.toBeNull();
     expect(fetched!.baseUrl).toBe("http://192.168.1.50:11434/v1");
   });
 
-  test("update can change and then clear baseUrl", () => {
-    const db = bootDb();
-    createConnection(db, {
+  test("update can change and then clear baseUrl", async () => {
+    await createConnection(requireMainDb(), {
       name: "ollama-local",
       provider: "ollama",
       auth: { type: "none" },
     });
 
-    const updated = updateConnection(db, "ollama-local", {
+    const updated = await updateConnection(requireMainDb(), "ollama-local", {
       auth: { type: "none" },
       baseUrl: "http://127.0.0.1:11434/v1",
     });
@@ -78,7 +61,7 @@ describe("ollama connection CRUD", () => {
       expect(updated.connection.baseUrl).toBe("http://127.0.0.1:11434/v1");
     }
 
-    const cleared = updateConnection(db, "ollama-local", {
+    const cleared = await updateConnection(requireMainDb(), "ollama-local", {
       auth: { type: "none" },
       baseUrl: null,
     });

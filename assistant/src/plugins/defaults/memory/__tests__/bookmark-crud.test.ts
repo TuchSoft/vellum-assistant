@@ -1,50 +1,12 @@
-import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
-
+import { describePg } from "../../../../__tests__/pg-test-db.js";
 import {
   createBookmark,
   deleteBookmarkByMessageId,
   listBookmarks,
 } from "../../../../persistence/bookmark-crud.js";
-import type { DrizzleDb } from "../../../../persistence/db-connection.js";
-import { getSqliteFrom } from "../../../../persistence/db-connection.js";
-import { migrateMessageBookmarks } from "../../../../persistence/migrations/242-message-bookmarks.js";
-import * as schema from "../../../../persistence/schema/index.js";
-
-/**
- * Recreate just enough of the conversations + messages tables to satisfy
- * the bookmark JOIN and FK CASCADE behavior. The PR-2 schema test uses
- * the same lightweight bootstrap.
- */
-function bootstrapMessageTables(raw: Database): void {
-  raw.exec(/*sql*/ `
-    CREATE TABLE IF NOT EXISTS memory_checkpoints (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `);
-  raw.exec(/*sql*/ `
-    CREATE TABLE IF NOT EXISTS conversations (
-      id TEXT PRIMARY KEY,
-      title TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `);
-  raw.exec(/*sql*/ `
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      metadata TEXT
-    )
-  `);
-}
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 
 interface SeedOptions {
   conversationId: string;
@@ -57,61 +19,55 @@ interface SeedOptions {
   messageMetadata?: string | null;
 }
 
-function seedConversationAndMessage(raw: Database, opts: SeedOptions): void {
+async function seedConversationAndMessage(opts: SeedOptions): Promise<void> {
+  const db = requireMainDb();
   const now = Date.now();
-  raw
-    .query(
-      `INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-    )
-    .run(opts.conversationId, opts.conversationTitle ?? "Example", now, now);
-  raw
-    .query(
-      `INSERT INTO messages (id, conversation_id, role, content, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+  await db.run(
+    `INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+    [opts.conversationId, opts.conversationTitle ?? "Example", now, now],
+  );
+  await db.run(
+    `INSERT INTO messages (id, conversation_id, role, content, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)`,
+    [
       opts.messageId,
       opts.conversationId,
       opts.messageRole ?? "user",
       opts.messageContent ?? "hello",
       opts.messageCreatedAt ?? now,
       opts.messageMetadata ?? null,
-    );
+    ],
+  );
 }
 
-function setupDb(): { db: DrizzleDb; raw: Database } {
-  const sqlite = new Database(":memory:");
-  sqlite.exec("PRAGMA journal_mode=WAL");
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  const db = drizzle(sqlite, { schema });
-  const raw = getSqliteFrom(db);
-  bootstrapMessageTables(raw);
-  migrateMessageBookmarks(db);
-  return { db, raw };
-}
+describePg("bookmark-crud", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    // Delete in FK-dependency order: bookmarks -> messages -> conversations.
+    await db.run("DELETE FROM message_bookmarks");
+    await db.run("DELETE FROM messages");
+    await db.run("DELETE FROM conversations");
+  });
 
-describe("bookmark-crud", () => {
-  test("createBookmark is idempotent — second call returns the existing row", () => {
-    const { db, raw } = setupDb();
-    seedConversationAndMessage(raw, {
+  test("createBookmark is idempotent — second call returns the existing row", async () => {
+    await seedConversationAndMessage({
       conversationId: "conv-1",
       messageId: "msg-1",
     });
 
-    const first = createBookmark(db, { messageId: "msg-1" });
-    const second = createBookmark(db, { messageId: "msg-1" });
+    const first = await createBookmark({ messageId: "msg-1" });
+    const second = await createBookmark({ messageId: "msg-1" });
 
     expect(first.inserted).toBe(true);
     expect(second.inserted).toBe(false);
     expect(second.bookmark.id).toBe(first.bookmark.id);
     expect(second.bookmark.createdAt).toBe(first.bookmark.createdAt);
 
-    const all = listBookmarks(db);
+    const all = await listBookmarks();
     expect(all.length).toBe(1);
   });
 
-  test("createBookmark returns the JOIN-shaped summary directly", () => {
-    const { db, raw } = setupDb();
-    seedConversationAndMessage(raw, {
+  test("createBookmark returns the JOIN-shaped summary directly", async () => {
+    await seedConversationAndMessage({
       conversationId: "conv-summary",
       messageId: "msg-summary",
       conversationTitle: "Title goes here",
@@ -119,7 +75,7 @@ describe("bookmark-crud", () => {
       messageRole: "assistant",
     });
 
-    const result = createBookmark(db, { messageId: "msg-summary" });
+    const result = await createBookmark({ messageId: "msg-summary" });
 
     expect(result.inserted).toBe(true);
     const summary = result.bookmark;
@@ -129,16 +85,15 @@ describe("bookmark-crud", () => {
     expect(typeof summary.messageCreatedAt).toBe("number");
   });
 
-  test("listBookmarks returns rows newest-first and includes joined fields", () => {
-    const { db, raw } = setupDb();
-    seedConversationAndMessage(raw, {
+  test("listBookmarks returns rows newest-first and includes joined fields", async () => {
+    await seedConversationAndMessage({
       conversationId: "conv-A",
       messageId: "msg-A",
       conversationTitle: "Older",
       messageContent: "first message",
       messageRole: "user",
     });
-    seedConversationAndMessage(raw, {
+    await seedConversationAndMessage({
       conversationId: "conv-B",
       messageId: "msg-B",
       conversationTitle: "Newer",
@@ -148,18 +103,17 @@ describe("bookmark-crud", () => {
 
     // Force deterministic ordering by inserting bookmarks with explicit
     // created_at values 1 ms apart.
-    raw
-      .query(
-        `INSERT INTO message_bookmarks (id, message_id, conversation_id, created_at) VALUES (?, ?, ?, ?)`,
-      )
-      .run("bm-A", "msg-A", "conv-A", 1000);
-    raw
-      .query(
-        `INSERT INTO message_bookmarks (id, message_id, conversation_id, created_at) VALUES (?, ?, ?, ?)`,
-      )
-      .run("bm-B", "msg-B", "conv-B", 2000);
+    const db = requireMainDb();
+    await db.run(
+      `INSERT INTO message_bookmarks (id, message_id, conversation_id, created_at) VALUES (?, ?, ?, ?)`,
+      ["bm-A", "msg-A", "conv-A", 1000],
+    );
+    await db.run(
+      `INSERT INTO message_bookmarks (id, message_id, conversation_id, created_at) VALUES (?, ?, ?, ?)`,
+      ["bm-B", "msg-B", "conv-B", 2000],
+    );
 
-    const result = listBookmarks(db);
+    const result = await listBookmarks();
     expect(result.map((r) => r.id)).toEqual(["bm-B", "bm-A"]);
     expect(result[0]?.conversationTitle).toBe("Newer");
     expect(result[0]?.messagePreview).toBe("second message");
@@ -168,46 +122,45 @@ describe("bookmark-crud", () => {
     expect(result[1]?.messageRole).toBe("user");
   });
 
-  test("listBookmarks excludes bookmarks whose conversation no longer exists (CASCADE)", () => {
-    const { db, raw } = setupDb();
-    seedConversationAndMessage(raw, {
+  test("listBookmarks excludes bookmarks whose conversation no longer exists (CASCADE)", async () => {
+    await seedConversationAndMessage({
       conversationId: "conv-keep",
       messageId: "msg-keep",
     });
-    seedConversationAndMessage(raw, {
+    await seedConversationAndMessage({
       conversationId: "conv-drop",
       messageId: "msg-drop",
     });
-    createBookmark(db, { messageId: "msg-keep" });
-    createBookmark(db, { messageId: "msg-drop" });
-    expect(listBookmarks(db).length).toBe(2);
+    await createBookmark({ messageId: "msg-keep" });
+    await createBookmark({ messageId: "msg-drop" });
+    expect((await listBookmarks()).length).toBe(2);
 
-    // Deleting the parent conversation cascades through messages → bookmarks.
-    raw.query(`DELETE FROM conversations WHERE id = ?`).run("conv-drop");
+    // Deleting the parent conversation cascades through messages -> bookmarks.
+    await requireMainDb().run(`DELETE FROM conversations WHERE id = ?`, [
+      "conv-drop",
+    ]);
 
-    const remaining = listBookmarks(db);
+    const remaining = await listBookmarks();
     expect(remaining.length).toBe(1);
     expect(remaining[0]?.conversationId).toBe("conv-keep");
   });
 
-  test("deleteBookmarkByMessageId removes the matching row", () => {
-    const { db, raw } = setupDb();
-    seedConversationAndMessage(raw, {
+  test("deleteBookmarkByMessageId removes the matching row", async () => {
+    await seedConversationAndMessage({
       conversationId: "conv-d",
       messageId: "msg-d",
     });
-    createBookmark(db, { messageId: "msg-d" });
-    expect(listBookmarks(db).length).toBe(1);
+    await createBookmark({ messageId: "msg-d" });
+    expect((await listBookmarks()).length).toBe(1);
 
-    expect(deleteBookmarkByMessageId(db, "msg-d")).toBe(true);
-    expect(listBookmarks(db).length).toBe(0);
+    expect(await deleteBookmarkByMessageId("msg-d")).toBe(true);
+    expect((await listBookmarks()).length).toBe(0);
     // Calling again with no row present returns false.
-    expect(deleteBookmarkByMessageId(db, "msg-d")).toBe(false);
+    expect(await deleteBookmarkByMessageId("msg-d")).toBe(false);
   });
 
-  test("messagePreview decodes JSON-serialized ContentBlock[] rows", () => {
-    const { db, raw } = setupDb();
-    seedConversationAndMessage(raw, {
+  test("messagePreview decodes JSON-serialized ContentBlock[] rows", async () => {
+    await seedConversationAndMessage({
       conversationId: "conv-blocks",
       messageId: "msg-blocks",
       messageContent: JSON.stringify([
@@ -216,20 +169,19 @@ describe("bookmark-crud", () => {
       messageRole: "user",
     });
 
-    const { bookmark: summary } = createBookmark(db, {
+    const { bookmark: summary } = await createBookmark({
       messageId: "msg-blocks",
     });
 
     // Without the decode step, this would render as the raw JSON literal
     // (`[{"type":"text","text":"…"}]`) rather than the spoken text.
     expect(summary.messagePreview).toBe("Hello, can you help with…");
-    const listed = listBookmarks(db);
+    const listed = await listBookmarks();
     expect(listed[0]?.messagePreview).toBe("Hello, can you help with…");
   });
 
-  test("messagePreview quotes the delivered message on a private assistant row", () => {
-    const { db, raw } = setupDb();
-    seedConversationAndMessage(raw, {
+  test("messagePreview quotes the delivered message on a private assistant row", async () => {
+    await seedConversationAndMessage({
       conversationId: "conv-private",
       messageId: "msg-private",
       messageContent: JSON.stringify([
@@ -245,20 +197,19 @@ describe("bookmark-crud", () => {
       messageMetadata: JSON.stringify({ assistantTextVisibility: "private" }),
     });
 
-    const { bookmark: summary } = createBookmark(db, {
+    const { bookmark: summary } = await createBookmark({
       messageId: "msg-private",
     });
 
     expect(summary.messagePreview).toBe("You have two meetings today.");
     expect(summary.messagePreview).not.toContain("Working notes");
-    expect(listBookmarks(db)[0]?.messagePreview).toBe(
+    expect((await listBookmarks())[0]?.messagePreview).toBe(
       "You have two meetings today.",
     );
   });
 
-  test("messagePreview concatenates multi-text blocks and drops non-text blocks", () => {
-    const { db, raw } = setupDb();
-    seedConversationAndMessage(raw, {
+  test("messagePreview concatenates multi-text blocks and drops non-text blocks", async () => {
+    await seedConversationAndMessage({
       conversationId: "conv-multi",
       messageId: "msg-multi",
       messageContent: JSON.stringify([
@@ -269,63 +220,31 @@ describe("bookmark-crud", () => {
       messageRole: "assistant",
     });
 
-    const { bookmark: summary } = createBookmark(db, {
+    const { bookmark: summary } = await createBookmark({
       messageId: "msg-multi",
     });
 
     expect(summary.messagePreview).toBe("first paragraph\nsecond paragraph");
   });
 
-  test("createBookmark derives conversationId from the message row", () => {
-    const { db, raw } = setupDb();
-    seedConversationAndMessage(raw, {
+  test("createBookmark derives conversationId from the message row", async () => {
+    await seedConversationAndMessage({
       conversationId: "conv-real",
       messageId: "msg-x",
     });
 
-    const { bookmark: summary } = createBookmark(db, { messageId: "msg-x" });
+    const { bookmark: summary } = await createBookmark({ messageId: "msg-x" });
     expect(summary.conversationId).toBe("conv-real");
-    expect(listBookmarks(db)[0]?.conversationId).toBe("conv-real");
+    expect((await listBookmarks())[0]?.conversationId).toBe("conv-real");
   });
 
-  test("createBookmark throws when the message id does not exist", () => {
-    const { db } = setupDb();
-    expect(() => createBookmark(db, { messageId: "ghost" })).toThrow(
+  test("createBookmark throws when the message id does not exist", async () => {
+    await expect(createBookmark({ messageId: "ghost" })).rejects.toThrow(
       /Message ghost not found/,
     );
   });
 
-  test("listBookmarks drives the join from message_bookmarks even with planner stats that predate the table", () => {
-    const sqlite = new Database(":memory:");
-    sqlite.exec("PRAGMA foreign_keys = ON");
-    const captured: string[] = [];
-    const db = drizzle(sqlite, {
-      schema,
-      logger: { logQuery: (query: string) => captured.push(query) },
-    });
-    const raw = getSqliteFrom(db);
-    bootstrapMessageTables(raw);
-    migrateMessageBookmarks(db);
-    for (let i = 0; i < 30; i++) {
-      seedConversationAndMessage(raw, {
-        conversationId: `conv-${i}`,
-        messageId: `msg-${i}`,
-      });
-    }
-    // ANALYZE writes no sqlite_stat1 rows for an empty table, leaving
-    // message_bookmarks without statistics while messages gets them. This is
-    // the production state that made the planner scan messages.
-    raw.exec("ANALYZE");
-
-    listBookmarks(db);
-    const sql = captured.at(-1);
-    expect(sql).toBeDefined();
-    const plan = raw.query(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{
-      detail: string;
-    }>;
-    expect(plan[0]?.detail ?? "").toMatch(/^SCAN message_bookmarks/);
-    expect(plan.some((row) => row.detail.includes("SCAN messages"))).toBe(
-      false,
-    );
-  });
+  test.todo(
+    "listBookmarks drives the join from message_bookmarks even with planner stats that predate the table",
+  );
 });

@@ -60,18 +60,18 @@ import {
 import { seedOAuthProviders } from "../oauth/seed-providers.js";
 import { getDb } from "../persistence/db-connection.js";
 import { getSqliteFrom } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { migrateOAuthProvidersTokenAuthMethodDefault } from "../persistence/migrations/216-oauth-providers-token-auth-method.js";
-import { resetTestTables } from "../persistence/raw-query.js";
-import { oauthProviders } from "../persistence/schema/oauth.js";
 import { resetDbForTesting } from "./db-test-helpers.js";
 import { getMockFetchCalls, mockFetch, resetMockFetch } from "./mock-fetch.js";
+import { describePg } from "./pg-test-db.js";
 
 await initializeDb();
 
 /** Seed a minimal provider row for FK satisfaction. */
-function seedTestProvider(provider = "github"): void {
-  seedProviders([
+async function seedTestProvider(provider = "github"): Promise<void> {
+  await seedProviders([
     {
       provider,
       authorizeUrl: `https://${provider}.example.com/authorize`,
@@ -83,14 +83,22 @@ function seedTestProvider(provider = "github"): void {
 
 /** Create an app linked to the given provider. Returns the app row. */
 async function createTestApp(provider = "github", clientId = "client-1") {
-  seedTestProvider(provider);
+  await seedTestProvider(provider);
   return await upsertApp(provider, clientId);
 }
 
-beforeEach(() => {
+async function resetOAuthTables(): Promise<void> {
+  const db = requireMainDb();
+  // Delete in FK-dependency order: connections -> apps -> providers.
+  for (const table of ["oauth_connections", "oauth_apps", "oauth_providers"]) {
+    await db.run(`DELETE FROM "${table}"`);
+  }
+}
+
+beforeEach(async () => {
   // Clear OAuth tables between tests instead of full DB reset + migration.
-  // Delete in FK-dependency order: connections → apps → providers.
-  resetTestTables("oauth_connections", "oauth_apps", "oauth_providers");
+  // Delete in FK-dependency order: connections -> apps -> providers.
+  await resetOAuthTables();
   mockDeleteSecureKeyAsync.mockClear();
   mockSetSecureKeyAsync.mockClear();
   secureKeyValues.clear();
@@ -105,10 +113,10 @@ afterAll(() => {
 // Provider operations
 // ---------------------------------------------------------------------------
 
-describe("provider operations", () => {
+describePg("provider operations", () => {
   describe("seedProviders", () => {
-    test("creates rows for new providers", () => {
-      seedProviders([
+    test("creates rows for new providers", async () => {
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/login/oauth/authorize",
@@ -125,7 +133,7 @@ describe("provider operations", () => {
         },
       ]);
 
-      const gh = getProvider("github");
+      const gh = await getProvider("github");
       expect(gh).toBeDefined();
       expect(gh!.provider).toBe("github");
       expect(gh!.authorizeUrl).toBe("https://github.com/login/oauth/authorize");
@@ -134,7 +142,7 @@ describe("provider operations", () => {
       );
       expect(JSON.parse(gh!.defaultScopes)).toEqual(["repo", "user"]);
 
-      const goog = getProvider("google");
+      const goog = await getProvider("google");
       expect(goog).toBeDefined();
       expect(goog!.provider).toBe("google");
       expect(JSON.parse(goog!.authorizeParams!)).toEqual({
@@ -142,8 +150,8 @@ describe("provider operations", () => {
       });
     });
 
-    test("updates implementation fields while preserving user-customizable fields on re-seed", () => {
-      seedProviders([
+    test("updates implementation fields while preserving user-customizable fields on re-seed", async () => {
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/login/oauth/authorize",
@@ -154,13 +162,13 @@ describe("provider operations", () => {
         },
       ]);
 
-      const original = getProvider("github");
+      const original = await getProvider("github");
       expect(original).toBeDefined();
       expect(original!.baseUrl).toBe("https://api.github.com");
       const originalCreatedAt = original!.createdAt;
 
       // Re-seed with corrected values (simulates a code fix deployed on upgrade)
-      seedProviders([
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/login/oauth/authorize-v2",
@@ -170,7 +178,7 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("github");
+      const row = await getProvider("github");
       expect(row).toBeDefined();
       // Implementation fields should be overwritten by the re-seed
       expect(row!.authorizeUrl).toBe(
@@ -189,8 +197,8 @@ describe("provider operations", () => {
       expect(row!.createdAt).toBe(originalCreatedAt);
     });
 
-    test("persists pingUrl when provided", () => {
-      seedProviders([
+    test("persists pingUrl when provided", async () => {
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize",
@@ -200,12 +208,12 @@ describe("provider operations", () => {
           pingUrl: "https://api.github.com/user",
         },
       ]);
-      const row = getProvider("github");
+      const row = await getProvider("github");
       expect(row!.pingUrl).toBe("https://api.github.com/user");
     });
 
-    test("pingUrl defaults to null when omitted", () => {
-      seedProviders([
+    test("pingUrl defaults to null when omitted", async () => {
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize",
@@ -213,13 +221,13 @@ describe("provider operations", () => {
           defaultScopes: ["repo"],
         },
       ]);
-      const row = getProvider("github");
+      const row = await getProvider("github");
       expect(row!.pingUrl).toBeNull();
     });
 
-    test("preserves user-customizable fields while overwriting implementation fields on re-seed", () => {
+    test("preserves user-customizable fields while overwriting implementation fields on re-seed", async () => {
       // Initial seed with all fields
-      seedProviders([
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize",
@@ -237,17 +245,17 @@ describe("provider operations", () => {
       ]);
 
       // Manually update user-customizable fields to simulate user edits
-      const db = getDb();
-      db.update(oauthProviders)
+      const db = requireMainDb();
+      await db.orm
+        .update(db.schema.oauthProviders)
         .set({
           defaultScopes: JSON.stringify(["repo", "user", "gist"]),
           baseUrl: "https://custom.github.com/api",
         })
-        .where(eq(oauthProviders.provider, "github"))
-        .run();
+        .where(eq(db.schema.oauthProviders.provider, "github"));
 
       // Verify the manual updates took effect
-      const beforeReseed = getProvider("github");
+      const beforeReseed = await getProvider("github");
       expect(JSON.parse(beforeReseed!.defaultScopes)).toEqual([
         "repo",
         "user",
@@ -256,7 +264,7 @@ describe("provider operations", () => {
       expect(beforeReseed!.baseUrl).toBe("https://custom.github.com/api");
 
       // Re-seed with updated implementation fields
-      seedProviders([
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize-v2",
@@ -274,7 +282,7 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("github");
+      const row = await getProvider("github");
       expect(row).toBeDefined();
 
       // defaultScopes are overwritten by the seed data
@@ -294,8 +302,8 @@ describe("provider operations", () => {
       expect(row!.pingUrl).toBe("https://api.github.com/user-v2");
     });
 
-    test("persists custom scopeSeparator when provided", () => {
-      seedProviders([
+    test("persists custom scopeSeparator when provided", async () => {
+      await seedProviders([
         {
           provider: "test-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -306,13 +314,13 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("test-provider");
+      const row = await getProvider("test-provider");
       expect(row).toBeDefined();
       expect(row!.scopeSeparator).toBe(",");
     });
 
-    test("scopeSeparator defaults to ' ' when omitted", () => {
-      seedProviders([
+    test("scopeSeparator defaults to ' ' when omitted", async () => {
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize",
@@ -321,13 +329,13 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("github");
+      const row = await getProvider("github");
       expect(row).toBeDefined();
       expect(row!.scopeSeparator).toBe(" ");
     });
 
-    test("re-seeding with a changed scopeSeparator overwrites the stored value", () => {
-      seedProviders([
+    test("re-seeding with a changed scopeSeparator overwrites the stored value", async () => {
+      await seedProviders([
         {
           provider: "linear",
           authorizeUrl: "https://linear.app/oauth/authorize",
@@ -338,12 +346,12 @@ describe("provider operations", () => {
         },
       ]);
 
-      const first = getProvider("linear");
+      const first = await getProvider("linear");
       expect(first!.scopeSeparator).toBe(" ");
 
       // Re-seed with a different separator — it should be overwritten,
       // proving scopeSeparator is in the onConflictDoUpdate set clause.
-      seedProviders([
+      await seedProviders([
         {
           provider: "linear",
           authorizeUrl: "https://linear.app/oauth/authorize",
@@ -354,12 +362,12 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("linear");
+      const row = await getProvider("linear");
       expect(row!.scopeSeparator).toBe(",");
     });
 
-    test("persists refreshUrl when provided", () => {
-      seedProviders([
+    test("persists refreshUrl when provided", async () => {
+      await seedProviders([
         {
           provider: "test-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -369,13 +377,13 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("test-provider");
+      const row = await getProvider("test-provider");
       expect(row).toBeDefined();
       expect(row!.refreshUrl).toBe("https://refresh.example.com/token");
     });
 
-    test("refreshUrl defaults to null when omitted", () => {
-      seedProviders([
+    test("refreshUrl defaults to null when omitted", async () => {
+      await seedProviders([
         {
           provider: "test-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -384,13 +392,13 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("test-provider");
+      const row = await getProvider("test-provider");
       expect(row).toBeDefined();
       expect(row!.refreshUrl).toBeNull();
     });
 
-    test("re-seeding with a changed refreshUrl overwrites the stored value", () => {
-      seedProviders([
+    test("re-seeding with a changed refreshUrl overwrites the stored value", async () => {
+      await seedProviders([
         {
           provider: "test-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -400,13 +408,13 @@ describe("provider operations", () => {
         },
       ]);
 
-      const first = getProvider("test-provider");
+      const first = await getProvider("test-provider");
       expect(first!.refreshUrl).toBe("https://refresh.example.com/token");
 
       // Re-seed with a different refreshUrl — it should be overwritten,
       // proving refreshUrl is in the onConflictDoUpdate set clause (not
       // preserved like baseUrl).
-      seedProviders([
+      await seedProviders([
         {
           provider: "test-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -416,12 +424,12 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("test-provider");
+      const row = await getProvider("test-provider");
       expect(row!.refreshUrl).toBe("https://refresh-v2.example.com/token");
     });
 
-    test("persists revokeUrl and revokeBodyTemplate when provided", () => {
-      seedProviders([
+    test("persists revokeUrl and revokeBodyTemplate when provided", async () => {
+      await seedProviders([
         {
           provider: "test-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -432,7 +440,7 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("test-provider");
+      const row = await getProvider("test-provider");
       expect(row).toBeDefined();
       expect(row!.revokeUrl).toBe("https://revoke.example.com");
       expect(JSON.parse(row!.revokeBodyTemplate!)).toEqual({
@@ -440,8 +448,8 @@ describe("provider operations", () => {
       });
     });
 
-    test("revokeUrl and revokeBodyTemplate default to null when omitted", () => {
-      seedProviders([
+    test("revokeUrl and revokeBodyTemplate default to null when omitted", async () => {
+      await seedProviders([
         {
           provider: "test-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -450,14 +458,14 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("test-provider");
+      const row = await getProvider("test-provider");
       expect(row).toBeDefined();
       expect(row!.revokeUrl).toBeNull();
       expect(row!.revokeBodyTemplate).toBeNull();
     });
 
-    test("writes logoUrl on insert", () => {
-      seedProviders([
+    test("writes logoUrl on insert", async () => {
+      await seedProviders([
         {
           provider: "google",
           authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -468,13 +476,13 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("google");
+      const row = await getProvider("google");
       expect(row).toBeDefined();
       expect(row!.logoUrl).toBe("https://cdn.simpleicons.org/google");
     });
 
-    test("overwrites logoUrl on conflict", () => {
-      seedProviders([
+    test("overwrites logoUrl on conflict", async () => {
+      await seedProviders([
         {
           provider: "google",
           authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -485,14 +493,14 @@ describe("provider operations", () => {
         },
       ]);
 
-      expect(getProvider("google")!.logoUrl).toBe(
+      expect((await getProvider("google"))!.logoUrl).toBe(
         "https://cdn.simpleicons.org/google",
       );
 
       // Re-seed with a different logoUrl — it should be overwritten,
       // proving logoUrl is in the onConflictDoUpdate set clause alongside
       // the other display-metadata fields.
-      seedProviders([
+      await seedProviders([
         {
           provider: "google",
           authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -503,12 +511,12 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("google");
+      const row = await getProvider("google");
       expect(row!.logoUrl).toBe("https://cdn.simpleicons.org/google-v2");
     });
 
-    test("re-seeding with a changed revokeUrl overwrites the stored value", () => {
-      seedProviders([
+    test("re-seeding with a changed revokeUrl overwrites the stored value", async () => {
+      await seedProviders([
         {
           provider: "test-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -518,13 +526,13 @@ describe("provider operations", () => {
         },
       ]);
 
-      const first = getProvider("test-provider");
+      const first = await getProvider("test-provider");
       expect(first!.revokeUrl).toBe("https://revoke.example.com");
 
       // Re-seed with a different revokeUrl — it should be overwritten,
       // proving revokeUrl is in the onConflictDoUpdate set clause (not
       // preserved like baseUrl).
-      seedProviders([
+      await seedProviders([
         {
           provider: "test-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -534,21 +542,21 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("test-provider");
+      const row = await getProvider("test-provider");
       expect(row!.revokeUrl).toBe("https://revoke-v2.example.com");
     });
 
-    test("seedOAuthProviders seeds Google, Twitter, and Linear with revoke config and leaves other providers null", () => {
-      seedOAuthProviders();
+    test("seedOAuthProviders seeds Google, Twitter, and Linear with revoke config and leaves other providers null", async () => {
+      await seedOAuthProviders();
 
-      const google = getProvider("google");
+      const google = await getProvider("google");
       expect(google).toBeDefined();
       expect(google!.revokeUrl).toBe("https://oauth2.googleapis.com/revoke");
       expect(JSON.parse(google!.revokeBodyTemplate!)).toEqual({
         token: "{access_token}",
       });
 
-      const twitter = getProvider("twitter");
+      const twitter = await getProvider("twitter");
       expect(twitter).toBeDefined();
       expect(twitter!.revokeUrl).toBe("https://api.x.com/2/oauth2/revoke");
       expect(JSON.parse(twitter!.revokeBodyTemplate!)).toEqual({
@@ -557,37 +565,37 @@ describe("provider operations", () => {
         client_id: "{client_id}",
       });
 
-      const linear = getProvider("linear");
+      const linear = await getProvider("linear");
       expect(linear).toBeDefined();
       expect(linear!.revokeUrl).toBe("https://api.linear.app/oauth/revoke");
       expect(JSON.parse(linear!.revokeBodyTemplate!)).toEqual({
         token: "{access_token}",
       });
 
-      const slack = getProvider("slack");
+      const slack = await getProvider("slack");
       expect(slack).toBeDefined();
       expect(slack!.revokeUrl).toBeNull();
       expect(slack!.revokeBodyTemplate).toBeNull();
 
-      const github = getProvider("github");
+      const github = await getProvider("github");
       expect(github).toBeDefined();
       expect(github!.revokeUrl).toBeNull();
 
-      const outlook = getProvider("outlook");
+      const outlook = await getProvider("outlook");
       expect(outlook).toBeDefined();
       expect(outlook!.revokeUrl).toBeNull();
     });
 
-    test("seedOAuthProviders seeds google with a host-only base URL", () => {
-      seedOAuthProviders();
-      const google = getProvider("google");
+    test("seedOAuthProviders seeds google with a host-only base URL", async () => {
+      await seedOAuthProviders();
+      const google = await getProvider("google");
       expect(google!.baseUrl).toBe("https://www.googleapis.com");
     });
 
-    test("seedOAuthProviders advances a stale gmail-scoped google base URL to the host-only default", () => {
+    test("seedOAuthProviders advances a stale gmail-scoped google base URL to the host-only default", async () => {
       // Simulate a pre-existing install seeded with the old mailbox-scoped base
       // URL, then preserved by seedProviders' COALESCE on subsequent startups.
-      seedProviders([
+      await seedProviders([
         {
           provider: "google",
           authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -596,17 +604,19 @@ describe("provider operations", () => {
           defaultScopes: [],
         },
       ]);
-      expect(getProvider("google")!.baseUrl).toBe(
+      expect((await getProvider("google"))!.baseUrl).toBe(
         "https://gmail.googleapis.com/gmail/v1/users/me",
       );
 
-      seedOAuthProviders();
+      await seedOAuthProviders();
 
-      expect(getProvider("google")!.baseUrl).toBe("https://www.googleapis.com");
+      expect((await getProvider("google"))!.baseUrl).toBe(
+        "https://www.googleapis.com",
+      );
     });
 
-    test("seedOAuthProviders leaves a user-customized google base URL untouched", () => {
-      seedProviders([
+    test("seedOAuthProviders leaves a user-customized google base URL untouched", async () => {
+      await seedProviders([
         {
           provider: "google",
           authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -616,15 +626,15 @@ describe("provider operations", () => {
         },
       ]);
 
-      seedOAuthProviders();
+      await seedOAuthProviders();
 
-      expect(getProvider("google")!.baseUrl).toBe(
+      expect((await getProvider("google"))!.baseUrl).toBe(
         "https://proxy.internal.example/google",
       );
     });
 
-    test("migrateProviderBaseUrl only rewrites rows holding the stale value", () => {
-      seedProviders([
+    test("migrateProviderBaseUrl only rewrites rows holding the stale value", async () => {
+      await seedProviders([
         {
           provider: "test-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -634,30 +644,30 @@ describe("provider operations", () => {
         },
       ]);
 
-      const changed = migrateProviderBaseUrl({
+      const changed = await migrateProviderBaseUrl({
         provider: "test-provider",
         staleBaseUrl: "https://old.example.com",
         nextBaseUrl: "https://new.example.com",
       });
       expect(changed).toBe(1);
-      expect(getProvider("test-provider")!.baseUrl).toBe(
+      expect((await getProvider("test-provider"))!.baseUrl).toBe(
         "https://new.example.com",
       );
 
       // Idempotent: a second run matches nothing.
-      const changedAgain = migrateProviderBaseUrl({
+      const changedAgain = await migrateProviderBaseUrl({
         provider: "test-provider",
         staleBaseUrl: "https://old.example.com",
         nextBaseUrl: "https://new.example.com",
       });
       expect(changedAgain).toBe(0);
-      expect(getProvider("test-provider")!.baseUrl).toBe(
+      expect((await getProvider("test-provider"))!.baseUrl).toBe(
         "https://new.example.com",
       );
     });
 
-    test("applies client_secret_post default when tokenEndpointAuthMethod is omitted from seed", () => {
-      seedProviders([
+    test("applies client_secret_post default when tokenEndpointAuthMethod is omitted from seed", async () => {
+      await seedProviders([
         {
           provider: "no-auth-method-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -667,13 +677,13 @@ describe("provider operations", () => {
           // Note: tokenEndpointAuthMethod intentionally omitted
         },
       ]);
-      const row = getProvider("no-auth-method-provider");
+      const row = await getProvider("no-auth-method-provider");
       expect(row).toBeDefined();
       expect(row!.tokenEndpointAuthMethod).toBe("client_secret_post");
     });
 
-    test("defaults tokenExchangeBodyFormat to 'form' when omitted from seed", () => {
-      seedProviders([
+    test("defaults tokenExchangeBodyFormat to 'form' when omitted from seed", async () => {
+      await seedProviders([
         {
           provider: "no-body-format-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -683,13 +693,13 @@ describe("provider operations", () => {
           // Note: tokenExchangeBodyFormat intentionally omitted
         },
       ]);
-      const row = getProvider("no-body-format-provider");
+      const row = await getProvider("no-body-format-provider");
       expect(row).toBeDefined();
       expect(row!.tokenExchangeBodyFormat).toBe("form");
     });
 
-    test("persists explicit tokenExchangeBodyFormat value on seed", () => {
-      seedProviders([
+    test("persists explicit tokenExchangeBodyFormat value on seed", async () => {
+      await seedProviders([
         {
           provider: "json-body-format-provider",
           authorizeUrl: "https://example.com/authorize",
@@ -699,12 +709,12 @@ describe("provider operations", () => {
           tokenExchangeBodyFormat: "json",
         },
       ]);
-      const row = getProvider("json-body-format-provider");
+      const row = await getProvider("json-body-format-provider");
       expect(row).toBeDefined();
       expect(row!.tokenExchangeBodyFormat).toBe("json");
     });
 
-    test("migration 216 backfills NULL token_endpoint_auth_method to client_secret_post", () => {
+    test("migration 216 backfills NULL token_endpoint_auth_method to client_secret_post", async () => {
       // Use raw SQLite to bypass Drizzle's NOT NULL enforcement and insert
       // a legacy-shaped row with NULL token_endpoint_auth_method.
       const db = getDb();
@@ -741,29 +751,44 @@ describe("provider operations", () => {
       expect(row.token_endpoint_auth_method).toBe("client_secret_post");
     });
 
-    test("migration 216 is idempotent — running twice on backfilled rows is a no-op", () => {
-      seedProviders([
-        {
-          provider: "already-set-provider",
-          authorizeUrl: "https://example.com/authorize",
-          tokenExchangeUrl: "https://example.com/token",
-          tokenEndpointAuthMethod: "client_secret_basic",
-          defaultScopes: [],
-        },
-      ]);
-
+    test("migration 216 is idempotent — running twice on backfilled rows is a no-op", async () => {
       const db = getDb();
+      const raw = getSqliteFrom(db);
+      raw.exec(`
+        INSERT INTO oauth_providers (
+          provider_key, auth_url, token_url, token_endpoint_auth_method,
+          default_scopes, scope_policy, available_scopes, scope_separator,
+          requires_client_secret, created_at, updated_at
+        ) VALUES (
+          'already-set-provider',
+          'https://example.com/authorize',
+          'https://example.com/token',
+          'client_secret_basic',
+          '[]',
+          '{}',
+          NULL,
+          ' ',
+          1,
+          ${Date.now()},
+          ${Date.now()}
+        )
+      `);
+
       migrateOAuthProvidersTokenAuthMethodDefault(db);
       migrateOAuthProvidersTokenAuthMethodDefault(db);
 
-      const row = getProvider("already-set-provider");
-      expect(row!.tokenEndpointAuthMethod).toBe("client_secret_basic");
+      const row = raw
+        .prepare(
+          `SELECT token_endpoint_auth_method FROM oauth_providers WHERE provider_key = 'already-set-provider'`,
+        )
+        .get() as { token_endpoint_auth_method: string };
+      expect(row.token_endpoint_auth_method).toBe("client_secret_basic");
     });
   });
 
   describe("getProvider", () => {
-    test("returns the correct row", () => {
-      seedProviders([
+    test("returns the correct row", async () => {
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize",
@@ -772,19 +797,19 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("github");
+      const row = await getProvider("github");
       expect(row).toBeDefined();
       expect(row!.provider).toBe("github");
     });
 
-    test("returns undefined for unknown keys", () => {
-      expect(getProvider("nonexistent")).toBeUndefined();
+    test("returns undefined for unknown keys", async () => {
+      expect(await getProvider("nonexistent")).toBeUndefined();
     });
   });
 
   describe("registerProvider", () => {
-    test("creates a new row", () => {
-      const row = registerProvider({
+    test("creates a new row", async () => {
+      const row = await registerProvider({
         provider: "linear",
         authorizeUrl: "https://linear.app/oauth/authorize",
         tokenExchangeUrl: "https://api.linear.app/oauth/token",
@@ -794,31 +819,31 @@ describe("provider operations", () => {
       expect(row.provider).toBe("linear");
       expect(row.authorizeUrl).toBe("https://linear.app/oauth/authorize");
 
-      const fetched = getProvider("linear");
+      const fetched = await getProvider("linear");
       expect(fetched).toBeDefined();
       expect(fetched!.provider).toBe("linear");
     });
 
-    test("throws for duplicate provider_key", () => {
-      registerProvider({
+    test("throws for duplicate provider_key", async () => {
+      await registerProvider({
         provider: "linear",
         authorizeUrl: "https://linear.app/oauth/authorize",
         tokenExchangeUrl: "https://api.linear.app/oauth/token",
         defaultScopes: ["read"],
       });
 
-      expect(() =>
+      await expect(
         registerProvider({
           provider: "linear",
           authorizeUrl: "https://linear.app/oauth/authorize",
           tokenExchangeUrl: "https://api.linear.app/oauth/token",
           defaultScopes: ["read"],
         }),
-      ).toThrow(/already exists.*linear/);
+      ).rejects.toThrow(/already exists.*linear/);
     });
 
-    test("persists scopeSeparator and round-trips via getProvider", () => {
-      registerProvider({
+    test("persists scopeSeparator and round-trips via getProvider", async () => {
+      await registerProvider({
         provider: "linear",
         authorizeUrl: "https://linear.app/oauth/authorize",
         tokenExchangeUrl: "https://api.linear.app/oauth/token",
@@ -827,26 +852,26 @@ describe("provider operations", () => {
         scopeSeparator: ";",
       });
 
-      const fetched = getProvider("linear");
+      const fetched = await getProvider("linear");
       expect(fetched).toBeDefined();
       expect(fetched!.scopeSeparator).toBe(";");
     });
 
-    test("scopeSeparator defaults to ' ' when omitted", () => {
-      registerProvider({
+    test("scopeSeparator defaults to ' ' when omitted", async () => {
+      await registerProvider({
         provider: "linear",
         authorizeUrl: "https://linear.app/oauth/authorize",
         tokenExchangeUrl: "https://api.linear.app/oauth/token",
         defaultScopes: ["read"],
       });
 
-      const fetched = getProvider("linear");
+      const fetched = await getProvider("linear");
       expect(fetched).toBeDefined();
       expect(fetched!.scopeSeparator).toBe(" ");
     });
 
-    test("persists refreshUrl and round-trips via getProvider", () => {
-      registerProvider({
+    test("persists refreshUrl and round-trips via getProvider", async () => {
+      await registerProvider({
         provider: "linear",
         authorizeUrl: "https://linear.app/oauth/authorize",
         tokenExchangeUrl: "https://api.linear.app/oauth/token",
@@ -854,26 +879,26 @@ describe("provider operations", () => {
         defaultScopes: ["read"],
       });
 
-      const fetched = getProvider("linear");
+      const fetched = await getProvider("linear");
       expect(fetched).toBeDefined();
       expect(fetched!.refreshUrl).toBe("https://api.linear.app/oauth/refresh");
     });
 
-    test("refreshUrl defaults to null when omitted", () => {
-      registerProvider({
+    test("refreshUrl defaults to null when omitted", async () => {
+      await registerProvider({
         provider: "linear",
         authorizeUrl: "https://linear.app/oauth/authorize",
         tokenExchangeUrl: "https://api.linear.app/oauth/token",
         defaultScopes: ["read"],
       });
 
-      const fetched = getProvider("linear");
+      const fetched = await getProvider("linear");
       expect(fetched).toBeDefined();
       expect(fetched!.refreshUrl).toBeNull();
     });
 
-    test("persists revokeUrl and revokeBodyTemplate and round-trips via getProvider", () => {
-      registerProvider({
+    test("persists revokeUrl and revokeBodyTemplate and round-trips via getProvider", async () => {
+      await registerProvider({
         provider: "linear",
         authorizeUrl: "https://linear.app/oauth/authorize",
         tokenExchangeUrl: "https://api.linear.app/oauth/token",
@@ -882,7 +907,7 @@ describe("provider operations", () => {
         defaultScopes: ["read"],
       });
 
-      const fetched = getProvider("linear");
+      const fetched = await getProvider("linear");
       expect(fetched).toBeDefined();
       expect(fetched!.revokeUrl).toBe("https://api.linear.app/oauth/revoke");
       expect(JSON.parse(fetched!.revokeBodyTemplate!)).toEqual({
@@ -890,8 +915,8 @@ describe("provider operations", () => {
       });
     });
 
-    test("applies client_secret_post default when tokenEndpointAuthMethod is omitted", () => {
-      const row = registerProvider({
+    test("applies client_secret_post default when tokenEndpointAuthMethod is omitted", async () => {
+      const row = await registerProvider({
         provider: "custom-default-test",
         authorizeUrl: "https://example.com/authorize",
         tokenExchangeUrl: "https://example.com/token",
@@ -901,12 +926,12 @@ describe("provider operations", () => {
       });
       expect(row.tokenEndpointAuthMethod).toBe("client_secret_post");
 
-      const fetched = getProvider("custom-default-test");
+      const fetched = await getProvider("custom-default-test");
       expect(fetched!.tokenEndpointAuthMethod).toBe("client_secret_post");
     });
 
-    test("preserves explicit client_secret_basic when registering a provider", () => {
-      const row = registerProvider({
+    test("preserves explicit client_secret_basic when registering a provider", async () => {
+      const row = await registerProvider({
         provider: "custom-basic-test",
         authorizeUrl: "https://example.com/authorize",
         tokenExchangeUrl: "https://example.com/token",
@@ -917,8 +942,8 @@ describe("provider operations", () => {
       expect(row.tokenEndpointAuthMethod).toBe("client_secret_basic");
     });
 
-    test("defaults tokenExchangeBodyFormat to 'form' when omitted", () => {
-      const row = registerProvider({
+    test("defaults tokenExchangeBodyFormat to 'form' when omitted", async () => {
+      const row = await registerProvider({
         provider: "no-body-format-test",
         authorizeUrl: "https://example.com/authorize",
         tokenExchangeUrl: "https://example.com/token",
@@ -928,12 +953,12 @@ describe("provider operations", () => {
       });
       expect(row.tokenExchangeBodyFormat).toBe("form");
 
-      const fetched = getProvider("no-body-format-test");
+      const fetched = await getProvider("no-body-format-test");
       expect(fetched!.tokenExchangeBodyFormat).toBe("form");
     });
 
-    test("persists explicit tokenExchangeBodyFormat 'json' when registering a provider", () => {
-      const row = registerProvider({
+    test("persists explicit tokenExchangeBodyFormat 'json' when registering a provider", async () => {
+      const row = await registerProvider({
         provider: "json-body-format-test",
         authorizeUrl: "https://example.com/authorize",
         tokenExchangeUrl: "https://example.com/token",
@@ -944,8 +969,8 @@ describe("provider operations", () => {
       expect(row.tokenExchangeBodyFormat).toBe("json");
     });
 
-    test("stores logoUrl when provided", () => {
-      registerProvider({
+    test("stores logoUrl when provided", async () => {
+      await registerProvider({
         provider: "notion",
         authorizeUrl: "https://api.notion.com/v1/oauth/authorize",
         tokenExchangeUrl: "https://api.notion.com/v1/oauth/token",
@@ -954,28 +979,28 @@ describe("provider operations", () => {
         logoUrl: "https://cdn.simpleicons.org/notion",
       });
 
-      const fetched = getProvider("notion");
+      const fetched = await getProvider("notion");
       expect(fetched).toBeDefined();
       expect(fetched!.logoUrl).toBe("https://cdn.simpleicons.org/notion");
     });
 
-    test("defaults logoUrl to null when omitted", () => {
-      registerProvider({
+    test("defaults logoUrl to null when omitted", async () => {
+      await registerProvider({
         provider: "linear",
         authorizeUrl: "https://linear.app/oauth/authorize",
         tokenExchangeUrl: "https://api.linear.app/oauth/token",
         defaultScopes: ["read"],
       });
 
-      const fetched = getProvider("linear");
+      const fetched = await getProvider("linear");
       expect(fetched).toBeDefined();
       expect(fetched!.logoUrl).toBeNull();
     });
   });
 
   describe("updateProvider", () => {
-    test("updates scopeSeparator on an existing row", () => {
-      seedProviders([
+    test("updates scopeSeparator on an existing row", async () => {
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize",
@@ -984,22 +1009,22 @@ describe("provider operations", () => {
         },
       ]);
 
-      const before = getProvider("github");
+      const before = await getProvider("github");
       expect(before!.scopeSeparator).toBe(" ");
 
-      const updated = updateProvider("github", { scopeSeparator: "," });
+      const updated = await updateProvider("github", { scopeSeparator: "," });
       expect(updated).toBeDefined();
       expect(updated!.scopeSeparator).toBe(",");
 
-      const fetched = getProvider("github");
+      const fetched = await getProvider("github");
       expect(fetched!.scopeSeparator).toBe(",");
     });
 
-    test("coerces empty-string scopeSeparator to default ' '", () => {
+    test("coerces empty-string scopeSeparator to default ' '", async () => {
       // An empty separator would join scopes into a single concatenated token
       // (e.g. ["read","write"].join("") === "readwrite") which is never a
       // valid OAuth authorize URL value. Coerce to the default.
-      seedProviders([
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize",
@@ -1010,16 +1035,16 @@ describe("provider operations", () => {
         },
       ]);
 
-      expect(getProvider("github")!.scopeSeparator).toBe(",");
+      expect((await getProvider("github"))!.scopeSeparator).toBe(",");
 
-      const updated = updateProvider("github", { scopeSeparator: "" });
+      const updated = await updateProvider("github", { scopeSeparator: "" });
       expect(updated).toBeDefined();
       expect(updated!.scopeSeparator).toBe(" ");
-      expect(getProvider("github")!.scopeSeparator).toBe(" ");
+      expect((await getProvider("github"))!.scopeSeparator).toBe(" ");
     });
 
-    test("sets refreshUrl on an existing row where it was previously null", () => {
-      seedProviders([
+    test("sets refreshUrl on an existing row where it was previously null", async () => {
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize",
@@ -1028,10 +1053,10 @@ describe("provider operations", () => {
         },
       ]);
 
-      const before = getProvider("github");
+      const before = await getProvider("github");
       expect(before!.refreshUrl).toBeNull();
 
-      const updated = updateProvider("github", {
+      const updated = await updateProvider("github", {
         refreshUrl: "https://github.com/login/oauth/refresh",
       });
       expect(updated).toBeDefined();
@@ -1039,14 +1064,14 @@ describe("provider operations", () => {
         "https://github.com/login/oauth/refresh",
       );
 
-      const fetched = getProvider("github");
+      const fetched = await getProvider("github");
       expect(fetched!.refreshUrl).toBe(
         "https://github.com/login/oauth/refresh",
       );
     });
 
-    test("leaves refreshUrl unchanged when not passed to updateProvider", () => {
-      seedProviders([
+    test("leaves refreshUrl unchanged when not passed to updateProvider", async () => {
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize",
@@ -1056,12 +1081,12 @@ describe("provider operations", () => {
         },
       ]);
 
-      expect(getProvider("github")!.refreshUrl).toBe(
+      expect((await getProvider("github"))!.refreshUrl).toBe(
         "https://github.com/login/oauth/refresh",
       );
 
       // Update a different field — refreshUrl should be left alone.
-      const updated = updateProvider("github", {
+      const updated = await updateProvider("github", {
         displayLabel: "GitHub (updated)",
       });
       expect(updated).toBeDefined();
@@ -1071,8 +1096,8 @@ describe("provider operations", () => {
       expect(updated!.displayLabel).toBe("GitHub (updated)");
     });
 
-    test("sets revokeUrl on an existing row where it was previously null", () => {
-      seedProviders([
+    test("sets revokeUrl on an existing row where it was previously null", async () => {
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize",
@@ -1081,21 +1106,21 @@ describe("provider operations", () => {
         },
       ]);
 
-      const before = getProvider("github");
+      const before = await getProvider("github");
       expect(before!.revokeUrl).toBeNull();
 
-      const updated = updateProvider("github", {
+      const updated = await updateProvider("github", {
         revokeUrl: "https://github.com/login/oauth/revoke",
       });
       expect(updated).toBeDefined();
       expect(updated!.revokeUrl).toBe("https://github.com/login/oauth/revoke");
 
-      const fetched = getProvider("github");
+      const fetched = await getProvider("github");
       expect(fetched!.revokeUrl).toBe("https://github.com/login/oauth/revoke");
     });
 
-    test("sets revokeBodyTemplate on an existing row and JSON round-trips", () => {
-      seedProviders([
+    test("sets revokeBodyTemplate on an existing row and JSON round-trips", async () => {
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize",
@@ -1104,10 +1129,10 @@ describe("provider operations", () => {
         },
       ]);
 
-      const before = getProvider("github");
+      const before = await getProvider("github");
       expect(before!.revokeBodyTemplate).toBeNull();
 
-      const updated = updateProvider("github", {
+      const updated = await updateProvider("github", {
         revokeBodyTemplate: {
           token: "{access_token}",
           client_id: "{client_id}",
@@ -1119,15 +1144,15 @@ describe("provider operations", () => {
         client_id: "{client_id}",
       });
 
-      const fetched = getProvider("github");
+      const fetched = await getProvider("github");
       expect(JSON.parse(fetched!.revokeBodyTemplate!)).toEqual({
         token: "{access_token}",
         client_id: "{client_id}",
       });
     });
 
-    test("leaves revokeUrl and revokeBodyTemplate unchanged when not passed to updateProvider", () => {
-      seedProviders([
+    test("leaves revokeUrl and revokeBodyTemplate unchanged when not passed to updateProvider", async () => {
+      await seedProviders([
         {
           provider: "github",
           authorizeUrl: "https://github.com/authorize",
@@ -1138,15 +1163,17 @@ describe("provider operations", () => {
         },
       ]);
 
-      expect(getProvider("github")!.revokeUrl).toBe(
+      expect((await getProvider("github"))!.revokeUrl).toBe(
         "https://github.com/login/oauth/revoke",
       );
-      expect(JSON.parse(getProvider("github")!.revokeBodyTemplate!)).toEqual({
+      expect(
+        JSON.parse((await getProvider("github"))!.revokeBodyTemplate!),
+      ).toEqual({
         token: "{access_token}",
       });
 
       // Update a different field — revoke fields should be left alone.
-      const updated = updateProvider("github", {
+      const updated = await updateProvider("github", {
         displayLabel: "GitHub (updated)",
       });
       expect(updated).toBeDefined();
@@ -1157,8 +1184,8 @@ describe("provider operations", () => {
       expect(updated!.displayLabel).toBe("GitHub (updated)");
     });
 
-    test("coerces empty string tokenEndpointAuthMethod to client_secret_post", () => {
-      seedProviders([
+    test("coerces empty string tokenEndpointAuthMethod to client_secret_post", async () => {
+      await seedProviders([
         {
           provider: "update-empty-test",
           authorizeUrl: "https://example.com/authorize",
@@ -1168,22 +1195,22 @@ describe("provider operations", () => {
         },
       ]);
 
-      expect(getProvider("update-empty-test")!.tokenEndpointAuthMethod).toBe(
-        "client_secret_basic",
-      );
+      expect(
+        (await getProvider("update-empty-test"))!.tokenEndpointAuthMethod,
+      ).toBe("client_secret_basic");
 
-      const updated = updateProvider("update-empty-test", {
+      const updated = await updateProvider("update-empty-test", {
         tokenEndpointAuthMethod: "",
       });
       expect(updated).toBeDefined();
       expect(updated!.tokenEndpointAuthMethod).toBe("client_secret_post");
 
-      const row = getProvider("update-empty-test");
+      const row = await getProvider("update-empty-test");
       expect(row!.tokenEndpointAuthMethod).toBe("client_secret_post");
     });
 
-    test("coerces empty string tokenExchangeBodyFormat to 'form'", () => {
-      seedProviders([
+    test("coerces empty string tokenExchangeBodyFormat to 'form'", async () => {
+      await seedProviders([
         {
           provider: "update-empty-body-format-test",
           authorizeUrl: "https://example.com/authorize",
@@ -1194,41 +1221,42 @@ describe("provider operations", () => {
       ]);
 
       expect(
-        getProvider("update-empty-body-format-test")!.tokenExchangeBodyFormat,
+        (await getProvider("update-empty-body-format-test"))!
+          .tokenExchangeBodyFormat,
       ).toBe("json");
 
-      const updated = updateProvider("update-empty-body-format-test", {
+      const updated = await updateProvider("update-empty-body-format-test", {
         tokenExchangeBodyFormat: "",
       });
       expect(updated).toBeDefined();
       expect(updated!.tokenExchangeBodyFormat).toBe("form");
 
-      const row = getProvider("update-empty-body-format-test");
+      const row = await getProvider("update-empty-body-format-test");
       expect(row!.tokenExchangeBodyFormat).toBe("form");
     });
 
-    test("sets logoUrl on an existing row where it was previously null", () => {
-      registerProvider({
+    test("sets logoUrl on an existing row where it was previously null", async () => {
+      await registerProvider({
         provider: "linear",
         authorizeUrl: "https://linear.app/oauth/authorize",
         tokenExchangeUrl: "https://api.linear.app/oauth/token",
         defaultScopes: ["read"],
       });
 
-      expect(getProvider("linear")!.logoUrl).toBeNull();
+      expect((await getProvider("linear"))!.logoUrl).toBeNull();
 
-      const updated = updateProvider("linear", {
+      const updated = await updateProvider("linear", {
         logoUrl: "https://cdn.simpleicons.org/linear",
       });
       expect(updated).toBeDefined();
       expect(updated!.logoUrl).toBe("https://cdn.simpleicons.org/linear");
 
-      const fetched = getProvider("linear");
+      const fetched = await getProvider("linear");
       expect(fetched!.logoUrl).toBe("https://cdn.simpleicons.org/linear");
     });
 
-    test("clears logoUrl when passed null", () => {
-      registerProvider({
+    test("clears logoUrl when passed null", async () => {
+      await registerProvider({
         provider: "notion",
         authorizeUrl: "https://api.notion.com/v1/oauth/authorize",
         tokenExchangeUrl: "https://api.notion.com/v1/oauth/token",
@@ -1237,19 +1265,19 @@ describe("provider operations", () => {
         logoUrl: "https://cdn.simpleicons.org/notion",
       });
 
-      expect(getProvider("notion")!.logoUrl).toBe(
+      expect((await getProvider("notion"))!.logoUrl).toBe(
         "https://cdn.simpleicons.org/notion",
       );
 
-      const updated = updateProvider("notion", { logoUrl: null });
+      const updated = await updateProvider("notion", { logoUrl: null });
       expect(updated).toBeDefined();
       expect(updated!.logoUrl).toBeNull();
 
-      expect(getProvider("notion")!.logoUrl).toBeNull();
+      expect((await getProvider("notion"))!.logoUrl).toBeNull();
     });
 
-    test("leaves logoUrl unchanged when not passed to updateProvider", () => {
-      registerProvider({
+    test("leaves logoUrl unchanged when not passed to updateProvider", async () => {
+      await registerProvider({
         provider: "notion",
         authorizeUrl: "https://api.notion.com/v1/oauth/authorize",
         tokenExchangeUrl: "https://api.notion.com/v1/oauth/token",
@@ -1258,12 +1286,12 @@ describe("provider operations", () => {
         logoUrl: "https://cdn.simpleicons.org/notion",
       });
 
-      expect(getProvider("notion")!.logoUrl).toBe(
+      expect((await getProvider("notion"))!.logoUrl).toBe(
         "https://cdn.simpleicons.org/notion",
       );
 
       // Update a different field — logoUrl should be left alone.
-      const updated = updateProvider("notion", {
+      const updated = await updateProvider("notion", {
         displayLabel: "Notion (updated)",
       });
       expect(updated).toBeDefined();
@@ -1273,8 +1301,8 @@ describe("provider operations", () => {
   });
 
   describe("scopeSeparator empty-string coercion", () => {
-    test("seedProviders coerces empty-string scopeSeparator to ' '", () => {
-      seedProviders([
+    test("seedProviders coerces empty-string scopeSeparator to ' '", async () => {
+      await seedProviders([
         {
           provider: "linear",
           authorizeUrl: "https://linear.app/oauth/authorize",
@@ -1285,12 +1313,12 @@ describe("provider operations", () => {
         },
       ]);
 
-      const row = getProvider("linear");
+      const row = await getProvider("linear");
       expect(row!.scopeSeparator).toBe(" ");
     });
 
-    test("registerProvider coerces empty-string scopeSeparator to ' '", () => {
-      registerProvider({
+    test("registerProvider coerces empty-string scopeSeparator to ' '", async () => {
+      await registerProvider({
         provider: "linear",
         authorizeUrl: "https://linear.app/oauth/authorize",
         tokenExchangeUrl: "https://api.linear.app/oauth/token",
@@ -1299,7 +1327,7 @@ describe("provider operations", () => {
         scopeSeparator: "",
       });
 
-      const row = getProvider("linear");
+      const row = await getProvider("linear");
       expect(row!.scopeSeparator).toBe(" ");
     });
   });
@@ -1309,10 +1337,10 @@ describe("provider operations", () => {
 // App operations
 // ---------------------------------------------------------------------------
 
-describe("app operations", () => {
+describePg("app operations", () => {
   describe("upsertApp", () => {
     test("creates a new app and returns it with a UUID", async () => {
-      seedTestProvider("github");
+      await seedTestProvider("github");
       const app = await upsertApp("github", "client-abc");
 
       expect(app.id).toBeTruthy();
@@ -1327,7 +1355,7 @@ describe("app operations", () => {
     });
 
     test("returns the existing app when called again with same (provider, clientId)", async () => {
-      seedTestProvider("github");
+      await seedTestProvider("github");
       const first = await upsertApp("github", "client-abc");
       const second = await upsertApp("github", "client-abc");
 
@@ -1336,7 +1364,7 @@ describe("app operations", () => {
     });
 
     test("stores clientSecret in secure storage on new app creation", async () => {
-      seedTestProvider("github");
+      await seedTestProvider("github");
       const app = await upsertApp("github", "client-abc", {
         clientSecretValue: "my-secret",
       });
@@ -1352,7 +1380,7 @@ describe("app operations", () => {
     });
 
     test("stores clientSecret in secure storage when upserting an existing app", async () => {
-      seedTestProvider("github");
+      await seedTestProvider("github");
       const first = await upsertApp("github", "client-abc");
       mockSetSecureKeyAsync.mockClear();
 
@@ -1368,16 +1396,18 @@ describe("app operations", () => {
     });
 
     test("throws when setSecureKeyAsync returns false", async () => {
-      seedTestProvider("github");
+      await seedTestProvider("github");
       mockSetSecureKeyAsync.mockResolvedValueOnce(false);
 
       await expect(
-        upsertApp("github", "client-abc", { clientSecretValue: "bad-secret" }),
+        upsertApp("github", "client-abc", {
+          clientSecretValue: "bad-secret",
+        }),
       ).rejects.toThrow("Failed to store client_secret in secure storage");
     });
 
     test("accepts clientSecretCredentialPath and verifies existence", async () => {
-      seedTestProvider("github");
+      await seedTestProvider("github");
       secureKeyValues.set("custom/path", "stored-secret");
 
       const app = await upsertApp("github", "client-abc", {
@@ -1390,7 +1420,7 @@ describe("app operations", () => {
     });
 
     test("throws when clientSecretCredentialPath points to nonexistent secret", async () => {
-      seedTestProvider("github");
+      await seedTestProvider("github");
 
       await expect(
         upsertApp("github", "client-abc", {
@@ -1400,7 +1430,7 @@ describe("app operations", () => {
     });
 
     test("throws when both clientSecretValue and clientSecretCredentialPath are provided", async () => {
-      seedTestProvider("github");
+      await seedTestProvider("github");
 
       await expect(
         upsertApp("github", "client-abc", {
@@ -1413,7 +1443,7 @@ describe("app operations", () => {
     });
 
     test("records default clientSecretCredentialPath when neither value nor path is provided", async () => {
-      seedTestProvider("github");
+      await seedTestProvider("github");
       const app = await upsertApp("github", "client-abc");
 
       expect(app.clientSecretCredentialPath).toBe(
@@ -1422,7 +1452,7 @@ describe("app operations", () => {
     });
 
     test("updates clientSecretCredentialPath on existing row when path is provided", async () => {
-      seedTestProvider("github");
+      await seedTestProvider("github");
       const first = await upsertApp("github", "client-abc");
       expect(first.clientSecretCredentialPath).toBe(
         `oauth_app/${first.id}/client_secret`,
@@ -1441,7 +1471,7 @@ describe("app operations", () => {
   describe("getApp", () => {
     test("returns the correct row by id", async () => {
       const app = await createTestApp("github", "client-1");
-      const fetched = getApp(app.id);
+      const fetched = await getApp(app.id);
 
       expect(fetched).toBeDefined();
       expect(fetched!.id).toBe(app.id);
@@ -1449,23 +1479,23 @@ describe("app operations", () => {
       expect(fetched!.clientId).toBe("client-1");
     });
 
-    test("returns undefined for unknown id", () => {
-      expect(getApp("nonexistent-id")).toBeUndefined();
+    test("returns undefined for unknown id", async () => {
+      expect(await getApp("nonexistent-id")).toBeUndefined();
     });
   });
 
   describe("getAppByProviderAndClientId", () => {
     test("returns the correct row", async () => {
       const app = await createTestApp("github", "client-1");
-      const fetched = getAppByProviderAndClientId("github", "client-1");
+      const fetched = await getAppByProviderAndClientId("github", "client-1");
 
       expect(fetched).toBeDefined();
       expect(fetched!.id).toBe(app.id);
     });
 
-    test("returns undefined for unknown combination", () => {
+    test("returns undefined for unknown combination", async () => {
       expect(
-        getAppByProviderAndClientId("github", "nonexistent"),
+        await getAppByProviderAndClientId("github", "nonexistent"),
       ).toBeUndefined();
     });
   });
@@ -1476,7 +1506,7 @@ describe("app operations", () => {
       const deleted = await deleteApp(app.id);
 
       expect(deleted).toBe(true);
-      expect(getApp(app.id)).toBeUndefined();
+      expect(await getApp(app.id)).toBeUndefined();
     });
 
     test("cleans up client_secret from secure storage using stored path", async () => {
@@ -1491,7 +1521,7 @@ describe("app operations", () => {
     });
 
     test("uses custom clientSecretCredentialPath when deleting", async () => {
-      seedTestProvider("github");
+      await seedTestProvider("github");
       secureKeyValues.set("custom/secret/path", "the-secret");
       const app = await upsertApp("github", "client-1", {
         clientSecretCredentialPath: "custom/secret/path",
@@ -1518,7 +1548,7 @@ describe("app operations", () => {
       );
 
       // DB row should already be deleted (delete happens before secure key cleanup)
-      expect(getApp(app.id)).toBeUndefined();
+      expect(await getApp(app.id)).toBeUndefined();
     });
   });
 });
@@ -1527,11 +1557,11 @@ describe("app operations", () => {
 // Connection operations
 // ---------------------------------------------------------------------------
 
-describe("connection operations", () => {
+describePg("connection operations", () => {
   describe("createConnection", () => {
     test("creates a row with status='active'", async () => {
       const app = await createTestApp("github", "client-1");
-      const conn = createConnection({
+      const conn = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo", "user"],
@@ -1557,21 +1587,21 @@ describe("connection operations", () => {
   describe("getConnection", () => {
     test("returns the correct row", async () => {
       const app = await createTestApp("github", "client-1");
-      const conn = createConnection({
+      const conn = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
 
-      const fetched = getConnection(conn.id);
+      const fetched = await getConnection(conn.id);
       expect(fetched).toBeDefined();
       expect(fetched!.id).toBe(conn.id);
       expect(fetched!.provider).toBe("github");
     });
 
-    test("returns undefined for unknown id", () => {
-      expect(getConnection("nonexistent-id")).toBeUndefined();
+    test("returns undefined for unknown id", async () => {
+      expect(await getConnection("nonexistent-id")).toBeUndefined();
     });
   });
 
@@ -1579,7 +1609,7 @@ describe("connection operations", () => {
     test("returns the most recent active connection with no filters", async () => {
       const app = await createTestApp("github", "client-1");
 
-      createConnection({
+      await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
@@ -1587,7 +1617,7 @@ describe("connection operations", () => {
         createdAt: 1000,
       });
 
-      const conn2 = createConnection({
+      const conn2 = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo", "user"],
@@ -1595,7 +1625,7 @@ describe("connection operations", () => {
         createdAt: 2000,
       });
 
-      const result = getActiveConnection("github");
+      const result = await getActiveConnection("github");
       expect(result).toBeDefined();
       expect(result!.id).toBe(conn2.id);
     });
@@ -1603,7 +1633,7 @@ describe("connection operations", () => {
     test("narrows by account when provided", async () => {
       const app = await createTestApp("github", "client-1");
 
-      const conn1 = createConnection({
+      const conn1 = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         accountInfo: "user1@example.com",
@@ -1612,7 +1642,7 @@ describe("connection operations", () => {
         createdAt: 1000,
       });
 
-      createConnection({
+      await createConnection({
         oauthAppId: app.id,
         provider: "github",
         accountInfo: "user2@example.com",
@@ -1621,7 +1651,7 @@ describe("connection operations", () => {
         createdAt: 2000,
       });
 
-      const result = getActiveConnection("github", {
+      const result = await getActiveConnection("github", {
         account: "user1@example.com",
       });
       expect(result).toBeDefined();
@@ -1632,7 +1662,7 @@ describe("connection operations", () => {
       const app1 = await createTestApp("github", "client-a");
       const app2 = await createTestApp("github", "client-b");
 
-      const conn1 = createConnection({
+      const conn1 = await createConnection({
         oauthAppId: app1.id,
         provider: "github",
         grantedScopes: ["repo"],
@@ -1640,7 +1670,7 @@ describe("connection operations", () => {
         createdAt: 1000,
       });
 
-      createConnection({
+      await createConnection({
         oauthAppId: app2.id,
         provider: "github",
         grantedScopes: ["repo"],
@@ -1648,7 +1678,9 @@ describe("connection operations", () => {
         createdAt: 2000,
       });
 
-      const result = getActiveConnection("github", { clientId: "client-a" });
+      const result = await getActiveConnection("github", {
+        clientId: "client-a",
+      });
       expect(result).toBeDefined();
       expect(result!.id).toBe(conn1.id);
     });
@@ -1656,14 +1688,14 @@ describe("connection operations", () => {
     test("returns undefined when clientId has no matching app", async () => {
       const app = await createTestApp("github", "client-1");
 
-      createConnection({
+      await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
 
-      const result = getActiveConnection("github", {
+      const result = await getActiveConnection("github", {
         clientId: "nonexistent",
       });
       expect(result).toBeUndefined();
@@ -1672,34 +1704,34 @@ describe("connection operations", () => {
     test("skips revoked connections", async () => {
       const app = await createTestApp("github", "client-1");
 
-      const conn = createConnection({
+      const conn = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
-      updateConnection(conn.id, { status: "revoked" });
+      await updateConnection(conn.id, { status: "revoked" });
 
-      const result = getActiveConnection("github");
+      const result = await getActiveConnection("github");
       expect(result).toBeUndefined();
     });
 
-    test("returns undefined when no connections exist", () => {
-      expect(getActiveConnection("github")).toBeUndefined();
+    test("returns undefined when no connections exist", async () => {
+      expect(await getActiveConnection("github")).toBeUndefined();
     });
   });
 
   describe("getActiveConnections account selectors", () => {
     test("selects an unlabelled connection by its exact ID", async () => {
       const app = await createTestApp("github", "client-1");
-      const selected = createConnection({
+      const selected = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
         createdAt: 1000,
       });
-      createConnection({
+      await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
@@ -1708,27 +1740,29 @@ describe("connection operations", () => {
       });
 
       expect(selected.accountInfo).toBeNull();
-      expect(getActiveConnections("github", { account: selected.id })).toEqual([
-        selected,
-      ]);
-      expect(getActiveConnection("github", { account: selected.id })?.id).toBe(
-        selected.id,
-      );
       expect(
-        getActiveConnections("github", { account: selected.id.slice(0, -1) }),
+        await getActiveConnections("github", { account: selected.id }),
+      ).toEqual([selected]);
+      expect(
+        (await getActiveConnection("github", { account: selected.id }))?.id,
+      ).toBe(selected.id);
+      expect(
+        await getActiveConnections("github", {
+          account: selected.id.slice(0, -1),
+        }),
       ).toEqual([]);
     });
 
     test("prefers matching labels over an ID while preserving newest-first order", async () => {
       const app = await createTestApp("github", "client-1");
-      const idMatch = createConnection({
+      const idMatch = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
         createdAt: 3000,
       });
-      const olderLabelMatch = createConnection({
+      const olderLabelMatch = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         accountInfo: idMatch.id,
@@ -1736,7 +1770,7 @@ describe("connection operations", () => {
         hasRefreshToken: false,
         createdAt: 1000,
       });
-      const newerLabelMatch = createConnection({
+      const newerLabelMatch = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         accountInfo: idMatch.id,
@@ -1745,23 +1779,22 @@ describe("connection operations", () => {
         createdAt: 2000,
       });
 
-      expect(getActiveConnections("github", { account: idMatch.id })).toEqual([
-        newerLabelMatch,
-        olderLabelMatch,
-      ]);
+      expect(
+        await getActiveConnections("github", { account: idMatch.id }),
+      ).toEqual([newerLabelMatch, olderLabelMatch]);
     });
 
     test("keeps ID fallback inside provider, client and active-status filters", async () => {
       const app = await createTestApp("github", "client-1");
       const otherApp = await createTestApp("github", "client-2");
       await createTestApp("google", "client-1");
-      const selected = createConnection({
+      const selected = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
-      const labelMatch = createConnection({
+      const labelMatch = await createConnection({
         oauthAppId: otherApp.id,
         provider: "github",
         accountInfo: selected.id,
@@ -1770,36 +1803,36 @@ describe("connection operations", () => {
       });
 
       expect(
-        getActiveConnections("github", {
+        await getActiveConnections("github", {
           account: selected.id,
           clientId: "client-1",
         }),
       ).toEqual([selected]);
       expect(
-        getActiveConnections("github", {
+        await getActiveConnections("github", {
           account: selected.id,
           clientId: "client-2",
         }),
       ).toEqual([labelMatch]);
       expect(
-        getActiveConnections("github", {
+        await getActiveConnections("github", {
           account: labelMatch.id,
           clientId: "client-1",
         }),
       ).toEqual([]);
-      expect(getActiveConnections("google", { account: selected.id })).toEqual(
-        [],
-      );
       expect(
-        getActiveConnections("github", {
+        await getActiveConnections("google", { account: selected.id }),
+      ).toEqual([]);
+      expect(
+        await getActiveConnections("github", {
           account: selected.id,
           clientId: "missing-client",
         }),
       ).toEqual([]);
 
-      updateConnection(selected.id, { status: "revoked" });
+      await updateConnection(selected.id, { status: "revoked" });
       expect(
-        getActiveConnections("github", {
+        await getActiveConnections("github", {
           account: selected.id,
           clientId: "client-1",
         }),
@@ -1812,7 +1845,7 @@ describe("connection operations", () => {
       const app = await createTestApp("github", "client-1");
 
       // Create two connections with explicit timestamps so ordering is deterministic
-      createConnection({
+      await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
@@ -1820,7 +1853,7 @@ describe("connection operations", () => {
         createdAt: 1000,
       });
 
-      const conn2 = createConnection({
+      const conn2 = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo", "user"],
@@ -1828,7 +1861,7 @@ describe("connection operations", () => {
         createdAt: 2000,
       });
 
-      const result = getConnectionByProvider("github");
+      const result = await getConnectionByProvider("github");
       expect(result).toBeDefined();
       expect(result!.id).toBe(conn2.id);
     });
@@ -1836,14 +1869,14 @@ describe("connection operations", () => {
     test("skips connections with status='revoked'", async () => {
       const app = await createTestApp("github", "client-1");
 
-      const conn1 = createConnection({
+      const conn1 = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
 
-      const conn2 = createConnection({
+      const conn2 = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo", "user"],
@@ -1851,9 +1884,9 @@ describe("connection operations", () => {
       });
 
       // Revoke the most recent connection
-      updateConnection(conn2.id, { status: "revoked" });
+      await updateConnection(conn2.id, { status: "revoked" });
 
-      const result = getConnectionByProvider("github");
+      const result = await getConnectionByProvider("github");
       expect(result).toBeDefined();
       expect(result!.id).toBe(conn1.id);
     });
@@ -1861,21 +1894,21 @@ describe("connection operations", () => {
     test("skips connections with status='expired'", async () => {
       const app = await createTestApp("github", "client-1");
 
-      const conn = createConnection({
+      const conn = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
 
-      updateConnection(conn.id, { status: "expired" });
+      await updateConnection(conn.id, { status: "expired" });
 
-      const result = getConnectionByProvider("github");
+      const result = await getConnectionByProvider("github");
       expect(result).toBeUndefined();
     });
 
-    test("returns undefined when no active connections exist", () => {
-      expect(getConnectionByProvider("github")).toBeUndefined();
+    test("returns undefined when no active connections exist", async () => {
+      expect(await getConnectionByProvider("github")).toBeUndefined();
     });
   });
 
@@ -1883,7 +1916,7 @@ describe("connection operations", () => {
     test("returns all active connections for a provider", async () => {
       const app = await createTestApp("github", "client-1");
 
-      createConnection({
+      await createConnection({
         oauthAppId: app.id,
         provider: "github",
         accountInfo: "user1@example.com",
@@ -1891,7 +1924,7 @@ describe("connection operations", () => {
         hasRefreshToken: false,
       });
 
-      createConnection({
+      await createConnection({
         oauthAppId: app.id,
         provider: "github",
         accountInfo: "user2@example.com",
@@ -1899,14 +1932,14 @@ describe("connection operations", () => {
         hasRefreshToken: false,
       });
 
-      const results = listActiveConnectionsByProvider("github");
+      const results = await listActiveConnectionsByProvider("github");
       expect(results).toHaveLength(2);
     });
 
     test("excludes revoked connections", async () => {
       const app = await createTestApp("github", "client-1");
 
-      createConnection({
+      await createConnection({
         oauthAppId: app.id,
         provider: "github",
         accountInfo: "user1@example.com",
@@ -1914,22 +1947,22 @@ describe("connection operations", () => {
         hasRefreshToken: false,
       });
 
-      const conn2 = createConnection({
+      const conn2 = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         accountInfo: "user2@example.com",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
-      updateConnection(conn2.id, { status: "revoked" });
+      await updateConnection(conn2.id, { status: "revoked" });
 
-      const results = listActiveConnectionsByProvider("github");
+      const results = await listActiveConnectionsByProvider("github");
       expect(results).toHaveLength(1);
       expect(results[0]!.accountInfo).toBe("user1@example.com");
     });
 
-    test("returns empty array when no active connections exist", () => {
-      const results = listActiveConnectionsByProvider("github");
+    test("returns empty array when no active connections exist", async () => {
+      const results = await listActiveConnectionsByProvider("github");
       expect(results).toHaveLength(0);
     });
   });
@@ -1937,7 +1970,7 @@ describe("connection operations", () => {
   describe("isProviderConnected", () => {
     test("returns true when active connection has an access token in secure storage", async () => {
       const app = await createTestApp("github", "client-1");
-      const conn = createConnection({
+      const conn = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
@@ -1951,7 +1984,7 @@ describe("connection operations", () => {
 
     test("returns false when active connection exists but access token is missing", async () => {
       const app = await createTestApp("github", "client-1");
-      createConnection({
+      await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
@@ -1968,14 +2001,14 @@ describe("connection operations", () => {
 
     test("returns false when connection is revoked even with token in store", async () => {
       const app = await createTestApp("github", "client-1");
-      const conn = createConnection({
+      const conn = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
 
-      updateConnection(conn.id, { status: "revoked" });
+      await updateConnection(conn.id, { status: "revoked" });
       secureKeyValues.set(`oauth_connection/${conn.id}/access_token`, "tok");
 
       expect(await isProviderConnected("github")).toBe(false);
@@ -1985,14 +2018,14 @@ describe("connection operations", () => {
   describe("updateConnection", () => {
     test("modifies specific fields", async () => {
       const app = await createTestApp("github", "client-1");
-      const conn = createConnection({
+      const conn = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
 
-      const updated = updateConnection(conn.id, {
+      const updated = await updateConnection(conn.id, {
         status: "revoked",
         label: "Revoked account",
         grantedScopes: ["repo", "user", "gist"],
@@ -2002,7 +2035,7 @@ describe("connection operations", () => {
 
       expect(updated).toBe(true);
 
-      const fetched = getConnection(conn.id);
+      const fetched = await getConnection(conn.id);
       expect(fetched).toBeDefined();
       expect(fetched!.status).toBe("revoked");
       expect(fetched!.label).toBe("Revoked account");
@@ -2022,102 +2055,102 @@ describe("connection operations", () => {
       const app1 = await createTestApp("github", "client-1");
       const app2 = await upsertApp("github", "client-2");
 
-      const conn = createConnection({
+      const conn = await createConnection({
         oauthAppId: app1.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
 
-      expect(getConnection(conn.id)!.oauthAppId).toBe(app1.id);
+      expect((await getConnection(conn.id))!.oauthAppId).toBe(app1.id);
 
-      const updated = updateConnection(conn.id, { oauthAppId: app2.id });
+      const updated = await updateConnection(conn.id, { oauthAppId: app2.id });
       expect(updated).toBe(true);
 
-      const fetched = getConnection(conn.id);
+      const fetched = await getConnection(conn.id);
       expect(fetched).toBeDefined();
       expect(fetched!.oauthAppId).toBe(app2.id);
     });
 
-    test("returns false for nonexistent id", () => {
-      expect(updateConnection("nonexistent-id", { status: "revoked" })).toBe(
-        false,
-      );
+    test("returns false for nonexistent id", async () => {
+      expect(
+        await updateConnection("nonexistent-id", { status: "revoked" }),
+      ).toBe(false);
     });
   });
 
   describe("listConnections", () => {
     test("returns all connections when no filter is given", async () => {
       const ghApp = await createTestApp("github", "client-1");
-      seedTestProvider("google");
+      await seedTestProvider("google");
       const googApp = await upsertApp("google", "client-2");
 
-      createConnection({
+      await createConnection({
         oauthAppId: ghApp.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
-      createConnection({
+      await createConnection({
         oauthAppId: googApp.id,
         provider: "google",
         grantedScopes: ["email"],
         hasRefreshToken: true,
       });
 
-      const all = listConnections();
+      const all = await listConnections();
       expect(all).toHaveLength(2);
     });
 
     test("filters by provider key", async () => {
       const ghApp = await createTestApp("github", "client-1");
-      seedTestProvider("google");
+      await seedTestProvider("google");
       const googApp = await upsertApp("google", "client-2");
 
-      createConnection({
+      await createConnection({
         oauthAppId: ghApp.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
-      createConnection({
+      await createConnection({
         oauthAppId: googApp.id,
         provider: "google",
         grantedScopes: ["email"],
         hasRefreshToken: true,
       });
 
-      const ghConns = listConnections("github");
+      const ghConns = await listConnections("github");
       expect(ghConns).toHaveLength(1);
       expect(ghConns[0].provider).toBe("github");
 
-      const googConns = listConnections("google");
+      const googConns = await listConnections("google");
       expect(googConns).toHaveLength(1);
       expect(googConns[0].provider).toBe("google");
     });
 
-    test("returns empty array when no connections exist", () => {
-      expect(listConnections()).toEqual([]);
+    test("returns empty array when no connections exist", async () => {
+      expect(await listConnections()).toEqual([]);
     });
   });
 
   describe("deleteConnection", () => {
     test("removes the row and returns true", async () => {
       const app = await createTestApp("github", "client-1");
-      const conn = createConnection({
+      const conn = await createConnection({
         oauthAppId: app.id,
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       });
 
-      const deleted = deleteConnection(conn.id);
+      const deleted = await deleteConnection(conn.id);
       expect(deleted).toBe(true);
-      expect(getConnection(conn.id)).toBeUndefined();
+      expect(await getConnection(conn.id)).toBeUndefined();
     });
 
-    test("returns false for nonexistent id", () => {
-      expect(deleteConnection("nonexistent-id")).toBe(false);
+    test("returns false for nonexistent id", async () => {
+      expect(await deleteConnection("nonexistent-id")).toBe(false);
     });
   });
 });
@@ -2126,16 +2159,16 @@ describe("connection operations", () => {
 // disconnectOAuthProvider
 // ---------------------------------------------------------------------------
 
-describe("disconnectOAuthProvider", () => {
+describePg("disconnectOAuthProvider", () => {
   /**
    * Seed a provider with revokeUrl and (optionally) a revokeBodyTemplate.
    */
-  function seedProviderWithRevoke(
+  async function seedProviderWithRevoke(
     provider: string,
     revokeUrl: string | null,
     revokeBodyTemplate?: Record<string, string>,
-  ): void {
-    seedProviders([
+  ): Promise<void> {
+    await seedProviders([
       {
         provider,
         authorizeUrl: `https://${provider}.example.com/authorize`,
@@ -2158,7 +2191,7 @@ describe("disconnectOAuthProvider", () => {
 
   test("returns 'disconnected' and deletes connection row and secure keys when connection exists", async () => {
     const app = await createTestApp("github", "client-1");
-    const conn = createConnection({
+    const conn = await createConnection({
       oauthAppId: app.id,
       provider: "github",
       grantedScopes: ["repo"],
@@ -2178,16 +2211,20 @@ describe("disconnectOAuthProvider", () => {
     );
 
     // Verify connection row was deleted
-    expect(getConnection(conn.id)).toBeUndefined();
+    expect(await getConnection(conn.id)).toBeUndefined();
   });
 
   test("calls upstream revoke when provider has revokeUrl and access token exists", async () => {
-    seedProviderWithRevoke("google", "https://oauth2.googleapis.com/revoke", {
-      token: "{access_token}",
-      client_id: "{client_id}",
-    });
+    await seedProviderWithRevoke(
+      "google",
+      "https://oauth2.googleapis.com/revoke",
+      {
+        token: "{access_token}",
+        client_id: "{client_id}",
+      },
+    );
     const app = await upsertApp("google", "client-1");
-    const conn = createConnection({
+    const conn = await createConnection({
       oauthAppId: app.id,
       provider: "google",
       grantedScopes: ["email"],
@@ -2220,7 +2257,7 @@ describe("disconnectOAuthProvider", () => {
   test("skips upstream revoke when provider has no revokeUrl", async () => {
     // GitHub seeded by createTestApp via seedTestProvider — no revokeUrl.
     const app = await createTestApp("github", "client-1");
-    const conn = createConnection({
+    const conn = await createConnection({
       oauthAppId: app.id,
       provider: "github",
       grantedScopes: ["repo"],
@@ -2237,11 +2274,15 @@ describe("disconnectOAuthProvider", () => {
   });
 
   test("skips upstream revoke when no access token exists in secure storage", async () => {
-    seedProviderWithRevoke("google", "https://oauth2.googleapis.com/revoke", {
-      token: "{access_token}",
-    });
+    await seedProviderWithRevoke(
+      "google",
+      "https://oauth2.googleapis.com/revoke",
+      {
+        token: "{access_token}",
+      },
+    );
     const app = await upsertApp("google", "client-1");
-    createConnection({
+    await createConnection({
       oauthAppId: app.id,
       provider: "google",
       grantedScopes: ["email"],
@@ -2255,11 +2296,15 @@ describe("disconnectOAuthProvider", () => {
   });
 
   test("continues local cleanup when upstream revoke returns non-2xx", async () => {
-    seedProviderWithRevoke("google", "https://oauth2.googleapis.com/revoke", {
-      token: "{access_token}",
-    });
+    await seedProviderWithRevoke(
+      "google",
+      "https://oauth2.googleapis.com/revoke",
+      {
+        token: "{access_token}",
+      },
+    );
     const app = await upsertApp("google", "client-1");
-    const conn = createConnection({
+    const conn = await createConnection({
       oauthAppId: app.id,
       provider: "google",
       grantedScopes: ["email"],
@@ -2283,15 +2328,19 @@ describe("disconnectOAuthProvider", () => {
     expect(mockDeleteSecureKeyAsync).toHaveBeenCalledWith(
       `oauth_connection/${conn.id}/access_token`,
     );
-    expect(getConnection(conn.id)).toBeUndefined();
+    expect(await getConnection(conn.id)).toBeUndefined();
   });
 
   test("continues local cleanup when upstream revoke throws (network error)", async () => {
-    seedProviderWithRevoke("google", "https://oauth2.googleapis.com/revoke", {
-      token: "{access_token}",
-    });
+    await seedProviderWithRevoke(
+      "google",
+      "https://oauth2.googleapis.com/revoke",
+      {
+        token: "{access_token}",
+      },
+    );
     const app = await upsertApp("google", "client-1");
-    const conn = createConnection({
+    const conn = await createConnection({
       oauthAppId: app.id,
       provider: "google",
       grantedScopes: ["email"],
@@ -2311,17 +2360,21 @@ describe("disconnectOAuthProvider", () => {
 
     const result = await disconnectOAuthProvider("google");
     expect(result).toBe("disconnected");
-    expect(getConnection(conn.id)).toBeUndefined();
+    expect(await getConnection(conn.id)).toBeUndefined();
   });
 
   test("substitutes {access_token} and {client_id} in body template values", async () => {
-    seedProviderWithRevoke("google", "https://oauth2.googleapis.com/revoke", {
-      token: "{access_token}",
-      client_id: "{client_id}",
-      token_type_hint: "access_token",
-    });
+    await seedProviderWithRevoke(
+      "google",
+      "https://oauth2.googleapis.com/revoke",
+      {
+        token: "{access_token}",
+        client_id: "{client_id}",
+        token_type_hint: "access_token",
+      },
+    );
     const app = await upsertApp("google", "client-substitution");
-    const conn = createConnection({
+    const conn = await createConnection({
       oauthAppId: app.id,
       provider: "google",
       grantedScopes: ["email"],
@@ -2359,11 +2412,11 @@ describe("disconnectOAuthProvider", () => {
     // the captured body contains the literal "tok$&abc" — which only holds
     // when we use a function-replacement callback that preserves literal
     // semantics and mirrors Python's str.replace() behavior.
-    seedProviderWithRevoke("google", "https://revoke.example.com/r", {
+    await seedProviderWithRevoke("google", "https://revoke.example.com/r", {
       token: "{access_token}",
     });
     const app = await upsertApp("google", "client-1");
-    const conn = createConnection({
+    const conn = await createConnection({
       oauthAppId: app.id,
       provider: "google",
       grantedScopes: ["email"],
@@ -2396,11 +2449,11 @@ describe("disconnectOAuthProvider", () => {
     // placeholders must have ALL of them substituted to preserve parity.
     // This test guards against a regression to .replace(), which would
     // leave the second {access_token} as a literal placeholder.
-    seedProviderWithRevoke("google", "https://revoke.example.com/r", {
+    await seedProviderWithRevoke("google", "https://revoke.example.com/r", {
       token: "token={access_token}&also={access_token}",
     });
     const app = await upsertApp("google", "client-1");
-    const conn = createConnection({
+    const conn = await createConnection({
       oauthAppId: app.id,
       provider: "google",
       grantedScopes: ["email"],
@@ -2429,7 +2482,7 @@ describe("disconnectOAuthProvider", () => {
   test("coerces non-string body template values to strings", async () => {
     // seedProviderWithRevoke restricts to Record<string, string>; bypass it
     // here by inserting a template with a numeric value via a direct seed.
-    seedProviders([
+    await seedProviders([
       {
         provider: "google",
         authorizeUrl: "https://google.example.com/authorize",
@@ -2445,7 +2498,7 @@ describe("disconnectOAuthProvider", () => {
       },
     ]);
     const app = await upsertApp("google", "client-1");
-    const conn = createConnection({
+    const conn = await createConnection({
       oauthAppId: app.id,
       provider: "google",
       grantedScopes: ["email"],
@@ -2473,11 +2526,15 @@ describe("disconnectOAuthProvider", () => {
   });
 
   test("revokes BEFORE deleting tokens from secure storage", async () => {
-    seedProviderWithRevoke("google", "https://oauth2.googleapis.com/revoke", {
-      token: "{access_token}",
-    });
+    await seedProviderWithRevoke(
+      "google",
+      "https://oauth2.googleapis.com/revoke",
+      {
+        token: "{access_token}",
+      },
+    );
     const app = await upsertApp("google", "client-1");
-    const conn = createConnection({
+    const conn = await createConnection({
       oauthAppId: app.id,
       provider: "google",
       grantedScopes: ["email"],
@@ -2545,22 +2602,22 @@ describe("disconnectOAuthProvider", () => {
 // FK constraint enforcement
 // ---------------------------------------------------------------------------
 
-describe("FK constraints", () => {
+describePg("FK constraints", () => {
   test("creating an app with a nonexistent provider_key fails", async () => {
     await expect(
       upsertApp("nonexistent-provider", "client-1"),
     ).rejects.toThrow();
   });
 
-  test("creating a connection with a nonexistent oauth_app_id fails", () => {
-    seedTestProvider("github");
-    expect(() =>
+  test("creating a connection with a nonexistent oauth_app_id fails", async () => {
+    await seedTestProvider("github");
+    await expect(
       createConnection({
         oauthAppId: "nonexistent-app-id",
         provider: "github",
         grantedScopes: ["repo"],
         hasRefreshToken: false,
       }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 });

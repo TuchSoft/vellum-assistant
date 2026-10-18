@@ -7,7 +7,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { Database } from "bun:sqlite";
 import {
   afterAll,
   afterEach,
@@ -17,8 +16,6 @@ import {
   mock,
   test,
 } from "bun:test";
-
-import { drizzle } from "drizzle-orm/bun-sqlite";
 
 // ---------------------------------------------------------------------------
 // Mocks — declared before imports that depend on platform/logger
@@ -66,15 +63,14 @@ import {
   mergeDefaultWorkspaceConfig,
 } from "../config/loader.js";
 import { seedInferenceProfiles } from "../config/seed-inference-profiles.js";
-import type { DrizzleDb } from "../persistence/db-connection.js";
-import { migrateCreateProviderConnections } from "../persistence/migrations/243-provider-connections.js";
-import { migrateProviderConnectionStatusLabel } from "../persistence/migrations/244-provider-connection-status-label.js";
-import { migrateProviderConnectionBaseUrlAndModels } from "../persistence/migrations/250-provider-connection-base-url-and-models.js";
-import * as schema from "../persistence/schema/index.js";
+import type { AsyncDb } from "../persistence/db-facade.js";
+import { requireMainDb } from "../persistence/db-facade.js";
+import { seedCanonicalConnections } from "../providers/inference/connections.js";
 import { getConnection } from "../providers/inference/connections.js";
 import { getProviderDefaultModel } from "../providers/model-intents.js";
 import { getConfigQuarantineNoticePath } from "../util/platform.js";
 import { setStorePathForTesting } from "./encrypted-store-test-helpers.js";
+import { describePg } from "./pg-test-db.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -142,9 +138,11 @@ function fullSeededCallSites(): Record<string, Record<string, unknown>> {
   };
 }
 
-function mergeDefaultConfigAndSeedInferenceProfiles(db?: DrizzleDb): void {
+function mergeDefaultConfigAndSeedInferenceProfiles(
+  db?: AsyncDb,
+): Promise<void> {
   const defaultConfigMerge = mergeDefaultWorkspaceConfig();
-  seedInferenceProfiles({
+  return seedInferenceProfiles({
     preserveActiveProfile: defaultConfigMerge.providedLlmActiveProfile,
     isHatch: defaultConfigMerge.hadOverlay,
     db,
@@ -173,14 +171,8 @@ const LEGACY_HATCH_PROFILE_NAMES = [
 const MANAGED_BALANCED_MODEL = CODE_DEFAULT_PROFILE_ENTRIES.balanced
   .model as string;
 
-function createProviderConnectionsDb(): DrizzleDb {
-  const sqlite = new Database(":memory:");
-  sqlite.exec("PRAGMA journal_mode=WAL");
-  const db = drizzle(sqlite, { schema });
-  migrateCreateProviderConnections(db);
-  migrateProviderConnectionStatusLabel(db);
-  migrateProviderConnectionBaseUrlAndModels(db);
-  return db;
+function createProviderConnectionsDb(): AsyncDb {
+  return requireMainDb();
 }
 
 // ---------------------------------------------------------------------------
@@ -191,13 +183,13 @@ function createProviderConnectionsDb(): DrizzleDb {
 // ---------------------------------------------------------------------------
 
 describe("deepMergeOverwrite", () => {
-  test("overwrites top-level scalars", () => {
+  test("overwrites top-level scalars", async () => {
     const target: Record<string, unknown> = { a: 1, b: "old" };
     deepMergeOverwrite(target, { a: 2, c: "new" });
     expect(target).toEqual({ a: 2, b: "old", c: "new" });
   });
 
-  test("recursively merges nested objects, overwriting leaves", () => {
+  test("recursively merges nested objects, overwriting leaves", async () => {
     const target: Record<string, unknown> = {
       nested: { keep: "yes", change: "before" },
     };
@@ -209,20 +201,20 @@ describe("deepMergeOverwrite", () => {
     });
   });
 
-  test("replaces arrays wholesale rather than merging", () => {
+  test("replaces arrays wholesale rather than merging", async () => {
     const target: Record<string, unknown> = { items: [1, 2, 3] };
     deepMergeOverwrite(target, { items: [9] });
     expect(target).toEqual({ items: [9] });
   });
 
-  test("assigns null to scalar fields (preserves nullable config values)", () => {
+  test("assigns null to scalar fields (preserves nullable config values)", async () => {
     const target: Record<string, unknown> = { a: 1, b: 2 };
     deepMergeOverwrite(target, { a: null });
     expect(target).toEqual({ a: null, b: 2 });
     expect("a" in target).toBe(true);
   });
 
-  test("assigns null to nested scalar fields, preserving siblings", () => {
+  test("assigns null to nested scalar fields, preserving siblings", async () => {
     const target: Record<string, unknown> = {
       a: { b: 1, c: 2, d: 3 },
     };
@@ -231,7 +223,7 @@ describe("deepMergeOverwrite", () => {
     expect("b" in (target.a as Record<string, unknown>)).toBe(true);
   });
 
-  test("assigns null to existing null fields (no-op for already-null)", () => {
+  test("assigns null to existing null fields (no-op for already-null)", async () => {
     const target: Record<string, unknown> = {
       heartbeat: { activeHoursStart: null, intervalMs: 6000 },
     };
@@ -243,7 +235,7 @@ describe("deepMergeOverwrite", () => {
     });
   });
 
-  test("deletion of a nested key whose value is itself an object", () => {
+  test("deletion of a nested key whose value is itself an object", async () => {
     // Models the macOS clear-call-site-override case:
     // PATCH { llm: { callSites: { commitMessage: null } } } removes the
     // commitMessage entry entirely while keeping other call-site entries
@@ -270,14 +262,14 @@ describe("deepMergeOverwrite", () => {
     });
   });
 
-  test("deletion is a no-op when the key is already absent", () => {
+  test("deletion is a no-op when the key is already absent", async () => {
     const target: Record<string, unknown> = { a: 1 };
     deepMergeOverwrite(target, { missing: null });
     expect(target).toEqual({ a: 1 });
     expect("missing" in target).toBe(false);
   });
 
-  test("strips null leaves when assigning a whole subtree to a missing key", () => {
+  test("strips null leaves when assigning a whole subtree to a missing key", async () => {
     // Models a PATCH that introduces a new call-site entry while clearing
     // some of its sub-fields in the same payload — the nulls must not
     // be persisted.
@@ -299,13 +291,13 @@ describe("deepMergeOverwrite", () => {
     });
   });
 
-  test("strips null leaves when overwriting a scalar with an object subtree", () => {
+  test("strips null leaves when overwriting a scalar with an object subtree", async () => {
     const target: Record<string, unknown> = { a: 1 };
     deepMergeOverwrite(target, { a: { b: null, c: 5, d: { e: null, f: 6 } } });
     expect(target).toEqual({ a: { c: 5, d: { f: 6 } } });
   });
 
-  test("nullable config fields: null replaces scalar default, not deleted", () => {
+  test("nullable config fields: null replaces scalar default, not deleted", async () => {
     // Models PATCH { heartbeat: { activeHoursStart: null, activeHoursEnd: null } }
     // on a config where the defaults (8, 22) are in place. The nullable fields
     // must store null (meaning "disabled") — NOT be deleted (which would
@@ -325,7 +317,7 @@ describe("deepMergeOverwrite", () => {
     });
   });
 
-  test("mixed: deletes object entries, assigns null to scalars in same merge", () => {
+  test("mixed: deletes object entries, assigns null to scalars in same merge", async () => {
     // Verifies both behaviors coexist in a single merge: object entries are
     // deleted (call-site clearing) while scalar nulls are assigned (nullable fields).
     const target: Record<string, unknown> = {
@@ -346,13 +338,13 @@ describe("deepMergeOverwrite", () => {
     });
   });
 
-  test("preserves explicit boolean false and zero (not treated as null)", () => {
+  test("preserves explicit boolean false and zero (not treated as null)", async () => {
     const target: Record<string, unknown> = { a: true, b: 1 };
     deepMergeOverwrite(target, { a: false, b: 0 });
     expect(target).toEqual({ a: false, b: 0 });
   });
 
-  test("undefined override values are passed through, not treated as deletion", () => {
+  test("undefined override values are passed through, not treated as deletion", async () => {
     // JSON.parse never produces undefined, but guard the in-process call path:
     // an explicit undefined assignment should follow the same "scalar overwrite"
     // path as before, not the null-deletion path.
@@ -372,7 +364,7 @@ describe("deepMergeOverwrite", () => {
 // strip, fresh-config seed, corrupt-JSON quarantine) are protected below.
 // ---------------------------------------------------------------------------
 
-describe("loadConfig startup behavior", () => {
+describePg("loadConfig startup behavior", () => {
   beforeEach(() => {
     ensureTestDir();
     const resetPaths = [
@@ -415,7 +407,7 @@ describe("loadConfig startup behavior", () => {
     invalidateConfigCache();
   });
 
-  test("does not modify existing config.json on load", () => {
+  test("does not modify existing config.json on load", async () => {
     // Write a partial config and confirm the file's bytes are unchanged
     // after loadConfig(). Schema defaults must apply in-memory only; disk
     // is the user's source of truth.
@@ -428,7 +420,7 @@ describe("loadConfig startup behavior", () => {
     expect(after.equals(before)).toBe(true);
   });
 
-  test("getConfig().memory.v2.bm25_b returns schema default when absent on disk", () => {
+  test("getConfig().memory.v2.bm25_b returns schema default when absent on disk", async () => {
     // Consumer-side correctness: even though loadConfig no longer writes
     // schema defaults back to disk, accessors still see them via the
     // in-memory `cached: AssistantConfig` populated by `applyNestedDefaults`.
@@ -439,7 +431,7 @@ describe("loadConfig startup behavior", () => {
     expect(config.memory.v2.bm25_b).toBe(0.4);
   });
 
-  test("default workspace config merge prunes exact seeded call-site defaults", () => {
+  test("default workspace config merge prunes exact seeded call-site defaults", async () => {
     const seededCallSites = fullSeededCallSites();
     const overlayPath = join(WORKSPACE_DIR, "hatch-overlay.json");
     writeFileSync(
@@ -489,7 +481,7 @@ describe("loadConfig startup behavior", () => {
     expect(callSites.customSite).toEqual({ profile: "frontier" });
   });
 
-  test("reloads cached config when config.json is updated externally", () => {
+  test("reloads cached config when config.json is updated externally", async () => {
     // Models a CLI subprocess writing twilio.accountSid while the assistant
     // process already has an effective config cached in memory.
     writeConfig({ twilio: { accountSid: "AC_cached_before" } });
@@ -504,7 +496,7 @@ describe("loadConfig startup behavior", () => {
     );
   });
 
-  test("still strips deprecated fields and rewrites", () => {
+  test("still strips deprecated fields and rewrites", async () => {
     // `warnAndStripDeprecatedFields` is a legitimate self-healing path:
     // it removes fields the schema no longer recognizes and persists the
     // cleaned config so the deprecation warning fires only once.
@@ -521,7 +513,7 @@ describe("loadConfig startup behavior", () => {
     expect(raw.provider).toBe("anthropic");
   });
 
-  test("strips memory.jobs.batchSize from existing user configs", () => {
+  test("strips memory.jobs.batchSize from existing user configs", async () => {
     // Pre-PR-#29364, the memory job worker read `memory.jobs.batchSize` to
     // size its single claim batch. The per-lane scheduler no longer reads
     // it, so the field is deprecated. Existing configs that have it
@@ -539,7 +531,7 @@ describe("loadConfig startup behavior", () => {
     expect(raw.memory?.jobs?.workerConcurrency).toBe(4);
   });
 
-  test("strips daemon.reapOrphanedSubprocesses from existing user configs", () => {
+  test("strips daemon.reapOrphanedSubprocesses from existing user configs", async () => {
     // `daemon.reapOrphanedSubprocesses` is a deprecated opt-in flag: the
     // orphan-subprocess reaper runs by default whenever the daemon is PID 1 on
     // Linux. Existing configs that have it written to disk should load cleanly
@@ -557,7 +549,7 @@ describe("loadConfig startup behavior", () => {
     expect(raw.daemon?.standaloneRecording).toBe(false);
   });
 
-  test("strips calls.voice.language from existing user configs", () => {
+  test("strips calls.voice.language from existing user configs", async () => {
     // `calls.voice.language` is a retired no-op knob: nothing read it.
     // The spoken language lives at `services.stt.language` and per-language
     // TTS voices at `services.tts.providers.<id>.languageVoices`. Existing
@@ -576,7 +568,7 @@ describe("loadConfig startup behavior", () => {
     expect(raw.calls?.voice?.telephonyStreaming).toBe(false);
   });
 
-  test("still writes a default config on first launch when file is absent", () => {
+  test("still writes a default config on first launch when file is absent", async () => {
     // Discoverability: when no config.json exists, write one populated with
     // all schema defaults so users can see and edit available options.
     expect(existsSync(CONFIG_PATH)).toBe(false);
@@ -590,7 +582,7 @@ describe("loadConfig startup behavior", () => {
     expect(raw.dataDir).toBeUndefined();
   });
 
-  test("off-platform hatch writes no profile entries; defaults resolve through the hatch provider", () => {
+  test("off-platform hatch writes no profile entries; defaults resolve through the hatch provider", async () => {
     const overlayPath = join(WORKSPACE_DIR, "hatch-overlay.json");
     writeFileSync(
       overlayPath,
@@ -610,7 +602,7 @@ describe("loadConfig startup behavior", () => {
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
     const db = createProviderConnectionsDb();
 
-    mergeDefaultConfigAndSeedInferenceProfiles(db);
+    await mergeDefaultConfigAndSeedInferenceProfiles(db);
     const config = loadConfig();
 
     // `llm.default` is not part of the schema — the overlay blob stays on
@@ -632,7 +624,7 @@ describe("loadConfig startup behavior", () => {
       expect(raw.llm.profiles[name]).toBeUndefined();
     }
     // The personal connection the BYOK column stamps is created at hatch.
-    expect(getConnection(db, "anthropic-personal")).not.toBeNull();
+    expect(await getConnection(db, "anthropic-personal")).not.toBeNull();
 
     // Resolution contract the hatch relies on: the defaults resolve active
     // through the hatch provider with the personal connection.
@@ -647,7 +639,7 @@ describe("loadConfig startup behavior", () => {
     expect("status" in (effective.balanced ?? {})).toBe(false);
   });
 
-  test("on-platform hatch writes no profile entries; defaults resolve from the catalog", () => {
+  test("on-platform hatch writes no profile entries; defaults resolve from the catalog", async () => {
     process.env.IS_PLATFORM = "true";
 
     const overlayPath = join(WORKSPACE_DIR, "hatch-overlay.json");
@@ -668,7 +660,7 @@ describe("loadConfig startup behavior", () => {
     );
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.activeProfile).toBe("balanced");
@@ -683,7 +675,7 @@ describe("loadConfig startup behavior", () => {
     expect(effectiveBalanced?.provider_connection).toBeUndefined();
   });
 
-  test("re-hatch from openai to anthropic leaves the user profile untouched and re-anchors the defaults", () => {
+  test("re-hatch from openai to anthropic leaves the user profile untouched and re-anchors the defaults", async () => {
     // Pre-seed an OpenAI-style workspace: user-defined custom-balanced profile
     // is active, default is openai. Simulates a workspace that hatched against
     // OpenAI under the pre-1.2 model.
@@ -709,7 +701,7 @@ describe("loadConfig startup behavior", () => {
     );
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
 
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
     // Off-platform re-hatch: the default profiles become active, anchored on
@@ -733,7 +725,7 @@ describe("loadConfig startup behavior", () => {
     expect(effective.balanced?.provider_connection).toBe("anthropic-personal");
   });
 
-  test("on-platform re-hatch resets active profile to balanced", () => {
+  test("on-platform re-hatch resets active profile to balanced", async () => {
     process.env.IS_PLATFORM = "true";
 
     writeConfig({
@@ -758,7 +750,7 @@ describe("loadConfig startup behavior", () => {
     );
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
 
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
     // On-platform: no user profiles created, active resets to managed balanced.
@@ -772,7 +764,7 @@ describe("loadConfig startup behavior", () => {
     expect(raw.llm.profiles["custom-balanced"].provider).toBe("openai");
   });
 
-  test("hatch overlay active profile must be dispatchable to be preserved", () => {
+  test("hatch overlay active profile must be dispatchable to be preserved", async () => {
     const overlayPath = join(WORKSPACE_DIR, "hatch-overlay.json");
     writeFileSync(
       overlayPath,
@@ -793,7 +785,7 @@ describe("loadConfig startup behavior", () => {
     );
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles.placeholder).toBeUndefined();
@@ -801,7 +793,7 @@ describe("loadConfig startup behavior", () => {
     expect(raw.llm.activeProfile).toBe("balanced");
   });
 
-  test("boot removes non-dispatchable profile references", () => {
+  test("boot removes non-dispatchable profile references", async () => {
     writeConfig({
       llm: {
         default: { provider: "anthropic", model: "claude-opus-4-7" },
@@ -830,7 +822,7 @@ describe("loadConfig startup behavior", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles.placeholder).toBeUndefined();
@@ -844,24 +836,24 @@ describe("loadConfig startup behavior", () => {
     expect(raw.llm.callSites.commitMessage.maxTokens).toBe(256);
   });
 
-  test("preserves user-supplied non-catalog model on every restart (ollama custom model)", () => {
+  test("preserves user-supplied non-catalog model on every restart (ollama custom model)", async () => {
     // Models the ollama case: catalog lists only `llama3.2` but the user has
     // pulled `codellama`. The seeder must NOT silently overwrite their pick.
     writeConfig({
       llm: { default: { provider: "ollama", model: "codellama" } },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     let raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
     expect(raw.llm.default.model).toBe("codellama");
 
     // Re-run to confirm idempotency — the user's model survives every restart.
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
     expect(raw.llm.default.model).toBe("codellama");
   });
 
-  test("off-platform hatch with openai resolves the defaults through the openai column", () => {
+  test("off-platform hatch with openai resolves the defaults through the openai column", async () => {
     const overlayPath = join(WORKSPACE_DIR, "hatch-overlay.json");
     writeFileSync(
       overlayPath,
@@ -870,7 +862,7 @@ describe("loadConfig startup behavior", () => {
     );
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.activeProfile).toBe("balanced");
@@ -895,7 +887,7 @@ describe("loadConfig startup behavior", () => {
     expect(effective["cost-optimized"]?.model).toBe("gpt-5.6-luna");
   });
 
-  test("off-platform hatch with a provider outside the named matrix columns resolves through the shared BYOK templates", () => {
+  test("off-platform hatch with a provider outside the named matrix columns resolves through the shared BYOK templates", async () => {
     // `together` has no column in PROFILE_IMPLS and no intent table: the
     // defaults must still anchor on it (not fall back to anthropic), backed
     // by the `together-personal` connection and its catalog defaultModel.
@@ -908,7 +900,7 @@ describe("loadConfig startup behavior", () => {
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
     const db = createProviderConnectionsDb();
 
-    mergeDefaultConfigAndSeedInferenceProfiles(db);
+    await mergeDefaultConfigAndSeedInferenceProfiles(db);
     const config = loadConfig();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
@@ -919,7 +911,7 @@ describe("loadConfig startup behavior", () => {
     for (const name of LEGACY_HATCH_PROFILE_NAMES) {
       expect(raw.llm.profiles[name]).toBeUndefined();
     }
-    expect(getConnection(db, "together-personal")).not.toBeNull();
+    expect(await getConnection(db, "together-personal")).not.toBeNull();
 
     const effective = getEffectiveProfilesForProvider(
       raw.llm.profiles,
@@ -937,7 +929,7 @@ describe("loadConfig startup behavior", () => {
     }
   });
 
-  test("off-platform hatch with a connection-eligible provider that is not a default-provider choice falls back to anthropic", () => {
+  test("off-platform hatch with a connection-eligible provider that is not a default-provider choice falls back to anthropic", async () => {
     // `litellm` passes the connection gate (API-key catalog provider with a
     // fixed base URL requirement absent) but its catalog defaultModel is
     // empty, so it is not a DEFAULT_PROVIDER_CHOICES member. The key and
@@ -954,7 +946,7 @@ describe("loadConfig startup behavior", () => {
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
     const db = createProviderConnectionsDb();
 
-    mergeDefaultConfigAndSeedInferenceProfiles(db);
+    await mergeDefaultConfigAndSeedInferenceProfiles(db);
     const config = loadConfig();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
@@ -964,7 +956,7 @@ describe("loadConfig startup behavior", () => {
     for (const name of LEGACY_HATCH_PROFILE_NAMES) {
       expect(raw.llm.profiles[name]).toBeUndefined();
     }
-    expect(getConnection(db, "litellm-personal")).not.toBeNull();
+    expect(await getConnection(db, "litellm-personal")).not.toBeNull();
 
     const effective = getEffectiveProfilesForProvider(
       raw.llm.profiles,
@@ -980,7 +972,7 @@ describe("loadConfig startup behavior", () => {
     }
   });
 
-  test("off-platform boot leaves an existing managed entry byte-identical", () => {
+  test("off-platform boot leaves an existing managed entry byte-identical", async () => {
     // A drifted legacy full-body entry left by a previous release stays
     // exactly as written — boots never rewrite managed entries. Content is
     // served from the code catalog at resolution time instead.
@@ -998,7 +990,7 @@ describe("loadConfig startup behavior", () => {
     });
 
     // Non-hatch boot (no overlay).
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles.balanced).toEqual(drifted);
@@ -1010,7 +1002,7 @@ describe("loadConfig startup behavior", () => {
     expect(effectiveBalanced?.provider_connection).toBeUndefined();
   });
 
-  test("boot leaves a source-less legacy canonical profile as a user-owned shadow", () => {
+  test("boot leaves a source-less legacy canonical profile as a user-owned shadow", async () => {
     // Migration 052 seeded canonical profiles without a `source`. A
     // source-less entry on a default name is user-owned: boots leave it
     // byte-identical (never reclaimed or tagged managed), and it shadows the
@@ -1026,7 +1018,7 @@ describe("loadConfig startup behavior", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles["quality-optimized"]).toEqual(legacy);
@@ -1040,10 +1032,10 @@ describe("loadConfig startup behavior", () => {
     expect(effectiveQuality?.source).toBeUndefined();
   });
 
-  test("defaults the advisor profile to the managed Quality profile", () => {
+  test("defaults the advisor profile to the managed Quality profile", async () => {
     writeConfig({ llm: { default: { provider: "anthropic" } } });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     // The strongest active managed default via the effective view. No
@@ -1058,7 +1050,7 @@ describe("loadConfig startup behavior", () => {
     expect(effectiveQuality?.model).toBe("gpt-5.6-sol");
   });
 
-  test("platform boot leaves a drifted managed entry byte-identical; resolution serves catalog content", () => {
+  test("platform boot leaves a drifted managed entry byte-identical; resolution serves catalog content", async () => {
     // Headline behavior: default profile content is code-owned, so model/config
     // updates ship in a release without any workspace rewrite. Boots never
     // touch managed entries; the effective view serves the catalog body and
@@ -1080,7 +1072,7 @@ describe("loadConfig startup behavior", () => {
     });
 
     // Non-hatch boot (no overlay).
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles.balanced).toEqual(drifted);
@@ -1094,7 +1086,7 @@ describe("loadConfig startup behavior", () => {
     expect("topP" in (effectiveBalanced ?? {})).toBe(false);
   });
 
-  test("platform boot preserves user-edited label and status on a managed stub", () => {
+  test("platform boot preserves user-edited label and status on a managed stub", async () => {
     // The workspace-owned fields a user may set on a managed profile — label
     // and status — live on the stub, which boots never touch. The effective
     // view overlays them onto the code-owned body.
@@ -1112,7 +1104,7 @@ describe("loadConfig startup behavior", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles.balanced).toEqual(edited);
@@ -1124,7 +1116,7 @@ describe("loadConfig startup behavior", () => {
     expect(effectiveBalanced?.status).toBe("disabled");
   });
 
-  test("off-platform boot preserves a user-edited label on a managed stub (Codex P1 on PR #30362)", () => {
+  test("off-platform boot preserves a user-edited label on a managed stub (Codex P1 on PR #30362)", async () => {
     // Simulate a user who renamed the managed "balanced" profile via
     // PUT /v1/config/llm/profiles/balanced { label: "My Default" }.
     const stub = { source: "managed", label: "My Default" };
@@ -1135,7 +1127,7 @@ describe("loadConfig startup behavior", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     // The stub is untouched, and the user's label rides on top of the
@@ -1146,7 +1138,7 @@ describe("loadConfig startup behavior", () => {
     expect(effectiveBalanced?.model).toBe(MANAGED_BALANCED_MODEL);
   });
 
-  test("off-platform boot preserves user-toggled status on a managed stub", () => {
+  test("off-platform boot preserves user-toggled status on a managed stub", async () => {
     // Simulate a user who disabled the managed "balanced" profile via
     // PUT /v1/config/llm/profiles/balanced { status: "disabled" }.
     const stub = { source: "managed", status: "disabled" };
@@ -1157,7 +1149,7 @@ describe("loadConfig startup behavior", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles.balanced).toEqual(stub);
@@ -1168,7 +1160,7 @@ describe("loadConfig startup behavior", () => {
     expect(effectiveBalanced?.model).toBe(MANAGED_BALANCED_MODEL);
   });
 
-  test("boot preserves a user-edited topP override on a managed stub", () => {
+  test("boot preserves a user-edited topP override on a managed stub", async () => {
     // Simulate a user who overrode topP on the managed "balanced" profile via
     // PUT /v1/config/llm/profiles/balanced { topP: 0.5 }. The override lives
     // on the stub, survives boots untouched, and overlays the catalog body
@@ -1181,7 +1173,7 @@ describe("loadConfig startup behavior", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles.balanced).toEqual(stub);
@@ -1192,13 +1184,13 @@ describe("loadConfig startup behavior", () => {
     expect(effectiveBalanced?.model).toBe(MANAGED_BALANCED_MODEL);
   });
 
-  test("effective balanced profile carries no topP override by default", () => {
+  test("effective balanced profile carries no topP override by default", async () => {
     // Boots write no managed entry, and the catalog body (matching the
     // quality profile) carries no topP — so the effective balanced profile
     // has none either.
     writeConfig({ llm: {} });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles.balanced).toBeUndefined();
@@ -1206,7 +1198,7 @@ describe("loadConfig startup behavior", () => {
     expect("topP" in (effectiveBalanced ?? {})).toBe(false);
   });
 
-  test("off-platform reseed preserves an explicit null label (user cleared it)", () => {
+  test("off-platform reseed preserves an explicit null label (user cleared it)", async () => {
     // Setting label to null is the "clear" intent — must survive too,
     // otherwise the next boot would re-stamp the template's default
     // label and ignore the user's clear action.
@@ -1225,20 +1217,20 @@ describe("loadConfig startup behavior", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles.balanced.label).toBeNull();
   });
 
-  test("non-hatch off-platform boot writes no managed entries; defaults resolve bare-labeled from the catalog", () => {
+  test("non-hatch off-platform boot writes no managed entries; defaults resolve bare-labeled from the catalog", async () => {
     // First boot of a config with no prior profiles and no hatch overlay:
     // nothing is materialized for the default names. The " (Managed)" label
     // suffix exists only on the thin stubs written at BYOK hatch time; a
     // plain boot serves the bare catalog labels through the effective view.
     writeConfig({});
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles.balanced).toBeUndefined();
@@ -1249,7 +1241,7 @@ describe("loadConfig startup behavior", () => {
     expect("status" in (effectiveBalanced ?? {})).toBe(false);
   });
 
-  test("platform overlay fragment stays on disk verbatim; resolution serves catalog content with the overlay label", () => {
+  test("platform overlay fragment stays on disk verbatim; resolution serves catalog content with the overlay label", async () => {
     // The overlay's `balanced` fragment lands verbatim on disk and stays
     // there across boots — boots never rewrite managed entries. Resolution,
     // however, always serves default profile CONTENT from the code catalog:
@@ -1305,7 +1297,7 @@ describe("loadConfig startup behavior", () => {
     );
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const config = loadConfig();
     const mainAgentConfig = resolveCallSiteConfig("mainAgent", config.llm);
 
@@ -1338,7 +1330,7 @@ describe("loadConfig startup behavior", () => {
     // Next boot, no overlay: the entry stays byte-identical on disk, and
     // resolution keeps serving the fireworks-managed catalog body with the
     // overlay's label on top.
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
 
     const afterRestart = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
     expect(afterRestart.llm.activeProfile).toBe("balanced");
@@ -1363,7 +1355,7 @@ describe("loadConfig startup behavior", () => {
     expect(effectiveBalanced?.label).toBe("Platform Balanced");
   });
 
-  test("quarantines corrupt config before merging hatch overlay", () => {
+  test("quarantines corrupt config before merging hatch overlay", async () => {
     writeFileSync(CONFIG_PATH, "{not valid json");
 
     const overlayPath = join(WORKSPACE_DIR, "hatch-overlay.json");
@@ -1384,7 +1376,7 @@ describe("loadConfig startup behavior", () => {
     );
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
 
     const quarantined = readdirSync(WORKSPACE_DIR).filter((n) =>
       n.startsWith("config.json.corrupt-"),
@@ -1411,7 +1403,7 @@ describe("loadConfig startup behavior", () => {
     expect(effective.balanced?.provider_connection).toBe("anthropic-personal");
   });
 
-  test("an active managed backup profile survives a reload", () => {
+  test("an active managed backup profile survives a reload", async () => {
     // A managed backup resolves from the code catalog without being
     // materialized in `llm.profiles`, so selecting one persists nothing but
     // the reference. If the schema did not treat backup keys as
@@ -1429,14 +1421,14 @@ describe("loadConfig startup behavior", () => {
     const config = loadConfig();
     expect(config.llm.activeProfile).toBe("balanced-backup");
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
 
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
     expect(raw.llm.activeProfile).toBe("balanced-backup");
     expect(raw.llm.profiles["balanced-backup"]).toBeUndefined();
   });
 
-  test("an active managed backup profile is repaired on a BYOK install", () => {
+  test("an active managed backup profile is repaired on a BYOK install", async () => {
     // Backups live on the managed column alone, so under a BYOK default
     // provider the selection names a profile that resolves to nothing. The
     // schema rejects the reference on load and the seeder, which resolves
@@ -1453,13 +1445,13 @@ describe("loadConfig startup behavior", () => {
     const config = loadConfig();
     expect(config.llm.activeProfile).toBeUndefined();
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
 
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
     expect(raw.llm.activeProfile).toBe("balanced");
   });
 
-  test("a call site pinned to a managed backup profile survives a reload", () => {
+  test("a call site pinned to a managed backup profile survives a reload", async () => {
     writeConfig({
       llm: {
         defaultProvider: { provider: "vellum" },
@@ -1476,7 +1468,7 @@ describe("loadConfig startup behavior", () => {
     expect(raw.llm.callSites.recall.profile).toBe("cost-optimized-backup");
   });
 
-  test("still quarantines corrupt JSON", () => {
+  test("still quarantines corrupt JSON", async () => {
     // Corrupt-config quarantine is a recovery path: the broken file is
     // renamed to `config.json.corrupt-<ts>.json` and the daemon proceeds
     // with defaults. This must keep working.
@@ -1506,7 +1498,7 @@ describe("loadConfig startup behavior", () => {
 // them.
 // ---------------------------------------------------------------------------
 
-describe("seedInferenceProfiles BYOK-mode default profiles", () => {
+describePg("seedInferenceProfiles BYOK-mode default profiles", () => {
   beforeEach(() => {
     ensureTestDir();
     const resetPaths = [
@@ -1536,7 +1528,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     invalidateConfigCache();
   });
 
-  test("off-platform hatch writes no stubs; defaults resolve active with bare labels", () => {
+  test("off-platform hatch writes no stubs; defaults resolve active with bare labels", async () => {
     const overlayPath = join(WORKSPACE_DIR, "hatch-overlay.json");
     writeFileSync(
       overlayPath,
@@ -1552,7 +1544,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     );
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     // No workspace entries at all: no disabled stubs, no label suffixes, no
@@ -1570,7 +1562,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     expect("status" in (effective["cost-optimized"] ?? {})).toBe(false);
   });
 
-  test("off-platform BYOK hatch defaults advisor to quality-optimized", () => {
+  test("off-platform BYOK hatch defaults advisor to quality-optimized", async () => {
     const overlayPath = join(WORKSPACE_DIR, "hatch-overlay.json");
     writeFileSync(
       overlayPath,
@@ -1579,14 +1571,14 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     );
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const config = loadConfig();
 
     expect(config.llm.activeProfile).toBe("balanced");
     expect(config.llm.advisorProfile).toBe("quality-optimized");
   });
 
-  test("off-platform boot clears a disabled managed advisor even when a personal profile exists", () => {
+  test("off-platform boot clears a disabled managed advisor even when a personal profile exists", async () => {
     writeConfig({
       llm: {
         advisorProfile: "frontier",
@@ -1630,7 +1622,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const config = loadConfig();
 
     // Advisor repair only considers the managed defaults; a user profile is
@@ -1638,7 +1630,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     expect(config.llm.advisorProfile).toBeUndefined();
   });
 
-  test("platform boot repairs a disabled managed advisor to an active managed profile", () => {
+  test("platform boot repairs a disabled managed advisor to an active managed profile", async () => {
     process.env.IS_PLATFORM = "true";
     writeConfig({
       llm: {
@@ -1662,13 +1654,13 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const config = loadConfig();
 
     expect(config.llm.advisorProfile).toBe("quality-optimized");
   });
 
-  test("off-platform boot clears a disabled managed advisor when no active replacement exists", () => {
+  test("off-platform boot clears a disabled managed advisor when no active replacement exists", async () => {
     writeConfig({
       llm: {
         advisorProfile: "frontier",
@@ -1705,13 +1697,13 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const config = loadConfig();
 
     expect(config.llm.advisorProfile).toBeUndefined();
   });
 
-  test("off-platform managed-inference hatch keeps selected managed connection active", () => {
+  test("off-platform managed-inference hatch keeps selected managed connection active", async () => {
     const overlayPath = join(WORKSPACE_DIR, "hatch-overlay.json");
     writeFileSync(
       overlayPath,
@@ -1729,7 +1721,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
     const db = createProviderConnectionsDb();
 
-    mergeDefaultConfigAndSeedInferenceProfiles(db);
+    await mergeDefaultConfigAndSeedInferenceProfiles(db);
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.activeProfile).toBe("balanced");
@@ -1745,7 +1737,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     expect("status" in (effectiveBalanced ?? {})).toBe(false);
   });
 
-  test("off-platform managed-inference hatch respects explicit non-managed active connection", () => {
+  test("off-platform managed-inference hatch respects explicit non-managed active connection", async () => {
     const overlayPath = join(WORKSPACE_DIR, "hatch-overlay.json");
     writeFileSync(
       overlayPath,
@@ -1771,7 +1763,8 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
     const db = createProviderConnectionsDb();
 
-    mergeDefaultConfigAndSeedInferenceProfiles(db);
+    await seedCanonicalConnections(db);
+    await mergeDefaultConfigAndSeedInferenceProfiles(db);
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.activeProfile).toBe("balanced");
@@ -1779,12 +1772,11 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
       "anthropic-personal",
     );
     // Connections exist (status is no longer a connection-level concept).
-    expect(getConnection(db, "anthropic-managed")).not.toBeNull();
-    expect(getConnection(db, "openai-managed")).not.toBeNull();
-    expect(getConnection(db, "gemini-managed")).not.toBeNull();
+    // All managed-routable providers share the single `vellum` connection.
+    expect(await getConnection(db, "vellum")).not.toBeNull();
   });
 
-  test("non-hatch off-platform boot writes no managed entries and never auto-disables the defaults", () => {
+  test("non-hatch off-platform boot writes no managed entries and never auto-disables the defaults", async () => {
     // Existing installs that upgrade to a version where the workspace
     // carries no entries for the default names get nothing materialized on
     // a normal boot — and therefore nothing auto-disabled. The disabled
@@ -1801,7 +1793,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     });
 
     // No overlay → not a hatch.
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles.balanced).toBeUndefined();
@@ -1813,7 +1805,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     expect("status" in (effective["cost-optimized"] ?? {})).toBe(false);
   });
 
-  test("on-platform hatch writes no managed stubs; catalog labels stay bare", () => {
+  test("on-platform hatch writes no managed stubs; catalog labels stay bare", async () => {
     process.env.IS_PLATFORM = "true";
 
     const overlayPath = join(WORKSPACE_DIR, "hatch-overlay.json");
@@ -1824,7 +1816,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     );
     process.env.VELLUM_DEFAULT_WORKSPACE_CONFIG_PATH = overlayPath;
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     // Platform hatches materialize nothing, and the catalog labels carry no
@@ -1837,7 +1829,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     expect(effective["cost-optimized"]?.label).toBe("Budget");
   });
 
-  test("a managed key missing from profileOrder lands beside its siblings", () => {
+  test("a managed key missing from profileOrder lands beside its siblings", async () => {
     // An install that predates a newly shipped managed profile, with a custom
     // profile already in its order. The new key belongs with the other
     // managed profiles, not after whatever the user has arranged below them.
@@ -1857,7 +1849,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profileOrder).toEqual([
@@ -1874,7 +1866,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     ]);
   });
 
-  test("boot leaves legacy bare labels on managed entries untouched", () => {
+  test("boot leaves legacy bare labels on managed entries untouched", async () => {
     // Existing off-platform install has bare labels (`label: "Balanced"`)
     // on its managed entries. Boots never rewrite managed entries — there
     // is no label-suffix upgrade pass — so the entries stay byte-identical
@@ -1909,7 +1901,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     });
 
     // No overlay → not a hatch.
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles).toEqual(legacyProfiles);
@@ -1919,7 +1911,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     expect(effective["cost-optimized"]?.label).toBe("Speed");
   });
 
-  test("boot preserves user-customized labels and explicit null on off-platform", () => {
+  test("boot preserves user-customized labels and explicit null on off-platform", async () => {
     // A user-set string that differs from the bare default survives, as
     // does an explicit null (user cleared the label) — boots never touch
     // managed entries, whatever label state they carry.
@@ -1952,7 +1944,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles.balanced.label).toBe("My Balanced");
@@ -1960,7 +1952,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     expect(raw.llm.profiles["cost-optimized"].label).toBe("Speed (Managed)");
   });
 
-  test("platform boot leaves a bare label on a managed entry untouched", () => {
+  test("platform boot leaves a bare label on a managed entry untouched", async () => {
     // An on-platform install with a bare "Balanced" label keeps it — boots
     // never rewrite managed entries, and no suffix exists on platform.
     process.env.IS_PLATFORM = "true";
@@ -1980,13 +1972,13 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
       },
     });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const config = loadConfig();
 
     expect(config.llm.profiles.balanced?.label).toBe("Balanced");
   });
 
-  test("subsequent off-platform boot preserves user-set status on managed profiles", () => {
+  test("subsequent off-platform boot preserves user-set status on managed profiles", async () => {
     // Simulate a user who hatched yesterday, then re-enabled the managed
     // Balanced profile (they have platform auth via a separate route).
     writeConfig({
@@ -2014,7 +2006,7 @@ describe("seedInferenceProfiles BYOK-mode default profiles", () => {
     });
 
     // No overlay → this is a normal boot, not a hatch.
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const config = loadConfig();
 
     // User's "active" decision survives the boot upsert.
@@ -2061,21 +2053,21 @@ describe("OS Beta managed profile template", () => {
     invalidateConfigCache();
   });
 
-  test("seedInferenceProfiles does not create an os-beta profile", () => {
+  test("seedInferenceProfiles does not create an os-beta profile", async () => {
     writeConfig({ llm: { default: { provider: "anthropic" } } });
 
-    mergeDefaultConfigAndSeedInferenceProfiles();
+    await mergeDefaultConfigAndSeedInferenceProfiles();
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
     expect(raw.llm.profiles["os-beta"]).toBeUndefined();
     expect((raw.llm.profileOrder as string[]).includes("os-beta")).toBe(false);
   });
 
-  test("MANAGED_PROFILE_NAMES contains os-beta", () => {
+  test("MANAGED_PROFILE_NAMES contains os-beta", async () => {
     expect(MANAGED_PROFILE_NAMES.has("os-beta")).toBe(true);
   });
 
-  test("materializeProfile resolves OS Beta to the Balanced model with low effort", () => {
+  test("materializeProfile resolves OS Beta to the Balanced model with low effort", async () => {
     const entry = materializeProfile(
       OS_BETA_PROFILE_TEMPLATE,
       "together",

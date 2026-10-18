@@ -51,6 +51,7 @@ mock.module("../../../persistence/embeddings/embedding-backend.js", () => ({
   },
 }));
 
+import { describePg } from "../../../__tests__/pg-test-db.js";
 import type { AssistantEventEnvelope } from "../../../api/index.js";
 import { BACKUP_PROFILE_KEYS } from "../../../config/default-profile-names.js";
 import {
@@ -68,13 +69,13 @@ import {
   getLogsDb,
   getMemorySqlite,
 } from "../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import {
   conversationKeys,
   conversations,
   llmRequestLogs,
   messages,
-  providerConnections,
 } from "../../../persistence/schema/index.js";
 import {
   backfillMemoryV2ActivationMessageId,
@@ -817,7 +818,7 @@ describe("GET /v1/messages/:id/llm-context — synthetic call_site projection", 
   });
 });
 
-describe("PUT /v1/config/llm/profiles/:name", () => {
+describePg("PUT /v1/config/llm/profiles/:name", () => {
   beforeEach(() => {
     initializeProvidersCalls = 0;
     clearEmbeddingBackendCacheCalls = 0;
@@ -986,9 +987,11 @@ describe("PUT /v1/config/llm/profiles/:name", () => {
     // Start from a clean connection slate — provider_connections persists
     // across tests in this file, so a leaked openai-personal would otherwise
     // win the derivation.
-    getDb().delete(providerConnections).run();
+    await requireMainDb().orm.delete(
+      requireMainDb().schema.providerConnections,
+    );
     // The single Vellum-managed connection serves managed-routable providers.
-    createConnection(getDb(), {
+    await createConnection(requireMainDb(), {
       name: "vellum",
       provider: "vellum",
       auth: { type: "platform" },
@@ -1026,16 +1029,18 @@ describe("PUT /v1/config/llm/profiles/:name", () => {
   });
 
   test("Any active derivation skips orphaned legacy *-managed rows", async () => {
-    getDb().delete(providerConnections).run();
+    await requireMainDb().orm.delete(
+      requireMainDb().schema.providerConnections,
+    );
     // Upgraded workspaces may still carry a legacy openai-managed row (hidden
     // from the list route, deleted by a follow-up migration). It must not be
-    // auto-picked — the derivation should bind to `vellum` instead.
-    createConnection(getDb(), {
+    // auto-picked, the derivation should bind to `vellum` instead.
+    await createConnection(requireMainDb(), {
       name: "openai-managed",
       provider: "openai",
       auth: { type: "platform" },
     });
-    createConnection(getDb(), {
+    await createConnection(requireMainDb(), {
       name: "vellum",
       provider: "vellum",
       auth: { type: "platform" },
@@ -1056,7 +1061,7 @@ describe("PUT /v1/config/llm/profiles/:name", () => {
 
   test("auto-derives provider_connection for BYOK provider (Any active)", async () => {
     // Seed a fireworks connection in the DB.
-    createConnection(getDb(), {
+    await createConnection(requireMainDb(), {
       name: "fireworks",
       provider: "fireworks",
       auth: { type: "api_key", credential: "fireworks:api_key" },
@@ -1100,7 +1105,7 @@ describe("PUT /v1/config/llm/profiles/:name", () => {
     expect(savedProfile.provider).toBe("openrouter");
     expect(savedProfile.provider_connection).toBe("openrouter-personal");
 
-    const conn = getConnection(getDb(), "openrouter-personal");
+    const conn = await getConnection(requireMainDb(), "openrouter-personal");
     expect(conn).not.toBeNull();
     expect(conn!.provider).toBe("openrouter");
     expect(conn!.auth).toEqual({
@@ -1131,7 +1136,7 @@ describe("PUT /v1/config/llm/profiles/:name", () => {
     expect(savedProfile.model).toBe("MiniMax-M2.7");
     expect(savedProfile.provider_connection).toBe("minimax-personal");
 
-    const conn = getConnection(getDb(), "minimax-personal");
+    const conn = await getConnection(requireMainDb(), "minimax-personal");
     expect(conn).not.toBeNull();
     expect(conn!.provider).toBe("minimax");
   });
@@ -1507,7 +1512,9 @@ describe("custom profile write normalization (complete overrides)", () => {
   test("re-writing a completed profile is idempotent", async () => {
     // Deterministic connection state: the PUT handler derives a connection
     // for provider-carrying bodies, so both writes must see the same rows.
-    getDb().delete(providerConnections).run();
+    await requireMainDb().orm.delete(
+      requireMainDb().schema.providerConnections,
+    );
     await replaceProfileRoute.handler({
       pathParams: { name: "mine" },
       body: { provider: "anthropic", model: "claude-haiku-4-5-20251001" },

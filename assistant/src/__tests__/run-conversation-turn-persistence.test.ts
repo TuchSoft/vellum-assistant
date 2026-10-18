@@ -34,7 +34,6 @@ import {
   isEchoSuppressedUserMessage,
   isReplyPushIneligibleUserMessage,
 } from "../persistence/conversation-types.js";
-import { getDb } from "../persistence/db-connection.js";
 import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { buildScopedConversationKey } from "../persistence/delivery-crud.js";
@@ -65,11 +64,14 @@ setConfig("llm", {
 });
 setConfig("memory", { enabled: false, v2: { enabled: false } });
 
-createConnection(getDb(), {
-  name: "test-conn",
-  provider: "anthropic",
-  auth: { type: "api_key", credential: "credential/test/api_key" },
-});
+/** Seed the provider connection the default profile resolves through. */
+async function seedTestConnection(): Promise<void> {
+  await createConnection(requireMainDb(), {
+    name: "test-conn",
+    provider: "anthropic",
+    auth: { type: "api_key", credential: "credential/test/api_key" },
+  });
+}
 
 // The SSE fan-out is the one collaborator with nowhere to write in a test —
 // every publish the turn makes (including the list invalidations asserted
@@ -211,6 +213,7 @@ async function resetDb(): Promise<void> {
   // `conversations` row this wipe just deleted.
   clearAllActiveConversations();
   const db = requireMainDb();
+  await seedTestConnection();
   await db.run("DELETE FROM messages");
   await db.run("DELETE FROM external_conversation_bindings");
   await db.run("DELETE FROM conversation_keys");

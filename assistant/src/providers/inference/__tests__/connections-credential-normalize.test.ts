@@ -1,27 +1,9 @@
-import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
-
-import { migrateCreateProviderConnections } from "../../../persistence/migrations/243-provider-connections.js";
-import { migrateProviderConnectionStatusLabel } from "../../../persistence/migrations/244-provider-connection-status-label.js";
-import { migrateProviderConnectionBaseUrlAndModels } from "../../../persistence/migrations/250-provider-connection-base-url-and-models.js";
-import { migrateDropProviderConnectionStatus } from "../../../persistence/migrations/265-drop-provider-connection-status.js";
-import * as schema from "../../../persistence/schema/index.js";
-import { providerConnections } from "../../../persistence/schema/inference.js";
+import { describePg } from "../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { normalizeCredentialRef } from "../../../security/credential-key.js";
 import { createConnection, getConnection } from "../connections.js";
-
-function bootDb() {
-  const sqlite = new Database(":memory:");
-  sqlite.exec("PRAGMA journal_mode=WAL");
-  const db = drizzle(sqlite, { schema });
-  migrateCreateProviderConnections(db);
-  migrateProviderConnectionStatusLabel(db);
-  migrateDropProviderConnectionStatus(db);
-  migrateProviderConnectionBaseUrlAndModels(db);
-  return db;
-}
 
 describe("normalizeCredentialRef", () => {
   test("maps the secrets-API wire name to the vault key", () => {
@@ -46,10 +28,14 @@ describe("normalizeCredentialRef", () => {
   });
 });
 
-describe("connection credential normalization", () => {
-  test("createConnection stores the vault-key form for a wire-name credential", () => {
-    const db = bootDb();
-    const result = createConnection(db, {
+describePg("connection credential normalization", () => {
+  beforeEach(async () => {
+    const db = requireMainDb();
+    await db.orm.delete(db.schema.providerConnections);
+  });
+
+  test("createConnection stores the vault-key form for a wire-name credential", async () => {
+    const result = await createConnection(requireMainDb(), {
       name: "openrouter-conn",
       provider: "openrouter",
       auth: { type: "api_key", credential: "openrouter:api_key" },
@@ -62,23 +48,24 @@ describe("connection credential normalization", () => {
     }
   });
 
-  test("getConnection heals a stored wire-name credential without a migration", () => {
-    const db = bootDb();
+  test("getConnection heals a stored wire-name credential without a migration", async () => {
+    const db = requireMainDb();
     const now = Date.now();
-    db.insert(providerConnections)
-      .values({
-        name: "legacy-openrouter",
-        provider: "openrouter",
-        auth: JSON.stringify({
+    await db.run(
+      `INSERT INTO provider_connections (name, provider, auth, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+      [
+        "legacy-openrouter",
+        "openrouter",
+        JSON.stringify({
           type: "api_key",
           credential: "openrouter:api_key",
         }),
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+        now,
+        now,
+      ],
+    );
 
-    const conn = getConnection(db, "legacy-openrouter");
+    const conn = await getConnection(db, "legacy-openrouter");
     expect(conn).not.toBeNull();
     if (conn?.auth.type === "api_key") {
       expect(conn.auth.credential).toBe("credential/openrouter/api_key");

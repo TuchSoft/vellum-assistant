@@ -92,7 +92,11 @@ import {
   startToolProfilingRequest,
 } from "../tools/tool-profiler.js";
 import type { UsageActor } from "../usage/actors.js";
-import { isPreemptedByNewMessage } from "../util/abort-reasons.js";
+import {
+  isAbortReason,
+  isHardCancelAbort,
+  isPreemptedByNewMessage,
+} from "../util/abort-reasons.js";
 import { getLogger } from "../util/logger.js";
 import { timeAgo } from "../util/time.js";
 import { getWorkspaceGitService } from "../workspace/git-service.js";
@@ -1110,6 +1114,13 @@ export async function runAgentLoopImpl(
       return;
     }
     turnReleased = true;
+    // A hard cancel force-clears the processing flag while this turn is still
+    // unwinding, so a later turn can already own the conversation's controller
+    // by the time this runs. Only the turn that still owns the controller may
+    // clear the lock and reset turn-scoped state; releasing a newer turn's
+    // hold would publish that turn as idle and let its writes interleave with
+    // the next turn's.
+    const ownsTurn = ctx.abortController === abortController;
     if (abnormalOutcome) {
       try {
         stampTurnOutcome(userMessageId, abnormalOutcome.outcome, {
@@ -1128,13 +1139,23 @@ export async function runAgentLoopImpl(
     }
     // Ownership capture happens in the same synchronous step as the
     // release, so records queued after this point belong to the next turn.
-    if (ctx.pendingReactionRecords?.length) {
+    if (ownsTurn && ctx.pendingReactionRecords?.length) {
       ownedReactionRecords.push(...ctx.pendingReactionRecords.splice(0));
     }
-    desktopAutomationLease.releaseForConversation(ctx.conversationId);
-    ctx.abortController = null;
-    ctx.setProcessing(false);
+    if (ownsTurn) {
+      desktopAutomationLease.releaseForConversation(ctx.conversationId);
+      ctx.abortController = null;
+      ctx.setProcessing(false);
+    }
     unregisterInflightTurn(ctx.conversationId, state);
+
+    if (!ownsTurn) {
+      rlog.debug(
+        { conversationId: ctx.conversationId },
+        "Not releasing turn state: another turn owns the conversation",
+      );
+      return;
+    }
 
     // Tear down the remaining per-turn state in the same synchronous step as
     // the release, so a turn that starts against the freed conversation cannot
@@ -2485,6 +2506,16 @@ export async function runAgentLoopImpl(
     // finalization barrier below must not: a replacement turn that started
     // writing files now would still have them swept into this turn's commit.
     let outstandingCommit: Promise<void> | undefined;
+    // A hard-cancelled turn must not run the turn-boundary commit that
+    // attributes the working tree to it: the Stop already published the
+    // conversation as idle, and a follow-up turn may have started writing.
+    // Committing here would sweep that newer work (and this turn's abandoned
+    // partial writes) into the cancelled turn's commit. The next turn's own
+    // boundary commits the accumulated tree instead, which is the same
+    // deferred-commit path `toolsDisabledForTurn` uses.
+    const abortReason = abortController.signal.reason;
+    const hardCancelled =
+      isAbortReason(abortReason) && isHardCancelAbort(abortReason);
     try {
       if (turnStarted) {
         ctx.turnCount++;
@@ -2543,7 +2574,15 @@ export async function runAgentLoopImpl(
           }
         };
 
-        if (toolsDisabledForTurn) {
+        if (hardCancelled) {
+          rlog.info(
+            {
+              conversationId: ctx.conversationId,
+              turnNumber: ctx.turnCount,
+            },
+            "Skipping the turn-boundary commit for a hard-cancelled turn",
+          );
+        } else if (toolsDisabledForTurn) {
           // Let the caller and the queue drain below claim an immediate
           // follow-up turn before starting Git. That turn will commit the
           // accumulated disk view.
@@ -2559,11 +2598,13 @@ export async function runAgentLoopImpl(
           await runTurnCommit();
         }
 
-        // Recompute relationship-state.json at turn boundary (fire-and-forget).
-        // The writer swallows its own errors, but we still guard with catch()
-        // here so a regression in the writer can never bubble out of the
-        // agent loop and reject an otherwise-complete turn.
-        void writeRelationshipState().catch(() => {});
+        if (!hardCancelled) {
+          // Recompute relationship-state.json at turn boundary (fire-and-forget).
+          // The writer swallows its own errors, but we still guard with catch()
+          // here so a regression in the writer can never bubble out of the
+          // agent loop and reject an otherwise-complete turn.
+          void writeRelationshipState().catch(() => {});
+        }
       }
 
       // Consolidation deferred to compaction: keeping assistant + tool_result

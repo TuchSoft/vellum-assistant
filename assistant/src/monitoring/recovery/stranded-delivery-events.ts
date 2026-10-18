@@ -54,8 +54,8 @@ export async function recoverStrandedDeliveryEvents(): Promise<void> {
           WHERE processing_status = 'processed'
             AND delivery_status = 'pending'
             AND raw_payload IS NOT NULL
-            AND json_extract(raw_payload, '$.replyCallbackUrl') IS NOT NULL
-            AND json_extract(raw_payload, '$.replyMessageId') IS NOT NULL
+            AND raw_payload::jsonb ->> 'replyCallbackUrl' IS NOT NULL
+            AND raw_payload::jsonb ->> 'replyMessageId' IS NOT NULL
             AND created_at < ?`,
         [now, now, bootTime],
       );

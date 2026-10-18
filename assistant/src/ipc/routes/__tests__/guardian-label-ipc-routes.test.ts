@@ -41,27 +41,29 @@ describe("resolve_guardian_label", () => {
     expect(sharedIds.has("resolve_guardian_label")).toBe(false);
   });
 
-  test("returns the persona preferred name when present", () => {
+  test("returns the persona preferred name when present", async () => {
     mockGuardianPersona = "- Preferred name/reference: John\n";
-    expect(
-      handleResolveGuardianLabel({ body: { storedDisplayName: "Stored" } }),
-    ).toEqual({ label: "John" });
-  });
-
-  test("falls back to the stored displayName when no preferred name is set", () => {
-    mockGuardianPersona = "- Preferred name/reference:\n";
-    expect(
-      handleResolveGuardianLabel({ body: { storedDisplayName: "Stored" } }),
-    ).toEqual({ label: "Stored" });
-  });
-
-  test("falls back to the default reference when neither is set", () => {
-    expect(handleResolveGuardianLabel({ body: {} })).toEqual({
-      label: "my human",
+    const { label } = handleResolveGuardianLabel({
+      body: { storedDisplayName: "Stored" },
     });
-    expect(
-      handleResolveGuardianLabel({ body: { storedDisplayName: null } }),
-    ).toEqual({ label: "my human" });
+    expect(await label).toEqual("John");
+  });
+
+  test("falls back to the stored displayName when no preferred name is set", async () => {
+    mockGuardianPersona = "- Preferred name/reference:\n";
+    const { label } = handleResolveGuardianLabel({
+      body: { storedDisplayName: "Stored" },
+    });
+    expect(await label).toEqual("Stored");
+  });
+
+  test("falls back to the default reference when neither is set", async () => {
+    const { label } = handleResolveGuardianLabel({ body: {} });
+    expect(await label).toEqual("my human");
+    const { label: storedLabel } = handleResolveGuardianLabel({
+      body: { storedDisplayName: null },
+    });
+    expect(await storedLabel).toEqual("my human");
   });
 
   test("rejects a non-string storedDisplayName", () => {

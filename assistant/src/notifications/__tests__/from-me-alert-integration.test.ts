@@ -167,7 +167,7 @@ test("a missing platform delivery reuses the saved initial-creation audit withou
     decision,
     options,
   );
-  const initial = findDeliveryByDecisionAndChannel(
+  const initial = await findDeliveryByDecisionAndChannel(
     decision.persistedDecisionId,
     "vellum",
   );

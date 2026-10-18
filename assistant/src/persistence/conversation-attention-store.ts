@@ -6,17 +6,7 @@
  * single-row projection per conversation (conversation_assistant_attention_state).
  */
 
-import {
-  and,
-  desc,
-  eq,
-  inArray,
-  isNull,
-  lt,
-  or,
-  type SQL,
-  sql,
-} from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or, type SQL, sql } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
 import { UserError } from "../util/errors.js";
@@ -219,6 +209,7 @@ export async function seedForkedConversationAttention(params: {
   conversationId: string;
   latestAssistantMessageId: string | null;
   latestAssistantMessageAt: number | null;
+  db?: AsyncDb;
 }): Promise<void> {
   const { conversationId, latestAssistantMessageId, latestAssistantMessageAt } =
     params;
@@ -227,7 +218,7 @@ export async function seedForkedConversationAttention(params: {
     return;
   }
 
-  const db = requireMainDb();
+  const db = params.db ?? requireMainDb();
   const attentionState = db.schema.conversationAssistantAttentionState;
   const now = Date.now();
   const [existing] = await db.orm
@@ -662,7 +653,7 @@ export async function listConversationAttention(
   const rows = await (
     conditions.length > 0 ? query.where(and(...conditions)) : query
   )
-    .orderBy(desc(attentionState.latestAssistantMessageAt))
+    .orderBy(sql`${attentionState.latestAssistantMessageAt} DESC NULLS LAST`)
     .limit(limit);
 
   return rows.map(rowToState);

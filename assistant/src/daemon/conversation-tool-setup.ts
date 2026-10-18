@@ -30,7 +30,7 @@ import {
 } from "../persistence/conversation-tool-surface.js";
 import { getBindingByConversation } from "../persistence/external-conversation-store.js";
 import { getAllDefaultPluginNames } from "../plugins/defaults/main.js";
-import { isActivationSession } from "../plugins/defaults/memory/activation-session-store.js";
+import { isActivationSessionCached } from "../plugins/defaults/memory/activation-session-store.js";
 import { isPluginDisabled } from "../plugins/disabled-state.js";
 import type { Message, ToolDefinition } from "../providers/types.js";
 import { registerConversationSender } from "../tools/browser/browser-screencast.js";
@@ -1183,7 +1183,7 @@ export function createResolveToolsCallback(
     // telemetry param on ui_show. The marker is written before the first
     // tool resolution (see `applyBootstrapTemplate` in system-prompt.ts), so
     // the projected schema is stable for the conversation's lifetime.
-    if (isActivationSession(ctx.conversationId)) {
+    if (isActivationSessionCached(ctx.conversationId)) {
       allBaseDefs = injectActivationMomentParam(allBaseDefs);
     }
 

@@ -1221,7 +1221,7 @@ export async function wakeAgentForOpportunity(
       // Wakes run their own onEvent and bypass it, so record here.
       if (event.type === "usage") {
         try {
-          recordUsage(
+          void recordUsage(
             {
               conversationId,
               providerName: event.actualProvider ?? conversation.provider.name,

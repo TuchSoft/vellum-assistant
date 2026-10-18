@@ -19,8 +19,8 @@ export interface CompactionEvent {
 export async function appendCompactionEvent(
   conversationId: string,
   event: CompactionEvent,
+  db: AsyncDb = requireMainDb(),
 ): Promise<void> {
-  const db = requireMainDb();
   const conversationCompactionEvents = db.schema.conversationCompactionEvents;
   await db.orm.insert(conversationCompactionEvents).values({
     id: uuid(),

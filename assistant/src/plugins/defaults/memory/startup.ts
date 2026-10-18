@@ -51,6 +51,7 @@ import {
 } from "../../../persistence/jobs-store.js";
 import { fireAndForgetTelemetry } from "../../../telemetry/fire-and-forget.js";
 import { recordWatchdogEvent } from "../../../telemetry/watchdog-events-store.js";
+import { primeActivationSessionCache } from "./activation-session-store.js";
 import { resolveQdrantUrl } from "./embeddings.js";
 import { startMemoryJobsWorker } from "./jobs-worker.js";
 import { getLogger } from "./logging.js";
@@ -67,6 +68,10 @@ import { sweepConceptPageFrontmatter } from "./substrate/frontmatter-sweep.js";
 const log = getLogger("memory-startup");
 
 export async function runMemoryStartup(config: AssistantConfig): Promise<void> {
+  // The synchronous tool resolver reads the activation-session mirror, so
+  // prime it before any turn can resolve tools.
+  await primeActivationSessionCache();
+
   // ---- shared infra ----
   // Boot the Qdrant process every tier's vector work sits on.
   const qdrantUrl = resolveQdrantUrl();

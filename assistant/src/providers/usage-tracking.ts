@@ -46,14 +46,14 @@ export class UsageTrackingProvider implements Provider {
     options?: SendMessageOptions,
   ): Promise<ProviderResponse> {
     const response = await this.inner.sendMessage(messages, options);
-    this.recordUsage(response, options);
+    void this.recordUsage(response, options);
     return response;
   }
 
-  private recordUsage(
+  private async recordUsage(
     response: ProviderResponse,
     options?: SendMessageOptions,
-  ): void {
+  ): Promise<void> {
     const config = options?.config;
     if (!config?.callSite) {
       return;
@@ -94,7 +94,7 @@ export class UsageTrackingProvider implements Provider {
         pricingUsage,
       );
 
-      recordUsageEvent(
+      await recordUsageEvent(
         {
           actor: "llm_call_site",
           provider: providerName,

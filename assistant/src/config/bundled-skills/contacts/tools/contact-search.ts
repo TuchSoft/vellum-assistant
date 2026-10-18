@@ -16,9 +16,11 @@ type SearchContact = Omit<ContactRead, "channels"> & {
   channels: SearchChannel[];
 };
 
-function formatContactSummary(c: SearchContact): string {
+async function formatContactSummary(c: SearchContact): Promise<string> {
   const displayName =
-    c.role === "guardian" ? resolveGuardianName(c.displayName) : c.displayName;
+    c.role === "guardian"
+      ? await resolveGuardianName(c.displayName)
+      : c.displayName;
   const parts = [`- **${displayName}** (ID: ${c.id})`];
   if (c.notes) {
     parts.push(`  Notes: ${c.notes}`);
@@ -81,7 +83,7 @@ export async function executeContactSearch(
 
   const lines = [`Found ${results.length} contact(s):\n`];
   for (const contact of results) {
-    lines.push(formatContactSummary(contact));
+    lines.push(await formatContactSummary(contact));
   }
 
   return { content: lines.join("\n"), isError: false };

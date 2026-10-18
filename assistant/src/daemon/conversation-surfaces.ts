@@ -1854,11 +1854,11 @@ function getRequestedSurfaceCompletionSummary(
  * when the surface renders) and the commit-time path (the other moments,
  * recorded when the user commits the surface).
  */
-function recordActivationMoment(
+async function recordActivationMoment(
   ctx: Conversation,
   moment: ActivationMomentParam,
-): void {
-  if (!isActivationSession(ctx.conversationId)) {
+): Promise<void> {
+  if (!(await isActivationSession(ctx.conversationId))) {
     return;
   }
   fireAndForgetTelemetry(
@@ -1885,7 +1885,10 @@ function recordActivationMoment(
  * submitted / selected-and-committed), NOT from intermediate non-terminal
  * events (`selection_changed` / `content_changed` / `state_update`).
  */
-function maybeEmitActivationMoment(ctx: Conversation, surfaceId: string): void {
+async function maybeEmitActivationMoment(
+  ctx: Conversation,
+  surfaceId: string,
+): Promise<void> {
   const stored = ctx.surfaceState.get(surfaceId);
   const moment = stored?.activationMoment;
   if (!moment) {
@@ -1894,7 +1897,7 @@ function maybeEmitActivationMoment(ctx: Conversation, surfaceId: string): void {
   // Clear the tag first so this can fire at most once per surface even if the
   // commit path is re-entered.
   stored.activationMoment = undefined;
-  recordActivationMoment(ctx, moment);
+  await recordActivationMoment(ctx, moment);
 }
 
 /** The action result for an enqueue the message queue refused. */
@@ -2098,7 +2101,7 @@ export async function handleSurfaceAction(
     // — record an activation milestone if tagged. Must run before
     // `cleanupStandaloneSurface` clears the surface state.
     if (!isCancellation) {
-      maybeEmitActivationMoment(ctx, surfaceId);
+      await maybeEmitActivationMoment(ctx, surfaceId);
     }
 
     // Cleanup and resolve — order matters: cleanup clears the timer
@@ -2191,7 +2194,7 @@ export async function handleSurfaceAction(
     // Launching a child conversation is a terminal user commit — record an
     // activation milestone if tagged. The helper clears the tag after firing,
     // so the other commit-path call sites below can't double-emit.
-    maybeEmitActivationMoment(ctx, surfaceId);
+    await maybeEmitActivationMoment(ctx, surfaceId);
     return { accepted: true, conversationId };
   }
 
@@ -2364,7 +2367,7 @@ export async function handleSurfaceAction(
     // surface was tagged (best-effort, no-op otherwise). Deferred until after
     // the rejection check so a queue-full click doesn't over-report a moment
     // (and the one-shot tag stays intact for the user's retry).
-    maybeEmitActivationMoment(ctx, surfaceId);
+    await maybeEmitActivationMoment(ctx, surfaceId);
 
     await maybeCompleteSurfaceAfterAction(
       ctx,
@@ -2626,7 +2629,7 @@ export async function handleSurfaceAction(
   // surface was tagged (best-effort, no-op otherwise). Deferred until after the
   // rejection check so a queue-full click doesn't over-report a moment (and the
   // one-shot tag stays intact for the user's retry).
-  maybeEmitActivationMoment(ctx, surfaceId);
+  await maybeEmitActivationMoment(ctx, surfaceId);
 
   await maybeCompleteSurfaceAfterAction(ctx, surfaceId, actionId, mergedData, {
     liveSurfaceType: pending.surfaceType,
@@ -3762,7 +3765,7 @@ export async function surfaceProxyResolver(
     });
 
     if (activationMoment !== undefined && !storeTagForCommit) {
-      recordActivationMoment(ctx, activationMoment);
+      await recordActivationMoment(ctx, activationMoment);
     }
 
     log.info(

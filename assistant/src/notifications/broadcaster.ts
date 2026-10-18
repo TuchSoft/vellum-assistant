@@ -807,7 +807,7 @@ export class NotificationBroadcaster {
 
         try {
           if (hasPersistedDecision) {
-            createDelivery({
+            await createDelivery({
               id: deliveryId,
               notificationDecisionId: persistedDecisionId,
               channel,
@@ -1014,7 +1014,7 @@ export class NotificationBroadcaster {
         );
         if (hasPersistedDecision) {
           try {
-            updateDeliveryStatus(
+            await updateDeliveryStatus(
               deliveryId,
               "sent",
               undefined,
@@ -1047,7 +1047,7 @@ export class NotificationBroadcaster {
       } else {
         const status = adapterResult.skipped ? "skipped" : "failed";
         if (hasPersistedDecision) {
-          updateDeliveryStatus(deliveryId, status, {
+          await updateDeliveryStatus(deliveryId, status, {
             message: adapterResult.error,
           });
         }
@@ -1067,7 +1067,7 @@ export class NotificationBroadcaster {
 
       if (hasPersistedDecision) {
         try {
-          updateDeliveryStatus(deliveryId, "failed", {
+          await updateDeliveryStatus(deliveryId, "failed", {
             message: errorMessage,
           });
         } catch {

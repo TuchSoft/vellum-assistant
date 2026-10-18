@@ -25,9 +25,11 @@ const ResolveGuardianLabelParamsSchema = z.object({
  * Resolve the guardian's display label: the persona-file preferred name when
  * set, else the stored displayName, else the default user reference.
  */
-export function handleResolveGuardianLabel({ body = {} }: RouteHandlerArgs) {
+export async function handleResolveGuardianLabel({
+  body = {},
+}: RouteHandlerArgs) {
   const { storedDisplayName } = ResolveGuardianLabelParamsSchema.parse(body);
-  return { label: resolveGuardianName(storedDisplayName ?? null) };
+  return { label: await resolveGuardianName(storedDisplayName ?? null) };
 }
 
 /**

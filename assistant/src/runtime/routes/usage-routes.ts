@@ -109,7 +109,7 @@ function handleUsageTotals({ queryParams }: RouteHandlerArgs) {
   return getUsageTotals(range, filter);
 }
 
-function handleUsageDaily({ queryParams }: RouteHandlerArgs) {
+async function handleUsageDaily({ queryParams }: RouteHandlerArgs) {
   const qp = queryParams ?? {};
   const range = parseEpochMillisRange(qp);
   const granularity = qp.granularity ?? "daily";
@@ -120,14 +120,13 @@ function handleUsageDaily({ queryParams }: RouteHandlerArgs) {
   }
   const tz = resolveTimezone(qp);
   const filter = parseUsageAggregationFilter(qp);
-  const buckets =
-    granularity === "hourly"
-      ? getUsageHourBuckets(range, tz, { fillEmpty: true }, filter)
-      : getUsageDayBuckets(range, tz, { fillEmpty: true }, filter);
+  const buckets = await (granularity === "hourly"
+    ? getUsageHourBuckets(range, tz, { fillEmpty: true }, filter)
+    : getUsageDayBuckets(range, tz, { fillEmpty: true }, filter));
   return { buckets };
 }
 
-function handleUsageBreakdown({ queryParams }: RouteHandlerArgs) {
+async function handleUsageBreakdown({ queryParams }: RouteHandlerArgs) {
   const qp = queryParams ?? {};
   const range = parseEpochMillisRange(qp);
 
@@ -144,7 +143,7 @@ function handleUsageBreakdown({ queryParams }: RouteHandlerArgs) {
   }
 
   const filter = parseUsageAggregationFilter(qp);
-  const breakdown = getUsageGroupBreakdown(
+  const breakdown = await getUsageGroupBreakdown(
     range,
     groupBy as GroupByDimension,
     filter,
@@ -152,7 +151,7 @@ function handleUsageBreakdown({ queryParams }: RouteHandlerArgs) {
   return { breakdown };
 }
 
-function handleUsageSeries({ queryParams }: RouteHandlerArgs) {
+async function handleUsageSeries({ queryParams }: RouteHandlerArgs) {
   const qp = queryParams ?? {};
   const range = parseEpochMillisRange(qp);
   const granularity = qp.granularity ?? "daily";
@@ -176,7 +175,7 @@ function handleUsageSeries({ queryParams }: RouteHandlerArgs) {
 
   const tz = resolveTimezone(qp);
   const filter = parseUsageAggregationFilter(qp);
-  const buckets = getUsageGroupedSeries(
+  const buckets = await getUsageGroupedSeries(
     range,
     groupBy as Exclude<GroupByDimension, "conversation">,
     granularity as UsageGranularity,

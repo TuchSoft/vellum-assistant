@@ -4,10 +4,7 @@ import { updateConversationUsage } from "../persistence/conversation-crud.js";
 import { recordUsageEvent } from "../persistence/llm-usage-store.js";
 import type { UsageActor } from "../usage/actors.js";
 import { resolveUsageAttribution } from "../usage/attribution.js";
-import {
-  extractRawUsage,
-  extractReportedCostUsd,
-} from "../usage/pricing.js";
+import { extractRawUsage, extractReportedCostUsd } from "../usage/pricing.js";
 import type {
   AnthropicCacheCreationTokenDetails,
   PricingResult,
@@ -250,7 +247,7 @@ async function retryUsageWrite(entry: PendingUsageWrite): Promise<void> {
   }
 }
 
-export function recordUsage(
+export async function recordUsage(
   ctx: UsageContext,
   inputTokens: number,
   outputTokens: number,
@@ -265,7 +262,7 @@ export function recordUsage(
   contextWindow?: { tokens: number; maxTokens: number },
   attribution?: UsageAttributionInput | UsageAttributionSnapshot | null,
   cronRunId: string | null = null,
-): void {
+): Promise<void> {
   if (inputTokens <= 0 && outputTokens <= 0) {
     return;
   }
@@ -339,7 +336,7 @@ export function recordUsage(
   // Dual-write: persist per-turn usage event to the new ledger table
   try {
     const attributionSnapshot = resolveAttribution(attribution);
-    recordUsageEvent(
+    await recordUsageEvent(
       {
         actor,
         provider: ctx.providerName,

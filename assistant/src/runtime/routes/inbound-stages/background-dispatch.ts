@@ -810,7 +810,7 @@ function startTrustedContactApprovalNotifier(params: {
             ? (guardianForChannel(guardians, sourceChannel)?.displayName ??
               undefined)
             : undefined;
-          const guardianName = resolveGuardianName(displayName);
+          const guardianName = await resolveGuardianName(displayName);
           const waitingText = `Waiting for ${guardianName}'s approval...`;
           try {
             await deliverChannelReply(replyCallbackUrl, {

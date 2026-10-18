@@ -3439,7 +3439,7 @@ export async function handleMessageComplete(
   }
 
   try {
-    backfillMemoryRecallLogMessageId(
+    await backfillMemoryRecallLogMessageId(
       deps.ctx.conversationId,
       assistantMessageId,
     );

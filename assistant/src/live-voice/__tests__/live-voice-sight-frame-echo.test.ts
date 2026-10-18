@@ -128,7 +128,7 @@ async function uploadFrame(): Promise<string> {
 }
 
 async function expectAnnouncement(
-  harness: ReturnType<typeof createHarness>,
+  harness: Awaited<ReturnType<typeof createHarness>>,
   cameraFrame: boolean,
 ): Promise<void> {
   await waitFor(() => harness.published.length >= 2);

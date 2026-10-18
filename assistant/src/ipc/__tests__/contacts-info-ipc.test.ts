@@ -1,13 +1,12 @@
 /**
  * Unit tests for the daemon-side contact INFO-READ IPC handlers
  * (ipc/routes/contacts-info-ipc-routes.ts). Each handler reads the real
- * (isolated) assistant DB, so we seed rows via getSqlite() and invoke the
- * handler with `{ body }` exactly as the IPC server would.
+ * (isolated) Postgres database, so we seed rows via requireMainDb() and invoke
+ * the handler with `{ body }` exactly as the IPC server would.
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
 
-import { getSqlite } from "../../persistence/db-connection.js";
 import { initializeDb } from "../../persistence/db-init.js";
 import {
   handleContactChannelIdentityLookup,
@@ -18,11 +17,11 @@ import {
 
 await initializeDb();
 
-function resetTables(): void {
-  const sqlite = getSqlite();
-  sqlite.run("DELETE FROM assistant_contact_metadata");
-  sqlite.run("DELETE FROM contact_channels");
-  sqlite.run("DELETE FROM contacts");
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run("DELETE FROM assistant_contact_metadata");
+  await db.run("DELETE FROM contact_channels");
+  await db.run("DELETE FROM contacts");
 }
 
 function insertContact(params: {
@@ -31,9 +30,9 @@ function insertContact(params: {
   notes?: string | null;
   userFile?: string | null;
   contactType?: "human" | "assistant";
-}): void {
+}): Promise<void> {
   const now = Date.now();
-  getSqlite().run(
+  await requireMainDb().run(
     "INSERT INTO contacts (id, display_name, notes, user_file, contact_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     [
       params.id,
@@ -54,9 +53,9 @@ function insertChannel(params: {
   address: string;
   externalChatId?: string | null;
   updatedAt?: number | null;
-}): void {
+}): Promise<void> {
   const now = Date.now();
-  getSqlite().run(
+  await requireMainDb().run(
     "INSERT INTO contact_channels (id, contact_id, type, address, is_primary, external_chat_id, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
     [
       params.id,
@@ -74,8 +73,8 @@ function insertMetadata(params: {
   contactId: string;
   species: string;
   metadata?: Record<string, unknown> | null;
-}): void {
-  getSqlite().run(
+}): Promise<void> {
+  await requireMainDb().run(
     "INSERT INTO assistant_contact_metadata (contact_id, species, metadata) VALUES (?, ?, ?)",
     [
       params.contactId,
@@ -85,8 +84,8 @@ function insertMetadata(params: {
   );
 }
 
-beforeEach(() => {
-  resetTables();
+beforeEach(async () => {
+  await resetTables();
 });
 
 // ── contacts_info_batch ──────────────────────────────────────────────────────
@@ -134,9 +133,9 @@ describe("handleContactsInfoBatch", () => {
     expect(result.infos[0].assistantMetadata).toBeNull();
   });
 
-  test("malformed metadata JSON degrades to null metadata", () => {
-    insertContact({ id: "c1", contactType: "assistant" });
-    getSqlite().run(
+  test("malformed metadata JSON degrades to null metadata", async () => {
+    await insertContact({ id: "c1", contactType: "assistant" });
+    await requireMainDb().run(
       "INSERT INTO assistant_contact_metadata (contact_id, species, metadata) VALUES (?, ?, ?)",
       ["c1", "vellum", "{not valid json"],
     );

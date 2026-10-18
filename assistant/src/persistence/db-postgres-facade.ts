@@ -184,8 +184,16 @@ export function getPostgresAsyncDb(
   if (baseline.length > 0) {
     let existing = baselines.get(url);
     if (!existing) {
-      existing = applyBaseline(sql, [...baseline]);
-      baselines.set(url, existing);
+      const run = applyBaseline(sql, [...baseline]);
+      baselines.set(url, run);
+      // A rejected apply must not poison the URL for the process lifetime: a
+      // transient startup failure should retry on the next open.
+      void run.catch(() => {
+        if (baselines.get(url) === run) {
+          baselines.delete(url);
+        }
+      });
+      existing = run;
     }
     applied = existing;
   }

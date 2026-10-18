@@ -368,7 +368,7 @@ export function applyBootstrapTemplate(
         ACTIVATION_RAIL_BOOTSTRAP_TEMPLATE,
       ))
   ) {
-    markActivationSession(conversationId);
+    void markActivationSession(conversationId);
   }
 }
 

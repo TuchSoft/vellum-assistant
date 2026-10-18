@@ -1,9 +1,8 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
-import { ensureGroupMigration } from "./conversation-group-migration.js";
-import { initializeDb } from "./db-init.js";
-import { rawAll, rawExec, rawGet, rawRun } from "./raw-query.js";
-await initializeDb();
+import { describePg } from "./__tests__/pg-test-db.js";
+import { ensureGroupMigrationAsync } from "./conversation-group-migration.js";
+import { requireMainDb } from "./db-facade.js";
 
 // Simulate a legacy install that has the `system:reflections` system group
 // plus a conversation pointing at it. The migration must:
@@ -11,67 +10,45 @@ await initializeDb();
 //   2. Move the legacy conversation to `system:background` (step 6).
 //   3. Delete the orphaned `system:reflections` row (step 7).
 //
-// We pre-create the `conversation_groups` table and `group_id` column directly
-// because the migration's own CREATE TABLE IF NOT EXISTS / ALTER TABLE steps
-// would otherwise be the first to introduce them — there's no way to seed the
-// "legacy" row until they exist.
-describe("ensureGroupMigration — reflections cleanup", () => {
-  beforeAll(() => {
-    rawExec(`
-      CREATE TABLE IF NOT EXISTS conversation_groups (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        sort_position REAL NOT NULL DEFAULT 0,
-        is_system_group BOOLEAN NOT NULL DEFAULT FALSE,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-      )
-    `);
-    try {
-      rawRun(
-        "test:addGroupIdColumn",
-        "ALTER TABLE conversations ADD COLUMN group_id TEXT REFERENCES conversation_groups(id) ON DELETE SET NULL",
-      );
-    } catch {
-      // column already present — ok
-    }
-    rawRun(
-      "test:seedReflectionsGroup",
-      "INSERT OR IGNORE INTO conversation_groups (id, name, sort_position, is_system_group) VALUES ('system:reflections', 'Reflections', 100, TRUE)",
+// The baseline already carries `conversation_groups` and the `group_id`
+// column, so the legacy rows can be seeded directly before the migration runs.
+describePg("ensureGroupMigration — reflections cleanup", () => {
+  beforeAll(async () => {
+    const db = requireMainDb();
+    await db.run("DELETE FROM conversations");
+    await db.run("DELETE FROM conversation_groups");
+    await db.run(
+      "INSERT INTO conversation_groups (id, name, sort_position, is_system_group) VALUES (?, ?, ?, ?)",
+      ["system:reflections", "Reflections", 100, true],
     );
-    const now = Math.floor(Date.now() / 1000);
-    rawRun(
-      "test:seedLegacyConv",
+    const now = Date.now();
+    await db.run(
       "INSERT INTO conversations (id, created_at, updated_at, group_id) VALUES (?, ?, ?, ?)",
-      "legacy-refl-1",
-      now,
-      now,
-      "system:reflections",
+      ["legacy-refl-1", now, now, "system:reflections"],
     );
 
-    ensureGroupMigration();
+    await ensureGroupMigrationAsync();
   });
 
-  test("moves legacy system:reflections conversations to system:background", () => {
-    const legacy = rawGet<{ group_id: string | null }>(
-      "test:getLegacyGroupId",
+  test("moves legacy system:reflections conversations to system:background", async () => {
+    const legacy = await requireMainDb().get<{ group_id: string | null }>(
       "SELECT group_id FROM conversations WHERE id = 'legacy-refl-1'",
     );
     expect(legacy?.group_id).toBe("system:background");
   });
 
-  test("deletes the orphaned system:reflections group row", () => {
-    const refl = rawGet<{ id: string }>(
-      "test:getReflectionsGroup",
+  test("deletes the orphaned system:reflections group row", async () => {
+    const refl = await requireMainDb().get<{ id: string }>(
       "SELECT id FROM conversation_groups WHERE id = 'system:reflections'",
     );
     expect(refl).toBeNull();
   });
 
-  test("seeds the current system groups without system:reflections", () => {
-    const systemIds = rawAll<{ id: string }>(
-      "test:listSystemGroups",
-      "SELECT id FROM conversation_groups WHERE id LIKE 'system:%' ORDER BY id",
+  test("seeds the current system groups without system:reflections", async () => {
+    const systemIds = (
+      await requireMainDb().all<{ id: string }>(
+        "SELECT id FROM conversation_groups WHERE id LIKE 'system:%' ORDER BY id",
+      )
     ).map((r) => r.id);
     expect(systemIds).toEqual([
       "system:all",
@@ -81,18 +58,16 @@ describe("ensureGroupMigration — reflections cleanup", () => {
     ]);
   });
 
-  test("records the cleanup sentinel so the step is idempotent", () => {
-    const sentinel = rawGet<{ id: string }>(
-      "test:getSentinel",
+  test("records the cleanup sentinel so the step is idempotent", async () => {
+    const sentinel = await requireMainDb().get<{ id: string }>(
       "SELECT id FROM conversation_groups WHERE id = '_reflections_group_deleted_complete'",
     );
     expect(sentinel?.id).toBe("_reflections_group_deleted_complete");
   });
 
-  test("re-running ensureGroupMigration does not recreate the stale group", () => {
-    expect(() => ensureGroupMigration()).not.toThrow();
-    const refl = rawGet<{ id: string }>(
-      "test:getReflectionsGroup",
+  test("re-running ensureGroupMigration does not recreate the stale group", async () => {
+    await expect(ensureGroupMigrationAsync()).resolves.toBeUndefined();
+    const refl = await requireMainDb().get<{ id: string }>(
       "SELECT id FROM conversation_groups WHERE id = 'system:reflections'",
     );
     expect(refl).toBeNull();

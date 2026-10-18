@@ -592,7 +592,7 @@ export async function emitNotificationSignal<TEventName extends string>(
     // or the From me push default), so the audit matches the dispatch.
     if (decision !== prePolicyDecision && decision.persistedDecisionId) {
       try {
-        updateDecision(decision.persistedDecisionId, {
+        await updateDecision(decision.persistedDecisionId, {
           selectedChannels: decision.selectedChannels,
           reasoningSummary: decision.reasoningSummary,
           validationResults: {
@@ -614,7 +614,7 @@ export async function emitNotificationSignal<TEventName extends string>(
     // only the producer's dedupeKey, which may be null).
     if (decision.dedupeKey && !params.dedupeKey) {
       try {
-        setEventDedupeKey(signalId, decision.dedupeKey);
+        await setEventDedupeKey(signalId, decision.dedupeKey);
       } catch (err) {
         log.warn(
           { err, signalId },
@@ -722,7 +722,7 @@ export async function emitNotificationSignal<TEventName extends string>(
     // double-sends to the ones that did.
     if (eventPersisted && !hasChannelSideEffect(channelResults)) {
       try {
-        setEventDedupeKey(signalId, null);
+        await setEventDedupeKey(signalId, null);
       } catch (releaseErr) {
         log.warn(
           { err: releaseErr, signalId },

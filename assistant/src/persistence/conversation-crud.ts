@@ -9,10 +9,10 @@ import {
   eq,
   gt,
   gte,
+  ilike,
   inArray,
   isNotNull,
   isNull,
-  like,
   lt,
   lte,
   notInArray,
@@ -165,9 +165,11 @@ async function deletePendingTelemetryEventsForConversation(
  * conversation no longer exists, so whatever this pass leaves behind is
  * reclaimed on a later one.
  */
-function purgeWatchTimelineForDeletedConversation(id: string): void {
+async function purgeWatchTimelineForDeletedConversation(
+  id: string,
+): Promise<void> {
   try {
-    purgeWatchTimelineForConversation(id);
+    await purgeWatchTimelineForConversation(id);
   } catch (err) {
     log.warn(
       { err, conversationId: id },
@@ -1696,7 +1698,11 @@ export async function forkConversation(params: {
   // Disk-view sync runs after commit — file I/O is idempotent and
   // conversation deletion cleans up orphaned directories.
   for (const entry of diskSyncQueue) {
-    syncMessageToDisk(entry.conversationId, entry.messageId, entry.createdAt);
+    await syncMessageToDisk(
+      entry.conversationId,
+      entry.messageId,
+      entry.createdAt,
+    );
   }
 
   const persistedFork = await getConversation(forkedConversation.id);
@@ -1824,12 +1830,13 @@ async function populateForkContentsInProcess(
         stagingMessageId ?? forkedMessageId,
         link.attachmentId,
         link.position,
+        db,
       );
       attachmentIdMap.set(link.attachmentId, scopedAttachmentId);
     }
 
     if (stagingMessageId) {
-      await relinkAttachments([stagingMessageId], forkedMessageId);
+      await relinkAttachments([stagingMessageId], forkedMessageId, db);
       await db.orm
         .delete(db.schema.messages)
         .where(eq(db.schema.messages.id, stagingMessageId));
@@ -1879,6 +1886,7 @@ async function populateForkContentsInProcess(
     conversationId: fork.id,
     latestAssistantMessageId: latestForkedAssistant?.messageId ?? null,
     latestAssistantMessageAt: latestForkedAssistant?.messageAt ?? null,
+    db,
   });
 
   // Carry the parent's per-conversation memory state into the child (activation
@@ -2296,11 +2304,15 @@ export async function forkConversationForRetrospective(params: {
           // source event is at-or-before the boundary). Rolls back with
           // the transaction, so the retry unit stays atomic.
           if (inheritedCompaction) {
-            await appendCompactionEvent(fork.id, {
-              compactedAt: inheritedCompaction.compactedAt,
-              summary: inheritedCompaction.summary,
-              compactedMessageCount: forkCompactedMessageCount,
-            });
+            await appendCompactionEvent(
+              fork.id,
+              {
+                compactedAt: inheritedCompaction.compactedAt,
+                summary: inheritedCompaction.summary,
+                compactedMessageCount: forkCompactedMessageCount,
+              },
+              tx,
+            );
           }
         }),
       { op: "forkConversationForRetrospective.populate" },
@@ -2408,7 +2420,7 @@ export async function deleteConversation(
       .where(eq(tx.schema.messages.conversationId, id));
     // Subagent rows share the conversation's lifetime, so they commit or roll
     // back with the conversation row they describe.
-    await deleteSubagentRecordsByParent(id);
+    await deleteSubagentRecordsByParent(id, tx);
     await tx.orm
       .delete(tx.schema.conversations)
       .where(eq(tx.schema.conversations.id, id));
@@ -2424,7 +2436,7 @@ export async function deleteConversation(
     removeConversationDir(id, createdAtForDiskCleanup);
   }
 
-  purgeWatchTimelineForDeletedConversation(id);
+  await purgeWatchTimelineForDeletedConversation(id);
   forgetActivationLinkForDeletedConversation(id);
 
   // Notify `conversation-deleted` hooks (e.g. the memory plugin failing its
@@ -2512,7 +2524,7 @@ export async function deleteConversationGently(
       .where(eq(tx.schema.toolInvocations.conversationId, id));
     // Subagent rows share the conversation's lifetime, so they commit or roll
     // back with the conversation row they describe.
-    await deleteSubagentRecordsByParent(id);
+    await deleteSubagentRecordsByParent(id, tx);
     // Conversation row deletion cascades to remaining dependent tables.
     await tx.orm
       .delete(tx.schema.conversations)
@@ -2530,7 +2542,7 @@ export async function deleteConversationGently(
     removeConversationDir(id, createdAtForDiskCleanup);
   }
 
-  purgeWatchTimelineForDeletedConversation(id);
+  await purgeWatchTimelineForDeletedConversation(id);
   forgetActivationLinkForDeletedConversation(id);
 
   // Notify `conversation-deleted` hooks — fire-and-forget, same contract as
@@ -2780,13 +2792,13 @@ export async function selectProviderMetaCandidateMetadata(
         await lineageFilter(conversationId),
         opts?.includeFlatLegacy
           ? or(
-              like(messages.metadata, '%"providerMeta"%'),
-              like(messages.metadata, '%"slackMeta"%'),
-              like(messages.metadata, '%"source":"slack"%'),
+              ilike(messages.metadata, '%"providerMeta"%'),
+              ilike(messages.metadata, '%"slackMeta"%'),
+              ilike(messages.metadata, '%"source":"slack"%'),
             )
           : or(
-              like(messages.metadata, '%"providerMeta"%'),
-              like(messages.metadata, '%"slackMeta"%'),
+              ilike(messages.metadata, '%"providerMeta"%'),
+              ilike(messages.metadata, '%"slackMeta"%'),
             ),
       ),
     )
@@ -2823,7 +2835,7 @@ export async function selectSightFrameCaptureTimes(
     .where(
       and(
         await lineageFilter(conversationId),
-        like(messages.metadata, `%"${SIGHT_FRAME_ATTACHMENT_IDS_KEY}"%`),
+        ilike(messages.metadata, `%"${SIGHT_FRAME_ATTACHMENT_IDS_KEY}"%`),
       ),
     )
     .orderBy(asc(messages.createdAt));
@@ -3011,7 +3023,7 @@ export async function selectNewestSightFrameCapture(
     .where(
       and(
         await lineageFilter(conversationId),
-        like(messages.metadata, `%"${SIGHT_FRAME_ATTACHMENT_IDS_KEY}"%`),
+        ilike(messages.metadata, `%"${SIGHT_FRAME_ATTACHMENT_IDS_KEY}"%`),
       ),
     )
     .orderBy(desc(messages.createdAt))
@@ -4169,7 +4181,7 @@ export async function clearAll(): Promise<{
   // that needs to reach one: an append arriving from here on finds no
   // conversation to key itself to and is refused, and an append that already
   // ran is a row this deletes.
-  purgeAllWatchTimelines();
+  await purgeAllWatchTimelines();
 
   // The memory feature's relocated conversation-keyed tables lost their main-DB
   // cascade. Signal the wipe through the hook rather than reaching into the
@@ -4681,11 +4693,11 @@ export async function updateMessageContentAndMetadata(
 export async function relinkAttachments(
   fromMessageIds: string[],
   toMessageId: string,
+  db: AsyncDb = requireMainDb(),
 ): Promise<number> {
   if (fromMessageIds.length === 0) {
     return 0;
   }
-  const db = requireMainDb();
   const messageAttachments = db.schema.messageAttachments;
 
   // Count how many links will be moved before updating.

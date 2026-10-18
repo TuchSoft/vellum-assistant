@@ -147,7 +147,7 @@ async function recordRecallSideEffects(
   const m = graphResult.metrics;
 
   try {
-    recordMemoryRecallLog({
+    await recordMemoryRecallLog({
       conversationId: ctx.conversationId,
       enabled: true,
       degraded: false,

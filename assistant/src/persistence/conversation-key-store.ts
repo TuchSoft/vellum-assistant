@@ -225,12 +225,15 @@ export async function getOrCreateConversation(
       .where(eq(conversations.id, conversationKey));
 
     if (existingConversation) {
-      await tx.orm.insert(conversationKeys).values({
-        id: uuid(),
-        conversationKey,
-        conversationId: existingConversation.id,
-        createdAt: Date.now(),
-      });
+      await tx.orm
+        .insert(conversationKeys)
+        .values({
+          id: uuid(),
+          conversationKey,
+          conversationId: existingConversation.id,
+          createdAt: Date.now(),
+        })
+        .onConflictDoNothing();
       const [conv] = await tx.orm
         .select({ conversationType: conversations.conversationType })
         .from(conversations)
@@ -271,12 +274,42 @@ export async function getOrCreateConversation(
       originChannel: opts?.origin ?? null,
     });
 
-    await tx.orm.insert(conversationKeys).values({
-      id: uuid(),
-      conversationKey,
-      conversationId,
-      createdAt: now,
-    });
+    const keyInsert = await tx.orm
+      .insert(conversationKeys)
+      .values({
+        id: uuid(),
+        conversationKey,
+        conversationId,
+        createdAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ conversationId: conversationKeys.conversationId });
+
+    if (keyInsert.length === 0) {
+      // Another process claimed the key between our read and insert. Drop the
+      // conversation row this transaction just created and return the winner.
+      await tx.orm
+        .delete(conversations)
+        .where(eq(conversations.id, conversationId));
+      const [winner] = await tx.orm
+        .select()
+        .from(conversationKeys)
+        .where(eq(conversationKeys.conversationKey, conversationKey));
+      if (!winner) {
+        throw new Error(
+          `conversation key ${conversationKey} was claimed concurrently but is not readable`,
+        );
+      }
+      const [conv] = await tx.orm
+        .select({ conversationType: conversations.conversationType })
+        .from(conversations)
+        .where(eq(conversations.id, winner.conversationId));
+      return {
+        conversationId: winner.conversationId,
+        conversationType: conv?.conversationType ?? "standard",
+        created: false as const,
+      };
+    }
 
     return {
       conversationId,

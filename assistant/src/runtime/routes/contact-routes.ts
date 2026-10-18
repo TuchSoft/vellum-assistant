@@ -54,13 +54,13 @@ import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
 
 const log = getLogger("contact-routes");
 
-function withGuardianNameOverride<
+async function withGuardianNameOverride<
   T extends { role: string; displayName: string },
->(contact: T): T {
+>(contact: T): Promise<T> {
   if (contact.role === "guardian") {
     return {
       ...contact,
-      displayName: resolveGuardianName(contact.displayName),
+      displayName: await resolveGuardianName(contact.displayName),
     };
   }
   return contact;
@@ -121,12 +121,12 @@ interface PreparableContact {
  */
 function prepareContactResponse<T extends PreparableContact & { role: string }>(
   contact: T,
-): T;
+): Promise<T>;
 function prepareContactResponse<T extends PreparableContact>(
   contact: T,
   guardianIds: ReadonlySet<string>,
-): T & { role: ContactRole };
-function prepareContactResponse(
+): Promise<T & { role: ContactRole }>;
+async function prepareContactResponse(
   contact: PreparableContact & { role?: string },
   guardianIds?: ReadonlySet<string>,
 ) {
@@ -137,7 +137,7 @@ function prepareContactResponse(
   const withRole = guardianIds
     ? withGatewayRole(coerced, guardianIds)
     : (coerced as PreparableContact & { role: string });
-  return withChannelCompat(withGuardianNameOverride(withRole));
+  return withChannelCompat(await withGuardianNameOverride(withRole));
 }
 
 const VALID_CONTACT_TYPES: readonly ContactType[] = ["human", "assistant"];
@@ -220,7 +220,9 @@ async function relayListContacts(limit: number, role: ContactRole | undefined) {
     // so the guardian id set is not consulted here.
     return {
       ok: true,
-      contacts: contacts.map((c) => prepareContactResponse(c)),
+      contacts: await Promise.all(
+        contacts.map((c) => prepareContactResponse(c)),
+      ),
     };
   } catch (err) {
     rethrowGatewayIpcFailure(err);
@@ -363,7 +365,9 @@ export async function handleListContacts(queryParams: Record<string, string>) {
     ]);
     return {
       ok: true,
-      contacts: contacts.map((c) => prepareContactResponse(c, guardianIds)),
+      contacts: await Promise.all(
+        contacts.map((c) => prepareContactResponse(c, guardianIds)),
+      ),
     };
   }
 
@@ -383,7 +387,9 @@ export async function handleListContacts(queryParams: Record<string, string>) {
     ]);
     return {
       ok: true,
-      contacts: contacts.map((c) => prepareContactResponse(c, guardianIds)),
+      contacts: await Promise.all(
+        contacts.map((c) => prepareContactResponse(c, guardianIds)),
+      ),
     };
   }
 
@@ -402,7 +408,7 @@ export async function handleGetContact(contactId: string) {
     // Relayed read: trust the gateway-sourced role (omit guardianIds).
     return {
       ok: true,
-      contact: prepareContactResponse(contact),
+      contact: await prepareContactResponse(contact),
       assistantMetadata: assistantMetadata ?? undefined,
     };
   } catch (err) {
@@ -891,7 +897,9 @@ export const ROUTES: RouteDefinition[] = [
         hydrateTelemetryFromGateway(await searchContacts(parsed)),
         getGuardianContactIds(),
       ]);
-      return contacts.map((c) => prepareContactResponse(c, guardianIds));
+      return await Promise.all(
+        contacts.map((c) => prepareContactResponse(c, guardianIds)),
+      );
     },
   },
 
@@ -1007,7 +1015,7 @@ export async function handleMergeContactsRoute(args: RouteHandlerArgs) {
     return {
       ok: parsed.ok,
       contact: parsed.contact
-        ? prepareContactResponse(
+        ? await prepareContactResponse(
             parsed.contact as unknown as PreparableContact & { role: string },
           )
         : undefined,

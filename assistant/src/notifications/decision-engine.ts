@@ -779,13 +779,13 @@ function enforceAccessRequestSeedBlocks(
  * keeps the verbatim message from degrading to an empty
  * `composeFallbackCopy` body.
  */
-function buildPassThroughDecision(params: {
+async function buildPassThroughDecision(params: {
   signal: NotificationSignal;
   availableChannels: NotificationChannel[];
   selectedChannels: NotificationChannel[];
   body: string;
   reasoningSummary: string;
-}): NotificationDecision {
+}): Promise<NotificationDecision> {
   const { availableChannels, body, signal } = params;
   const title = resolveTitle(
     readPayloadString(signal.contextPayload, "requestedTitle"),
@@ -817,7 +817,7 @@ function buildPassThroughDecision(params: {
     ...(deepLinkTarget ? { deepLinkTarget } : {}),
   };
   decision = applyDecisionGuards(decision, signal);
-  decision.persistedDecisionId = persistDecision(signal, decision);
+  decision.persistedDecisionId = await persistDecision(signal, decision);
   return decision;
 }
 
@@ -1022,7 +1022,7 @@ export async function evaluateSignal(
       buildFallbackDecision(signal, availableChannels),
       signal,
     );
-    decision.persistedDecisionId = persistDecision(signal, decision);
+    decision.persistedDecisionId = await persistDecision(signal, decision);
     return decision;
   }
 
@@ -1045,7 +1045,7 @@ export async function evaluateSignal(
   }
 
   decision = applyDecisionGuards(decision, signal);
-  decision.persistedDecisionId = persistDecision(signal, decision);
+  decision.persistedDecisionId = await persistDecision(signal, decision);
 
   return decision;
 }
@@ -1376,10 +1376,10 @@ function enforceConversationAffinity(
 
 // ── Persistence ────────────────────────────────────────────────────────
 
-function persistDecision(
+async function persistDecision(
   signal: NotificationSignal,
   decision: NotificationDecision,
-): string | undefined {
+): Promise<string | undefined> {
   try {
     const decisionId = uuid();
 
@@ -1395,7 +1395,7 @@ function persistDecision(
       }
     }
 
-    createDecision({
+    await createDecision({
       id: decisionId,
       notificationEventId: signal.signalId,
       shouldNotify: decision.shouldNotify,

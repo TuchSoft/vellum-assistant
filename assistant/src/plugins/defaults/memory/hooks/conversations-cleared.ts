@@ -19,7 +19,7 @@ import { clearAllConversationMemoryTables } from "../conversation-memory-purge.j
 const conversationsCleared: HookFunction<
   ConversationsClearedContext
 > = async () => {
-  clearAllConversationMemoryTables();
+  await clearAllConversationMemoryTables();
 };
 
 export default conversationsCleared;

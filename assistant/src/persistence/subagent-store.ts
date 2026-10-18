@@ -16,6 +16,7 @@ import {
   normalizeSubagentLabel,
   TERMINAL_STATUSES,
 } from "../subagent/types.js";
+import type { AsyncDb } from "./db-facade.js";
 import { requireMainDb } from "./db-facade.js";
 
 /** A durable subagent lifecycle record (camelCase mirror of the row). */
@@ -503,8 +504,8 @@ export async function countRecentSimilarSpawns(args: {
  */
 export async function deleteSubagentRecordsByParent(
   parentConversationId: string,
+  db: AsyncDb = requireMainDb(),
 ): Promise<void> {
-  const db = requireMainDb();
   await db.run(`DELETE FROM subagents WHERE parent_conversation_id = ?`, [
     parentConversationId,
   ]);

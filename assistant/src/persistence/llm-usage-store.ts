@@ -897,7 +897,7 @@ export async function getUsageGroupBreakdown(
       LEFT JOIN conversations c ON e.conversation_id = c.id
       WHERE ${where.sql}
       GROUP BY e.conversation_id
-      ORDER BY total_estimated_cost_usd DESC
+      ORDER BY total_estimated_cost_usd DESC NULLS LAST
       LIMIT 50
       `,
       where.params,
@@ -942,7 +942,7 @@ export async function getUsageGroupBreakdown(
       LEFT JOIN cron_jobs schedule_group_jobs
         ON schedule_group_jobs.id = schedule_usage.group_key
       GROUP BY schedule_usage.group_key
-      ORDER BY total_estimated_cost_usd DESC
+      ORDER BY total_estimated_cost_usd DESC NULLS LAST
       `,
       [...groupKeySubquery.params, ...where.params],
     );
@@ -966,7 +966,7 @@ export async function getUsageGroupBreakdown(
     FROM llm_usage_events e
     WHERE ${where.sql}
     GROUP BY e.${column}
-    ORDER BY total_estimated_cost_usd DESC
+    ORDER BY total_estimated_cost_usd DESC NULLS LAST
     `,
     where.params,
   );

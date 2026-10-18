@@ -59,21 +59,8 @@ export async function createEvent(
   const now = Date.now();
 
   // Normalize empty strings to null so the falsy check below and the DB
-  // unique index stay in agreement (empty string is falsy in JS but would
-  // be stored as a non-null value in SQLite).
+  // unique index stay in agreement.
   const normalizedDedupeKey = params.dedupeKey || null;
-
-  // If there's a dedupe key, check for duplicates first
-  if (normalizedDedupeKey) {
-    const [existing] = await db.orm
-      .select()
-      .from(events)
-      .where(and(eq(events.dedupeKey, normalizedDedupeKey)))
-      .limit(1);
-    if (existing) {
-      return null;
-    }
-  }
 
   const row = {
     id: params.id,
@@ -87,9 +74,16 @@ export async function createEvent(
     updatedAt: now,
   };
 
-  await db.orm.insert(events).values(row);
+  // If there's a dedupe key, the unique index is the authority: a
+  // check-then-insert races across pool connections, so let the insert
+  // report whether this caller won.
+  const inserted = await db.orm
+    .insert(events)
+    .values(row)
+    .onConflictDoNothing()
+    .returning({ id: events.id });
 
-  return row;
+  return inserted.length > 0 ? row : null;
 }
 
 /**

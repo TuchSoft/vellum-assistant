@@ -38,7 +38,7 @@ const conversationDeleted: HookFunction<ConversationDeletedContext> = async (
   ctx,
 ) => {
   cancelPendingJobsForConversation(ctx.conversationId, MEMORY_JOB_TYPES);
-  purgeConversationMemoryTables(ctx.conversationId);
+  await purgeConversationMemoryTables(ctx.conversationId);
   // The pending receipt is keyed to a burst, not a conversation, so the
   // cancel above never matches it; its entries name their source.
   removeSkillUpdateReceiptEntriesForConversation(ctx.conversationId);

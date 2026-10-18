@@ -29,6 +29,7 @@ import {
 import { getLogger } from "../util/logger.js";
 import { getWorkspaceDir } from "../util/platform.js";
 import { getConversationAttachmentsDirPath } from "./conversation-directories.js";
+import type { AsyncDb } from "./db-facade.js";
 import { requireMainDb } from "./db-facade.js";
 
 export interface StoredAttachment {
@@ -134,11 +135,11 @@ async function getAttachmentRow(
 
 async function getMessageConversationContext(
   messageId: string,
+  db: AsyncDb = requireMainDb(),
 ): Promise<{ conversationId: string; conversationCreatedAt: number } | null> {
   // Any-state read, deliberately: the id names a message the caller is
   // already linking an attachment to, and a rendered row may still be
   // streaming. Existence and ownership are the question, not completeness.
-  const db = requireMainDb();
   return await db.get<{
     conversationId: string;
     conversationCreatedAt: number;
@@ -203,8 +204,8 @@ async function insertMessageAttachmentLink(
   messageId: string,
   attachmentId: string,
   position: number,
+  db: AsyncDb = requireMainDb(),
 ): Promise<void> {
-  const db = requireMainDb();
   await db.run(
     `INSERT INTO message_attachments
        (id, message_id, attachment_id, position, created_at)
@@ -1251,13 +1252,13 @@ export async function linkAttachmentToMessage(
   messageId: string,
   attachmentId: string,
   position: number,
+  db: AsyncDb = requireMainDb(),
 ): Promise<string> {
-  const ctx = await getMessageConversationContext(messageId);
+  const ctx = await getMessageConversationContext(messageId, db);
   if (!ctx) {
     throw new Error(`Message not found: ${messageId}`);
   }
 
-  const db = requireMainDb();
   const messageAttachments = db.schema.messageAttachments;
   const existingRows = await db.orm
     .select({ attachmentId: messageAttachments.attachmentId })
@@ -1278,7 +1279,12 @@ export async function linkAttachmentToMessage(
     ctx.conversationId,
     ctx.conversationCreatedAt,
   );
-  await insertMessageAttachmentLink(messageId, scopedAttachmentId, position);
+  await insertMessageAttachmentLink(
+    messageId,
+    scopedAttachmentId,
+    position,
+    db,
+  );
   return scopedAttachmentId;
 }
 

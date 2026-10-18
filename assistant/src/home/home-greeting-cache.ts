@@ -44,9 +44,9 @@ function readWorkspaceFile(name: string): string {
   }
 }
 
-function computeIdentityContentHash(): string {
+async function computeIdentityContentHash(): Promise<string> {
   const staticFiles = IDENTITY_FILES.map(readWorkspaceFile).join("\n---\n");
-  const guardianPersona = resolveGuardianPersona() ?? "";
+  const guardianPersona = (await resolveGuardianPersona()) ?? "";
   const combined = staticFiles + "\n---\n" + guardianPersona;
   return createHash("sha256").update(combined).digest("hex");
 }
@@ -70,7 +70,7 @@ export async function getCachedHomeGreeting(): Promise<string | null> {
       return null;
     }
 
-    const currentHash = computeIdentityContentHash();
+    const currentHash = await computeIdentityContentHash();
     if (currentHash !== hash) {
       return null;
     }
@@ -88,7 +88,7 @@ export async function getCachedHomeGreeting(): Promise<string | null> {
  */
 export async function setCachedHomeGreeting(text: string): Promise<boolean> {
   try {
-    const hash = computeIdentityContentHash();
+    const hash = await computeIdentityContentHash();
     const now = String(Date.now());
     await setMemoryCheckpoint(CHECKPOINT_KEY_TEXT, text);
     await setMemoryCheckpoint(CHECKPOINT_KEY_HASH, hash);

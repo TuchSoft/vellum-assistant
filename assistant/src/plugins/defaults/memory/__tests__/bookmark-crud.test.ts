@@ -246,5 +246,6 @@ describePg("bookmark-crud", () => {
 
   test.todo(
     "listBookmarks drives the join from message_bookmarks even with planner stats that predate the table",
+    () => {},
   );
 });

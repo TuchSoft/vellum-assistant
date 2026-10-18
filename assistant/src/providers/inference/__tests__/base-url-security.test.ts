@@ -10,11 +10,11 @@ import { resolveAuth } from "../resolve-auth.js";
 // ---------------------------------------------------------------------------
 
 describe("migration 257: strip base_url from non-openai-compatible connections", () => {
-  test.todo("clears base_url on anthropic connection");
+  test.todo("clears base_url on anthropic connection", () => {});
 
-  test.todo("preserves base_url on openai-compatible connection");
+  test.todo("preserves base_url on openai-compatible connection", () => {});
 
-  test.todo("is idempotent");
+  test.todo("is idempotent", () => {});
 });
 
 // ---------------------------------------------------------------------------

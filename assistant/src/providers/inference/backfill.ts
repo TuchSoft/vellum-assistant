@@ -19,6 +19,7 @@
 
 import { MANAGED_PROFILE_NAMES } from "../../config/default-profile-catalog.js";
 import { loadRawConfig, saveRawConfig } from "../../config/loader.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { credentialKey } from "../../security/credential-key.js";
 import { getLogger } from "../../util/logger.js";
 import { isConnectionCompatibleWithModel } from "../connection-model-compat.js";
@@ -224,7 +225,7 @@ async function ensureProviderConnection(
   const entryModel = typeof entry.model === "string" ? entry.model : undefined;
   const existingForProvider = isManagedOwned
     ? undefined
-    : (await listConnections({ provider })).find((c) =>
+    : (await listConnections(requireMainDb(), { provider })).find((c) =>
         isConnectionCompatibleWithModel(c, entryModel),
       );
   if (existingForProvider) {
@@ -243,10 +244,10 @@ async function ensureProviderConnection(
     // `auth: { type: "none" }`; everything else gets an api_key
     // pointing at the conventional credential slot.
     connectionName = `${provider}-personal`;
-    if (!(await getConnection(connectionName))) {
+    if (!(await getConnection(requireMainDb(), connectionName))) {
       const isKeyless = provider === "ollama";
       const credName = credentialKey(provider, "api_key");
-      const result = await createConnection({
+      const result = await createConnection(requireMainDb(), {
         name: connectionName,
         provider,
         auth: isKeyless

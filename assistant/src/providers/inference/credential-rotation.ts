@@ -43,7 +43,7 @@ export async function refreshProvidersForRotatedCredential(
   // The credential write has already succeeded: an enumeration failure
   // refreshes rather than surfacing as a 500.
   try {
-    const connections = findConnectionsUsingCredential(key);
+    const connections = await findConnectionsUsingCredential(key);
     if (connections.length > 0) {
       await refreshProvidersAfterSecretChange();
     }

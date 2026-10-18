@@ -1,3 +1,4 @@
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { credentialKey } from "../../security/credential-key.js";
 import {
   getSecureKeyResultAsync,
@@ -33,7 +34,9 @@ const LEGACY_SHARED_REF = credentialKey("openai-compatible", "api_key");
  * the legacy ref.
  */
 export async function repairSharedCredentialSlots(): Promise<void> {
-  const rows = await listConnections({ provider: "openai-compatible" });
+  const rows = await listConnections(requireMainDb(), {
+    provider: "openai-compatible",
+  });
   const sharing = rows.filter(
     (row) =>
       row.auth.type === "api_key" && row.auth.credential === LEGACY_SHARED_REF,
@@ -71,7 +74,7 @@ export async function repairSharedCredentialSlots(): Promise<void> {
       // client mutations, and a row rewritten (or deleted and recreated)
       // mid-await must not have its fresh auth clobbered with the repair
       // target.
-      const current = await getConnection(row.name);
+      const current = await getConnection(requireMainDb(), row.name);
       if (
         current?.auth.type !== "api_key" ||
         current.auth.credential !== LEGACY_SHARED_REF
@@ -82,7 +85,7 @@ export async function repairSharedCredentialSlots(): Promise<void> {
         );
         continue;
       }
-      const updated = await updateConnection(row.name, {
+      const updated = await updateConnection(requireMainDb(), row.name, {
         auth: { type: "api_key", credential: target },
       });
       if (updated.ok) {

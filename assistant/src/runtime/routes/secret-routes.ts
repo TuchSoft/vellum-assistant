@@ -457,7 +457,8 @@ async function handleReadSecret({ body }: RouteHandlerArgs) {
   try {
     let accountKey: string;
     let prefetchedResult:
-      Awaited<ReturnType<typeof getSecureKeyResultAsync>> | undefined;
+      | Awaited<ReturnType<typeof getSecureKeyResultAsync>>
+      | undefined;
 
     if (type === "api_key") {
       if (
@@ -569,7 +570,7 @@ async function handleDeleteSecret({ body }: RouteHandlerArgs) {
       // Provider connections reference the namespaced account, so the in-use
       // check keys off `credKey`: the bare pre-migration account is never a
       // connection's `resolve_auth` target.
-      const affectedConnections = assertCredentialNotInUse(
+      const affectedConnections = await assertCredentialNotInUse(
         credKey,
         force === true,
       );
@@ -611,7 +612,10 @@ async function handleDeleteSecret({ body }: RouteHandlerArgs) {
       if (existing === undefined) {
         throw new NotFoundError(`Credential not found: ${name}`);
       }
-      const affectedConnections = assertCredentialNotInUse(key, force === true);
+      const affectedConnections = await assertCredentialNotInUse(
+        key,
+        force === true,
+      );
       const deleteResult = await deleteSecureKeyAsync(key);
       if (deleteResult === "error") {
         throw new InternalError(

@@ -5,7 +5,7 @@
  * auth through it, so the delete surfaces ask this before removing anything.
  */
 
-import { getDb } from "../../persistence/db-connection.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { normalizeCredentialRef } from "../../security/credential-key.js";
 import { listConnections } from "./connections.js";
 
@@ -22,11 +22,11 @@ import { listConnections } from "./connections.js";
  * refuse the delete rather than treat the credential as unused, which is the
  * exact silent breakage this check exists to prevent.
  */
-export function findConnectionsUsingCredential(
+export async function findConnectionsUsingCredential(
   credentialAccount: string,
-): string[] {
+): Promise<string[]> {
   const account = normalizeCredentialRef(credentialAccount);
-  return listConnections(getDb())
+  return (await listConnections(requireMainDb()))
     .filter(
       (connection) =>
         "credential" in connection.auth &&

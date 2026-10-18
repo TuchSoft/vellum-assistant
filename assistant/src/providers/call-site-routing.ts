@@ -26,7 +26,7 @@ import {
   resolveCallSiteConfigWithProfile,
 } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import {
   ProviderError,
   type ProviderRouteAttribution,
@@ -47,7 +47,10 @@ import {
   resolveRoutingIdentity,
   tryResolveProviderForConnectionName,
 } from "./connection-resolution.js";
-import { listConnections } from "./inference/connections.js";
+import {
+  ensureConnectionSnapshot,
+  listConnections,
+} from "./inference/connections.js";
 import type { ProvidersConfig } from "./registry.js";
 import { shouldUseNativeWebSearch } from "./registry.js";
 import { recordProviderRequestDiagnostics } from "./request-diagnostics.js";
@@ -254,6 +257,8 @@ export class CallSiteRoutingProvider implements Provider {
       return this.defaultRoute();
     }
 
+    await ensureConnectionSnapshot();
+
     const overrideProfile = options?.config?.overrideProfile;
     // Forward `forceOverrideProfile` and the per-conversation mix seed so
     // transport selection resolves the same profile/arm as wire-param
@@ -310,7 +315,7 @@ export class CallSiteRoutingProvider implements Provider {
       | undefined;
     if (!connectionName) {
       try {
-        autoResolveCandidates = listConnections(getDb(), {
+        autoResolveCandidates = await listConnections(requireMainDb(), {
           provider: resolved.provider,
         });
         const active = autoResolveCandidates.find((c) =>

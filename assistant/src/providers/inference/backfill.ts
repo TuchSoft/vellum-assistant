@@ -19,7 +19,6 @@
 
 import { MANAGED_PROFILE_NAMES } from "../../config/default-profile-catalog.js";
 import { loadRawConfig, saveRawConfig } from "../../config/loader.js";
-import type { DrizzleDb } from "../../persistence/db-connection.js";
 import { credentialKey } from "../../security/credential-key.js";
 import { getLogger } from "../../util/logger.js";
 import { isConnectionCompatibleWithModel } from "../connection-model-compat.js";
@@ -30,6 +29,7 @@ import {
 } from "./auth.js";
 import {
   createConnection,
+  ensureConnectionSnapshot,
   getConnection,
   listConnections,
   seedCanonicalConnections,
@@ -54,10 +54,11 @@ const log = getLogger("provider-connections-backfill");
  *      entry's `provider` field + the global inference mode and write it back.
  *   4. Save config.json if any entry was updated.
  */
-export function runProviderConnectionsBackfill(db: DrizzleDb): void {
+export async function runProviderConnectionsBackfill(): Promise<void> {
   try {
-    seedCanonicalConnections(db);
-    backfillConfigProfiles(db);
+    await ensureConnectionSnapshot();
+    await seedCanonicalConnections();
+    await backfillConfigProfiles();
   } catch (err) {
     log.error(
       { err },
@@ -66,7 +67,7 @@ export function runProviderConnectionsBackfill(db: DrizzleDb): void {
   }
 }
 
-function backfillConfigProfiles(db: DrizzleDb): void {
+async function backfillConfigProfiles(): Promise<void> {
   const raw = loadRawConfig();
   const llm = raw.llm as Record<string, unknown> | undefined;
   if (!llm) {
@@ -83,7 +84,11 @@ function backfillConfigProfiles(db: DrizzleDb): void {
   const defaultProfile = llm.default as Record<string, unknown> | undefined;
   if (defaultProfile && typeof defaultProfile === "object") {
     if (
-      ensureProviderConnection(defaultProfile, "<llm.default>", db, globalMode)
+      await ensureProviderConnection(
+        defaultProfile,
+        "<llm.default>",
+        globalMode,
+      )
     ) {
       llm.default = defaultProfile;
       changed = true;
@@ -98,7 +103,7 @@ function backfillConfigProfiles(db: DrizzleDb): void {
       if (!profile || typeof profile !== "object") {
         continue;
       }
-      if (ensureProviderConnection(profile, profileName, db, globalMode)) {
+      if (await ensureProviderConnection(profile, profileName, globalMode)) {
         profiles[profileName] = profile;
         changed = true;
       }
@@ -125,10 +130,9 @@ function backfillConfigProfiles(db: DrizzleDb): void {
         continue;
       }
       if (
-        ensureProviderConnection(
+        await ensureProviderConnection(
           callSite,
           `<llm.callSites.${callSiteName}>`,
-          db,
           globalMode,
         )
       ) {
@@ -158,12 +162,11 @@ function backfillConfigProfiles(db: DrizzleDb): void {
  *
  * Returns `true` if the entry was changed, `false` otherwise.
  */
-function ensureProviderConnection(
+async function ensureProviderConnection(
   entry: Record<string, unknown>,
   entryLabel: string,
-  db: DrizzleDb,
   globalMode: string,
-): boolean {
+): Promise<boolean> {
   // Treat empty/whitespace strings the same as missing — `resolveDefaultProvider`
   // (and friends) use a falsy check on the field, so a manually cleared
   // `provider_connection: ""` would otherwise skip backfill and then hard-throw
@@ -221,7 +224,7 @@ function ensureProviderConnection(
   const entryModel = typeof entry.model === "string" ? entry.model : undefined;
   const existingForProvider = isManagedOwned
     ? undefined
-    : listConnections(db, { provider }).find((c) =>
+    : (await listConnections({ provider })).find((c) =>
         isConnectionCompatibleWithModel(c, entryModel),
       );
   if (existingForProvider) {
@@ -240,10 +243,10 @@ function ensureProviderConnection(
     // `auth: { type: "none" }`; everything else gets an api_key
     // pointing at the conventional credential slot.
     connectionName = `${provider}-personal`;
-    if (!getConnection(db, connectionName)) {
+    if (!(await getConnection(connectionName))) {
       const isKeyless = provider === "ollama";
       const credName = credentialKey(provider, "api_key");
-      const result = createConnection(db, {
+      const result = await createConnection({
         name: connectionName,
         provider,
         auth: isKeyless

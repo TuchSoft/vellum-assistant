@@ -1,4 +1,3 @@
-import type { DrizzleDb } from "../../persistence/db-connection.js";
 import { credentialKey } from "../../security/credential-key.js";
 import {
   getSecureKeyResultAsync,
@@ -33,10 +32,8 @@ const LEGACY_SHARED_REF = credentialKey("openai-compatible", "api_key");
  * to be repaired on a later boot. Idempotent: a repaired row does not match
  * the legacy ref.
  */
-export async function repairSharedCredentialSlots(
-  db: DrizzleDb,
-): Promise<void> {
-  const rows = listConnections(db, { provider: "openai-compatible" });
+export async function repairSharedCredentialSlots(): Promise<void> {
+  const rows = await listConnections({ provider: "openai-compatible" });
   const sharing = rows.filter(
     (row) =>
       row.auth.type === "api_key" && row.auth.credential === LEGACY_SHARED_REF,
@@ -70,12 +67,11 @@ export async function repairSharedCredentialSlots(
           await setSecureKeyAsync(target, shared.value);
         }
       }
-      // Re-read synchronously after the vault awaits: the repair runs
-      // concurrently with client mutations, and a row rewritten (or
-      // deleted and recreated) mid-await must not have its fresh auth
-      // clobbered with the repair target. The check and the update share
-      // one event-loop turn, so no mutation can interleave.
-      const current = getConnection(db, row.name);
+      // Re-read after the vault awaits: the repair runs concurrently with
+      // client mutations, and a row rewritten (or deleted and recreated)
+      // mid-await must not have its fresh auth clobbered with the repair
+      // target.
+      const current = await getConnection(row.name);
       if (
         current?.auth.type !== "api_key" ||
         current.auth.credential !== LEGACY_SHARED_REF
@@ -86,7 +82,7 @@ export async function repairSharedCredentialSlots(
         );
         continue;
       }
-      const updated = updateConnection(db, row.name, {
+      const updated = await updateConnection(row.name, {
         auth: { type: "api_key", credential: target },
       });
       if (updated.ok) {

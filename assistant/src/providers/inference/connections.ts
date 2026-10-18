@@ -1,8 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 
-import type { DrizzleDb } from "../../persistence/db-connection.js";
-import { providerConnections } from "../../persistence/schema/inference.js";
+import { type AsyncDb, requireMainDb } from "../../persistence/db-facade.js";
 import { normalizeCredentialRef } from "../../security/credential-key.js";
 import { getLogger } from "../../util/logger.js";
 import { clearConnectionProviderCache } from "../registry.js";
@@ -78,22 +77,91 @@ function parseModelsColumn(raw: string | null): ConnectionModel[] | null {
 }
 
 // ---------------------------------------------------------------------------
+// Synchronous snapshot
+// ---------------------------------------------------------------------------
+
+/**
+ * Synchronous view of the connection rows, or `undefined` before the first
+ * load in this process.
+ *
+ * Dispatch and capability probes judge connection names on synchronous paths
+ * (the resolver's `isResolvableProvider` callback, the native-web-search probe,
+ * context-window sizing), so they read this snapshot instead of the async
+ * facade. Every async read and every mutation refreshes it; boot warms it
+ * before dispatch starts.
+ */
+let snapshot: Map<string, ProviderConnection> | undefined;
+
+function replaceSnapshot(connections: ProviderConnection[]): void {
+  snapshot = new Map(
+    connections.map((connection) => [connection.name, connection]),
+  );
+}
+
+function putSnapshot(connection: ProviderConnection): void {
+  snapshot?.set(connection.name, connection);
+}
+
+function dropSnapshot(name: string): void {
+  snapshot?.delete(name);
+}
+
+/** Whether the snapshot has been loaded in this process. */
+export function isConnectionSnapshotLoaded(): boolean {
+  return snapshot !== undefined;
+}
+
+/**
+ * A connection from the synchronous snapshot, or `undefined` when the
+ * snapshot is cold or the name is absent. Cold is indistinguishable from
+ * absent here; callers that fail open use `isConnectionSnapshotLoaded` to
+ * tell the two apart.
+ */
+export function peekConnection(name: string): ProviderConnection | undefined {
+  return snapshot?.get(name);
+}
+
+/** Reload the synchronous snapshot from the main database. */
+export async function refreshConnectionSnapshot(): Promise<void> {
+  replaceSnapshot(await listConnections(requireMainDb()));
+}
+
+/**
+ * Load the snapshot if this process has not loaded it yet. Fail-soft: a
+ * missing or unreachable database leaves the snapshot cold, which callers
+ * handle the same way they handle a database blip.
+ */
+export async function ensureConnectionSnapshot(): Promise<void> {
+  if (snapshot !== undefined) {
+    return;
+  }
+  try {
+    await refreshConnectionSnapshot();
+  } catch (err) {
+    log.warn(
+      { err },
+      "provider connection snapshot unavailable; synchronous connection lookups degrade",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Read
 // ---------------------------------------------------------------------------
 
-export function listConnections(
-  db: DrizzleDb,
+export async function listConnections(
+  db: AsyncDb = requireMainDb(),
   filter?: { provider?: string },
-): ProviderConnection[] {
+): Promise<ProviderConnection[]> {
+  const connections = db.schema.providerConnections;
   const rows = filter?.provider
-    ? db
+    ? await db.orm
         .select()
-        .from(providerConnections)
-        .where(eq(providerConnections.provider, filter.provider))
-        .all()
-    : db.select().from(providerConnections).all();
+        .from(connections)
+        .where(eq(connections.provider, filter.provider))
+    : await db.orm.select().from(connections);
 
-  return rows.flatMap((row) => {
+  const result = rows.flatMap((row) => {
     const auth = parseAuth(JSON.parse(row.auth));
     if (!auth) {
       return [];
@@ -114,17 +182,28 @@ export function listConnections(
       },
     ];
   });
+
+  if (filter?.provider) {
+    for (const connection of result) {
+      putSnapshot(connection);
+    }
+  } else {
+    replaceSnapshot(result);
+  }
+
+  return result;
 }
 
-export function getConnection(
-  db: DrizzleDb,
+export async function getConnection(
+  db: AsyncDb = requireMainDb(),
   name: string,
-): ProviderConnection | null {
-  const row = db
+): Promise<ProviderConnection | null> {
+  const connections = db.schema.providerConnections;
+  const [row] = await db.orm
     .select()
-    .from(providerConnections)
-    .where(eq(providerConnections.name, name))
-    .get();
+    .from(connections)
+    .where(eq(connections.name, name))
+    .limit(1);
 
   if (!row) {
     return null;
@@ -137,7 +216,7 @@ export function getConnection(
   if (!provider.success) {
     return null;
   }
-  return {
+  const connection: ProviderConnection = {
     ...row,
     auth,
     provider: provider.data,
@@ -146,6 +225,8 @@ export function getConnection(
     models: parseModelsColumn(row.models),
     isManaged: isManagedRow({ ...row, provider: provider.data, auth }),
   };
+  putSnapshot(connection);
+  return connection;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,12 +275,14 @@ export type ConnectionDeleteError =
   | { code: "not_found" }
   | { code: "has_references"; count: number };
 
-export function createConnection(
-  db: DrizzleDb,
+export async function createConnection(
+  db: AsyncDb = requireMainDb(),
   input: CreateConnectionInput,
-):
+): Promise<
   | { ok: true; connection: ProviderConnection }
-  | { ok: false; error: ConnectionCreateError } {
+  | { ok: false; error: ConnectionCreateError }
+> {
+  const connections = db.schema.providerConnections;
   if (!VALID_CONNECTION_PROVIDERS.includes(input.provider as never)) {
     return {
       ok: false,
@@ -214,11 +297,11 @@ export function createConnection(
     return { ok: false, error: { code: "invalid_auth" } };
   }
 
-  const existing = db
-    .select({ name: providerConnections.name })
-    .from(providerConnections)
-    .where(eq(providerConnections.name, input.name))
-    .get();
+  const [existing] = await db.orm
+    .select({ name: connections.name })
+    .from(connections)
+    .where(eq(connections.name, input.name))
+    .limit(1);
   if (existing) {
     return { ok: false, error: { code: "already_exists" } };
   }
@@ -237,47 +320,47 @@ export function createConnection(
   }
 
   const now = Date.now();
-  db.insert(providerConnections)
-    .values({
-      name: input.name,
-      provider,
-      auth: JSON.stringify(auth),
-      label,
-      baseUrl,
-      models: models === null ? null : JSON.stringify(models),
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  await db.orm.insert(connections).values({
+    name: input.name,
+    provider,
+    auth: JSON.stringify(auth),
+    label,
+    baseUrl,
+    models: models === null ? null : JSON.stringify(models),
+    createdAt: now,
+    updatedAt: now,
+  });
 
   // Invalidate per-connection adapter cache so subsequent dispatch
   // resolves the freshly-inserted row's auth.
   clearConnectionProviderCache();
 
-  return {
-    ok: true,
-    connection: {
-      name: input.name,
-      provider,
-      auth,
-      label,
-      baseUrl,
-      models,
-      createdAt: now,
-      updatedAt: now,
-      isManaged: isManagedRow({ name: input.name, provider, auth }),
-    },
+  const connection: ProviderConnection = {
+    name: input.name,
+    provider,
+    auth,
+    label,
+    baseUrl,
+    models,
+    createdAt: now,
+    updatedAt: now,
+    isManaged: isManagedRow({ name: input.name, provider, auth }),
   };
+  putSnapshot(connection);
+
+  return { ok: true, connection };
 }
 
-export function updateConnection(
-  db: DrizzleDb,
+export async function updateConnection(
+  db: AsyncDb = requireMainDb(),
   name: string,
   input: UpdateConnectionInput,
-):
+): Promise<
   | { ok: true; connection: ProviderConnection }
-  | { ok: false; error: ConnectionUpdateError } {
-  const existing = getConnection(db, name);
+  | { ok: false; error: ConnectionUpdateError }
+> {
+  const connections = db.schema.providerConnections;
+  const existing = await getConnection(db, name);
   if (!existing) {
     return { ok: false, error: { code: "not_found" } };
   }
@@ -335,27 +418,27 @@ export function updateConnection(
       input.models === null ? null : JSON.stringify(input.models);
   }
 
-  db.update(providerConnections)
+  await db.orm
+    .update(connections)
     .set(setClause)
-    .where(eq(providerConnections.name, name))
-    .run();
+    .where(eq(connections.name, name));
 
   // Drop cached adapter built against the previous auth config.
   clearConnectionProviderCache();
 
-  return {
-    ok: true,
-    connection: {
-      ...existing,
-      auth,
-      provider: nextProvider,
-      label: input.label !== undefined ? input.label : existing.label,
-      baseUrl: nextBaseUrl,
-      models: nextModels,
-      updatedAt: now,
-      isManaged: isManagedRow({ name, provider: nextProvider, auth }),
-    },
+  const connection: ProviderConnection = {
+    ...existing,
+    auth,
+    provider: nextProvider,
+    label: input.label !== undefined ? input.label : existing.label,
+    baseUrl: nextBaseUrl,
+    models: nextModels,
+    updatedAt: now,
+    isManaged: isManagedRow({ name, provider: nextProvider, auth }),
   };
+  putSnapshot(connection);
+
+  return { ok: true, connection };
 }
 
 /**
@@ -365,16 +448,17 @@ export function updateConnection(
  * When false, rejects if any profile in the provided profile names list
  * references this connection.
  */
-export function deleteConnection(
-  db: DrizzleDb,
+export async function deleteConnection(
+  db: AsyncDb = requireMainDb(),
   name: string,
   opts: { force?: boolean; referencingProfiles?: string[] } = {},
-): { ok: true } | { ok: false; error: ConnectionDeleteError } {
-  const existing = db
-    .select({ name: providerConnections.name })
-    .from(providerConnections)
-    .where(eq(providerConnections.name, name))
-    .get();
+): Promise<{ ok: true } | { ok: false; error: ConnectionDeleteError }> {
+  const connections = db.schema.providerConnections;
+  const [existing] = await db.orm
+    .select({ name: connections.name })
+    .from(connections)
+    .where(eq(connections.name, name))
+    .limit(1);
 
   if (!existing) {
     return { ok: false, error: { code: "not_found" } };
@@ -391,12 +475,11 @@ export function deleteConnection(
     };
   }
 
-  db.delete(providerConnections)
-    .where(eq(providerConnections.name, name))
-    .run();
+  await db.orm.delete(connections).where(eq(connections.name, name));
 
   // Evict cached adapter for the deleted connection name.
   clearConnectionProviderCache();
+  dropSnapshot(name);
 
   return { ok: true };
 }
@@ -488,7 +571,10 @@ export const MANAGED_CONNECTION_NAMES: ReadonlySet<string> = new Set(
  * default only when the existing row has `label IS NULL`, covering installs
  * that pre-date the label seed.
  */
-export function seedCanonicalConnections(db: DrizzleDb): void {
+export async function seedCanonicalConnections(
+  db: AsyncDb = requireMainDb(),
+): Promise<void> {
+  const connections = db.schema.providerConnections;
   const now = Date.now();
   for (const { name, provider, auth, label } of CANONICAL_CONNECTIONS) {
     // Never clobber a pre-existing user connection that happens to share this
@@ -498,11 +584,11 @@ export function seedCanonicalConnections(db: DrizzleDb): void {
     // the platform-auth sentinel and make it managed/write-protected, breaking
     // any profile that references the user's connection. Only seed/refresh when
     // the row is absent or already our sentinel (same provider).
-    const existing = db
-      .select({ provider: providerConnections.provider })
-      .from(providerConnections)
-      .where(eq(providerConnections.name, name))
-      .get();
+    const [existing] = await db.orm
+      .select({ provider: connections.provider })
+      .from(connections)
+      .where(eq(connections.name, name))
+      .limit(1);
     if (existing && existing.provider !== provider) {
       log.warn(
         { name, existingProvider: existing.provider },
@@ -511,7 +597,8 @@ export function seedCanonicalConnections(db: DrizzleDb): void {
       continue;
     }
 
-    db.insert(providerConnections)
+    await db.orm
+      .insert(connections)
       .values({
         name,
         provider,
@@ -521,26 +608,35 @@ export function seedCanonicalConnections(db: DrizzleDb): void {
         updatedAt: now,
       })
       .onConflictDoUpdate({
-        target: providerConnections.name,
+        target: connections.name,
         set: {
           provider,
           auth: JSON.stringify(auth),
           updatedAt: now,
         },
-      })
-      .run();
+      });
 
     // Backfill the default label on rows that pre-date label seeding so
     // existing installs pick up the friendly name. Does not overwrite a
     // user-set label.
-    db.update(providerConnections)
+    await db.orm
+      .update(connections)
       .set({ label, updatedAt: now })
-      .where(
-        and(
-          eq(providerConnections.name, name),
-          isNull(providerConnections.label),
-        ),
-      )
-      .run();
+      .where(and(eq(connections.name, name), isNull(connections.label)));
+
+    if (snapshot) {
+      const previous = snapshot.get(name);
+      snapshot.set(name, {
+        name,
+        provider,
+        auth,
+        label: previous?.label ?? label,
+        baseUrl: previous?.baseUrl ?? null,
+        models: previous?.models ?? null,
+        createdAt: previous?.createdAt ?? now,
+        updatedAt: now,
+        isManaged: isManagedRow({ name, provider, auth }),
+      });
+    }
   }
 }

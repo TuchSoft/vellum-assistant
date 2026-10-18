@@ -7,7 +7,7 @@
  * credential store so the CLI can import it without pulling in the database.
  */
 
-import { getDb } from "../../persistence/db-connection.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import type { OAuth2TokenResult } from "../../security/oauth2.js";
 import { getLogger } from "../../util/logger.js";
 import {
@@ -32,15 +32,18 @@ export async function storeChatgptSubscriptionTokens(
 ): Promise<void> {
   await storeChatgptSubscriptionCredentials(tokens);
 
-  const db = getDb();
-  const existing = getConnection(db, CHATGPT_SUBSCRIPTION_CONNECTION_NAME);
+  const db = requireMainDb();
+  const existing = await getConnection(
+    db,
+    CHATGPT_SUBSCRIPTION_CONNECTION_NAME,
+  );
 
   if (existing) {
     // Stamp the provider with the auth: this row IS the subscription route
     // (auth modality = provider identity), and dispatch derives the openai
     // upstream from the identity per-request. Stamping also heals a
     // claiming row whose provider would otherwise misroute the fresh token.
-    const updateResult = updateConnection(
+    const updateResult = await updateConnection(
       db,
       CHATGPT_SUBSCRIPTION_CONNECTION_NAME,
       { auth: CHATGPT_SUBSCRIPTION_AUTH_INPUT, provider: "chatgpt" },
@@ -55,7 +58,7 @@ export async function storeChatgptSubscriptionTokens(
     return;
   }
 
-  const createResult = createConnection(db, {
+  const createResult = await createConnection(db, {
     name: CHATGPT_SUBSCRIPTION_CONNECTION_NAME,
     provider: "chatgpt",
     auth: CHATGPT_SUBSCRIPTION_AUTH_INPUT,

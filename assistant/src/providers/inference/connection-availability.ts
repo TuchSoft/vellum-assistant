@@ -16,7 +16,7 @@
  * drift.
  */
 
-import { getDb } from "../../persistence/db-connection.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { credentialKey } from "../../security/credential-key.js";
 import { getSecureKeyResultAsync } from "../../security/secure-keys.js";
 import {
@@ -40,7 +40,11 @@ import {
   VELLUM_MANAGED_PROVIDER,
 } from "../vellum-model-routing.js";
 import { ROUTING_IDENTITY_PROVIDERS } from "./auth.js";
-import { getConnection, listConnections } from "./connections.js";
+import {
+  ensureConnectionSnapshot,
+  getConnection,
+  listConnections,
+} from "./connections.js";
 
 /**
  * Every availability verdict, in one place. Route schemas build their zod
@@ -131,7 +135,7 @@ export async function computeConnectionAvailability(
   // stored, so availability must judge the actual row, not the name.
   let connection;
   try {
-    connection = getConnection(getDb(), resolvedConnectionName);
+    connection = await getConnection(requireMainDb(), resolvedConnectionName);
   } catch {
     return {
       status: "unknown",
@@ -354,6 +358,7 @@ export async function computeProfileAvailability(
     }
   }
 
+  await ensureConnectionSnapshot();
   // Precedence matches dispatch: an explicit provider_connection wins over
   // an entry-name provider, and the vendor judged is the entry's
   // dispatchable kind either way (the same translation dispatch uses).
@@ -377,7 +382,7 @@ export async function computeProfileAvailability(
   // provider serves the request, and none means dispatch returns no provider.
   let candidates;
   try {
-    candidates = listConnections(getDb(), { provider });
+    candidates = await listConnections(requireMainDb(), { provider });
   } catch {
     return {
       status: "unknown",

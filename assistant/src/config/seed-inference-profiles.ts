@@ -1,4 +1,4 @@
-import type { DrizzleDb } from "../persistence/db-connection.js";
+import type { AsyncDb } from "../persistence/db-facade.js";
 import { PROVIDERS_REQUIRING_BASE_URL_AND_MODELS } from "../providers/inference/auth.js";
 import {
   createConnection,
@@ -32,7 +32,7 @@ export type SeedInferenceProfilesOptions = {
   /** True when a hatch overlay was consumed this startup. */
   isHatch?: boolean;
   /** DB handle for creating user provider connections at hatch time. */
-  db?: DrizzleDb;
+  db?: AsyncDb;
 };
 
 /**
@@ -56,9 +56,9 @@ export type SeedInferenceProfilesOptions = {
  * 3. **Active/advisor profile resolution**: hatches activate `balanced`;
  *    boots repair dangling or disabled selections.
  */
-export function seedInferenceProfiles(
+export async function seedInferenceProfiles(
   options: SeedInferenceProfilesOptions = {},
-): void {
+): Promise<void> {
   const config = loadRawConfig();
 
   if (config.llm == null || typeof config.llm !== "object") {
@@ -109,9 +109,12 @@ export function seedInferenceProfiles(
       }
       const userConnectionName = `${hatchProvider}-personal`;
 
-      if (options.db && !getConnection(options.db, userConnectionName)) {
+      if (
+        options.db &&
+        !(await getConnection(options.db, userConnectionName))
+      ) {
         const credName = credentialKey(hatchProvider, "api_key");
-        const result = createConnection(options.db, {
+        const result = await createConnection(options.db, {
           name: userConnectionName,
           provider: hatchProvider,
           auth: { type: "api_key", credential: credName },

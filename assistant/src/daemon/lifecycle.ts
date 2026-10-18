@@ -25,7 +25,7 @@ import { recordDaemonBootTime } from "../monitoring/daemon-boot-time.js";
 import { backfillManualTokenConnections } from "../oauth/manual-token-connection.js";
 import { seedOAuthProviders } from "../oauth/seed-providers.js";
 import { getMaxPersistedConversationSeq } from "../persistence/conversation-crud.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { initializeDb } from "../persistence/db-init.js";
 import { startEmbeddingRuntimeManager } from "../persistence/embeddings/embedding-backend.js";
 import { maybeEnqueueLexicalBackfillOnUpgrade } from "../persistence/job-handlers/message-lexical-backfill.js";
@@ -229,7 +229,7 @@ export async function runDaemon(): Promise<void> {
   // IPC call has a 3s connect + 5s call timeout that would otherwise
   // stall the critical path).
   // After the async fetch resolves, reconcile flag-gated managed profiles
-  // (OS Beta): `seedInferenceProfiles()` runs synchronously earlier in boot
+  // (OS Beta): `seedInferenceProfiles()` runs earlier in boot
   // before flags are available, so this lands the profile on the same boot once
   // the flag cache is populated. When this reconcile is the call that mutates
   // config (it raced ahead of the gateway flag listener), publish the config
@@ -378,7 +378,7 @@ export async function runDaemon(): Promise<void> {
     // before backfill reads config. Idempotent — runs every boot so new
     // canonicals propagate and manual config.json edits self-heal.
     try {
-      runProviderConnectionsBackfill(getDb());
+      await runProviderConnectionsBackfill();
     } catch (err) {
       log.warn(
         { err },
@@ -389,7 +389,7 @@ export async function runDaemon(): Promise<void> {
     // Repoint openai-compatible connections sharing the legacy provider-keyed
     // credential slot onto per-connection slots. Vault-dependent, so it runs
     // fire-and-forget with per-row deferral rather than blocking startup.
-    void repairSharedCredentialSlots(getDb()).catch((err) => {
+    void repairSharedCredentialSlots().catch((err) => {
       log.warn({ err }, "credential slot repair failed — continuing startup");
     });
 
@@ -553,10 +553,10 @@ export async function runDaemon(): Promise<void> {
   // resolution plus, on off-platform hatches, `llm.defaultProvider` and a
   // personal provider connection for the hatch provider.
   try {
-    seedInferenceProfiles({
+    await seedInferenceProfiles({
       preserveActiveProfile: defaultConfigMerge.providedLlmActiveProfile,
       isHatch: defaultConfigMerge.hadOverlay,
-      db: dbReady ? getDb() : undefined,
+      db: dbReady ? requireMainDb() : undefined,
     });
     log.info("Inference profile seeding complete");
   } catch (err) {

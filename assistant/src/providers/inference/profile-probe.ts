@@ -18,7 +18,7 @@ import {
   selectWinningProfile,
 } from "../../config/llm-resolver.js";
 import { getConfigReadOnly } from "../../config/loader.js";
-import { getDb } from "../../persistence/db-connection.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import { ProviderError, type ProviderErrorReason } from "../../util/errors.js";
 import { getLogger } from "../../util/logger.js";
 import { dispatchProviderResolvable } from "../connection-resolution.js";
@@ -186,7 +186,9 @@ export async function probeInferenceProfile(
   // A legacy profile can declare a concrete provider while staying bound to
   // a platform-billed connection row; the row's auth is the billing fact, so
   // it gates the probe too.
-  const boundRow = connection ? getConnection(getDb(), connection) : null;
+  const boundRow = connection
+    ? await getConnection(requireMainDb(), connection)
+    : null;
   if (boundRow?.auth.type === "platform") {
     return null;
   }
@@ -217,7 +219,7 @@ export async function probeInferenceProfile(
       return null;
     }
     const routedRow = route?.connectionName
-      ? getConnection(getDb(), route.connectionName)
+      ? await getConnection(requireMainDb(), route.connectionName)
       : null;
     if (routedRow?.auth.type === "platform") {
       return null;

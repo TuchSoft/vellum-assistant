@@ -33,7 +33,7 @@ import {
   selectWinningProfile,
 } from "../config/llm-resolver.js";
 import { unknownLlmProviderIssue } from "../config/schemas/llm.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import { credentialKey } from "../security/credential-key.js";
 import { ProviderNotConfiguredError } from "../util/errors.js";
 import { getLogger } from "../util/logger.js";
@@ -47,8 +47,10 @@ import {
 } from "./inference/auth.js";
 import {
   canonicalVellumConnection,
+  ensureConnectionSnapshot,
   getConnection,
   listConnections,
+  peekConnection,
 } from "./inference/connections.js";
 import { resolveManagedProxyContext } from "./platform-proxy/context.js";
 import { checkCredentialPresence } from "./provider-availability.js";
@@ -90,7 +92,7 @@ export function resolveEntryConnectionName(
     return null;
   }
   try {
-    return getConnection(getDb(), provider) ? provider : null;
+    return peekConnection(provider) ? provider : null;
   } catch {
     return null;
   }
@@ -111,7 +113,7 @@ export function writableProfileProviderIssue(provider: string): string | null {
     return null;
   }
   try {
-    if (getConnection(getDb(), provider) != null) {
+    if (peekConnection(provider) != null) {
       return null;
     }
   } catch {
@@ -153,7 +155,7 @@ export function connectionProviderKind(
   model: string | undefined,
 ): string | null {
   try {
-    const row = getConnection(getDb(), connectionName);
+    const row = peekConnection(connectionName);
     if (!row) {
       return null;
     }
@@ -242,7 +244,7 @@ export async function tryResolveProviderForConnectionName(
   }
   let connection;
   try {
-    connection = getConnection(getDb(), connectionName);
+    connection = await getConnection(requireMainDb(), connectionName);
   } catch (err) {
     throw new ConnectionResolutionError(
       connectionName,
@@ -331,8 +333,9 @@ export async function tryResolveProviderForConnectionName(
       | import("./inference/auth.js").ProviderConnection[]
       | undefined;
     try {
-      const db = getDb();
-      mismatchCandidates = listConnections(db, { provider: expectedProvider });
+      mismatchCandidates = await listConnections(requireMainDb(), {
+        provider: expectedProvider,
+      });
       const active = mismatchCandidates.find((c) =>
         isConnectionCompatibleWithModel(c, model),
       );
@@ -438,12 +441,7 @@ export function isManagedConnectionRoute(
   if (connectionName === VELLUM_MANAGED_CONNECTION_NAME) {
     return true;
   }
-  let connection;
-  try {
-    connection = getConnection(getDb(), connectionName);
-  } catch {
-    return undefined;
-  }
+  const connection = peekConnection(connectionName);
   return connection ? isVellumManagedConnection(connection) : undefined;
 }
 
@@ -510,6 +508,7 @@ async function resolveThroughPlatform(
 export async function resolveDefaultProvider(
   config: ProvidersConfig,
 ): Promise<Provider | null> {
+  await ensureConnectionSnapshot();
   const resolved = resolveCallSiteConfig("mainAgent", config.llm, {
     isResolvableProvider: dispatchProviderResolvable,
   });
@@ -546,7 +545,7 @@ export async function resolveDefaultProvider(
       | undefined;
     if (resolved.provider) {
       try {
-        autoResolveCandidates = listConnections(getDb(), {
+        autoResolveCandidates = await listConnections(requireMainDb(), {
           provider: resolved.provider,
         });
         const active = autoResolveCandidates.find((c) =>
@@ -620,6 +619,7 @@ export async function preflightResolvedConfig(
   },
   attribution: { profileName?: string } = {},
 ): Promise<void> {
+  await ensureConnectionSnapshot();
   // Routing identities preflight through their canonical row and derived
   // upstream; an unroutable vellum model throws here — it is statically
   // detectable, exactly what preflight exists to surface.
@@ -651,7 +651,7 @@ export async function preflightResolvedConfig(
 
   let connection;
   try {
-    connection = getConnection(getDb(), connectionName);
+    connection = await getConnection(requireMainDb(), connectionName);
   } catch {
     // DB unavailable — indeterminate, not a config error.
     return;

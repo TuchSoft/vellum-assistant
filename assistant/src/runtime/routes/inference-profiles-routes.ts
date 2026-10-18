@@ -38,7 +38,7 @@ import {
   ProfileEntry,
   routingIdentityModelIssue,
 } from "../../config/schemas/llm.js";
-import { getDb } from "../../persistence/db-connection.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import {
   catalogProviderForProfile,
   resolveEntryProviderKind,
@@ -51,7 +51,10 @@ import {
   CONNECTION_AVAILABILITY_STATUSES,
   isUnavailable,
 } from "../../providers/inference/connection-availability.js";
-import { getConnection } from "../../providers/inference/connections.js";
+import {
+  ensureConnectionSnapshot,
+  getConnection,
+} from "../../providers/inference/connections.js";
 import { probeInferenceProfile } from "../../providers/inference/profile-probe.js";
 import {
   catalogContextWindowTokens,
@@ -206,7 +209,11 @@ function modelReachIssue(
   provider: string,
   model: string,
   connectionName?: string,
-): { identity: boolean; catalogProvider: string; message: string } | null {
+): Promise<{
+  identity: boolean;
+  catalogProvider: string;
+  message: string;
+} | null> {
   if (ROUTING_IDENTITY_PROVIDERS.has(provider)) {
     const issue = routingIdentityModelIssue(provider, model);
     return issue
@@ -221,7 +228,10 @@ function modelReachIssue(
   const modelListConnection =
     connectionName ?? (entryKind !== null ? provider : undefined);
   if (modelListConnection) {
-    const connection = getConnection(getDb(), modelListConnection);
+    const connection = await getConnection(
+      requireMainDb(),
+      modelListConnection,
+    );
     if (connection?.models?.some((m) => m.id === model)) {
       return null;
     }
@@ -238,13 +248,13 @@ function modelReachIssue(
  * (never throws) when `allowUnlisted`; throws otherwise for an uncataloged
  * model. An uncataloged model always warns, whether or not it is allowed.
  */
-function validateModel(
+async function validateModel(
   provider: string,
   model: string,
   allowUnlisted: boolean,
   connectionName?: string,
-): string[] {
-  const issue = modelReachIssue(provider, model, connectionName);
+): Promise<string[]> {
+  const issue = await modelReachIssue(provider, model, connectionName);
   if (!issue) {
     return [];
   }
@@ -276,10 +286,10 @@ function validateModel(
  * and offline; the live probe covers what only a request can prove. Mix
  * arms are judged on their own rows, and managed bodies are code-owned.
  */
-function profileConfigIssue(record: Record<string, unknown>): {
+async function profileConfigIssue(record: Record<string, unknown>): Promise<{
   code: "model_unknown" | "over_output_cap" | "no_input_room";
   message: string;
-} | null {
+} | null> {
   if (record.mix != null || record.source === "managed") {
     return null;
   }
@@ -293,7 +303,7 @@ function profileConfigIssue(record: Record<string, unknown>): {
   // A stored allowUnlisted marker records that catalog absence was accepted
   // deliberately at write time; the live probe is the check for those.
   if (record.allowUnlisted !== true) {
-    const reach = modelReachIssue(
+    const reach = await modelReachIssue(
       provider,
       model,
       typeof record.provider_connection === "string"
@@ -338,8 +348,8 @@ function maxTokensBudgetIssue(
   });
 }
 
-function assertConnectionExists(name: string): void {
-  if (!getConnection(getDb(), name)) {
+async function assertConnectionExists(name: string): Promise<void> {
+  if (!(await getConnection(requireMainDb(), name))) {
     throw new BadRequestError(
       `Connection "${name}" does not exist. Create it first with ` +
         `"assistant inference providers connections create", or omit --connection.`,
@@ -523,6 +533,7 @@ function assertSaneMaxTokens(
 // ---------------------------------------------------------------------------
 
 async function handleListProfiles() {
+  await ensureConnectionSnapshot();
   const config = getConfigReadOnly();
   const effective = getUserSelectableProfilesForProvider(
     config.llm.profiles,
@@ -533,7 +544,7 @@ async function handleListProfiles() {
   const profiles = await Promise.all(
     orderProfileKeys(effective, config.llm.profileOrder).map(async (name) => {
       const record = effective[name] as Record<string, unknown>;
-      const configIssue = profileConfigIssue(record);
+      const configIssue = await profileConfigIssue(record);
       return {
         name,
         label: typeof record.label === "string" ? record.label : null,
@@ -553,6 +564,7 @@ async function handleListProfiles() {
 }
 
 async function handleGetProfile({ pathParams = {} }: RouteHandlerArgs) {
+  await ensureConnectionSnapshot();
   const name = (pathParams.name ?? "").trim();
   if (!name) {
     throw new BadRequestError("Profile name must be a non-empty string");
@@ -567,7 +579,7 @@ async function handleGetProfile({ pathParams = {} }: RouteHandlerArgs) {
     throw new NotFoundError(`Profile "${name}" not found.`);
   }
   const record = entry as Record<string, unknown>;
-  const configIssue = profileConfigIssue(record);
+  const configIssue = await profileConfigIssue(record);
   return {
     name,
     entry: record,
@@ -597,11 +609,12 @@ async function handleCreateProfile({ body = {} }: RouteHandlerArgs) {
     );
   }
 
+  await ensureConnectionSnapshot();
   assertValidProvider(input.provider);
   if (input.connection) {
-    assertConnectionExists(input.connection);
+    await assertConnectionExists(input.connection);
   }
-  const warnings = validateModel(
+  const warnings = await validateModel(
     input.provider,
     input.model,
     input.allowUnlisted ?? false,
@@ -626,13 +639,12 @@ async function handleCreateProfile({ body = {} }: RouteHandlerArgs) {
   // display name — the catalog's, or the named connection's for custom
   // endpoints — so an unlabeled create still reads well in the UI.
   if (entry.label === undefined) {
+    const connection = input.connection
+      ? await getConnection(requireMainDb(), input.connection)
+      : null;
     const displayName =
       getModelDisplayName(input.model) ??
-      (input.connection
-        ? getConnection(getDb(), input.connection)?.models?.find(
-            (m) => m.id === input.model,
-          )?.displayName
-        : undefined);
+      connection?.models?.find((m) => m.id === input.model)?.displayName;
     if (displayName) {
       entry.label = displayName;
     }
@@ -719,12 +731,13 @@ async function handleUpdateProfile({
     input.model ??
     (typeof existing.model === "string" ? existing.model : undefined);
 
+  await ensureConnectionSnapshot();
   if (input.provider) {
     assertValidProvider(input.provider);
   }
   let warnings: string[] = [];
   if (input.connection) {
-    assertConnectionExists(input.connection);
+    await assertConnectionExists(input.connection);
   }
   const nextConnection =
     input.connection ??
@@ -736,7 +749,7 @@ async function handleUpdateProfile({
     typeof nextProvider === "string" &&
     typeof nextModel === "string"
   ) {
-    warnings = validateModel(
+    warnings = await validateModel(
       nextProvider,
       nextModel,
       input.allowUnlisted ?? false,

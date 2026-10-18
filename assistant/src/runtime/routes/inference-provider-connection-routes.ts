@@ -17,7 +17,7 @@ import {
 } from "../../config/default-provider-resolution.js";
 import { getIsPlatform } from "../../config/env-registry.js";
 import { getConfigReadOnly } from "../../config/loader.js";
-import { getDb } from "../../persistence/db-connection.js";
+import { requireMainDb } from "../../persistence/db-facade.js";
 import {
   type Auth,
   AuthSchema,
@@ -263,22 +263,21 @@ function authFingerprint(auth: Auth): string {
 // Handlers
 // ---------------------------------------------------------------------------
 
-function handleListConnections({ queryParams = {} }: RouteHandlerArgs) {
+async function handleListConnections({ queryParams = {} }: RouteHandlerArgs) {
   const provider = queryParams.provider;
-  const connections = listConnections(
-    getDb(),
-    provider ? { provider } : undefined,
+  const connections = (
+    await listConnections(requireMainDb(), provider ? { provider } : undefined)
   ).filter((c) => !LEGACY_MANAGED_CONNECTION_NAMES.has(c.name));
   return { connections };
 }
 
-function handleGetConnection({ pathParams = {} }: RouteHandlerArgs) {
+async function handleGetConnection({ pathParams = {} }: RouteHandlerArgs) {
   const { name } = pathParams;
   if (!name) {
     throw new BadRequestError("name is required");
   }
 
-  const conn = getConnection(getDb(), name);
+  const conn = await getConnection(requireMainDb(), name);
   if (!conn) {
     throw new NotFoundError(`Connection "${name}" not found.`);
   }
@@ -293,11 +292,11 @@ function handleGetConnection({ pathParams = {} }: RouteHandlerArgs) {
  * provider's identity. Enforced daemon-side: every client (web, CLI, API)
  * goes through these routes.
  */
-function assertValidCustomProviderIdentity(
+async function assertValidCustomProviderIdentity(
   provider: string,
   labelRaw: unknown,
   selfName: string,
-): void {
+): Promise<void> {
   if (provider !== "openai-compatible") {
     return;
   }
@@ -312,9 +311,11 @@ function assertValidCustomProviderIdentity(
       `Invalid ${label ? "label" : "name"}: "${identity}" belongs to a built-in provider. Pick another name.`,
     );
   }
-  const duplicate = listConnections(getDb(), {
-    provider: "openai-compatible",
-  }).find(
+  const duplicate = (
+    await listConnections(requireMainDb(), {
+      provider: "openai-compatible",
+    })
+  ).find(
     (c) =>
       c.name !== selfName &&
       (c.label?.trim() || c.name).toLowerCase() === lower,
@@ -412,11 +413,11 @@ async function handleCreateConnection({ body = {} }: RouteHandlerArgs) {
 
   const customFields = await parseCustomProviderFields(body, resolvedProvider);
 
-  // Same event-loop turn as the write: no await separates this check from
-  // createConnection, so concurrent requests cannot both pass it.
-  assertValidCustomProviderIdentity(resolvedProvider, labelRaw, name);
+  // The write rejects a duplicate name; this check rejects a duplicate
+  // display identity across custom providers.
+  await assertValidCustomProviderIdentity(resolvedProvider, labelRaw, name);
 
-  const result = createConnection(getDb(), {
+  const result = await createConnection(requireMainDb(), {
     name,
     provider: resolvedProvider,
     auth: authResult.data,
@@ -463,7 +464,7 @@ async function handleUpdateConnection({
     throw new BadRequestError("name is required");
   }
 
-  const existing = getConnection(getDb(), name);
+  const existing = await getConnection(requireMainDb(), name);
   if (!existing) {
     throw new NotFoundError(`Connection "${name}" not found.`);
   }
@@ -557,7 +558,7 @@ async function handleUpdateConnection({
     assertValidCustomProviderIdentity(existing.provider, labelRaw, name);
   }
 
-  const result = updateConnection(getDb(), name, {
+  const result = await updateConnection(requireMainDb(), name, {
     auth: authResult.data,
     ...(chatgptIdentityStamp ? { provider: "chatgpt" } : {}),
     ...(labelRaw !== undefined ? { label: labelRaw as string | null } : {}),
@@ -595,7 +596,7 @@ async function handleDeleteConnection({ pathParams = {} }: RouteHandlerArgs) {
 
   // Existence check first so a stale profile `provider_connection`
   // reference to a missing connection returns 404 (not 409).
-  const existing = getConnection(getDb(), name);
+  const existing = await getConnection(requireMainDb(), name);
   if (!existing) {
     throw new NotFoundError(`Connection "${name}" not found.`);
   }
@@ -645,9 +646,9 @@ async function handleDeleteConnection({ pathParams = {} }: RouteHandlerArgs) {
     if (
       !dp.connectionName &&
       existing.provider === dp.provider &&
-      listConnections(getDb(), { provider: dp.provider }).filter(
-        (c) => !LEGACY_MANAGED_CONNECTION_NAMES.has(c.name),
-      ).length === 1
+      (
+        await listConnections(requireMainDb(), { provider: dp.provider })
+      ).filter((c) => !LEGACY_MANAGED_CONNECTION_NAMES.has(c.name)).length === 1
     ) {
       throw new ConflictError(
         `Connection "${name}" is the only connection for provider "${dp.provider}", which llm.defaultProvider depends on. Update llm.defaultProvider or add another connection for provider "${dp.provider}" before deleting.`,
@@ -681,7 +682,7 @@ async function handleDeleteConnection({ pathParams = {} }: RouteHandlerArgs) {
     })
     .map(([profileName]) => profileName);
 
-  const result = deleteConnection(getDb(), name, {
+  const result = await deleteConnection(requireMainDb(), name, {
     referencingProfiles,
   });
 

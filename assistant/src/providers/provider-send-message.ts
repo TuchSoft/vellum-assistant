@@ -10,7 +10,7 @@ import {
 } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import type { LLMCallSite } from "../config/schemas/llm.js";
-import { getDb } from "../persistence/db-connection.js";
+import { requireMainDb } from "../persistence/db-facade.js";
 import type { ProviderRouteAttribution } from "../util/errors.js";
 import { getLogger } from "../util/logger.js";
 import {
@@ -25,7 +25,10 @@ import {
   resolveRoutingIdentity,
   tryResolveProviderForConnectionName,
 } from "./connection-resolution.js";
-import { listConnections } from "./inference/connections.js";
+import {
+  ensureConnectionSnapshot,
+  listConnections,
+} from "./inference/connections.js";
 import { initializeProviders, listProviders } from "./registry.js";
 import { recordProviderRequestDiagnostics } from "./request-diagnostics.js";
 import type {
@@ -162,6 +165,7 @@ export async function resolveConfiguredProvider(
     }
   }
 
+  await ensureConnectionSnapshot();
   const resolved = resolveCallSiteConfig(callSite, config.llm, {
     ...opts,
     isResolvableProvider: dispatchProviderResolvable,
@@ -194,7 +198,7 @@ export async function resolveConfiguredProvider(
   if (!connectionName) {
     if (inferenceProvider) {
       try {
-        const candidates = listConnections(getDb(), {
+        const candidates = await listConnections(requireMainDb(), {
           provider: inferenceProvider,
         });
         const active = candidates.find((c) =>

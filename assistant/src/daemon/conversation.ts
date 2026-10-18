@@ -1772,24 +1772,6 @@ export class Conversation {
               }
             }
 
-            // The v2 static memory block (essentials/threads/recent/buffer
-            // wrapped in either `<info>…</info>` or `<memory>…</memory>`)
-            // carries personal user memory. Trust-gated to mirror
-            // `isPersonalMemoryAllowed` at injection time — untrusted-actor
-            // views must not read persisted personal memory back through
-            // metadata. Skipped on the tail row because the next turn
-            // re-injects fresh content on full-mode turns.
-            if (
-              !isTail &&
-              personalMemoryAllowed &&
-              typeof meta.memoryV2StaticBlock === "string"
-            ) {
-              content = [
-                { type: "text" as const, text: meta.memoryV2StaticBlock },
-                ...content,
-              ];
-            }
-
             // Memory remains rehydrated on all rows (existing behavior).
             // Strip any pre-existing wrapper before re-wrapping so historical
             // rows persisted with the wrapper (v2 path before the

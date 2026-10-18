@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { MemoryConfigSchema } from "../../../config/schemas/memory.js";
-import { MemoryV2ConfigSchema } from "../../../config/schemas/memory-v2.js";
+import { MemorySubstrateConfigSchema } from "../../../config/schemas/memory-substrate.js";
 import {
   resolveSubstrateTuning,
   type SubstrateTuning,
@@ -21,8 +21,8 @@ import { copySubstrateTunablesMigration as MIG } from "../135-copy-substrate-tun
 let workspaceDir: string;
 let configPath: string;
 
-/** The shipped `memory.v2` defaults, i.e. the effective value of an unset key. */
-const V2_SCHEMA_DEFAULTS = MemoryV2ConfigSchema.parse({});
+/** The shipped substrate defaults, i.e. the effective value of an unset key. */
+const SUBSTRATE_SCHEMA_DEFAULTS = MemorySubstrateConfigSchema.parse({});
 
 function pick<T>(
   substrate: Record<string, unknown>,
@@ -46,7 +46,7 @@ function pick<T>(
 function resolveSubstrateOnly(
   substrate: Record<string, unknown>,
 ): SubstrateTuning {
-  const d = V2_SCHEMA_DEFAULTS;
+  const d = SUBSTRATE_SCHEMA_DEFAULTS;
   return {
     sweep_enabled: pick(substrate, "sweep_enabled", d.sweep_enabled),
     dense_weight: pick(substrate, "dense_weight", d.dense_weight),
@@ -84,8 +84,8 @@ function resolveSubstrateOnly(
       "consolidation_prompt_path",
       d.consolidation_prompt_path,
     ),
-    spread_k: pick(substrate, "spread_k", d.k),
-    spread_hops: pick(substrate, "spread_hops", d.hops),
+    spread_k: pick(substrate, "spread_k", d.spread_k),
+    spread_hops: pick(substrate, "spread_hops", d.spread_hops),
     ann_candidate_limit: pick(
       substrate,
       "ann_candidate_limit",
@@ -289,18 +289,16 @@ describe("135-copy-substrate-tunables", () => {
     expect(withFallback.min_sparse_spread).toBe(0.05);
   });
 
-  test("bm25_b at the historical 0.75 default is the one value the copy rule cannot carry", () => {
-    // The skip list treats 0.75 as loader-seeded, so it never reaches
-    // memory.substrate and only the fallback keeps it in effect. Recorded here
-    // because it is the single case where dropping the fallback would change
-    // behavior.
+  test("a persisted value equal to a retired default is skipped by this copy rule", () => {
+    // Migration 135 deliberately copies only non-default values, so a
+    // persisted 0.75 never reaches memory.substrate here. Migration 162 runs
+    // later and copies it unconditionally, which is what keeps the effective
+    // value unchanged once the v2 fallback is gone.
     write({ memory: { v2: { bm25_b: 0.75 } } });
 
     MIG.run(workspaceDir);
 
-    const parsed = MemoryConfigSchema.parse(memory());
-    expect(resolveSubstrateTuning(parsed).bm25_b).toBe(0.75);
-    expect(resolveSubstrateOnly({}).bm25_b).toBe(0.4);
+    expect(memory().substrate).toBeUndefined();
   });
 
   test("never clobbers an already-set memory.substrate key, but still copies its unset siblings", () => {

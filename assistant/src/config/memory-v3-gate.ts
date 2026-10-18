@@ -15,19 +15,11 @@ export function isMemoryEnabled(
 }
 
 /**
- * Whether the legacy graph/PKB memory engine (tier v1) is the live tier:
- * memory is on and no concept-page consumer (v3 live or the v2 injection
- * engine) is. Like {@link isMemoryEnabled}, accepts a `memory`-slice view.
+ * Whether the legacy graph/PKB memory engine (tier v1) is the live tier.
+ * Kept for the v1 retirement surface: with the concept-page substrate active
+ * whenever memory is on, this is never true, and every v1 path stays inert.
  *
- * THE memory-off semantics for v1, stated once and shared by every v1 path
- * (job dispatch, the job handlers, maintenance scheduling, startup seeding,
- * the filing routes): `memory.enabled === false` means v1 is NOT the live
- * tier, so v1 work is skipped exactly as it is under the concept-page
- * substrate. Turning memory off is a user-facing opt-out — it must never be
- * the one state in which the daemon still LLM-extracts, embeds, or files into
- * the legacy graph. Ask this predicate, never `usesConceptPageMemory` alone:
- * the two agree on every tier EXCEPT memory-off, where the bare substrate
- * check reports "v1" and would keep v1 running.
+ * Like {@link isMemoryEnabled}, accepts a `memory`-slice view.
  */
 export function isMemoryV1Active(
   config: Pick<AssistantConfig, "memory">,
@@ -36,37 +28,9 @@ export function isMemoryV1Active(
 }
 
 /**
- * Whether the v2 activation/router engine performs turn-time selection:
- * memory is on, `memory.v2.enabled` is set, and v3 is NOT the live injected
- * source. Distinct from `usesConceptPageMemory`: `memory.v2.enabled` defaults
- * true and typically stays set on v3-live assistants, so this predicate is the
- * ONLY correct way to ask "should v2 select this turn" — a direct
- * `memory.v2.enabled` read misbehaves under v3.
- */
-export function isV2InjectionEngineActive(config: AssistantConfig): boolean {
-  return (
-    isMemoryEnabled(config) &&
-    config.memory?.v2?.enabled === true &&
-    !isMemoryV3Live(config)
-  );
-}
-
-/**
- * Whether `memory.v2.enabled` is explicitly `false` — deliberately NOT the
- * negation of `isV2InjectionEngineActive`, since the key defaults true. Names
- * the explicit-false semantics `daemon/embedding-reconcile.ts` relies on: an
- * explicit opt-out suppresses concept-page reconcile work even where the
- * default would allow it.
- */
-export function isMemoryV2ExplicitlyDisabled(config: AssistantConfig): boolean {
-  return config.memory?.v2?.enabled === false;
-}
-
-/**
  * Whether memory-v3 is the live injected memory source for this assistant,
- * suppressing v2 injection. Gated by workspace config (`memory.v3.live`): new
- * assistants are switched on at creation via a workspace migration, while
- * existing assistants stay on v2 until the value is set explicitly.
+ * gated by workspace config (`memory.v3.live`): new assistants are switched on
+ * at creation via a workspace migration.
  */
 export function isMemoryV3Live(config: AssistantConfig): boolean {
   return config.memory?.v3?.live === true;
@@ -115,8 +79,6 @@ export function isSkillImprovementActive(config: AssistantConfig): boolean {
  */
 export interface ConceptPageMemoryGateConfig {
   enabled?: boolean;
-  v2?: { enabled?: boolean };
-  v3?: { live?: boolean };
 }
 
 /**
@@ -124,24 +86,11 @@ export interface ConceptPageMemoryGateConfig {
  * (`remember` → `memory/buffer.md` → consolidation → concept pages under
  * `memory/concepts/`), the concept-page Qdrant collection and its boot-time
  * maintenance (capability seeding, BM25 corpus stats, reembed reconcile), and
- * the static `<info>` memory block. The substrate is memory-v3's foundation —
- * v3's lanes, learned edges, and the memory graph all read these pages — and
- * the memory-v2 injection engine reads the same pages, so the substrate is
- * active whenever either consumer is on:
- *
- * - `memory.v3.live` — memory-v3 is the live injected source, or
- * - `memory.v2.enabled` — the v2 injection engine is enabled.
- *
- * An explicit `memory.enabled === false` wins over both. Equivalent to
- * `memoryTier(config)` being `"v2"` or `"v3"` (see `memory-tier.ts`). Once
- * every assistant is v3-live and the v1/v2 paths are removed, the v2 clause
- * disappears and this collapses to the `memory.enabled` check.
+ * the static `<info>` memory block. An explicit `memory.enabled === false`
+ * disables it.
  */
 export function usesConceptPageMemory(
   memory: ConceptPageMemoryGateConfig | undefined,
 ): boolean {
-  if (memory?.enabled === false) {
-    return false;
-  }
-  return memory?.v3?.live === true || memory?.v2?.enabled === true;
+  return memory?.enabled !== false;
 }

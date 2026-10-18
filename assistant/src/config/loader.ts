@@ -1159,7 +1159,7 @@ export function loadConfig(): AssistantConfig {
     // When the file already exists, leave it alone — disk represents user
     // intent, while the in-memory `cached: AssistantConfig` (above) has all
     // schema defaults applied via `applyNestedDefaults`/`validateWithSchema`,
-    // so consumers calling `getConfig().memory.v2.bm25_b` continue to receive
+    // so consumers calling `getConfig().memory.substrate.bm25_b` continue to receive
     // the schema default whenever the field is absent on disk. Contract: disk =
     // user intent, in-memory cache = effective values.
     if (willSeed) {

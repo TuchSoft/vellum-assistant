@@ -19,11 +19,7 @@ import {
   saveRawConfig,
   setNestedValue,
 } from "../config/loader.js";
-import {
-  isMemoryEnabled,
-  isMemoryV2ExplicitlyDisabled,
-  isMemoryV3Live,
-} from "../config/memory-v3-gate.js";
+import { isMemoryEnabled, isMemoryV3Live } from "../config/memory-v3-gate.js";
 import type { AssistantConfig } from "../config/types.js";
 import {
   deleteMemoryCheckpoint,
@@ -283,23 +279,6 @@ export async function reconcileEmbeddingIdentity(
   // and the credential-arrival retry call.
   if (!isMemoryEnabled(config)) {
     log.info("Memory disabled — skipping embedding-identity reconcile");
-    return { action: "noop", dim: null };
-  }
-
-  // v2 disabled: the reconcile manages the v2 concept-page collection (its
-  // committed-dim probe reads `memory_v2_concept_pages`) and the v3 section
-  // collection that layers on the v2 page index. A v2-disabled install instead
-  // uses the v1 collection, whose dimension is owned by the v1 startup path
-  // (`qdrantClient.ensureCollection()` + `rebuild_index` + the lazy v1
-  // dimension recreate). Running here would enqueue `memory_v2_reembed` against
-  // the disabled v2 index and persist a `vectorSize` after the v1 client was
-  // already initialized at the old dimension. Defaults to true; gate strictly
-  // on the explicit `false` (and tolerate a missing `v2` node in test
-  // configs) — the semantics `isMemoryV2ExplicitlyDisabled` names.
-  if (isMemoryV2ExplicitlyDisabled(config)) {
-    log.info(
-      "Memory v2 disabled — skipping embedding-identity reconcile; v1 path owns its collection dimension",
-    );
     return { action: "noop", dim: null };
   }
 

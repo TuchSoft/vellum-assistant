@@ -54,15 +54,10 @@ import {
   stopMemoryTierReporter,
 } from "./memory-tier-reporter.js";
 
-function makeConfig(
-  enabled: boolean,
-  v2Enabled: boolean,
-  v3Live = false,
-): AssistantConfig {
+function makeConfig(enabled: boolean, v3Live = false): AssistantConfig {
   return {
     memory: {
       enabled,
-      v2: { enabled: v2Enabled },
       v3: { live: v3Live },
     },
   } as AssistantConfig;
@@ -85,7 +80,7 @@ describe("memory-tier-reporter", () => {
   });
 
   test("emits a memory_tier watchdog carrying the current tier", () => {
-    const config = makeConfig(true, true); // memory on, v2 enabled → "v2"
+    const config = makeConfig(true, false); // memory on, v3 not live → "v1"
     currentConfig = config;
 
     recordMemoryTierOnce();
@@ -95,18 +90,18 @@ describe("memory-tier-reporter", () => {
       checkName: "memory_tier",
       detail: { tier: memoryTier(config), ...ZERO_CORPUS },
     });
-    expect(recorded[0]?.detail?.tier).toBe("v2");
+    expect(recorded[0]?.detail?.tier).toBe("v1");
   });
 
   test("reflects a different tier for a different config (v3 live)", () => {
-    currentConfig = makeConfig(true, true, true); // v3 live wins over v2
+    currentConfig = makeConfig(true, true);
     recordMemoryTierOnce();
 
     expect(recorded[0]?.detail).toEqual({ tier: "v3", ...ZERO_CORPUS });
   });
 
   test("carries the measured corpus size alongside the tier", () => {
-    currentConfig = makeConfig(true, true, true);
+    currentConfig = makeConfig(true, true);
     corpus = {
       concept_pages: 42,
       concept_bytes: 133_700,
@@ -123,7 +118,7 @@ describe("memory-tier-reporter", () => {
   test("a failed corpus probe still emits the tier heartbeat", () => {
     // The fleet-mix dashboards read `detail.tier`; a sizing failure must
     // degrade the payload, never drop the event and gap the series.
-    currentConfig = makeConfig(true, true, true);
+    currentConfig = makeConfig(true, true);
     corpusError = new Error("workspace unreadable");
 
     recordMemoryTierOnce();
@@ -179,7 +174,7 @@ describe("memory-tier-reporter", () => {
     recordMemoryTierOnce();
 
     expect(recorded).toHaveLength(1);
-    expect(recorded[0]?.detail).toEqual({ tier: "v2" });
+    expect(recorded[0]?.detail).toEqual({ tier: "v3" });
   });
 
   test("startMemoryTierReporter is a no-op under VELLUM_DEV=1", () => {

@@ -10,9 +10,8 @@ import ts from "typescript";
  * `assistant/docs/architecture/memory.md` for the full tier map.
  *
  * The memory plugin is layered into tier directories: `substrate/` is the
- * shared concept-page substrate used by both v2 and v3, `v1/` is the legacy
- * PKB/graph engine, `v2/` is the activation-spreading engine, and `v3/` (plus
- * its `v3-eval/` sibling) is the lane/orchestrator engine. Everything else
+ * shared concept-page substrate, `v1/` is the legacy PKB/graph engine, and
+ * `v3/` (plus its `v3-eval/` sibling) is the lane/orchestrator engine. Everything else
  * under the plugin root — including `graph/` (the all-tier legacy store and
  * dispatcher) — is spine code that composes tiers.
  *
@@ -20,9 +19,8 @@ import ts from "typescript";
  *   - `substrate/` imports no tier directory (it is the bottom layer).
  *   - `v1/` imports no other tier directory (shared `graph/` modules and
  *     plugin-root infra are fine — they are spine, not tiers).
- *   - `v2/` may import `substrate/` but not `v1/`, `v3/`, or `v3-eval/`.
  *   - `v3/` and `v3-eval/` may import `substrate/` (and each other) but not
- *     `v1/` or `v2/`.
+ *     `v1/`.
  *   - A spine file importing from two or more tier directories is a
  *     composition point and must be on the frozen {@link SPINE_ALLOWLIST}.
  *   - A file outside the plugin reaching into a tier directory is a host
@@ -30,8 +28,9 @@ import ts from "typescript";
  *     Host importers are the set the tier deletion runbooks enumerate: a
  *     deletion that skips them leaves broken imports and an unbuildable tree.
  *
- * Guard 2 — tier-key config reads (`memory.substrate.*` / `memory.v2.*` /
- * `memory.v3.*`) across all of `assistant/src/`. Tier selection flows through
+ * Guard 2 — tier-key config reads (`memory.substrate.*` / `memory.v3.*`, plus
+ * the historical `memory.v2.*` keys only in append-only migrations) across all
+ * of `assistant/src/`. Tier selection flows through
  * the predicates in `src/config/memory-v3-gate.ts` (from which
  * `src/config/memory-tier.ts` derives) and substrate tunables resolve via
  * `substrate/tuning.ts`, so raw tier-key reads outside the frozen
@@ -82,16 +81,15 @@ import ts from "typescript";
 const MEM_REL = "src/plugins/defaults/memory";
 const MEM_ABS = join(process.cwd(), ...MEM_REL.split("/"));
 
-const TIER_DIRS = ["substrate", "v1", "v2", "v3", "v3-eval"] as const;
+const TIER_DIRS = ["substrate", "v1", "v3", "v3-eval"] as const;
 type Tier = (typeof TIER_DIRS)[number];
 
 /** Tier directories each tier must not import from. */
 const FORBIDDEN_TIER_IMPORTS: Record<Tier, ReadonlySet<Tier>> = {
-  substrate: new Set(["v1", "v2", "v3", "v3-eval"]),
-  v1: new Set(["substrate", "v2", "v3", "v3-eval"]),
-  v2: new Set(["v1", "v3", "v3-eval"]),
-  v3: new Set(["v1", "v2"]),
-  "v3-eval": new Set(["v1", "v2"]),
+  substrate: new Set(["v1", "v3", "v3-eval"]),
+  v1: new Set(["substrate", "v3", "v3-eval"]),
+  v3: new Set(["v1"]),
+  "v3-eval": new Set(["v1"]),
 };
 
 /**
@@ -102,13 +100,11 @@ const FORBIDDEN_TIER_IMPORTS: Record<Tier, ReadonlySet<Tier>> = {
  * this list is how the tier deletion runbooks retire an engine.
  */
 const SPINE_ALLOWLIST: ReadonlySet<string> = new Set([
-  "fork-conversation-memory.ts",
   "graph-topology/build-memory-graph.ts",
   "graph/conversation-graph-memory.ts",
   "injectors.ts",
   "job-handlers.ts",
   "jobs-worker.ts",
-  "src/memory-v2-routes.ts",
   "startup.ts",
 ]);
 
@@ -138,13 +134,8 @@ interface HostTierImportExemption {
  */
 const HOST_TIER_IMPORT_ALLOWLIST: readonly HostTierImportExemption[] = [
   {
-    path: "src/cli/commands/memory/memory-v2-compare-render.ts",
-    tiers: ["v2"],
-  },
-  { path: "src/cli/commands/memory/memory-v2.ts", tiers: ["v2"] },
-  {
     path: "src/daemon/conversation-agent-loop-handlers.ts",
-    tiers: ["v2", "v3"],
+    tiers: ["v3"],
   },
   { path: "src/daemon/conversation-runtime-assembly.ts", tiers: ["v3"] },
   { path: "src/daemon/conversation.ts", tiers: ["v3"] },
@@ -153,10 +144,7 @@ const HOST_TIER_IMPORT_ALLOWLIST: readonly HostTierImportExemption[] = [
   { path: "src/daemon/tool-side-effects.ts", tiers: ["substrate"] },
   { path: "src/persistence/steps.ts", tiers: ["v1"] },
   { path: "src/runtime/routes/consolidation-routes.ts", tiers: ["substrate"] },
-  {
-    path: "src/runtime/routes/conversation-query-routes.ts",
-    tiers: ["v2", "v3"],
-  },
+  { path: "src/runtime/routes/conversation-query-routes.ts", tiers: ["v3"] },
   { path: "src/runtime/routes/global-search-routes.ts", tiers: ["v1"] },
   { path: "src/runtime/routes/secret-routes.ts", tiers: ["substrate"] },
   { path: "src/tools/filesystem/write.ts", tiers: ["v1"] },
@@ -189,53 +177,34 @@ interface TierKeyExemption {
  * tunables through `substrate/tuning.ts`; see the tier deletion runbooks
  * before touching this list.
  *
- * - `config/memory-v3-gate.ts` (both) — the gate module; the one sanctioned
- *   home for raw tier-predicate reads, and it compares v2 against v3.
+ * - `config/memory-v3-gate.ts` (v3) — the gate module; the one sanctioned
+ *   home for raw tier-predicate reads.
  * - `config/loader.ts` (v3) — seeds/normalizes the persisted `memory.v3`
  *   shape.
- * - `telemetry/config-setting-snapshot.ts` (both) — reports both tier keys
+ * - `telemetry/config-setting-snapshot.ts` (v3) — reports the tier keys
  *   as-is.
  * - the named migrations: append-only history that rewrites or reads the
  *   historical tier keys it was written for. Listed per file, not per
  *   directory: a future migration reading a tier key is a new decision and
  *   gets challenged like any other.
- * - `substrate/tuning.ts` (substrate, v2) — the substrate tunable resolver;
- *   the `memory.substrate`→`memory.v2` fallback lives here by design.
- * - `v2/` (v2), `v3/` (v3) — each engine reads its own tuning namespace and
- *   never the other engine's.
- * - `graph/conversation-graph-memory.ts` (v2) — reads `memory.v2.router` for
- *   the all-tier dispatcher's historical-pairs routing.
+ * - `substrate/tuning.ts` (substrate) — the substrate tunable resolver.
+ * - `v3/` (v3) — the engine reads its own tuning namespace.
  * - `graph-topology/build-memory-graph.ts` (v3) — reads `memory.v3.edge`
  *   tuning when building the graph view.
- * - `src/memory-v2-routes.ts` (v2) — the v2 tuning routes read and merge
- *   `memory.v2` config directly.
  */
 const TIER_KEY_READ_ALLOWLIST: readonly TierKeyExemption[] = [
   { path: "src/config/loader.ts", keys: ["v3"] },
-  { path: "src/config/memory-v3-gate.ts", keys: ["v2", "v3"] },
-  {
-    path: "src/persistence/migrations/335-collapse-memory-embed-backlog.ts",
-    keys: ["v2"],
-  },
+  { path: "src/config/memory-v3-gate.ts", keys: ["v3"] },
   {
     path: "src/plugins/defaults/memory/graph-topology/build-memory-graph.ts",
     keys: ["v3"],
   },
   {
-    path: "src/plugins/defaults/memory/graph/conversation-graph-memory.ts",
-    keys: ["v2"],
-  },
-  {
-    path: "src/plugins/defaults/memory/src/memory-v2-routes.ts",
-    keys: ["v2"],
-  },
-  {
     path: "src/plugins/defaults/memory/substrate/tuning.ts",
-    keys: ["substrate", "v2"],
+    keys: ["substrate"],
   },
-  { path: "src/plugins/defaults/memory/v2/", keys: ["v2"] },
   { path: "src/plugins/defaults/memory/v3/", keys: ["v3"] },
-  { path: "src/telemetry/config-setting-snapshot.ts", keys: ["v2", "v3"] },
+  { path: "src/telemetry/config-setting-snapshot.ts", keys: ["v3"] },
   {
     path: "src/workspace/migrations/085-memory-v2-bm25-b-reembed-disabled-v2-pages.ts",
     keys: ["v2"],
@@ -254,6 +223,10 @@ const TIER_KEY_READ_ALLOWLIST: readonly TierKeyExemption[] = [
   },
   {
     path: "src/workspace/migrations/135-copy-substrate-tunables.ts",
+    keys: ["substrate", "v2"],
+  },
+  {
+    path: "src/workspace/migrations/162-copy-memory-v2-tunables-to-substrate.ts",
     keys: ["substrate", "v2"],
   },
   {

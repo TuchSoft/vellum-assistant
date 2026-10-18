@@ -13,7 +13,6 @@ import type {
   LlmContextResponse,
   LLMRequestLogEntry,
   MemoryRecallLog,
-  MemoryV2ActivationLog,
 } from "@vellumai/assistant-api";
 
 /**
@@ -359,7 +358,6 @@ async function fetchConversationLlmContextFromPerMessage(
       conversationTotalEstimatedCostUsd: null,
       logs: [],
       memoryRecall: null,
-      memoryV2Activation: null,
     };
   }
 
@@ -372,7 +370,6 @@ async function fetchConversationLlmContextFromPerMessage(
   let conversationKind = "user";
   let conversationTotalEstimatedCostUsd: number | null = null;
   let memoryRecall: MemoryRecallLog | null = null;
-  let memoryV2Activation: MemoryV2ActivationLog | null = null;
 
   const seenLogId = new Set<string>();
   const allLogs: LLMRequestLogEntry[] = [];
@@ -389,9 +386,6 @@ async function fetchConversationLlmContextFromPerMessage(
     }
     if (r.memoryRecall) {
       memoryRecall = r.memoryRecall;
-    }
-    if (r.memoryV2Activation) {
-      memoryV2Activation = r.memoryV2Activation;
     }
     for (const log of r.logs ?? []) {
       if (seenLogId.has(log.id)) {
@@ -410,7 +404,6 @@ async function fetchConversationLlmContextFromPerMessage(
     conversationTotalEstimatedCostUsd,
     logs: allLogs,
     memoryRecall,
-    memoryV2Activation,
   };
 }
 

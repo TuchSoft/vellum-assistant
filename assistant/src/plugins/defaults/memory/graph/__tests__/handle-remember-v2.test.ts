@@ -3,7 +3,7 @@
  *
  * Every remember write lands in `memory/buffer.md` + the daily archive —
  * the concept-page substrate's intake — regardless of which injection
- * engine (v2 or v3) is live. The PKB tree is never touched.
+ * engine is live. The PKB tree is never touched.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -60,10 +60,6 @@ const CONFIG_MEMORY_OFF = {
   ...CONFIG,
   memory: { ...CONFIG.memory, enabled: false },
 };
-const CONFIG_V2_OFF = {
-  ...CONFIG,
-  memory: { ...CONFIG.memory, v2: { ...CONFIG.memory.v2, enabled: false } },
-};
 
 beforeEach(() => {
   enqueueCalls.length = 0;
@@ -80,7 +76,7 @@ function todaysArchiveBasename(now: Date = new Date()): string {
   return `${yyyy}-${mm}-${dd}.md`;
 }
 
-describe("handleRemember — memory.v2.enabled on", () => {
+describe("handleRemember — memory on", () => {
   test("does not write when global memory is disabled", () => {
     const result = handleRemember(
       { content: "do not save this" },
@@ -114,7 +110,7 @@ describe("handleRemember — memory.v2.enabled on", () => {
     const archive = readFileSync(archivePath, "utf-8");
     expect(archive).toContain("Alice prefers VS Code over Vim");
 
-    // v2 must NOT touch the PKB tree.
+    // The concept-page write path must NOT touch the PKB tree.
     expect(existsSync(join(tmpWorkspace, "pkb"))).toBe(false);
   });
 
@@ -170,24 +166,20 @@ describe("handleRemember — memory.v2.enabled on", () => {
   });
 });
 
-describe("handleRemember — memory.v2.enabled off", () => {
-  test("still writes to memory/, never the PKB tree", () => {
-    const result = handleRemember(
-      { content: "buffered regardless of the v2 flag" },
-      "conv-v1-1",
-      CONFIG_V2_OFF,
-    );
+describe("handleRemember — buffering", () => {
+  test("writes to memory/, never the PKB tree", () => {
+    const result = handleRemember({ content: "buffered" }, "conv-v1-1", CONFIG);
 
     expect(result.success).toBe(true);
 
     const memoryDir = join(tmpWorkspace, "memory");
     const buffer = readFileSync(join(memoryDir, "buffer.md"), "utf-8");
-    expect(buffer).toContain("buffered regardless of the v2 flag");
+    expect(buffer).toContain("buffered");
     const archive = readFileSync(
       join(memoryDir, "archive", todaysArchiveBasename()),
       "utf-8",
     );
-    expect(archive).toContain("buffered regardless of the v2 flag");
+    expect(archive).toContain("buffered");
 
     // The PKB tree is never written and no PKB re-index jobs are enqueued.
     expect(existsSync(join(tmpWorkspace, "pkb"))).toBe(false);
@@ -196,7 +188,7 @@ describe("handleRemember — memory.v2.enabled off", () => {
 });
 
 describe("handleRemember — batch (array) content", () => {
-  test("v2: writes every fact from an array in a single call", () => {
+  test("writes every fact from an array in a single call", () => {
     const result = handleRemember(
       { content: ["fact one", "fact two", "fact three"] },
       "conv-batch-1",
@@ -225,11 +217,11 @@ describe("handleRemember — batch (array) content", () => {
     expect(archive).toContain("fact three");
   });
 
-  test("batched call with the v2 flag off still writes memory/ and enqueues nothing", () => {
+  test("batched call still writes memory/ and enqueues nothing", () => {
     const result = handleRemember(
       { content: ["alpha", "beta", "gamma"] },
       "conv-batch-2",
-      CONFIG_V2_OFF,
+      CONFIG,
     );
 
     expect(result.success).toBe(true);

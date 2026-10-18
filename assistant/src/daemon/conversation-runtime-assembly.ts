@@ -56,12 +56,8 @@ import { createContextSummaryMessage } from "../plugins/defaults/compaction/wind
 import {
   countMemoryPrefixBlocks,
   extractMemoryPrefixBlocks,
-  getLiveGraphMemory,
 } from "../plugins/defaults/memory/graph/conversation-graph-memory.js";
-import {
-  unwrapMemoryBlock,
-  wrapMemoryBlock,
-} from "../plugins/defaults/memory/memory-marker.js";
+import { unwrapMemoryBlock } from "../plugins/defaults/memory/memory-marker.js";
 import { getPrunedSections } from "../plugins/defaults/memory/v3/ever-injected-store.js";
 import {
   mergeIntoAnchorBlock,
@@ -1865,7 +1861,6 @@ export interface RuntimeInjectionBlocks {
   workspaceBlock?: string;
   nowScratchpadBlock?: string;
   pkbContextBlock?: string;
-  memoryV2StaticBlock?: string;
   /**
    * The `<background_turn>` block the `background-turn` default injector
    * attached this turn (background/scheduled non-interactive turns only).
@@ -1889,7 +1884,7 @@ export interface RuntimeInjectionBlocks {
   nonInteractiveContextBlock?: string;
   /**
    * UNWRAPPED inner text of the memory-v3 frozen net-new section block the v3
-   * injector attached this turn, mirroring v2's unwrapped `memoryInjectedBlock`
+   * injector attached this turn, mirroring the legacy graph block's unwrapped
    * contract (rehydration re-wraps on use). Undefined when v3 attached no new
    * sections (all-repeat turn, v3 off, or v3 failure) and when the block
    * attached in memory only, carrying no residency commit (a replaced
@@ -1907,12 +1902,10 @@ export interface RuntimeInjectionBlocks {
    */
   memoryV3PointerBlock?: string;
   /**
-   * True when memory-v3 superseded v2 as this turn's `<memory>` source —
-   * `memory.v3.live` is on AND the v3 injector produced a block (possibly
-   * empty-text on an all-repeat turn), i.e. exactly when assembly stripped
-   * v2's fresh tail block. The user-prompt-submit hook keys v2's
-   * `memoryInjectedBlock` metadata persist off this so a stripped v2 block is
-   * never rehydrated back into history on reload.
+   * True when memory-v3 owned this turn's `<memory>` source — `memory.v3.live`
+   * is on AND the v3 injector produced a block (possibly empty-text on an
+   * all-repeat turn). Kept so the user-prompt-submit hook can tell this turn's
+   * assembled layout apart from a legacy graph block.
    */
   memoryV3Active?: boolean;
   /**
@@ -2110,81 +2103,6 @@ function applyInjectionBlock(
     }
   }
   return runMessages;
-}
-
-/**
- * Strip v2's freshly-prepended DYNAMIC memory prefix from the tail user
- * message, preserving every other leading memory-prefix block. Exactly three
- * shapes are v2's to remove:
- *
- *  - `v2WrappedBlock` — the wrapped (`wrapMemoryBlock`) form of the text the
- *    graph-memory wiring prepended this turn, matched by full-block IDENTITY.
- *    A prefix match cannot work here: v3's card-block instruction header is
- *    deliberately byte-identical to v2's `INJECTION_HEADER`
- *    (`memory/v2/injection.ts`), and v2's router block leads with that same
- *    header whenever any summary section is present — the dominant case — so
- *    the two layers' blocks are indistinguishable by any shared prefix.
- *  - legacy `<memory __injected>` text blocks — only v2 ever produced them.
- *  - memory-image groups (`<memory_image …>` opener text, the image block,
- *    the `</memory_image>` closer) — only v2 injects images; v3 card blocks
- *    are text-only.
- *
- * Everything else in the leading memory prefix survives:
- *
- *  - memory-v3's frozen card blocks: a same-turn re-entry assembly (overflow
- *    convergence) sees the tail it assembled on first entry, whose leading
- *    block may be this turn's just-frozen v3 cards (while this re-entry's
- *    injector run produces an EMPTY block — the cards are already claimed by
- *    the everInjected store). Their bytes never equal the v2 identity, so
- *    they are kept without needing to be recognized as v3.
- *  - the `<info>` static block: it counts toward the memory prefix for
- *    splice positioning but is never prepended by `prepareMemory`, so the v2
- *    suppression strip has no business removing it.
- *
- * `v2WrappedBlock === null` (nothing injected this turn, or no live graph
- * handle) still strips the image groups and legacy blocks — both are
- * unambiguously v2's — but leaves every `<memory>` text block in place.
- */
-function stripTailV2DynamicMemoryPrefix(
-  messages: Message[],
-  v2WrappedBlock: string | null,
-): Message[] {
-  const last = messages[messages.length - 1];
-  if (!last || last.role !== "user") {
-    return messages;
-  }
-  const prefixCount = countMemoryPrefixBlocks(last.content);
-  if (prefixCount === 0) {
-    return messages;
-  }
-  const content = last.content.filter((block, i) => {
-    if (i >= prefixCount) {
-      return true;
-    }
-    // v2's memory-image groups: opener text, injected image, closer text.
-    if (block.type === "image") {
-      return false;
-    }
-    if (block.type !== "text") {
-      return true;
-    }
-    if (block.text.startsWith("<memory_image")) {
-      return false;
-    }
-    if (block.text === "</memory_image>") {
-      return false;
-    }
-    // v2's legacy dynamic wrapper.
-    if (block.text.startsWith("<memory __injected>\n")) {
-      return false;
-    }
-    // v2's current dynamic block — identity match only (see doc comment).
-    return v2WrappedBlock === null || block.text !== v2WrappedBlock;
-  });
-  if (content.length === last.content.length) {
-    return messages;
-  }
-  return [...messages.slice(0, -1), { ...last, content }];
 }
 
 /**
@@ -2582,7 +2500,6 @@ export async function applyRuntimeInjections(
   let nowScratchpadCaptured: string | undefined;
   let pkbContextCaptured: string | undefined;
   let pkbSystemReminderCaptured: string | undefined;
-  let memoryV2StaticCaptured: string | undefined;
   let memoryV3Captured: string | undefined;
   let memoryV3PointerCaptured: string | undefined;
   let backgroundTurnCaptured: string | undefined;
@@ -2607,9 +2524,6 @@ export async function applyRuntimeInjections(
           break;
         case "pkb-reminder":
           pkbSystemReminderCaptured = block.text;
-          break;
-        case "memory-v2-static":
-          memoryV2StaticCaptured = block.text;
           break;
         case "background-turn":
           backgroundTurnCaptured = block.text;
@@ -2642,7 +2556,7 @@ export async function applyRuntimeInjections(
       ? injectorChainPieces.join("\n\n")
       : undefined;
 
-  // ── Step 0: tail pointer strip + tombstone strip + v2 tail suppression ──
+  // ── Step 0: tail pointer strip + tombstone strip ──
   //
   // Pointer strip (tail only): mid-turn re-entry and post-compact can hand
   // back a tail that already carries this turn's `<memory_pointer>`. Strip
@@ -2653,7 +2567,7 @@ export async function applyRuntimeInjections(
   // that a row persisted by an earlier build rehydrated onto the tail is
   // stripped the same way (that build tail-stripped it too). With the v3
   // flag off no pointer blocks exist and this is a content no-op.
-  let runMessagesForAssembly = stripTailUserTextBlocksByPrefix(runMessages, [
+  const runMessagesForAssembly = stripTailUserTextBlocksByPrefix(runMessages, [
     MEMORY_POINTER_MATCHER,
     LEGACY_MEMORY_SPOTLIGHT_MATCHER,
   ]);
@@ -2669,8 +2583,8 @@ export async function applyRuntimeInjections(
   // applies on load, converges the live history to the store by the next
   // assembly whenever the valve ran. In place on the shared message
   // objects, so the fold-back keeps it; idempotent and a no-op below the
-  // cap. Ownership is by identity (`isV3LiveBlock`), so v2 blocks and
-  // pre-cutover blocks are never touched.
+  // cap. Ownership is by identity (`isV3LiveBlock`), so pre-cutover blocks
+  // are never touched.
   const memoryV3Live = isMemoryV3Live(getConfig());
   if (memoryV3Live) {
     stripPrunedSectionsFromMessages(
@@ -2679,34 +2593,13 @@ export async function applyRuntimeInjections(
     );
   }
 
-  // v2 suppression: when `memory.v3.live` is on AND the v3 injector
-  // produced a block this turn (possibly empty-text on an all-repeat turn), v3
-  // owns the `<memory>` layer. v2's `prepareMemory` already prepended its own
-  // fresh `<memory>` block to the tail user message — strip the TAIL's v2
-  // dynamic prefix only, so the v3 `after-memory-prefix` block (Step 2) lands
-  // at the top of the tail with no v2 prefix ahead of it. Historical user
-  // messages keep their memory blocks byte-identical: frozen v3 section
-  // blocks from prior turns AND pre-cutover v2 blocks both ride the cached
-  // prefix. The strip discriminates v2's dynamic block by IDENTITY ({@link
-  // stripTailV2DynamicMemoryPrefix}): the live graph handle holds the exact
-  // text the wiring layer prepended this turn, so a re-entry tail's
-  // just-frozen v3 section block (and the `<info>` static block) survive even
-  // though v2 and v3 blocks share identical wrapper + header bytes — the v2
-  // prefix this strip exists to remove was already stripped on first entry.
-  // Keyed off the v3 block being present (not the flag alone) so a v3 failure
-  // (`produce()` → null) leaves v2's block intact — fallback rather than a
-  // memory-less turn. Idempotent: re-injection sites that already stripped
-  // see no change. Flag off → bit-for-bit identical to the v2 path.
+  // v3 ownership: when `memory.v3.live` is on AND the v3 injector produced a
+  // block this turn (possibly empty-text on an all-repeat turn), v3 owns the
+  // `<memory>` layer. Keyed off the block being present (not the flag alone)
+  // so a v3 failure (`produce()` → null) leaves the turn without a memory
+  // block rather than failing assembly.
   const v3ProducedBlock = afterMemory.some((b) => b.id === MEMORY_V3_BLOCK_ID);
   const memoryV3Active = memoryV3Live && v3ProducedBlock;
-  if (memoryV3Active) {
-    const v2DynamicText =
-      getLiveGraphMemory(conversationId)?.lastInjectedBlockText ?? null;
-    runMessagesForAssembly = stripTailV2DynamicMemoryPrefix(
-      runMessagesForAssembly,
-      v2DynamicText === null ? null : wrapMemoryBlock(v2DynamicText),
-    );
-  }
 
   let result = runMessagesForAssembly;
 
@@ -2725,8 +2618,8 @@ export async function applyRuntimeInjections(
     // selection afresh for the replacement, resident ones included, so
     // carrying the anchor's block as well would put each re-selected
     // section in the prompt twice. With no v3 block this turn the anchor's
-    // block is carried as the turn's only memory, the fallback the v2 tail
-    // strip above also keeps.
+    // block is carried as the turn's only memory, the fallback the legacy
+    // path also keeps.
     const carriedMemoryBlocks = extractMemoryPrefixBlocks(
       runMessagesForAssembly,
     ).filter((block) => !(memoryV3Active && isV3LiveBlock(block)));
@@ -2936,7 +2829,6 @@ export async function applyRuntimeInjections(
       workspaceBlock: workspaceCaptured,
       nowScratchpadBlock: nowScratchpadCaptured,
       pkbContextBlock: pkbContextCaptured,
-      memoryV2StaticBlock: memoryV2StaticCaptured,
       memoryV3InjectedBlock: memoryV3Captured,
       memoryV3PointerBlock: memoryV3PointerCaptured,
       backgroundTurnBlock: backgroundTurnCaptured,

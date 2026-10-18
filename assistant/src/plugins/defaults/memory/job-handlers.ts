@@ -11,10 +11,10 @@
  * dispatch time rather than capturing it eagerly, so a per-test `mock.module` of
  * the underlying handler is honored.
  *
- * The table is grouped into labeled per-tier sections (V1 / SUBSTRATE / V2
- * ENGINE / V3 / RETROSPECTIVE) so retiring a tier is deleting its section and
- * its import group. Registration keys off `type` alone, so the literal order
- * is a readability convenience.
+ * The table is grouped into labeled per-tier sections (V1 / SUBSTRATE / V3 /
+ * RETROSPECTIVE) so retiring a tier is deleting its section and its import
+ * group. Registration keys off `type` alone, so the literal order is a
+ * readability convenience.
  */
 
 import { isMemoryV1Active } from "../../../config/memory-v3-gate.js";
@@ -66,11 +66,6 @@ import {
   sweepOrphanedGraphNodePointsJob,
 } from "./v1/job-handlers/index-maintenance.js";
 import { embedPkbFileJob } from "./v1/jobs/embed-pkb-file.js";
-// V2 ENGINE — delete with v2.
-import {
-  memoryV2ActivationRecomputeJob,
-  memoryV2MigrateJob,
-} from "./v2/backfill-jobs.js";
 // V3.
 import { maintainJob as memoryV3MaintainJob } from "./v3/maintain-job.js";
 import { listOverlongSections } from "./v3/overlong-sections.js";
@@ -257,12 +252,11 @@ export const memoryJobHandlers: readonly JobHandlerEntry[] = [
     handler: () => pkbCompactionJob(),
   },
 
-  // SUBSTRATE (v2+v3).
+  // SUBSTRATE.
   // Concept-page embedding, the buffer sweep and consolidator, and the
-  // corpus reembed — shared by the v2 injection engine and v3, so they
-  // outlive v1 and v2 alike. `graph_trigger_embed` deliberately lives here
-  // rather than with the v1 graph jobs: it embeds trigger text the substrate
-  // reads (locked by `__tests__/jobs-worker-v2-graph-trigger-embed.test.ts`).
+  // corpus reembed. `graph_trigger_embed` deliberately lives here rather than
+  // with the v1 graph jobs: it embeds trigger text the substrate reads
+  // (locked by `__tests__/jobs-worker-v2-graph-trigger-embed.test.ts`).
   {
     type: "graph_trigger_embed",
     handler: (job, config) => embedGraphTriggerJob(job, config),
@@ -285,20 +279,6 @@ export const memoryJobHandlers: readonly JobHandlerEntry[] = [
   {
     type: "memory_v2_reembed",
     handler: (job, config) => memoryV2ReembedJob(job, config),
-  },
-
-  // V2 ENGINE — delete with v2.
-  // Operator-triggered backfills owned by the activation/router engine: the
-  // one-shot v1→v2 synthesis and the persisted-activation recompute. The job
-  // types share the `memory_v2_` prefix with the substrate entries above, but
-  // the work is engine-local.
-  {
-    type: "memory_v2_migrate",
-    handler: (job, config) => memoryV2MigrateJob(job, config),
-  },
-  {
-    type: "memory_v2_activation_recompute",
-    handler: (job, config) => memoryV2ActivationRecomputeJob(job, config),
   },
 
   // V3.

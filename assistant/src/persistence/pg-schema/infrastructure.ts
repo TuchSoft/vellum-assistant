@@ -239,31 +239,6 @@ export const memoryRecallLogs = pgTable(
   ],
 );
 
-// Per-turn log of memory-v2 concept/skill activations. Lives in the
-// dedicated memory database (`assistant-memory.db`), not main — access it
-// via the memory connection (`getMemoryDb()` / `getMemorySqlite()`).
-export const memoryV2ActivationLogs = pgTable(
-  "memory_v2_activation_logs",
-  {
-    id: text("id").primaryKey(),
-    conversationId: text("conversation_id").notNull(),
-    messageId: text("message_id"),
-    turn: bigint("turn", { mode: "number" }).notNull(),
-    mode: text("mode").notNull(), // "context-load" | "per-turn"
-    conceptsJson: text("concepts_json").notNull(),
-    skillsJson: text("skills_json").notNull(),
-    configJson: text("config_json").notNull(),
-    createdAt: bigint("created_at", { mode: "number" }).notNull(),
-  },
-  (table) => [
-    index("idx_memory_v2_activation_logs_message_id").on(table.messageId),
-    index("idx_memory_v2_activation_logs_conversation_id").on(
-      table.conversationId,
-    ),
-    index("idx_memory_v2_activation_logs_created_at").on(table.createdAt),
-  ],
-);
-
 export const llmUsageEvents = pgTable(
   "llm_usage_events",
   {

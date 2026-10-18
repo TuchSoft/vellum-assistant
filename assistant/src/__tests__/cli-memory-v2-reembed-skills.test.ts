@@ -4,7 +4,7 @@
  *
  * The CLI half mocks `cliIpcCall` and asserts the subcommand dispatches
  * to `memory_v2_reembed_skills` with an empty body. The route half uses
- * the real `loadConfig` — `memory.v2.enabled` is toggled via a per-test
+ * the real `loadConfig` — `memory.enabled` is toggled via a per-test
  * `config.json` fixture in the temp workspace. We mock only
  * `seedV2SkillEntries` so we can assert it was invoked without actually
  * embedding skills.
@@ -58,8 +58,8 @@ const { applyCommandHelp } = await import("../cli/lib/cli-command-help.js");
 const { memoryHelp } = await import("../cli/commands/memory/index.help.js");
 const { registerMemoryV2Command } =
   await import("../cli/commands/memory/memory-v2.js");
-const { ROUTES: memoryV2Routes, MEMORY_V2_DISABLED_CODE } =
-  await import("../plugins/defaults/memory/src/memory-v2-routes.js");
+const { ROUTES: substrateRoutes, MEMORY_V2_DISABLED_CODE } =
+  await import("../plugins/defaults/memory/src/memory-substrate-routes.js");
 const { RouteError } = await import("../runtime/routes/errors.js");
 
 // ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ async function runCommand(args: string[]): Promise<{ exitCode: number }> {
 }
 
 /**
- * Override `memory.v2.enabled` (and any other config paths) by writing a
+ * Override `memory.v3.live` (and any other config paths) by writing a
  * workspace `config.json` that the real `loadConfig` will pick up.
  */
 function writeWorkspaceConfig(json: Record<string, unknown>): void {
@@ -119,7 +119,7 @@ function writeWorkspaceConfig(json: Record<string, unknown>): void {
   invalidateConfigCache();
 }
 
-const reembedSkillsRoute = memoryV2Routes.find(
+const reembedSkillsRoute = substrateRoutes.find(
   (r) => r.operationId === "memory_v2_reembed_skills",
 );
 
@@ -130,7 +130,7 @@ beforeEach(() => {
   process.exitCode = 0;
 
   // Default: v2 enabled so happy-path tests pass.
-  writeWorkspaceConfig({ memory: { v2: { enabled: true } } });
+  writeWorkspaceConfig({ memory: { v3: { live: true } } });
 });
 
 afterEach(() => {
@@ -187,8 +187,8 @@ describe("memory_v2_reembed_skills route", () => {
     expect(seedCallCount).toBe(0);
   });
 
-  test("throws RouteError when config.memory.v2.enabled is off", async () => {
-    writeWorkspaceConfig({ memory: { v2: { enabled: false } } });
+  test("throws RouteError when config.memory.v3.live is off", async () => {
+    writeWorkspaceConfig({ memory: { enabled: false } });
 
     await expect(
       reembedSkillsRoute!.handler({ body: {} }),
@@ -201,7 +201,7 @@ describe("memory_v2_reembed_skills route", () => {
 // All v2 routes share the same gate
 // ---------------------------------------------------------------------------
 
-describe("all memory v2 routes — MEMORY_V2_DISABLED gate", () => {
+describe("all concept-page routes — MEMORY_V2_DISABLED gate", () => {
   // Minimal bodies that satisfy each route's schema. The gate runs before
   // schema validation so any body would surface the gate error, but using
   // valid shapes keeps the assertion precise: we're confirming the gate
@@ -211,16 +211,15 @@ describe("all memory v2 routes — MEMORY_V2_DISABLED gate", () => {
   // read-only diagnostic walk that must be runnable before the flag is
   // flipped (see the dedicated coverage further down).
   const MINIMAL_BODIES: Record<string, Record<string, unknown>> = {
-    memory_v2_backfill: { op: "migrate" },
+    memory_v2_backfill: { op: "reembed" },
     memory_v2_get_concept_page: { slug: "any" },
     memory_v2_list_concept_pages: {},
-    memory_v2_concept_frequency: {},
   };
 
   const GATE_OFF_CASES = [
     {
       label: "config is off",
-      apply: () => writeWorkspaceConfig({ memory: { v2: { enabled: false } } }),
+      apply: () => writeWorkspaceConfig({ memory: { enabled: false } }),
     },
   ];
 
@@ -228,7 +227,9 @@ describe("all memory v2 routes — MEMORY_V2_DISABLED gate", () => {
     for (const { label, apply } of GATE_OFF_CASES) {
       test(`${operationId} throws MEMORY_V2_DISABLED when ${label}`, async () => {
         apply();
-        const route = memoryV2Routes.find((r) => r.operationId === operationId);
+        const route = substrateRoutes.find(
+          (r) => r.operationId === operationId,
+        );
         expect(route).toBeDefined();
 
         try {
@@ -245,11 +246,11 @@ describe("all memory v2 routes — MEMORY_V2_DISABLED gate", () => {
   }
 
   // memory_v2_validate is the one read-only diagnostic that must work
-  // before the operator flips memory.v2.enabled — the
+  // before the operator flips memory.v3.live — the
   // vellum-memory-v2-migration skill's pre-flip dry-run depends on it.
-  test("memory_v2_validate runs when memory.v2.enabled is false", async () => {
-    writeWorkspaceConfig({ memory: { v2: { enabled: false } } });
-    const route = memoryV2Routes.find(
+  test("memory_v2_validate runs when memory is disabled", async () => {
+    writeWorkspaceConfig({ memory: { enabled: false } });
+    const route = substrateRoutes.find(
       (r) => r.operationId === "memory_v2_validate",
     );
     expect(route).toBeDefined();

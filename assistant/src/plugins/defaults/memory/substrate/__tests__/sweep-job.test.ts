@@ -2,10 +2,10 @@
  * Tests for `substrate/sweep-job.ts`.
  *
  * Coverage matrix:
- *   - v2 disabled in config → no provider/DB calls, returns 0 (early bail).
+ *   - memory disabled in config → no provider/DB calls, returns 0 (early bail).
  *   - sweep_enabled off → no provider call, returns 0.
- *   - v2 on + no recent messages → no provider call, returns 0.
- *   - v2 on + recent messages → provider invoked with rendered prompt;
+ *   - memory on + no recent messages → no provider call, returns 0.
+ *   - memory on + recent messages → provider invoked with rendered prompt;
  *     each entry is appended to `memory/buffer.md` AND today's archive.
  *   - Tool-call response shape mismatch → returns 0 without writes.
  *   - Empty entries are skipped (the model can't pad the buffer).
@@ -103,18 +103,17 @@ const { messages, conversations } =
   await import("../../../../../persistence/schema/index.js");
 const { memoryV2SweepJob } = await import("../sweep-job.js");
 
-// The handler reads `config.memory.v2.enabled` and `sweep_enabled`, so we
-// hand it a minimal stand-in instead of materializing the full default
-// config — which would otherwise pull in heavy schemas this test doesn't
-// exercise.
+// The handler reads `config.memory.enabled` and `sweep_enabled`, so we hand
+// it a minimal stand-in instead of materializing the full default config —
+// which would otherwise pull in heavy schemas this test doesn't exercise.
 const CONFIG = {
-  memory: { v2: { enabled: true, sweep_enabled: true } },
+  memory: { enabled: true, substrate: { sweep_enabled: true } },
 } as Parameters<typeof memoryV2SweepJob>[1];
-const CONFIG_V2_OFF = {
-  memory: { v2: { enabled: false, sweep_enabled: true } },
+const CONFIG_MEMORY_OFF = {
+  memory: { enabled: false, substrate: { sweep_enabled: true } },
 } as Parameters<typeof memoryV2SweepJob>[1];
 const CONFIG_SWEEP_OFF = {
-  memory: { v2: { enabled: true, sweep_enabled: false } },
+  memory: { enabled: true, substrate: { sweep_enabled: false } },
 } as Parameters<typeof memoryV2SweepJob>[1];
 
 function makeJob(): Parameters<typeof memoryV2SweepJob>[0] {
@@ -227,11 +226,11 @@ beforeEach(async () => {
 
 // ---------------------------------------------------------------------------
 
-describe("memoryV2SweepJob — v2 disabled", () => {
-  test("returns 0 without invoking the provider when memory.v2.enabled is false", async () => {
+describe("memoryV2SweepJob — memory disabled", () => {
+  test("returns 0 without invoking the provider when memory is disabled", async () => {
     providerStub = makeEntriesProvider(["should-not-be-written"]);
 
-    const written = await memoryV2SweepJob(makeJob(), CONFIG_V2_OFF);
+    const written = await memoryV2SweepJob(makeJob(), CONFIG_MEMORY_OFF);
 
     expect(written).toBe(0);
     expect(providerCalls).toHaveLength(0);

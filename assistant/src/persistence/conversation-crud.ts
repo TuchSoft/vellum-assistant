@@ -449,7 +449,6 @@ export const messageMetadataSchema = z
     workspaceBlock: z.string().optional(),
     nowScratchpadBlock: z.string().optional(),
     pkbContextBlock: z.string().optional(),
-    memoryV2StaticBlock: z.string().optional(),
     /** `<background_turn>` block (background/scheduled non-interactive turns),
      *  rehydrated by `loadFromDb` for reload/fork prefix-cache parity. */
     backgroundTurnBlock: z.string().optional(),

@@ -72,8 +72,7 @@ const ADAPTIVE_SPARSE_FULL_SPREAD = 0.5;
  * `baseDense + baseSparse` and `fused` stays interpretable as a [0, 1]
  * similarity.
  *
- * Pure function — exported so the diagnostic surface in
- * `memory-v2-routes.explain-similarity` can show the effective weights and
+ * Pure function — exported so diagnostics can show the effective weights and
  * the measured spread alongside per-channel score statistics.
  */
 export function effectiveWeights(

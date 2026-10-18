@@ -39,5 +39,66 @@ export const PG_STEPS: readonly PgMigrationStep[] = [
       }
     },
   },
+  {
+    name: "0001_drop_memory_v2_tables",
+    up: async (db) => {
+      for (const table of [
+        "memory_v2_activation_logs",
+        "memory_v2_injection_events",
+        "activation_state",
+      ]) {
+        await db.exec(`DROP TABLE IF EXISTS "${table}" CASCADE`);
+      }
+    },
+    down: async (db) => {
+      // Recreate the retired shapes (empty) so a rollback past this step leaves
+      // the ledger and schema in agreement.
+      await db.exec(
+        `CREATE TABLE IF NOT EXISTS "activation_state" (
+          "conversation_id" text PRIMARY KEY,
+          "message_id" text NOT NULL,
+          "state_json" text NOT NULL,
+          "ever_injected_json" text NOT NULL DEFAULT '[]',
+          "current_turn" bigint NOT NULL DEFAULT 0,
+          "updated_at" bigint NOT NULL
+        )`,
+      );
+      await db.exec(
+        `CREATE TABLE IF NOT EXISTS "memory_v2_activation_logs" (
+          "id" text PRIMARY KEY,
+          "conversation_id" text NOT NULL,
+          "message_id" text,
+          "turn" bigint NOT NULL,
+          "mode" text NOT NULL,
+          "concepts_json" text NOT NULL,
+          "skills_json" text NOT NULL,
+          "config_json" text NOT NULL,
+          "created_at" bigint NOT NULL
+        )`,
+      );
+      await db.exec(
+        `CREATE TABLE IF NOT EXISTS "memory_v2_injection_events" (
+          "id" bigint PRIMARY KEY,
+          "slug" text NOT NULL,
+          "injected_at" bigint NOT NULL
+        )`,
+      );
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "idx_memory_v2_activation_logs_created_at" ON "memory_v2_activation_logs" ("created_at")`,
+      );
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "idx_memory_v2_activation_logs_conversation_id" ON "memory_v2_activation_logs" ("conversation_id")`,
+      );
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "idx_memory_v2_activation_logs_message_id" ON "memory_v2_activation_logs" ("message_id")`,
+      );
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "idx_memory_v2_injection_events_time" ON "memory_v2_injection_events" ("injected_at")`,
+      );
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "idx_memory_v2_injection_events_slug_time" ON "memory_v2_injection_events" ("slug", "injected_at")`,
+      );
+    },
+  },
   // --- Data backfills appended below, one named step each. ---
 ];

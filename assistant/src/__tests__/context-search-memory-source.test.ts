@@ -293,7 +293,7 @@ describe("searchMemorySource", () => {
     );
   });
 
-  test("routes to v2 source when memory.v2.enabled is on", async () => {
+  test("routes to the concept-page source when memory is on", async () => {
     v2EvidenceReturn = [
       {
         id: "memory:v2:alice",
@@ -313,7 +313,7 @@ describe("searchMemorySource", () => {
     const result = await searchMemorySource(
       "alice",
       makeContext({
-        config: makeV2EnabledConfig(),
+        config: makeConceptPageConfig(),
       }),
       6,
     );
@@ -328,13 +328,13 @@ describe("searchMemorySource", () => {
     ]);
   });
 
-  test("stays on legacy path when memory.v2.enabled is off", async () => {
+  test("stays on legacy path when memory is off", async () => {
     searchHits = [{ nodeId: "node-a", score: 0.7, text: "" }];
     hydratedNodes = [makeNode({ id: "node-a", content: "Legacy hit" })];
 
     await searchMemorySource(
       "alice",
-      makeContext({ config: makeV2DisabledConfig() }),
+      makeContext({ config: makeV1Config() }),
       5,
     );
 
@@ -343,18 +343,18 @@ describe("searchMemorySource", () => {
   });
 });
 
-function makeV2EnabledConfig(): AssistantConfig {
+function makeConceptPageConfig(): AssistantConfig {
   return {
     memory: {
-      v2: { enabled: true },
+      enabled: true,
     },
   } as unknown as AssistantConfig;
 }
 
-function makeV2DisabledConfig(): AssistantConfig {
+function makeV1Config(): AssistantConfig {
   return {
     memory: {
-      v2: { enabled: false },
+      enabled: false,
     },
   } as unknown as AssistantConfig;
 }
@@ -365,7 +365,7 @@ function makeContext(
   return {
     workingDir: "/tmp/example-workspace",
     conversationId: "conv-123",
-    config: { memory: { v2: { enabled: false } } } as AssistantConfig,
+    config: { memory: { enabled: false } } as AssistantConfig,
     ...overrides,
   };
 }

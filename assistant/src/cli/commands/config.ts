@@ -148,15 +148,6 @@ export function registerConfigCommand(program: Command): void {
                 : String(value),
             );
           }
-          // A `memory.v2` substrate tunable whose `memory.substrate` twin is
-          // set has a second reader — print which key the runtime consults so
-          // the value above cannot be mistaken for the effective one.
-          const { describeShadowedConfigGet, findSubstrateShadowing } =
-            await import("../../config/substrate-twin-shadowing.js");
-          const shadowing = findSubstrateShadowing(raw, key);
-          if (shadowing) {
-            log.warn(describeShadowedConfigGet(shadowing, key));
-          }
         },
       );
 

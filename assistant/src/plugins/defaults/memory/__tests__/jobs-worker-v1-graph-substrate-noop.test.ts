@@ -4,18 +4,18 @@
  * complete as no-ops whenever v1 is not the live memory tier: their handlers
  * mutate the legacy v1 graph — the bootstrap and the extraction run LLM work
  * into it — which only the v1 tier reads, so a stale or hand-enqueued row must
- * not consume LLM budget or write the dormant store. On a v1 config the same
- * handlers run their real implementations.
+ * not consume LLM budget or write the dormant store. The concept-page
+ * substrate is active whenever memory is on, so v1 is never the live tier.
  *
  * "Not the live tier" is one condition, `isMemoryV1Active`, and it covers TWO
  * states: concept-page memory active, and memory switched off entirely. Both
  * are asserted per handler here — the guard used to be spelled three different
  * ways that agreed on the substrate case and disagreed on memory-off.
  *
- * `memory.enabled` and `memory.v2.enabled` both default true, so the real
- * loader reading this file's (empty) workspace config already yields the
- * substrate-active state the worker-level tests need. The handler-level
- * tests pass explicit configs instead.
+ * `memory.enabled` defaults true, so the real loader reading this file's
+ * (empty) workspace config already yields the substrate-active state the
+ * worker-level tests need. The handler-level tests pass explicit configs
+ * instead.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -116,8 +116,8 @@ const { setConfig } =
   await import("../../../../__tests__/helpers/set-config.js");
 
 // Generous lane caps so a single `runMemoryJobsOnce` tick claims every seeded
-// row (the default slow-LLM cap is 1). `memory.v2.enabled` keeps its default
-// (true), so concept-page memory is active.
+// row (the default slow-LLM cap is 1). Memory is enabled by default, so the
+// concept-page substrate is active.
 setConfig("memory", {
   jobs: { slowLlmConcurrency: 8, fastConcurrency: 8 },
 });
@@ -175,12 +175,6 @@ function fakeJob(type: string): MemoryJob {
     createdAt: 0,
     updatedAt: 0,
   } as MemoryJob;
-}
-
-function v1Config(): AssistantConfig {
-  const config = applyNestedDefaults({});
-  config.memory.v2.enabled = false;
-  return config;
 }
 
 function memoryDisabledConfig(): AssistantConfig {
@@ -254,22 +248,10 @@ describePg("v1 graph jobs under concept-page memory", () => {
     expect(bootstrapCalls).toBe(0);
   });
 
-  test("the graph_bootstrap handler runs the bootstrap on a v1 config", async () => {
-    await handlerFor("graph_bootstrap")(fakeJob("graph_bootstrap"), v1Config());
-
-    expect(bootstrapCalls).toBe(1);
-  });
-
   test("the graph_decay handler no-ops on a v3-live config", async () => {
     await handlerFor("graph_decay")(fakeJob("graph_decay"), v3LiveConfig());
 
     expect(decayCalls).toBe(0);
-  });
-
-  test("the graph_decay handler runs the decay tick on a v1 config", async () => {
-    await handlerFor("graph_decay")(fakeJob("graph_decay"), v1Config());
-
-    expect(decayCalls).toBe(1);
   });
 
   // ── The unified guard: memory-off behaves exactly like the substrate ──
@@ -298,10 +280,7 @@ describePg("v1 graph jobs under concept-page memory", () => {
     expect(extractCalls).toBe(0);
   });
 
-  test("the graph_extract handler no-ops off v1 and runs on v1", async () => {
-    // `graph_extract` re-inlined its own substrate check instead of sharing the
-    // lifecycle handlers' guard; it now answers to the same condition, so it
-    // must skip on BOTH off-v1 states and still run on v1.
+  test("the graph_extract handler no-ops off v1", async () => {
     await handlerFor("graph_extract")(fakeJob("graph_extract"), v3LiveConfig());
     expect(extractCalls).toBe(0);
 
@@ -310,9 +289,6 @@ describePg("v1 graph jobs under concept-page memory", () => {
       memoryDisabledConfig(),
     );
     expect(extractCalls).toBe(0);
-
-    await handlerFor("graph_extract")(fakeJob("graph_extract"), v1Config());
-    expect(extractCalls).toBe(1);
   });
 
   test("memory-off leaves v1 Qdrant rows unclaimed, matching the dispatch guard", async () => {

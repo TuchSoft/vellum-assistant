@@ -112,7 +112,6 @@ describe("fetchConversationLlmContext — happy path", () => {
       conversationTotalEstimatedCostUsd: 0.21,
       logs: [staticLog("log-a", 1), staticLog("log-b", 2)],
       memoryRecall: null,
-      memoryV2Activation: null,
     };
     nextResponses = [{ status: 200, body }];
 
@@ -143,7 +142,6 @@ describe("fetchConversationLlmContext — happy path", () => {
       conversationTotalEstimatedCostUsd: null,
       logs: [staticLog("log-a", 1)],
       memoryRecall: null,
-      memoryV2Activation: null,
     };
     nextResponses = [{ status: 200, body }];
 
@@ -216,7 +214,6 @@ describe("fetchConversationLlmContext — legacy fallback (404)", () => {
       conversationTotalEstimatedCostUsd: null,
       logs: [],
       memoryRecall: null,
-      memoryV2Activation: null,
     });
   });
 
@@ -234,7 +231,6 @@ describe("fetchConversationLlmContext — legacy fallback (404)", () => {
           conversationTotalEstimatedCostUsd: 0.5,
           logs: [staticLog("log-b", 2), staticLog("log-a", 1)],
           memoryRecall: null,
-          memoryV2Activation: null,
         },
       },
       // /v1/assistants/asst-1/messages/msg-2/llm-context
@@ -249,7 +245,6 @@ describe("fetchConversationLlmContext — legacy fallback (404)", () => {
           conversationTotalEstimatedCostUsd: 0.5,
           logs: [staticLog("log-b", 2), staticLog("log-c", 3)],
           memoryRecall: null,
-          memoryV2Activation: null,
         },
       },
     ];
@@ -294,7 +289,6 @@ describe("fetchConversationLlmContext — legacy fallback (404)", () => {
           conversationTotalEstimatedCostUsd: null,
           logs: [],
           memoryRecall: null,
-          memoryV2Activation: null,
         },
       },
       {
@@ -307,7 +301,6 @@ describe("fetchConversationLlmContext — legacy fallback (404)", () => {
           conversationTotalEstimatedCostUsd: null,
           logs: [],
           memoryRecall: null,
-          memoryV2Activation: null,
         },
       },
     ];
@@ -346,7 +339,6 @@ describe("fetchConversationLlmContext — legacy fallback (404)", () => {
           conversationTotalEstimatedCostUsd: 0.1,
           logs: [staticLog("log-only", 7)],
           memoryRecall: null,
-          memoryV2Activation: null,
         },
       },
     ];
@@ -373,7 +365,6 @@ describe("fetchMessageLlmContextOrThrow — message mode", () => {
       conversationTotalEstimatedCostUsd: 0.03,
       logs: [staticLog("log-z", 9)],
       memoryRecall: null,
-      memoryV2Activation: null,
     };
     nextResponses = [{ status: 200, body }];
 

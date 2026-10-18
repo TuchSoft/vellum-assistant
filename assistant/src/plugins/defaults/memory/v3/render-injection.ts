@@ -13,9 +13,9 @@ import type { SectionRef } from "./types.js";
 const SKILLS_CATALOG_HINT_CHUNK = `${SKILLS_CATALOG_HINT_HEADER}\n${escapeInjectedBody(SKILLS_INJECTION_CATALOG_HINT)}`;
 
 /**
- * Leading instruction line of the frozen `<memory>` block, byte-identical to
- * v2's `INJECTION_HEADER` (`memory/v2/injection.ts`) so the read affordance
- * the model already knows applies unchanged: every injected section carries a
+ * Leading instruction line of the frozen `<memory>` block. It keeps the
+ * historical instruction header byte-for-byte so the read affordance the
+ * model already knows applies unchanged: every injected section carries a
  * `# memory/concepts/<slug>.md` path header it can `file_read`.
  */
 export const V3_INJECTION_HEADER =

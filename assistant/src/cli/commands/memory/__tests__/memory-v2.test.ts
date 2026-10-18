@@ -2,9 +2,9 @@
  * Tests for the `assistant memory v2` CLI subgroup.
  *
  * Validates:
- *   - Subcommand registration (reembed, reembed-skills, activation, validate,
- *     ema, simulate) under `memory v2`. v1 had its own subcommands but those
- *     were retired.
+ *   - Subcommand registration (reembed, reembed-skills, validate) under
+ *     `memory v2`. The engine-only subcommands were retired with the v2
+ *     injection engine.
  *   - Each mutating subcommand maps to the right `memory_v2_backfill` op.
  *   - `validate` calls `memory_v2_validate` and pretty-prints the report.
  *   - `reembed-skills` calls `memory_v2_reembed_skills` synchronously.
@@ -150,15 +150,7 @@ describe("subcommand registration", () => {
     const v2 = memory!.commands.find((c) => c.name() === "v2");
     expect(v2).toBeDefined();
     const subcommandNames = v2!.commands.map((c) => c.name()).sort();
-    expect(subcommandNames).toEqual([
-      "activation",
-      "compare",
-      "ema",
-      "reembed",
-      "reembed-skills",
-      "simulate",
-      "validate",
-    ]);
+    expect(subcommandNames).toEqual(["reembed", "reembed-skills", "validate"]);
   });
 
   test("--help lists every registered subcommand and no removed ones", () => {
@@ -168,9 +160,11 @@ describe("subcommand registration", () => {
     const help = v2.helpInformation();
     expect(help).toContain("reembed");
     expect(help).toContain("reembed-skills");
-    expect(help).toContain("activation");
     expect(help).toContain("validate");
-    expect(help).toContain("simulate");
+    expect(help).not.toContain("activation");
+    expect(help).not.toContain("simulate");
+    expect(help).not.toContain("ema");
+    expect(help).not.toContain("compare");
     // Removed subcommands must not surface in help.
     expect(help).not.toContain("migrate");
     expect(help).not.toContain("explain");
@@ -239,40 +233,6 @@ describe("memory v2 reembed-skills", () => {
     mockIpcResult = { ok: false, error: "Memory v2 not enabled" };
 
     const { exitCode } = await runCommand(["memory", "v2", "reembed-skills"]);
-
-    expect(exitCode).toBe(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// activation
-// ---------------------------------------------------------------------------
-
-describe("memory v2 activation", () => {
-  test("sends memory_v2/backfill with op=activation-recompute", async () => {
-    mockIpcResult = { ok: true, result: { jobId: "activation-1" } };
-
-    const { exitCode } = await runCommand(["memory", "v2", "activation"]);
-
-    expect(exitCode).toBe(0);
-    expect(lastIpcCall!.method).toBe("memory_v2_backfill");
-    expect(lastIpcCall!.params.body).toEqual({ op: "activation-recompute" });
-  });
-
-  test("logs the returned jobId", async () => {
-    mockIpcResult = { ok: true, result: { jobId: "activation-abc" } };
-
-    await runCommand(["memory", "v2", "activation"]);
-
-    expect(logOutput.some((line) => line.includes("activation-abc"))).toBe(
-      true,
-    );
-  });
-
-  test("exits with code 1 on IPC failure", async () => {
-    mockIpcResult = { ok: false, error: "Connection timeout" };
-
-    const { exitCode } = await runCommand(["memory", "v2", "activation"]);
 
     expect(exitCode).toBe(1);
   });

@@ -12,7 +12,7 @@ import { ROUTES as MEMORY_EVAL_ROUTES } from "../../plugins/defaults/memory/src/
 import { ROUTES as MEMORY_GRAPH_ROUTES } from "../../plugins/defaults/memory/src/memory-graph-routes.js";
 import { ROUTES as MEMORY_INGEST_ROUTES } from "../../plugins/defaults/memory/src/memory-ingest-routes.js";
 import { ROUTES as MEMORY_ITEM_ROUTES } from "../../plugins/defaults/memory/src/memory-item-routes.js";
-import { ROUTES as MEMORY_V2_ROUTES } from "../../plugins/defaults/memory/src/memory-v2-routes.js";
+import { ROUTES as MEMORY_SUBSTRATE_ROUTES } from "../../plugins/defaults/memory/src/memory-substrate-routes.js";
 import { ROUTES as MEMORY_V3_ROUTES } from "../../plugins/defaults/memory/src/memory-v3-routes.js";
 import { ROUTES as MEMORY_WORKER_ROUTES } from "../../plugins/defaults/memory/src/memory-worker-routes.js";
 import { ROUTES as ACP_CLAUDE_AUTH_ROUTES } from "./acp-claude-auth-routes.js";
@@ -269,7 +269,7 @@ export const ROUTES: RouteDefinition[] = [
   ...MEMORY_GRAPH_ROUTES,
   ...MEMORY_INGEST_ROUTES,
   ...MEMORY_ITEM_ROUTES,
-  ...MEMORY_V2_ROUTES,
+  ...MEMORY_SUBSTRATE_ROUTES,
   ...MEMORY_V3_ROUTES,
   ...MEMORY_WORKER_ROUTES,
   ...MESSAGES_LEXICAL_ROUTES,

@@ -79,7 +79,6 @@ const BASELINE: Record<string, readonly string[]> = {
   memory: [
     "src/cli/commands/memory/memory-ingest.ts",
     "src/cli/commands/memory/memory-retrospective.ts",
-    "src/cli/commands/memory/memory-v2-compare-render.ts",
     "src/cli/commands/memory/memory-v2.ts",
     "src/cli/commands/memory/memory-v3.ts",
     "src/cli/commands/memory/nodes.ts",

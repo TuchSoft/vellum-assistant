@@ -95,21 +95,20 @@ import { createNode } from "../../graph/store.js";
 import type { NewNode } from "../../graph/types.js";
 import { loadContextMemory, retrieveForTurn } from "./retriever.js";
 
-// These tests exercise v1 retrieval. `memory.v2.enabled` (default `true`)
-// makes `loadContextMemory` short-circuit, so disable it here to keep the
-// v1 path under test.
+// These tests exercise v1 retrieval. The concept-page substrate is active
+// whenever memory is on and makes `loadContextMemory` short-circuit, so
+// disable memory here to keep the v1 path under test.
 const TEST_CONFIG: AssistantConfig = {
   ...DEFAULT_CONFIG,
   memory: {
     ...DEFAULT_CONFIG.memory,
-    v2: { ...DEFAULT_CONFIG.memory.v2, enabled: false },
+    enabled: false,
   },
 };
 
-// Concept-page substrate active through the v3 arm: memory on, the v2
-// injection engine off, memory-v3 live.
+// Concept-page substrate active: memory on, memory-v3 live.
 const V3_LIVE_CONFIG: AssistantConfig = {
-  ...TEST_CONFIG,
+  ...DEFAULT_CONFIG,
   memory: {
     ...TEST_CONFIG.memory,
     v3: { ...TEST_CONFIG.memory.v3, live: true },
@@ -344,13 +343,12 @@ describePg("retrieveForTurn — concept-page substrate short-circuit", () => {
     expect(result.metrics.embeddingProvider).toBeNull();
   });
 
-  test("returns the empty result and never embeds when the v2 engine is enabled", async () => {
+  test("returns the empty result and never embeds when memory is on", async () => {
     const tracker = new InContextTracker();
     const result = await retrieveForTurn({
       assistantLastMessage: "What did we decide yesterday?",
       userLastMessage: "We decided to ship on Friday.",
-      // Stock config: `memory.v2.enabled` defaults true, which is the other
-      // arm of the concept-page substrate.
+      // Stock config: memory is on, so the concept-page substrate owns reads.
       config: DEFAULT_CONFIG,
       tracker,
     });
@@ -360,7 +358,7 @@ describePg("retrieveForTurn — concept-page substrate short-circuit", () => {
     expect(result.metrics.topCandidates).toEqual([]);
   });
 
-  test("still retrieves on a v1 config (memory on, v2 disabled, v3 not live)", async () => {
+  test("still retrieves on a legacy config (memory disabled)", async () => {
     const tracker = new InContextTracker();
     const result = await retrieveForTurn({
       assistantLastMessage: "What did we decide yesterday?",
@@ -369,8 +367,8 @@ describePg("retrieveForTurn — concept-page substrate short-circuit", () => {
       tracker,
     });
 
-    // The guard is a substrate gate, not a kill switch: v1 assistants still
-    // embed the last exchange and score the candidates it surfaces.
+    // The guard is a substrate gate, not a kill switch: with memory disabled
+    // the legacy path still embeds the last exchange and scores candidates.
     expect(embedCallCount).toBe(1);
     expect(result.queryVector).toEqual([0.5, 0.5, 0.5]);
     const candidateIds = new Set(
@@ -514,10 +512,10 @@ describePg("loadContextMemory — dual-query capability ranking", () => {
 
   // Build a config where capabilityReserve=1 so the ranking code actually
   // prunes (it only prunes when capabilityNodes.length > capabilityReserve).
-  // memory.v2.enabled=false to keep the v1 retrieval path under test.
+  // memory.enabled=false to keep the v1 retrieval path under test.
   const DUAL_QUERY_CONFIG: AssistantConfig = structuredClone(DEFAULT_CONFIG);
   DUAL_QUERY_CONFIG.memory.retrieval.injection.contextLoad.capabilityReserve = 1;
-  DUAL_QUERY_CONFIG.memory.v2.enabled = false;
+  DUAL_QUERY_CONFIG.memory.enabled = false;
 
   // Keyword-routed embed: any text that contains a topic keyword returns a
   // one-hot vector identifying that topic. Anything else falls back to a

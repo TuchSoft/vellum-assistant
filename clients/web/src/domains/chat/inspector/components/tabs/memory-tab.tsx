@@ -1,13 +1,10 @@
 import { ChevronDown, ChevronRight, Copy } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState, type ReactNode } from "react";
 
 import type {
   LlmContextResponse,
   MemoryCandidate,
   MemoryRecallLog,
-  MemoryV2ActivationLog,
-  MemoryV2ConceptRow,
   MemoryV3Pool,
   MemoryV3PoolCandidate,
   MemoryV3SelectionLog,
@@ -18,47 +15,40 @@ import { Card } from "@vellumai/design-library";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useTranslation } from "@/i18n";
 
-import { conceptPageQueryOptions } from "../../concept-page-api";
-
 /**
- * Memory tab rendering V1 recall, V2 activation, and/or the V3 selection.
+ * Memory tab rendering V1 recall and/or the V3 selection.
  * When more than one is present a pill switcher lets the user toggle between
  * them; when only one is present it renders directly. The V3 section shows
  * what the v3 retriever selected — injected into context when v3 is the
  * assistant's live memory source, otherwise logged but not injected.
  */
-type MemoryView = "recall" | "v2" | "v3";
+type MemoryView = "recall" | "v3";
 
 type MemoryTranslate = ReturnType<typeof useTranslation<"chat">>["t"];
 
 export function MemoryTab({
   context,
-  assistantId,
 }: {
   context: LlmContextResponse | undefined;
-  assistantId: string | undefined;
 }): ReactNode {
   const { t } = useTranslation("chat");
   const recall = context?.memoryRecall ?? null;
-  const v2 = context?.memoryV2Activation ?? null;
   const v3 = context?.memoryV3Selection ?? null;
   const hasRecall = recall !== null;
-  const hasV2 = v2 !== null;
   const hasV3 = v3 != null;
 
   const pills: { id: MemoryView; label: string; show: boolean }[] = [
     { id: "v3", label: t("memoryTab.pillMemoryV3"), show: hasV3 },
-    { id: "v2", label: t("memoryTab.pillMemoryV2"), show: hasV2 },
     { id: "recall", label: t("memoryTab.pillRecallV1"), show: hasRecall },
   ];
   const available = pills.filter((p) => p.show);
 
-  const defaultView: MemoryView = hasV2 ? "v2" : hasV3 ? "v3" : "recall";
+  const defaultView: MemoryView = hasV3 ? "v3" : "recall";
   const [view, setView] = useState<MemoryView>(defaultView);
 
   useEffect(() => {
-    setView(hasV2 ? "v2" : hasV3 ? "v3" : "recall");
-  }, [hasV2, hasV3, hasRecall]);
+    setView(hasV3 ? "v3" : "recall");
+  }, [hasV3, hasRecall]);
 
   if (available.length === 0) {
     return <NoDataState t={t} />;
@@ -88,8 +78,6 @@ export function MemoryTab({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {activeView === "v3" && v3 != null ? (
           <MemoryV3Section selection={v3} t={t} />
-        ) : activeView === "v2" && v2 != null ? (
-          <MemoryV2Section activation={v2} assistantId={assistantId} t={t} />
         ) : recall != null ? (
           <MemoryRecallSection recall={recall} t={t} />
         ) : null}
@@ -363,95 +351,6 @@ function CandidateRow({
   );
 }
 
-function MemoryV2Section({
-  activation,
-  assistantId,
-  t,
-}: {
-  activation: MemoryV2ActivationLog;
-  assistantId: string | undefined;
-  t: MemoryTranslate;
-}): ReactNode {
-  const sorted = useMemo(
-    () =>
-      [...activation.concepts].sort(
-        (a, b) => b.finalActivation - a.finalActivation,
-      ),
-    [activation.concepts],
-  );
-
-  const inContextCount = sorted.filter((c) => c.status === "in_context").length;
-  const injectedCount = sorted.filter((c) => c.status === "injected").length;
-  const notInjectedCount = sorted.filter(
-    (c) => c.status === "not_injected",
-  ).length;
-
-  const cfg = activation.config;
-
-  return (
-    <div className="flex flex-col gap-4 p-4">
-      <ScopeBanner
-        title={t("memoryTab.v2TurnTitle", {
-          turn: activation.turn,
-          mode: activation.mode,
-        })}
-        body={t("memoryTab.v2TurnBody")}
-      />
-
-      <div className="flex flex-wrap gap-2">
-        <CountPill
-          label={t("memoryTab.inContextPill", { count: fmt(inContextCount) })}
-          dotColor={v2StatusColor("in_context")}
-        />
-        <CountPill
-          label={t("memoryTab.injectedPill", { count: fmt(injectedCount) })}
-          dotColor={v2StatusColor("injected")}
-        />
-        <CountPill
-          label={t("memoryTab.notInjectedPill", {
-            count: fmt(notInjectedCount),
-          })}
-          dotColor={v2StatusColor("not_injected")}
-        />
-      </div>
-
-      <V2ConfigCard config={cfg} t={t} />
-
-      <SectionCard
-        title={t("memoryTab.conceptActivationsTitle", {
-          count: fmt(sorted.length),
-        })}
-        subtitle={t("memoryTab.conceptActivationsSubtitle")}
-      >
-        {sorted.length > 0 ? (
-          <div className="flex flex-col gap-1">
-            {sorted.map((concept) => (
-              <ConceptRow
-                key={concept.slug}
-                concept={concept}
-                config={cfg}
-                assistantId={assistantId}
-                t={t}
-              />
-            ))}
-          </div>
-        ) : (
-          <span
-            className="text-body-medium-lighter"
-            style={{ color: "var(--content-secondary)" }}
-          >
-            {t("memoryTab.noEntriesRanked")}
-          </span>
-        )}
-      </SectionCard>
-    </div>
-  );
-}
-
-/**
- * Card whose body is revealed by a header toggle (title, subtitle, chevron).
- * Collapsed by default; the body mounts only while expanded.
- */
 function DisclosureCard({
   title,
   subtitle,
@@ -509,42 +408,7 @@ function DisclosureCard({
   );
 }
 
-/** Collapsible config card mirroring the macOS V2 tab's disclosure group. */
-function V2ConfigCard({
-  config,
-  t,
-}: {
-  config: MemoryV2ActivationLog["config"];
-  t: MemoryTranslate;
-}): ReactNode {
-  return (
-    <DisclosureCard
-      title={t("memoryTab.configTitle")}
-      subtitle={t("memoryTab.configSubtitle")}
-    >
-      <MetaGrid
-        rows={[
-          { label: t("memoryTab.configDDecay"), value: fmtAct(config.d) },
-          { label: t("memoryTab.configCUser"), value: fmtAct(config.c_user) },
-          {
-            label: t("memoryTab.configCAssistant"),
-            value: fmtAct(config.c_assistant),
-          },
-          { label: t("memoryTab.configCNow"), value: fmtAct(config.c_now) },
-          { label: t("memoryTab.configKSharpening"), value: fmtAct(config.k) },
-          { label: t("memoryTab.configHops"), value: String(config.hops) },
-          { label: t("memoryTab.configTopK"), value: String(config.top_k) },
-          {
-            label: t("memoryTab.configEpsilon"),
-            value: fmtAct(config.epsilon),
-          },
-        ]}
-      />
-    </DisclosureCard>
-  );
-}
-
-/** Pill with an optional leading status dot — mirrors the macOS count chips. */
+/** Collapsible config card for the v3 selection details. */
 function CountPill({
   label,
   dotColor,
@@ -588,7 +452,7 @@ function MemoryV3Section({
 
   // `selection.live` reflects whether v3 is the assistant's CURRENT live memory
   // source, not per-turn history. Persisted `memory_v3_selections` rows can be
-  // inspected on an assistant that is on v2 (no v3 rows are written there, but
+  // inspected on an assistant without v3 rows, but
   // older rows survive), where the selection was logged but never injected.
   const live = selection.live;
 
@@ -834,233 +698,6 @@ function V3PoolCandidateRow({
   );
 }
 
-function ConceptRow({
-  concept,
-  config,
-  assistantId,
-  t,
-}: {
-  concept: MemoryV2ConceptRow;
-  config: MemoryV2ActivationLog["config"];
-  assistantId: string | undefined;
-  t: MemoryTranslate;
-}): ReactNode {
-  const [expanded, setExpanded] = useState(false);
-
-  const isCustomSource = concept.source !== "ann_top50";
-  const statusColor = v2StatusColor(concept.status);
-  const statusText = v2StatusLabel(concept.status, t);
-
-  // Render the scaled contribution to A_o (coefficient × raw) with the raw
-  // similarity in parens, matching the macOS tab — the scaled values are
-  // what actually sum into the own-activation term.
-  const breakdownRows: { label: string; value: string }[] = [
-    {
-      label: t("memoryTab.breakdownOwnActivation"),
-      value: fmtAct(concept.ownActivation),
-    },
-    {
-      label: t("memoryTab.breakdownSpreadDelta"),
-      value: fmtAct(concept.spreadContribution),
-    },
-    {
-      label: t("memoryTab.breakdownPriorActivation"),
-      value: fmtAct(concept.priorActivation),
-    },
-    {
-      label: t("memoryTab.breakdownCUserSim"),
-      value: t("memoryTab.breakdownScaledRaw", {
-        scaled: fmtAct(concept.simUser * config.c_user),
-        raw: fmtAct(concept.simUser),
-      }),
-    },
-    {
-      label: t("memoryTab.breakdownCAssistantSim"),
-      value: t("memoryTab.breakdownScaledRaw", {
-        scaled: fmtAct(concept.simAssistant * config.c_assistant),
-        raw: fmtAct(concept.simAssistant),
-      }),
-    },
-    {
-      label: t("memoryTab.breakdownCNowSim"),
-      value: t("memoryTab.breakdownScaledRaw", {
-        scaled: fmtAct(concept.simNow * config.c_now),
-        raw: fmtAct(concept.simNow),
-      }),
-    },
-  ];
-
-  // Rerank contributes additively to A_o weighted by c_user / c_assistant.
-  // Render both channels whenever the slug was in the rerank pool, so a
-  // "+0.000" boost shows up explicitly rather than vanishing. The
-  // boost-value fallback covers older log rows that pre-date `inRerankPool`.
-  const rerankUser = concept.simUserRerankBoost ?? 0;
-  const rerankAsst = concept.simAssistantRerankBoost ?? 0;
-  if ((concept.inRerankPool ?? false) || rerankUser > 0 || rerankAsst > 0) {
-    breakdownRows.push({
-      label: t("memoryTab.breakdownCUserRerank"),
-      value: t("memoryTab.breakdownRerankScaledRaw", {
-        scaled: fmtAct(rerankUser * config.c_user),
-        raw: fmtAct(rerankUser),
-      }),
-    });
-    breakdownRows.push({
-      label: t("memoryTab.breakdownCAssistantRerank"),
-      value: t("memoryTab.breakdownRerankScaledRaw", {
-        scaled: fmtAct(rerankAsst * config.c_assistant),
-        raw: fmtAct(rerankAsst),
-      }),
-    });
-  }
-  if (isCustomSource) {
-    breakdownRows.push({
-      label: t("memoryTab.breakdownSource"),
-      value: concept.source,
-    });
-  }
-  breakdownRows.push({
-    label: t("memoryTab.breakdownStatus"),
-    value: statusText,
-  });
-
-  const barWidth = Math.max(0, Math.min(concept.finalActivation, 1));
-
-  return (
-    <div
-      className="overflow-hidden rounded-md"
-      style={{ background: "var(--surface-base)" }}
-    >
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 px-3 py-2 text-left"
-        style={{ background: "none", border: "none", cursor: "pointer" }}
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-      >
-        <span
-          className="mt-0.5 shrink-0 rounded-full"
-          style={{
-            width: 8,
-            height: 8,
-            background: statusColor,
-          }}
-          aria-hidden
-        />
-        <code
-          className="flex-1 truncate text-body-small-default"
-          style={{ color: "var(--content-default)" }}
-        >
-          {concept.slug}
-        </code>
-        {isCustomSource && <TypeChip label={concept.source} />}
-        <div
-          className="shrink-0 overflow-hidden rounded-full"
-          style={{
-            width: 60,
-            height: 6,
-            background: "var(--surface-active)",
-          }}
-        >
-          <div
-            className="h-full rounded-full"
-            style={{
-              width: `${barWidth * 100}%`,
-              background: "var(--primary-base)",
-            }}
-          />
-        </div>
-        <span
-          className="w-12 shrink-0 text-right text-body-medium-default tabular-nums"
-          style={{ color: "var(--content-default)" }}
-        >
-          {fmtAct(concept.finalActivation)}
-        </span>
-        <span
-          className="shrink-0"
-          style={{ color: "var(--content-secondary)" }}
-        >
-          {expanded ? (
-            <ChevronDown size={14} aria-hidden />
-          ) : (
-            <ChevronRight size={14} aria-hidden />
-          )}
-        </span>
-      </button>
-
-      {expanded && (
-        <div
-          className="flex flex-col gap-1 px-3 pb-3"
-          style={{ paddingLeft: "1.5rem" }}
-        >
-          {breakdownRows.map(({ label, value }) => (
-            <BreakdownRow key={label} label={label} value={value} />
-          ))}
-          <ConceptPageContent
-            assistantId={assistantId}
-            slug={concept.slug}
-            t={t}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Lazily fetches and renders the raw markdown body of a memory v2 concept
- * page. Mounted only inside an expanded concept row, so the fetch fires on
- * expand and caches per slug — mirroring the macOS `ConceptPageContentView`.
- */
-function ConceptPageContent({
-  assistantId,
-  slug,
-  t,
-}: {
-  assistantId: string | undefined;
-  slug: string;
-  t: MemoryTranslate;
-}): ReactNode {
-  const query = useQuery({
-    ...conceptPageQueryOptions(assistantId ?? "", slug),
-    enabled: Boolean(assistantId),
-  });
-
-  let body: ReactNode;
-  if (query.isError || query.data?.kind === "missing") {
-    body = (
-      <span
-        className="text-label-small-default"
-        style={{ color: "var(--content-tertiary)" }}
-      >
-        {t("memoryTab.pageNotFound")}
-      </span>
-    );
-  } else if (query.data?.kind === "loaded") {
-    body = <CodeBlock text={query.data.rendered} />;
-  } else {
-    body = (
-      <span
-        className="text-label-small-default"
-        style={{ color: "var(--content-tertiary)" }}
-      >
-        {t("memoryTab.loading")}
-      </span>
-    );
-  }
-
-  return (
-    <div className="mt-2 flex flex-col gap-1">
-      <span
-        className="text-label-small-default"
-        style={{ color: "var(--content-secondary)" }}
-      >
-        {t("memoryTab.pageContentLabel")}
-      </span>
-      {body}
-    </div>
-  );
-}
-
 function ScopeBanner({
   title,
   body,
@@ -1155,31 +792,6 @@ function MetaGrid({
           </span>
         </div>
       ))}
-    </div>
-  );
-}
-
-function BreakdownRow({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}): ReactNode {
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span
-        className="text-label-small-default"
-        style={{ color: "var(--content-secondary)" }}
-      >
-        {label}
-      </span>
-      <span
-        className="tabular-nums text-body-medium-default"
-        style={{ color: "var(--content-default)" }}
-      >
-        {value}
-      </span>
     </div>
   );
 }
@@ -1280,36 +892,3 @@ function fmtScore(n: number): string {
   return n.toFixed(3);
 }
 
-function fmtAct(n: number): string {
-  return n.toFixed(3);
-}
-
-function v2StatusColor(status: string): string {
-  switch (status) {
-    case "in_context":
-      return "var(--content-secondary)";
-    case "injected":
-      return "var(--system-positive-strong)";
-    case "not_injected":
-      return "var(--content-disabled)";
-    case "page_missing":
-      return "var(--system-mid-strong)";
-    default:
-      return "var(--content-tertiary)";
-  }
-}
-
-function v2StatusLabel(status: string, t: MemoryTranslate): string {
-  switch (status) {
-    case "in_context":
-      return t("memoryTab.v2StatusInContext");
-    case "injected":
-      return t("memoryTab.v2StatusInjected");
-    case "not_injected":
-      return t("memoryTab.v2StatusNotInjected");
-    case "page_missing":
-      return t("memoryTab.v2StatusPageMissing");
-    default:
-      return status;
-  }
-}

@@ -202,13 +202,8 @@ mock.module("../../../../../config/memory-v3-gate.js", () => ({
   isMemoryV3Live: () => flagStates["memory-v3-live"] ?? v3FlagOn,
   isMemoryEnabled: (config?: { memory?: { enabled?: boolean } }) =>
     config?.memory?.enabled !== false,
-  usesConceptPageMemory: (memory?: {
-    enabled?: boolean;
-    v2?: { enabled?: boolean };
-    v3?: { live?: boolean };
-  }) =>
-    memory?.enabled !== false &&
-    (memory?.v3?.live === true || memory?.v2?.enabled === true),
+  usesConceptPageMemory: (memory?: { enabled?: boolean }) =>
+    memory?.enabled !== false,
 }));
 
 // ── Workspace pin ───────────────────────────────────────────────────
@@ -238,15 +233,15 @@ const { invalidatePageIndex } = await import("../page-index.js");
 const { formatBufferTimestamp, formatRememberEntry } =
   await import("../../buffer-format.js");
 
-// The handler only reads `config.memory.enabled`, `config.memory.v2.enabled`,
-// `config.memory.v2.consolidation_prompt_path`, and
-// `config.memory.v2.consolidation_max_entries_per_run`, so a minimal
+// The handler only reads `config.memory.enabled`,
+// `config.memory.substrate.consolidation_prompt_path`, and
+// `config.memory.substrate.consolidation_max_entries_per_run`, so a minimal
 // stand-in covers those call sites without materializing the full default
 // config.
 const CONFIG = {
   memory: {
     enabled: true,
-    v2: { enabled: true, consolidation_prompt_path: null },
+    substrate: { consolidation_prompt_path: null },
   },
 } as Parameters<typeof memoryV2ConsolidateJob>[1];
 
@@ -257,24 +252,17 @@ function configWithMaxEntries(
   return {
     memory: {
       enabled: true,
-      v2: {
-        enabled: true,
+      substrate: {
         consolidation_prompt_path: null,
         consolidation_max_entries_per_run: maxEntries,
       },
     },
   } as Parameters<typeof memoryV2ConsolidateJob>[1];
 }
-const CONFIG_DISABLED = {
-  memory: {
-    enabled: true,
-    v2: { enabled: false, consolidation_prompt_path: null },
-  },
-} as Parameters<typeof memoryV2ConsolidateJob>[1];
 const CONFIG_MEMORY_DISABLED = {
   memory: {
     enabled: false,
-    v2: { enabled: true, consolidation_prompt_path: null },
+    substrate: { consolidation_prompt_path: null },
   },
 } as Parameters<typeof memoryV2ConsolidateJob>[1];
 
@@ -551,7 +539,7 @@ describe("memoryV2ConsolidateJob — chunked cutoff (consolidation_max_entries_p
   });
 });
 
-describe("memoryV2ConsolidateJob — v2 disabled", () => {
+describe("memoryV2ConsolidateJob — memory disabled", () => {
   test("returns disabled without invoking the runner when memory.enabled is false", async () => {
     writeFileSync(bufferPath(), "- [Apr 27, 9:00 AM] Alice prefers VS Code.\n");
 
@@ -559,19 +547,6 @@ describe("memoryV2ConsolidateJob — v2 disabled", () => {
       makeJob(),
       CONFIG_MEMORY_DISABLED,
     );
-
-    expect(result).toEqual({ kind: "disabled" });
-    expect(runnerCalls).toBe(0);
-    expect(enqueuedJobs).toHaveLength(0);
-    // Lock must NOT linger on the disabled path — the handler bailed before
-    // the lock was acquired.
-    expect(existsSync(lockPath())).toBe(false);
-  });
-
-  test("returns disabled without invoking the runner when memory.v2.enabled is false", async () => {
-    writeFileSync(bufferPath(), "- [Apr 27, 9:00 AM] Alice prefers VS Code.\n");
-
-    const result = await memoryV2ConsolidateJob(makeJob(), CONFIG_DISABLED);
 
     expect(result).toEqual({ kind: "disabled" });
     expect(runnerCalls).toBe(0);
@@ -727,14 +702,14 @@ describe("memoryV2ConsolidateJob — non-empty buffer", () => {
     expect(runnerLastArgs?.toolGateMode).toBeUndefined();
   });
 
-  test("honors memory.v2.consolidation_prompt_path override when set", async () => {
+  test("honors memory.substrate.consolidation_prompt_path override when set", async () => {
     writeFileSync(
       join(tmpWorkspace, "custom-prompt.md"),
       "CUSTOM CONSOLIDATION at {{CUTOFF}}\n",
     );
     const overrideConfig = {
       memory: {
-        v2: { enabled: true, consolidation_prompt_path: "custom-prompt.md" },
+        substrate: { consolidation_prompt_path: "custom-prompt.md" },
       },
     } as Parameters<typeof memoryV2ConsolidateJob>[1];
 
@@ -1584,7 +1559,10 @@ describe("memoryV2ConsolidateJob — consecutive-failure state", () => {
     const lastFailureAt = Date.now() - 60_000;
     seedFailureState(2, lastFailureAt);
 
-    const result = await memoryV2ConsolidateJob(makeJob(), CONFIG_DISABLED);
+    const result = await memoryV2ConsolidateJob(
+      makeJob(),
+      CONFIG_MEMORY_DISABLED,
+    );
 
     expect(result.kind).toBe("disabled");
     expect(readFailureState()).toEqual({

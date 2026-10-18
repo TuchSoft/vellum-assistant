@@ -10786,93 +10786,6 @@ paths:
                           - queryContext
                         additionalProperties: false
                       - type: "null"
-                  memoryV2Activation:
-                    anyOf:
-                      - type: object
-                        properties:
-                          turn:
-                            type: number
-                          mode:
-                            type: string
-                          concepts:
-                            type: array
-                            items:
-                              type: object
-                              properties:
-                                slug:
-                                  type: string
-                                finalActivation:
-                                  type: number
-                                ownActivation:
-                                  type: number
-                                priorActivation:
-                                  type: number
-                                simUser:
-                                  type: number
-                                simAssistant:
-                                  type: number
-                                simNow:
-                                  type: number
-                                simUserRerankBoost:
-                                  type: number
-                                simAssistantRerankBoost:
-                                  type: number
-                                inRerankPool:
-                                  type: boolean
-                                spreadContribution:
-                                  type: number
-                                source:
-                                  type: string
-                                status:
-                                  type: string
-                              required:
-                                - slug
-                                - finalActivation
-                                - ownActivation
-                                - priorActivation
-                                - simUser
-                                - simAssistant
-                                - simNow
-                                - spreadContribution
-                                - source
-                                - status
-                              additionalProperties: false
-                          config:
-                            type: object
-                            properties:
-                              d:
-                                type: number
-                              c_user:
-                                type: number
-                              c_assistant:
-                                type: number
-                              c_now:
-                                type: number
-                              k:
-                                type: number
-                              hops:
-                                type: number
-                              top_k:
-                                type: number
-                              epsilon:
-                                type: number
-                            required:
-                              - d
-                              - c_user
-                              - c_assistant
-                              - c_now
-                              - k
-                              - hops
-                              - top_k
-                              - epsilon
-                            additionalProperties: false
-                        required:
-                          - turn
-                          - mode
-                          - concepts
-                          - config
-                        additionalProperties: false
-                      - type: "null"
                   memoryV3Selection:
                     anyOf:
                       - type: object
@@ -10958,7 +10871,6 @@ paths:
                   - conversationKind
                   - logs
                   - memoryRecall
-                  - memoryV2Activation
                 additionalProperties: false
   /v1/conversations/rename:
     post:
@@ -11455,6 +11367,8 @@ paths:
                 source:
                   default: cli
                   type: string
+                background:
+                  type: boolean
                 cronRunId:
                   type: string
                   minLength: 1
@@ -11482,6 +11396,8 @@ paths:
                     type: boolean
                   reason:
                     type: string
+                  dispatched:
+                    type: boolean
                 required:
                   - invoked
                   - producedToolCalls
@@ -11981,8 +11897,8 @@ paths:
       operationId: debug_database_get
       summary: Database migration diagnostics
       description:
-        Return the in-memory DB migration latch, including failed and deferred steps. Does not query SQLite, so it
-        stays answerable while migrations are running or have failed.
+        Return the in-memory DB migration latch, including failed and deferred steps. Does not query the database,
+        so it stays answerable while migrations are running or have failed.
       tags:
         - debug
       responses:
@@ -20884,10 +20800,8 @@ paths:
   /v1/memory/v2/backfill:
     post:
       operationId: memory_v2_backfill_post
-      summary: Enqueue a memory v2 backfill job
-      description:
-        Enqueues one of four operator-triggered backfill jobs (migrate, rebuild-edges, reembed,
-        activation-recompute) against the memory jobs queue.
+      summary: Enqueue a concept-page reembed job
+      description: Enqueues the operator-triggered concept-page reembed job against the memory jobs queue.
       tags:
         - memory
       requestBody:
@@ -20900,9 +20814,7 @@ paths:
                 op:
                   type: string
                   enum:
-                    - migrate
                     - reembed
-                    - activation-recompute
                 force:
                   type: boolean
               required:
@@ -20911,86 +20823,11 @@ paths:
       responses:
         "200":
           description: Successful response
-  /v1/memory/v2/compare-retrievers:
-    post:
-      operationId: memory_v2_compareretrievers_post
-      summary: Compare retrievers against the router's logged selections (read-only)
-      description:
-        Runs one or more retrievers over a sample of historical turns (memory_v2_activation_logs, mode='router')
-        and scores their selected pages against the logged selections as ground truth, reconstructing each turn's inputs
-        from the messages table + current NOW. Read-only — writes nothing. Each scored turn re-runs the router (one LLM
-        call), so keep `limit` modest. Today the only retriever is the router itself, so this is the harness self-test.
-      tags:
-        - memory
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                limit:
-                  type: integer
-                  exclusiveMinimum: 0
-                  maximum: 9007199254740991
-                strategy:
-                  type: string
-                  enum:
-                    - recent
-                    - random
-                conversationIds:
-                  type: array
-                  items:
-                    type: string
-                    minLength: 1
-                ks:
-                  type: array
-                  items:
-                    type: integer
-                    exclusiveMinimum: 0
-                    maximum: 9007199254740991
-                includeNotInjected:
-                  type: boolean
-              additionalProperties: false
-      responses:
-        "200":
-          description: Successful response
-  /v1/memory/v2/concept-frequency:
-    post:
-      operationId: memory_v2_conceptfrequency_post
-      summary: Aggregate per-concept injection frequency from activation logs
-      description:
-        "Debug-only. Aggregates the existing memory_v2_activation_logs table by (slug, status) and cross-references
-        on-disk concept pages so an operator can see which concepts get injected often, which get scored but rejected,
-        and which on-disk pages never even surface as candidates. Optional filters: conversationId narrows to a single
-        conversation; sinceMs restricts to logs created at-or-after the given epoch ms timestamp."
-      tags:
-        - memory
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                conversationId:
-                  type: string
-                  minLength: 1
-                sinceMs:
-                  type: integer
-                  minimum: 0
-                  maximum: 9007199254740991
-              additionalProperties: false
-      responses:
-        "200":
-          description: Successful response
   /v1/memory/v2/concept-page:
     post:
       operationId: memory_v2_conceptpage_post
-      summary: Read a single memory v2 concept page
-      description:
-        Returns the rendered (frontmatter + body) markdown for a slug. 404 when the slug has no on-disk page — the
-        activation log inspector uses this to show what got injected.
+      summary: Read a single concept page
+      description: Returns the rendered (frontmatter + body) markdown for a slug. 404 when the slug has no on-disk page.
       tags:
         - memory
       requestBody:
@@ -21009,32 +20846,10 @@ paths:
       responses:
         "200":
           description: Successful response
-  /v1/memory/v2/ema-scores:
-    post:
-      operationId: memory_v2_emascores_post
-      summary: List every concept page with its injection-frequency EMA score
-      description:
-        Computes the time-decayed injection frequency (3-day half-life) for every entry in the current page index
-        by reading memory_v2_injection_events. Returns entries sorted by score descending then slug ASCII, including
-        zero-score pages so callers can decide whether to filter. Read-only; tier 2 of the v4 router uses the same
-        computation to pick its top-M.
-      tags:
-        - memory
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties: {}
-              additionalProperties: false
-      responses:
-        "200":
-          description: Successful response
   /v1/memory/v2/list-concept-pages:
     post:
       operationId: memory_v2_listconceptpages_post
-      summary: List all memory v2 concept pages with metadata
+      summary: List all concept pages with metadata
       description:
         Returns slugs, body sizes, edge counts, and last-modified timestamps for every concept page on disk.
         Read-only; used by the desktop About → Memories surface to render a browse-able list.
@@ -21078,32 +20893,10 @@ paths:
                 required:
                   - pages
                 additionalProperties: false
-  /v1/memory/v2/now-text:
-    get:
-      operationId: memory_v2_nowtext_get
-      summary: Return the current rendered `<now>` body
-      description:
-        Returns the current NOW.md (autoloaded essentials/threads/recent). Used by the memory router playground to
-        seed its `<now>` text area with a production-like default so callers can edit from a realistic baseline.
-      tags:
-        - memory
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  nowText:
-                    type: string
-                required:
-                  - nowText
-                additionalProperties: false
   /v1/memory/v2/reembed-skills:
     post:
       operationId: memory_v2_reembedskills_post
-      summary: Re-seed v2 skill entries from the current skill catalog
+      summary: Re-seed concept-page skill entries from the current skill catalog
       description:
         Synchronously re-runs seedV2SkillEntries against the current skill catalog. Gated on concept-page memory
         being active.
@@ -21120,187 +20913,14 @@ paths:
       responses:
         "200":
           description: Successful response
-  /v1/memory/v2/router-prompt-template:
-    get:
-      operationId: memory_v2_routerprompttemplate_get
-      summary: Return the bundled router system-prompt template
-      description:
-        Returns the bundled `ROUTER_PROMPT` body with placeholders intact (`{{ASSISTANT_NAME}}`, `{{USER_NAME}}`,
-        `{{PAGE_INDEX}}`). Used by the memory router playground's 'Load default' affordance so users have a known-good
-        starting point when authoring an inline prompt override.
-      tags:
-        - memory
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  template:
-                    type: string
-                required:
-                  - template
-                additionalProperties: false
-  /v1/memory/v2/simulate-router:
-    post:
-      operationId: memory_v2_simulaterouter_post
-      summary: Dry-run the v4 router with config overrides (read-only)
-      description:
-        Runs the memory router against the live page index + EMA scores with optional tier_size / batch_size
-        overrides, without recording an injection event or writing an activation log. Returns the slugs that would have
-        been selected, per-slug tier provenance, EMA scores, and the effective router config so operators can validate
-        knob changes before flipping them in workspace config.
-      tags:
-        - memory
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                recentTurnPairs:
-                  minItems: 1
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      assistantMessage:
-                        type: string
-                      userMessage:
-                        type: string
-                    required:
-                      - assistantMessage
-                      - userMessage
-                    additionalProperties: false
-                nowText:
-                  type: string
-                configOverrides:
-                  type: object
-                  properties:
-                    tier1_size:
-                      anyOf:
-                        - type: integer
-                          minimum: 1
-                          maximum: 9007199254740991
-                        - type: "null"
-                    tier2_size:
-                      anyOf:
-                        - type: integer
-                          minimum: 1
-                          maximum: 9007199254740991
-                        - type: "null"
-                    batch_size:
-                      anyOf:
-                        - type: integer
-                          minimum: 1
-                          maximum: 9007199254740991
-                        - type: "null"
-                  additionalProperties: false
-                profileOverride:
-                  type: string
-                  minLength: 1
-                routerPromptOverride:
-                  type: string
-                  maxLength: 1000000
-              required:
-                - recentTurnPairs
-              additionalProperties: false
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  selectedSlugs:
-                    type: array
-                    items:
-                      type: string
-                  sourceBySlug:
-                    type: object
-                    propertyNames:
-                      type: string
-                    additionalProperties:
-                      type: string
-                  scores:
-                    type: object
-                    propertyNames:
-                      type: string
-                    additionalProperties:
-                      type: number
-                  failureReason:
-                    anyOf:
-                      - type: string
-                      - type: "null"
-                  effectiveConfig:
-                    type: object
-                    properties:
-                      tier1_size:
-                        anyOf:
-                          - type: number
-                          - type: "null"
-                      tier2_size:
-                        anyOf:
-                          - type: number
-                          - type: "null"
-                      batch_size:
-                        anyOf:
-                          - type: number
-                          - type: "null"
-                      max_page_ids:
-                        type: number
-                    required:
-                      - tier1_size
-                      - tier2_size
-                      - batch_size
-                      - max_page_ids
-                    additionalProperties: false
-                  overrides:
-                    type: object
-                    properties:
-                      tier1_size:
-                        anyOf:
-                          - type: number
-                          - type: "null"
-                      tier2_size:
-                        anyOf:
-                          - type: number
-                          - type: "null"
-                      batch_size:
-                        anyOf:
-                          - type: number
-                          - type: "null"
-                    additionalProperties: false
-                  totalCandidatePages:
-                    type: number
-                  profileOverride:
-                    anyOf:
-                      - type: string
-                      - type: "null"
-                  routerPromptOverridden:
-                    type: boolean
-                required:
-                  - selectedSlugs
-                  - sourceBySlug
-                  - scores
-                  - failureReason
-                  - effectiveConfig
-                  - overrides
-                  - totalCandidatePages
-                  - profileOverride
-                  - routerPromptOverridden
-                additionalProperties: false
   /v1/memory/v2/validate:
     post:
       operationId: memory_v2_validate_post
-      summary: Validate memory v2 workspace state
+      summary: Validate the concept-page workspace state
       description:
-        Read-only structural validation of the v2 workspace — reports orphan edges, oversized pages, and parse
-        failures. Runnable regardless of memory.v2.enabled so operators can dry-run validation before flipping the flag.
+        Read-only structural validation of the concept-page workspace — reports orphan edges, oversized pages, and
+        parse failures. Runnable regardless of the memory tier so operators can dry-run validation before enabling
+        memory.
       tags:
         - memory
       requestBody:
@@ -23960,93 +23580,6 @@ paths:
                           - queryContext
                         additionalProperties: false
                       - type: "null"
-                  memoryV2Activation:
-                    anyOf:
-                      - type: object
-                        properties:
-                          turn:
-                            type: number
-                          mode:
-                            type: string
-                          concepts:
-                            type: array
-                            items:
-                              type: object
-                              properties:
-                                slug:
-                                  type: string
-                                finalActivation:
-                                  type: number
-                                ownActivation:
-                                  type: number
-                                priorActivation:
-                                  type: number
-                                simUser:
-                                  type: number
-                                simAssistant:
-                                  type: number
-                                simNow:
-                                  type: number
-                                simUserRerankBoost:
-                                  type: number
-                                simAssistantRerankBoost:
-                                  type: number
-                                inRerankPool:
-                                  type: boolean
-                                spreadContribution:
-                                  type: number
-                                source:
-                                  type: string
-                                status:
-                                  type: string
-                              required:
-                                - slug
-                                - finalActivation
-                                - ownActivation
-                                - priorActivation
-                                - simUser
-                                - simAssistant
-                                - simNow
-                                - spreadContribution
-                                - source
-                                - status
-                              additionalProperties: false
-                          config:
-                            type: object
-                            properties:
-                              d:
-                                type: number
-                              c_user:
-                                type: number
-                              c_assistant:
-                                type: number
-                              c_now:
-                                type: number
-                              k:
-                                type: number
-                              hops:
-                                type: number
-                              top_k:
-                                type: number
-                              epsilon:
-                                type: number
-                            required:
-                              - d
-                              - c_user
-                              - c_assistant
-                              - c_now
-                              - k
-                              - hops
-                              - top_k
-                              - epsilon
-                            additionalProperties: false
-                        required:
-                          - turn
-                          - mode
-                          - concepts
-                          - config
-                        additionalProperties: false
-                      - type: "null"
                   memoryV3Selection:
                     anyOf:
                       - type: object
@@ -24132,7 +23665,6 @@ paths:
                   - conversationKind
                   - logs
                   - memoryRecall
-                  - memoryV2Activation
                 additionalProperties: false
   /v1/messages/lexical/backfill:
     post:
@@ -29501,9 +29033,9 @@ paths:
         per conversation after activity (time/message thresholds, pre-compaction) — there is no global schedule, so
         `nextRunAt` is always null and no run-now endpoint exists. `intervalMs` is the per-conversation time threshold
         (`memory.retrospective.timeThresholdMs`), `lastRunAt` is the `createdAt` of the most recent retrospective
-        conversation across both legacy and fork sources, `available` gates on `memory.enabled` (not
-        `memory.v2.enabled`), and `enabled` narrows that by `memory.retrospective.enabled`, the per-pass kill switch
-        that stops retrospectives without disabling the rest of memory.
+        conversation across both legacy and fork sources, `available` gates on `memory.enabled` (not the section-lane
+        tier), and `enabled` narrows that by `memory.retrospective.enabled`, the per-pass kill switch that stops
+        retrospectives without disabling the rest of memory.
       tags:
         - retrospective
       responses:
@@ -39541,12 +39073,6 @@ components:
       properties:
         enabled:
           type: boolean
-        v2:
-          type: object
-          properties:
-            enabled:
-              type: boolean
-          additionalProperties: {}
       additionalProperties: {}
     ServiceMode:
       type: string

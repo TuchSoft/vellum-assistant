@@ -33,7 +33,13 @@ import type {
  * reads directly. Compaction logs are ClickHouse-only and have no SQLite table,
  * so there is nothing to exclude for them.
  */
-export const EXCLUDED_TABLES: readonly RegExp[] = [];
+export const EXCLUDED_TABLES: readonly RegExp[] = [
+  // Retired memory-v2 storage. The Postgres port carries a dedicated drop step
+  // (`0001_drop_memory_v2_tables`) for databases created before the removal.
+  /^memory_v2_activation_logs$/,
+  /^memory_v2_injection_events$/,
+  /^activation_state$/,
+];
 
 export interface BaselineOptions {
   excludeTables?: readonly RegExp[];

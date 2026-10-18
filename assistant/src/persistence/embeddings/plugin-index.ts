@@ -148,7 +148,7 @@ let clientConfigIdentity: string | null = null;
  * The eager `initQdrantClient` in `runMemoryStartup`
  * (`plugins/defaults/memory/startup.ts`) cannot be relied on here: it runs in
  * the daemon process only, and only while memory v1 is the live tier — on a
- * default workspace (`memory.v2.enabled`, or `memory.v3.live`) it is skipped
+ * default workspace (`memory.enabled`) it is skipped
  * entirely, because no v1 lane reads or writes the collection in that state.
  * The plugin index is not a memory tier: it is plugin-owned search that must
  * work on every tier and in any process that runs plugin code, so it resolves

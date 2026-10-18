@@ -1,7 +1,7 @@
 /**
- * Degraded-mode coverage for the relocated per-turn memory log tables: with
- * the dedicated memory database unavailable, writes are best-effort no-ops
- * and reads return empty/zero results — nothing throws mid-turn.
+ * Degraded-mode coverage for the per-turn memory log tables: with the
+ * dedicated memory database unavailable, writes are best-effort no-ops and
+ * reads return empty/zero results — nothing throws mid-turn.
  *
  * Unavailability is simulated by removing the database URL from the
  * environment, so the memory-slot facade resolves to null without mocking any
@@ -18,28 +18,13 @@ import {
 
 setDefaultTimeout(30_000);
 
-import type { AsyncDb } from "../../../../persistence/db-facade.js";
 import {
   backfillMemoryRecallLogMessageId,
   getMemoryRecallLogByMessageIds,
   recordMemoryRecallLog,
 } from "../memory-recall-log-store.js";
-import {
-  backfillMemoryV2ActivationMessageId,
-  getMemoryV2ActivationLogByMessageIds,
-  recordMemoryV2ActivationLog,
-} from "../v2/activation-log-store.js";
-import { getConceptFrequencySummary } from "../v2/concept-frequency.js";
-import { extractOracleTurns } from "../v2/harness/oracle.js";
 import { recordInjected } from "../v3/ever-injected-store.js";
 import { planPrune } from "../v3/prune.js";
-import {
-  sampleConcepts,
-  sampleConfig,
-} from "./fixtures/memory-v2-activation-fixtures.js";
-
-// listPages returns [] for a workspace with no concepts directory.
-const WORKSPACE = "/tmp/memory-log-stores-degraded-nonexistent-workspace";
 
 let previousDatabaseUrl: string | undefined;
 
@@ -57,18 +42,6 @@ afterEach(() => {
 });
 
 describe("memory log stores without a memory database", () => {
-  test("activation-log writes no-op and reads return null", async () => {
-    await recordMemoryV2ActivationLog({
-      conversationId: "conv-1",
-      turn: 1,
-      mode: "per-turn",
-      concepts: sampleConcepts,
-      config: sampleConfig,
-    });
-    await backfillMemoryV2ActivationMessageId("conv-1", "msg-1");
-    expect(await getMemoryV2ActivationLogByMessageIds(["msg-1"])).toBeNull();
-  });
-
   test("recall-log writes no-op and reads return null", async () => {
     await recordMemoryRecallLog({
       conversationId: "conv-1",
@@ -87,17 +60,6 @@ describe("memory log stores without a memory database", () => {
     });
     await backfillMemoryRecallLogMessageId("conv-1", "msg-1");
     expect(await getMemoryRecallLogByMessageIds(["msg-1"])).toBeNull();
-  });
-
-  test("concept-frequency degrades to zero counts", async () => {
-    const result = await getConceptFrequencySummary(WORKSPACE);
-    expect(result.totals).toEqual({ logCount: 0, conceptOccurrences: 0 });
-    expect(result.concepts).toEqual([]);
-    expect(result.neverEvaluatedSlugs).toEqual([]);
-  });
-
-  test("oracle extraction returns no turns", async () => {
-    expect(await extractOracleTurns({} as unknown as AsyncDb)).toEqual([]);
   });
 });
 

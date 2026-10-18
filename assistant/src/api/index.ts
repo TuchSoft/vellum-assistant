@@ -884,14 +884,6 @@ export {
   MemoryRecallLogSchema,
 } from "./responses/memory-recall-log.js";
 export {
-  type MemoryV2ActivationLog,
-  MemoryV2ActivationLogSchema,
-  type MemoryV2ConceptRow,
-  MemoryV2ConceptRowSchema,
-  type MemoryV2ConfigSnapshot,
-  MemoryV2ConfigSnapshotSchema,
-} from "./responses/memory-v2-activation-log.js";
-export {
   type MemoryV3Pool,
   type MemoryV3PoolCandidate,
   MemoryV3PoolCandidateSchema,

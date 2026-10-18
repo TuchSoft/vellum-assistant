@@ -82,7 +82,7 @@ export async function handleMemoryIngest(
 ): Promise<MemoryIngestResult> {
   if (!usesConceptPageMemory(config.memory)) {
     throw new BadRequestError(
-      "Concept-page memory is not active - enable memory.v3.live (or memory.v2.enabled) to ingest pages.",
+      "Concept-page memory is not active - enable memory to ingest pages.",
     );
   }
   const params = parseBody(MemoryIngestParamsSchema, body ?? {});

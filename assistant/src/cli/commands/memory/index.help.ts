@@ -16,7 +16,7 @@ export const memoryHelp: CliCommandHelp = {
   helpText: `
 The 'nodes' subgroup provides content-based list, delete, and update over
 memory graph nodes — address facts by text, not UUID (requires concept-page
-memory: memory.v3.live or memory.v2.enabled).
+memory: memory.v3.live).
 
 The 'items' subgroup exposes full CRUD over individual memory items
 (remembered facts) — list, get, create, update, delete.
@@ -49,8 +49,7 @@ addresses nodes by UUID, these
 commands address nodes by content text — matching the way an operator refers to
 a remembered fact without first looking up its ID.
 
-All subcommands require concept-page memory (memory.v3.live or
-memory.v2.enabled) and the assistant to be running.
+All subcommands require concept-page memory (memory.v3.live) and the assistant to be running.
 
 Examples:
   $ assistant memory nodes stats
@@ -61,7 +60,7 @@ Examples:
       subcommands: [
         {
           name: "stats",
-          description: "Show a health overview of the memory v2 graph",
+          description: "Show a health overview of the memory graph",
           options: [
             {
               flags: "--json",
@@ -379,21 +378,22 @@ Examples:
     },
     {
       name: "v2",
-      description: "Memory v2 subsystem operations (concept-page model)",
+      description: "Concept-page subsystem operations",
       helpText: `
 The concept-page memory subsystem stores prose concept pages with directed
 edges in each page's frontmatter. Pages live under
-/workspace/memory/concepts/ and are active when memory.v3.live or
-memory.v2.enabled is set.
+/workspace/memory/concepts/ and are active when memory.v3.live is set.
 
 Mutating subcommands return a jobId enqueued on the memory job queue,
 except reembed-skills which runs synchronously inside the assistant.
 Read-only subcommands print diagnostic reports without mutating state.
 
+The namespace keeps its historical 'v2' spelling because the IPC routes it
+drives (memory/v2/*) are frozen wire surface.
+
 Examples:
   $ assistant memory v2 reembed
-  $ assistant memory v2 reembed-skills
-  $ assistant memory v2 activation`,
+  $ assistant memory v2 reembed-skills`,
       subcommands: [
         {
           name: "reembed",
@@ -415,9 +415,9 @@ Examples:
         {
           name: "reembed-skills",
           description:
-            "Re-seed v2 skill entries from the current skill catalog (synchronous)",
+            "Re-seed concept-page skill entries from the current skill catalog (synchronous)",
           helpText: `
-Re-runs the v2 skill catalog seed against the current skill set, replacing
+Re-runs the skill catalog seed against the current skill set, replacing
 both the in-process skill cache and the skill entries in the unified
 memory_v2_concept_pages Qdrant collection (under the skills/<id> slug
 prefix). Useful after editing a skill's SKILL.md, after a feature-flag flip
@@ -425,27 +425,10 @@ changes the enabled-skill set, or to recover corrupted skill embeddings.
 
 Unlike 'reembed' (concept pages), this runs synchronously inside the
 assistant — the command returns only once the seed completes. Requires
-concept-page memory to be active (memory.v3.live or memory.v2.enabled).
+concept-page memory to be active (memory.v3.live).
 
 Examples:
   $ assistant memory v2 reembed-skills`,
-        },
-        {
-          name: "activation",
-          description:
-            "Refresh persisted activation state for every active conversation",
-          helpText: `
-Walks every conversation row in the activation_state table and
-recomputes the persisted state without rendering or injecting a memory
-block. Useful after tuning the activation params (d, c_user, c_assistant,
-c_now, k, hops) so subsequent retrievals reflect the new weights without
-waiting for organic per-turn updates.
-
-The job runs on the background memory worker — this command returns once
-the job is enqueued.
-
-Examples:
-  $ assistant memory v2 activation`,
         },
         {
           name: "validate",
@@ -453,140 +436,10 @@ Examples:
             "Same report as 'memory validate' (read-only concept-page check)",
           helpText: `
 Identical to 'assistant memory validate'; prefer that spelling. The report
-covers the concept-page store, which is the same under memory v2 and v3.
+covers the concept-page store.
 
 Examples:
   $ assistant memory validate`,
-        },
-        {
-          name: "ema",
-          description:
-            "List concept pages by injection-frequency EMA score (read-only)",
-          options: [
-            {
-              flags: "-n, --limit <count>",
-              description:
-                "Maximum rows to print (default 25; ignored with --all)",
-              defaultValue: "25",
-            },
-            {
-              flags: "--all",
-              description: "Print every page, including zero-score pages",
-            },
-            {
-              flags: "--include-zeros",
-              description:
-                "Include pages with score 0 in the default-limited view",
-            },
-            {
-              flags: "--json",
-              description: "Emit raw JSON instead of a formatted table",
-            },
-          ],
-          helpText: `
-EMA score is the time-decayed sum Σ exp(-λ × (now - tᵢ)) with a 3-day
-half-life, computed from memory_v2_injection_events. A score of 1.0 means
-roughly one router selection in the last few minutes; 0.5 means a single
-selection ~3 days ago. Pages that have never been router-selected since
-EMA tracking began report 0.
-
-Examples:
-  $ assistant memory v2 ema
-  $ assistant memory v2 ema -n 100
-  $ assistant memory v2 ema --all --json | jq '.entries | length'`,
-        },
-        {
-          name: "simulate",
-          description:
-            "Dry-run the v4 router against a synthetic query (read-only)",
-          options: [
-            {
-              flags: "-q, --query <text>",
-              description: "User query to route the simulated turn against",
-              required: true,
-            },
-            {
-              flags: "--tier1-size <n>",
-              description:
-                "Override memory.v2.router.tier1_size for this run (number or 'null')",
-            },
-            {
-              flags: "--tier2-size <n>",
-              description:
-                "Override memory.v2.router.tier2_size for this run (number or 'null')",
-            },
-            {
-              flags: "--batch-size <n>",
-              description:
-                "Override memory.v2.router.batch_size for this run (number or 'null')",
-            },
-            {
-              flags: "--json",
-              description: "Emit raw JSON instead of a grouped report",
-            },
-          ],
-          helpText: `
-Runs the v4 router read-only against the live page index + EMA scores, with
-optional tier/batch overrides applied on top of the live config. NO writes:
-no row is appended to memory_v2_injection_events or memory_v2_activation_logs,
-and no activation state is mutated. Use this to preview the effect of a
-config knob change before flipping it in workspace config.json.
-
-Limitations:
-  - priorEverInjected is empty (single-turn simulation; live router dedups
-    against pages already in context).
-  - NOW.md is read at simulate-time, not historical-turn time.
-  - assistantMessage is empty.
-
-Pass 'null' to an override flag to explicitly disable that tier for this run
-(e.g. --tier2-size null reverts to tier1 → tier3). Omitting an override
-inherits the live config value.
-
-Examples:
-  $ assistant memory v2 simulate -q "what should we ship next"
-  $ assistant memory v2 simulate -q "..." --tier1-size 100 --tier2-size 200 --batch-size 50
-  $ assistant memory v2 simulate -q "..." --json | jq '.selectedSlugs'`,
-        },
-        {
-          name: "compare",
-          description:
-            "Compare retrievers against the router's logged picks over a sample of real turns (read-only)",
-          // The repeatable `--conversation <id>` option (accumulator parser +
-          // array default) and the options registered after it live in
-          // memory-v2.ts — the contract cannot express parser functions or
-          // array defaults, and option order must match registration order.
-          options: [
-            {
-              flags: "--limit <n>",
-              description:
-                "How many historical turns to sample (default 20). Each re-runs the router = one LLM call.",
-            },
-            {
-              flags: "--strategy <recent|random>",
-              description:
-                "Sampling strategy over historical turns (default recent)",
-            },
-            {
-              flags: "--k <list>",
-              description:
-                "Comma-separated recall@k cutoffs (default 5,10,25,50)",
-            },
-          ],
-          helpText: `
-Runs the comparison harness read-only: samples historical 'router'-mode turns
-from memory_v2_activation_logs, reconstructs each turn's inputs, re-runs each
-retriever, and scores selections against the logged picks (recall@k). NO writes.
-
-Cost: each scored turn re-runs the router (one LLM call), so --limit is the
-cost knob — start small. Today the only retriever is the router itself, so this
-is the harness self-test (router graded against its own logged picks); the gap
-from 1.0 is input-reconstruction drift (NOW.md / config moved since the turn).
-
-Examples:
-  $ assistant memory v2 compare --limit 20
-  $ assistant memory v2 compare --limit 50 --strategy random --k 5,10,25
-  $ assistant memory v2 compare --limit 20 --trace conv-abc:7
-  $ assistant memory v2 compare --limit 20 --json | jq '.retrievers[0].aggregate'`,
         },
       ],
     },
@@ -812,7 +665,7 @@ Walks memory/concepts/ on disk and reports:
   - Parse failures (malformed frontmatter)
 
 Read-only. Exits non-zero if anything is reported. Works on every memory
-tier, including before memory.v3.live or memory.v2.enabled is set, so it
+tier, including before memory.v3.live is set, so it
 doubles as the pre-flip check for a migration.
 
 Examples:
@@ -864,7 +717,7 @@ Behavior:
   invalid pages set a non-zero exit code without blocking valid ones. Requests
   are sent in batches of 200 pages. When the consolidation lock is held the
   command fails and names the holder; retry after the current writer finishes.
-  Requires concept-page memory (memory.v3.live or memory.v2.enabled).
+  Requires concept-page memory (memory.v3.live).
 
 Examples:
   $ assistant memory ingest --dir .mv3/staging --dry-run

@@ -147,10 +147,12 @@ pgDescribe("pg baseline + runner (postgres)", () => {
   });
 
   test("the runner applies steps, records them, and rolls back", async () => {
+    // Baseline + a marker step: the runner mechanics under test, without the
+    // unrelated data/schema steps PG_STEPS carries.
     const steps = [
-      ...PG_STEPS,
+      PG_STEPS[0]!,
       {
-        name: "0001_test_marker",
+        name: "0009_test_marker",
         up: async () => {
           // no-op schema-wise; just exercises the ledger
         },
@@ -161,23 +163,23 @@ pgDescribe("pg baseline + runner (postgres)", () => {
     ];
 
     const applied = await runPgMigrations(db(), steps);
-    expect(applied.applied).toEqual(["0000_baseline", "0001_test_marker"]);
+    expect(applied.applied).toEqual(["0000_baseline", "0009_test_marker"]);
     expect(await appliedPgSteps(db())).toEqual([
       "0000_baseline",
-      "0001_test_marker",
+      "0009_test_marker",
     ]);
     expect(await pgTableNames()).toContain("messages");
 
     // Re-running applies nothing.
     const rerun = await runPgMigrations(db(), steps);
     expect(rerun.applied).toEqual([]);
-    expect(rerun.skipped).toEqual(["0000_baseline", "0001_test_marker"]);
+    expect(rerun.skipped).toEqual(["0000_baseline", "0009_test_marker"]);
 
     // Roll back to the baseline: only the marker step is reverted.
     const rolledBack = await rollbackPgMigrations(db(), steps, {
       to: "0000_baseline",
     });
-    expect(rolledBack.rolledBack).toEqual(["0001_test_marker"]);
+    expect(rolledBack.rolledBack).toEqual(["0009_test_marker"]);
     expect(await appliedPgSteps(db())).toEqual(["0000_baseline"]);
 
     // Roll back everything: the baseline drops its tables. The ledger table
@@ -185,6 +187,27 @@ pgDescribe("pg baseline + runner (postgres)", () => {
     const full = await rollbackPgMigrations(db(), steps, { to: null });
     expect(full.rolledBack).toEqual(["0000_baseline"]);
     expect(await pgTableNames()).toEqual([PG_MIGRATION_LEDGER]);
+  });
+
+  test("the v2 removal step drops and recovers the retired tables", async () => {
+    const dropStep = PG_STEPS.find(
+      (step) => step.name === "0001_drop_memory_v2_tables",
+    );
+    expect(dropStep).toBeDefined();
+
+    await db().exec(`CREATE TABLE "activation_state" (id text)`);
+    await db().exec(`CREATE TABLE "memory_v2_activation_logs" (id text)`);
+    await db().exec(`CREATE TABLE "memory_v2_injection_events" (id text)`);
+
+    await dropStep!.up(db());
+    expect(await pgTableNames()).not.toContain("activation_state");
+    expect(await pgTableNames()).not.toContain("memory_v2_activation_logs");
+    expect(await pgTableNames()).not.toContain("memory_v2_injection_events");
+
+    await dropStep!.down!(db());
+    expect(await pgTableNames()).toContain("activation_state");
+    expect(await pgTableNames()).toContain("memory_v2_activation_logs");
+    expect(await pgTableNames()).toContain("memory_v2_injection_events");
   });
 
   test("the ledger table is present after a run", async () => {

@@ -90,10 +90,6 @@ export function buildInspectorExportFiles(
       path: "memory/memory-recall.json",
       contents: prettyJson(context.memoryRecall ?? null),
     },
-    {
-      path: "memory/memory-v2-activation.json",
-      contents: prettyJson(context.memoryV2Activation ?? null),
-    },
   ];
 
   context.logs.forEach((log, index) => {

@@ -876,7 +876,7 @@ function TabContent({
     case "skills":
       return <SkillsTab logs={logs} buildCallHref={buildCallHref} />;
     case "memory":
-      return <MemoryTab context={context} assistantId={assistantId} />;
+      return <MemoryTab context={context} />;
   }
 }
 

@@ -31,7 +31,6 @@ function trackedConfigSettings(
 ): ReadonlyArray<readonly [string, string]> {
   const pairs: ReadonlyArray<readonly [string, boolean | undefined]> = [
     ["memory.enabled", config.memory?.enabled],
-    ["memory.v2.enabled", config.memory?.v2?.enabled],
     ["memory.v3.live", config.memory?.v3?.live],
   ];
   return pairs

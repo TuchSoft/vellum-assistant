@@ -172,6 +172,10 @@ const LEGACY_JOB_TYPES = new Set([
   "generate_capability_cards",
   "generate_thread_starters",
   "memory_v2_rebuild_edges",
+  // Retired memory-v2 engine job types — the activation/router engine no
+  // longer has handlers. Kept here so pre-upgrade rows drop gracefully.
+  "memory_v2_migrate",
+  "memory_v2_activation_recompute",
   // Retired memory-v3 job types — handlers were removed in the v3 rip. Kept
   // here so pre-upgrade rows enqueued by the old write path drop gracefully.
   "memory_v3_consolidate",
@@ -1167,7 +1171,7 @@ export async function maybeEnqueueGraphMaintenanceJobs(
   }
 }
 
-// ── SUBSTRATE (v2+v3) maintenance ─────────────────────────────────
+// ── SUBSTRATE maintenance ─────────────────────────────────
 
 /**
  * Substrate maintenance entries; scheduled only while concept-page memory is

@@ -428,7 +428,7 @@ describePg("loadConfig startup behavior", () => {
 
     const config = getConfig();
 
-    expect(config.memory.v2.bm25_b).toBe(0.4);
+    expect(config.memory.substrate.bm25_b).toBe(0.4);
   });
 
   test("default workspace config merge prunes exact seeded call-site defaults", async () => {

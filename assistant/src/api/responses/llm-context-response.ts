@@ -23,7 +23,6 @@ import { z } from "zod";
 
 import { LLMRequestLogEntrySchema } from "./llm-request-log-entry.js";
 import { MemoryRecallLogSchema } from "./memory-recall-log.js";
-import { MemoryV2ActivationLogSchema } from "./memory-v2-activation-log.js";
 import { MemoryV3SelectionLogSchema } from "./memory-v3-selection-log.js";
 
 export const LlmContextResponseSchema = z.object({
@@ -34,7 +33,6 @@ export const LlmContextResponseSchema = z.object({
   conversationTotalEstimatedCostUsd: z.number().nullish(),
   logs: z.array(LLMRequestLogEntrySchema),
   memoryRecall: MemoryRecallLogSchema.nullable(),
-  memoryV2Activation: MemoryV2ActivationLogSchema.nullable(),
   memoryV3Selection: MemoryV3SelectionLogSchema.nullish(),
 });
 

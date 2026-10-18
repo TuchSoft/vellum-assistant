@@ -16,21 +16,14 @@ const log = getLogger("memory-db");
 const PURGE_BATCH = 10_000;
 
 /**
- * `true` unless `memory.enabled` or `memory.v2.enabled` is explicitly
- * `false`. Missing/unloadable config falls through to the schema defaults
- * (enabled) — mirrors `isMemoryEnabled` in the jobs store and the gating of
- * workspace migration 085.
+ * `true` unless `memory.enabled` is explicitly `false`. Missing/unloadable
+ * config falls through to the schema defaults (enabled) — mirrors
+ * `isMemoryEnabled` in the jobs store.
  */
 function memoryV2ReembedAllowed(): boolean {
   try {
     const config = getConfig();
-    if (config.memory?.enabled === false) {
-      return false;
-    }
-    if (config.memory?.v2?.enabled === false) {
-      return false;
-    }
-    return true;
+    return config.memory?.enabled !== false;
   } catch {
     return true;
   }

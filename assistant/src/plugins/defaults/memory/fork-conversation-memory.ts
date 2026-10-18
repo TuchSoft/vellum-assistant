@@ -2,14 +2,6 @@ import type { AsyncDb } from "../../../persistence/db-facade.js";
 import { forkGraphMemoryState } from "./graph/graph-memory-state-store.js";
 import { forkRetrospectiveState } from "./memory-retrospective-state.js";
 import {
-  extractInjectedConceptSlugs,
-  readInjectedBlock,
-} from "./substrate/injected-block-slugs.js";
-import {
-  forkActivationState,
-  seedForkActivationState,
-} from "./v2/activation-store.js";
-import {
   forkEverInjected,
   seedEverInjectedFromBlocks,
 } from "./v3/ever-injected-store.js";
@@ -41,15 +33,15 @@ export interface ForkConversationMemoryInput {
 
 /**
  * Carry the parent's per-conversation memory state into a freshly forked child
- * (activation and injection logs, graph state, retrospective state).
+ * (injection logs, graph state, retrospective state).
  *
  * The persistence layer's fork path (`conversation-crud.ts`) imports this
  * directly and calls it inside the fork's DB transaction, threading the live
  * transaction handle for the state that still lives in the main DB
- * (ever-injected, retrospective) so those copies commit with the fork.
- * Activation and graph state have moved to the dedicated memory connection, a
- * separate database file: their copies write that connection and so are not
- * part of the fork transaction, matching the cross-file split everywhere else.
+ * (ever-injected, retrospective) so those copies commit with the fork. Graph
+ * state lives on the dedicated memory connection; its copy writes that
+ * connection and so is not part of the fork transaction, matching the
+ * cross-file split everywhere else.
  * This is a persistence → memory back-import documented in the
  * persistence-layering guard; unlike the other persistence-lifecycle events it
  * is a direct call rather than a first-class `hooks` dispatch, because the
@@ -75,12 +67,10 @@ export async function forkConversationMemory(
   } = input;
 
   // Carry the parent's per-conversation memory state into the child so the
-  // forked thread resumes with the same activation/injection log and
-  // in-context tracker the parent had at fork time. Only valid for
-  // full-history forks: a truncated fork would inherit activation/tracker
-  // entries for turns the child does not actually contain.
+  // forked thread resumes with the same injection log and in-context tracker
+  // the parent had at fork time. Only valid for full-history forks: a truncated
+  // fork would inherit state for turns the child does not actually contain.
   if (isFullHistoryFork) {
-    forkActivationState(sourceConversationId, forkId);
     forkEverInjected(sourceConversationId, forkId);
     forkGraphMemoryState(sourceConversationId, forkId);
   } else {
@@ -91,23 +81,12 @@ export async function forkConversationMemory(
     // `everInjected` from the inherited attachments themselves — scoped to
     // the child's visible window, since attachments behind an inherited
     // compaction boundary are not rendered and must stay re-injectable.
-    // The v2 and v3 layers persist under separate metadata keys with the
-    // same `# memory/concepts/<slug>.md` header convention, so each seeds
-    // its own dedup record from its own blocks: v2 at page grain, v3 at
-    // section grain (the store scans the section headers itself).
     const visibleStartIndex = Math.min(
       inheritedCompactedMessageCount,
       messagesToCopy.length,
     );
-    const inheritedSlugs = new Set<string>();
     const inheritedV3Blocks: InjectedBlock[] = [];
     for (const message of messagesToCopy.slice(visibleStartIndex)) {
-      const block = readInjectedBlock(message.metadata, "memoryInjectedBlock");
-      if (block) {
-        for (const slug of extractInjectedConceptSlugs(block)) {
-          inheritedSlugs.add(slug);
-        }
-      }
       // Each inherited block carries the format its row's metadata records
       // (the copied metadata keeps the persisting build's stamp): the seeder
       // scans the current ones and skips the legacy ones, which seed nothing.
@@ -116,7 +95,6 @@ export async function forkConversationMemory(
         inheritedV3Blocks.push(v3Block);
       }
     }
-    seedForkActivationState(forkId, [...inheritedSlugs]);
     seedEverInjectedFromBlocks(
       sourceConversationId,
       forkId,

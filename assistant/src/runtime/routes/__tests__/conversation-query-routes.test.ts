@@ -3,10 +3,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { waitFor } from "../../../__tests__/helpers/wait-for.js";
-import {
-  sampleConcepts as sharedSampleConcepts,
-  sampleConfig,
-} from "../../../plugins/defaults/memory/__tests__/fixtures/memory-v2-activation-fixtures.js";
 
 // In-memory source of truth for the workspace raw config. Tests assign or
 // mutate this, then `seedRawConfig()` mirrors it to the real config.json the
@@ -64,11 +60,7 @@ import {
 import { AssistantConfigSchema } from "../../../config/schema.js";
 import { LLMConfigBase } from "../../../config/schemas/llm.js";
 import type { ConversationCreateType } from "../../../persistence/conversation-types.js";
-import {
-  getDb,
-  getLogsDb,
-  getMemorySqlite,
-} from "../../../persistence/db-connection.js";
+import { getDb, getLogsDb } from "../../../persistence/db-connection.js";
 import { requireMainDb } from "../../../persistence/db-facade.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import {
@@ -78,23 +70,11 @@ import {
   messages,
 } from "../../../persistence/schema/index.js";
 import {
-  backfillMemoryV2ActivationMessageId,
-  type MemoryV2ConceptRowRecord,
-  type MemoryV2ConfigSnapshot,
-  recordMemoryV2ActivationLog,
-} from "../../../plugins/defaults/memory/v2/activation-log-store.js";
-import {
   createConnection,
   getConnection,
 } from "../../../providers/inference/connections.js";
 import { assistantEventHub } from "../../assistant-event-hub.js";
 import { commitConfigWrite, ROUTES } from "../conversation-query-routes.js";
-
-// Local subset: this test only exercises a single concept row.
-const sampleConcepts: MemoryV2ConceptRowRecord[] = sharedSampleConcepts.slice(
-  0,
-  1,
-);
 
 await initializeDb();
 
@@ -149,7 +129,6 @@ function dispatchConversationLlmContext(queryParams: Record<string, string>) {
 function clearTables(): void {
   const db = getDb();
   getLogsDb()!.delete(llmRequestLogs).run();
-  getMemorySqlite()!.exec(`DELETE FROM memory_v2_activation_logs`);
   db.delete(messages).run();
   db.delete(conversationKeys).run();
   db.delete(conversations).run();
@@ -306,7 +285,6 @@ describe("GET /v1/conversations/llm-context", () => {
       conversationTotalEstimatedCostUsd: number | null;
       logs: Array<{ id: string }>;
       memoryRecall: null;
-      memoryV2Activation: null;
     };
 
     expect(body.conversationId).toBe("conv-1");
@@ -315,7 +293,6 @@ describe("GET /v1/conversations/llm-context", () => {
     expect(body.conversationTotalEstimatedCostUsd).toBe(0.42);
     expect(body.logs.map((log) => log.id)).toEqual(["log-a", "log-b"]);
     expect(body.memoryRecall).toBeNull();
-    expect(body.memoryV2Activation).toBeNull();
   });
 
   test("returns an empty inspector response for an unresolved conversation key", async () => {
@@ -511,59 +488,6 @@ describe("GET /v1/llm-request-logs/:id/context", () => {
     expect(
       logContextRoute.handler({ pathParams: { id: "log-missing" } }),
     ).rejects.toThrow("log not found");
-  });
-});
-
-describe("GET /v1/messages/:id/llm-context — memoryV2Activation", () => {
-  beforeEach(() => {
-    clearTables();
-  });
-
-  test("returns null memoryV2Activation when no v2 log exists for the turn", async () => {
-    const messageId = "msg-no-v2";
-    seedRequestLog(messageId, "log-no-v2");
-
-    const body = (await dispatchLlmContext(messageId)) as {
-      memoryV2Activation: unknown;
-      memoryRecall: unknown;
-    };
-
-    expect(body.memoryV2Activation).toBeNull();
-    // Backwards-compat: memoryRecall remains.
-    expect(body).toHaveProperty("memoryRecall");
-  });
-
-  test("returns the recorded v2 activation log on the response", async () => {
-    const conversationId = "conv-v2";
-    const messageId = "msg-v2-present";
-
-    seedRequestLog(messageId, "log-v2-present");
-    recordMemoryV2ActivationLog({
-      conversationId,
-      turn: 4,
-      mode: "per-turn",
-      concepts: sampleConcepts,
-      config: sampleConfig,
-    });
-    backfillMemoryV2ActivationMessageId(conversationId, messageId);
-
-    const body = (await dispatchLlmContext(messageId)) as {
-      memoryV2Activation: {
-        turn: number;
-        mode: "context-load" | "per-turn";
-        concepts: MemoryV2ConceptRowRecord[];
-        config: MemoryV2ConfigSnapshot;
-      } | null;
-      memoryRecall: unknown;
-    };
-
-    expect(body.memoryV2Activation).not.toBeNull();
-    expect(body.memoryV2Activation!.turn).toBe(4);
-    expect(body.memoryV2Activation!.mode).toBe("per-turn");
-    expect(body.memoryV2Activation!.concepts).toEqual(sampleConcepts);
-    expect(body.memoryV2Activation!.config).toEqual(sampleConfig);
-    // Backwards-compat: memoryRecall field still present.
-    expect(body).toHaveProperty("memoryRecall");
   });
 });
 

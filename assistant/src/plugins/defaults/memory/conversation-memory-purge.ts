@@ -12,7 +12,6 @@ const log = getLogger("conversation-memory-purge");
  * memory connection.
  */
 export const CONVERSATION_KEYED_MEMORY_TABLES: readonly string[] = [
-  "memory_v2_activation_logs",
   "memory_recall_logs",
   "memory_v3_selections",
   "memory_v3_pools",
@@ -21,7 +20,6 @@ export const CONVERSATION_KEYED_MEMORY_TABLES: readonly string[] = [
   // rows to purge.
   "memory_v3_pool_inputs",
   "activation_sessions",
-  "activation_state",
   "conversation_graph_memory_state",
   "memory_v3_ever_injected",
   "memory_v3_injected_sections",

@@ -6,12 +6,8 @@ import type { PostCompactContext } from "@vellumai/plugin-api";
 
 import { setConfig } from "./helpers/set-config.js";
 
-// This test exercises v1 PKB injection. `config.memory.v2.enabled` (default
-// `true`) makes the PKB injector go silent — seed it off in the real workspace
-// config so the v1 injection chain assertions stay meaningful. The Slack
-// suites below need a bot user id, and the timezone-resolution suite re-seeds
-// `ui` per test via `seedUiTimezones`.
-setConfig("memory", { v2: { enabled: false } });
+// The Slack suites below need a bot user id, and the timezone-resolution suite
+// re-seeds `ui` per test via `seedUiTimezones`.
 setConfig("slack", { botUserId: "U_BOT" });
 
 // Per-test overrides for `ui.userTimezone` / `ui.detectedTimezone` so the
@@ -23,18 +19,14 @@ function seedUiTimezones(ui: {
   setConfig("ui", ui);
 }
 
-const realMemoryConfigForAssemblyTest =
-  await import("../plugins/defaults/memory/config.js");
-const realGetMemoryConfigForAssemblyTest =
-  realMemoryConfigForAssemblyTest.getMemoryConfig;
-
-// Memory code resolves its config through the plugin's own accessor, not
-// getConfig(); mirror the v2-disabled override there.
-mock.module("../plugins/defaults/memory/config.js", () => ({
-  getMemoryConfig: () => {
-    const real = realGetMemoryConfigForAssemblyTest();
-    return { ...real, v2: { ...real.v2, enabled: false } };
-  },
+// The injector-chain assertions below cover the legacy PKB injectors, whose
+// ordering and rendering are tier-agnostic. Force the v1-active predicate so
+// those injectors run their production code paths.
+const realMemoryGateForAssemblyTest =
+  await import("../config/memory-v3-gate.js");
+mock.module("../config/memory-v3-gate.js", () => ({
+  ...realMemoryGateForAssemblyTest,
+  isMemoryV1Active: () => true,
 }));
 
 // `resolveTurnInboundActorContext` reads the INFO `notes` field via a local

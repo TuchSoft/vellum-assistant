@@ -28,7 +28,6 @@ function makeContext(): LlmContextResponse {
       reason: null,
       queryContext: "query",
     },
-    memoryV2Activation: null,
     logs: [
       {
         id: "log/alpha",
@@ -114,7 +113,6 @@ describe("inspector export", () => {
       "conversation/actual-user-messages.json",
       "conversation/llm-calls.json",
       "memory/memory-recall.json",
-      "memory/memory-v2-activation.json",
       "normalized-context/calls/001-log_alpha/summary.json",
       "normalized-context/calls/001-log_alpha/request-sections.json",
       "normalized-context/calls/001-log_alpha/response-sections.json",
@@ -201,7 +199,6 @@ function makeManyLogContext(count: number): LlmContextResponse {
     conversationKind: "chat",
     conversationTotalEstimatedCostUsd: null,
     memoryRecall: null,
-    memoryV2Activation: null,
     // Section-less logs so the export hits both the payload and section fetchers.
     logs: Array.from({ length: count }, (_, index) => ({
       id: `log/${index}`,

@@ -2,9 +2,8 @@
  * Head-of-line repro for the per-lane scheduler in `runMemoryJobsOnce`.
  *
  * Before this fix, all non-embed jobs ran through a single bounded worker
- * pool, so a long-running `graph_consolidate` LLM call would pin every slot
- * and starve fast-lane jobs (e.g. `memory_v2_activation_recompute`)
- * for the duration of that call.
+ * pool, so a long-running slow-lane LLM call would pin every slot and starve
+ * fast-lane jobs for the duration of that call.
  *
  * The new scheduler runs slow / fast / embed lanes in parallel pools, each
  * with its own concurrency budget. This test enqueues a wave of slow LLM
@@ -40,13 +39,9 @@ setDefaultTimeout(30_000);
 // claimed jobs without lane awareness and ran them through a single
 // workerConcurrency-sized pool — would pin its slots on the first claimed
 // slow jobs and force the fast jobs to queue behind a 200ms LLM call.
-// `memory.v2.enabled` is off so v1 is the active memory tier: the slow-lane
-// job here is `graph_consolidate`, whose handler completes v1 graph rows as
-// a no-op while concept-page memory is active — this test needs it to
-// genuinely run.
-// Everything else (including `memory.enabled: true`) is the schema default.
+// The slow-lane job under test is `memory_v3_maintain` (mocked below); the
+// fast-lane job is `memory_v2_reembed`. Everything else is the schema default.
 setConfig("memory", {
-  v2: { enabled: false },
   jobs: {
     slowLlmConcurrency: 1,
     fastConcurrency: 5,
@@ -68,42 +63,31 @@ const completions: CompletionRecord[] = [];
 // job completes before any slow job — a single 200ms window is plenty.
 const SLOW_DELAY_MS = 200;
 
-mock.module("../plugins/defaults/memory/v1/graph/consolidation.js", () => ({
-  runConsolidation: async (
-    scopeId: string,
-  ): Promise<{
-    totalUpdated: number;
-    totalDeleted: number;
-    totalMergeEdges: number;
-  }> => {
+mock.module("../plugins/defaults/memory/v3/maintain-job.js", () => ({
+  maintainJob: async (job: {
+    payload: { scopeId?: string };
+  }): Promise<void> => {
     await new Promise((resolve) => setTimeout(resolve, SLOW_DELAY_MS));
     completions.push({
-      type: "graph_consolidate",
-      conversationId: scopeId,
+      type: "memory_v3_maintain",
+      conversationId: job.payload.scopeId ?? "",
       completedAt: Date.now(),
     });
-    return { totalUpdated: 0, totalDeleted: 0, totalMergeEdges: 0 };
   },
 }));
 
 // Fast-lane handler: resolves on the next microtask. The test fires this
 // many times in parallel; nothing should block.
-mock.module("../plugins/defaults/memory/v2/backfill-jobs.js", () => ({
-  memoryV2ActivationRecomputeJob: async (job: {
+mock.module("../plugins/defaults/memory/substrate/reembed-job.js", () => ({
+  memoryV2ReembedJob: async (job: {
     payload: { scopeId?: string };
-  }): Promise<number> => {
+  }): Promise<void> => {
     completions.push({
-      type: "memory_v2_activation_recompute",
+      type: "memory_v2_reembed",
       conversationId: job.payload.scopeId ?? "",
       completedAt: Date.now(),
     });
-    return 0;
   },
-  memoryV2MigrateJob: async (): Promise<void> => {},
-}));
-
-mock.module("../plugins/defaults/memory/substrate/reembed-job.js", () => ({
-  memoryV2ReembedJob: async (): Promise<void> => {},
 }));
 
 // Stub remaining heavy boundaries that we never exercise but that get pulled
@@ -136,24 +120,20 @@ describe("memory jobs worker lane scheduling", () => {
   });
 
   test("fast lane completes before slow lane releases its slot", async () => {
-    // 5 slow `graph_consolidate` jobs across distinct scopes (so they would
-    // serialize behind a single shared pool) plus 5 fast
-    // `memory_v2_activation_recompute` jobs across distinct scopes.
+    // 5 slow `memory_v3_maintain` jobs across distinct scopes (so they would
+    // serialize behind a single shared pool) plus 5 fast `memory_v2_reembed`
+    // jobs across distinct scopes.
     for (let i = 0; i < 5; i++) {
-      enqueueMemoryJob("graph_consolidate", { scopeId: `slow-${i}` });
+      enqueueMemoryJob("memory_v3_maintain", { scopeId: `slow-${i}` });
     }
     for (let i = 0; i < 5; i++) {
-      enqueueMemoryJob("memory_v2_activation_recompute", {
-        scopeId: `fast-${i}`,
-      });
+      enqueueMemoryJob("memory_v2_reembed", { scopeId: `fast-${i}` });
     }
 
     await runMemoryJobsOnce();
 
-    const fastDone = completions.filter(
-      (c) => c.type === "memory_v2_activation_recompute",
-    );
-    const slowDone = completions.filter((c) => c.type === "graph_consolidate");
+    const fastDone = completions.filter((c) => c.type === "memory_v2_reembed");
+    const slowDone = completions.filter((c) => c.type === "memory_v3_maintain");
 
     // Slow lane is capped at 1 in this test, so only 1 slow job ran in this
     // tick. Fast lane has cap 2, but with 5 fast jobs it runs all 5 because
@@ -178,11 +158,10 @@ describe("memory jobs worker lane scheduling", () => {
     // picked up on subsequent ticks. (FIFO ordering inside the slow lane is
     // covered separately in jobs-store-qdrant-breaker.test.ts.)
     //
-    // Note: a sixth `graph_consolidate` row may also appear here — the
-    // `maybeEnqueueGraphMaintenanceJobs` tail of `runMemoryJobsOnce` enqueues
-    // its own maintenance job whose checkpoint is missing in this fresh DB.
-    // That row is irrelevant; we only care about the completed-vs-pending
-    // counts of jobs we explicitly seeded.
+    // The `maybeEnqueueGraphMaintenanceJobs` tail of `runMemoryJobsOnce` may
+    // enqueue its own maintenance job whose checkpoint is missing in this
+    // fresh DB. That row is a different type and irrelevant here; we only care
+    // about the completed-vs-pending counts of jobs we explicitly seeded.
     const completedSlow = countSlowByStatus("completed");
     expect(completedSlow).toBe(1);
   });
@@ -195,7 +174,7 @@ function countSlowByStatus(
   return db
     .select()
     .from(memoryJobs)
-    .where(eq(memoryJobs.type, "graph_consolidate"))
+    .where(eq(memoryJobs.type, "memory_v3_maintain"))
     .all()
     .filter((row) => row.status === status).length;
 }

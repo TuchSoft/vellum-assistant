@@ -27,7 +27,6 @@ const PASSTHROUGH_BLOCKS: ReadonlyArray<
   ["workspaceBlock", "workspaceBlock"],
   ["nowScratchpadBlock", "nowScratchpadBlock"],
   ["pkbContextBlock", "pkbContextBlock"],
-  ["memoryV2StaticBlock", "memoryV2StaticBlock"],
   ["backgroundTurnBlock", "backgroundTurnBlock"],
   ["channelCapabilitiesBlock", "channelCapabilitiesBlock"],
   ["nonInteractiveContextBlock", "nonInteractiveContextBlock"],
@@ -39,12 +38,10 @@ const PASSTHROUGH_BLOCKS: ReadonlyArray<
  * key in one update. The memory layers end the turn mutually exclusive per
  * row and, on a retry, exactly as the rerun assembled them:
  *
- *  - v2's block (`memoryInjectedBlock`) was persisted right after retrieval.
- *    When memory-v3 superseded it this turn (`blocks.memoryV3Active`),
- *    assembly stripped the v2 block from the tail, so the update REMOVES the
- *    key again (persisting it would rehydrate a block that is not in the
- *    live history). `v2BlockPersisted` says whether there is anything to
- *    remove.
+ *  - the legacy graph block (`memoryInjectedBlock`) was persisted right after
+ *    retrieval. When memory-v3 owned the turn (`blocks.memoryV3Active`), the
+ *    legacy block was not written, and the update REMOVES any stale key.
+ *    `graphBlockPersisted` says whether there is anything to remove.
  *  - `blocks.memoryV3InjectedBlock` (the frozen net-new section block,
  *    unwrapped) persists under `MEMORY_V3_INJECTED_BLOCK_METADATA_KEY` with
  *    `MEMORY_V3_INJECTED_BLOCK_FORMAT` stamped beside it (the value the
@@ -65,14 +62,14 @@ const PASSTHROUGH_BLOCKS: ReadonlyArray<
  * (`JSON.stringify` drops it); the metadata schema types these fields
  * `string | absent`, so removal drops the key rather than writing null.
  * Nothing is persisted (`null`) only when the turn produced no block, has no
- * v2 key to remove, and memory-v3 was not the turn's memory layer.
+ * legacy key to remove, and memory-v3 was not the turn's memory layer.
  */
 export function injectionMetadataUpdates(
   blocks: RuntimeInjectionResult["blocks"],
-  v2BlockPersisted: boolean,
+  graphBlockPersisted: boolean,
 ): Record<string, unknown> | null {
   const updates: Record<string, unknown> = {};
-  if (blocks.memoryV3Active && v2BlockPersisted) {
+  if (blocks.memoryV3Active && graphBlockPersisted) {
     updates.memoryInjectedBlock = undefined;
   }
   if (blocks.memoryV3InjectedBlock) {

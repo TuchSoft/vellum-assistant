@@ -129,8 +129,8 @@ describe("pgDefaultFor", () => {
 });
 
 describe("buildBaselineStatements", () => {
-  test("excludes the LLM log table", () => {
-    expect(joined).not.toContain("llm_request_logs");
+  test("includes the LLM log table (the consolidated database reads it)", () => {
+    expect(joined).toContain("llm_request_logs");
   });
 
   test("maps column types, honouring the schema-file overrides", () => {
@@ -163,7 +163,12 @@ describe("committed baseline", () => {
   });
 
   test("does not contain the log tables or the migration ledger", () => {
-    expect(BASELINE_TABLES).not.toContain("llm_request_logs");
+    // The consolidated Postgres database also carries `llm_request_logs`
+    // (the conversation store reads it directly), so it stays in the baseline.
+    expect(BASELINE_TABLES).toContain("llm_request_logs");
+    expect(BASELINE_TABLES).not.toContain("memory_v2_activation_logs");
+    expect(BASELINE_TABLES).not.toContain("memory_v2_injection_events");
+    expect(BASELINE_TABLES).not.toContain("activation_state");
     expect(BASELINE_TABLES).not.toContain(PG_MIGRATION_LEDGER);
     expect(BASELINE_TABLES.some((t) => /compaction_log/.test(t))).toBe(false);
   });

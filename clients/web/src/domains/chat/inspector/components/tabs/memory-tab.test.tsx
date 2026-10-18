@@ -20,7 +20,6 @@ function contextWithPool(pool: MemoryV3Pool | null): LlmContextResponse {
     conversationTotalEstimatedCostUsd: null,
     logs: [],
     memoryRecall: null,
-    memoryV2Activation: null,
     memoryV3Selection: {
       turn: 3,
       live: true,
@@ -79,7 +78,7 @@ afterEach(cleanup);
 describe("MemoryTab v3 candidate pool", () => {
   test("renders the pool collapsed behind its summary and expands to the candidate rows", () => {
     render(
-      <MemoryTab context={contextWithPool(POOL)} assistantId="assistant-1" />,
+      <MemoryTab context={contextWithPool(POOL)} />,
     );
 
     const toggle = screen.getByRole("button", { name: /Candidate pool/ });
@@ -103,7 +102,7 @@ describe("MemoryTab v3 candidate pool", () => {
 
   test("renders the empty state for a turn logged before pools were persisted", () => {
     render(
-      <MemoryTab context={contextWithPool(null)} assistantId="assistant-1" />,
+      <MemoryTab context={contextWithPool(null)} />,
     );
 
     expect(screen.getByText("Candidate pool")).toBeTruthy();
@@ -123,7 +122,6 @@ describe("MemoryTab v3 candidate pool", () => {
           selectorRan: false,
           candidates: [],
         })}
-        assistantId="assistant-1"
       />,
     );
 
@@ -164,7 +162,6 @@ describe("MemoryTab v3 candidate pool", () => {
     render(
       <MemoryTab
         context={contextWithPool(passthrough)}
-        assistantId="assistant-1"
       />,
     );
 

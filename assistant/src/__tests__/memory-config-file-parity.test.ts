@@ -53,17 +53,17 @@ describe("memory config file parity", () => {
   });
 
   test("custom knobs are visible and identical", () => {
-    writeConfig({ memory: { enabled: false, v2: { bm25_b: 0.9 } } });
+    writeConfig({ memory: { enabled: false, substrate: { bm25_b: 0.9 } } });
     const memory = expectParity();
     expect(memory.enabled).toBe(false);
-    expect(memory.v2.bm25_b).toBe(0.9);
+    expect(memory.substrate.bm25_b).toBe(0.9);
   });
 
   test("an invalid leaf falls back per-field; valid siblings survive", () => {
-    writeConfig({ memory: { enabled: false, v2: { bm25_b: "high" } } });
+    writeConfig({ memory: { enabled: false, substrate: { bm25_b: "high" } } });
     const memory = expectParity();
     expect(memory.enabled).toBe(false); // sibling customization survives
-    expect(typeof memory.v2.bm25_b).toBe("number"); // invalid leaf → default
+    expect(typeof memory.substrate.bm25_b).toBe("number"); // invalid leaf → default
   });
 
   test("unknown keys strip silently", () => {
@@ -183,9 +183,9 @@ describe("memory config file parity", () => {
 
       writeFileSync(
         join(otherWorkspace, "config.json"),
-        JSON.stringify({ memory: { v2: { enabled: false } } }),
+        JSON.stringify({ memory: { enabled: false } }),
       );
-      expect(getMemoryConfig().v2.enabled).toBe(false);
+      expect(getMemoryConfig().enabled).toBe(false);
       expectParity();
     } finally {
       process.env.VELLUM_WORKSPACE_DIR = savedWorkspace;

@@ -134,11 +134,10 @@ async function resolveLeafContext(
  * memory. Without this, a workflow launched by an untrusted actor whose manifest
  * grants `persona` could exfiltrate private memory in its output.
  *
- * On a v3-live assistant a persona leaf receives no injected memory at all:
- * `prepareMemory`'s v2 route is gated on `isV2InjectionEngineActive` (v3 live
- * suppresses it), the v1 retriever short-circuits to empty under the
- * concept-page substrate, and v3 orchestration is conversation-turn-scoped so
- * it does not run for workflow leaves.
+ * A persona leaf receives no injected memory at all: the v1 retriever
+ * short-circuits to empty under the concept-page substrate, and v3
+ * orchestration is conversation-turn-scoped so it does not run for workflow
+ * leaves.
  */
 async function injectPersonaMemory(
   opts: RunLeafOptions,

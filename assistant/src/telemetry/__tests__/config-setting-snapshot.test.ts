@@ -11,15 +11,10 @@ import {
   setShareAnalytics,
 } from "./outbox-test-harness.js";
 
-function makeConfig(
-  memoryEnabled: boolean,
-  v2Enabled: boolean,
-  v3Live = false,
-): AssistantConfig {
+function makeConfig(memoryEnabled: boolean, v3Live = false): AssistantConfig {
   return {
     memory: {
       enabled: memoryEnabled,
-      v2: { enabled: v2Enabled },
       v3: { live: v3Live },
     },
   } as AssistantConfig;
@@ -45,36 +40,34 @@ describe("config-setting-snapshot", () => {
 
     expect((await recordedPairs()).sort()).toEqual([
       ["memory.enabled", "true"],
-      ["memory.v2.enabled", "false"],
       ["memory.v3.live", "false"],
     ]);
   });
 
   test("repeated snapshots with unchanged values record nothing new", async () => {
-    await recordConfigSettingSnapshot(makeConfig(true, true));
-    await recordConfigSettingSnapshot(makeConfig(true, true));
-    await recordConfigSettingSnapshot(makeConfig(true, true));
+    await recordConfigSettingSnapshot(makeConfig(true, false));
+    await recordConfigSettingSnapshot(makeConfig(true, false));
+    await recordConfigSettingSnapshot(makeConfig(true, false));
 
-    expect(await recordedPairs()).toHaveLength(3);
+    expect(await recordedPairs()).toHaveLength(2);
   });
 
   test("a changed value records only the changed key", async () => {
-    await recordConfigSettingSnapshot(makeConfig(true, true));
-    await resetOutboxTable();
-
     await recordConfigSettingSnapshot(makeConfig(true, false));
-
-    expect(await recordedPairs()).toEqual([["memory.v2.enabled", "false"]]);
-  });
-
-  test("memory.v3.live is tracked and its flip is captured", async () => {
-    await recordConfigSettingSnapshot(makeConfig(true, true, false));
-    expect(await recordedPairs()).toContainEqual(["memory.v3.live", "false"]);
     await resetOutboxTable();
 
-    await recordConfigSettingSnapshot(makeConfig(true, true, true));
+    await recordConfigSettingSnapshot(makeConfig(true, true));
 
     expect(await recordedPairs()).toEqual([["memory.v3.live", "true"]]);
+  });
+
+  test("memory.enabled is tracked and its flip is captured", async () => {
+    await recordConfigSettingSnapshot(makeConfig(true, false));
+    await resetOutboxTable();
+
+    await recordConfigSettingSnapshot(makeConfig(false, false));
+
+    expect(await recordedPairs()).toEqual([["memory.enabled", "false"]]);
   });
 
   test("unknown consent skips entirely — no rows, no memo", async () => {
@@ -91,43 +84,41 @@ describe("config-setting-snapshot", () => {
     await recordConfigSettingSnapshot(makeConfig(true, false));
     expect((await recordedPairs()).sort()).toEqual([
       ["memory.enabled", "true"],
-      ["memory.v2.enabled", "false"],
       ["memory.v3.live", "false"],
     ]);
   });
 
   test("consent off drops the snapshot without poisoning the memo", async () => {
     setShareAnalytics(false);
-    await recordConfigSettingSnapshot(makeConfig(true, true));
+    await recordConfigSettingSnapshot(makeConfig(true, false));
     expect(await recordedPairs()).toHaveLength(0);
 
     // A later opted-in snapshot records the full set — the opted-out attempt
     // must not have memoized the values (mirrors the reporter's flush retry
     // once consent resolves).
     setShareAnalytics(true);
-    await recordConfigSettingSnapshot(makeConfig(true, true));
-    expect(await recordedPairs()).toHaveLength(3);
+    await recordConfigSettingSnapshot(makeConfig(true, false));
+    expect(await recordedPairs()).toHaveLength(2);
   });
 
   test("re-opt-in after an opt-out re-records the full snapshot", async () => {
     // Recorded while opted in.
-    await recordConfigSettingSnapshot(makeConfig(true, true));
-    expect(await recordedPairs()).toHaveLength(3);
+    await recordConfigSettingSnapshot(makeConfig(true, false));
+    expect(await recordedPairs()).toHaveLength(2);
     await resetOutboxTable();
 
     // Opt out: the reporter's opt-out flush discards any pending rows, so the
     // memo must be cleared here too.
     setShareAnalytics(false);
-    await recordConfigSettingSnapshot(makeConfig(true, true));
+    await recordConfigSettingSnapshot(makeConfig(true, false));
     expect(await recordedPairs()).toHaveLength(0);
 
     // Re-opt-in with the SAME config: the full snapshot re-records rather than
     // being skipped by a stale memo.
     setShareAnalytics(true);
-    await recordConfigSettingSnapshot(makeConfig(true, true));
+    await recordConfigSettingSnapshot(makeConfig(true, false));
     expect((await recordedPairs()).sort()).toEqual([
       ["memory.enabled", "true"],
-      ["memory.v2.enabled", "true"],
       ["memory.v3.live", "false"],
     ]);
   });

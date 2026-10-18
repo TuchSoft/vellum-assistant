@@ -1,23 +1,24 @@
 import { z } from "zod";
 
-import { WEIGHT_SUM_TOLERANCE } from "./memory-v2.js";
+/**
+ * Tolerance for floating-point comparisons of weight sums. Using 0.001 lets
+ * users specify weights to three decimal places without spurious rejections,
+ * while still catching obvious mis-sums.
+ */
+export const WEIGHT_SUM_TOLERANCE = 0.001;
 
 /**
  * Memory substrate (shared concept-page infrastructure) tuning.
  *
- * Every key is optional with no default: an unset key resolves to its
- * historical `memory.v2` counterpart via `resolveSubstrateTuning` (the
- * substrate's single config choke point), so the v2 schema keeps supplying
- * the effective defaults. `spread_k`, `spread_hops`, and
- * `ann_candidate_limit` map onto `memory.v2.k`, `memory.v2.hops`, and
- * `memory.v2.ann_candidate_limit` respectively; every other key shares its
- * name with its `memory.v2` twin.
+ * Every key carries the shipped default explicitly, so the substrate is the
+ * single config surface for concept-page consolidation, hybrid retrieval, BM25
+ * encoding, and the sweep.
  */
 export const MemorySubstrateConfigSchema = z
   .object({
     sweep_enabled: z
       .boolean({ error: "memory.substrate.sweep_enabled must be a boolean" })
-      .optional()
+      .default(false)
       .describe(
         "Whether the idle-debounced memory sweep job is enabled. `remember()` is the primary capture path; opt in only when the model is missing entries the sweep would have caught.",
       ),
@@ -25,7 +26,7 @@ export const MemorySubstrateConfigSchema = z
       .number({ error: "memory.substrate.dense_weight must be a number" })
       .min(0, "memory.substrate.dense_weight must be >= 0")
       .max(1, "memory.substrate.dense_weight must be <= 1")
-      .optional()
+      .default(0.85)
       .describe(
         "Weight on dense (cosine) similarity in the hybrid retrieval score.",
       ),
@@ -33,7 +34,7 @@ export const MemorySubstrateConfigSchema = z
       .number({ error: "memory.substrate.sparse_weight must be a number" })
       .min(0, "memory.substrate.sparse_weight must be >= 0")
       .max(1, "memory.substrate.sparse_weight must be <= 1")
-      .optional()
+      .default(0.15)
       .describe(
         "Weight on sparse (BM25-style) similarity in the hybrid retrieval score — sparse acts as a discriminator for keyword-rich queries.",
       ),
@@ -56,7 +57,7 @@ export const MemorySubstrateConfigSchema = z
     bm25_k1: z
       .number({ error: "memory.substrate.bm25_k1 must be a number" })
       .min(0, "memory.substrate.bm25_k1 must be >= 0")
-      .optional()
+      .default(1.2)
       .describe(
         "BM25 term-frequency saturation parameter. Increase to make repeated mentions of a term matter more, decrease to flatten the curve.",
       ),
@@ -64,7 +65,7 @@ export const MemorySubstrateConfigSchema = z
       .number({ error: "memory.substrate.bm25_b must be a number" })
       .min(0, "memory.substrate.bm25_b must be >= 0")
       .max(1, "memory.substrate.bm25_b must be <= 1")
-      .optional()
+      .default(0.4)
       .describe(
         "BM25 document-length normalization. 0 disables length normalization, 1 fully normalizes. Concept-page collections include structured list pages with high information density per word, so values below Lucene's 0.75 default avoid over-penalizing them.",
       ),
@@ -76,7 +77,7 @@ export const MemorySubstrateConfigSchema = z
       .positive(
         "memory.substrate.consolidation_interval_hours must be a positive integer",
       )
-      .optional()
+      .default(8)
       .describe(
         "Hours between scheduled consolidation runs that synthesize buffered memories into concept pages",
       ),
@@ -90,7 +91,7 @@ export const MemorySubstrateConfigSchema = z
         "memory.substrate.consolidation_max_buffer_lines must be a positive integer",
       )
       .nullable()
-      .optional()
+      .default(100)
       .describe(
         "Size-based trigger for consolidation. When `memory/buffer.md` reaches this many non-empty lines, consolidation runs even if the time-based interval hasn't elapsed. Set to `null` to disable the size trigger and rely solely on `consolidation_interval_hours`.",
       ),
@@ -106,7 +107,7 @@ export const MemorySubstrateConfigSchema = z
         "memory.substrate.consolidation_max_entries_per_run must be a positive integer",
       )
       .nullable()
-      .optional()
+      .default(150)
       .describe(
         "Upper bound on buffer entries one consolidation run may process. When the buffer holds more, the run's cutoff is moved back to the first over-cap entry's timestamp so the overflow is deferred to a follow-up pass. Bounds the context a single agentic run must read after a backlog. Set to `null` to always process the full buffer.",
       ),
@@ -114,7 +115,7 @@ export const MemorySubstrateConfigSchema = z
       .number({ error: "memory.substrate.max_page_chars must be a number" })
       .int("memory.substrate.max_page_chars must be an integer")
       .positive("memory.substrate.max_page_chars must be a positive integer")
-      .optional()
+      .default(5000)
       .describe(
         "Soft upper bound on concept-page body length — pages exceeding this are flagged for split during consolidation",
       ),
@@ -123,7 +124,7 @@ export const MemorySubstrateConfigSchema = z
         error: "memory.substrate.consolidation_prompt_path must be a string",
       })
       .nullable()
-      .optional()
+      .default(null)
       .describe(
         "Optional path to a file whose contents replace the bundled consolidation prompt. Relative paths resolve under the workspace root; absolute paths and a leading `~/` (expanded to the home directory) are honored only when they still resolve inside the workspace root — a path that lands outside the workspace (including via symlinks) is rejected. The loaded contents may include `{{CUTOFF}}`, which is substituted with the run's ISO-8601 cutoff timestamp. If the file is rejected, missing, unreadable, or empty, the bundled prompt is used and a warning is logged.",
       ),
@@ -131,17 +132,17 @@ export const MemorySubstrateConfigSchema = z
       .number({ error: "memory.substrate.spread_k must be a number" })
       .min(0, "memory.substrate.spread_k must be >= 0")
       .max(1, "memory.substrate.spread_k must be <= 1")
-      .optional()
+      .default(0.5)
       .describe(
-        "Spreading-activation propagation coefficient — fraction of own activation that flows to neighbors per hop. Falls back to `memory.v2.k`.",
+        "Spreading-activation propagation coefficient — fraction of own activation that flows to neighbors per hop.",
       ),
     spread_hops: z
       .number({ error: "memory.substrate.spread_hops must be a number" })
       .int("memory.substrate.spread_hops must be an integer")
       .nonnegative("memory.substrate.spread_hops must be non-negative")
-      .optional()
+      .default(2)
       .describe(
-        "Maximum BFS distance for spreading activation across the concept graph. Falls back to `memory.v2.hops`.",
+        "Maximum BFS distance for spreading activation across the concept graph.",
       ),
     ann_candidate_limit: z
       .number({
@@ -152,21 +153,15 @@ export const MemorySubstrateConfigSchema = z
         "memory.substrate.ann_candidate_limit must be a positive integer",
       )
       .nullable()
-      .optional()
+      .default(null)
       .describe(
         "Per-channel cap on the unrestricted ANN candidate query used by memory recall (dense and sparse each return up to this many hits before they are unioned). `null` = unlimited (every page in the concept-page collection is eligible).",
       ),
   })
   .describe(
-    "Memory substrate tuning — overrides for the shared concept-page infrastructure (consolidation, hybrid retrieval, BM25 encoding, sweep). Unset keys resolve to their historical `memory.v2` counterparts.",
+    "Memory substrate tuning for the shared concept-page infrastructure (consolidation, hybrid retrieval, BM25 encoding, sweep).",
   )
   .superRefine((config, ctx) => {
-    if (
-      config.dense_weight === undefined ||
-      config.sparse_weight === undefined
-    ) {
-      return;
-    }
     const hybridSum = config.dense_weight + config.sparse_weight;
     if (Math.abs(hybridSum - 1.0) >= WEIGHT_SUM_TOLERANCE) {
       const message = `memory.substrate hybrid weights (dense_weight + sparse_weight) must sum to 1.0 (got ${hybridSum.toFixed(4)})`;

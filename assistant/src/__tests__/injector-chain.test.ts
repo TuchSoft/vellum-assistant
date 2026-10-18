@@ -24,23 +24,14 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
-import { setConfig } from "./helpers/set-config.js";
-
-// This test exercises v1 PKB injection. `config.memory.v2.enabled`
-// (default `true`) makes the PKB injector go silent — seed it off for real
-// so the v1 injection chain assertions stay meaningful.
-setConfig("memory", { v2: { enabled: false } });
-
-// Memory code resolves its config through the plugin's own accessor, not
-// getConfig(); mirror the v2-disabled override there.
-const realMemoryConfigModule =
-  await import("../plugins/defaults/memory/config.js");
-const realGetMemoryConfig = realMemoryConfigModule.getMemoryConfig;
-mock.module("../plugins/defaults/memory/config.js", () => ({
-  getMemoryConfig: () => {
-    const real = realGetMemoryConfig();
-    return { ...real, v2: { ...real.v2, enabled: false } };
-  },
+// The injector-chain assertions below cover the legacy PKB injectors, whose
+// ordering and rendering are tier-agnostic. Force the v1-active predicate so
+// those injectors run their production code paths.
+const realMemoryGateForInjectorChain =
+  await import("../config/memory-v3-gate.js");
+mock.module("../config/memory-v3-gate.js", () => ({
+  ...realMemoryGateForInjectorChain,
+  isMemoryV1Active: () => true,
 }));
 
 // `applyRuntimeInjections` computes the `<turn_context>` `current_time` live

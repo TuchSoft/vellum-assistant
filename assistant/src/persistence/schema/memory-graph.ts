@@ -145,31 +145,3 @@ export const memoryGraphNodeEdits = sqliteTable("memory_graph_node_edits", {
   conversationId: text("conversation_id"),
   created: integer("created").notNull(),
 });
-
-// ---------------------------------------------------------------------------
-// Memory v2 — activation_state
-// ---------------------------------------------------------------------------
-
-/**
- * Per-conversation snapshot of the v2 retrieval state. One row per
- * conversation; created lazily on first injection.
- *
- * - `stateJson`: sparse `{slug: activation}` map (only slugs > epsilon).
- * - `everInjectedJson`: append-only `[{slug, turn}]` list used to keep
- *   per-turn injections strictly delta-only. Pruned when compaction evicts
- *   the turns whose attached slugs lived on.
- *
- * No FK to conversations.id — fork() may copy state for a child
- * conversation that hasn't been persisted yet, and stale rows are cheap.
- *
- * Lives in the dedicated memory database (`assistant-memory.db`), not main —
- * access it via the memory connection (`getMemoryDb()` / `getMemorySqlite()`).
- */
-export const activationState = sqliteTable("activation_state", {
-  conversationId: text("conversation_id").primaryKey(),
-  messageId: text("message_id").notNull(),
-  stateJson: text("state_json").notNull(),
-  everInjectedJson: text("ever_injected_json").notNull().default("[]"),
-  currentTurn: integer("current_turn").notNull().default(0),
-  updatedAt: integer("updated_at").notNull(),
-});

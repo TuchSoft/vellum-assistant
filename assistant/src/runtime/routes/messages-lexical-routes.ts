@@ -2,7 +2,7 @@
  * Messages lexical-index route — enqueues the resumable backfill that indexes
  * existing messages into the Qdrant lexical collection.
  *
- * Deliberately NOT gated on `memory.v2.enabled`: the lexical index powers
+ * Deliberately NOT gated on the memory tier: the lexical index powers
  * regular message-content search and is independent of the v2 concept-page
  * machinery. The backfill runs off the event loop as a cursor-checkpointed
  * background job. This route enqueues it on demand (operator or client); the

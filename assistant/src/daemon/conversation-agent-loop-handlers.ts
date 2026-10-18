@@ -71,7 +71,6 @@ import {
 import type { ContextWindowResult } from "../plugins/defaults/compaction/window-manager.js";
 import { indexMessageNow } from "../plugins/defaults/memory/indexer.js";
 import { backfillMemoryRecallLogMessageId } from "../plugins/defaults/memory/memory-recall-log-store.js";
-import { backfillMemoryV2ActivationMessageId } from "../plugins/defaults/memory/v2/activation-log-store.js";
 import { backfillMemoryV3SelectionMessageId } from "../plugins/defaults/memory/v3/shadow-plugin.js";
 import { resolveMediaSourceData } from "../providers/media-resolve.js";
 import type {
@@ -3447,18 +3446,6 @@ export async function handleMessageComplete(
     deps.rlog.warn(
       { err },
       "Failed to backfill message_id on memory recall log (non-fatal)",
-    );
-  }
-
-  try {
-    backfillMemoryV2ActivationMessageId(
-      deps.ctx.conversationId,
-      assistantMessageId,
-    );
-  } catch (err) {
-    deps.rlog.warn(
-      { err },
-      "Failed to backfill memory v2 activation log messageId (non-fatal)",
     );
   }
 

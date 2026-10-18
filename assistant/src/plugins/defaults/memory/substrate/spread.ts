@@ -19,9 +19,9 @@
 // A == A_o because both numerator and denominator collapse to `A_o(n)` and
 // `1`, respectively.
 //
-// Consumed by both the v2 injection engine (`v2/activation.ts`) and the
-// `memory` recall source (`context-search/sources/memory-v2.ts`), which runs
-// whenever `usesConceptPageMemory()` holds — i.e. under v3 too.
+// Consumed by the `memory` recall source
+// (`context-search/sources/memory-v2.ts`), which runs whenever
+// `usesConceptPageMemory()` holds.
 
 import { clampUnitInterval } from "../validation.js";
 import type { EdgeIndex } from "./edge-index.js";

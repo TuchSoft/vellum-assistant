@@ -1,8 +1,4 @@
-import {
-  isMemoryEnabled,
-  isMemoryV3Live,
-  isV2InjectionEngineActive,
-} from "./memory-v3-gate.js";
+import { isMemoryEnabled, isMemoryV3Live } from "./memory-v3-gate.js";
 import type { AssistantConfig } from "./schema.js";
 
 export type MemoryTier = "off" | "v1" | "v2" | "v3";
@@ -14,13 +10,13 @@ export type MemoryTier = "off" | "v1" | "v2" | "v3";
  * buckets and the runtime gates can never disagree:
  *
  * - `"off"` wins over everything: {@link isMemoryEnabled} is false when an
- *   explicit `memory.enabled === false` disables the whole memory system,
- *   regardless of v2/v3 settings.
- * - `"v3"` wins over `"v2"`: when memory-v3 is live it suppresses v2 injection
- *   (see {@link isMemoryV3Live}).
- * - `"v2"` when the v2 injection engine performs turn-time selection
- *   (see {@link isV2InjectionEngineActive}).
- * - `"v1"` otherwise (memory on, neither v2 nor v3 selected).
+ *   explicit `memory.enabled === false` disables the whole memory system.
+ * - `"v3"` when memory-v3 is live (see {@link isMemoryV3Live}).
+ * - `"v1"` otherwise. The bucket is retained because the platform dashboard
+ *   groups on the frozen `memory_tier` strings; with the concept-page substrate
+ *   active whenever memory is on, no assistant reports it.
+ *
+ * The `"v2"` bucket is retired with the v2 engine and is never returned.
  */
 export function memoryTier(config: AssistantConfig): MemoryTier {
   if (!isMemoryEnabled(config)) {
@@ -28,9 +24,6 @@ export function memoryTier(config: AssistantConfig): MemoryTier {
   }
   if (isMemoryV3Live(config)) {
     return "v3";
-  }
-  if (isV2InjectionEngineActive(config)) {
-    return "v2";
   }
   return "v1";
 }

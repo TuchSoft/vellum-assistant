@@ -43,7 +43,6 @@ interface ContextStub {
           summary?: unknown;
         }>;
         memoryRecall: null;
-        memoryV2Activation: null;
       }
     | undefined;
   isLoading: boolean;
@@ -273,7 +272,6 @@ describe("InspectPage — gating", () => {
         conversationTotalEstimatedCostUsd: null,
         logs: [makeLog("log-1", 1)],
         memoryRecall: null,
-        memoryV2Activation: null,
       },
       isLoading: false,
       isError: false,
@@ -306,7 +304,6 @@ describe("InspectPage — gating", () => {
         conversationTotalEstimatedCostUsd: null,
         logs: [makeLog("log-1", 1)],
         memoryRecall: null,
-        memoryV2Activation: null,
       },
       isLoading: false,
       isError: false,
@@ -365,7 +362,6 @@ describe("InspectPage — data-loading branches", () => {
         conversationTotalEstimatedCostUsd: null,
         logs: [],
         memoryRecall: null,
-        memoryV2Activation: null,
       },
       isLoading: false,
       isError: false,
@@ -386,7 +382,6 @@ describe("InspectPage — data-loading branches", () => {
         conversationTotalEstimatedCostUsd: 0.42,
         logs: [makeLog("log-1", 1), makeLog("log-2", 2)],
         memoryRecall: null,
-        memoryV2Activation: null,
       },
       isLoading: false,
       isError: false,
@@ -458,7 +453,6 @@ describe("InspectPage — dual-mode chrome", () => {
         conversationTotalEstimatedCostUsd: null,
         logs: [makeLog("log-1", 1)],
         memoryRecall: null,
-        memoryV2Activation: null,
       },
       isLoading: false,
       isError: false,
@@ -509,7 +503,6 @@ describe("InspectPage — dual-mode chrome", () => {
         conversationTotalEstimatedCostUsd: null,
         logs: [makeLog("log-1", 1)],
         memoryRecall: null,
-        memoryV2Activation: null,
       },
       isLoading: false,
       isError: false,
@@ -543,7 +536,6 @@ describe("InspectPage — dual-mode chrome", () => {
         conversationTotalEstimatedCostUsd: null,
         logs: [makeLog("log-3", 3), makeLog("log-4", 4)],
         memoryRecall: null,
-        memoryV2Activation: null,
       },
       isLoading: false,
       isError: false,
@@ -564,7 +556,6 @@ describe("InspectPage — dual-mode chrome", () => {
           makeLog("log-5", 5),
         ],
         memoryRecall: null,
-        memoryV2Activation: null,
       },
       isLoading: false,
       isError: false,
@@ -603,7 +594,6 @@ describe("InspectPage — dual-mode chrome", () => {
         conversationTotalEstimatedCostUsd: null,
         logs: [],
         memoryRecall: null,
-        memoryV2Activation: null,
       },
       isLoading: false,
       isError: false,

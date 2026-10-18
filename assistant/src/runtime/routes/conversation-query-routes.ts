@@ -73,10 +73,6 @@ import { VALID_MEMORY_EMBEDDING_PROVIDERS } from "../../config/schemas/memory-st
 import { NotificationsConfigSchema } from "../../config/schemas/notifications.js";
 import { ServiceModeSchema } from "../../config/schemas/services.js";
 import { isSidebarDoneEnabled } from "../../config/sidebar-done-gate.js";
-import {
-  describeShadowedConfigSet,
-  findSubstrateShadowing,
-} from "../../config/substrate-twin-shadowing.js";
 import { getConfigWatcher } from "../../daemon/config-watcher.js";
 import {
   getEmbeddingConfigInfo,
@@ -118,7 +114,6 @@ import { resolveOpenAICompatibleBaseUrl } from "../../persistence/embeddings/emb
 import { getLlmRequestLogSource } from "../../persistence/llm-request-log-source.js";
 import { type LogRow } from "../../persistence/llm-request-log-store.js";
 import { getMemoryRecallLogByMessageIds } from "../../plugins/defaults/memory/memory-recall-log-store.js";
-import { getMemoryV2ActivationLogByMessageIds } from "../../plugins/defaults/memory/v2/activation-log-store.js";
 import { getMemoryV3SelectionForInspectorByMessageIds } from "../../plugins/defaults/memory/v3/selection-log-store.js";
 import { writableProfileProviderIssue } from "../../providers/connection-resolution.js";
 import { ROUTING_IDENTITY_PROVIDERS } from "../../providers/inference/auth.js";
@@ -757,13 +752,12 @@ const WireProfileEntry = ProfileEntry.extend({
 
 /**
  * Wire shape of the `memory` section in config responses. Passthrough
- * preserves fields beyond `enabled` and `v2` so the client doesn't strip
- * unrecognised memory config that newer daemons may add.
+ * preserves fields beyond `enabled` so the client doesn't strip unrecognised
+ * memory config that newer daemons may add.
  */
 const MemoryWireConfigSchema = z
   .object({
     enabled: z.boolean().optional(),
-    v2: z.object({ enabled: z.boolean().optional() }).passthrough().optional(),
   })
   .passthrough()
   .meta({ id: "MemoryConfig" });
@@ -1813,17 +1807,6 @@ async function handleSetConfig({ body }: RouteHandlerArgs) {
   seedSttProviderForSparseBlock(raw);
 
   await commitConfigWrite(raw, "set");
-  // A `memory.v2` substrate tunable whose `memory.substrate` twin is set does
-  // not mean what an unpaired write means: the substrate namespace wins in
-  // `resolveSubstrateTuning`, and for the three twins the v2 injection engine
-  // reads directly the two namespaces diverge instead. Report which case this
-  // is alongside the success so the caller can tell the operator.
-  const shadowing = findSubstrateShadowing(raw, path);
-  if (shadowing) {
-    const warning = describeShadowedConfigSet(shadowing, path);
-    log.warn({ path, substratePath: shadowing.substratePath }, warning);
-    return { ok: true, warning };
-  }
   return { ok: true };
 }
 
@@ -2201,8 +2184,6 @@ async function handleGetLlmContext({
   const logs = await source.getRequestLogsByMessageId(messageId);
   const turnMessageIds = await getAssistantMessageIdsInTurn(messageId);
   const memoryRecallLog = await getMemoryRecallLogByMessageIds(turnMessageIds);
-  const memoryV2Activation =
-    await getMemoryV2ActivationLogByMessageIds(turnMessageIds);
   const message = await getMessageById(messageId);
   const conversation = message
     ? await getConversation(message.conversationId)
@@ -2218,9 +2199,8 @@ async function handleGetLlmContext({
   // turn finishes — see `assistant/src/memory/conversation-crud.ts`.
   const conversationTotalEstimatedCostUsd =
     conversation?.totalEstimatedCost ?? null;
-  // v3 selections are keyed to the turn's message ids (stamped by the turn-end
-  // backfill), independent of v2's tracker turn — so the panel shows whenever
-  // the turn has v3 data, regardless of v2/v3 turn-counter drift.
+  // v3 selections are keyed to the turn's message ids (stamped by the
+  // turn-end backfill), so the panel shows whenever the turn has v3 data.
   const memoryV3Selection =
     await getMemoryV3SelectionForInspectorByMessageIds(turnMessageIds);
   return {
@@ -2229,7 +2209,6 @@ async function handleGetLlmContext({
     conversationTotalEstimatedCostUsd,
     logs: logs.map((log) => normalizeLlmContextLog(log, view)),
     memoryRecall: memoryRecallLog ?? null,
-    memoryV2Activation: memoryV2Activation ?? null,
     memoryV3Selection,
   };
 }
@@ -2257,7 +2236,6 @@ async function handleGetConversationLlmContext({
         conversationTotalEstimatedCostUsd: null,
         logs: [],
         memoryRecall: null,
-        memoryV2Activation: null,
         memoryV3Selection: null,
       };
     }
@@ -2276,7 +2254,6 @@ async function handleGetConversationLlmContext({
         conversationTotalEstimatedCostUsd: null,
         logs: [],
         memoryRecall: null,
-        memoryV2Activation: null,
         memoryV3Selection: null,
       };
     }
@@ -2299,7 +2276,6 @@ async function handleGetConversationLlmContext({
     conversationTotalEstimatedCostUsd,
     logs: logs.map((log) => normalizeLlmContextLog(log, view)),
     memoryRecall: null,
-    memoryV2Activation: null,
     memoryV3Selection: null,
   };
 }

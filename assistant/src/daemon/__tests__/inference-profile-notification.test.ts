@@ -42,9 +42,10 @@ mock.module("../../plugins/defaults/memory/memory-recall-log-store.js", () => ({
   backfillMemoryRecallLogMessageId: () => {},
 }));
 
-mock.module("../../plugins/defaults/memory/v2/activation-log-store.js", () => ({
-  backfillMemoryV2ActivationMessageId: () => {},
-}));
+mock.module(
+  "../../plugins/defaults/memory/v2/activation-log-store.js",
+  () => ({}),
+);
 
 // ── Imports (after mocks) ────────────────────────────────────────────────────
 import { mockUnownedModeSessions } from "../../__tests__/helpers/mock-conversation.js";

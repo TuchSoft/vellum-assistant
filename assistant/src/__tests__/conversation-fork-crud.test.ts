@@ -50,7 +50,6 @@ import {
   getRetrospectiveState,
   upsertRetrospectiveState,
 } from "../plugins/defaults/memory/memory-retrospective-state.js";
-import { hydrate as hydrateActivationState } from "../plugins/defaults/memory/v2/activation-store.js";
 import {
   getInjected as getV3Injected,
   markPruned as markV3Pruned,
@@ -68,7 +67,6 @@ async function resetTables(): Promise<void> {
   await db.orm.delete(channelInboundEvents);
   await db.orm.delete(externalConversationBindings);
   await db.orm.delete(conversationAssistantAttentionState);
-  await db.run("DELETE FROM activation_state");
   await db.orm.delete(conversationCompactionEvents);
   await db.run("DELETE FROM conversation_graph_memory_state");
   await db.run("DELETE FROM memory_retrospective_state");
@@ -83,26 +81,6 @@ async function resetTables(): Promise<void> {
   await db.run("DELETE FROM attachments");
   await db.run("DELETE FROM messages");
   await db.run("DELETE FROM conversations");
-}
-
-async function insertActivationState(row: {
-  conversationId: string;
-  messageId: string;
-  state: Record<string, number>;
-  everInjected: Array<{ slug: string; turn: number }>;
-  currentTurn: number;
-}): Promise<void> {
-  await requireMainDb().run(
-    "INSERT INTO activation_state (conversation_id, message_id, state_json, ever_injected_json, current_turn, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-    [
-      row.conversationId,
-      row.messageId,
-      JSON.stringify(row.state),
-      JSON.stringify(row.everInjected),
-      row.currentTurn,
-      1_700_000_000_000,
-    ],
-  );
 }
 
 function parseMetadata(metadata: string | null): unknown {
@@ -1106,51 +1084,6 @@ describePg("forkConversation", () => {
     expect(forkQueuedWorkCount).toBe(0);
   });
 
-  test("copies the parent's v2 activation state into the fork", async () => {
-    const source = await createConversation("Activation thread");
-    const sourceMessage = await addMessage(
-      source.id,
-      "user",
-      "Tell me about the Q3 launch plan",
-      { skipIndexing: true },
-    );
-
-    await insertActivationState({
-      conversationId: source.id,
-      messageId: sourceMessage.id,
-      state: {
-        "concepts/q3-launch-plan": 0.71,
-        "concepts/marketing-ops": 0.34,
-      },
-      everInjected: [
-        { slug: "concepts/q3-launch-plan", turn: 1 },
-        { slug: "concepts/marketing-ops", turn: 1 },
-      ],
-      currentTurn: 2,
-    });
-
-    const fork = await forkConversation({ conversationId: source.id });
-
-    const childState = await hydrateActivationState(fork.id);
-    expect(childState).toEqual({
-      messageId: sourceMessage.id,
-      state: {
-        "concepts/q3-launch-plan": 0.71,
-        "concepts/marketing-ops": 0.34,
-      },
-      everInjected: [
-        { slug: "concepts/q3-launch-plan", turn: 1 },
-        { slug: "concepts/marketing-ops", turn: 1 },
-      ],
-      currentTurn: 2,
-      updatedAt: 1_700_000_000_000,
-    });
-
-    // Parent state is untouched.
-    const parentState = await hydrateActivationState(source.id);
-    expect(parentState?.currentTurn).toBe(2);
-  });
-
   test("copies the parent's v1 graph memory state into the fork", async () => {
     const source = await createConversation("Graph tracker thread");
     await addMessage(source.id, "user", "Look up alice's preferences", {
@@ -1176,7 +1109,7 @@ describePg("forkConversation", () => {
     expect(await loadGraphMemoryState(source.id)).toBe(trackerSnapshot);
   });
 
-  test("leaves both memory state tables empty when the parent has none", async () => {
+  test("leaves graph memory state empty when the parent has none", async () => {
     const source = await createConversation("Pristine thread");
     await addMessage(source.id, "user", "first message", {
       skipIndexing: true,
@@ -1184,7 +1117,6 @@ describePg("forkConversation", () => {
 
     const fork = await forkConversation({ conversationId: source.id });
 
-    expect(await hydrateActivationState(fork.id)).toBeNull();
     expect(await loadGraphMemoryState(fork.id)).toBeNull();
   });
 
@@ -1196,17 +1128,10 @@ describePg("forkConversation", () => {
     await addMessage(source.id, "assistant", "first reply", {
       skipIndexing: true,
     });
-    const lastMessage = await addMessage(source.id, "user", "second turn", {
+    await addMessage(source.id, "user", "second turn", {
       skipIndexing: true,
     });
 
-    await insertActivationState({
-      conversationId: source.id,
-      messageId: lastMessage.id,
-      state: { "concepts/foo": 0.5 },
-      everInjected: [{ slug: "concepts/foo", turn: 2 }],
-      currentTurn: 2,
-    });
     await saveGraphMemoryState(
       source.id,
       JSON.stringify({
@@ -1223,149 +1148,7 @@ describePg("forkConversation", () => {
       throughMessageId: firstMessage.id,
     });
 
-    expect(await hydrateActivationState(fork.id)).toBeNull();
     expect(await loadGraphMemoryState(fork.id)).toBeNull();
-  });
-
-  test("truncated fork seeds everInjected from inherited memory attachments", async () => {
-    const source = await createConversation("Truncated seed thread");
-    await addMessage(source.id, "user", "first turn", {
-      metadata: {
-        memoryInjectedBlock:
-          "# memory/concepts/topics/page-a.md\nSummary A\n\n# memory/concepts/topics/page-b.md\nSummary B",
-      },
-      skipIndexing: true,
-    });
-    await addMessage(source.id, "assistant", "first reply", {
-      skipIndexing: true,
-    });
-    const boundaryMessage = await addMessage(source.id, "user", "second turn", {
-      metadata: {
-        memoryInjectedBlock: "# memory/concepts/topics/page-c.md\nSummary C",
-      },
-      skipIndexing: true,
-    });
-    await addMessage(source.id, "assistant", "second reply", {
-      skipIndexing: true,
-    });
-    // Past the fork boundary — its attachment must NOT be claimed.
-    await addMessage(source.id, "user", "third turn", {
-      metadata: {
-        memoryInjectedBlock: "# memory/concepts/topics/page-d.md\nSummary D",
-      },
-      skipIndexing: true,
-    });
-
-    await insertActivationState({
-      conversationId: source.id,
-      messageId: "parent-msg",
-      state: { "topics/page-d": 0.9 },
-      everInjected: [
-        { slug: "topics/page-a", turn: 1 },
-        { slug: "topics/page-b", turn: 1 },
-        { slug: "topics/page-c", turn: 2 },
-        { slug: "topics/page-d", turn: 3 },
-      ],
-      currentTurn: 3,
-    });
-
-    const fork = await forkConversation({
-      conversationId: source.id,
-      throughMessageId: boundaryMessage.id,
-    });
-
-    const childState = await hydrateActivationState(fork.id);
-    expect(childState).not.toBeNull();
-    // Exactly the slugs whose attachments live in the copied history —
-    // page-d (injected past the boundary) stays re-injectable.
-    expect(childState?.everInjected.map((e) => e.slug).sort()).toEqual([
-      "topics/page-a",
-      "topics/page-b",
-      "topics/page-c",
-    ]);
-    expect(childState?.everInjected.every((e) => e.turn === 0)).toBe(true);
-    // Activation scores and the turn counter start fresh, matching the
-    // graph tracker (also not copied for truncated forks).
-    expect(childState?.state).toEqual({});
-    expect(childState?.currentTurn).toBe(0);
-  });
-
-  test("truncated fork ignores attachments behind an inherited compaction boundary", async () => {
-    const source = await createConversation("Compacted truncated thread");
-    const compactedTurn = await addMessage(
-      source.id,
-      "user",
-      "compacted turn",
-      {
-        metadata: {
-          memoryInjectedBlock:
-            "# memory/concepts/topics/page-compacted.md\nOld summary",
-        },
-        skipIndexing: true,
-      },
-    );
-    const compactedReply = await addMessage(
-      source.id,
-      "assistant",
-      "compacted reply",
-      { skipIndexing: true },
-    );
-    const boundaryMessage = await addMessage(source.id, "user", "live turn", {
-      metadata: {
-        memoryInjectedBlock: "# memory/concepts/topics/page-live.md\nSummary",
-      },
-      skipIndexing: true,
-    });
-    const liveReply = await addMessage(source.id, "assistant", "live reply", {
-      skipIndexing: true,
-    });
-    const pastBoundary = await addMessage(source.id, "user", "past boundary", {
-      skipIndexing: true,
-    });
-    // First two messages sit behind a compaction that ran before the live
-    // turn: their injected blocks are not rendered, so the fork must not
-    // claim them.
-    const db = requireMainDb();
-    const base = Date.now();
-    await db.run(
-      `UPDATE messages SET created_at = ${base} WHERE id = '${compactedTurn.id}'`,
-    );
-    await db.run(
-      `UPDATE messages SET created_at = ${base + 1} WHERE id = '${compactedReply.id}'`,
-    );
-    await db.run(
-      `UPDATE messages SET created_at = ${base + 3} WHERE id = '${boundaryMessage.id}'`,
-    );
-    await db.run(
-      `UPDATE messages SET created_at = ${base + 4} WHERE id = '${liveReply.id}'`,
-    );
-    await db.run(
-      `UPDATE messages SET created_at = ${base + 5} WHERE id = '${pastBoundary.id}'`,
-    );
-    const compactedAt = base + 2;
-    await db.orm
-      .update(conversations)
-      .set({
-        contextSummary: "Compacted summary",
-        contextCompactedMessageCount: 2,
-        contextCompactedAt: compactedAt,
-      })
-      .where(eq(conversations.id, source.id));
-    await appendCompactionEvent(source.id, {
-      compactedAt,
-      summary: "Compacted summary",
-      compactedMessageCount: 2,
-    });
-
-    const fork = await forkConversation({
-      conversationId: source.id,
-      throughMessageId: boundaryMessage.id,
-    });
-
-    const childState = await hydrateActivationState(fork.id);
-    expect(childState?.everInjected.map((e) => e.slug)).toEqual([
-      "topics/page-live",
-    ]);
   });
 
   test("copies the parent's memory-v3 section record into a full fork", async () => {
@@ -1444,8 +1227,6 @@ describePg("forkConversation", () => {
         [MEMORY_V3_INJECTED_BLOCK_FORMAT_METADATA_KEY]:
           MEMORY_V3_INJECTED_BLOCK_FORMAT,
         [MEMORY_V3_INJECTED_BLOCK_METADATA_KEY]: `${leadA}\n\n${notesA}\n\n${leadB}\n\n${skill}`,
-        // A v2 block on the same message must seed only the v2 record.
-        memoryInjectedBlock: "# memory/concepts/topics/page-v2.md\nSummary",
       },
       skipIndexing: true,
     });
@@ -1516,11 +1297,6 @@ describePg("forkConversation", () => {
         bytes: Buffer.byteLength(leadB),
         prunedAt: null,
       },
-    ]);
-    // The v2 seed picked up only the v2 block, not the v3 sections.
-    const childState = await hydrateActivationState(fork.id);
-    expect(childState?.everInjected.map((e) => e.slug)).toEqual([
-      "topics/page-v2",
     ]);
   });
 
@@ -1646,29 +1422,6 @@ describePg("forkConversation", () => {
 
     expect(row?.conversationType).toBe("background");
     expect(groupIdRow?.group_id).toBe("system:background");
-  });
-
-  test("copies memory state when throughMessageId points at the last message", async () => {
-    const source = await createConversation("Through-last thread");
-    const lastMessage = await addMessage(source.id, "user", "only turn", {
-      skipIndexing: true,
-    });
-
-    await insertActivationState({
-      conversationId: source.id,
-      messageId: lastMessage.id,
-      state: { "concepts/foo": 0.9 },
-      everInjected: [{ slug: "concepts/foo", turn: 1 }],
-      currentTurn: 1,
-    });
-
-    const fork = await forkConversation({
-      conversationId: source.id,
-      throughMessageId: lastMessage.id,
-    });
-
-    const childState = await hydrateActivationState(fork.id);
-    expect(childState?.currentTurn).toBe(1);
   });
 
   test("batch-copies every message with a complete id map and last-assistant pointer", async () => {

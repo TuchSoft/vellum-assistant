@@ -30,7 +30,7 @@ const processed: string[] = [];
 registerJobHandler("index_message_lexical", async (job) => {
   processed.push(job.type);
 });
-registerJobHandler("memory_v2_activation_recompute", async (job) => {
+registerJobHandler("memory_v2_reembed", async (job) => {
   processed.push(job.type);
 });
 
@@ -54,27 +54,25 @@ describe("runMemoryJobsOnce with memory disabled", () => {
     enqueueMemoryJob("index_message_lexical", { messageId: "msg-1" });
     // A fast-lane MEMORY job type: proves the restriction is by type, not
     // just by zeroing the slow/embed lane budgets.
-    enqueueMemoryJob("memory_v2_activation_recompute", {});
+    enqueueMemoryJob("memory_v2_reembed", {});
 
     const ran = await runMemoryJobsOnce();
 
     expect(ran).toBe(1);
     expect(processed).toEqual(["index_message_lexical"]);
     expect(jobStatuses("index_message_lexical")).toEqual(["completed"]);
-    expect(jobStatuses("memory_v2_activation_recompute")).toEqual(["pending"]);
+    expect(jobStatuses("memory_v2_reembed")).toEqual(["pending"]);
   });
 
   test("drains both once memory is re-enabled", async () => {
     enqueueMemoryJob("index_message_lexical", { messageId: "msg-2" });
-    enqueueMemoryJob("memory_v2_activation_recompute", {});
+    enqueueMemoryJob("memory_v2_reembed", {});
 
     seedMemoryEnabled(true);
     const ran = await runMemoryJobsOnce();
 
     expect(ran).toBe(2);
     expect(jobStatuses("index_message_lexical")).toEqual(["completed"]);
-    expect(jobStatuses("memory_v2_activation_recompute")).toEqual([
-      "completed",
-    ]);
+    expect(jobStatuses("memory_v2_reembed")).toEqual(["completed"]);
   });
 });

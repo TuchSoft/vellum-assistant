@@ -4,9 +4,8 @@
 // `graph/` is the all-tier legacy-graph store + tier dispatcher: `store.ts`,
 // `capability-seed.ts`, and `tool-handlers.ts` are written on every tier
 // (capability nodes feed `list_memory`), while the read ENGINE lives in
-// `../v1/graph/`. This class manages the InContextTracker lifecycle,
-// dispatches retrieval to the active tier's engine, and owns compaction
-// eviction of v2/v3 per-conversation state.
+// `../v1/graph/`. This class manages the InContextTracker lifecycle and owns
+// compaction eviction of v3 per-conversation state.
 // ---------------------------------------------------------------------------
 
 import type {
@@ -18,22 +17,16 @@ import type {
 import { and, desc, eq, inArray, ne, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 
-import {
-  isMemoryEnabled,
-  isV2InjectionEngineActive,
-} from "../../../../config/memory-v3-gate.js";
+import { isMemoryEnabled } from "../../../../config/memory-v3-gate.js";
 import type { AssistantConfig } from "../../../../config/types.js";
 import { estimateTextTokens } from "../../../../context/token-estimator.js";
 import {
   getMemoryAsyncDb,
   requireMainDb,
 } from "../../../../persistence/db-facade.js";
-import { embedWithRetry } from "../../../../persistence/embeddings/embed.js";
-import { generateSparseEmbedding } from "../../../../persistence/embeddings/embedding-backend.js";
 import type { QdrantSparseVector } from "../../../../persistence/embeddings/qdrant-client.js";
 import { getLogger } from "../logging.js";
 import { wrapMemoryBlock } from "../memory-marker.js";
-import { getWorkspaceDir } from "../paths.js";
 // V1 — delete with v1. The v1 read engine: legacy-graph retrieval and block
 // assembly, feeding the v1 fallback arms of `loadContextMemory` /
 // `retrieveForTurn` below.
@@ -46,18 +39,6 @@ import {
   resolveInjectionImages,
 } from "../v1/graph/injection.js";
 import { loadContextMemory, retrieveForTurn } from "../v1/graph/retriever.js";
-// v2 injection engine — turn-time selection over the concept-page substrate
-import {
-  clearEverInjected as clearV2EverInjected,
-  hydrate as hydrateV2State,
-  save as saveV2State,
-} from "../v2/activation-store.js";
-import {
-  injectMemoryV2Block,
-  type InjectMemoryV2Mode,
-} from "../v2/injection.js";
-import { loadNowText } from "../v2/now-text.js";
-import type { RouterTurnPair } from "../v2/router.js";
 // v3 per-conversation state — evicted here on compaction
 import { clearConversation as clearV3EverInjected } from "../v3/ever-injected-store.js";
 import {
@@ -375,32 +356,12 @@ export class ConversationGraphMemory {
     const upToTurn = this.tracker.getTurn();
     this.tracker.evictCompactedTurns(upToTurn);
 
-    // Mirror the eviction on the v2 activation row: the cached `<memory>`
-    // attachments those slugs lived on are gone, but `everInjected` would
-    // otherwise keep them deduped from per-turn deltas forever.
-    //
-    // Cleared unconditionally rather than filtered by `upToTurn`: the
-    // tracker's `currentTurn` is only persisted on graceful dispose while
-    // `everInjected` is persisted every turn, so a SIGKILL'd session can
-    // leave entries with `turn > tracker.currentTurn` that a turn-bounded
-    // filter would skip.
-    try {
-      const state = await hydrateV2State(this.conversationId);
-      if (state) {
-        await saveV2State(this.conversationId, clearV2EverInjected(state));
-      }
-    } catch (err) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
-        "Failed to evict v2 activation state on compaction (non-fatal)",
-      );
-    }
-
     // Memory-v3's section record resets at the same trigger: the frozen
     // section blocks it claims were just stripped from history, so every
-    // section must become re-injectable. Cleared unconditionally for the
-    // same crash-drift reason as v2's `everInjected` above. The store logs
-    // its own failure and reports it.
+    // section must become re-injectable. Cleared unconditionally: the
+    // tracker's `currentTurn` is only persisted on graceful dispose while the
+    // store is persisted every turn, so a SIGKILL'd session can leave entries
+    // with `turn > tracker.currentTurn` that a turn-bounded filter would skip.
     const cleared = await clearV3EverInjected(this.conversationId);
 
     this.needsReload = true;
@@ -606,7 +567,6 @@ export class ConversationGraphMemory {
 
         return await this.runContextLoad(
           messages,
-          routingMessages,
           config,
           recentSummaries,
           firstUserText ?? undefined,
@@ -643,68 +603,15 @@ export class ConversationGraphMemory {
 
   private async runContextLoad(
     messages: Message[],
-    routingMessages: Message[],
     config: AssistantConfig,
     recentSummaries: string[],
     userQuery: string | undefined,
     signal: AbortSignal,
     onEvent: (msg: AssistantEvent) => void,
   ) {
-    // Use the raw user text (no >10-char filter) so even short greetings
-    // ("hi") get a fresh top-K activation dump on the first user message.
-    // The activation pipeline is robust to weak ANN signal — it falls back
-    // to spreading + nowText to surface candidates.
-    const startedAt = Date.now();
-    const rawUserText = readRawUserText(
-      routingMessages[routingMessages.length - 1],
-    );
-    const v2 = await this.maybeRouteV2Injection(
-      messages,
-      routingMessages,
-      config,
-      "context-load",
-      // Context-load runs before the messages array necessarily contains
-      // the just-arrived user turn (post-compaction restore, turn 1
-      // sketch), so override with the resolved user text rather than
-      // walking back through `messages`.
-      rawUserText ?? userQuery ?? "",
-      signal,
-    );
-
-    if (v2.routed) {
-      // Surface a user-query embedding so PKB hint search still runs on v2
-      // turns. v1's `loadContextMemory` produced these as a side effect of
-      // hybrid retrieval; the v2 path skips that retrieval, so embed
-      // explicitly here.
-      const userQueryText = rawUserText ?? userQuery ?? "";
-      const userQueryEmbed = await this.computeQueryVectors(
-        userQueryText,
-        userQueryText,
-        config,
-        signal,
-      );
-      this.initialized = true;
-      this.needsReload = false;
-      this.lastInjectedBlock = v2.injectedBlockText;
-      this.lastInjectedNodeIds = [];
-      this.lastInjectedImages = new Map();
-      return {
-        runMessages: v2.runMessages,
-        injectedTokens: v2.injectedBlockText
-          ? estimateTextTokens(v2.injectedBlockText)
-          : 0,
-        latencyMs: Date.now() - startedAt,
-        mode: "context-load" as const,
-        injectedBlockText: v2.injectedBlockText,
-        metrics: null,
-        userQueryVector: userQueryEmbed.dense,
-        userQuerySparseVector: userQueryEmbed.sparse,
-      };
-    }
-
-    // v1 fallback — only reached when the v2 engine is not the live tier (v2
-    // disabled, memory off, or v3 live; under the concept-page substrate the
-    // retriever short-circuits to zero nodes).
+    // v1 fallback — the legacy graph retriever short-circuits to zero nodes
+    // under the concept-page substrate, so this is the tier-agnostic no-op
+    // path for a v3 assistant.
     const result = await loadContextMemory({
       recentSummaries,
       userQuery,
@@ -829,54 +736,8 @@ export class ConversationGraphMemory {
       }
     }
 
-    // v2 path — skip v1 retrieval entirely when the v2 engine is the live
-    // tier. See the matching comment in `runContextLoad` for rationale.
-    const startedAt = Date.now();
-    const v2 = await this.maybeRouteV2Injection(
-      messages,
-      routingMessages,
-      config,
-      "per-turn",
-      null,
-      signal,
-    );
-    if (v2.routed) {
-      // Surface a per-turn query embedding so PKB hint search still runs
-      // on v2 turns. v1's `retrieveForTurn` produced these as a side effect;
-      // the v2 path skips that retrieval, so embed explicitly here. Match
-      // v1's split: dense embeds the combined assistant+user text (short
-      // referential follow-ups like "do that one" need the assistant turn
-      // for semantic grounding), while sparse uses the user message alone
-      // to keep lexical signal focused on what the user actually said.
-      const denseQueryText = [assistantLast, userLast]
-        .filter((m) => m.length > 0)
-        .join("\n\n");
-      const perTurnEmbed = await this.computeQueryVectors(
-        denseQueryText,
-        userLast,
-        config,
-        signal,
-      );
-      this.lastInjectedBlock = v2.injectedBlockText;
-      this.lastInjectedNodeIds = [];
-      this.lastInjectedImages = new Map();
-      return {
-        runMessages: v2.runMessages,
-        injectedTokens: v2.injectedBlockText
-          ? estimateTextTokens(v2.injectedBlockText)
-          : 0,
-        latencyMs: Date.now() - startedAt,
-        mode: "per-turn" as const,
-        injectedBlockText: v2.injectedBlockText,
-        metrics: null,
-        queryVector: perTurnEmbed.dense,
-        sparseVector: perTurnEmbed.sparse,
-      };
-    }
-
-    // v1 path (only reached when the v2 engine is not the live tier — v2
-    // disabled, memory off, or v3 live; under the concept-page substrate the
-    // retriever short-circuits to zero nodes).
+    // v1 path — the legacy graph retriever short-circuits to zero nodes under
+    // the concept-page substrate.
     const result = await retrieveForTurn({
       assistantLastMessage: assistantLast,
       userLastMessage: userLast,
@@ -941,111 +802,6 @@ export class ConversationGraphMemory {
       metrics: result.metrics,
       queryVector: result.queryVector,
       sparseVector: result.sparseVector,
-    };
-  }
-
-  /**
-   * Embed a query string for PKB hint search on v2 turns. v1 retrieval
-   * produced these vectors as a side effect; on v2 we skip retrieval, so
-   * the agent loop loses the dense/sparse pair it needs to drive
-   * `buildPkbReminderWithHints`. Failures here degrade PKB hints to the
-   * static fallback rather than blocking the turn.
-   */
-  private async computeQueryVectors(
-    denseText: string,
-    sparseText: string,
-    config: AssistantConfig,
-    signal: AbortSignal,
-  ): Promise<{ dense?: number[]; sparse?: QdrantSparseVector }> {
-    const trimmedDense = denseText.trim();
-    const trimmedSparse = sparseText.trim();
-    let dense: number[] | undefined;
-    if (trimmedDense.length > 0) {
-      try {
-        const result = await embedWithRetry(config, [trimmedDense], { signal });
-        dense = result.vectors[0];
-      } catch (err) {
-        log.warn(
-          { err: err instanceof Error ? err.message : String(err) },
-          "Failed to embed query for PKB hints on v2 path",
-        );
-      }
-    }
-    let sparse: QdrantSparseVector | undefined;
-    if (trimmedSparse.length > 0) {
-      const sparseRaw = generateSparseEmbedding(trimmedSparse);
-      sparse = sparseRaw.indices.length > 0 ? sparseRaw : undefined;
-    }
-    return { dense, sparse };
-  }
-
-  /**
-   * Run the v2 activation pipeline when the v2 injection engine is the live
-   * tier ({@link isV2InjectionEngineActive}) — memory on, `memory.v2.enabled`
-   * set, and v3 not live. Every `prepareMemory` entry point shares this gate,
-   * including callers without their own v3 guard (e.g. the persona
-   * workflow-leaf runner), so a v3-live assistant never runs the v2
-   * router/activation pipeline or writes its activation/injection logs.
-   *
-   * The two outcomes the caller distinguishes via `routed`:
-   *   - `routed: false` — v2 engine not active (disabled, memory off, or v3
-   *                        live); caller falls through to the legacy v1
-   *                        retrieval path.
-   *   - `routed: true`  — v2 ran. `runMessages` is either the v2-prepended
-   *                        message list (block was non-null) or the input
-   *                        messages unchanged (cache-stable empty path).
-   *                        Caller does NOT fall through to v1 in either case.
-   */
-  private async maybeRouteV2Injection(
-    messages: Message[],
-    routingMessages: Message[],
-    config: AssistantConfig,
-    mode: InjectMemoryV2Mode,
-    /**
-     * Override for the just-arrived user message text. Used by
-     * `runContextLoad` where the conversation history may not yet contain
-     * the user message that triggered the load (e.g. turn 1 / post-
-     * compaction restoration). When provided, the extracted pairs array
-     * is replaced with `[{ assistantMessage: "", userMessage: override }]`.
-     */
-    userMessageOverride: string | null,
-    signal: AbortSignal,
-  ): Promise<{
-    routed: boolean;
-    runMessages: Message[];
-    injectedBlockText: string | null;
-  }> {
-    if (!isV2InjectionEngineActive(config)) {
-      return { routed: false, runMessages: messages, injectedBlockText: null };
-    }
-
-    const nowText = await loadNowText(getWorkspaceDir());
-    const currentTurn = this.tracker.getTurn();
-    const historicalPairs = config.memory.v2.router.historical_pairs;
-    const recentTurnPairs =
-      userMessageOverride !== null
-        ? [{ assistantMessage: "", userMessage: userMessageOverride }]
-        : extractRecentTurnPairs(routingMessages, historicalPairs);
-
-    const result = await injectMemoryV2Block({
-      conversationId: this.conversationId,
-      currentTurn,
-      recentTurnPairs,
-      nowText,
-      messageId: `${this.conversationId}:turn:${currentTurn}`,
-      mode,
-      config,
-      signal,
-    });
-
-    if (!result.block) {
-      return { routed: true, runMessages: messages, injectedBlockText: null };
-    }
-
-    return {
-      routed: true,
-      runMessages: injectTextBlock(messages, result.block),
-      injectedBlockText: result.block,
     };
   }
 }
@@ -1291,66 +1047,4 @@ function readRawUserText(message: Message | undefined): string | null {
     return null;
   }
   return texts.join(" ");
-}
-
-/**
- * Walk back through the conversation history and collect the most recent
- * `K` `(assistant, user)` turn pairs for the router prompt. Each pair
- * represents the assistant's reply followed by the user message that
- * came after — the last pair's `userMessage` is the just-arrived turn
- * that triggered this call.
- *
- * Behavior at K=1 is bit-identical to the pre-knob signature: one pair
- * with the prior assistant reply + the just-arrived user message.
- *
- * Edge cases:
- *   - If history has fewer than K full pairs available (e.g. early in a
- *     conversation), returns however many pairs were found, oldest first.
- *     The oldest pair may have `assistantMessage: ""` when there is a
- *     user message with no preceding assistant reply — `runRouterBatch`
- *     skips the `[assistant]:` line in that case.
- *   - Non-text content (tool_use, tool_result, images) is collapsed by
- *     joining all text blocks within a single message with spaces. This
- *     matches the v1-style extraction the router has used since K=1.
- */
-function extractRecentTurnPairs(
-  messages: Message[],
-  k: number,
-): RouterTurnPair[] {
-  const messageText = (msg: Message): string =>
-    msg.content
-      .filter(
-        (b): b is Extract<typeof b, { type: "text" }> => b.type === "text",
-      )
-      .map((b) => b.text)
-      .join(" ");
-
-  const pairs: RouterTurnPair[] = [];
-  let pendingUser: string | null = null;
-  for (let i = messages.length - 1; i >= 0 && pairs.length < k; i--) {
-    const msg = messages[i];
-    if (msg.role === "user" && pendingUser === null) {
-      pendingUser = messageText(msg);
-    } else if (msg.role === "assistant" && pendingUser !== null) {
-      pairs.unshift({
-        assistantMessage: messageText(msg),
-        userMessage: pendingUser,
-      });
-      pendingUser = null;
-    }
-  }
-  // Conversation start: a user message with no preceding assistant reply
-  // still belongs in the prompt as the just-arrived turn. Emit it with an
-  // empty `assistantMessage` so `runRouterBatch` renders only `[user]:`.
-  if (pendingUser !== null && pairs.length < k) {
-    pairs.unshift({ assistantMessage: "", userMessage: pendingUser });
-  }
-  // Defensive fallback: the router contract requires a non-empty array.
-  // This only fires when `messages` has no user-text content at all
-  // (currently impossible since the agent loop always appends a user
-  // turn before invoking the v2 path, but cheap to keep correct).
-  if (pairs.length === 0) {
-    pairs.push({ assistantMessage: "", userMessage: "" });
-  }
-  return pairs;
 }

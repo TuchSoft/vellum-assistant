@@ -13,11 +13,13 @@ import {
   afterAll,
   beforeAll,
   beforeEach,
-  describe,
   expect,
   mock,
+  setDefaultTimeout,
   test,
 } from "bun:test";
+
+setDefaultTimeout(30_000);
 
 import { eq } from "drizzle-orm";
 
@@ -56,18 +58,17 @@ const tmpWorkspace = mkdtempSync(
 const previousWorkspaceEnv = process.env.VELLUM_WORKSPACE_DIR;
 process.env.VELLUM_WORKSPACE_DIR = tmpWorkspace;
 
-import { getMemoryDb } from "../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../persistence/db-init.js";
+import { describePg } from "../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { _resetQdrantBreaker } from "../../../../persistence/embeddings/qdrant-circuit-breaker.js";
 import { enqueueMemoryJob } from "../../../../persistence/jobs-store.js";
 import { memoryJobs } from "../../../../persistence/schema/index.js";
 import { registerMemoryPluginJobHandlers } from "../job-handler-registration.js";
 import { runMemoryJobsOnce } from "../jobs-worker.js";
 
-describe("graph_trigger_embed under memory v2", () => {
+describePg("graph_trigger_embed under memory v2", () => {
   beforeAll(async () => {
     registerMemoryPluginJobHandlers();
-    await initializeDb();
   });
 
   afterAll(() => {
@@ -79,14 +80,14 @@ describe("graph_trigger_embed under memory v2", () => {
     rmSync(tmpWorkspace, { recursive: true, force: true });
   });
 
-  beforeEach(() => {
-    getMemoryDb()!.run("DELETE FROM memory_jobs");
+  beforeEach(async () => {
+    await requireMainDb().run("DELETE FROM memory_jobs");
     triggerHandlerCalls = 0;
     _resetQdrantBreaker();
   });
 
   test("handler runs (is not short-circuited) when v2 is enabled", async () => {
-    const jobId = enqueueMemoryJob("graph_trigger_embed", {
+    const jobId = await enqueueMemoryJob("graph_trigger_embed", {
       triggerId: "trigger-123",
     });
 
@@ -94,11 +95,10 @@ describe("graph_trigger_embed under memory v2", () => {
 
     expect(triggerHandlerCalls).toBe(1);
 
-    const rows = getMemoryDb()!
-      .select()
+    const rows = await requireMainDb()
+      .orm.select()
       .from(memoryJobs)
-      .where(eq(memoryJobs.id, jobId))
-      .all();
+      .where(eq(memoryJobs.id, jobId));
     expect(rows[0]?.status).toBe("completed");
   });
 });

@@ -20,11 +20,13 @@ import {
   afterAll,
   beforeAll,
   beforeEach,
-  describe,
   expect,
   mock,
+  setDefaultTimeout,
   test,
 } from "bun:test";
+
+setDefaultTimeout(30_000);
 
 import { eq } from "drizzle-orm";
 
@@ -72,8 +74,8 @@ const tmpWorkspace = mkdtempSync(
 const previousWorkspaceEnv = process.env.VELLUM_WORKSPACE_DIR;
 process.env.VELLUM_WORKSPACE_DIR = tmpWorkspace;
 
-import { getMemoryDb } from "../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../persistence/db-init.js";
+import { describePg } from "../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { _resetQdrantBreaker } from "../../../../persistence/embeddings/qdrant-circuit-breaker.js";
 import {
   completeMemoryJob,
@@ -84,18 +86,17 @@ import { memoryJobs } from "../../../../persistence/schema/index.js";
 import { registerMemoryPluginJobHandlers } from "../job-handler-registration.js";
 import { runMemoryJobsOnce } from "../jobs-worker.js";
 
-function jobRow(jobId: string) {
-  return getMemoryDb()!
-    .select()
+async function jobRow(jobId: string) {
+  const rows = await requireMainDb()
+    .orm.select()
     .from(memoryJobs)
-    .where(eq(memoryJobs.id, jobId))
-    .get();
+    .where(eq(memoryJobs.id, jobId));
+  return rows[0];
 }
 
-describe("job outcome truthfulness", () => {
+describePg("job outcome truthfulness", () => {
   beforeAll(async () => {
     registerMemoryPluginJobHandlers();
-    await initializeDb();
   });
 
   afterAll(() => {
@@ -107,8 +108,8 @@ describe("job outcome truthfulness", () => {
     rmSync(tmpWorkspace, { recursive: true, force: true });
   });
 
-  beforeEach(() => {
-    getMemoryDb()!.run("DELETE FROM memory_jobs");
+  beforeEach(async () => {
+    await requireMainDb().run("DELETE FROM memory_jobs");
     _resetQdrantBreaker();
     retrospectiveOutcome = { kind: "no_new_messages" };
     consolidationOutcome = { kind: "empty_buffer" };
@@ -116,13 +117,13 @@ describe("job outcome truthfulness", () => {
 
   test("retrospective wake_failed dead-letters the row with an honest last_error", async () => {
     retrospectiveOutcome = { kind: "wake_failed", reason: "run_error" };
-    const jobId = enqueueMemoryJob("memory_retrospective", {
+    const jobId = await enqueueMemoryJob("memory_retrospective", {
       conversationId: "conv-1",
     });
 
     await runMemoryJobsOnce();
 
-    const row = jobRow(jobId);
+    const row = await jobRow(jobId);
     expect(row?.status).toBe("failed");
     expect(row?.lastError).toContain("retrospective wake failed");
     expect(row?.lastError).toContain("run_error");
@@ -133,77 +134,75 @@ describe("job outcome truthfulness", () => {
       kind: "no_usable_output",
       reason: "run persisted no memory-writing tool call",
     };
-    const jobId = enqueueMemoryJob("memory_retrospective", {
+    const jobId = await enqueueMemoryJob("memory_retrospective", {
       conversationId: "conv-1",
     });
 
     await runMemoryJobsOnce();
 
-    const row = jobRow(jobId);
+    const row = await jobRow(jobId);
     expect(row?.status).toBe("failed");
     expect(row?.lastError).toContain("no usable output");
   });
 
   test("retrospective source_processing defers the SAME row on the deferral counter", async () => {
     retrospectiveOutcome = { kind: "source_processing" };
-    const jobId = enqueueMemoryJob("memory_retrospective", {
+    const jobId = await enqueueMemoryJob("memory_retrospective", {
       conversationId: "conv-1",
     });
 
     const before = Date.now();
     await runMemoryJobsOnce();
 
-    const row = jobRow(jobId);
+    const row = await jobRow(jobId);
     expect(row?.status).toBe("pending");
     expect(row?.deferrals).toBe(1);
     expect(row?.attempts).toBe(0);
     expect(row!.runAfter).toBeGreaterThan(before);
     // Exactly one row for the conversation: no fresh row minted per attempt.
-    const rows = getMemoryDb()!
-      .select()
+    const rows = await requireMainDb()
+      .orm.select()
       .from(memoryJobs)
-      .where(eq(memoryJobs.type, "memory_retrospective"))
-      .all();
+      .where(eq(memoryJobs.type, "memory_retrospective"));
     expect(rows).toHaveLength(1);
   });
 
   test("source_processing deferral budget exhausts into an honest terminal failure", async () => {
     retrospectiveOutcome = { kind: "source_processing" };
-    const jobId = enqueueMemoryJob("memory_retrospective", {
+    const jobId = await enqueueMemoryJob("memory_retrospective", {
       conversationId: "conv-1",
     });
     // Spend 49 of the 50 deferrals up front; the next pass is the last one.
-    getMemoryDb()!
-      .update(memoryJobs)
+    await requireMainDb()
+      .orm.update(memoryJobs)
       .set({ deferrals: 49 })
-      .where(eq(memoryJobs.id, jobId))
-      .run();
+      .where(eq(memoryJobs.id, jobId));
 
     await runMemoryJobsOnce();
 
-    const row = jobRow(jobId);
+    const row = await jobRow(jobId);
     expect(row?.status).toBe("failed");
     expect(row?.lastError).toContain("mid-turn");
   });
 
   test("retrospective success and benign no-ops still complete", async () => {
     retrospectiveOutcome = { kind: "no_new_messages" };
-    const jobId = enqueueMemoryJob("memory_retrospective", {
+    const jobId = await enqueueMemoryJob("memory_retrospective", {
       conversationId: "conv-1",
     });
 
     await runMemoryJobsOnce();
 
-    expect(jobRow(jobId)?.status).toBe("completed");
+    expect((await jobRow(jobId))?.status).toBe("completed");
   });
 
   test("consolidation run_failed dead-letters the row with the failure reason", async () => {
     consolidationOutcome = { kind: "run_failed", reason: "timeout" };
-    const jobId = enqueueMemoryJob("memory_v2_consolidate", {});
+    const jobId = await enqueueMemoryJob("memory_v2_consolidate", {});
 
     await runMemoryJobsOnce();
 
-    const row = jobRow(jobId);
+    const row = await jobRow(jobId);
     expect(row?.status).toBe("failed");
     expect(row?.lastError).toContain("consolidation run failed");
     expect(row?.lastError).toContain("timeout");
@@ -211,31 +210,30 @@ describe("job outcome truthfulness", () => {
 
   test("consolidation skips (locked/empty) still complete", async () => {
     consolidationOutcome = { kind: "locked", holder: "1234 0 consolidation" };
-    const jobId = enqueueMemoryJob("memory_v2_consolidate", {});
+    const jobId = await enqueueMemoryJob("memory_v2_consolidate", {});
 
     await runMemoryJobsOnce();
 
-    expect(jobRow(jobId)?.status).toBe("completed");
+    expect((await jobRow(jobId))?.status).toBe("completed");
   });
 
   test("late completion cannot overwrite a watchdog-failed row", async () => {
-    const jobId = enqueueMemoryJob("memory_retrospective", {
+    const jobId = await enqueueMemoryJob("memory_retrospective", {
       conversationId: "conv-1",
     });
     // Simulate a claimed row whose execution went silent long enough for the
     // stalled-job watchdog to fail it.
-    getMemoryDb()!
-      .update(memoryJobs)
+    await requireMainDb()
+      .orm.update(memoryJobs)
       .set({ status: "running", startedAt: Date.now() - 60 * 60 * 1000 })
-      .where(eq(memoryJobs.id, jobId))
-      .run();
-    expect(failStalledJobs(30 * 60 * 1000)).toBe(1);
-    expect(jobRow(jobId)?.status).toBe("failed");
+      .where(eq(memoryJobs.id, jobId));
+    expect(await failStalledJobs(30 * 60 * 1000)).toBe(1);
+    expect((await jobRow(jobId))?.status).toBe("failed");
 
     // The abandoned execution finally returns and reports success.
-    completeMemoryJob(jobId);
+    await completeMemoryJob(jobId);
 
-    const row = jobRow(jobId);
+    const row = await jobRow(jobId);
     expect(row?.status).toBe("failed");
     expect(row?.lastError).toContain("timed out");
   });

@@ -51,7 +51,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+
+setDefaultTimeout(30_000);
 
 import type {
   ContentBlock,
@@ -62,7 +71,8 @@ import type {
 import { drizzle } from "drizzle-orm/bun-sqlite";
 
 import { setConfig } from "../../../../../__tests__/helpers/set-config.js";
-import { ensureMemoryV3SelectionsSchema } from "../../../../../persistence/migrations/338-move-memory-v3-selections-to-memory-db.js";
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import * as schema from "../../../../../persistence/schema/index.js";
 import {
   MEMORY_POINTER_PREFIX,
@@ -81,6 +91,7 @@ import { renderV3SectionInjection } from "../page-content.js";
 import {
   ensureMemoryV3InjectedSectionsSchema,
   ensureMemoryV3PoolsSchema,
+  ensureMemoryV3SelectionsSectionKeyOnce,
 } from "../plugin-schema.js";
 import { buildSectionNeedle } from "../section-needle.js";
 import { buildSectionIndex } from "../sections.js";
@@ -149,20 +160,12 @@ mock.module("../dense.js", () => ({
 }));
 
 let testSqlite: Database;
-// Selection and section-store rows live on the dedicated memory connection,
-// resolved via `getMemorySqlite` — stubbed to a second in-memory DB carrying
-// the relocated tables' schema. Messages stay in main.
-let memorySqlite: Database;
-let testDb = await makeDb();
-async function makeDb() {
+let testDb = makeTestDb();
+function makeTestDb() {
   testSqlite = new Database(":memory:");
   const db = drizzle(testSqlite, { schema });
-  memorySqlite = new Database(":memory:");
-  ensureMemoryV3SelectionsSchema(memorySqlite);
-  await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
-  ensureMemoryV3PoolsSchema(memorySqlite);
-  // Minimal `messages` shape — metadata persistence, the prune valve's
-  // v3-ownership scan, and the restart rehydration read only these columns.
+  // Minimal `messages` shape. The fixture's own metadata persistence and
+  // the restart rehydration read only these columns.
   testSqlite.run(/*sql*/ `
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
@@ -175,6 +178,31 @@ async function makeDb() {
   `);
   return db;
 }
+
+async function prepareMemorySchema(): Promise<void> {
+  const db = requireMainDb();
+  await db.exec("DROP TABLE IF EXISTS memory_v3_selections");
+  await db.exec(/*sql*/ `
+    CREATE TABLE memory_v3_selections (
+      conversation_id TEXT NOT NULL,
+      turn BIGINT NOT NULL,
+      slug TEXT NOT NULL,
+      source TEXT NOT NULL,
+      pinned BIGINT NOT NULL DEFAULT 0,
+      created_at BIGINT NOT NULL,
+      message_id TEXT,
+      section_ordinal BIGINT,
+      section_title TEXT,
+      PRIMARY KEY (conversation_id, turn, slug)
+    )
+  `);
+  await db.exec("DROP TABLE IF EXISTS memory_v3_injected_sections");
+  await db.exec("DROP TABLE IF EXISTS memory_v3_pools");
+  await ensureMemoryV3SelectionsSectionKeyOnce(db);
+  await ensureMemoryV3InjectedSectionsSchema(db);
+  await ensureMemoryV3PoolsSchema(db);
+}
+
 mock.module("../../../../../persistence/db-connection.js", () => ({
   ...realDbConnection,
   getDb: () => (carryMockActive ? testDb : realDbConnection.getDb()),
@@ -184,12 +212,6 @@ mock.module("../../../../../persistence/db-connection.js", () => ({
       : realDbConnection.getSqliteFrom(
           db as Parameters<typeof realDbConnection.getSqliteFrom>[0],
         ),
-  getMemorySqlite: () =>
-    carryMockActive ? memorySqlite : realDbConnection.getMemorySqlite(),
-  getMemoryDb: () =>
-    carryMockActive
-      ? drizzle(memorySqlite, { schema })
-      : realDbConnection.getMemoryDb(),
 }));
 
 /** Mutable prune config: `null` until the script opens the valve window. */
@@ -291,20 +313,19 @@ async function scriptedObserveTurn(conversationId: string, turnIndex: number) {
       prefixCards: lanes.prefixCards,
     },
   );
-  realShadowPlugin.writeTurnLog(
+  await realShadowPlugin.writeTurnLog(
     conversationId,
     turnIndex,
     realShadowPlugin.attributeSelections(result),
     buildPoolRecord(result),
   );
-  memorySqlite
-    .query(
-      /*sql*/ `
-      UPDATE memory_v3_selections SET created_at = ?
-      WHERE conversation_id = ? AND turn = ?
-    `,
-    )
-    .run(BASE + turnIndex * 1000, conversationId, turnIndex);
+  await requireMainDb().run(
+    /*sql*/ `
+    UPDATE memory_v3_selections SET created_at = ?
+    WHERE conversation_id = ? AND turn = ?
+  `,
+    [BASE + turnIndex * 1000, conversationId, turnIndex],
+  );
   return result;
 }
 
@@ -469,11 +490,6 @@ async function buildFixtureLanes(): Promise<FixtureLanes> {
 
   // Seed a selections history (a PRIOR conversation) making three slugs hot,
   // with distinct frecency so the hot order is deterministic.
-  const seed = memorySqlite.query(/*sql*/ `
-    INSERT INTO memory_v3_selections
-      (conversation_id, turn, slug, source, created_at)
-    VALUES (?, ?, ?, 'needle', ?)
-  `);
   const seedCounts: Array<[Slug, number]> = [
     ["hot-one", 3],
     ["hot-two", 2],
@@ -481,7 +497,12 @@ async function buildFixtureLanes(): Promise<FixtureLanes> {
   ];
   for (const [slug, count] of seedCounts) {
     for (let turn = 1; turn <= count; turn++) {
-      seed.run("conv-seed", turn, slug, BASE - 60_000);
+      await requireMainDb().run(
+        `INSERT INTO memory_v3_selections
+          (conversation_id, turn, slug, source, created_at)
+        VALUES (?, ?, ?, 'needle', ?)`,
+        ["conv-seed", turn, slug, BASE - 60_000],
+      );
     }
   }
 
@@ -504,12 +525,14 @@ async function buildFixtureLanes(): Promise<FixtureLanes> {
   const coreSlugs = loadCoreSet(workspaceDir).filter((slug) =>
     sectionIndex.byArticle.has(slug),
   );
-  const hotSlugs = computeHotSet({
-    k: 3,
-    halfLifeMs: 14 * DAY_MS,
-    now: BASE,
-    excludeSlugs: new Set(coreSlugs),
-  })
+  const hotSlugs = (
+    await computeHotSet({
+      k: 3,
+      halfLifeMs: 14 * DAY_MS,
+      now: BASE,
+      excludeSlugs: new Set(coreSlugs),
+    })
+  )
     .map((entry) => entry.slug)
     .filter((slug) => sectionIndex.byArticle.has(slug));
 
@@ -581,8 +604,7 @@ function makeProviderStub(): Provider {
     sendMessage: async (messages) => {
       selectCalls += 1;
       const first = messages[0]!.content[0] as
-        | (ContentBlock & { cache_control?: unknown })
-        | undefined;
+        (ContentBlock & { cache_control?: unknown }) | undefined;
       stablePrefixCaptures.push(
         first && first.type === "text" && first.cache_control
           ? { text: first.text, cacheControl: first.cache_control }
@@ -703,7 +725,7 @@ async function runTurn(
     },
   };
 
-  const activeBefore = refIds(getActiveSections(convId));
+  const activeBefore = refIds(await getActiveSections(convId));
   const sections = await memoryV3Injector.produce(ctx);
   if (!sections) {
     throw new Error(`turn ${turnIndex}: sections injector returned null`);
@@ -713,14 +735,14 @@ async function runTurn(
   // turn's sections (and the prune valve is scheduled).
   const commit = sections.meta?.[MEMORY_V3_COMMIT_META_KEY];
   if (typeof commit === "function") {
-    (commit as () => void)();
+    await (commit as () => unknown)();
   }
   const netNew = new Set(
-    [...refIds(getActiveSections(convId))].filter(
+    [...refIds(await getActiveSections(convId))].filter(
       (id) => !activeBefore.has(id),
     ),
   );
-  const netNewBytes = getInjected(convId)
+  const netNewBytes = (await getInjected(convId))
     .filter((row) => netNew.has(sectionRefId(row)))
     .reduce((sum, row) => sum + row.bytes, 0);
 
@@ -791,8 +813,8 @@ async function runTurn(
     pointerText: pointer?.text ?? "",
     pointerBytes: pointer ? renderedBytes(pointer.text) : 0,
     pointerPlacement: pointer?.placement ?? "",
-    residentBytes: residentBytes(convId),
-    pruned: refIds(getPrunedSections(convId)),
+    residentBytes: await residentBytes(convId),
+    pruned: refIds(await getPrunedSections(convId)),
     snapshot: persistentView(history),
   };
 }
@@ -804,13 +826,13 @@ async function runTurn(
  *  rung included). Persisted rows keep their metadata; `rehydrateFromDb`
  *  skips it for rows older than the compaction, as `loadFromDb` does past
  *  `historyStrippedAt`. */
-function compactMidTurn(convId: string): void {
+async function compactMidTurn(convId: string): Promise<void> {
   for (const message of histories.get(convId)!) {
     message.content = message.content.filter(
       (block) => !(block.type === "text" && isV3LiveBlock(block)),
     );
   }
-  clearConversation(convId);
+  await clearConversation(convId);
 }
 
 /** The post-compaction hook's re-injection of a turn already produced (the
@@ -928,7 +950,7 @@ async function retryTurn(
   testSqlite
     .query(/*sql*/ `DELETE FROM messages WHERE id = ?`)
     .run(`${convId}-m${anchorTurn}-assistant`);
-  let history = rehydrateFromDb(convId);
+  let history = await rehydrateFromDb(convId);
   histories.set(convId, history);
   const anchorRowId = `${convId}-m${anchorTurn}-user`;
   const tail = history[history.length - 1]!;
@@ -979,7 +1001,7 @@ async function retryTurn(
     }
   }
   if (typeof commit === "function") {
-    (commit as () => void)();
+    await (commit as () => unknown)();
   }
   const pointer = await memoryV3PointerInjector.produce(ctx);
   if (pointer && pointer.text.length > 0) {
@@ -1020,10 +1042,10 @@ async function retryTurn(
  *  invert, so the layout is [sections, pointer, ...]). A row older than
  *  `historyStrippedAt` (a compaction's marker) skips metadata rehydration,
  *  as `loadFromDb` does. */
-function rehydrateFromDb(
+async function rehydrateFromDb(
   convId: string,
   historyStrippedAt: number | null = null,
-): Message[] {
+): Promise<Message[]> {
   const rows = testSqlite
     .query(
       /*sql*/ `
@@ -1037,7 +1059,7 @@ function rehydrateFromDb(
     metadata: string | null;
     created_at: number;
   }>;
-  const pruned = getPrunedSections(convId);
+  const pruned = await getPrunedSections(convId);
   const preStripped = (row: (typeof rows)[number]): boolean =>
     historyStrippedAt !== null && row.created_at < historyStrippedAt;
   const blockOf = (row: (typeof rows)[number]): InjectedBlock | null =>
@@ -1174,7 +1196,8 @@ beforeAll(async () => {
   // The injector gates on `memory.v3.live` (read via real `getConfig()`),
   // which defaults false — seed it true so the live path runs.
   setConfig("memory", { v3: { live: true } });
-  testDb = await makeDb();
+  testDb = makeTestDb();
+  await prepareMemorySchema();
   providerStub = makeProviderStub();
   resetMemoryV3InjectorStateForTests();
   records.length = 0;
@@ -1197,7 +1220,7 @@ beforeAll(async () => {
   // EXACTLY core-beta's and hot-one's leads (the least-recently-selected
   // sections; their padded leads make them outweigh turn 7's incoming
   // sections, so target < max holds).
-  const residentAfter6 = residentBytes(CONV);
+  const residentAfter6 = await residentBytes(CONV);
   const incoming =
     renderedBytes(render("page-j", "Detail")) +
     renderedBytes(render("page-k", "Detail")) +
@@ -1226,7 +1249,7 @@ beforeAll(async () => {
   // injectors' in-memory state (orchestration memo), a real daemon restart
   // does both.
   restartLiveJson = persistentView(histories.get(CONV)!);
-  const rehydrated = rehydrateFromDb(CONV);
+  const rehydrated = await rehydrateFromDb(CONV);
   restartRehydratedJson = JSON.stringify(rehydrated);
   histories.set(CONV, rehydrated);
   resetMemoryV3InjectorStateForTests();
@@ -1243,8 +1266,8 @@ beforeAll(async () => {
     `,
     )
     .run(FORK_CONV, CONV);
-  forkEverInjected(CONV, FORK_CONV);
-  histories.set(FORK_CONV, rehydrateFromDb(FORK_CONV));
+  await forkEverInjected(CONV, FORK_CONV);
+  histories.set(FORK_CONV, await rehydrateFromDb(FORK_CONV));
   forkRecord = await runTurn(FORK_CONV, 9, "strawberry guava", [
     "page-g",
     "hot-three",
@@ -1258,7 +1281,7 @@ beforeAll(async () => {
   // turn 9: its turn-1 copy still sits in that message's metadata, and the
   // rehydrated history must hold only the turn-9 copy the live one does.
   finalLiveJson = persistentView(histories.get(CONV)!);
-  finalRehydratedJson = JSON.stringify(rehydrateFromDb(CONV));
+  finalRehydratedJson = JSON.stringify(await rehydrateFromDb(CONV));
 });
 
 afterAll(async () => {
@@ -1273,13 +1296,13 @@ afterAll(async () => {
 // Contract assertions.
 // ---------------------------------------------------------------------------
 
-describe("memory-v3 carry integration — cache contract", () => {
-  test("lanes: curated core in file order; frecency hot set in score order", () => {
+describePg("memory-v3 carry integration — cache contract", () => {
+  test("lanes: curated core in file order; frecency hot set in score order", async () => {
     expect(lanes.coreSlugs).toEqual(CORE_SLUGS);
     expect(lanes.hotSlugs).toEqual(HOT_SLUGS);
   });
 
-  test("selector stable prefix is byte-identical across all 10 turns and carries the cache breakpoint", () => {
+  test("selector stable prefix is byte-identical across all 10 turns and carries the cache breakpoint", async () => {
     // 10 parent turns + 1 fork turn, one selector call each.
     expect(selectCalls).toBe(11);
     expect(stablePrefixCaptures).toHaveLength(11);
@@ -1298,7 +1321,7 @@ describe("memory-v3 carry integration — cache contract", () => {
     }
   });
 
-  test("per-turn persistent render is net-new sections only; all-repeat turns render zero bytes", () => {
+  test("per-turn persistent render is net-new sections only; all-repeat turns render zero bytes", async () => {
     for (const [i, record] of records.entries()) {
       const expected = SCRIPT[i]!.expectNetNew;
       expect(record.sectionsPlacement).toBe("after-memory-prefix");
@@ -1327,7 +1350,7 @@ describe("memory-v3 carry integration — cache contract", () => {
     }
   });
 
-  test("turn 1's block is byte-exact in selection order (stable prefix leads first, then the finder section)", () => {
+  test("turn 1's block is byte-exact in selection order (stable prefix leads first, then the finder section)", async () => {
     expect(records[0]!.blockText).toBe(
       wrapMemoryBlock(
         renderInjectionBlockInner([
@@ -1340,21 +1363,21 @@ describe("memory-v3 carry integration — cache contract", () => {
     );
   });
 
-  test("a finder hit on a stable-prefix (hot) page injects its matched section, not its lead", () => {
+  test("a finder hit on a stable-prefix (hot) page injects its matched section, not its lead", async () => {
     expect(records[1]!.blockText).toContain(
       "# memory/concepts/hot-two.md § Detail\nraspberry detail material for hot-two",
     );
     expect(records[1]!.blockText).not.toContain("lead for hot-two");
   });
 
-  test("a page selected with a new section on turn 3 injects that section beside its earlier one", () => {
+  test("a page selected with a new section on turn 3 injects that section beside its earlier one", async () => {
     expect(records[2]!.blockText).toBe(
       wrapMemoryBlock(renderInjectionBlockInner([render("page-a", "Notes")])),
     );
     expect(records[2]!.blockText).not.toContain("§ Detail");
   });
 
-  test("prior turns' blocks stay frozen in history (byte-prefix), except the prune valve's one amortized strip", () => {
+  test("prior turns' blocks stay frozen in history (byte-prefix), except the prune valve's one amortized strip", async () => {
     // Pre-prune (turns 1–6): each persistent snapshot is a byte-prefix of the
     // next (the ephemeral pointer is excluded from the persistent view).
     for (let i = 0; i < 5; i++) {
@@ -1385,7 +1408,7 @@ describe("memory-v3 carry integration — cache contract", () => {
     expect(turn2Block).toBe(records[1]!.blockText);
   });
 
-  test("accounting: resident bytes equal cumulative net-new section bytes minus pruned bytes", () => {
+  test("accounting: resident bytes equal cumulative net-new section bytes minus pruned bytes", async () => {
     let expected = 0;
     for (const record of records) {
       expected += record.netNewBytes;
@@ -1397,8 +1420,8 @@ describe("memory-v3 carry integration — cache contract", () => {
   });
 });
 
-describe("memory-v3 carry integration: pointer contract", () => {
-  test("a turn with resident re-selections gets a pointer listing exactly those sections as paths", () => {
+describePg("memory-v3 carry integration: pointer contract", () => {
+  test("a turn with resident re-selections gets a pointer listing exactly those sections as paths", async () => {
     const turn5 = records[4]!;
     expect(turn5.pointerText.startsWith("<memory_pointer>\n")).toBe(true);
     expect(turn5.pointerText.endsWith("\n</memory_pointer>")).toBe(true);
@@ -1416,13 +1439,13 @@ describe("memory-v3 carry integration: pointer contract", () => {
     ).toBe(2);
   });
 
-  test("turns whose selections are all net-new get no pointer", () => {
+  test("turns whose selections are all net-new get no pointer", async () => {
     for (const turn of [1, 4, 6, 7, 8]) {
       expect(records[turn - 1]!.pointerText).toBe("");
     }
   });
 
-  test("each turn persists its pointer on that user message and keeps historical copies", () => {
+  test("each turn persists its pointer on that user message and keeps historical copies", async () => {
     for (const record of records) {
       expect(record.blockText).not.toContain("<memory_pointer>");
     }
@@ -1461,8 +1484,8 @@ describe("memory-v3 carry integration: pointer contract", () => {
   });
 });
 
-describe("memory-v3 carry integration — prune contract", () => {
-  test("the valve trips at turn 7: resident drops to target; core and hot leads are evicted by recency like any other", () => {
+describePg("memory-v3 carry integration — prune contract", () => {
+  test("the valve trips at turn 7: resident drops to target; core and hot leads are evicted by recency like any other", async () => {
     // Nothing pruned through turn 6.
     for (let i = 0; i < 6; i++) {
       expect(records[i]!.pruned.size).toBe(0);
@@ -1475,13 +1498,13 @@ describe("memory-v3 carry integration — prune contract", () => {
     );
     expect(records[6]!.residentBytes).toBe(pruneWindow.target);
     expect(records[6]!.residentBytes).toBeLessThanOrEqual(pruneWindow.max);
-    const activeAfter7 = refIds(getActiveSections(CONV));
+    const activeAfter7 = refIds(await getActiveSections(CONV));
     expect(activeAfter7.has(ref("core-alpha"))).toBe(true);
     expect(activeAfter7.has(ref("page-a", "Detail"))).toBe(true);
     expect(activeAfter7.has(ref("hot-two", "Detail"))).toBe(true);
   });
 
-  test("a pruned lead re-selected at turn 9 re-injects as a fresh entry", () => {
+  test("a pruned lead re-selected at turn 9 re-injects as a fresh entry", async () => {
     const turn9 = records[8]!;
     expect(turn9.netNew).toEqual(new Set([ref("core-beta")]));
     expect(turn9.blockText).toBe(
@@ -1489,16 +1512,18 @@ describe("memory-v3 carry integration — prune contract", () => {
     );
     // core-beta's lead is active again; hot-one's stays pruned.
     expect(turn9.pruned).toEqual(new Set([ref("hot-one")]));
-    expect(refIds(getActiveSections(CONV)).has(ref("core-beta"))).toBe(true);
+    expect(refIds(await getActiveSections(CONV)).has(ref("core-beta"))).toBe(
+      true,
+    );
   });
 });
 
-describe("memory-v3 carry integration — restart contract", () => {
-  test("rehydrating from the DB reproduces the live persistent layer byte-identically", () => {
+describePg("memory-v3 carry integration — restart contract", () => {
+  test("rehydrating from the DB reproduces the live persistent layer byte-identically", async () => {
     expect(restartRehydratedJson).toBe(restartLiveJson);
   });
 
-  test("after a pruned lead is re-injected, a restart rehydrates the live layer byte-identically: one copy, on the re-injecting turn's message", () => {
+  test("after a pruned lead is re-injected, a restart rehydrates the live layer byte-identically: one copy, on the re-injecting turn's message", async () => {
     expect(finalRehydratedJson).toBe(finalLiveJson);
     const rehydrated = JSON.parse(finalRehydratedJson) as Message[];
     const entry = render("core-beta", "");
@@ -1531,7 +1556,7 @@ describe("memory-v3 carry integration — restart contract", () => {
     expect(turn1Metadata.metadata).toContain("# memory/concepts/core-beta.md");
   });
 
-  test("pruned sections are absent from the rehydrated history (metadata stays intact)", () => {
+  test("pruned sections are absent from the rehydrated history (metadata stays intact)", async () => {
     const rehydrated = JSON.parse(restartRehydratedJson) as Message[];
     const blockText = rehydrated
       .flatMap((m) => m.content)
@@ -1561,8 +1586,8 @@ describe("memory-v3 carry integration — restart contract", () => {
   });
 });
 
-describe("memory-v3 carry integration — fork contract", () => {
-  test("fork copies carry each block's format stamp with the metadata", () => {
+describePg("memory-v3 carry integration — fork contract", () => {
+  test("fork copies carry each block's format stamp with the metadata", async () => {
     const rows = testSqlite
       .query(
         /*sql*/ `
@@ -1585,7 +1610,7 @@ describe("memory-v3 carry integration — fork contract", () => {
     }
   });
 
-  test("a fork inherits the dedup record: inherited sections are pointed at, only new ones render", () => {
+  test("a fork inherits the dedup record: inherited sections are pointed at, only new ones render", async () => {
     // page-g's Detail was injected on the parent before the fork; hot-three's
     // Detail (a finder hit on a hot page) never was.
     expect(forkRecord.netNew).toEqual(new Set([ref("hot-three", "Detail")]));
@@ -1598,10 +1623,10 @@ describe("memory-v3 carry integration — fork contract", () => {
       "memory/concepts/page-g.md § Detail",
     );
     // Inherited active and pruned state both copied (full-fork semantics).
-    const forkActive = refIds(getActiveSections(FORK_CONV));
+    const forkActive = refIds(await getActiveSections(FORK_CONV));
     expect(forkActive.has(ref("page-g", "Detail"))).toBe(true);
     expect(forkActive.has(ref("core-alpha"))).toBe(true);
-    expect(refIds(getPrunedSections(FORK_CONV))).toEqual(
+    expect(refIds(await getPrunedSections(FORK_CONV))).toEqual(
       new Set([ref("core-beta"), ref("hot-one")]),
     );
     // The fork's rehydrated history carries the inherited page-g section
@@ -1616,8 +1641,8 @@ describe("memory-v3 carry integration — fork contract", () => {
   });
 });
 
-describe("memory-v3 carry integration — footprint gate", () => {
-  test("steady-state per-turn fresh cost is net-new + pointer, not the working set", () => {
+describePg("memory-v3 carry integration — footprint gate", () => {
+  test("steady-state per-turn fresh cost is net-new + pointer, not the working set", async () => {
     // The all-repeat turns pay ZERO persistent bytes while the resident
     // working set stays in the thousands, the cache win the carry ships.
     const turn5 = records[4]!;
@@ -1627,7 +1652,7 @@ describe("memory-v3 carry integration — footprint gate", () => {
     expect(turn10.pointerBytes).toBeGreaterThan(0);
     // The resident working set holds the whole accumulated section footprint
     // (15+ active pages here) while the turn pays only the pointer.
-    expect(getActiveSections(CONV).size).toBeGreaterThanOrEqual(15);
+    expect((await getActiveSections(CONV)).size).toBeGreaterThanOrEqual(15);
     expect(turn10.netNewBytes + turn10.pointerBytes).toBeLessThan(
       turn10.residentBytes,
     );
@@ -1665,7 +1690,7 @@ describe("memory-v3 carry integration — footprint gate", () => {
 // residency, so the store and the persisted history agree across a restart.
 // ---------------------------------------------------------------------------
 
-describe("memory-v3 carry integration: compaction contract", () => {
+describePg("memory-v3 carry integration: compaction contract", () => {
   const KEEP: Slug[] = ["core-alpha", "core-beta", "hot-one", "page-a"];
   const REFS = new Set([
     ref("core-alpha"),
@@ -1681,7 +1706,7 @@ describe("memory-v3 carry integration: compaction contract", () => {
     histories.set(convId, []);
     const first = await runTurn(convId, 1, "apple", KEEP);
     expect(first.netNew).toEqual(REFS);
-    expect(refIds(getActiveSections(convId))).toEqual(REFS);
+    expect(refIds(await getActiveSections(convId))).toEqual(REFS);
 
     const toolResult: ContentBlock[] = [
       { type: "text", text: "tool result 1" },
@@ -1695,13 +1720,13 @@ describe("memory-v3 carry integration: compaction contract", () => {
     );
     histories.get(convId)!.push({ role: "user", content: [...toolResult] });
     const compactedAt = BASE + 1000 + 800;
-    compactMidTurn(convId);
+    await compactMidTurn(convId);
 
     // The post-compaction hook re-injects every selection of the turn onto
     // the tool-result tail (the first produce's entries, re-emitted from the
     // turn memo); the store claims none of them.
     expect((await reinjectTurn(convId, 1)).refs).toEqual(REFS);
-    expect(refIds(getActiveSections(convId)).size).toBe(0);
+    expect(refIds(await getActiveSections(convId)).size).toBe(0);
     return compactedAt;
   }
 
@@ -1720,7 +1745,7 @@ describe("memory-v3 carry integration: compaction contract", () => {
     const compactedAt = await injectThenCompactMidTurn(COMPACT_CONV);
 
     // Restart: every row predates the compaction, so nothing rehydrates.
-    const rehydrated = rehydrateFromDb(COMPACT_CONV, compactedAt);
+    const rehydrated = await rehydrateFromDb(COMPACT_CONV, compactedAt);
     expect(v3Blocks(rehydrated)).toBe(0);
     histories.set(COMPACT_CONV, rehydrated);
     resetMemoryV3InjectorStateForTests();
@@ -1730,13 +1755,13 @@ describe("memory-v3 carry integration: compaction contract", () => {
     const next = await runTurn(COMPACT_CONV, 2, "apple", KEEP);
     expect(next.netNew).toEqual(REFS);
     expect(next.pointerText).toBe("");
-    expect(refIds(getActiveSections(COMPACT_CONV))).toEqual(REFS);
+    expect(refIds(await getActiveSections(COMPACT_CONV))).toEqual(REFS);
     expect(v3Blocks(histories.get(COMPACT_CONV)!)).toBe(1);
 
     // A restart after that reproduces the live persistent layer.
-    expect(JSON.stringify(rehydrateFromDb(COMPACT_CONV, compactedAt))).toBe(
-      persistentView(histories.get(COMPACT_CONV)!),
-    );
+    expect(
+      JSON.stringify(await rehydrateFromDb(COMPACT_CONV, compactedAt)),
+    ).toBe(persistentView(histories.get(COMPACT_CONV)!));
   });
 
   test("without a restart the re-injected copy is superseded by the next turn's persisted copy at the following assembly", async () => {
@@ -1756,12 +1781,12 @@ describe("memory-v3 carry integration: compaction contract", () => {
     // stays, and the live layer matches what a restart rehydrates.
     stripPrunedSectionsFromMessages(
       history,
-      getPrunedSections(COMPACT_LIVE_CONV),
+      await getPrunedSections(COMPACT_LIVE_CONV),
     );
     expect(v3Blocks([toolResultMessage])).toBe(0);
     expect(v3Blocks(history)).toBe(1);
     expect(
-      JSON.stringify(rehydrateFromDb(COMPACT_LIVE_CONV, compactedAt)),
+      JSON.stringify(await rehydrateFromDb(COMPACT_LIVE_CONV, compactedAt)),
     ).toBe(persistentView(history));
   });
 });
@@ -1771,7 +1796,7 @@ describe("memory-v3 carry integration: compaction contract", () => {
 // injections onto a tail the hook stripped, with the store untouched.
 // ---------------------------------------------------------------------------
 
-describe("memory-v3 carry integration: re-entry contract", () => {
+describePg("memory-v3 carry integration: re-entry contract", () => {
   test("an overflow re-entry re-emits the turn's <memory> and <memory_pointer> bytes and leaves the store unchanged", async () => {
     histories.set(REENTRY_CONV, []);
     await runTurn(REENTRY_CONV, 1, "apple", [
@@ -1793,7 +1818,7 @@ describe("memory-v3 carry integration: re-entry contract", () => {
     // Turn 2's user message: the tail while the turn is in flight.
     const tail = history[history.length - 2]!;
     const sent = JSON.stringify(tail.content);
-    const storeBefore = getInjected(REENTRY_CONV);
+    const storeBefore = await getInjected(REENTRY_CONV);
 
     // The rung: no compaction, the store untouched, and the hook's tail strip
     // clears this turn's block and pointer before re-injecting. The store
@@ -1812,7 +1837,7 @@ describe("memory-v3 carry integration: re-entry contract", () => {
     expect(reentry.sectionsText).toBe(second.blockText);
     expect(reentry.pointerText).toBe(second.pointerText);
     expect(JSON.stringify(tail.content)).toBe(sent);
-    expect(getInjected(REENTRY_CONV)).toEqual(storeBefore);
+    expect(await getInjected(REENTRY_CONV)).toEqual(storeBefore);
   });
 });
 
@@ -1820,21 +1845,21 @@ describe("memory-v3 carry integration: re-entry contract", () => {
 // Retry contract: a rerun onto the original anchor row.
 // ---------------------------------------------------------------------------
 
-describe("memory-v3 carry integration: retry contract", () => {
+describePg("memory-v3 carry integration: retry contract", () => {
   const FIRST: Slug[] = ["core-alpha", "core-beta", "hot-one", "page-a"];
   const RERUN: Slug[] = ["page-a", "core-alpha", "page-b"];
 
   test("a rerun that injects net-new sections merges them into the anchor's frozen block: one block, both runs' sections once each after a reload, and the store claims exactly those", async () => {
     histories.set(RETRY_CONV, []);
     await runTurn(RETRY_CONV, 1, "apple", FIRST);
-    const claimedBefore = refIds(getActiveSections(RETRY_CONV));
+    const claimedBefore = refIds(await getActiveSections(RETRY_CONV));
 
     const retry = await retryTurn(RETRY_CONV, 1, 2, "apple banana", RERUN);
     expect(retry.merged).toBe(true);
     expect(retry.pointerText).toContain("memory/concepts/page-a.md");
 
     const expected = new Set([...claimedBefore, ref("page-b", "Detail")]);
-    expect(refIds(getActiveSections(RETRY_CONV))).toEqual(expected);
+    expect(refIds(await getActiveSections(RETRY_CONV))).toEqual(expected);
     // The live tail carries exactly one block holding both runs' sections.
     const live = histories.get(RETRY_CONV)!;
     const liveBlocks = ownedBlocks(live[live.length - 1]!);
@@ -1842,7 +1867,7 @@ describe("memory-v3 carry integration: retry contract", () => {
     expect(blockRefs(liveBlocks[0]!.text)).toEqual(expected);
     // A reload rehydrates the same single block, each section once, and
     // reproduces the live persistent layer.
-    const rehydrated = rehydrateFromDb(RETRY_CONV);
+    const rehydrated = await rehydrateFromDb(RETRY_CONV);
     const anchorBlocks = ownedBlocks(rehydrated[rehydrated.length - 1]!);
     expect(anchorBlocks).toHaveLength(1);
     expect(blockRefs(anchorBlocks[0]!.text)).toEqual(expected);
@@ -1864,7 +1889,7 @@ describe("memory-v3 carry integration: retry contract", () => {
     testSqlite
       .query(/*sql*/ `UPDATE messages SET metadata = ? WHERE id = ?`)
       .run(JSON.stringify(legacy), anchorRowId);
-    const claimedBefore = refIds(getActiveSections(RETRY_LEGACY_CONV));
+    const claimedBefore = refIds(await getActiveSections(RETRY_LEGACY_CONV));
     const blockBefore = legacy[MEMORY_V3_INJECTED_BLOCK_METADATA_KEY];
 
     const retry = await retryTurn(
@@ -1880,13 +1905,15 @@ describe("memory-v3 carry integration: retry contract", () => {
     // Nothing new is claimed and the anchor's block (and its lack of a
     // stamp) is untouched; the rerun's block lived on the tail in memory
     // only, so a reload rehydrates the anchor's block alone.
-    expect(refIds(getActiveSections(RETRY_LEGACY_CONV))).toEqual(claimedBefore);
+    expect(refIds(await getActiveSections(RETRY_LEGACY_CONV))).toEqual(
+      claimedBefore,
+    );
     const after = readMetadata(anchorRowId);
     expect(after[MEMORY_V3_INJECTED_BLOCK_METADATA_KEY]).toBe(blockBefore);
     expect(after[MEMORY_V3_INJECTED_BLOCK_FORMAT_METADATA_KEY]).toBeUndefined();
     const live = histories.get(RETRY_LEGACY_CONV)!;
     expect(ownedBlocks(live[live.length - 1]!)).toHaveLength(2);
-    const rehydrated = rehydrateFromDb(RETRY_LEGACY_CONV);
+    const rehydrated = await rehydrateFromDb(RETRY_LEGACY_CONV);
     const anchorBlocks = ownedBlocks(rehydrated[rehydrated.length - 1]!);
     expect(anchorBlocks).toHaveLength(1);
     expect(blockRefs(anchorBlocks[0]!.text)).toEqual(claimedBefore);

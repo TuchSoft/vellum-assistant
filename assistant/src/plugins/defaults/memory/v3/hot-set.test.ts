@@ -1,54 +1,55 @@
 /**
  * Tests for the frecency hot-set lane (`hot-set.ts`) and its config schema.
  *
- * `computeHotSet` reads `memory_v3_selections` over the dedicated memory
- * connection: each test installs an in-memory SQLite db into the `memory`
- * singleton slot (where the accessor resolves its connection), seeds it with
- * selection rows, and asserts the decayed-frequency ranking.
+ * `computeHotSet` reads `memory_v3_selections` over the memory-slot facade:
+ * each test seeds selection rows in the Postgres test database and asserts
+ * the decayed-frequency ranking.
  */
 
-import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
-
+import { describePg } from "../../../../__tests__/pg-test-db.js";
 import { MemoryV3ConfigSchema } from "../../../../config/schemas/memory-v3.js";
-import {
-  clearStoredDb,
-  setStoredDb,
-} from "../../../../persistence/db-singleton.js";
-import { ensureMemoryV3SelectionsSchema } from "../../../../persistence/migrations/338-move-memory-v3-selections-to-memory-db.js";
-import * as schema from "../../../../persistence/schema/index.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { computeHotSet, type HotSetOptions } from "./hot-set.js";
+import { ensureMemoryV3SelectionsSectionKeyOnce } from "./plugin-schema.js";
 
 const HALF_LIFE_MS = 1000;
 const NOW = 100_000;
 
-let sqlite: Database;
+let previousDatabaseUrl: string | undefined;
 
-beforeEach(() => {
-  sqlite = new Database(":memory:");
-  ensureMemoryV3SelectionsSchema(sqlite);
-  setStoredDb("memory", drizzle(sqlite, { schema }), () => sqlite.close());
+beforeEach(async () => {
+  previousDatabaseUrl = process.env.VELLUM_DATABASE_URL;
+  const db = requireMainDb();
+  await db.run(`DELETE FROM memory_v3_selections`);
+  await ensureMemoryV3SelectionsSectionKeyOnce(db);
 });
 
 afterEach(() => {
-  clearStoredDb("memory");
+  if (previousDatabaseUrl === undefined) {
+    delete process.env.VELLUM_DATABASE_URL;
+  } else {
+    process.env.VELLUM_DATABASE_URL = previousDatabaseUrl;
+  }
 });
 
 let nextTurn = 0;
 /** Insert one selection row per createdAt (distinct turns keep the PK unique). */
-function seed(slug: string, createdAts: number[]): void {
-  const stmt = sqlite.query(
-    `INSERT INTO memory_v3_selections (conversation_id, turn, slug, source, created_at) VALUES (?, ?, ?, ?, ?)`,
-  );
+async function seed(slug: string, createdAts: number[]): Promise<void> {
+  const db = requireMainDb();
   for (const createdAt of createdAts) {
-    stmt.run("conv-1", nextTurn++, slug, "needle", createdAt);
+    await db.run(
+      `INSERT INTO memory_v3_selections (conversation_id, turn, slug, source, created_at) VALUES (?, ?, ?, ?, ?)`,
+      ["conv-1", nextTurn++, slug, "needle", createdAt],
+    );
   }
 }
 
-function hotSet(overrides: Partial<HotSetOptions> = {}) {
-  return computeHotSet({
+async function hotSet(
+  overrides: Partial<HotSetOptions> = {},
+): Promise<Awaited<ReturnType<typeof computeHotSet>>> {
+  return await computeHotSet({
     k: 10,
     halfLifeMs: HALF_LIFE_MS,
     now: NOW,
@@ -57,77 +58,80 @@ function hotSet(overrides: Partial<HotSetOptions> = {}) {
   });
 }
 
-describe("computeHotSet", () => {
-  test("empty table yields empty result", () => {
-    expect(hotSet()).toEqual([]);
+describePg("computeHotSet", () => {
+  test("empty table yields empty result", async () => {
+    expect(await hotSet()).toEqual([]);
   });
 
-  test("newer selections outweigh older ones at the same count", () => {
-    seed("page-old", [NOW - 10 * HALF_LIFE_MS, NOW - 10 * HALF_LIFE_MS]);
-    seed("page-new", [NOW, NOW]);
-    const result = hotSet();
+  test("newer selections outweigh older ones at the same count", async () => {
+    await seed("page-old", [NOW - 10 * HALF_LIFE_MS, NOW - 10 * HALF_LIFE_MS]);
+    await seed("page-new", [NOW, NOW]);
+    const result = await hotSet();
     expect(result.map((e) => e.slug)).toEqual(["page-new", "page-old"]);
     expect(result[0]!.score).toBeGreaterThan(result[1]!.score);
   });
 
-  test("decay halves at exactly one half-life", () => {
-    seed("page-a", [NOW]);
-    seed("page-b", [NOW - HALF_LIFE_MS]);
-    const result = hotSet();
+  test("decay halves at exactly one half-life", async () => {
+    await seed("page-a", [NOW]);
+    await seed("page-b", [NOW - HALF_LIFE_MS]);
+    const result = await hotSet();
     const bySlug = new Map(result.map((e) => [e.slug, e.score]));
     expect(bySlug.get("page-a")).toBeCloseTo(1, 10);
     expect(bySlug.get("page-b")).toBeCloseTo(0.5, 10);
   });
 
-  test("scores sum across a slug's selections", () => {
-    seed("page-a", [NOW, NOW - HALF_LIFE_MS]);
-    expect(hotSet()[0]!.score).toBeCloseTo(1.5, 10);
+  test("scores sum across a slug's selections", async () => {
+    await seed("page-a", [NOW, NOW - HALF_LIFE_MS]);
+    expect((await hotSet())[0]!.score).toBeCloseTo(1.5, 10);
   });
 
-  test("k cut keeps only the top-k", () => {
-    seed("page-a", [NOW, NOW, NOW]);
-    seed("page-b", [NOW, NOW]);
-    seed("page-c", [NOW]);
-    expect(hotSet({ k: 2 }).map((e) => e.slug)).toEqual(["page-a", "page-b"]);
+  test("k cut keeps only the top-k", async () => {
+    await seed("page-a", [NOW, NOW, NOW]);
+    await seed("page-b", [NOW, NOW]);
+    await seed("page-c", [NOW]);
+    expect((await hotSet({ k: 2 })).map((e) => e.slug)).toEqual([
+      "page-a",
+      "page-b",
+    ]);
   });
 
-  test("excludeSlugs filters before the k cut", () => {
-    seed("page-a", [NOW, NOW, NOW]);
-    seed("page-b", [NOW, NOW]);
-    seed("page-c", [NOW]);
-    const result = hotSet({ k: 2, excludeSlugs: new Set(["page-a"]) });
+  test("excludeSlugs filters before the k cut", async () => {
+    await seed("page-a", [NOW, NOW, NOW]);
+    await seed("page-b", [NOW, NOW]);
+    await seed("page-c", [NOW]);
+    const result = await hotSet({ k: 2, excludeSlugs: new Set(["page-a"]) });
     expect(result.map((e) => e.slug)).toEqual(["page-b", "page-c"]);
   });
 
-  test("ties break deterministically by slug ascending", () => {
-    seed("page-b", [NOW]);
-    seed("page-a", [NOW]);
-    seed("page-c", [NOW]);
-    expect(hotSet().map((e) => e.slug)).toEqual(["page-a", "page-b", "page-c"]);
+  test("ties break deterministically by slug ascending", async () => {
+    await seed("page-b", [NOW]);
+    await seed("page-a", [NOW]);
+    await seed("page-c", [NOW]);
+    expect((await hotSet()).map((e) => e.slug)).toEqual([
+      "page-a",
+      "page-b",
+      "page-c",
+    ]);
   });
 
-  test("deterministic for fixed inputs", () => {
-    seed("page-a", [NOW, NOW - 3 * HALF_LIFE_MS]);
-    seed("page-b", [NOW - HALF_LIFE_MS]);
-    expect(hotSet()).toEqual(hotSet());
+  test("deterministic for fixed inputs", async () => {
+    await seed("page-a", [NOW, NOW - 3 * HALF_LIFE_MS]);
+    await seed("page-b", [NOW - HALF_LIFE_MS]);
+    expect(await hotSet()).toEqual(await hotSet());
   });
 
-  test("future-dated rows are clamped to weight 1", () => {
-    seed("page-a", [NOW + 50 * HALF_LIFE_MS]);
-    expect(hotSet()[0]!.score).toBeCloseTo(1, 10);
+  test("future-dated rows are clamped to weight 1", async () => {
+    await seed("page-a", [NOW + 50 * HALF_LIFE_MS]);
+    expect((await hotSet())[0]!.score).toBeCloseTo(1, 10);
   });
 
-  test("degrades to an empty hot set when the memory database is unavailable", () => {
-    seed("page-a", [NOW]);
-    // Simulate unavailability through the singleton slot instead of
-    // `mock.module`, which is process-global and leaks into sibling test
-    // files. The accessor extracts the raw connection from the stored
-    // handle's `$client`, so a handle without one makes `getMemorySqlite()`
-    // resolve to null, the same contract computeHotSet sees when the
-    // dedicated open fails.
-    clearStoredDb("memory");
-    setStoredDb("memory", { $client: null }, () => {});
-    expect(hotSet()).toEqual([]);
+  test("degrades to an empty hot set when the memory database is unavailable", async () => {
+    await seed("page-a", [NOW]);
+    // Removing the configured URL makes the memory-slot facade resolve to
+    // null, the same contract computeHotSet sees when the dedicated open
+    // fails.
+    delete process.env.VELLUM_DATABASE_URL;
+    expect(await hotSet()).toEqual([]);
   });
 });
 

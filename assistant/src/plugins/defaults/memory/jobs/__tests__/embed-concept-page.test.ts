@@ -23,11 +23,13 @@ import {
   afterEach,
   beforeAll,
   beforeEach,
-  describe,
   expect,
   mock,
+  setDefaultTimeout,
   test,
 } from "bun:test";
+
+setDefaultTimeout(30_000);
 
 // ── Embedding backend stub ─────────────────────────────────────────
 // `embedConceptPageJob` calls `getMemoryBackendStatus` first to verify a
@@ -139,11 +141,9 @@ afterAll(() => {
 // Imports are deferred to after the env var is set so any internal use of
 // `getWorkspaceDir()` resolves to the tmpdir.
 const { DEFAULT_CONFIG } = await import("../../../../../config/defaults.js");
-const { getMemoryDb } =
-  await import("../../../../../persistence/db-connection.js");
-const { resetDbForTesting } =
-  await import("../../../../../__tests__/db-test-helpers.js");
-const { initializeDb } = await import("../../../../../persistence/db-init.js");
+const { describePg } = await import("../../../../../__tests__/pg-test-db.js");
+const { requireMainDb } =
+  await import("../../../../../persistence/db-facade.js");
 const { memoryEmbeddings, memoryJobs } =
   await import("../../../../../persistence/schema/index.js");
 const { claimMemoryJobs, enqueueMemoryJob } =
@@ -185,15 +185,12 @@ function makeJob(payload: Record<string, unknown>): MemoryJob {
 }
 
 beforeEach(async () => {
-  resetDbForTesting();
-  // The first run pays the full cold-start migration chain; bump the hook
-  // timeout above bun's 5s default so the leading test doesn't flake in CI.
-  await initializeDb();
-  // memory_jobs lives in the dedicated memory connection, which the shared
-  // template-DB restore does not clear — truncate it so job rows written by
-  // earlier tests (or earlier suites in the same process) don't leak into
-  // the enqueue/coalesce assertions.
-  getMemoryDb()!.run("DELETE FROM memory_jobs");
+  // memory_jobs and the embedding cache live in the shared Postgres database;
+  // truncate both so rows written by earlier tests do not leak into the
+  // enqueue/coalesce assertions.
+  const db = requireMainDb();
+  await db.run("DELETE FROM memory_jobs");
+  await db.run("DELETE FROM memory_embeddings");
   embedWithBackendCalls.length = 0;
   upsertCalls.length = 0;
   deleteCalls.length = 0;
@@ -211,7 +208,7 @@ afterEach(() => {
 
 // ---------------------------------------------------------------------------
 
-describe("embedConceptPageJob — happy path", () => {
+describePg("embedConceptPageJob — happy path", () => {
   test("reads the page, embeds it, and upserts to the v2 collection", async () => {
     await writePage(tmpWorkspace, {
       slug: "alice-prefers-vs-code",
@@ -249,11 +246,9 @@ describe("embedConceptPageJob — happy path", () => {
 
     await embedConceptPageJob(makeJob({ slug: "bob-uses-zsh" }), TEST_CONFIG);
 
-    const row = getMemoryDb()!
-      .select()
-      .from(memoryEmbeddings)
-      .all()
-      .find((r) => r.targetId === "bob-uses-zsh");
+    const row = (
+      await requireMainDb().orm.select().from(memoryEmbeddings)
+    ).find((r) => r.targetId === "bob-uses-zsh");
 
     expect(row).toBeDefined();
     expect(row!.targetType).toBe("concept_page");
@@ -262,7 +257,7 @@ describe("embedConceptPageJob — happy path", () => {
   });
 });
 
-describe("embedConceptPageJob — summary embedding", () => {
+describePg("embedConceptPageJob — summary embedding", () => {
   test("embeds the summary when present and forwards summary vectors to upsert", async () => {
     await writePage(tmpWorkspace, {
       slug: "summarized-page",
@@ -368,7 +363,7 @@ describe("embedConceptPageJob — summary embedding", () => {
   });
 });
 
-describe("embedConceptPageJob — cache hit", () => {
+describePg("embedConceptPageJob — cache hit", () => {
   test("reuses the cached dense vector when content hash matches", async () => {
     await writePage(tmpWorkspace, {
       slug: "alice-prefers-vs-code",
@@ -422,7 +417,7 @@ describe("embedConceptPageJob — cache hit", () => {
   });
 });
 
-describe("embedConceptPageJob — delete propagation", () => {
+describePg("embedConceptPageJob — delete propagation", () => {
   test("removes the embedding when the page is missing on disk", async () => {
     // No `writePage` → page does not exist. Worker should clean up Qdrant.
     await embedConceptPageJob(makeJob({ slug: "deleted-slug" }), TEST_CONFIG);
@@ -433,7 +428,7 @@ describe("embedConceptPageJob — delete propagation", () => {
   });
 });
 
-describe("embedConceptPageJob — defensive", () => {
+describePg("embedConceptPageJob — defensive", () => {
   test("skips when slug is missing from the payload", async () => {
     await embedConceptPageJob(makeJob({}), TEST_CONFIG);
     expect(upsertCalls).toEqual([]);
@@ -448,7 +443,7 @@ describe("embedConceptPageJob — defensive", () => {
   });
 });
 
-describe("embedConceptPageJob — Qdrant breaker integration", () => {
+describePg("embedConceptPageJob — Qdrant breaker integration", () => {
   test("half-open probe success closes the breaker so embed catch-up unthrottles", async () => {
     // Trip the breaker by recording 5 consecutive Qdrant failures. Without
     // this fix, `embed_concept_page` bypassed the breaker entirely — winning
@@ -518,9 +513,11 @@ describe("embedConceptPageJob — Qdrant breaker integration", () => {
   });
 });
 
-describe("enqueueEmbedConceptPageJob", () => {
+describePg("enqueueEmbedConceptPageJob", () => {
   test("enqueues a pending embed_concept_page job with the slug payload", async () => {
-    const id = enqueueEmbedConceptPageJob({ slug: "alice-prefers-vs-code" });
+    const id = await enqueueEmbedConceptPageJob({
+      slug: "alice-prefers-vs-code",
+    });
     expect(id).toBeTruthy();
 
     const claimed = await claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
@@ -537,7 +534,7 @@ describe("enqueueEmbedConceptPageJob", () => {
       body: "Round-trip body.\n",
     });
 
-    enqueueEmbedConceptPageJob({ slug: "round-trip-slug" });
+    await enqueueEmbedConceptPageJob({ slug: "round-trip-slug" });
 
     const claimed = await claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
     expect(claimed).toHaveLength(1);
@@ -550,39 +547,32 @@ describe("enqueueEmbedConceptPageJob", () => {
   });
 
   test("inserted job row carries the right type and slug payload", async () => {
-    const id = enqueueEmbedConceptPageJob({ slug: "row-check" });
+    const id = await enqueueEmbedConceptPageJob({ slug: "row-check" });
 
-    const row = getMemoryDb()!
-      .select()
-      .from(memoryJobs)
-      .all()
-      .find((r) => r.id === id);
+    const row = (await requireMainDb().orm.select().from(memoryJobs)).find(
+      (r) => r.id === id,
+    );
     expect(row).toBeDefined();
     expect(row!.type).toBe("embed_concept_page");
     expect(JSON.parse(row!.payload)).toEqual({ slug: "row-check" });
   });
 
   test("coalesces with an existing pending job for the same slug", async () => {
-    const firstId = enqueueEmbedConceptPageJob({ slug: "dup-slug" });
-    const secondId = enqueueEmbedConceptPageJob({ slug: "dup-slug" });
+    const firstId = await enqueueEmbedConceptPageJob({ slug: "dup-slug" });
+    const secondId = await enqueueEmbedConceptPageJob({ slug: "dup-slug" });
 
     expect(secondId).toBe(firstId);
-    const rows = getMemoryDb()!
-      .select()
-      .from(memoryJobs)
-      .all()
-      .filter((r) => r.type === "embed_concept_page");
+    const rows = (await requireMainDb().orm.select().from(memoryJobs)).filter(
+      (r) => r.type === "embed_concept_page",
+    );
     expect(rows).toHaveLength(1);
   });
 
   test("different slugs do not coalesce", async () => {
-    enqueueEmbedConceptPageJob({ slug: "slug-a" });
-    enqueueEmbedConceptPageJob({ slug: "slug-b" });
+    await enqueueEmbedConceptPageJob({ slug: "slug-a" });
+    await enqueueEmbedConceptPageJob({ slug: "slug-b" });
 
-    const slugs = getMemoryDb()!
-      .select()
-      .from(memoryJobs)
-      .all()
+    const slugs = (await requireMainDb().orm.select().from(memoryJobs))
       .filter((r) => r.type === "embed_concept_page")
       .map((r) => JSON.parse(r.payload).slug)
       .sort();
@@ -594,38 +584,36 @@ describe("enqueueEmbedConceptPageJob", () => {
     // breaker-deferred or retry-backed-off row has. A coalescing enqueue
     // must not pull it earlier.
     const futureRunAfter = Date.now() + 300_000;
-    const id = enqueueMemoryJob(
+    const id = await enqueueMemoryJob(
       "embed_concept_page",
       { slug: "deferred-slug" },
       futureRunAfter,
     );
 
-    const coalescedId = enqueueEmbedConceptPageJob({ slug: "deferred-slug" });
+    const coalescedId = await enqueueEmbedConceptPageJob({
+      slug: "deferred-slug",
+    });
 
     expect(coalescedId).toBe(id);
-    const row = getMemoryDb()!
-      .select()
-      .from(memoryJobs)
-      .all()
-      .find((r) => r.id === id);
+    const row = (await requireMainDb().orm.select().from(memoryJobs)).find(
+      (r) => r.id === id,
+    );
     expect(row!.runAfter).toBe(futureRunAfter);
   });
 
   test("a running job for the slug does not suppress a fresh enqueue", async () => {
     // A running job may have already read the page from disk, so a write
     // landing after it started must still get its own pending row.
-    const firstId = enqueueEmbedConceptPageJob({ slug: "in-flight" });
+    const firstId = await enqueueEmbedConceptPageJob({ slug: "in-flight" });
     const claimed = await claimMemoryJobs({ slowLlm: 10, fast: 10, embed: 10 });
     expect(claimed.map((j) => j.id)).toEqual([firstId]);
 
-    const secondId = enqueueEmbedConceptPageJob({ slug: "in-flight" });
+    const secondId = await enqueueEmbedConceptPageJob({ slug: "in-flight" });
 
     expect(secondId).not.toBe(firstId);
-    const rows = getMemoryDb()!
-      .select()
-      .from(memoryJobs)
-      .all()
-      .filter((r) => r.type === "embed_concept_page");
+    const rows = (await requireMainDb().orm.select().from(memoryJobs)).filter(
+      (r) => r.type === "embed_concept_page",
+    );
     expect(rows.map((r) => r.status).sort()).toEqual(["pending", "running"]);
   });
 });

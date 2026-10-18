@@ -18,11 +18,13 @@ import {
   afterAll,
   beforeAll,
   beforeEach,
-  describe,
   expect,
   mock,
+  setDefaultTimeout,
   test,
 } from "bun:test";
+
+setDefaultTimeout(30_000);
 
 import { eq } from "drizzle-orm";
 
@@ -56,8 +58,8 @@ const tmpWorkspace = mkdtempSync(join(tmpdir(), "jobs-worker-v2-sweep-defer-"));
 const previousWorkspaceEnv = process.env.VELLUM_WORKSPACE_DIR;
 process.env.VELLUM_WORKSPACE_DIR = tmpWorkspace;
 
-import { getMemoryDb } from "../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../persistence/db-init.js";
+import { describePg } from "../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { _resetQdrantBreaker } from "../../../../persistence/embeddings/qdrant-circuit-breaker.js";
 import { enqueueMemoryJob } from "../../../../persistence/jobs-store.js";
 import { memoryJobs } from "../../../../persistence/schema/index.js";
@@ -66,18 +68,17 @@ import { runMemoryJobsOnce } from "../jobs-worker.js";
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
-function jobRow(jobId: string) {
-  return getMemoryDb()!
-    .select()
+async function jobRow(jobId: string) {
+  const rows = await requireMainDb()
+    .orm.select()
     .from(memoryJobs)
-    .where(eq(memoryJobs.id, jobId))
-    .get();
+    .where(eq(memoryJobs.id, jobId));
+  return rows[0];
 }
 
-describe("V1 Qdrant job dispatch under memory v2", () => {
+describePg("V1 Qdrant job dispatch under memory v2", () => {
   beforeAll(async () => {
     registerMemoryPluginJobHandlers();
-    await initializeDb();
   });
 
   afterAll(() => {
@@ -89,17 +90,20 @@ describe("V1 Qdrant job dispatch under memory v2", () => {
     rmSync(tmpWorkspace, { recursive: true, force: true });
   });
 
-  beforeEach(() => {
-    getMemoryDb()!.run("DELETE FROM memory_jobs");
+  beforeEach(async () => {
+    await requireMainDb().run("DELETE FROM memory_jobs");
     _resetQdrantBreaker();
   });
 
   test("holds the cacheless graph-node sweep pending, spending no attempt or deferral", async () => {
-    const jobId = enqueueMemoryJob("sweep_orphaned_graph_node_points", {});
+    const jobId = await enqueueMemoryJob(
+      "sweep_orphaned_graph_node_points",
+      {},
+    );
 
     await runMemoryJobsOnce();
 
-    const row = jobRow(jobId);
+    const row = await jobRow(jobId);
     expect(row?.status).toBe("pending");
     // Rescheduled a generous window out — not a hot loop, and not dead-lettered.
     expect(row!.runAfter).toBeGreaterThan(Date.now() + ONE_HOUR_MS);
@@ -110,13 +114,13 @@ describe("V1 Qdrant job dispatch under memory v2", () => {
   });
 
   test("still completes other v1 Qdrant job types as a no-op", async () => {
-    const jobId = enqueueMemoryJob("delete_qdrant_vectors", {
+    const jobId = await enqueueMemoryJob("delete_qdrant_vectors", {
       targetType: "graph_node",
       targetId: "node-1",
     });
 
     await runMemoryJobsOnce();
 
-    expect(jobRow(jobId)?.status).toBe("completed");
+    expect((await jobRow(jobId))?.status).toBe("completed");
   });
 });

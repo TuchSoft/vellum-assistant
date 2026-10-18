@@ -13,7 +13,16 @@
 // without re-embedding.
 // ---------------------------------------------------------------------------
 
-import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  beforeAll,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+
+setDefaultTimeout(30_000);
 
 // Configurable embed-mock state — reset between tests.
 let embedShouldThrow = false;
@@ -76,9 +85,10 @@ mock.module("@vellumai/plugin-api", () => ({
 }));
 
 import { resetDbForTesting } from "../../../../../__tests__/db-test-helpers.js";
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
 import { DEFAULT_CONFIG } from "../../../../../config/defaults.js";
 import type { AssistantConfig } from "../../../../../config/types.js";
-import { getMemorySqlite } from "../../../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import { initializeDb } from "../../../../../persistence/db-init.js";
 import { InContextTracker } from "../../graph/in-context-tracker.js";
 import { createNode } from "../../graph/store.js";
@@ -166,7 +176,7 @@ function makeEpisodicNode(content: string): NewNode {
   };
 }
 
-describe("loadContextMemory — query/sparse vector surfacing", () => {
+describePg("loadContextMemory — query/sparse vector surfacing", () => {
   beforeAll(async () => {
     await initializeDb();
   }, 30_000);
@@ -219,7 +229,7 @@ describe("loadContextMemory — query/sparse vector surfacing", () => {
   });
 });
 
-describe("retrieveForTurn — query/sparse vector surfacing", () => {
+describePg("retrieveForTurn — query/sparse vector surfacing", () => {
   beforeAll(async () => {
     await initializeDb();
   }, 30_000);
@@ -288,7 +298,7 @@ describe("retrieveForTurn — query/sparse vector surfacing", () => {
   });
 });
 
-describe("retrieveForTurn — concept-page substrate short-circuit", () => {
+describePg("retrieveForTurn — concept-page substrate short-circuit", () => {
   let seededNodeId = "";
 
   beforeAll(async () => {
@@ -305,8 +315,10 @@ describe("retrieveForTurn — concept-page substrate short-circuit", () => {
     searchRouter = () => [{ nodeId: seededNodeId, score: 0.95 }];
     resetDbForTesting();
     await initializeDb();
-    seededNodeId = createNode(
-      makeEpisodicNode("Notes on the quarterly planning meeting."),
+    seededNodeId = (
+      await createNode(
+        makeEpisodicNode("Notes on the quarterly planning meeting."),
+      )
     ).id;
   }, 30_000);
 
@@ -368,7 +380,7 @@ describe("retrieveForTurn — concept-page substrate short-circuit", () => {
   });
 });
 
-describe("retrieveForTurn — topic-pivot recovery", () => {
+describePg("retrieveForTurn — topic-pivot recovery", () => {
   // Build a one-hot keyword router so the combined assistant+user query and
   // the user-only query produce distinct vectors that can be routed to
   // disjoint Qdrant result sets. The key for the bug fix is that a long
@@ -407,20 +419,23 @@ describe("retrieveForTurn — topic-pivot recovery", () => {
     await initializeDb();
   }, 30_000);
 
-  beforeEach(() => {
+  beforeEach(async () => {
     embedShouldThrow = false;
     embedVector = [0.1, 0.2, 0.3];
     embedCallCount = 0;
     embedRouter = keywordEmbedRouter;
     searchRouter = vectorSearchRouter;
-    // The graph cluster lives in the dedicated memory database; reset it there.
     // Deleting nodes cascades to edges and triggers.
-    getMemorySqlite()!.run("DELETE FROM memory_graph_nodes");
-    cakeNodeId = createNode(
-      makeEpisodicNode("Notes on the birthday cake from the bakery."),
+    await requireMainDb().run("DELETE FROM memory_graph_nodes");
+    cakeNodeId = (
+      await createNode(
+        makeEpisodicNode("Notes on the birthday cake from the bakery."),
+      )
     ).id;
-    shirtNodeId = createNode(
-      makeEpisodicNode("Notes on the souvenir shirt from the conference."),
+    shirtNodeId = (
+      await createNode(
+        makeEpisodicNode("Notes on the souvenir shirt from the conference."),
+      )
     ).id;
   });
 
@@ -490,7 +505,7 @@ describe("retrieveForTurn — topic-pivot recovery", () => {
   });
 });
 
-describe("loadContextMemory — dual-query capability ranking", () => {
+describePg("loadContextMemory — dual-query capability ranking", () => {
   // Capture seeded capability node IDs so the searchGraphNodes mock can
   // reference them by ID (the mock runs at call time, not seed time).
   let inboxNodeId = "";
@@ -555,29 +570,28 @@ describe("loadContextMemory — dual-query capability ranking", () => {
     await initializeDb();
   }, 30_000);
 
-  beforeEach(() => {
+  beforeEach(async () => {
     embedShouldThrow = false;
     embedVector = [0.1, 0.2, 0.3];
     embedCallCount = 0;
     embedRouter = null;
     searchRouter = null;
-    // The graph cluster lives in the dedicated memory database; reset it there.
     // Deleting nodes cascades to edges and triggers.
-    getMemorySqlite()!.run("DELETE FROM memory_graph_nodes");
+    await requireMainDb().run("DELETE FROM memory_graph_nodes");
 
-    const inbox = createNode(
+    const inbox = await createNode(
       makeCapabilityNode(
         'The "Inbox Cleanup" skill (inbox-cleanup) is available. Run a high-recall, multi-pass email inbox cleanup. Use when: when user asks to clean up email inbox.',
         "inbox-cleanup",
       ),
     );
-    const heartbeat = createNode(
+    const heartbeat = await createNode(
       makeCapabilityNode(
         'The "Heartbeat" skill (heartbeat) is available. Body temperature and readiness check-ins. Use when: user asks about daily readiness.',
         "heartbeat",
       ),
     );
-    const watch = createNode(
+    const watch = await createNode(
       makeCapabilityNode(
         'The "Watch Together" skill (watch-together) is available. Co-watch video. Use when: user asks about watching Bridgerton or other shows.',
         "watch-together",

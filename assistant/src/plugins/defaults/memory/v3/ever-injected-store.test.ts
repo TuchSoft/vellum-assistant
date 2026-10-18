@@ -16,25 +16,23 @@
  *   - migration idempotence (run twice), and the one-shot legacy copy the
  *     lazy per-connection ensure records in the checkpoint ledger.
  *
- * The rows live on the dedicated memory connection, resolved via
- * `getMemorySqlite`, stubbed to an in-memory DB carrying the table's schema,
- * with `memoryDbAvailable` toggled to `null` for the fail-soft case; the
- * checkpoint ledger the ensure records its copy in rides `getDb`, stubbed to
- * an in-memory main DB carrying `memory_checkpoints`.
- *
- * `mock.module` is process-global and leaks into sibling files in a directory
- * run, so the db-connection stub DELEGATES to the real implementation unless
- * this test is actively running (`storeMockActive`, toggled in
- * beforeEach/afterAll). Mirrors `__tests__/selection-log-store.test.ts`.
+ * The rows live in the shared Postgres database. The plugin-init ensure and
+ * the checkpoint ledger it records the one-shot legacy copy in are exercised
+ * against the same fixture tables.
  */
 
-import { Database } from "bun:sqlite";
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
+setDefaultTimeout(30_000);
 
-import { ensureMemoryV3EverInjectedSchema } from "../../../../persistence/migrations/345-move-memory-v3-ever-injected-to-memory-db.js";
-import * as schema from "../../../../persistence/schema/index.js";
+import { describePg } from "../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { wrapMemoryBlock } from "../memory-marker.js";
 import { injectedSectionHeader } from "../substrate/injected-block-slugs.js";
 import { renderedBytes } from "../substrate/injected-block-slugs.js";
@@ -45,48 +43,16 @@ import {
 } from "./plugin-schema.js";
 import type { InjectedBlock } from "./types.js";
 
-const realDb = {
-  ...(await import("../../../../persistence/db-connection.js")),
-};
+let previousDatabaseUrl: string | undefined;
 
-let storeMockActive = false;
-let memoryDbAvailable = true;
-
-let memorySqlite: Database;
-/** The main connection, carrying the checkpoint ledger the sections ensure
- *  records its one-shot legacy copy in. */
-let mainSqlite: Database;
-await makeDb();
-async function makeDb() {
-  memorySqlite = new Database(":memory:");
-  await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
-  mainSqlite = new Database(":memory:");
-  mainSqlite.exec(/*sql*/ `
-    CREATE TABLE memory_checkpoints (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `);
+async function resetTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM memory_v3_injected_sections`);
+  await db.run(`DELETE FROM memory_v3_ever_injected`);
+  await db.run(`DELETE FROM memory_checkpoints WHERE key = ?`, [
+    SECTIONS_LEGACY_COPY_DONE_KEY,
+  ]);
 }
-
-mock.module("../../../../persistence/db-connection.js", () => ({
-  ...realDb,
-  getDb: () =>
-    storeMockActive ? drizzle(mainSqlite, { schema }) : realDb.getDb(),
-  getMemorySqlite: () =>
-    storeMockActive
-      ? memoryDbAvailable
-        ? memorySqlite
-        : null
-      : realDb.getMemorySqlite(),
-  getMemoryDb: () =>
-    storeMockActive
-      ? memoryDbAvailable
-        ? drizzle(memorySqlite, { schema })
-        : null
-      : realDb.getMemoryDb(),
-}));
 
 const {
   clearConversation,
@@ -105,55 +71,59 @@ const {
 } = await import("./ever-injected-store.js");
 
 beforeEach(async () => {
-  storeMockActive = true;
-  memoryDbAvailable = true;
-  await makeDb();
+  previousDatabaseUrl = process.env.VELLUM_DATABASE_URL;
+  await ensureMemoryV3InjectedSectionsSchema(requireMainDb());
+  await resetTables();
 });
 
-afterAll(() => {
-  storeMockActive = false;
+afterEach(() => {
+  if (previousDatabaseUrl === undefined) {
+    delete process.env.VELLUM_DATABASE_URL;
+  } else {
+    process.env.VELLUM_DATABASE_URL = previousDatabaseUrl;
+  }
 });
 
 /** Project the oracle rows down to the fields a test asserts on. */
-function summary(conversationId: string) {
-  return getInjected(conversationId).map(({ slug, key, bytes, prunedAt }) => ({
-    slug,
-    key,
-    bytes,
-    prunedAt,
-  }));
-}
-
-/** The conversation's rows in the legacy card table, by slug. */
-function legacySlugs(conversationId: string): string[] {
-  return (
-    memorySqlite
-      .query(
-        `SELECT slug FROM memory_v3_ever_injected
-         WHERE conversation_id = ? ORDER BY slug`,
-      )
-      .all(conversationId) as Array<{ slug: string }>
-  ).map((row) => row.slug);
-}
-
-/** Whether the ledger on the main connection records the legacy copy. */
-function legacyCopyRecorded(): boolean {
-  return (
-    mainSqlite
-      .query(`SELECT value FROM memory_checkpoints WHERE key = ?`)
-      .get(SECTIONS_LEGACY_COPY_DONE_KEY) != null
+async function summary(conversationId: string) {
+  return (await getInjected(conversationId)).map(
+    ({ slug, key, bytes, prunedAt }) => ({
+      slug,
+      key,
+      bytes,
+      prunedAt,
+    }),
   );
 }
 
-describe("metadata key constant", () => {
+/** The conversation's rows in the legacy card table, by slug. */
+async function legacySlugs(conversationId: string): Promise<string[]> {
+  const rows = await requireMainDb().all<{ slug: string }>(
+    `SELECT slug FROM memory_v3_ever_injected
+     WHERE conversation_id = ? ORDER BY slug`,
+    [conversationId],
+  );
+  return rows.map((row) => row.slug);
+}
+
+/** Whether the ledger on the main connection records the legacy copy. */
+async function legacyCopyRecorded(): Promise<boolean> {
+  const row = await requireMainDb().get<{ value: string }>(
+    `SELECT value FROM memory_checkpoints WHERE key = ?`,
+    [SECTIONS_LEGACY_COPY_DONE_KEY],
+  );
+  return row != null;
+}
+
+describePg("metadata key constant", () => {
   test("exports the v3 injected-block metadata key", async () => {
     expect(MEMORY_V3_INJECTED_BLOCK_METADATA_KEY).toBe("memoryV3InjectedBlock");
   });
 });
 
-describe("recordInjected / getInjected / getActiveSections", () => {
+describePg("recordInjected / getInjected / getActiveSections", () => {
   test("round-trips the recorded entries at (slug, key) grain", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [
         { slug: "topics/page-a", key: "", bytes: 100 },
@@ -163,16 +133,16 @@ describe("recordInjected / getInjected / getActiveSections", () => {
       1_000,
     );
 
-    expect(summary("conv-1")).toEqual([
+    expect(await summary("conv-1")).toEqual([
       { slug: "topics/page-a", key: "", bytes: 100, prunedAt: null },
       { slug: "topics/page-a", key: "Notes", bytes: 80, prunedAt: null },
       { slug: "topics/page-b", key: "Design#1", bytes: 250, prunedAt: null },
     ]);
     // The turn that injects a section selected it.
-    expect(getInjected("conv-1").map((row) => row.lastSelectedAt)).toEqual([
-      1_000, 1_000, 1_000,
-    ]);
-    const active = getActiveSections("conv-1");
+    expect(
+      (await getInjected("conv-1")).map((row) => row.lastSelectedAt),
+    ).toEqual([1_000, 1_000, 1_000]);
+    const active = await getActiveSections("conv-1");
     expect(active).toEqual(
       new Map([
         ["topics/page-a", new Set(["", "Notes"])],
@@ -183,28 +153,32 @@ describe("recordInjected / getInjected / getActiveSections", () => {
     expect(sectionRefSetHas(active, "topics/page-a", "Design")).toBe(false);
     expect(sectionRefSetHas(active, "topics/page-c", "")).toBe(false);
     // Other conversations see nothing.
-    expect(getInjected("conv-other")).toEqual([]);
-    expect(getActiveSections("conv-other").size).toBe(0);
+    expect(await getInjected("conv-other")).toEqual([]);
+    expect((await getActiveSections("conv-other")).size).toBe(0);
   });
 
   test("re-recording a pruned section clears pruned_at and refreshes bytes, injected_at, and last_selected_at", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [{ slug: "topics/page-a", key: "Notes", bytes: 100 }],
       1_000,
     );
-    markPruned("conv-1", [{ slug: "topics/page-a", key: "Notes" }], 2_000);
-    expect(summary("conv-1")).toEqual([
+    await markPruned(
+      "conv-1",
+      [{ slug: "topics/page-a", key: "Notes" }],
+      2_000,
+    );
+    expect(await summary("conv-1")).toEqual([
       { slug: "topics/page-a", key: "Notes", bytes: 100, prunedAt: 2_000 },
     ]);
 
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [{ slug: "topics/page-a", key: "Notes", bytes: 140 }],
       3_000,
     );
 
-    expect(getInjected("conv-1")).toEqual([
+    expect(await getInjected("conv-1")).toEqual([
       {
         slug: "topics/page-a",
         key: "Notes",
@@ -214,20 +188,20 @@ describe("recordInjected / getInjected / getActiveSections", () => {
         prunedAt: null,
       },
     ]);
-    expect(getActiveSections("conv-1")).toEqual(
+    expect(await getActiveSections("conv-1")).toEqual(
       new Map([["topics/page-a", new Set(["Notes"])]]),
     );
   });
 
   test("empty entries are a no-op", async () => {
-    recordInjected("conv-1", []);
-    expect(getInjected("conv-1")).toEqual([]);
+    await recordInjected("conv-1", []);
+    expect(await getInjected("conv-1")).toEqual([]);
   });
 });
 
-describe("markPruned / residentBytes / getPrunedSections", () => {
+describePg("markPruned / residentBytes / getPrunedSections", () => {
   test("pruned rows leave the active set and resident bytes but stay on record; siblings stay resident", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [
         { slug: "topics/page-a", key: "", bytes: 100 },
@@ -236,9 +210,9 @@ describe("markPruned / residentBytes / getPrunedSections", () => {
       ],
       1_000,
     );
-    expect(residentBytes("conv-1")).toBe(400);
+    expect(await residentBytes("conv-1")).toBe(400);
 
-    markPruned(
+    await markPruned(
       "conv-1",
       [
         { slug: "topics/page-a", key: "" },
@@ -247,10 +221,10 @@ describe("markPruned / residentBytes / getPrunedSections", () => {
       2_000,
     );
 
-    expect(getActiveSections("conv-1")).toEqual(
+    expect(await getActiveSections("conv-1")).toEqual(
       new Map([["topics/page-a", new Set(["Notes"])]]),
     );
-    expect(getActiveEntries("conv-1")).toEqual([
+    expect(await getActiveEntries("conv-1")).toEqual([
       {
         slug: "topics/page-a",
         key: "Notes",
@@ -259,15 +233,15 @@ describe("markPruned / residentBytes / getPrunedSections", () => {
         lastSelectedAt: 1_000,
       },
     ]);
-    expect(getPrunedSections("conv-1")).toEqual(
+    expect(await getPrunedSections("conv-1")).toEqual(
       new Map([
         ["topics/page-a", new Set([""])],
         ["topics/page-b", new Set([""])],
       ]),
     );
-    expect(residentBytes("conv-1")).toBe(250);
+    expect(await residentBytes("conv-1")).toBe(250);
     // Rows are never deleted — the record stays auditable.
-    expect(getInjected("conv-1")).toHaveLength(3);
+    expect(await getInjected("conv-1")).toHaveLength(3);
   });
 
   test("tombstones a plan far larger than one batch (and SQLite's expression depth) in one call", async () => {
@@ -275,50 +249,52 @@ describe("markPruned / residentBytes / getPrunedSections", () => {
       slug: `topics/page-${i}`,
       key: i % 2 === 0 ? "" : "Notes",
     }));
-    recordInjected(
+    await recordInjected(
       "conv-1",
       refs.map((ref) => ({ ...ref, bytes: 1 })),
       1_000,
     );
-    recordInjected("conv-1", [{ slug: "survivor", key: "", bytes: 7 }], 1_000);
-    expect(residentBytes("conv-1")).toBe(1_107);
+    await recordInjected(
+      "conv-1",
+      [{ slug: "survivor", key: "", bytes: 7 }],
+      1_000,
+    );
+    expect(await residentBytes("conv-1")).toBe(1_107);
 
-    markPruned("conv-1", refs, 2_000);
+    await markPruned("conv-1", refs, 2_000);
 
-    expect(residentBytes("conv-1")).toBe(7);
-    expect(getActiveSections("conv-1")).toEqual(
+    expect(await residentBytes("conv-1")).toBe(7);
+    expect(await getActiveSections("conv-1")).toEqual(
       new Map([["survivor", new Set([""])]]),
     );
-    expect(getPrunedSections("conv-1").size).toBe(1_100);
+    expect((await getPrunedSections("conv-1")).size).toBe(1_100);
     expect(
-      getInjected("conv-1").filter((row) => row.prunedAt === 2_000),
+      (await getInjected("conv-1")).filter((row) => row.prunedAt === 2_000),
     ).toHaveLength(1_100);
   });
 
   test("empty ref list is a no-op and residentBytes is 0 for unknown conversations", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [{ slug: "topics/page-a", key: "", bytes: 100 }],
       1_000,
     );
-    markPruned("conv-1", [], 2_000);
-    expect(residentBytes("conv-1")).toBe(100);
-    expect(residentBytes("conv-unknown")).toBe(0);
+    await markPruned("conv-1", [], 2_000);
+    expect(await residentBytes("conv-1")).toBe(100);
+    expect(await residentBytes("conv-unknown")).toBe(0);
   });
 });
 
-describe("touchSelected", () => {
+describePg("touchSelected", () => {
   /** Each row's selection stamp, by `(slug, key)`. */
-  function stamps(conversationId: string) {
-    return getInjected(conversationId).map(({ slug, key, lastSelectedAt }) => [
-      slug,
-      key,
-      lastSelectedAt,
-    ]);
+  async function stamps(conversationId: string) {
+    return (await getInjected(conversationId)).map(
+      ({ slug, key, lastSelectedAt }) => [slug, key, lastSelectedAt],
+    );
   }
 
   test("stamps exactly the named rows, leaving injected_at and other conversations alone; an unknown ref is a no-op", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [
         { slug: "topics/page-a", key: "", bytes: 100 },
@@ -327,13 +303,13 @@ describe("touchSelected", () => {
       ],
       1_000,
     );
-    recordInjected(
+    await recordInjected(
       "conv-2",
       [{ slug: "topics/page-a", key: "Notes", bytes: 80 }],
       1_000,
     );
 
-    touchSelected(
+    await touchSelected(
       "conv-1",
       [
         { slug: "topics/page-a", key: "Notes" },
@@ -343,15 +319,15 @@ describe("touchSelected", () => {
       2_000,
     );
 
-    expect(stamps("conv-1")).toEqual([
+    expect(await stamps("conv-1")).toEqual([
       ["topics/page-a", "", 1_000],
       ["topics/page-a", "Notes", 2_000],
       ["topics/page-b", "", 2_000],
     ]);
-    expect(stamps("conv-2")).toEqual([["topics/page-a", "Notes", 1_000]]);
-    expect(getInjected("conv-1").every((row) => row.injectedAt === 1_000)).toBe(
-      true,
-    );
+    expect(await stamps("conv-2")).toEqual([["topics/page-a", "Notes", 1_000]]);
+    expect(
+      (await getInjected("conv-1")).every((row) => row.injectedAt === 1_000),
+    ).toBe(true);
   });
 
   test("stamps a ref list far larger than one batch (and SQLite's expression depth) in one call", async () => {
@@ -359,93 +335,97 @@ describe("touchSelected", () => {
       slug: `topics/page-${i}`,
       key: i % 2 === 0 ? "" : "Notes",
     }));
-    recordInjected(
+    await recordInjected(
       "conv-1",
       refs.map((ref) => ({ ...ref, bytes: 1 })),
       1_000,
     );
 
-    touchSelected("conv-1", refs, 2_000);
+    await touchSelected("conv-1", refs, 2_000);
 
     expect(
-      getInjected("conv-1").filter((row) => row.lastSelectedAt === 2_000),
+      (await getInjected("conv-1")).filter(
+        (row) => row.lastSelectedAt === 2_000,
+      ),
     ).toHaveLength(1_100);
   });
 
   test("empty ref list is a no-op", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [{ slug: "topics/page-a", key: "", bytes: 100 }],
       1_000,
     );
-    touchSelected("conv-1", [], 2_000);
-    expect(stamps("conv-1")).toEqual([["topics/page-a", "", 1_000]]);
+    await touchSelected("conv-1", [], 2_000);
+    expect(await stamps("conv-1")).toEqual([["topics/page-a", "", 1_000]]);
   });
 });
 
-describe("clearConversation", () => {
+describePg("clearConversation", () => {
   test("deletes all rows for the conversation only", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [{ slug: "topics/page-a", key: "", bytes: 100 }],
       1_000,
     );
-    recordInjected(
+    await recordInjected(
       "conv-2",
       [{ slug: "topics/page-b", key: "", bytes: 200 }],
       1_000,
     );
 
-    clearConversation("conv-1");
+    await clearConversation("conv-1");
 
-    expect(getInjected("conv-1")).toEqual([]);
-    expect(getInjected("conv-2")).toHaveLength(1);
+    expect(await getInjected("conv-1")).toEqual([]);
+    expect(await getInjected("conv-2")).toHaveLength(1);
   });
 
   test("deletes the conversation's legacy card rows too, so a copy that runs after the reset re-imports nothing for it", async () => {
-    ensureMemoryV3EverInjectedSchema(memorySqlite);
-    memorySqlite.exec(/*sql*/ `
-      INSERT INTO memory_v3_ever_injected
-        (conversation_id, slug, injected_at, bytes, pruned_at)
-      VALUES
-        ('conv-1', 'topics/page-a', 1000, 120, NULL),
-        ('conv-1', 'topics/page-b', 2000, 340, NULL),
-        ('conv-2', 'topics/page-a', 3000, 100, NULL)
-    `);
+    const db = requireMainDb();
+    await db.run(
+      `INSERT INTO memory_v3_ever_injected
+         (conversation_id, slug, injected_at, bytes, pruned_at)
+       VALUES
+         ('conv-1', 'topics/page-a', 1000, 120, NULL),
+         ('conv-1', 'topics/page-b', 2000, 340, NULL),
+         ('conv-2', 'topics/page-a', 3000, 100, NULL)`,
+    );
     // The store's first use of this connection copies the legacy rows in.
     // The copy is async behind the main checkpoint ledger; flush it before
     // asserting the result.
-    summary("conv-1");
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
-    expect(summary("conv-1")).toEqual([
+    await summary("conv-1");
+    await ensureMemoryV3InjectedSectionsSchema(db);
+    expect(await summary("conv-1")).toEqual([
       { slug: "topics/page-a", key: "", bytes: 0, prunedAt: null },
       { slug: "topics/page-b", key: "", bytes: 0, prunedAt: null },
     ]);
-    expect(legacyCopyRecorded()).toBe(true);
+    expect(await legacyCopyRecorded()).toBe(true);
 
-    clearConversation("conv-1");
+    await clearConversation("conv-1");
 
-    expect(getInjected("conv-1")).toEqual([]);
-    expect(legacySlugs("conv-1")).toEqual([]);
-    expect(legacySlugs("conv-2")).toEqual(["topics/page-a"]);
-    expect(getInjected("conv-2")).toHaveLength(1);
+    expect(await getInjected("conv-1")).toEqual([]);
+    expect(await legacySlugs("conv-1")).toEqual([]);
+    expect(await legacySlugs("conv-2")).toEqual(["topics/page-a"]);
+    expect(await getInjected("conv-2")).toHaveLength(1);
 
     // A copy that runs again, its record lost, as a fresh connection's
     // ensure would: nothing of conv-1 is left to bring back.
-    mainSqlite.exec(`DELETE FROM memory_checkpoints`);
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
+    await requireMainDb().run(`DELETE FROM memory_checkpoints WHERE key = ?`, [
+      SECTIONS_LEGACY_COPY_DONE_KEY,
+    ]);
+    await ensureMemoryV3InjectedSectionsSchema(requireMainDb());
 
-    expect(getInjected("conv-1")).toEqual([]);
-    expect(summary("conv-2")).toEqual([
+    expect(await getInjected("conv-1")).toEqual([]);
+    expect(await summary("conv-2")).toEqual([
       { slug: "topics/page-a", key: "", bytes: 0, prunedAt: null },
     ]);
-    expect(legacyCopyRecorded()).toBe(true);
+    expect(await legacyCopyRecorded()).toBe(true);
   });
 });
 
-describe("forkEverInjected", () => {
+describePg("forkEverInjected", () => {
   test("copies the parent's full record, pruned state and selection stamps included", async () => {
-    recordInjected(
+    await recordInjected(
       "conv-parent",
       [
         { slug: "topics/page-a", key: "", bytes: 100 },
@@ -453,12 +433,20 @@ describe("forkEverInjected", () => {
       ],
       1_000,
     );
-    markPruned("conv-parent", [{ slug: "topics/page-a", key: "Notes" }], 2_000);
-    touchSelected("conv-parent", [{ slug: "topics/page-a", key: "" }], 3_000);
+    await markPruned(
+      "conv-parent",
+      [{ slug: "topics/page-a", key: "Notes" }],
+      2_000,
+    );
+    await touchSelected(
+      "conv-parent",
+      [{ slug: "topics/page-a", key: "" }],
+      3_000,
+    );
 
-    forkEverInjected("conv-parent", "conv-child");
+    await forkEverInjected("conv-parent", "conv-child");
 
-    expect(getInjected("conv-child")).toEqual([
+    expect(await getInjected("conv-child")).toEqual([
       {
         slug: "topics/page-a",
         key: "",
@@ -476,14 +464,14 @@ describe("forkEverInjected", () => {
         prunedAt: 2_000,
       },
     ]);
-    expect(residentBytes("conv-child")).toBe(100);
+    expect(await residentBytes("conv-child")).toBe(100);
     // Parent record is untouched.
-    expect(getInjected("conv-parent")).toHaveLength(2);
+    expect(await getInjected("conv-parent")).toHaveLength(2);
   });
 
   test("is a no-op when the parent has no rows", async () => {
-    forkEverInjected("conv-empty", "conv-child");
-    expect(getInjected("conv-child")).toEqual([]);
+    await forkEverInjected("conv-empty", "conv-child");
+    expect(await getInjected("conv-child")).toEqual([]);
   });
 });
 
@@ -494,21 +482,21 @@ const current = (inner: string): InjectedBlock => ({
 });
 const legacy = (inner: string): InjectedBlock => ({ inner, format: "legacy" });
 
-describe("seedEverInjectedFromBlocks", () => {
+describePg("seedEverInjectedFromBlocks", () => {
   const leadA = `${injectedSectionHeader("topics/page-a", "")}\nLead A`;
   const notesA = `${injectedSectionHeader("topics/page-a", "Notes")}\nNotes A`;
   const blockA = `${leadA}\n\n${notesA}`;
   const designB = `${injectedSectionHeader("topics/page-b", "Design#1")}\nDesign B`;
 
   test("seeds a row per inherited section, stamped at the given time with no selection stamp, with the bytes of its inherited span", async () => {
-    seedEverInjectedFromBlocks(
+    await seedEverInjectedFromBlocks(
       "conv-parent",
       "conv-child",
       [current(blockA), current(wrapMemoryBlock(designB))],
       5_000,
     );
 
-    expect(getInjected("conv-child")).toEqual([
+    expect(await getInjected("conv-child")).toEqual([
       {
         slug: "topics/page-a",
         key: "",
@@ -535,21 +523,21 @@ describe("seedEverInjectedFromBlocks", () => {
       },
     ]);
     // The child's resident accounting starts at what it inherited.
-    expect(residentBytes("conv-child")).toBe(
+    expect(await residentBytes("conv-child")).toBe(
       renderedBytes(leadA) + renderedBytes(notesA) + renderedBytes(designB),
     );
   });
 
   test("a section inherited from several blocks takes its latest span; an escaped forged header seeds no phantom row", async () => {
     const notesAgain = `${injectedSectionHeader("topics/page-a", "Notes")}\nNotes A, re-injected after a prune\n\\# memory/concepts/phantom.md`;
-    seedEverInjectedFromBlocks(
+    await seedEverInjectedFromBlocks(
       "conv-parent",
       "conv-child",
       [current(blockA), current(notesAgain)],
       5_000,
     );
 
-    expect(summary("conv-child")).toEqual([
+    expect(await summary("conv-child")).toEqual([
       {
         slug: "topics/page-a",
         key: "",
@@ -578,14 +566,14 @@ describe("seedEverInjectedFromBlocks", () => {
       "# CLI command: export",
       "Export a conversation.",
     ].join("\n");
-    seedEverInjectedFromBlocks(
+    await seedEverInjectedFromBlocks(
       "conv-parent",
       "conv-child",
       [current(block)],
       5_000,
     );
 
-    expect(summary("conv-child")).toEqual([
+    expect(await summary("conv-child")).toEqual([
       { slug: "cli-commands/export", key: "", bytes: 0, prunedAt: null },
       { slug: "skills/meet-join", key: "", bytes: 0, prunedAt: null },
       {
@@ -595,14 +583,14 @@ describe("seedEverInjectedFromBlocks", () => {
         prunedAt: null,
       },
     ]);
-    expect(getActiveSections("conv-child")).toEqual(
+    expect(await getActiveSections("conv-child")).toEqual(
       new Map([
         ["cli-commands/export", new Set([""])],
         ["skills/meet-join", new Set([""])],
         ["topics/page-a", new Set([""])],
       ]),
     );
-    expect(residentBytes("conv-child")).toBe(renderedBytes(leadA));
+    expect(await residentBytes("conv-child")).toBe(renderedBytes(leadA));
   });
 
   test("a legacy block (a pre-stamp row's) seeds nothing; the current blocks beside it seed as usual", async () => {
@@ -616,14 +604,14 @@ describe("seedEverInjectedFromBlocks", () => {
       "",
       "[sections: §Notes · §Design]",
     ].join("\n");
-    seedEverInjectedFromBlocks(
+    await seedEverInjectedFromBlocks(
       "conv-parent",
       "conv-child",
       [legacy(`preamble\n\n${card}`), current(designB)],
       5_000,
     );
 
-    expect(summary("conv-child")).toEqual([
+    expect(await summary("conv-child")).toEqual([
       {
         slug: "topics/page-b",
         key: "Design#1",
@@ -633,13 +621,13 @@ describe("seedEverInjectedFromBlocks", () => {
     ]);
 
     // Legacy blocks alone: a no-op.
-    seedEverInjectedFromBlocks(
+    await seedEverInjectedFromBlocks(
       "conv-parent",
       "conv-child-legacy-only",
       [legacy(`preamble\n\n${card}`)],
       5_000,
     );
-    expect(getInjected("conv-child-legacy-only")).toEqual([]);
+    expect(await getInjected("conv-child-legacy-only")).toEqual([]);
   });
 
   test("carries the parent's pruned_at tombstones for inherited sections", async () => {
@@ -648,7 +636,7 @@ describe("seedEverInjectedFromBlocks", () => {
     // so the scan seeds both, but Notes must arrive tombstoned, not active,
     // or the child's rehydration would resurrect a section the parent's live
     // view lost.
-    recordInjected(
+    await recordInjected(
       "conv-parent",
       [
         { slug: "topics/page-a", key: "", bytes: 100 },
@@ -656,16 +644,20 @@ describe("seedEverInjectedFromBlocks", () => {
       ],
       1_000,
     );
-    markPruned("conv-parent", [{ slug: "topics/page-a", key: "Notes" }], 2_000);
+    await markPruned(
+      "conv-parent",
+      [{ slug: "topics/page-a", key: "Notes" }],
+      2_000,
+    );
 
-    seedEverInjectedFromBlocks(
+    await seedEverInjectedFromBlocks(
       "conv-parent",
       "conv-child",
       [current(blockA)],
       5_000,
     );
 
-    expect(summary("conv-child")).toEqual([
+    expect(await summary("conv-child")).toEqual([
       {
         slug: "topics/page-a",
         key: "",
@@ -679,44 +671,44 @@ describe("seedEverInjectedFromBlocks", () => {
         prunedAt: 2_000,
       },
     ]);
-    expect(getActiveSections("conv-child")).toEqual(
+    expect(await getActiveSections("conv-child")).toEqual(
       new Map([["topics/page-a", new Set([""])]]),
     );
     // A tombstoned seed carries its bytes but stays out of the resident sum.
-    expect(residentBytes("conv-child")).toBe(renderedBytes(leadA));
+    expect(await residentBytes("conv-child")).toBe(renderedBytes(leadA));
 
     // Re-selection clears the inherited tombstone, same as in the parent.
-    recordInjected(
+    await recordInjected(
       "conv-child",
       [{ slug: "topics/page-a", key: "Notes", bytes: 50 }],
       6_000,
     );
-    expect(getActiveSections("conv-child")).toEqual(
+    expect(await getActiveSections("conv-child")).toEqual(
       new Map([["topics/page-a", new Set(["", "Notes"])]]),
     );
   });
 
   test("is a no-op for blocks with no headers and never overwrites existing rows", async () => {
-    seedEverInjectedFromBlocks(
+    await seedEverInjectedFromBlocks(
       "conv-parent",
       "conv-child",
       [current("no headers")],
       5_000,
     );
-    expect(getInjected("conv-child")).toEqual([]);
+    expect(await getInjected("conv-child")).toEqual([]);
 
-    recordInjected(
+    await recordInjected(
       "conv-child",
       [{ slug: "topics/page-a", key: "", bytes: 100 }],
       1_000,
     );
-    seedEverInjectedFromBlocks(
+    await seedEverInjectedFromBlocks(
       "conv-parent",
       "conv-child",
       [current(blockA)],
       5_000,
     );
-    expect(summary("conv-child")).toEqual([
+    expect(await summary("conv-child")).toEqual([
       { slug: "topics/page-a", key: "", bytes: 100, prunedAt: null },
       {
         slug: "topics/page-a",
@@ -728,139 +720,148 @@ describe("seedEverInjectedFromBlocks", () => {
   });
 });
 
-describe("memory-side schema", () => {
+describePg("memory-side schema", () => {
   test("a store call on a fresh memory connection creates the table itself (the lazy per-connection ensure)", async () => {
-    memorySqlite = new Database(":memory:");
+    await requireMainDb().exec(
+      "DROP TABLE IF EXISTS memory_v3_injected_sections",
+    );
 
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [{ slug: "topics/page-a", key: "", bytes: 100 }],
       1_000,
     );
 
-    expect(getActiveSections("conv-1")).toEqual(
+    expect(await getActiveSections("conv-1")).toEqual(
       new Map([["topics/page-a", new Set([""])]]),
     );
   });
 
   test("the plugin-init ensure creates the table and no-ops when the memory database is unavailable", async () => {
-    memorySqlite = new Database(":memory:");
-    ensureMemoryV3PluginSchema();
-    expect(
-      memorySqlite
-        .query(
-          `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_v3_injected_sections'`,
-        )
-        .get(),
-    ).not.toBeNull();
+    await requireMainDb().exec(
+      "DROP TABLE IF EXISTS memory_v3_injected_sections",
+    );
 
-    memoryDbAvailable = false;
-    expect(() => ensureMemoryV3PluginSchema()).not.toThrow();
+    await ensureMemoryV3PluginSchema();
+    const row = await requireMainDb().get<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables
+        WHERE table_schema = current_schema()
+          AND table_name = 'memory_v3_injected_sections'`,
+    );
+    expect(row).not.toBeNull();
+
+    delete process.env.VELLUM_DATABASE_URL;
+    await expect(ensureMemoryV3PluginSchema()).resolves.toBeUndefined();
   });
 
-  test("ensure is idempotent — running twice leaves a usable table", async () => {
-    // makeDb() already ensured the schema once; run it again.
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
+  test("ensure is idempotent, running twice leaves a usable table", async () => {
+    await ensureMemoryV3InjectedSectionsSchema(requireMainDb());
+    await ensureMemoryV3InjectedSectionsSchema(requireMainDb());
 
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [{ slug: "topics/page-a", key: "", bytes: 100 }],
       1_000,
     );
-    expect(getActiveSections("conv-1")).toEqual(
+    expect(await getActiveSections("conv-1")).toEqual(
       new Map([["topics/page-a", new Set([""])]]),
     );
   });
 
   test("the lazy per-connection ensure copies the legacy card rows once, recording the copy in the checkpoint ledger, and a later ensure skips it", async () => {
-    ensureMemoryV3EverInjectedSchema(memorySqlite);
-    memorySqlite.exec(/*sql*/ `
-      INSERT INTO memory_v3_ever_injected
-        (conversation_id, slug, injected_at, bytes, pruned_at)
-      VALUES ('conv-1', 'topics/page-a', 1000, 120, NULL)
-    `);
-    expect(legacyCopyRecorded()).toBe(false);
+    await requireMainDb().run(
+      `INSERT INTO memory_v3_ever_injected
+         (conversation_id, slug, injected_at, bytes, pruned_at)
+       VALUES ('conv-1', 'topics/page-a', 1000, 120, NULL)`,
+    );
+    expect(await legacyCopyRecorded()).toBe(false);
 
-    summary("conv-1");
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
-    expect(summary("conv-1")).toEqual([
+    await summary("conv-1");
+    await ensureMemoryV3InjectedSectionsSchema(requireMainDb());
+    expect(await summary("conv-1")).toEqual([
       { slug: "topics/page-a", key: "", bytes: 0, prunedAt: null },
     ]);
-    expect(legacyCopyRecorded()).toBe(true);
+    expect(await legacyCopyRecorded()).toBe(true);
 
     // The record, not the legacy rows, is what a later ensure consults.
-    recordInjected(
+    await recordInjected(
       "conv-1",
       [{ slug: "topics/page-a", key: "", bytes: 90 }],
       2_000,
     );
-    memorySqlite.query("DELETE FROM memory_v3_injected_sections").run();
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
-    expect(getInjected("conv-1")).toEqual([]);
+    await requireMainDb().run(`DELETE FROM memory_v3_injected_sections`);
+    await ensureMemoryV3InjectedSectionsSchema(requireMainDb());
+    expect(await getInjected("conv-1")).toEqual([]);
   });
 });
 
-describe("fail-soft without a memory database", () => {
+describePg("fail-soft without a memory database", () => {
   test("reads return empty and writes no-op when the memory DB is unavailable", async () => {
-    memoryDbAvailable = false;
-    expect(() =>
+    delete process.env.VELLUM_DATABASE_URL;
+    await expect(
       recordInjected(
         "conv-1",
         [{ slug: "topics/page-a", key: "", bytes: 100 }],
         1_000,
       ),
-    ).not.toThrow();
-    expect(getActiveSections("conv-1").size).toBe(0);
-    expect(getPrunedSections("conv-1").size).toBe(0);
-    expect(getInjected("conv-1")).toEqual([]);
-    expect(residentBytes("conv-1")).toBe(0);
-    expect(() =>
+    ).resolves.toBeUndefined();
+    expect((await getActiveSections("conv-1")).size).toBe(0);
+    expect((await getPrunedSections("conv-1")).size).toBe(0);
+    expect(await getInjected("conv-1")).toEqual([]);
+    expect(await residentBytes("conv-1")).toBe(0);
+    await expect(
       touchSelected("conv-1", [{ slug: "topics/page-a", key: "" }], 2_000),
-    ).not.toThrow();
-    expect(() => clearConversation("conv-1")).not.toThrow();
+    ).resolves.toBeUndefined();
+    await clearConversation("conv-1");
   });
 });
 
-describe("fail-soft when the underlying statement fails", () => {
-  // The memory connection is present, but the table is gone (a
-  // corrupt/dropped table, SQLITE_FULL, I/O error, or SQLITE_BUSY after
-  // timeout). Every write must degrade like the null-connection case — log a
-  // warning and no-op — rather than throwing out of the turn.
+describePg("fail-soft when the underlying statement fails", () => {
+  // The memory connection is present, but the table is gone (a corrupt or
+  // dropped table, I/O error, or a busy database). Every write must degrade
+  // like the null-connection case — log a warning and no-op — rather than
+  // throwing out of the turn.
   test("read paths return empty when the target table is missing (memory stays on, dedup off)", async () => {
-    memorySqlite.query("DROP TABLE memory_v3_injected_sections").run();
+    await requireMainDb().exec(
+      "DROP TABLE IF EXISTS memory_v3_injected_sections",
+    );
 
-    expect(getActiveSections("conv-1").size).toBe(0);
-    expect(getPrunedSections("conv-1").size).toBe(0);
-    expect(getActiveEntries("conv-1")).toEqual([]);
-    expect(getInjected("conv-1")).toEqual([]);
-    expect(residentBytes("conv-1")).toBe(0);
+    expect((await getActiveSections("conv-1")).size).toBe(0);
+    expect((await getPrunedSections("conv-1")).size).toBe(0);
+    expect(await getActiveEntries("conv-1")).toEqual([]);
+    expect(await getInjected("conv-1")).toEqual([]);
+    expect(await residentBytes("conv-1")).toBe(0);
   });
 
   test("write paths no-op when the target table is missing", async () => {
-    memorySqlite.query("DROP TABLE memory_v3_injected_sections").run();
+    await requireMainDb().exec(
+      "DROP TABLE IF EXISTS memory_v3_injected_sections",
+    );
 
-    expect(() =>
+    await expect(
       recordInjected(
         "conv-1",
         [{ slug: "topics/page-a", key: "", bytes: 100 }],
         1_000,
       ),
-    ).not.toThrow();
-    expect(() =>
+    ).resolves.toBeUndefined();
+    await expect(
       markPruned("conv-1", [{ slug: "topics/page-a", key: "" }], 2_000),
-    ).not.toThrow();
-    expect(() =>
+    ).resolves.toBeUndefined();
+    await expect(
       touchSelected("conv-1", [{ slug: "topics/page-a", key: "" }], 2_000),
-    ).not.toThrow();
-    expect(() => clearConversation("conv-1")).not.toThrow();
-    expect(() => forkEverInjected("conv-parent", "conv-child")).not.toThrow();
-    expect(() =>
+    ).resolves.toBeUndefined();
+    await clearConversation("conv-1");
+    await expect(
+      forkEverInjected("conv-parent", "conv-child"),
+    ).resolves.toBeUndefined();
+    await expect(
       seedEverInjectedFromBlocks(
         "conv-parent",
         "conv-child",
         [current(injectedSectionHeader("topics/page-a", ""))],
         5_000,
       ),
-    ).not.toThrow();
+    ).resolves.toBeUndefined();
   });
 });

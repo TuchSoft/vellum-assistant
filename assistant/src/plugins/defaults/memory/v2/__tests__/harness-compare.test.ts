@@ -1,11 +1,8 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
 import type { AssistantConfig } from "../../../../../config/types.js";
-import {
-  getDb,
-  getMemorySqlite,
-} from "../../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../../persistence/db-init.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import {
   conversations,
   messages,
@@ -13,8 +10,6 @@ import {
 import type { MemoryV2ConceptRowRecord } from "../activation-log-store.js";
 import { runComparisonOverHistory } from "../harness/compare.js";
 import type { RetrievalOutput, Retriever } from "../harness/retriever.js";
-
-await initializeDb();
 
 // loadNowText reads workspace files; a nonexistent dir yields "".
 const WORKSPACE = "/tmp/harness-compare-nonexistent-workspace";
@@ -38,32 +33,30 @@ function config(historicalPairs: number): AssistantConfig {
   } as unknown as AssistantConfig;
 }
 
-function ensureConversation(id: string): void {
-  getDb()
-    .insert(conversations)
+async function ensureConversation(id: string): Promise<void> {
+  await requireMainDb()
+    .orm.insert(conversations)
     .values({ id, createdAt: 0, updatedAt: 0 })
-    .onConflictDoNothing()
-    .run();
+    .onConflictDoNothing();
 }
 
-function insertMessage(
+async function insertMessage(
   id: string,
   conversationId: string,
   role: string,
   text: string,
   createdAt: number,
-): void {
-  ensureConversation(conversationId);
-  getDb()
-    .insert(messages)
+): Promise<void> {
+  await ensureConversation(conversationId);
+  await requireMainDb()
+    .orm.insert(messages)
     .values({
       id,
       conversationId,
       role,
       content: JSON.stringify([{ type: "text", text }]),
       createdAt,
-    })
-    .run();
+    });
 }
 
 function makeConcept(
@@ -87,23 +80,21 @@ function makeConcept(
   };
 }
 
-function insertRouterLog(
+async function insertRouterLog(
   conversationId: string,
   messageId: string,
   turn: number,
   concepts: MemoryV2ConceptRowRecord[],
   createdAt: number,
-): void {
-  ensureConversation(conversationId);
+): Promise<void> {
+  await ensureConversation(conversationId);
   // The activation log lives in the dedicated memory database.
-  getMemorySqlite()!
-    .prepare(
-      `INSERT INTO memory_v2_activation_logs (
-         id, conversation_id, message_id, turn, mode,
-         concepts_json, skills_json, config_json, created_at
-       ) VALUES (?, ?, ?, ?, 'router', ?, '[]', ?, ?)`,
-    )
-    .run(
+  await requireMainDb().run(
+    `INSERT INTO memory_v2_activation_logs (
+       id, conversation_id, message_id, turn, mode,
+       concepts_json, skills_json, config_json, created_at
+     ) VALUES (?, ?, ?, ?, 'router', ?, '[]', ?, ?)`,
+    [
       `log-${seq++}`,
       conversationId,
       messageId,
@@ -111,7 +102,8 @@ function insertRouterLog(
       JSON.stringify(concepts),
       JSON.stringify(ZERO_CONFIG),
       createdAt,
-    );
+    ],
+  );
 }
 
 function stubRetriever(name: string, selected: string[]): Retriever {
@@ -124,16 +116,17 @@ function stubRetriever(name: string, selected: string[]): Retriever {
   };
 }
 
-function reset(): void {
-  getMemorySqlite()!.exec(`DELETE FROM memory_v2_activation_logs`);
-  getDb().delete(messages).run();
+async function reset(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM memory_v2_activation_logs`);
+  await db.run(`DELETE FROM messages`);
 }
 
 /** Seed one router turn: user msg, assistant anchor, and the logged picks. */
-function seedTurn(groundTruth: string[]): void {
-  insertMessage("u1", "c1", "user", "hello", 10);
-  insertMessage("a1", "c1", "assistant", "hi", 20); // anchor for turn 1
-  insertRouterLog(
+async function seedTurn(groundTruth: string[]): Promise<void> {
+  await insertMessage("u1", "c1", "user", "hello", 10);
+  await insertMessage("a1", "c1", "assistant", "hi", 20); // anchor for turn 1
+  await insertRouterLog(
     "c1",
     "a1",
     1,
@@ -142,14 +135,14 @@ function seedTurn(groundTruth: string[]): void {
   );
 }
 
-describe("harness/compare runComparisonOverHistory", () => {
+describePg("harness/compare runComparisonOverHistory", () => {
   beforeEach(reset);
 
   test("scores a stub retriever against the logged ground truth", async () => {
-    seedTurn(["p1", "p2"]);
+    await seedTurn(["p1", "p2"]);
 
     const report = await runComparisonOverHistory({
-      db: getDb(),
+      db: requireMainDb(),
       workspaceDir: WORKSPACE,
       config: config(1),
       retrievers: [stubRetriever("stub", ["p1", "z"])],
@@ -164,10 +157,10 @@ describe("harness/compare runComparisonOverHistory", () => {
   });
 
   test("pageExists narrows the ground truth set", async () => {
-    seedTurn(["p1", "p2"]);
+    await seedTurn(["p1", "p2"]);
 
     const report = await runComparisonOverHistory({
-      db: getDb(),
+      db: requireMainDb(),
       workspaceDir: WORKSPACE,
       config: config(1),
       retrievers: [stubRetriever("stub", ["p1", "z"])],

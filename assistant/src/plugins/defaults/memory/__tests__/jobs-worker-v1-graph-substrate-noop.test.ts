@@ -24,11 +24,13 @@ import {
   afterAll,
   beforeAll,
   beforeEach,
-  describe,
   expect,
   mock,
+  setDefaultTimeout,
   test,
 } from "bun:test";
+
+setDefaultTimeout(30_000);
 
 import { eq } from "drizzle-orm";
 
@@ -121,9 +123,8 @@ setConfig("memory", {
 });
 
 const { applyNestedDefaults } = await import("../../../../config/loader.js");
-const { getMemoryDb } =
-  await import("../../../../persistence/db-connection.js");
-const { initializeDb } = await import("../../../../persistence/db-init.js");
+const { describePg } = await import("../../../../__tests__/pg-test-db.js");
+const { requireMainDb } = await import("../../../../persistence/db-facade.js");
 const { _resetQdrantBreaker } =
   await import("../../../../persistence/embeddings/qdrant-circuit-breaker.js");
 const { enqueueMemoryJob } =
@@ -143,12 +144,12 @@ function resetCallCounts(): void {
   extractCalls = 0;
 }
 
-function jobStatus(jobId: string): string | undefined {
-  return getMemoryDb()!
-    .select()
+async function jobStatus(jobId: string): Promise<string | undefined> {
+  const rows = await requireMainDb()
+    .orm.select()
     .from(memoryJobs)
-    .where(eq(memoryJobs.id, jobId))
-    .all()[0]?.status;
+    .where(eq(memoryJobs.id, jobId));
+  return rows[0]?.status;
 }
 
 function handlerFor(type: string) {
@@ -193,10 +194,9 @@ function v3LiveConfig(): AssistantConfig {
   return config;
 }
 
-describe("v1 graph jobs under concept-page memory", () => {
+describePg("v1 graph jobs under concept-page memory", () => {
   beforeAll(async () => {
     registerMemoryPluginJobHandlers();
-    await initializeDb();
   }, 30_000);
 
   afterAll(() => {
@@ -209,27 +209,27 @@ describe("v1 graph jobs under concept-page memory", () => {
     rmSync(tmpWorkspace, { recursive: true, force: true });
   });
 
-  beforeEach(() => {
-    getMemoryDb()!.run("DELETE FROM memory_jobs");
+  beforeEach(async () => {
+    await requireMainDb().run("DELETE FROM memory_jobs");
     resetCallCounts();
     _resetQdrantBreaker();
   });
 
   test("a graph_bootstrap row completes as a no-op without running the bootstrap", async () => {
-    const jobId = enqueueMemoryJob("graph_bootstrap", {});
+    const jobId = await enqueueMemoryJob("graph_bootstrap", {});
 
     await runMemoryJobsOnce();
 
     expect(bootstrapCalls).toBe(0);
-    expect(jobStatus(jobId)).toBe("completed");
+    expect(await jobStatus(jobId)).toBe("completed");
   });
 
   test("v1 maintenance rows complete as no-ops without running their implementations", async () => {
     const jobIds = {
-      decay: enqueueMemoryJob("graph_decay", {}),
-      consolidate: enqueueMemoryJob("graph_consolidate", {}),
-      patternScan: enqueueMemoryJob("graph_pattern_scan", {}),
-      narrative: enqueueMemoryJob("graph_narrative_refine", {}),
+      decay: await enqueueMemoryJob("graph_decay", {}),
+      consolidate: await enqueueMemoryJob("graph_consolidate", {}),
+      patternScan: await enqueueMemoryJob("graph_pattern_scan", {}),
+      narrative: await enqueueMemoryJob("graph_narrative_refine", {}),
     };
 
     await runMemoryJobsOnce();
@@ -238,10 +238,10 @@ describe("v1 graph jobs under concept-page memory", () => {
     expect(consolidateCalls).toBe(0);
     expect(patternScanCalls).toBe(0);
     expect(narrativeCalls).toBe(0);
-    expect(jobStatus(jobIds.decay)).toBe("completed");
-    expect(jobStatus(jobIds.consolidate)).toBe("completed");
-    expect(jobStatus(jobIds.patternScan)).toBe("completed");
-    expect(jobStatus(jobIds.narrative)).toBe("completed");
+    expect(await jobStatus(jobIds.decay)).toBe("completed");
+    expect(await jobStatus(jobIds.consolidate)).toBe("completed");
+    expect(await jobStatus(jobIds.patternScan)).toBe("completed");
+    expect(await jobStatus(jobIds.narrative)).toBe("completed");
   });
 
   test("the graph_bootstrap handler no-ops on a v3-live config", async () => {
@@ -320,14 +320,14 @@ describe("v1 graph jobs under concept-page memory", () => {
     // is dead work while memory is off. `runMemoryJobsOnce` never even claims
     // it in that state — only the message-lexical types are claimable — so the
     // row stays pending for a later return to v1 rather than being drained.
-    const jobId = enqueueMemoryJob("embed_segment", {});
+    const jobId = await enqueueMemoryJob("embed_segment", {});
     setConfig("memory", {
       enabled: false,
       jobs: { slowLlmConcurrency: 8, fastConcurrency: 8 },
     });
     try {
       await runMemoryJobsOnce();
-      expect(jobStatus(jobId)).toBe("pending");
+      expect(await jobStatus(jobId)).toBe("pending");
     } finally {
       setConfig("memory", {
         jobs: { slowLlmConcurrency: 8, fastConcurrency: 8 },
@@ -337,6 +337,6 @@ describe("v1 graph jobs under concept-page memory", () => {
     // Back on the substrate the same row IS claimed, and the dispatch guard
     // completes it as a no-op (the v1 Qdrant client is not initialized).
     await runMemoryJobsOnce();
-    expect(jobStatus(jobId)).toBe("completed");
+    expect(await jobStatus(jobId)).toBe("completed");
   });
 });

@@ -18,15 +18,15 @@
  *     an unreadable `candidates_json` reads `null`;
  *   - `ensureMemoryV3PoolsSchema` is idempotent.
  *
- * `mock.module` is process-global and leaks into sibling files in a directory
- * run, so the db-connection stub DELEGATES to the real implementation unless
- * this test is actively running (`storeMockActive`). Mirrors
- * `selection-log-store.test.ts`.
+ * These tests run against the Postgres test database, with the store
+ * resolving the memory-slot facade. Mirrors `selection-log-store.test.ts`.
  */
 
-import { Database } from "bun:sqlite";
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
+import type { AsyncDb } from "../../../../../persistence/db-facade.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import type { OrchestrateResult } from "../orchestrate.js";
 import {
   ensureMemoryV3PoolInputsSchema,
@@ -40,32 +40,17 @@ import type {
 import { renderFinderLine } from "../pool-select.js";
 import type { MemoryRoutingTurn, Section, Slug } from "../types.js";
 
-const realDb = {
-  ...(await import("../../../../../persistence/db-connection.js")),
-};
+let previousDatabaseUrl: string | undefined;
+let db: AsyncDb;
 
-let storeMockActive = false;
-// When false, the stubbed `getMemorySqlite` resolves to null: the contract
-// the store sees when the dedicated memory database cannot be opened.
-let memoryDbAvailable = true;
-
-let memorySqlite: Database;
-makeDb();
-function makeDb() {
-  memorySqlite = new Database(":memory:");
-  ensureMemoryV3PoolsSchema(memorySqlite);
-  ensureMemoryV3PoolInputsSchema(memorySqlite);
+async function makeDb(): Promise<void> {
+  await requireMainDb().exec("DROP TABLE IF EXISTS memory_v3_pools");
+  await requireMainDb().exec("DROP TABLE IF EXISTS memory_v3_pool_inputs");
+  await requireMainDb().exec("DROP TABLE IF EXISTS memory_v3_pool_texts");
+  await requireMainDb().exec("DROP FUNCTION IF EXISTS refuse_pool_writes()");
+  await ensureMemoryV3PoolsSchema(requireMainDb());
+  await ensureMemoryV3PoolInputsSchema(requireMainDb());
 }
-
-mock.module("../../../../../persistence/db-connection.js", () => ({
-  ...realDb,
-  getMemorySqlite: () =>
-    storeMockActive
-      ? memoryDbAvailable
-        ? memorySqlite
-        : null
-      : realDb.getMemorySqlite(),
-}));
 
 const {
   buildPoolInput,
@@ -79,14 +64,18 @@ const {
   writePoolInput,
 } = await import("../pool-log-store.js");
 
-beforeEach(() => {
-  storeMockActive = true;
-  memoryDbAvailable = true;
-  makeDb();
+beforeEach(async () => {
+  previousDatabaseUrl = process.env.VELLUM_DATABASE_URL;
+  await makeDb();
+  db = requireMainDb();
 });
 
-afterAll(() => {
-  storeMockActive = false;
+afterEach(() => {
+  if (previousDatabaseUrl === undefined) {
+    delete process.env.VELLUM_DATABASE_URL;
+  } else {
+    process.env.VELLUM_DATABASE_URL = previousDatabaseUrl;
+  }
 });
 
 function section(article: Slug, title: string, ordinal: number): Section {
@@ -179,13 +168,16 @@ function hardSkipped(): OrchestrateResult {
 
 /** Stamp the turn's pool row with its assistant message id, as the turn-end
  *  backfill does. */
-function stamp(conversationId: string, turn: number, messageId: string): void {
-  memorySqlite
-    .query(
-      `UPDATE memory_v3_pools SET message_id = ?
-       WHERE conversation_id = ? AND turn = ?`,
-    )
-    .run(messageId, conversationId, turn);
+async function stamp(
+  conversationId: string,
+  turn: number,
+  messageId: string,
+): Promise<void> {
+  await requireMainDb().run(
+    `UPDATE memory_v3_pools SET message_id = ?
+     WHERE conversation_id = ? AND turn = ?`,
+    [messageId, conversationId, turn],
+  );
 }
 
 const card = (
@@ -200,8 +192,8 @@ const card = (
   chosen,
 });
 
-describe("buildPoolRecord", () => {
-  test("lays the pool out in cache order with lanes, sections, and verdicts", () => {
+describePg("buildPoolRecord", () => {
+  test("lays the pool out in cache order with lanes, sections, and verdicts", async () => {
     const record = buildPoolRecord(orchestrated());
 
     expect(record.candidates).toEqual([
@@ -240,7 +232,7 @@ describe("buildPoolRecord", () => {
     expect(record.selector_ran).toBe(true);
   });
 
-  test("an empty pool records zero candidates with the selector not run", () => {
+  test("an empty pool records zero candidates with the selector not run", async () => {
     expect(
       buildPoolRecord({
         selections: [],
@@ -255,7 +247,7 @@ describe("buildPoolRecord", () => {
     });
   });
 
-  test("a closed-gate hard skip records an empty pool, not the stable prefix as rejected", () => {
+  test("a closed-gate hard skip records an empty pool, not the stable prefix as rejected", async () => {
     // The selector never saw core/hot/fresh; listing them unchosen would read
     // as a verdict it never gave.
     expect(buildPoolRecord(hardSkipped())).toEqual({
@@ -266,7 +258,7 @@ describe("buildPoolRecord", () => {
     });
   });
 
-  test("verdicts are per line: only the selected section's line reads chosen, and the card reads chosen when the page was kept", () => {
+  test("verdicts are per line: only the selected section's line reads chosen, and the card reads chosen when the page was kept", async () => {
     const first = section("topic/a", "One", 1);
     const second = section("topic/a", "Two", 2);
     const record = buildPoolRecord({
@@ -312,7 +304,7 @@ describe("buildPoolRecord", () => {
     expect(record.selected_count).toBe(1);
   });
 
-  test("a pool the selector rejected wholesale keeps every candidate, unchosen", () => {
+  test("a pool the selector rejected wholesale keeps every candidate, unchosen", async () => {
     const record = buildPoolRecord({ ...orchestrated(), selections: [] });
 
     expect(record.selector_ran).toBe(true);
@@ -321,7 +313,7 @@ describe("buildPoolRecord", () => {
     expect(record.candidates.every((c) => !c.chosen)).toBe(true);
   });
 
-  test("the disabled-selector passthrough keeps its pool with every candidate chosen", () => {
+  test("the disabled-selector passthrough keeps its pool with every candidate chosen", async () => {
     // `selectAllPoolCandidates` turns the whole pool into selections without
     // a selector judgment: the pool was real, so it is recorded.
     const record = buildPoolRecord({
@@ -361,26 +353,24 @@ describe("buildPoolRecord", () => {
   });
 });
 
-describe("writePool / readPoolForTurn", () => {
-  test("round-trips the record for the exact (conversation, turn)", () => {
+describePg("writePool / readPoolForTurn", () => {
+  test("round-trips the record for the exact (conversation, turn)", async () => {
     const record = buildPoolRecord(orchestrated());
-    writePool(memorySqlite, "conv-1", 4, record);
+    await writePool(db, "conv-1", 4, record);
 
-    expect(readPoolForTurn("conv-1", 4)).toEqual(record);
-    expect(readPoolForTurn("conv-1", 3)).toBeNull();
-    expect(readPoolForTurn("conv-2", 4)).toBeNull();
+    expect(await readPoolForTurn("conv-1", 4)).toEqual(record);
+    expect(await readPoolForTurn("conv-1", 3)).toBeNull();
+    expect(await readPoolForTurn("conv-2", 4)).toBeNull();
   });
 
-  test("writes message_id NULL for the turn-end backfill to stamp", () => {
-    writePool(memorySqlite, "conv-1", 4, buildPoolRecord(orchestrated()));
+  test("writes message_id NULL for the turn-end backfill to stamp", async () => {
+    await writePool(db, "conv-1", 4, buildPoolRecord(orchestrated()));
 
-    const row = memorySqlite
-      .query(
-        `SELECT message_id, pool_size, selected_count, selector_ran
-         FROM memory_v3_pools
-         WHERE conversation_id = 'conv-1' AND turn = 4`,
-      )
-      .get();
+    const row = await db.get(
+      `SELECT message_id, pool_size, selected_count, selector_ran
+       FROM memory_v3_pools
+       WHERE conversation_id = 'conv-1' AND turn = 4`,
+    );
     expect(row).toEqual({
       message_id: null,
       pool_size: 8,
@@ -389,23 +379,21 @@ describe("writePool / readPoolForTurn", () => {
     });
   });
 
-  test("a closed-gate turn persists selector_ran = 0 with an empty pool and reads back as such", () => {
-    writePool(memorySqlite, "conv-1", 4, buildPoolRecord(hardSkipped()));
+  test("a closed-gate turn persists selector_ran = 0 with an empty pool and reads back as such", async () => {
+    await writePool(db, "conv-1", 4, buildPoolRecord(hardSkipped()));
 
-    const row = memorySqlite
-      .query(
-        `SELECT pool_size, selected_count, selector_ran, candidates_json
-         FROM memory_v3_pools
-         WHERE conversation_id = 'conv-1' AND turn = 4`,
-      )
-      .get();
+    const row = await db.get(
+      `SELECT pool_size, selected_count, selector_ran, candidates_json
+       FROM memory_v3_pools
+       WHERE conversation_id = 'conv-1' AND turn = 4`,
+    );
     expect(row).toEqual({
       pool_size: 0,
       selected_count: 0,
       selector_ran: 0,
       candidates_json: "[]",
     });
-    expect(readPoolForTurn("conv-1", 4)).toEqual({
+    expect(await readPoolForTurn("conv-1", 4)).toEqual({
       candidates: [],
       pool_size: 0,
       selected_count: 0,
@@ -413,110 +401,121 @@ describe("writePool / readPoolForTurn", () => {
     });
   });
 
-  test("a re-observed turn replaces its row", () => {
-    writePool(memorySqlite, "conv-1", 4, buildPoolRecord(orchestrated()));
+  test("a re-observed turn replaces its row", async () => {
+    await writePool(db, "conv-1", 4, buildPoolRecord(orchestrated()));
     const smaller: PoolRecord = {
       candidates: [card("only/page", "core", true)],
       pool_size: 1,
       selected_count: 1,
       selector_ran: true,
     };
-    writePool(memorySqlite, "conv-1", 4, smaller);
+    await writePool(db, "conv-1", 4, smaller);
 
-    expect(readPoolForTurn("conv-1", 4)).toEqual(smaller);
-    expect(
-      memorySqlite.query(`SELECT COUNT(*) AS n FROM memory_v3_pools`).get(),
-    ).toEqual({ n: 1 });
+    expect(await readPoolForTurn("conv-1", 4)).toEqual(smaller);
+    expect(await db.get(`SELECT COUNT(*) AS n FROM memory_v3_pools`)).toEqual({
+      n: 1,
+    });
   });
 
-  test("throws on a failed statement so the caller's transaction can roll back", () => {
-    memorySqlite.run(
-      `CREATE TRIGGER refuse_pool_writes BEFORE INSERT ON memory_v3_pools
-       BEGIN SELECT RAISE(ABORT, 'pool write refused'); END`,
+  test("throws on a failed statement so the caller's transaction can roll back", async () => {
+    await db.exec(`
+      CREATE OR REPLACE FUNCTION refuse_pool_writes() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'pool write refused';
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await db.exec(`
+      CREATE TRIGGER refuse_pool_writes BEFORE INSERT ON memory_v3_pools
+      FOR EACH ROW EXECUTE FUNCTION refuse_pool_writes()
+    `);
+
+    await expect(
+      writePool(db, "conv-1", 4, buildPoolRecord(orchestrated())),
+    ).rejects.toThrow("pool write refused");
+    expect(await readPoolForTurn("conv-1", 4)).toBeNull();
+  });
+
+  test("degrades to a null read when the memory database is unavailable", async () => {
+    await writePool(db, "conv-1", 4, buildPoolRecord(orchestrated()));
+    delete process.env.VELLUM_DATABASE_URL;
+
+    expect(await readPoolForTurn("conv-1", 4)).toBeNull();
+  });
+
+  test("an unreadable candidates_json reads null instead of throwing", async () => {
+    await db.run(
+      `INSERT INTO memory_v3_pools
+         (conversation_id, turn, message_id, created_at,
+          pool_size, selected_count, candidates_json)
+       VALUES ('conv-1', 4, NULL, 1, 2, 1, 'not json')`,
     );
-
-    expect(() =>
-      writePool(memorySqlite, "conv-1", 4, buildPoolRecord(orchestrated())),
-    ).toThrow("pool write refused");
-    expect(readPoolForTurn("conv-1", 4)).toBeNull();
-  });
-
-  test("degrades to a null read when the memory database is unavailable", () => {
-    writePool(memorySqlite, "conv-1", 4, buildPoolRecord(orchestrated()));
-    memoryDbAvailable = false;
-
-    expect(readPoolForTurn("conv-1", 4)).toBeNull();
-  });
-
-  test("an unreadable candidates_json reads null instead of throwing", () => {
-    memorySqlite
-      .query(
-        `INSERT INTO memory_v3_pools
-           (conversation_id, turn, message_id, created_at,
-            pool_size, selected_count, candidates_json)
-         VALUES ('conv-1', 4, NULL, 1, 2, 1, 'not json')`,
-      )
-      .run();
-    expect(readPoolForTurn("conv-1", 4)).toBeNull();
+    expect(await readPoolForTurn("conv-1", 4)).toBeNull();
   });
 });
 
-describe("readPoolForMessageIds", () => {
-  test("finds the turn's pool by its stamped message id", () => {
+describePg("readPoolForMessageIds", () => {
+  test("finds the turn's pool by its stamped message id", async () => {
     const record = buildPoolRecord(orchestrated());
-    writePool(memorySqlite, "conv-1", 4, record);
-    writePool(memorySqlite, "conv-1", 5, buildPoolRecord(hardSkipped()));
-    stamp("conv-1", 4, "msg-4");
-    stamp("conv-1", 5, "msg-5");
+    await writePool(db, "conv-1", 4, record);
+    await writePool(db, "conv-1", 5, buildPoolRecord(hardSkipped()));
+    await stamp("conv-1", 4, "msg-4");
+    await stamp("conv-1", 5, "msg-5");
 
-    expect(readPoolForMessageIds(["msg-4"])).toEqual({ turn: 4, record });
+    expect(await readPoolForMessageIds(["msg-4"])).toEqual({ turn: 4, record });
     // Any of the turn's ids resolves it; a neighbouring turn never bleeds in.
-    expect(readPoolForMessageIds(["other", "msg-5"])).toEqual({
+    expect(await readPoolForMessageIds(["other", "msg-5"])).toEqual({
       turn: 5,
       record: buildPoolRecord(hardSkipped()),
     });
   });
 
-  test("returns null for empty ids, an unmatched id, and an unstamped row", () => {
-    writePool(memorySqlite, "conv-1", 4, buildPoolRecord(orchestrated())); // message_id NULL
+  test("returns null for empty ids, an unmatched id, and an unstamped row", async () => {
+    await writePool(db, "conv-1", 4, buildPoolRecord(orchestrated())); // message_id NULL
 
-    expect(readPoolForMessageIds([])).toBeNull();
-    expect(readPoolForMessageIds(["nope"])).toBeNull();
+    expect(await readPoolForMessageIds([])).toBeNull();
+    expect(await readPoolForMessageIds(["nope"])).toBeNull();
   });
 
-  test("degrades to null when the memory database is unavailable", () => {
-    writePool(memorySqlite, "conv-1", 4, buildPoolRecord(orchestrated()));
-    stamp("conv-1", 4, "msg-4");
-    memoryDbAvailable = false;
+  test("degrades to null when the memory database is unavailable", async () => {
+    await writePool(db, "conv-1", 4, buildPoolRecord(orchestrated()));
+    await stamp("conv-1", 4, "msg-4");
+    delete process.env.VELLUM_DATABASE_URL;
 
-    expect(readPoolForMessageIds(["msg-4"])).toBeNull();
+    expect(await readPoolForMessageIds(["msg-4"])).toBeNull();
   });
 });
 
-describe("ensureMemoryV3PoolsSchema", () => {
-  test("is idempotent and creates both indexes", () => {
-    expect(() => ensureMemoryV3PoolsSchema(memorySqlite)).not.toThrow();
+describePg("ensureMemoryV3PoolsSchema", () => {
+  test("is idempotent and creates both indexes", async () => {
+    await expect(ensureMemoryV3PoolsSchema(db)).resolves.toBeUndefined();
 
-    const indexes = memorySqlite
-      .query(`PRAGMA index_list(memory_v3_pools)`)
-      .all() as Array<{ name: string }>;
+    const indexes = await db.all<{ name: string }>(
+      `SELECT indexname AS name FROM pg_indexes
+        WHERE schemaname = current_schema() AND tablename = 'memory_v3_pools'`,
+    );
     const names = new Set(indexes.map((i) => i.name));
     expect(names.has("idx_memory_v3_pools_message")).toBe(true);
     expect(names.has("idx_memory_v3_pools_conv")).toBe(true);
   });
 
-  test("selector_ran defaults to 1 so a row written without it reads as a judged pool", () => {
+  test("selector_ran defaults to 1 so a row written without it reads as a judged pool", async () => {
     const column = (
-      memorySqlite.query(`PRAGMA table_info(memory_v3_pools)`).all() as Array<{
+      await db.all<{
         name: string;
         dflt_value: string | null;
-      }>
+      }>(
+        `SELECT column_name AS name, column_default AS dflt_value
+         FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'memory_v3_pools'`,
+      )
     ).find((c) => c.name === "selector_ran");
     expect(column?.dflt_value).toBe("1");
   });
 });
 
-describe("pool input capture", () => {
+describePg("pool input capture", () => {
   const turn: MemoryRoutingTurn = {
     conversationId: "conv-1",
     turnNumber: 4,
@@ -526,7 +525,7 @@ describe("pool input capture", () => {
     previousAssistantMessage: "hello",
   };
 
-  test("buildPoolInput captures each candidate's rendered text in pool order, aligned with the pool record", () => {
+  test("buildPoolInput captures each candidate's rendered text in pool order, aligned with the pool record", async () => {
     const result = orchestratedWithPool();
     const { input, texts } = buildPoolInput(result, turn, "select wisely");
     const record = buildPoolRecord(result);
@@ -551,7 +550,7 @@ describe("pool input capture", () => {
     });
   });
 
-  test("persists only the exact budgeted pool and context rendered to the selector", () => {
+  test("persists only the exact budgeted pool and context rendered to the selector", async () => {
     const selected = orchestratedWithPool();
     const result: OrchestrateResult = {
       ...selected,
@@ -598,7 +597,7 @@ describe("pool input capture", () => {
     ]);
   });
 
-  test("persists a failed selector's exact attempted pool with stable cards chosen and finder lines unchosen", () => {
+  test("persists a failed selector's exact attempted pool with stable cards chosen and finder lines unchosen", async () => {
     const result: OrchestrateResult = {
       selections: [{ slug: "core/page", sections: [] }],
       lanes: {
@@ -661,7 +660,7 @@ describe("pool input capture", () => {
     ]);
   });
 
-  test("a turn whose selector never judged a pool captures the context and no candidate texts", () => {
+  test("a turn whose selector never judged a pool captures the context and no candidate texts", async () => {
     const { input, texts } = buildPoolInput(
       hardSkipped(),
       {
@@ -682,7 +681,7 @@ describe("pool input capture", () => {
     });
   });
 
-  test("a result without the selector's pool captures no candidate texts rather than misaligned ones", () => {
+  test("a result without the selector's pool captures no candidate texts rather than misaligned ones", async () => {
     const { input, texts } = buildPoolInput(
       { ...orchestrated(), pool: undefined },
       turn,
@@ -693,23 +692,23 @@ describe("pool input capture", () => {
     expect(texts.size).toBe(0);
   });
 
-  test("writePoolInput and readPoolInputForTurn round-trip; a re-observed turn replaces its row; texts are stored once", () => {
+  test("writePoolInput and readPoolInputForTurn round-trip; a re-observed turn replaces its row; texts are stored once", async () => {
     const capture = buildPoolInput(
       orchestratedWithPool(),
       turn,
       "select wisely",
     );
-    writePoolInput(memorySqlite, "conv-1", 4, capture);
+    await writePoolInput(db, "conv-1", 4, capture);
 
-    expect(readPoolInputForTurn("conv-1", 4)).toEqual(capture.input);
-    expect(readPoolText(capture.input.candidate_text_hashes[0]!)).toBe(
+    expect(await readPoolInputForTurn("conv-1", 4)).toEqual(capture.input);
+    expect(await readPoolText(capture.input.candidate_text_hashes[0]!)).toBe(
       "core card",
     );
 
     // The next turn pools the same candidates: its input row is its own, the
     // texts are shared by hash.
-    writePoolInput(
-      memorySqlite,
+    await writePoolInput(
+      db,
       "conv-1",
       5,
       buildPoolInput(
@@ -718,19 +717,21 @@ describe("pool input capture", () => {
         "select wisely",
       ),
     );
-    const textCount = () =>
+    const textCount = async () =>
       (
-        memorySqlite
-          .query(`SELECT COUNT(*) AS n FROM memory_v3_pool_texts`)
-          .get() as { n: number }
+        (await db.get<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM memory_v3_pool_texts`,
+        )) as { n: number }
       ).n;
-    expect(textCount()).toBe(new Set(capture.input.candidate_text_hashes).size);
-    expect(readPoolInputForTurn("conv-1", 5)?.current_message).toBe(
+    expect(await textCount()).toBe(
+      new Set(capture.input.candidate_text_hashes).size,
+    );
+    expect((await readPoolInputForTurn("conv-1", 5))?.current_message).toBe(
       "and the fence?",
     );
 
-    writePoolInput(
-      memorySqlite,
+    await writePoolInput(
+      db,
       "conv-1",
       4,
       buildPoolInput(
@@ -739,28 +740,30 @@ describe("pool input capture", () => {
         "select wisely",
       ),
     );
-    expect(readPoolInputForTurn("conv-1", 4)?.current_message).toBe("again");
+    expect((await readPoolInputForTurn("conv-1", 4))?.current_message).toBe(
+      "again",
+    );
     expect(
       (
-        memorySqlite
-          .query(`SELECT COUNT(*) AS n FROM memory_v3_pool_inputs`)
-          .get() as { n: number }
+        (await db.get<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM memory_v3_pool_inputs`,
+        )) as { n: number }
       ).n,
     ).toBe(2);
   });
 
-  test("an absent turn or text reads null, and reads degrade to null when the memory connection is unavailable", () => {
-    expect(readPoolInputForTurn("conv-1", 9)).toBeNull();
-    expect(readPoolText("missing")).toBeNull();
+  test("an absent turn or text reads null, and reads degrade to null when the memory connection is unavailable", async () => {
+    expect(await readPoolInputForTurn("conv-1", 9)).toBeNull();
+    expect(await readPoolText("missing")).toBeNull();
 
-    writePoolInput(
-      memorySqlite,
+    await writePoolInput(
+      db,
       "conv-1",
       4,
       buildPoolInput(orchestratedWithPool(), turn, "select wisely"),
     );
-    memoryDbAvailable = false;
-    expect(readPoolInputForTurn("conv-1", 4)).toBeNull();
-    expect(readPoolText(hashPoolText("core card"))).toBeNull();
+    delete process.env.VELLUM_DATABASE_URL;
+    expect(await readPoolInputForTurn("conv-1", 4)).toBeNull();
+    expect(await readPoolText(hashPoolText("core card"))).toBeNull();
   });
 });

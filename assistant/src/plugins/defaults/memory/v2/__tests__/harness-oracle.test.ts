@@ -1,18 +1,15 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
-import {
-  getDb,
-  getMemorySqlite,
-} from "../../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../../persistence/db-init.js";
+setDefaultTimeout(30_000);
+
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import {
   conversations,
   messages,
 } from "../../../../../persistence/schema/index.js";
 import type { MemoryV2ConceptRowRecord } from "../activation-log-store.js";
 import { extractOracleTurns } from "../harness/oracle.js";
-
-await initializeDb();
 
 const CONFIG_JSON = JSON.stringify({
   d: 0,
@@ -27,12 +24,11 @@ const CONFIG_JSON = JSON.stringify({
 
 let seq = 0;
 
-function ensureConversation(id: string): void {
-  getDb()
-    .insert(conversations)
+async function ensureConversation(id: string): Promise<void> {
+  await requireMainDb()
+    .orm.insert(conversations)
     .values({ id, createdAt: 0, updatedAt: 0 })
-    .onConflictDoNothing()
-    .run();
+    .onConflictDoNothing();
 }
 
 function makeConcept(
@@ -56,24 +52,21 @@ function makeConcept(
   };
 }
 
-function insertLog(opts: {
+async function insertLog(opts: {
   conversationId: string;
   messageId: string | null;
   turn: number;
   mode: string;
   concepts: MemoryV2ConceptRowRecord[];
   createdAt: number;
-}): void {
-  ensureConversation(opts.conversationId);
-  // The activation log lives in the dedicated memory database.
-  getMemorySqlite()!
-    .prepare(
-      `INSERT INTO memory_v2_activation_logs (
-         id, conversation_id, message_id, turn, mode,
-         concepts_json, skills_json, config_json, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
-    )
-    .run(
+}): Promise<void> {
+  await ensureConversation(opts.conversationId);
+  await requireMainDb().run(
+    `INSERT INTO memory_v2_activation_logs (
+       id, conversation_id, message_id, turn, mode,
+       concepts_json, skills_json, config_json, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
+    [
       `log-${seq++}`,
       opts.conversationId,
       opts.messageId,
@@ -82,38 +75,39 @@ function insertLog(opts: {
       JSON.stringify(opts.concepts),
       CONFIG_JSON,
       opts.createdAt,
-    );
+    ],
+  );
 }
 
-function insertMessage(
+async function insertMessage(
   id: string,
   conversationId: string,
   createdAt: number,
-): void {
-  ensureConversation(conversationId);
-  getDb()
-    .insert(messages)
+): Promise<void> {
+  await ensureConversation(conversationId);
+  await requireMainDb()
+    .orm.insert(messages)
     .values({
       id,
       conversationId,
       role: "assistant",
       content: JSON.stringify([{ type: "text", text: "reply" }]),
       createdAt,
-    })
-    .run();
+    });
 }
 
-function reset(): void {
-  getMemorySqlite()!.exec(`DELETE FROM memory_v2_activation_logs`);
-  getDb().delete(messages).run();
+async function reset(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM memory_v2_activation_logs`);
+  await db.run(`DELETE FROM messages`);
 }
 
-describe("harness/oracle extractOracleTurns", () => {
+describePg("harness/oracle extractOracleTurns", () => {
   beforeEach(reset);
 
-  test("returns only mode='router' rows with a resolvable messageId", () => {
-    insertMessage("m1", "c1", 100);
-    insertLog({
+  test("returns only mode='router' rows with a resolvable messageId", async () => {
+    await insertMessage("m1", "c1", 100);
+    await insertLog({
       conversationId: "c1",
       messageId: "m1",
       turn: 1,
@@ -122,8 +116,8 @@ describe("harness/oracle extractOracleTurns", () => {
       createdAt: 100,
     });
     // non-router row — ignored
-    insertMessage("m2", "c1", 200);
-    insertLog({
+    await insertMessage("m2", "c1", 200);
+    await insertLog({
       conversationId: "c1",
       messageId: "m2",
       turn: 2,
@@ -132,7 +126,7 @@ describe("harness/oracle extractOracleTurns", () => {
       createdAt: 200,
     });
     // router row, null messageId — skipped (no anchor)
-    insertLog({
+    await insertLog({
       conversationId: "c1",
       messageId: null,
       turn: 3,
@@ -141,7 +135,7 @@ describe("harness/oracle extractOracleTurns", () => {
       createdAt: 300,
     });
     // router row, messageId does not resolve — skipped
-    insertLog({
+    await insertLog({
       conversationId: "c1",
       messageId: "ghost",
       turn: 4,
@@ -150,7 +144,7 @@ describe("harness/oracle extractOracleTurns", () => {
       createdAt: 400,
     });
 
-    const turns = extractOracleTurns(getDb(), { limit: 50 });
+    const turns = await extractOracleTurns(requireMainDb(), { limit: 50 });
     expect(turns.length).toBe(1);
     expect(turns[0]?.turn).toBe(1);
     expect(turns[0]?.groundTruthSlugs).toEqual(["a"]);
@@ -158,9 +152,9 @@ describe("harness/oracle extractOracleTurns", () => {
     expect(turns[0]?.anchorCreatedAt).toBe(100);
   });
 
-  test("ground truth keeps injected/in_context, drops the rest", () => {
-    insertMessage("m1", "c1", 100);
-    insertLog({
+  test("ground truth keeps injected/in_context, drops the rest", async () => {
+    await insertMessage("m1", "c1", 100);
+    await insertLog({
       conversationId: "c1",
       messageId: "m1",
       turn: 1,
@@ -174,13 +168,13 @@ describe("harness/oracle extractOracleTurns", () => {
         makeConcept("bad", "corrupt"),
       ],
     });
-    const turns = extractOracleTurns(getDb());
+    const turns = await extractOracleTurns(requireMainDb());
     expect(turns[0]?.groundTruthSlugs.sort()).toEqual(["ctx", "inj"]);
   });
 
-  test("includeNotInjected adds not_injected to ground truth", () => {
-    insertMessage("m1", "c1", 100);
-    insertLog({
+  test("includeNotInjected adds not_injected to ground truth", async () => {
+    await insertMessage("m1", "c1", 100);
+    await insertLog({
       conversationId: "c1",
       messageId: "m1",
       turn: 1,
@@ -191,13 +185,15 @@ describe("harness/oracle extractOracleTurns", () => {
         makeConcept("noinj", "not_injected"),
       ],
     });
-    const turns = extractOracleTurns(getDb(), { includeNotInjected: true });
+    const turns = await extractOracleTurns(requireMainDb(), {
+      includeNotInjected: true,
+    });
     expect(turns[0]?.groundTruthSlugs.sort()).toEqual(["inj", "noinj"]);
   });
 
-  test("pageExists predicate drops slugs whose page is gone", () => {
-    insertMessage("m1", "c1", 100);
-    insertLog({
+  test("pageExists predicate drops slugs whose page is gone", async () => {
+    await insertMessage("m1", "c1", 100);
+    await insertLog({
       conversationId: "c1",
       messageId: "m1",
       turn: 1,
@@ -208,15 +204,15 @@ describe("harness/oracle extractOracleTurns", () => {
         makeConcept("gone", "injected"),
       ],
     });
-    const turns = extractOracleTurns(getDb(), {
+    const turns = await extractOracleTurns(requireMainDb(), {
       pageExists: (slug) => slug === "present",
     });
     expect(turns[0]?.groundTruthSlugs).toEqual(["present"]);
   });
 
-  test("skips rows whose ground truth is empty after filtering", () => {
-    insertMessage("m1", "c1", 100);
-    insertLog({
+  test("skips rows whose ground truth is empty after filtering", async () => {
+    await insertMessage("m1", "c1", 100);
+    await insertLog({
       conversationId: "c1",
       messageId: "m1",
       turn: 1,
@@ -224,12 +220,12 @@ describe("harness/oracle extractOracleTurns", () => {
       createdAt: 100,
       concepts: [makeConcept("noinj", "not_injected")],
     });
-    expect(extractOracleTurns(getDb()).length).toBe(0);
+    expect((await extractOracleTurns(requireMainDb())).length).toBe(0);
   });
 
-  test("conversationIds filter restricts the scan", () => {
-    insertMessage("m1", "c1", 100);
-    insertLog({
+  test("conversationIds filter restricts the scan", async () => {
+    await insertMessage("m1", "c1", 100);
+    await insertLog({
       conversationId: "c1",
       messageId: "m1",
       turn: 1,
@@ -237,8 +233,8 @@ describe("harness/oracle extractOracleTurns", () => {
       concepts: [makeConcept("a", "injected")],
       createdAt: 100,
     });
-    insertMessage("m2", "c2", 200);
-    insertLog({
+    await insertMessage("m2", "c2", 200);
+    await insertLog({
       conversationId: "c2",
       messageId: "m2",
       turn: 1,
@@ -246,7 +242,9 @@ describe("harness/oracle extractOracleTurns", () => {
       concepts: [makeConcept("b", "injected")],
       createdAt: 200,
     });
-    const turns = extractOracleTurns(getDb(), { conversationIds: ["c2"] });
+    const turns = await extractOracleTurns(requireMainDb(), {
+      conversationIds: ["c2"],
+    });
     expect(turns.length).toBe(1);
     expect(turns[0]?.conversationId).toBe("c2");
   });

@@ -1,4 +1,12 @@
-import { beforeEach, expect, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+
+setDefaultTimeout(30_000);
 
 import { setConfig } from "../../../../__tests__/helpers/set-config.js";
 import { describePg } from "../../../../__tests__/pg-test-db.js";
@@ -8,12 +16,8 @@ import { describePg } from "../../../../__tests__/pg-test-db.js";
 setConfig("memory", { enabled: false, v2: { enabled: false } });
 
 import { createConversation } from "../../../../persistence/conversation-crud.js";
-import {
-  getMemorySqlite,
-  resetDb,
-} from "../../../../persistence/db-connection.js";
 import { requireMainDb } from "../../../../persistence/db-facade.js";
-import { initializeDb } from "../../../../persistence/db-init.js";
+import { closePostgresFacades } from "../../../../persistence/db-postgres-facade.js";
 import {
   _resetRetrospectiveCursorColumnForTests,
   appendToRememberedLog,
@@ -27,13 +31,11 @@ import {
   upsertRetrospectiveState,
 } from "../memory-retrospective-state.js";
 
-await initializeDb();
-
-// `memory_retrospective_state` now lives on the dedicated memory connection and
-// no longer carries a foreign key to `conversations`, so tests seed plain
+// `memory_retrospective_state` lives in the shared Postgres database and
+// carries no foreign key to `conversations`, so tests seed plain
 // conversation ids without a backing conversation row.
-function resetTables(): void {
-  getMemorySqlite()!.exec("DELETE FROM memory_retrospective_state");
+async function resetTables(): Promise<void> {
+  await requireMainDb().run("DELETE FROM memory_retrospective_state");
 }
 
 describe("appendToRememberedLog", () => {
@@ -78,7 +80,7 @@ describe("appendToRememberedLog", () => {
 
 describePg("memory-retrospective-state remembered log persistence", () => {
   beforeEach(async () => {
-    resetTables();
+    await resetTables();
   });
 
   test("upsert persists the log and getRetrospectiveState parses it back", async () => {
@@ -89,7 +91,7 @@ describePg("memory-retrospective-state remembered log persistence", () => {
       rememberedLog: ["save one", "save two"],
     });
 
-    const state = getRetrospectiveState("conv-log");
+    const state = await getRetrospectiveState("conv-log");
     expect(state?.rememberedLog).toEqual(["save one", "save two"]);
     expect(state?.lastProcessedMessageId).toBe("m1");
   });
@@ -107,7 +109,7 @@ describePg("memory-retrospective-state remembered log persistence", () => {
       lastRunAt: 2000,
     });
 
-    const state = getRetrospectiveState("conv-preserve");
+    const state = await getRetrospectiveState("conv-preserve");
     expect(state?.lastProcessedMessageId).toBe("m2");
     expect(state?.rememberedLog).toEqual(["keep me"]);
   });
@@ -119,7 +121,9 @@ describePg("memory-retrospective-state remembered log persistence", () => {
       lastRunAt: 1000,
     });
 
-    expect(getRetrospectiveState("conv-null-log")?.rememberedLog).toEqual([]);
+    expect(
+      (await getRetrospectiveState("conv-null-log"))?.rememberedLog,
+    ).toEqual([]);
   });
 
   test("malformed stored JSON degrades to an empty log instead of throwing", async () => {
@@ -129,19 +133,20 @@ describePg("memory-retrospective-state remembered log persistence", () => {
       lastRunAt: 1000,
       rememberedLog: ["x"],
     });
-    getMemorySqlite()!
-      .query(
-        "UPDATE memory_retrospective_state SET remembered_log = ? WHERE conversation_id = ?",
-      )
-      .run("not-json{{", "conv-corrupt");
+    await requireMainDb().run(
+      "UPDATE memory_retrospective_state SET remembered_log = ? WHERE conversation_id = ?",
+      ["not-json{{", "conv-corrupt"],
+    );
 
-    expect(getRetrospectiveState("conv-corrupt")?.rememberedLog).toEqual([]);
+    expect(
+      (await getRetrospectiveState("conv-corrupt"))?.rememberedLog,
+    ).toEqual([]);
   });
 
   test("bumpRetrospectiveLastRunAt seeds the empty-string sentinel with an empty log and preserves an existing log", async () => {
     // Failure-only row: "" sentinel, empty log.
     await bumpRetrospectiveLastRunAt("conv-failure-only", 1000);
-    const freshState = getRetrospectiveState("conv-failure-only");
+    const freshState = await getRetrospectiveState("conv-failure-only");
     expect(freshState?.lastProcessedMessageId).toBe("");
     expect(freshState?.rememberedLog).toEqual([]);
 
@@ -153,7 +158,7 @@ describePg("memory-retrospective-state remembered log persistence", () => {
       rememberedLog: ["survives failures"],
     });
     await bumpRetrospectiveLastRunAt("conv-seasoned", 2000);
-    const seasonedState = getRetrospectiveState("conv-seasoned");
+    const seasonedState = await getRetrospectiveState("conv-seasoned");
     expect(seasonedState?.lastRunAt).toBe(2000);
     expect(seasonedState?.rememberedLog).toEqual(["survives failures"]);
   });
@@ -176,15 +181,15 @@ describePg("memory-retrospective-state remembered log persistence", () => {
       lastCopiedSourceMessageId: null,
     });
 
-    expect(getRetrospectiveState("conv-fork-child")?.rememberedLog).toEqual([
-      "parent baseline",
-    ]);
+    expect(
+      (await getRetrospectiveState("conv-fork-child"))?.rememberedLog,
+    ).toEqual(["parent baseline"]);
   });
 });
 
 describePg("memory-retrospective-state cursor timestamp", () => {
   beforeEach(async () => {
-    resetTables();
+    await resetTables();
   });
 
   test("upsert persists lastProcessedCreatedAt and both reads return it", async () => {
@@ -195,12 +200,13 @@ describePg("memory-retrospective-state cursor timestamp", () => {
       lastRunAt: 1000,
     });
 
-    expect(getRetrospectiveState("conv-ts")?.lastProcessedCreatedAt).toBe(
-      1_234,
-    );
     expect(
-      listRetrospectiveStates(10).find((s) => s.conversationId === "conv-ts")
-        ?.lastProcessedCreatedAt,
+      (await getRetrospectiveState("conv-ts"))?.lastProcessedCreatedAt,
+    ).toBe(1_234);
+    expect(
+      (await listRetrospectiveStates(10)).find(
+        (s) => s.conversationId === "conv-ts",
+      )?.lastProcessedCreatedAt,
     ).toBe(1_234);
   });
 
@@ -217,7 +223,7 @@ describePg("memory-retrospective-state cursor timestamp", () => {
       lastRunAt: 2000,
     });
 
-    const state = getRetrospectiveState("conv-ts");
+    const state = await getRetrospectiveState("conv-ts");
     expect(state?.lastProcessedMessageId).toBe("m2");
     expect(state?.lastProcessedCreatedAt).toBeNull();
   });
@@ -231,7 +237,7 @@ describePg("memory-retrospective-state cursor timestamp", () => {
     });
     await bumpRetrospectiveLastRunAt("conv-ts", 5000);
 
-    const state = getRetrospectiveState("conv-ts");
+    const state = await getRetrospectiveState("conv-ts");
     expect(state?.lastRunAt).toBe(5000);
     expect(state?.lastProcessedCreatedAt).toBe(1_234);
   });
@@ -264,7 +270,7 @@ describePg("memory-retrospective-state cursor timestamp", () => {
       lastCopiedSourceMessageId: "src-m1",
     });
 
-    const child = getRetrospectiveState("conv-fork-ts-dst");
+    const child = await getRetrospectiveState("conv-fork-ts-dst");
     expect(child?.lastProcessedMessageId).toBe("dst-m1");
     expect(child?.lastProcessedCreatedAt).toBe(4_000);
 
@@ -307,7 +313,7 @@ describePg("memory-retrospective-state cursor timestamp", () => {
       lastCopiedSourceMessageId: "src-m3",
     });
 
-    const child = getRetrospectiveState("conv-fork-bound-dst");
+    const child = await getRetrospectiveState("conv-fork-bound-dst");
     expect(child?.lastProcessedMessageId).toBe("dst-m1");
     expect(child?.lastProcessedCreatedAt).toBe(1_000);
 
@@ -329,7 +335,8 @@ describePg("memory-retrospective-state cursor timestamp", () => {
       lastCopiedSourceMessageId: "src-m3",
     });
     expect(
-      getRetrospectiveState("conv-fork-bound-dst")?.lastProcessedMessageId,
+      (await getRetrospectiveState("conv-fork-bound-dst"))
+        ?.lastProcessedMessageId,
     ).toBe("");
 
     await db.run(`DELETE FROM messages`);
@@ -337,49 +344,53 @@ describePg("memory-retrospective-state cursor timestamp", () => {
   });
 
   test("ensureRetrospectiveCursorColumn adds the column to a legacy table once and is a no-op after", async () => {
-    const raw = getMemorySqlite()!;
-    raw.exec("DROP TABLE memory_retrospective_state");
-    raw.exec(`
+    const raw = requireMainDb();
+    await raw.exec("DROP TABLE memory_retrospective_state");
+    await raw.exec(`
       CREATE TABLE memory_retrospective_state (
         conversation_id TEXT PRIMARY KEY,
         last_processed_message_id TEXT NOT NULL,
-        last_run_at INTEGER NOT NULL,
+        last_run_at BIGINT NOT NULL,
         remembered_log TEXT
       )
     `);
     _resetRetrospectiveCursorColumnForTests();
 
-    expect(ensureRetrospectiveCursorColumn("test")).toBe(true);
-    expect(ensureRetrospectiveCursorColumn("test")).toBe(true);
+    expect(await ensureRetrospectiveCursorColumn("test")).toBe(true);
+    expect(await ensureRetrospectiveCursorColumn("test")).toBe(true);
 
-    const columns = raw
-      .query("PRAGMA table_info(memory_retrospective_state)")
-      .all() as Array<{ name: string }>;
+    const columns = await raw.all<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'memory_retrospective_state'`,
+    );
     expect(
-      columns.filter((c) => c.name === "last_processed_created_at"),
+      columns.filter((c) => c.column_name === "last_processed_created_at"),
     ).toHaveLength(1);
   });
 
   test("a replaced memory connection is probed again, so a restored database without the column gets it", async () => {
-    expect(ensureRetrospectiveCursorColumn("test")).toBe(true);
+    expect(await ensureRetrospectiveCursorColumn("test")).toBe(true);
 
     // What a restore or import does: the stored connections are dropped and
-    // reopened. Strip the column on the reopened file to stand in for an
+    // reopened. Strip the column on the reopened connection to stand in for an
     // older database.
-    resetDb();
-    const reopened = getMemorySqlite()!;
-    reopened.exec(
-      "ALTER TABLE memory_retrospective_state DROP COLUMN last_processed_created_at",
+    await closePostgresFacades();
+    const reopened = requireMainDb();
+    await reopened.exec(
+      "ALTER TABLE memory_retrospective_state DROP COLUMN IF EXISTS last_processed_created_at",
     );
 
-    expect(getRetrospectiveState("conv-none")).toBeNull();
-    expect(ensureRetrospectiveCursorColumn("test")).toBe(true);
-    const columns = reopened
-      .query("PRAGMA table_info(memory_retrospective_state)")
-      .all() as Array<{ name: string }>;
-    expect(columns.some((c) => c.name === "last_processed_created_at")).toBe(
-      true,
+    expect(await getRetrospectiveState("conv-none")).toBeNull();
+    expect(await ensureRetrospectiveCursorColumn("test")).toBe(true);
+    const columns = await reopened.all<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'memory_retrospective_state'`,
     );
+    expect(
+      columns.some((c) => c.column_name === "last_processed_created_at"),
+    ).toBe(true);
   });
 });
 
@@ -391,7 +402,7 @@ describe("fail-soft when the underlying statement fails", () => {
   // than throwing out and aborting the user-visible fork. Dropped last so no
   // later test in this file sees the missing table.
   test("forkRetrospectiveState no-ops when the target table is missing", async () => {
-    getMemorySqlite()!.exec("DROP TABLE memory_retrospective_state");
+    await requireMainDb().exec("DROP TABLE memory_retrospective_state");
 
     await expect(
       forkRetrospectiveState({

@@ -1,11 +1,10 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
+setDefaultTimeout(30_000);
+
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
 import type { AssistantConfig } from "../../../../../config/types.js";
-import {
-  getDb,
-  getMemorySqlite,
-} from "../../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../../persistence/db-init.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import {
   conversations,
   messages,
@@ -13,8 +12,6 @@ import {
 import type { MemoryV2ConceptRowRecord } from "../activation-log-store.js";
 import type { OracleTurn } from "../harness/oracle.js";
 import { reconstructInput } from "../harness/replay-input.js";
-
-await initializeDb();
 
 // loadNowText reads workspace files; a nonexistent dir yields "".
 const WORKSPACE = "/tmp/harness-replay-nonexistent-workspace";
@@ -32,12 +29,11 @@ const ZERO_CONFIG = {
 
 let seq = 0;
 
-function ensureConversation(id: string): void {
-  getDb()
-    .insert(conversations)
+async function ensureConversation(id: string): Promise<void> {
+  await requireMainDb()
+    .orm.insert(conversations)
     .values({ id, createdAt: 0, updatedAt: 0 })
-    .onConflictDoNothing()
-    .run();
+    .onConflictDoNothing();
 }
 
 function config(historicalPairs: number): AssistantConfig {
@@ -46,24 +42,23 @@ function config(historicalPairs: number): AssistantConfig {
   } as unknown as AssistantConfig;
 }
 
-function insertMessage(
+async function insertMessage(
   id: string,
   conversationId: string,
   role: string,
   text: string,
   createdAt: number,
-): void {
-  ensureConversation(conversationId);
-  getDb()
-    .insert(messages)
+): Promise<void> {
+  await ensureConversation(conversationId);
+  await requireMainDb()
+    .orm.insert(messages)
     .values({
       id,
       conversationId,
       role,
       content: JSON.stringify([{ type: "text", text }]),
       createdAt,
-    })
-    .run();
+    });
 }
 
 function makeConcept(
@@ -87,23 +82,20 @@ function makeConcept(
   };
 }
 
-function insertRouterLog(
+async function insertRouterLog(
   conversationId: string,
   messageId: string,
   turn: number,
   concepts: MemoryV2ConceptRowRecord[],
   createdAt: number,
-): void {
-  ensureConversation(conversationId);
-  // The activation log lives in the dedicated memory database.
-  getMemorySqlite()!
-    .prepare(
-      `INSERT INTO memory_v2_activation_logs (
-         id, conversation_id, message_id, turn, mode,
-         concepts_json, skills_json, config_json, created_at
-       ) VALUES (?, ?, ?, ?, 'router', ?, '[]', ?, ?)`,
-    )
-    .run(
+): Promise<void> {
+  await ensureConversation(conversationId);
+  await requireMainDb().run(
+    `INSERT INTO memory_v2_activation_logs (
+       id, conversation_id, message_id, turn, mode,
+       concepts_json, skills_json, config_json, created_at
+     ) VALUES (?, ?, ?, ?, 'router', ?, '[]', ?, ?)`,
+    [
       `log-${seq++}`,
       conversationId,
       messageId,
@@ -111,7 +103,8 @@ function insertRouterLog(
       JSON.stringify(concepts),
       JSON.stringify(ZERO_CONFIG),
       createdAt,
-    );
+    ],
+  );
 }
 
 function turnFor(
@@ -131,22 +124,23 @@ function turnFor(
   };
 }
 
-function reset(): void {
-  getMemorySqlite()!.exec(`DELETE FROM memory_v2_activation_logs`);
-  getDb().delete(messages).run();
+async function reset(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM memory_v2_activation_logs`);
+  await db.run(`DELETE FROM messages`);
 }
 
-describe("harness/replay-input reconstructInput", () => {
+describePg("harness/replay-input reconstructInput", () => {
   beforeEach(reset);
 
   test("reconstructs the last (assistant,user) pair before the anchor reply", async () => {
-    insertMessage("u1", "c1", "user", "first user", 10);
-    insertMessage("a1", "c1", "assistant", "first reply", 20);
-    insertMessage("u2", "c1", "user", "second user", 30);
-    insertMessage("a2", "c1", "assistant", "second reply", 40); // anchor
+    await insertMessage("u1", "c1", "user", "first user", 10);
+    await insertMessage("a1", "c1", "assistant", "first reply", 20);
+    await insertMessage("u2", "c1", "user", "second user", 30);
+    await insertMessage("a2", "c1", "assistant", "second reply", 40); // anchor
 
     const r = await reconstructInput(
-      getDb(),
+      requireMainDb(),
       turnFor("c1", 2, "a2", 40),
       config(1),
       WORKSPACE,
@@ -160,15 +154,15 @@ describe("harness/replay-input reconstructInput", () => {
   });
 
   test("historical_pairs=2 returns the last two pairs", async () => {
-    insertMessage("u1", "c1", "user", "u-one", 10);
-    insertMessage("a1", "c1", "assistant", "a-one", 20);
-    insertMessage("u2", "c1", "user", "u-two", 30);
-    insertMessage("a2", "c1", "assistant", "a-two", 40);
-    insertMessage("u3", "c1", "user", "u-three", 50);
-    insertMessage("a3", "c1", "assistant", "a-three", 60); // anchor
+    await insertMessage("u1", "c1", "user", "u-one", 10);
+    await insertMessage("a1", "c1", "assistant", "a-one", 20);
+    await insertMessage("u2", "c1", "user", "u-two", 30);
+    await insertMessage("a2", "c1", "assistant", "a-two", 40);
+    await insertMessage("u3", "c1", "user", "u-three", 50);
+    await insertMessage("a3", "c1", "assistant", "a-three", 60); // anchor
 
     const r = await reconstructInput(
-      getDb(),
+      requireMainDb(),
       turnFor("c1", 3, "a3", 60),
       config(2),
       WORKSPACE,
@@ -180,9 +174,9 @@ describe("harness/replay-input reconstructInput", () => {
   });
 
   test("returns null when the anchor message is not found", async () => {
-    insertMessage("u1", "c1", "user", "hi", 10);
+    await insertMessage("u1", "c1", "user", "hi", 10);
     const r = await reconstructInput(
-      getDb(),
+      requireMainDb(),
       turnFor("c1", 1, "missing-anchor", 999),
       config(1),
       WORKSPACE,
@@ -191,11 +185,11 @@ describe("harness/replay-input reconstructInput", () => {
   });
 
   test("priorEverInjected mirrors production everInjected retention from earlier router turns", async () => {
-    insertMessage("u1", "c1", "user", "u1", 10);
-    insertMessage("a1", "c1", "assistant", "a1", 20);
-    insertMessage("u2", "c1", "user", "u2", 30);
-    insertMessage("a2", "c1", "assistant", "a2", 40); // anchor for turn 2
-    insertRouterLog(
+    await insertMessage("u1", "c1", "user", "u1", 10);
+    await insertMessage("a1", "c1", "assistant", "a1", 20);
+    await insertMessage("u2", "c1", "user", "u2", 30);
+    await insertMessage("a2", "c1", "assistant", "a2", 40); // anchor for turn 2
+    await insertRouterLog(
       "c1",
       "a1",
       1,
@@ -213,7 +207,7 @@ describe("harness/replay-input reconstructInput", () => {
     );
 
     const r = await reconstructInput(
-      getDb(),
+      requireMainDb(),
       turnFor("c1", 2, "a2", 40),
       config(1),
       WORKSPACE,

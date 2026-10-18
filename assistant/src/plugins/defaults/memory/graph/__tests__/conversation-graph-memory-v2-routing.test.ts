@@ -16,21 +16,22 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Database } from "bun:sqlite";
 import {
   afterAll,
   beforeAll,
   beforeEach,
-  describe,
   expect,
   mock,
+  setDefaultTimeout,
   test,
 } from "bun:test";
 
+setDefaultTimeout(30_000);
+
 import type { Message } from "@vellumai/plugin-api";
-import { drizzle } from "drizzle-orm/bun-sqlite";
 
 import { createMockLoggerModule } from "../../../../../__tests__/helpers/mock-logger.js";
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
 import type { AssistantConfig } from "../../../../../config/types.js";
 
 // ---------------------------------------------------------------------------
@@ -162,7 +163,6 @@ afterAll(() => {
     process.env.VELLUM_WORKSPACE_DIR = previousWorkspaceEnv;
   }
   rmSync(tmpWorkspace, { recursive: true, force: true });
-  clearStoredDb("memory");
   // Restore mocks so a sibling test loaded in the same `bun test` run sees
   // unmocked module bindings.
   mock.restore();
@@ -173,83 +173,33 @@ afterAll(() => {
 // bindings resolve through the stubs.
 // ---------------------------------------------------------------------------
 
-import type { DrizzleDb } from "../../../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 
 const { ConversationGraphMemory } =
   await import("../conversation-graph-memory.js");
 const { applyNestedDefaults } = await import("../../../../../config/loader.js");
-const { getSqliteFrom } =
-  await import("../../../../../persistence/db-connection.js");
-const { migrateActivationState } =
-  await import("../../../../../persistence/migrations/232-activation-state.js");
-const { ensureActivationStateSchema } =
-  await import("../../../../../persistence/migrations/343-move-activation-state-to-memory-db.js");
-const { ensureConversationGraphMemoryStateSchema } =
-  await import("../../../../../persistence/migrations/344-move-conversation-graph-memory-state-to-memory-db.js");
 const { ensureMemoryV3InjectedSectionsSchema } =
   await import("../../v3/plugin-schema.js");
 const {
   getActiveSections: getV3ActiveSections,
   recordInjected: recordV3Injected,
 } = await import("../../v3/ever-injected-store.js");
-const schema = await import("../../../../../persistence/schema/index.js");
 const { _resetMemoryV2QdrantForTests } =
   await import("../../substrate/qdrant.js");
 const { hydrate: hydrateActivationState, save: saveActivationState } =
   await import("../../v2/activation-store.js");
-const { setStoredDb, clearStoredDb } =
-  await import("../../../../../persistence/db-singleton.js");
-
-// The wiring layer calls `getDb()` to fetch the SQLite handle. We mock
-// only that one export and spread the real module so unrelated callers
-// (`raw*` helpers, etc.) keep working when this test runs alongside
-// others. A live mutable holder lets each `beforeEach` swap the handle
-// without re-registering the mock.
-let testDbHandle: DrizzleDb | null = null;
-// memory-v3's everInjected record lives on the dedicated memory connection now;
-// each test db carries a matching in-memory memory connection.
-let memorySqliteHandle: Database | null = null;
-const realDbModule =
-  await import("../../../../../persistence/db-connection.js");
-mock.module("../../../../../persistence/db-connection.js", () => ({
-  ...realDbModule,
-  getDb: () => {
-    if (!testDbHandle) {
-      throw new Error("test db not initialized");
-    }
-    return testDbHandle;
-  },
-  getMemorySqlite: () => memorySqliteHandle,
-  getMemoryDb: () =>
-    memorySqliteHandle ? drizzle(memorySqliteHandle, { schema }) : null,
-}));
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function createTestDb(): Promise<DrizzleDb> {
-  const sqlite = new Database(":memory:");
-  sqlite.exec("PRAGMA journal_mode=WAL");
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  const db = drizzle(sqlite, { schema });
-  getSqliteFrom(db).exec(/*sql*/ `
-    CREATE TABLE IF NOT EXISTS memory_checkpoints (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `);
-  migrateActivationState(db);
-  // The relocated per-conversation tables prepareMemory touches — activation
-  // state, graph-memory state, and the v3 section record, all live on the
-  // dedicated memory connection, so the mocked handle carries each one's
-  // schema.
-  memorySqliteHandle = new Database(":memory:");
-  ensureActivationStateSchema(memorySqliteHandle);
-  ensureConversationGraphMemoryStateSchema(memorySqliteHandle);
-  await ensureMemoryV3InjectedSectionsSchema(memorySqliteHandle);
-  return db;
+async function resetTestTables(): Promise<void> {
+  const db = requireMainDb();
+  await db.run(`DELETE FROM activation_state`);
+  await db.run(`DELETE FROM conversation_graph_memory_state`);
+  await db.run(`DELETE FROM memory_v2_activation_logs`);
+  await db.run(`DELETE FROM memory_v3_injected_sections`);
+  await db.run(`DELETE FROM memory_v3_selections`);
 }
 
 function makeConfig(
@@ -337,10 +287,8 @@ function stageTurn(
 const noopEvent = () => {};
 
 beforeEach(async () => {
-  testDbHandle = await createTestDb();
-  // The v2 activation store resolves `activation_state` through the memory
-  // connection; point that slot at the same handle the `getDb()` mock serves.
-  setStoredDb("memory", testDbHandle, () => {});
+  await ensureMemoryV3InjectedSectionsSchema(requireMainDb());
+  await resetTestTables();
   qdrantState.queryResponses.dense.length = 0;
   qdrantState.queryResponses.sparse.length = 0;
   loadContextMemoryMock.mockClear();
@@ -354,491 +302,514 @@ beforeEach(async () => {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("ConversationGraphMemory.prepareMemory — v2 routing (per-turn path)", () => {
-  test("config off → v2 not run, messages unchanged", async () => {
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+describePg(
+  "ConversationGraphMemory.prepareMemory — v2 routing (per-turn path)",
+  () => {
+    test("config off → v2 not run, messages unchanged", async () => {
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
 
-    const memory = makeMemory();
-    const config = makeConfig(false);
-    const messages = makeMessages();
+      const memory = makeMemory();
+      const config = makeConfig(false);
+      const messages = makeMessages();
 
-    const result = await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
+      const result = await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
 
-    expect(result.mode).toBe("per-turn");
-    expect(result.injectedBlockText).toBeNull();
-    expect(result.runMessages).toEqual(messages);
-  });
+      expect(result.mode).toBe("per-turn");
+      expect(result.injectedBlockText).toBeNull();
+      expect(result.runMessages).toEqual(messages);
+    });
 
-  test("separate routing history directs v1 retrieval without replacing model history", async () => {
-    const memory = makeMemory();
-    const config = makeConfig(false);
-    const callerText = "What is my preferred editor?";
-    const continuationText = "Continue the answer.";
-    const routingMessages = makeMessages(callerText);
-    const messages: Message[] = [
-      ...routingMessages,
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Let me check that." }],
-      },
-      {
-        role: "user",
-        content: [{ type: "text", text: continuationText }],
-      },
-    ];
+    test("separate routing history directs v1 retrieval without replacing model history", async () => {
+      const memory = makeMemory();
+      const config = makeConfig(false);
+      const callerText = "What is my preferred editor?";
+      const continuationText = "Continue the answer.";
+      const routingMessages = makeMessages(callerText);
+      const messages: Message[] = [
+        ...routingMessages,
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Let me check that." }],
+        },
+        {
+          role: "user",
+          content: [{ type: "text", text: continuationText }],
+        },
+      ];
 
-    const result = await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-      routingMessages,
-    );
+      const result = await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+        routingMessages,
+      );
 
-    expect(retrieveForTurnMock).toHaveBeenCalledWith(
-      expect.objectContaining({ userLastMessage: callerText }),
-    );
-    expect(result.runMessages).toEqual(messages);
-  });
+      expect(retrieveForTurnMock).toHaveBeenCalledWith(
+        expect.objectContaining({ userLastMessage: callerText }),
+      );
+      expect(result.runMessages).toEqual(messages);
+    });
 
-  test("config on → v2 block prepended, mode is per-turn", async () => {
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+    test("config on → v2 block prepended, mode is per-turn", async () => {
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
 
-    const memory = makeMemory();
-    const config = makeConfig(true);
-    const messages = makeMessages("Tell me about Alice's editor preferences");
+      const memory = makeMemory();
+      const config = makeConfig(true);
+      const messages = makeMessages("Tell me about Alice's editor preferences");
 
-    const result = await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
+      const result = await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
 
-    expect(result.mode).toBe("per-turn");
-    expect(result.injectedBlockText).not.toBeNull();
-    expect(result.injectedBlockText).not.toContain("<memory>");
-    expect(result.injectedBlockText).toContain(
-      "# memory/concepts/alice-vscode.md",
-    );
+      expect(result.mode).toBe("per-turn");
+      expect(result.injectedBlockText).not.toBeNull();
+      expect(result.injectedBlockText).not.toContain("<memory>");
+      expect(result.injectedBlockText).toContain(
+        "# memory/concepts/alice-vscode.md",
+      );
 
-    // The leading content block on the user message is the v2 block,
-    // wrapped exactly once.
-    const lastMsg = result.runMessages[result.runMessages.length - 1];
-    expect(lastMsg?.role).toBe("user");
-    const firstBlock = lastMsg?.content[0];
-    expect(firstBlock?.type).toBe("text");
-    if (firstBlock?.type !== "text") {
-      throw new Error("unexpected block type");
-    }
-    expect(firstBlock.text.startsWith("<memory>\n")).toBe(true);
-    expect(firstBlock.text.endsWith("\n</memory>")).toBe(true);
-    // No nested wrapper.
-    expect(firstBlock.text.match(/<memory>/g)?.length).toBe(1);
+      // The leading content block on the user message is the v2 block,
+      // wrapped exactly once.
+      const lastMsg = result.runMessages[result.runMessages.length - 1];
+      expect(lastMsg?.role).toBe("user");
+      const firstBlock = lastMsg?.content[0];
+      expect(firstBlock?.type).toBe("text");
+      if (firstBlock?.type !== "text") {
+        throw new Error("unexpected block type");
+      }
+      expect(firstBlock.text.startsWith("<memory>\n")).toBe(true);
+      expect(firstBlock.text.endsWith("\n</memory>")).toBe(true);
+      // No nested wrapper.
+      expect(firstBlock.text.match(/<memory>/g)?.length).toBe(1);
 
-    // v1 retrieval is fully bypassed when v2 is enabled.
-    expect(retrieveForTurnMock).not.toHaveBeenCalled();
-  });
+      // v1 retrieval is fully bypassed when v2 is enabled.
+      expect(retrieveForTurnMock).not.toHaveBeenCalled();
+    });
 
-  test("reinjectCachedMemory after v2 injection wraps exactly once (no double-wrap)", async () => {
-    // Regression for the double-wrap bug: v2 cached `lastInjectedBlock`
-    // already wrapped, then `reinjectCachedMemory` re-wrapped via
-    // `injectTextBlock`, producing `<memory>\n<memory>\n...\n</memory>\n</memory>`.
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+    test("reinjectCachedMemory after v2 injection wraps exactly once (no double-wrap)", async () => {
+      // Regression for the double-wrap bug: v2 cached `lastInjectedBlock`
+      // already wrapped, then `reinjectCachedMemory` re-wrapped via
+      // `injectTextBlock`, producing `<memory>\n<memory>\n...\n</memory>\n</memory>`.
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
 
-    const memory = makeMemory();
-    const config = makeConfig(true);
-    const messages = makeMessages("Tell me about Alice's editor preferences");
+      const memory = makeMemory();
+      const config = makeConfig(true);
+      const messages = makeMessages("Tell me about Alice's editor preferences");
 
-    const initial = await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
-    expect(initial.injectedBlockText).not.toBeNull();
+      const initial = await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
+      expect(initial.injectedBlockText).not.toBeNull();
 
-    // Simulate post-compaction: caller re-runs `applyRuntimeInjections`
-    // (which strips memory injections) and then asks for the cached
-    // memory to be re-prepended.
-    const reinjected = memory.reinjectCachedMemory(messages);
-    const lastMsg = reinjected.runMessages[reinjected.runMessages.length - 1];
-    const firstBlock = lastMsg?.content[0];
-    expect(firstBlock?.type).toBe("text");
-    if (firstBlock?.type !== "text") {
-      throw new Error("unexpected block type");
-    }
-    expect(firstBlock.text.startsWith("<memory>\n")).toBe(true);
-    expect(firstBlock.text.endsWith("\n</memory>")).toBe(true);
-    expect(firstBlock.text.match(/<memory>/g)?.length).toBe(1);
-    expect(firstBlock.text.match(/<\/memory>/g)?.length).toBe(1);
-    expect(firstBlock.text).toContain("# memory/concepts/alice-vscode.md");
-  });
+      // Simulate post-compaction: caller re-runs `applyRuntimeInjections`
+      // (which strips memory injections) and then asks for the cached
+      // memory to be re-prepended.
+      const reinjected = memory.reinjectCachedMemory(messages);
+      const lastMsg = reinjected.runMessages[reinjected.runMessages.length - 1];
+      const firstBlock = lastMsg?.content[0];
+      expect(firstBlock?.type).toBe("text");
+      if (firstBlock?.type !== "text") {
+        throw new Error("unexpected block type");
+      }
+      expect(firstBlock.text.startsWith("<memory>\n")).toBe(true);
+      expect(firstBlock.text.endsWith("\n</memory>")).toBe(true);
+      expect(firstBlock.text.match(/<memory>/g)?.length).toBe(1);
+      expect(firstBlock.text.match(/<\/memory>/g)?.length).toBe(1);
+      expect(firstBlock.text).toContain("# memory/concepts/alice-vscode.md");
+    });
 
-  test("per-turn dense embedding is computed from combined assistant+user text", async () => {
-    // Short referential follow-ups ("do that one") carry no semantic signal
-    // on their own — the dense PKB query embedding must mirror v1's
-    // `retrieveForTurn` and combine the prior assistant turn so hint search
-    // still resolves what "that one" refers to. The sparse vector matches
-    // v1 by using the user message alone so lexical signal isn't diluted.
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+    test("per-turn dense embedding is computed from combined assistant+user text", async () => {
+      // Short referential follow-ups ("do that one") carry no semantic signal
+      // on their own — the dense PKB query embedding must mirror v1's
+      // `retrieveForTurn` and combine the prior assistant turn so hint search
+      // still resolves what "that one" refers to. The sparse vector matches
+      // v1 by using the user message alone so lexical signal isn't diluted.
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
 
-    const memory = makeMemory();
-    const config = makeConfig(true);
-    const assistantText =
-      "Alice prefers VS Code as her editor — she finds the extension ecosystem unmatched.";
-    const userText = "do that one";
-    const messages: Message[] = [
-      {
-        role: "user",
-        content: [
-          { type: "text" as const, text: "what editors did we cover?" },
+      const memory = makeMemory();
+      const config = makeConfig(true);
+      const assistantText =
+        "Alice prefers VS Code as her editor — she finds the extension ecosystem unmatched.";
+      const userText = "do that one";
+      const messages: Message[] = [
+        {
+          role: "user",
+          content: [
+            { type: "text" as const, text: "what editors did we cover?" },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text" as const, text: assistantText }],
+        },
+        { role: "user", content: [{ type: "text" as const, text: userText }] },
+      ];
+
+      await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
+
+      // v1's `retrieveForTurn` joins assistantLast + userLast with "\n\n" and
+      // embeds the combined string as the dense query vector. Assert the v2
+      // path makes the exact same embed call somewhere during this turn.
+      const expectedCombined = `${assistantText}\n\n${userText}`;
+      const matchingCall = embedWithBackendMock.mock.calls.find((call) => {
+        const texts = call[1] as string[];
+        return texts.length === 1 && texts[0] === expectedCombined;
+      });
+      expect(matchingCall).toBeDefined();
+
+      // Sparse embedding for the per-turn query uses userLast only.
+      expect(generateSparseEmbeddingMock.mock.calls).toContainEqual([userText]);
+      expect(
+        generateSparseEmbeddingMock.mock.calls.some((call) =>
+          (call[0] as string).includes(assistantText),
+        ),
+      ).toBe(false);
+    });
+
+    test("separate routing history directs v2 retrieval while injection stays on model history", async () => {
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+
+      const memory = makeMemory();
+      const config = makeConfig(true);
+      const callerText = "What is my preferred editor?";
+      const continuationText = "Continue the answer.";
+      const routingMessages = makeMessages(callerText);
+      const messages: Message[] = [
+        ...routingMessages,
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Let me check that." }],
+        },
+        {
+          role: "user",
+          content: [{ type: "text", text: continuationText }],
+        },
+      ];
+
+      const result = await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+        routingMessages,
+      );
+
+      expect(generateSparseEmbeddingMock.mock.calls).toContainEqual([
+        callerText,
+      ]);
+      expect(generateSparseEmbeddingMock.mock.calls).not.toContainEqual([
+        continuationText,
+      ]);
+      const tail = result.runMessages[result.runMessages.length - 1];
+      expect(tail?.role).toBe("user");
+      expect(tail?.content).toContainEqual({
+        type: "text",
+        text: continuationText,
+      });
+      expect(tail?.content[0]).toEqual(
+        expect.objectContaining({ type: "text" }),
+      );
+      if (tail?.content[0]?.type !== "text") {
+        throw new Error("unexpected block type");
+      }
+      expect(tail.content[0].text).toContain(
+        "# memory/concepts/alice-vscode.md",
+      );
+    });
+
+    test("config on with empty Qdrant hits → no retrieved concepts in the v2 block, v1 fallback skipped", async () => {
+      // No `stageTurn` call — every channel returns `{ points: [] }` so the
+      // candidate set is empty and retrieval contributes nothing. Always-candidate
+      // skills are pinned rather than retrieved, so the block may still carry
+      // their cards; what must be absent is any retrieved concept section.
+      const memory = makeMemory();
+      const config = makeConfig(true);
+      const messages = makeMessages();
+
+      const result = await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
+
+      expect(result.injectedBlockText ?? "").not.toContain(
+        "# memory/concepts/",
+      );
+      expect(JSON.stringify(result.runMessages)).not.toContain(
+        "memory/concepts/",
+      );
+      expect(retrieveForTurnMock).not.toHaveBeenCalled();
+    });
+  },
+);
+
+describePg(
+  "ConversationGraphMemory.prepareMemory — v2 routing (context-load path)",
+  () => {
+    test("config on → v2 fires with mode=context-load", async () => {
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+
+      // Fresh memory → initialized=false → runContextLoad branch.
+      const memory = new ConversationGraphMemory("conv-test-cl");
+      const config = makeConfig(true);
+      const messages = makeMessages("first message of the conversation here");
+
+      const result = await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
+
+      expect(result.mode).toBe("context-load");
+      expect(result.injectedBlockText).not.toBeNull();
+      expect(result.injectedBlockText).toContain(
+        "# memory/concepts/alice-vscode.md",
+      );
+      // injectedBlockText is the unwrapped inner content; the wrapper is
+      // applied at injection time on the run message.
+      expect(result.injectedBlockText).not.toContain("<memory>");
+      const lastMsg = result.runMessages[result.runMessages.length - 1];
+      const firstBlock = lastMsg?.content[0];
+      if (firstBlock?.type !== "text") {
+        throw new Error("unexpected block type");
+      }
+      expect(firstBlock.text.match(/<memory>/g)?.length).toBe(1);
+
+      // v1 retrieval is fully bypassed when v2 is enabled.
+      expect(loadContextMemoryMock).not.toHaveBeenCalled();
+    });
+
+    test("config off → v2 not run on first turn either", async () => {
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+
+      const memory = new ConversationGraphMemory("conv-test-cl-off");
+      const config = makeConfig(false);
+      const messages = makeMessages("first message of the conversation here");
+
+      const result = await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
+
+      expect(result.mode).toBe("context-load");
+      expect(result.injectedBlockText).toBeNull();
+    });
+  },
+);
+
+describePg(
+  "ConversationGraphMemory.prepareMemory — v3-live suppresses the v2 engine",
+  () => {
+    // `memory.v2.enabled` defaults true and stays set on v3-live assistants, so
+    // the dispatch must NOT read it directly: with v3 live, the v2
+    // router/activation pipeline (and its activation-log/injection-event
+    // writes) must not run even though the flag is on. This covers every
+    // `prepareMemory` caller, including ones without their own v3 guard (the
+    // persona workflow-leaf runner).
+    test("per-turn: v3 live with v2.enabled=true → v2 not routed, v1 fallback taken", async () => {
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+
+      const memory = makeMemory();
+      const config = makeConfig(true, true, true);
+      const messages = makeMessages("Tell me about Alice's editor preferences");
+
+      const result = await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
+
+      expect(result.mode).toBe("per-turn");
+      expect(result.injectedBlockText).toBeNull();
+      expect(result.runMessages).toEqual(messages);
+      // Dispatch falls through to the v1 retriever (its stub returns zero
+      // nodes) instead of routing into the v2 engine.
+      expect(retrieveForTurnMock).toHaveBeenCalled();
+      // The v2 activation pipeline embeds its hybrid queries through the
+      // embedding backend; zero calls proves the pipeline never started.
+      expect(embedWithBackendMock).not.toHaveBeenCalled();
+      // And it persisted no activation state for the conversation.
+      expect(await hydrateActivationState("conv-test-1")).toBeNull();
+    });
+
+    test("context-load: v3 live with v2.enabled=true → v2 not routed, v1 fallback taken", async () => {
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+
+      const memory = new ConversationGraphMemory("conv-test-v3-cl");
+      const config = makeConfig(true, true, true);
+      const messages = makeMessages("first message of the conversation here");
+
+      const result = await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
+
+      expect(result.mode).toBe("context-load");
+      expect(result.injectedBlockText).toBeNull();
+      expect(loadContextMemoryMock).toHaveBeenCalled();
+      expect(embedWithBackendMock).not.toHaveBeenCalled();
+      expect(await hydrateActivationState("conv-test-v3-cl")).toBeNull();
+    });
+  },
+);
+
+describePg(
+  "ConversationGraphMemory.prepareMemory — memory.enabled gate",
+  () => {
+    test("memory.enabled=false short-circuits per-turn path: mode=none, no injection, v2/v1 not called", async () => {
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+
+      const memory = makeMemory();
+      const config = makeConfig(true, false);
+      const messages = makeMessages();
+
+      const result = await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
+
+      expect(result.mode).toBe("none");
+      expect(result.injectedBlockText).toBeNull();
+      expect(result.runMessages).toEqual(messages);
+      expect(retrieveForTurnMock).not.toHaveBeenCalled();
+      expect(loadContextMemoryMock).not.toHaveBeenCalled();
+    });
+
+    test("memory.enabled=false short-circuits context-load path: mode=none, no injection, v2/v1 not called", async () => {
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+
+      const memory = new ConversationGraphMemory("conv-test-master-off");
+      const config = makeConfig(true, false);
+      const messages = makeMessages("first message of the conversation here");
+
+      const result = await memory.prepareMemory(
+        messages,
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
+
+      expect(result.mode).toBe("none");
+      expect(result.injectedBlockText).toBeNull();
+      expect(result.runMessages).toEqual(messages);
+      expect(loadContextMemoryMock).not.toHaveBeenCalled();
+      expect(retrieveForTurnMock).not.toHaveBeenCalled();
+    });
+  },
+);
+
+describePg(
+  "ConversationGraphMemory.onCompacted — v2 activation eviction",
+  () => {
+    test("clears everInjected so a previously-injected slug can re-attach", async () => {
+      // Without this wiring, `selectInjections` keeps subtracting the slug from
+      // every per-turn delta even though compaction discarded the cached
+      // `<memory>` attachment that previously made it visible.
+      const conversationId = "conv-test-evict";
+      const memory = new ConversationGraphMemory(conversationId);
+      const config = makeConfig(true);
+
+      // Turn 1 — context-load fires (initialized=false), injecting alice-vscode.
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+      const initial = await memory.prepareMemory(
+        makeMessages("Tell me about Alice's editor preferences"),
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
+      expect(initial.injectedBlockText).toContain(
+        "# memory/concepts/alice-vscode.md",
+      );
+
+      const before = await hydrateActivationState(conversationId);
+      expect(before?.everInjected.map((e) => e.slug)).toContain("alice-vscode");
+
+      // Seed a memory-v3 section record too: the same trigger clears it (the
+      // frozen section blocks those pages rode were just compacted away).
+      await recordV3Injected(conversationId, [
+        { slug: "alice-vscode", key: "", bytes: 100 },
+      ]);
+      expect(await getV3ActiveSections(conversationId)).toEqual(
+        new Map([["alice-vscode", new Set([""])]]),
+      );
+
+      await memory.onCompacted(1);
+
+      const after = await hydrateActivationState(conversationId);
+      expect(after?.everInjected).toEqual([]);
+      expect(await getV3ActiveSections(conversationId)).toEqual(new Map());
+
+      // Turn 2 — same Qdrant relevance. With everInjected cleared the slug
+      // should appear again in the injection block (re-attached on the new
+      // user message after compaction).
+      stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
+      const next = await memory.prepareMemory(
+        makeMessages("And what about Alice's editor again?"),
+        config,
+        new AbortController().signal,
+        noopEvent,
+      );
+      expect(next.injectedBlockText).toContain(
+        "# memory/concepts/alice-vscode.md",
+      );
+    });
+
+    test("clears everInjected entries whose turn exceeds the tracker's currentTurn (zombie drift)", async () => {
+      // Regression: under the prior turn-bounded eviction, entries with `turn >
+      // tracker.currentTurn` survived `onCompacted` forever. This can happen
+      // after a non-graceful shutdown: `everInjected` is persisted every turn
+      // while the tracker snapshot is only persisted on graceful dispose, so a
+      // SIGKILL'd session followed by a reload restores the tracker from an
+      // older snapshot with a lower currentTurn while keeping the high-turn
+      // entries on disk.
+      const conversationId = "conv-test-zombie-drift";
+      const memory = new ConversationGraphMemory(conversationId);
+
+      // Seed the simulated post-crash state directly: tracker stays at
+      // currentTurn=0 (default for a fresh ConversationGraphMemory), while the
+      // persisted row carries everInjected entries from turns 10 and 20 (left
+      // over from a prior session that never disposed cleanly).
+      await saveActivationState(conversationId, {
+        messageId: "msg-zombie",
+        state: {},
+        everInjected: [
+          { slug: "alice-vscode", turn: 10 },
+          { slug: "bob-pkg-mgr", turn: 20 },
         ],
-      },
-      {
-        role: "assistant",
-        content: [{ type: "text" as const, text: assistantText }],
-      },
-      { role: "user", content: [{ type: "text" as const, text: userText }] },
-    ];
+        currentTurn: 0,
+        updatedAt: 1,
+      });
 
-    await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
+      await memory.onCompacted(0);
 
-    // v1's `retrieveForTurn` joins assistantLast + userLast with "\n\n" and
-    // embeds the combined string as the dense query vector. Assert the v2
-    // path makes the exact same embed call somewhere during this turn.
-    const expectedCombined = `${assistantText}\n\n${userText}`;
-    const matchingCall = embedWithBackendMock.mock.calls.find((call) => {
-      const texts = call[1] as string[];
-      return texts.length === 1 && texts[0] === expectedCombined;
+      const after = await hydrateActivationState(conversationId);
+      expect(after?.everInjected).toEqual([]);
     });
-    expect(matchingCall).toBeDefined();
-
-    // Sparse embedding for the per-turn query uses userLast only.
-    expect(generateSparseEmbeddingMock.mock.calls).toContainEqual([userText]);
-    expect(
-      generateSparseEmbeddingMock.mock.calls.some((call) =>
-        (call[0] as string).includes(assistantText),
-      ),
-    ).toBe(false);
-  });
-
-  test("separate routing history directs v2 retrieval while injection stays on model history", async () => {
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
-
-    const memory = makeMemory();
-    const config = makeConfig(true);
-    const callerText = "What is my preferred editor?";
-    const continuationText = "Continue the answer.";
-    const routingMessages = makeMessages(callerText);
-    const messages: Message[] = [
-      ...routingMessages,
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Let me check that." }],
-      },
-      {
-        role: "user",
-        content: [{ type: "text", text: continuationText }],
-      },
-    ];
-
-    const result = await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-      routingMessages,
-    );
-
-    expect(generateSparseEmbeddingMock.mock.calls).toContainEqual([callerText]);
-    expect(generateSparseEmbeddingMock.mock.calls).not.toContainEqual([
-      continuationText,
-    ]);
-    const tail = result.runMessages[result.runMessages.length - 1];
-    expect(tail?.role).toBe("user");
-    expect(tail?.content).toContainEqual({
-      type: "text",
-      text: continuationText,
-    });
-    expect(tail?.content[0]).toEqual(expect.objectContaining({ type: "text" }));
-    if (tail?.content[0]?.type !== "text") {
-      throw new Error("unexpected block type");
-    }
-    expect(tail.content[0].text).toContain("# memory/concepts/alice-vscode.md");
-  });
-
-  test("config on with empty Qdrant hits → no retrieved concepts in the v2 block, v1 fallback skipped", async () => {
-    // No `stageTurn` call — every channel returns `{ points: [] }` so the
-    // candidate set is empty and retrieval contributes nothing. Always-candidate
-    // skills are pinned rather than retrieved, so the block may still carry
-    // their cards; what must be absent is any retrieved concept section.
-    const memory = makeMemory();
-    const config = makeConfig(true);
-    const messages = makeMessages();
-
-    const result = await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
-
-    expect(result.injectedBlockText ?? "").not.toContain("# memory/concepts/");
-    expect(JSON.stringify(result.runMessages)).not.toContain(
-      "memory/concepts/",
-    );
-    expect(retrieveForTurnMock).not.toHaveBeenCalled();
-  });
-});
-
-describe("ConversationGraphMemory.prepareMemory — v2 routing (context-load path)", () => {
-  test("config on → v2 fires with mode=context-load", async () => {
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
-
-    // Fresh memory → initialized=false → runContextLoad branch.
-    const memory = new ConversationGraphMemory("conv-test-cl");
-    const config = makeConfig(true);
-    const messages = makeMessages("first message of the conversation here");
-
-    const result = await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
-
-    expect(result.mode).toBe("context-load");
-    expect(result.injectedBlockText).not.toBeNull();
-    expect(result.injectedBlockText).toContain(
-      "# memory/concepts/alice-vscode.md",
-    );
-    // injectedBlockText is the unwrapped inner content; the wrapper is
-    // applied at injection time on the run message.
-    expect(result.injectedBlockText).not.toContain("<memory>");
-    const lastMsg = result.runMessages[result.runMessages.length - 1];
-    const firstBlock = lastMsg?.content[0];
-    if (firstBlock?.type !== "text") {
-      throw new Error("unexpected block type");
-    }
-    expect(firstBlock.text.match(/<memory>/g)?.length).toBe(1);
-
-    // v1 retrieval is fully bypassed when v2 is enabled.
-    expect(loadContextMemoryMock).not.toHaveBeenCalled();
-  });
-
-  test("config off → v2 not run on first turn either", async () => {
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
-
-    const memory = new ConversationGraphMemory("conv-test-cl-off");
-    const config = makeConfig(false);
-    const messages = makeMessages("first message of the conversation here");
-
-    const result = await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
-
-    expect(result.mode).toBe("context-load");
-    expect(result.injectedBlockText).toBeNull();
-  });
-});
-
-describe("ConversationGraphMemory.prepareMemory — v3-live suppresses the v2 engine", () => {
-  // `memory.v2.enabled` defaults true and stays set on v3-live assistants, so
-  // the dispatch must NOT read it directly: with v3 live, the v2
-  // router/activation pipeline (and its activation-log/injection-event
-  // writes) must not run even though the flag is on. This covers every
-  // `prepareMemory` caller, including ones without their own v3 guard (the
-  // persona workflow-leaf runner).
-  test("per-turn: v3 live with v2.enabled=true → v2 not routed, v1 fallback taken", async () => {
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
-
-    const memory = makeMemory();
-    const config = makeConfig(true, true, true);
-    const messages = makeMessages("Tell me about Alice's editor preferences");
-
-    const result = await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
-
-    expect(result.mode).toBe("per-turn");
-    expect(result.injectedBlockText).toBeNull();
-    expect(result.runMessages).toEqual(messages);
-    // Dispatch falls through to the v1 retriever (its stub returns zero
-    // nodes) instead of routing into the v2 engine.
-    expect(retrieveForTurnMock).toHaveBeenCalled();
-    // The v2 activation pipeline embeds its hybrid queries through the
-    // embedding backend; zero calls proves the pipeline never started.
-    expect(embedWithBackendMock).not.toHaveBeenCalled();
-    // And it persisted no activation state for the conversation.
-    expect(await hydrateActivationState("conv-test-1")).toBeNull();
-  });
-
-  test("context-load: v3 live with v2.enabled=true → v2 not routed, v1 fallback taken", async () => {
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
-
-    const memory = new ConversationGraphMemory("conv-test-v3-cl");
-    const config = makeConfig(true, true, true);
-    const messages = makeMessages("first message of the conversation here");
-
-    const result = await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
-
-    expect(result.mode).toBe("context-load");
-    expect(result.injectedBlockText).toBeNull();
-    expect(loadContextMemoryMock).toHaveBeenCalled();
-    expect(embedWithBackendMock).not.toHaveBeenCalled();
-    expect(await hydrateActivationState("conv-test-v3-cl")).toBeNull();
-  });
-});
-
-describe("ConversationGraphMemory.prepareMemory — memory.enabled gate", () => {
-  test("memory.enabled=false short-circuits per-turn path: mode=none, no injection, v2/v1 not called", async () => {
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
-
-    const memory = makeMemory();
-    const config = makeConfig(true, false);
-    const messages = makeMessages();
-
-    const result = await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
-
-    expect(result.mode).toBe("none");
-    expect(result.injectedBlockText).toBeNull();
-    expect(result.runMessages).toEqual(messages);
-    expect(retrieveForTurnMock).not.toHaveBeenCalled();
-    expect(loadContextMemoryMock).not.toHaveBeenCalled();
-  });
-
-  test("memory.enabled=false short-circuits context-load path: mode=none, no injection, v2/v1 not called", async () => {
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
-
-    const memory = new ConversationGraphMemory("conv-test-master-off");
-    const config = makeConfig(true, false);
-    const messages = makeMessages("first message of the conversation here");
-
-    const result = await memory.prepareMemory(
-      messages,
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
-
-    expect(result.mode).toBe("none");
-    expect(result.injectedBlockText).toBeNull();
-    expect(result.runMessages).toEqual(messages);
-    expect(loadContextMemoryMock).not.toHaveBeenCalled();
-    expect(retrieveForTurnMock).not.toHaveBeenCalled();
-  });
-});
-
-describe("ConversationGraphMemory.onCompacted — v2 activation eviction", () => {
-  test("clears everInjected so a previously-injected slug can re-attach", async () => {
-    // Without this wiring, `selectInjections` keeps subtracting the slug from
-    // every per-turn delta even though compaction discarded the cached
-    // `<memory>` attachment that previously made it visible.
-    const conversationId = "conv-test-evict";
-    const memory = new ConversationGraphMemory(conversationId);
-    const config = makeConfig(true);
-
-    // Turn 1 — context-load fires (initialized=false), injecting alice-vscode.
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
-    const initial = await memory.prepareMemory(
-      makeMessages("Tell me about Alice's editor preferences"),
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
-    expect(initial.injectedBlockText).toContain(
-      "# memory/concepts/alice-vscode.md",
-    );
-
-    const before = await hydrateActivationState(conversationId);
-    expect(before?.everInjected.map((e) => e.slug)).toContain("alice-vscode");
-
-    // Seed a memory-v3 section record too: the same trigger clears it (the
-    // frozen section blocks those pages rode were just compacted away).
-    recordV3Injected(conversationId, [
-      { slug: "alice-vscode", key: "", bytes: 100 },
-    ]);
-    expect(getV3ActiveSections(conversationId)).toEqual(
-      new Map([["alice-vscode", new Set([""])]]),
-    );
-
-    await memory.onCompacted(1);
-
-    const after = await hydrateActivationState(conversationId);
-    expect(after?.everInjected).toEqual([]);
-    expect(getV3ActiveSections(conversationId)).toEqual(new Map());
-
-    // Turn 2 — same Qdrant relevance. With everInjected cleared the slug
-    // should appear again in the injection block (re-attached on the new
-    // user message after compaction).
-    stageTurn([{ slug: "alice-vscode", denseScore: 0.9 }]);
-    const next = await memory.prepareMemory(
-      makeMessages("And what about Alice's editor again?"),
-      config,
-      new AbortController().signal,
-      noopEvent,
-    );
-    expect(next.injectedBlockText).toContain(
-      "# memory/concepts/alice-vscode.md",
-    );
-  });
-
-  test("clears everInjected entries whose turn exceeds the tracker's currentTurn (zombie drift)", async () => {
-    // Regression: under the prior turn-bounded eviction, entries with `turn >
-    // tracker.currentTurn` survived `onCompacted` forever. This can happen
-    // after a non-graceful shutdown: `everInjected` is persisted every turn
-    // while the tracker snapshot is only persisted on graceful dispose, so a
-    // SIGKILL'd session followed by a reload restores the tracker from an
-    // older snapshot with a lower currentTurn while keeping the high-turn
-    // entries on disk.
-    const conversationId = "conv-test-zombie-drift";
-    const memory = new ConversationGraphMemory(conversationId);
-
-    // Seed the simulated post-crash state directly: tracker stays at
-    // currentTurn=0 (default for a fresh ConversationGraphMemory), while the
-    // persisted row carries everInjected entries from turns 10 and 20 (left
-    // over from a prior session that never disposed cleanly).
-    await saveActivationState(conversationId, {
-      messageId: "msg-zombie",
-      state: {},
-      everInjected: [
-        { slug: "alice-vscode", turn: 10 },
-        { slug: "bob-pkg-mgr", turn: 20 },
-      ],
-      currentTurn: 0,
-      updatedAt: 1,
-    });
-
-    await memory.onCompacted(0);
-
-    const after = await hydrateActivationState(conversationId);
-    expect(after?.everInjected).toEqual([]);
-  });
-});
+  },
+);

@@ -1,4 +1,4 @@
-import { beforeEach, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 // Record enqueues instead of writing job rows — the trigger decision is the
 // unit under test here, not the jobs store's gating.
@@ -15,7 +15,6 @@ mock.module("../memory-retrospective-enqueue.js", () => ({
 import { describePg } from "../../../../__tests__/pg-test-db.js";
 import type { AssistantConfig } from "../../../../config/types.js";
 import { createConversation } from "../../../../persistence/conversation-crud.js";
-import { getMemorySqlite } from "../../../../persistence/db-connection.js";
 import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { SKILL_CARD_MESSAGE_KIND } from "../memory-retrospective-constants.js";
 import { upsertRetrospectiveState } from "../memory-retrospective-state.js";
@@ -155,7 +154,7 @@ async function resetTables(): Promise<void> {
   const db = requireMainDb();
   await db.run(`DELETE FROM messages`);
   // `memory_retrospective_state` lives on the memory connection now.
-  getMemorySqlite()!.exec(`DELETE FROM memory_retrospective_state`);
+  await requireMainDb().exec(`DELETE FROM memory_retrospective_state`);
   await db.run(`DELETE FROM conversations`);
 }
 

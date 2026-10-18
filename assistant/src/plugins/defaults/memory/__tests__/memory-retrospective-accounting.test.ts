@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 
 import { describePg } from "../../../../__tests__/pg-test-db.js";
 import {
@@ -94,7 +94,7 @@ describePg("hasQualifyingUserMessageAfter", () => {
     await db.run(`DELETE FROM messages`);
     await db.run(`DELETE FROM conversations`);
     await createConversation({ id: CONV });
-  });
+  }, 30_000);
 
   test("assistant-only tail does not qualify", async () => {
     await insertRaw({ role: "assistant", content: TEXT, createdAt: 1_000 });
@@ -257,7 +257,7 @@ describePg("getRetrospectiveMessagesAfter", () => {
     await db.run(`DELETE FROM messages`);
     await db.run(`DELETE FROM conversations`);
     await createConversation({ id: CONV });
-  });
+  }, 30_000);
 
   test("truncates at a stale mid-slice unfinalized row so the cursor never passes it", async () => {
     const first = await insertRaw({
@@ -327,7 +327,7 @@ describePg("ambient camera frames are not retrospective work", () => {
     await db.run(`DELETE FROM messages`);
     await db.run(`DELETE FROM conversations`);
     await createConversation({ id: CONV });
-  });
+  }, 30_000);
 
   /** One kept frame, as the live-voice persist writes it. */
   async function insertSightFrame(

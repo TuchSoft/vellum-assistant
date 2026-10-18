@@ -6,7 +6,7 @@
  * The gate sits in the persistence claim path rather than the worker loop so
  * the plugin needs no import from outside its own directory.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 
 import { eq } from "drizzle-orm";
 
@@ -14,9 +14,9 @@ import { createMockLoggerModule } from "../../../../__tests__/helpers/mock-logge
 
 mock.module("../../../../util/logger.js", () => createMockLoggerModule());
 
+import { describePg } from "../../../../__tests__/pg-test-db.js";
 import { setMemoryCheckpoint } from "../../../../persistence/checkpoints.js";
-import { getMemoryDb } from "../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../persistence/db-init.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import {
   claimMemoryJobs,
   enqueueMemoryJob,
@@ -25,67 +25,62 @@ import {
   clearLifecycleQuiesce,
   setLifecycleQuiesce,
 } from "../../../../persistence/lifecycle-quiesce.js";
-import { resetTestTables } from "../../../../persistence/raw-query.js";
 import { memoryJobs } from "../../../../persistence/schema/index.js";
 import { runMemoryJobsOnce } from "../jobs-worker.js";
 
 const QUIESCE_KEY = "lifecycle:quiesce_until";
 const ALL_LANES = { slowLlm: 1, fast: 1, embed: 1 };
 
-await initializeDb();
-getMemoryDb();
-
-function jobStatus(id: string): string | undefined {
-  return getMemoryDb()!
-    .select({ status: memoryJobs.status })
+async function jobStatus(id: string): Promise<string | undefined> {
+  const rows = await requireMainDb()
+    .orm.select({ status: memoryJobs.status })
     .from(memoryJobs)
-    .where(eq(memoryJobs.id, id))
-    .get()?.status;
+    .where(eq(memoryJobs.id, id));
+  return rows[0]?.status;
 }
 
 beforeEach(async () => {
-  getMemoryDb()!.run("DELETE FROM memory_jobs");
-  resetTestTables("memory_checkpoints");
+  await requireMainDb().run("DELETE FROM memory_jobs");
   await clearLifecycleQuiesce();
 });
 
-describe("memory job claim quiesce gate", () => {
+describePg("memory job claim quiesce gate", () => {
   test("active lease: claimMemoryJobs claims nothing", async () => {
-    const jobId = enqueueMemoryJob("index_message_lexical", {});
+    const jobId = await enqueueMemoryJob("index_message_lexical", {});
     await setLifecycleQuiesce(60_000);
 
     const claimed = await claimMemoryJobs(ALL_LANES);
 
     expect(claimed).toHaveLength(0);
-    expect(jobStatus(jobId)).toBe("pending");
+    expect(await jobStatus(jobId)).toBe("pending");
   });
 
   test("no lease: claiming is fully open (fail-open default)", async () => {
-    const jobId = enqueueMemoryJob("index_message_lexical", {});
+    const jobId = await enqueueMemoryJob("index_message_lexical", {});
 
     const claimed = await claimMemoryJobs(ALL_LANES);
 
     expect(claimed).toHaveLength(1);
-    expect(jobStatus(jobId)).toBe("running");
+    expect(await jobStatus(jobId)).toBe("running");
   });
 
   test("expired lease: claiming is open again (TTL fail-open)", async () => {
     await setMemoryCheckpoint(QUIESCE_KEY, String(Date.now() - 1));
-    const jobId = enqueueMemoryJob("index_message_lexical", {});
+    const jobId = await enqueueMemoryJob("index_message_lexical", {});
 
     const claimed = await claimMemoryJobs(ALL_LANES);
 
     expect(claimed).toHaveLength(1);
-    expect(jobStatus(jobId)).toBe("running");
+    expect(await jobStatus(jobId)).toBe("running");
   });
 
   test("worker tick under an active lease leaves the queue untouched", async () => {
-    const jobId = enqueueMemoryJob("index_message_lexical", {});
+    const jobId = await enqueueMemoryJob("index_message_lexical", {});
     await setLifecycleQuiesce(60_000);
 
     const processed = await runMemoryJobsOnce();
 
     expect(processed).toBe(0);
-    expect(jobStatus(jobId)).toBe("pending");
-  });
+    expect(await jobStatus(jobId)).toBe("pending");
+  }, 30_000);
 });

@@ -21,8 +21,7 @@
  * stripped (the cache contract). The provider is stubbed (no network).
  */
 
-import { Database } from "bun:sqlite";
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, expect, mock, test } from "bun:test";
 
 import type {
   ContentBlock,
@@ -30,10 +29,9 @@ import type {
   Provider,
   ProviderResponse,
 } from "@vellumai/plugin-api";
-import { drizzle } from "drizzle-orm/bun-sqlite";
 
-import { ensureMemoryV3SelectionsSchema } from "../../../../../persistence/migrations/338-move-memory-v3-selections-to-memory-db.js";
-import * as schema from "../../../../../persistence/schema/index.js";
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import { wrapMemoryBlock } from "../../memory-marker.js";
 import { renderedBytes } from "../../substrate/injected-block-slugs.js";
 import type { PageIndexEntry } from "../../substrate/page-index.js";
@@ -87,41 +85,8 @@ mock.module("../dense.js", () => ({
   ) => (denseMockActive ? [] : realDense.denseLaneScored(...args)),
 }));
 
-// In-memory everInjected store backing the net-new dedup, swapped in only
-// while this file's tests run.
-const realDbConnection = {
-  ...(await import("../../../../../persistence/db-connection.js")),
-};
-let testSqlite: Database;
-// The everInjected carry and v3 selection rows live on the dedicated memory
-// connection, resolved via `getMemorySqlite` — stubbed to a second in-memory DB
-// carrying the relocated tables' schema.
-let memorySqlite: Database;
-let testDb = await makeDb();
-async function makeDb() {
-  testSqlite = new Database(":memory:");
-  const db = drizzle(testSqlite, { schema });
-  memorySqlite = new Database(":memory:");
-  ensureMemoryV3SelectionsSchema(memorySqlite);
-  await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
-  return db;
-}
-mock.module("../../../../../persistence/db-connection.js", () => ({
-  ...realDbConnection,
-  getDb: () => (denseMockActive ? testDb : realDbConnection.getDb()),
-  getSqliteFrom: (db: unknown) =>
-    denseMockActive
-      ? testSqlite
-      : realDbConnection.getSqliteFrom(
-          db as Parameters<typeof realDbConnection.getSqliteFrom>[0],
-        ),
-  getMemorySqlite: () =>
-    denseMockActive ? memorySqlite : realDbConnection.getMemorySqlite(),
-  getMemoryDb: () =>
-    denseMockActive
-      ? drizzle(memorySqlite, { schema })
-      : realDbConnection.getMemoryDb(),
-}));
+// The store-backed dedup runs against the real Postgres test database, so the
+// section rows persist across a turn exactly as they do in production.
 
 const { orchestrate } = await import("../orchestrate.js");
 const { renderInjectionBlockInner, V3_INJECTION_HEADER } =
@@ -271,7 +236,7 @@ async function runTurn(
     finderSectionsPerPage: 3,
     prefixCards: new Map(),
   });
-  const active = getActiveSections(conversationId);
+  const active = await getActiveSections(conversationId);
   const { sectionIndex } = deps.lanes;
   const leadOf = (slug: Slug) =>
     sectionIndex.sections[sectionIndex.byArticle.get(slug)![0]!]!;
@@ -291,7 +256,7 @@ async function runTurn(
       });
     }
   }
-  recordInjected(
+  await recordInjected(
     conversationId,
     entries.map(({ slug, key, text }) => ({
       slug,
@@ -306,7 +271,10 @@ async function runTurn(
 beforeEach(async () => {
   denseMockActive = true;
   providerStub = null;
-  testDb = await makeDb();
+  const db = requireMainDb();
+  await ensureMemoryV3InjectedSectionsSchema(db);
+  await db.run(`DELETE FROM memory_v3_injected_sections`);
+  await db.run(`DELETE FROM memory_v3_selections`);
 });
 
 afterAll(() => {
@@ -318,7 +286,7 @@ afterAll(() => {
 // history; an all-repeat turn renders nothing new.
 // ---------------------------------------------------------------------------
 
-describe("memory-v3 live: net-new section accumulation", () => {
+describePg("memory-v3 live: net-new section accumulation", () => {
   test("turn 2 re-selecting turn 1's page renders zero new sections", async () => {
     const lanes = await buildLanes();
 
@@ -334,7 +302,7 @@ describe("memory-v3 live: net-new section accumulation", () => {
     const t2 = await runTurn("conv-1", 2, "apple", ["page-a"], { lanes });
     expect(t2.netNew).toEqual([]);
     expect(t2.block).toBe("");
-    expect(residentBytes("conv-1")).toBeGreaterThan(0);
+    expect(await residentBytes("conv-1")).toBeGreaterThan(0);
   });
 
   test("a topic shift renders only the newly-selected page's section", async () => {
@@ -370,7 +338,7 @@ describe("memory-v3 live: net-new section accumulation", () => {
 // cache contract that replaced the old all-turns strip).
 // ---------------------------------------------------------------------------
 
-describe("memory-v3 live: frozen section blocks in history", () => {
+describePg("memory-v3 live: frozen section blocks in history", () => {
   test("prior turns' messages stay byte-identical as new turns inject", async () => {
     const lanes = await buildLanes();
     const memBlock = (text: string): ContentBlock => ({ type: "text", text });

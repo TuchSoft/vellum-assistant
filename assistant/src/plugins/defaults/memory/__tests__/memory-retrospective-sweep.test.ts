@@ -1,4 +1,6 @@
-import { beforeEach, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, setDefaultTimeout, test } from "bun:test";
+
+setDefaultTimeout(30_000);
 
 // Record enqueues instead of writing job rows — the sweep's scan/gate decision
 // is the unit under test, not the jobs store's coalescing. The enqueue's own
@@ -22,7 +24,6 @@ import type { AssistantConfig } from "../../../../config/types.js";
 import { AUTO_ANALYSIS_SOURCE } from "../../../../persistence/auto-analysis-constants.js";
 import { createConversation } from "../../../../persistence/conversation-crud.js";
 import { MEMORY_V2_CONSOLIDATION_SOURCE } from "../../../../persistence/conversation-types.js";
-import { getMemorySqlite } from "../../../../persistence/db-connection.js";
 import { requireMainDb } from "../../../../persistence/db-facade.js";
 import { upsertMemoryRetrospectiveJob } from "../../../../persistence/jobs-store.js";
 import {
@@ -61,8 +62,8 @@ async function setLastMessageAt(
 async function resetTables(): Promise<void> {
   const db = requireMainDb();
   await db.run(`DELETE FROM messages`);
-  getMemorySqlite()!.exec(`DELETE FROM memory_retrospective_state`);
-  getMemorySqlite()!.exec(`DELETE FROM memory_jobs`);
+  await db.run(`DELETE FROM memory_retrospective_state`);
+  await db.run(`DELETE FROM memory_jobs`);
   await db.run(`DELETE FROM conversations`);
 }
 
@@ -277,8 +278,8 @@ describePg("runRetrospectiveSweep", () => {
     // pending-only coalescing creates a fresh pending row).
     const conv = await createConversation({ id: "conv-a" });
     await insertMessage(conv.id, { createdAt: 1_000 });
-    upsertMemoryRetrospectiveJob({ conversationId: conv.id });
-    getMemorySqlite()!.exec(
+    await upsertMemoryRetrospectiveJob({ conversationId: conv.id });
+    await requireMainDb().run(
       `UPDATE memory_jobs SET status = 'running' WHERE type = 'memory_retrospective'`,
     );
 
@@ -349,7 +350,7 @@ describePg("listSweepCandidateConversationIds", () => {
     await resetTables();
   });
 
-  test("excludes retrospective, consolidation, auto-analysis, and scheduled sources; orders by id", () => {
+  test("excludes retrospective, consolidation, auto-analysis, and scheduled sources; orders by id", async () => {
     await createConversation({ id: "conv-a" });
     await createConversation({ id: "conv-b" });
     await createConversation({
@@ -376,25 +377,27 @@ describePg("listSweepCandidateConversationIds", () => {
       await setLastMessageAt(id, 5_000);
     }
 
-    const ids = listSweepCandidateConversationIds("", 100, 0);
+    const ids = await listSweepCandidateConversationIds("", 100, 0);
 
     expect(ids).toEqual(["conv-a", "conv-b"]);
   });
 
-  test("keyset cursor resumes past the given id", () => {
+  test("keyset cursor resumes past the given id", async () => {
     for (const id of ["conv-a", "conv-b", "conv-c"]) {
       await createConversation({ id });
       await setLastMessageAt(id, 5_000);
     }
 
-    expect(listSweepCandidateConversationIds("conv-a", 100, 0)).toEqual([
+    expect(await listSweepCandidateConversationIds("conv-a", 100, 0)).toEqual([
       "conv-b",
       "conv-c",
     ]);
-    expect(listSweepCandidateConversationIds("", 1, 0)).toEqual(["conv-a"]);
+    expect(await listSweepCandidateConversationIds("", 1, 0)).toEqual([
+      "conv-a",
+    ]);
   });
 
-  test("lookback cutoff excludes dormant and never-stamped conversations", () => {
+  test("lookback cutoff excludes dormant and never-stamped conversations", async () => {
     await createConversation({ id: "conv-recent" });
     await setLastMessageAt("conv-recent", 5_000);
     await createConversation({ id: "conv-dormant" });
@@ -402,7 +405,7 @@ describePg("listSweepCandidateConversationIds", () => {
     // No message stamp at all — `gt` NULL semantics exclude it.
     await createConversation({ id: "conv-unstamped" });
 
-    expect(listSweepCandidateConversationIds("", 100, 2_000)).toEqual([
+    expect(await listSweepCandidateConversationIds("", 100, 2_000)).toEqual([
       "conv-recent",
     ]);
   });

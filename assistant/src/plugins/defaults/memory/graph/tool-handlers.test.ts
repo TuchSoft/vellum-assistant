@@ -4,7 +4,16 @@
  * All DB/store calls are mocked so the tests run without a real workspace.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+
+setDefaultTimeout(30_000);
 
 // ── Controllable store mock ────────────────────────────────────────────────────
 let mockNodes: Array<{
@@ -94,21 +103,21 @@ describe("handleDeleteMemory", () => {
     mockDeleteNode.mockClear();
   });
 
-  test("returns error when content is empty", () => {
-    const result = handleDeleteMemory({ content: "  " }, configV2On);
+  test("returns error when content is empty", async () => {
+    const result = await handleDeleteMemory({ content: "  " }, configV2On);
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/required/);
   });
 
-  test("returns error when concept-page memory is inactive", () => {
-    const result = handleDeleteMemory({ content: "foo" }, configV2Off);
+  test("returns error when concept-page memory is inactive", async () => {
+    const result = await handleDeleteMemory({ content: "foo" }, configV2Off);
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/concept-page memory/);
   });
 
-  test("passes the gate when v3 is live with the v2 flag off", () => {
+  test("passes the gate when v3 is live with the v2 flag off", async () => {
     mockNodes = [node("1", "User prefers TypeScript")];
-    const result = handleDeleteMemory(
+    const result = await handleDeleteMemory(
       { content: "User prefers TypeScript" },
       configV3Only,
     );
@@ -116,16 +125,19 @@ describe("handleDeleteMemory", () => {
     expect(mockDeleteNode).toHaveBeenCalledWith("1");
   });
 
-  test("returns error when no node matches", () => {
+  test("returns error when no node matches", async () => {
     mockNodes = [node("1", "Something else entirely")];
-    const result = handleDeleteMemory({ content: "TypeScript" }, configV2On);
+    const result = await handleDeleteMemory(
+      { content: "TypeScript" },
+      configV2On,
+    );
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/No memory found/);
   });
 
-  test("deletes exact-match node", () => {
+  test("deletes exact-match node", async () => {
     mockNodes = [node("1", "User prefers TypeScript")];
-    const result = handleDeleteMemory(
+    const result = await handleDeleteMemory(
       { content: "User prefers TypeScript" },
       configV2On,
     );
@@ -134,12 +146,12 @@ describe("handleDeleteMemory", () => {
     expect(result.message).toMatch(/Deleted/);
   });
 
-  test("exact match takes priority over substring match", () => {
+  test("exact match takes priority over substring match", async () => {
     mockNodes = [
       node("1", "User prefers TypeScript"),
       node("2", "User prefers TypeScript over JavaScript"),
     ];
-    const result = handleDeleteMemory(
+    const result = await handleDeleteMemory(
       { content: "User prefers TypeScript" },
       configV2On,
     );
@@ -147,12 +159,15 @@ describe("handleDeleteMemory", () => {
     expect(mockDeleteNode).toHaveBeenCalledWith("1");
   });
 
-  test("returns error when multiple nodes match", () => {
+  test("returns error when multiple nodes match", async () => {
     mockNodes = [
       node("1", "User likes TypeScript"),
       node("2", "User uses TypeScript at work"),
     ];
-    const result = handleDeleteMemory({ content: "TypeScript" }, configV2On);
+    const result = await handleDeleteMemory(
+      { content: "TypeScript" },
+      configV2On,
+    );
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/Multiple memories match/);
     expect(mockDeleteNode).not.toHaveBeenCalled();
@@ -167,8 +182,8 @@ describe("handleUpdateMemory", () => {
     mockEnqueueMemoryJob.mockClear();
   });
 
-  test("returns error when inputs are missing", () => {
-    const result = handleUpdateMemory(
+  test("returns error when inputs are missing", async () => {
+    const result = await handleUpdateMemory(
       { old_content: "", new_content: "new" },
       "cli",
       configV2On,
@@ -177,8 +192,8 @@ describe("handleUpdateMemory", () => {
     expect(result.message).toMatch(/required/);
   });
 
-  test("returns error when concept-page memory is inactive", () => {
-    const result = handleUpdateMemory(
+  test("returns error when concept-page memory is inactive", async () => {
+    const result = await handleUpdateMemory(
       { old_content: "old", new_content: "new" },
       "cli",
       configV2Off,
@@ -187,9 +202,9 @@ describe("handleUpdateMemory", () => {
     expect(result.message).toMatch(/concept-page memory/);
   });
 
-  test("returns error when no node matches old_content", () => {
+  test("returns error when no node matches old_content", async () => {
     mockNodes = [node("1", "Something else")];
-    const result = handleUpdateMemory(
+    const result = await handleUpdateMemory(
       { old_content: "TypeScript", new_content: "JavaScript" },
       "cli",
       configV2On,
@@ -198,9 +213,9 @@ describe("handleUpdateMemory", () => {
     expect(result.message).toMatch(/No memory found/);
   });
 
-  test("updates matching node and re-embeds", () => {
+  test("updates matching node and re-embeds", async () => {
     mockNodes = [node("1", "User prefers TypeScript")];
-    const result = handleUpdateMemory(
+    const result = await handleUpdateMemory(
       {
         old_content: "User prefers TypeScript",
         new_content: "User prefers TypeScript and Bun",
@@ -218,12 +233,12 @@ describe("handleUpdateMemory", () => {
     });
   });
 
-  test("returns error when multiple nodes match", () => {
+  test("returns error when multiple nodes match", async () => {
     mockNodes = [
       node("1", "User likes TypeScript"),
       node("2", "User uses TypeScript daily"),
     ];
-    const result = handleUpdateMemory(
+    const result = await handleUpdateMemory(
       { old_content: "TypeScript", new_content: "Rust" },
       "cli",
       configV2On,
@@ -233,12 +248,12 @@ describe("handleUpdateMemory", () => {
     expect(mockUpdateNode).not.toHaveBeenCalled();
   });
 
-  test("returns error when new_content already exists on another node", () => {
+  test("returns error when new_content already exists on another node", async () => {
     mockNodes = [
       node("1", "User prefers TypeScript"),
       node("2", "User prefers Rust"),
     ];
-    const result = handleUpdateMemory(
+    const result = await handleUpdateMemory(
       {
         old_content: "User prefers TypeScript",
         new_content: "User prefers Rust",
@@ -257,62 +272,62 @@ describe("handleListMemory", () => {
     mockNodes = [];
   });
 
-  test("returns empty when concept-page memory is inactive", () => {
-    const result = handleListMemory({}, configV2Off);
+  test("returns empty when concept-page memory is inactive", async () => {
+    const result = await handleListMemory({}, configV2Off);
     expect(result.success).toBe(false);
     expect(result.nodes).toHaveLength(0);
     expect(result.total).toBe(0);
   });
 
-  test("passes the gate when v3 is live with the v2 flag off", () => {
+  test("passes the gate when v3 is live with the v2 flag off", async () => {
     mockNodes = [node("1", "User prefers TypeScript")];
-    const result = handleListMemory({}, configV3Only);
+    const result = await handleListMemory({}, configV3Only);
     expect(result.success).toBe(true);
     expect(result.nodes).toHaveLength(1);
   });
 
-  test("returns all active nodes", () => {
+  test("returns all active nodes", async () => {
     mockNodes = [
       node("1", "User prefers TypeScript"),
       node("2", "User works at Acme Corp"),
     ];
-    const result = handleListMemory({}, configV2On);
+    const result = await handleListMemory({}, configV2On);
     expect(result.success).toBe(true);
     expect(result.nodes).toHaveLength(2);
     expect(result.total).toBe(2);
     expect(result.nodes[0]!.id).toBe("1");
   });
 
-  test("filters by search substring (case-insensitive)", () => {
+  test("filters by search substring (case-insensitive)", async () => {
     mockNodes = [
       node("1", "User prefers TypeScript"),
       node("2", "User works at Acme Corp"),
       node("3", "The sky is typescript-blue"),
     ];
-    const result = handleListMemory({ search: "typescript" }, configV2On);
+    const result = await handleListMemory({ search: "typescript" }, configV2On);
     expect(result.success).toBe(true);
     expect(result.nodes).toHaveLength(2);
     expect(result.nodes.map((n) => n.id)).toEqual(["1", "3"]);
   });
 
-  test("returns no results when search matches nothing", () => {
+  test("returns no results when search matches nothing", async () => {
     mockNodes = [node("1", "User prefers TypeScript")];
-    const result = handleListMemory({ search: "Python" }, configV2On);
+    const result = await handleListMemory({ search: "Python" }, configV2On);
     expect(result.success).toBe(true);
     expect(result.nodes).toHaveLength(0);
     expect(result.total).toBe(0);
   });
 
-  test("respects limit", () => {
+  test("respects limit", async () => {
     mockNodes = Array.from({ length: 10 }, (_, i) =>
       node(String(i), `Memory ${i}`),
     );
-    const result = handleListMemory({ limit: 3 }, configV2On);
+    const result = await handleListMemory({ limit: 3 }, configV2On);
     expect(result.nodes).toHaveLength(3);
     expect(result.total).toBe(3);
   });
 
-  test("search is exhaustive — finds matches beyond position 500 in the full set", () => {
+  test("search is exhaustive — finds matches beyond position 500 in the full set", async () => {
     // Simulate 502 nodes where the matching one is at position 501 (would be
     // missed if we capped the DB fetch at 500 before filtering in memory).
     const bulk = Array.from({ length: 501 }, (_, i) =>
@@ -320,17 +335,20 @@ describe("handleListMemory", () => {
     );
     const late = node("late", "User speaks Kinyarwanda");
     mockNodes = [...bulk, late];
-    const result = handleListMemory({ search: "kinyarwanda" }, configV2On);
+    const result = await handleListMemory(
+      { search: "kinyarwanda" },
+      configV2On,
+    );
     expect(result.success).toBe(true);
     expect(result.nodes).toHaveLength(1);
     expect(result.nodes[0]!.id).toBe("late");
   });
 
-  test("includes required fields on each node", () => {
+  test("includes required fields on each node", async () => {
     mockNodes = [
       node("42", "Test content", { type: "episodic", fidelity: "clear" }),
     ];
-    const result = handleListMemory({}, configV2On);
+    const result = await handleListMemory({}, configV2On);
     const n = result.nodes[0]!;
     expect(n.id).toBe("42");
     expect(n.content).toBe("Test content");

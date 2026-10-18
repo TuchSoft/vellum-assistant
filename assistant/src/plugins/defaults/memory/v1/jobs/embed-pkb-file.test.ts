@@ -1,4 +1,14 @@
-import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+
+setDefaultTimeout(30_000);
 
 // Track calls to indexPkbFile so we can assert the handler forwards payload
 // fields correctly.
@@ -21,16 +31,15 @@ mock.module("../../config.js", () => ({
   getMemoryConfig: () => ({ v2: { enabled: v2Enabled } }),
 }));
 
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
 import { DEFAULT_CONFIG } from "../../../../../config/defaults.js";
 import type { AssistantConfig } from "../../../../../config/types.js";
-import { getMemoryDb } from "../../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../../persistence/db-init.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import {
   claimMemoryJobs,
   type MemoryJob,
   type MemoryJobType,
 } from "../../../../../persistence/jobs-store.js";
-import { memoryJobs } from "../../../../../persistence/schema/index.js";
 import { embedPkbFileJob, enqueuePkbIndexJob } from "./embed-pkb-file.js";
 
 const TEST_CONFIG: AssistantConfig = DEFAULT_CONFIG;
@@ -52,14 +61,8 @@ function makeJob(payload: Record<string, unknown>): MemoryJob {
 }
 
 describe("embedPkbFileJob", () => {
-  beforeAll(async () => {
-    await initializeDb();
-  });
-
-  beforeEach(() => {
+  beforeEach(async () => {
     indexPkbFileCalls.length = 0;
-    const db = getMemoryDb()!;
-    db.delete(memoryJobs).run();
   });
 
   test("calls indexPkbFile with payload fields", async () => {
@@ -111,22 +114,19 @@ describe("embedPkbFileJob", () => {
   });
 });
 
-describe("enqueuePkbIndexJob", () => {
-  beforeAll(async () => {
-    await initializeDb();
-  });
+describePg("enqueuePkbIndexJob", () => {
+  beforeAll(() => {});
 
-  beforeEach(() => {
+  beforeEach(async () => {
     indexPkbFileCalls.length = 0;
     v2Enabled = false;
-    const db = getMemoryDb()!;
-    db.delete(memoryJobs).run();
+    await requireMainDb().run("DELETE FROM memory_jobs");
   });
 
   test("does not enqueue when memory v2 is enabled", async () => {
     v2Enabled = true;
 
-    const id = enqueuePkbIndexJob({
+    const id = await enqueuePkbIndexJob({
       pkbRoot: "/pkb/root",
       absPath: "/pkb/root/note.md",
     });
@@ -138,7 +138,7 @@ describe("enqueuePkbIndexJob", () => {
   });
 
   test("enqueues a pending embed_pkb_file job with payload", async () => {
-    const id = enqueuePkbIndexJob({
+    const id = await enqueuePkbIndexJob({
       pkbRoot: "/pkb/root",
       absPath: "/pkb/root/note.md",
     });

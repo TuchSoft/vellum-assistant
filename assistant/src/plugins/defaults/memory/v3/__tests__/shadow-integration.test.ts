@@ -28,19 +28,32 @@
  */
 
 import { Database } from "bun:sqlite";
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
+
+setDefaultTimeout(30_000);
 
 import type { Message, Provider, ProviderResponse } from "@vellumai/plugin-api";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 
-import { ensureMemoryV3SelectionsSchema } from "../../../../../persistence/migrations/338-move-memory-v3-selections-to-memory-db.js";
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import * as schema from "../../../../../persistence/schema/index.js";
 import type { PageIndexEntry } from "../../substrate/page-index.js";
 import { renderCard } from "../card.js";
 import type { EdgeGraph } from "../edge.js";
 import { buildEdgeGraph } from "../edge.js";
 import type { OrchestrateResult } from "../orchestrate.js";
-import { ensureMemoryV3PoolsSchema } from "../plugin-schema.js";
+import {
+  ensureMemoryV3PoolsSchema,
+  ensureMemoryV3SelectionsSectionKeyOnce,
+} from "../plugin-schema.js";
 import { buildSectionNeedle } from "../section-needle.js";
 import { buildSectionIndex } from "../sections.js";
 import type { MemoryRoutingTurn, SectionIndex, Slug } from "../types.js";
@@ -96,23 +109,23 @@ mock.module("../dense.js", () => ({
       : realDense.denseLaneScored(...args),
 }));
 
-// In-memory selections DB. Selection and pool rows live on the dedicated
-// memory connection: `writeTurnLog` writes and `summarizeSelections` reads
-// via `getMemorySqlite`, stubbed to a DB carrying both tables' schema.
+// Selection and pool rows live in the shared Postgres database; `writeTurnLog`
+// writes and `summarizeSelections` reads through the memory-slot facade.
 const realDb = {
   ...(await import("../../../../../persistence/db-connection.js")),
 };
 let testSqlite: Database;
-let memorySqlite: Database;
 let testDb = makeDb();
 function makeDb() {
   testSqlite = new Database(":memory:");
-  testSqlite.exec("PRAGMA journal_mode=WAL");
-  const db = drizzle(testSqlite, { schema });
-  memorySqlite = new Database(":memory:");
-  ensureMemoryV3SelectionsSchema(memorySqlite);
-  ensureMemoryV3PoolsSchema(memorySqlite);
-  return db;
+  return drizzle(testSqlite, { schema });
+}
+async function prepareStore(): Promise<void> {
+  const db = requireMainDb();
+  await ensureMemoryV3SelectionsSectionKeyOnce(db);
+  await ensureMemoryV3PoolsSchema(db);
+  await db.run(`DELETE FROM memory_v3_selections`);
+  await db.run(`DELETE FROM memory_v3_pools`);
 }
 mock.module("../../../../../persistence/db-connection.js", () => ({
   ...realDb,
@@ -121,7 +134,6 @@ mock.module("../../../../../persistence/db-connection.js", () => ({
     mockActive
       ? testSqlite
       : realDb.getSqliteFrom(db as Parameters<typeof realDb.getSqliteFrom>[0]),
-  getMemorySqlite: () => (mockActive ? memorySqlite : realDb.getMemorySqlite()),
 }));
 
 const { orchestrate } = await import("../orchestrate.js");
@@ -294,13 +306,14 @@ function selectProvider(keep: Slug[]): Provider {
 // ---------------------------------------------------------------------------
 
 /** Read back every logged selection source for a turn, in row order. */
-function loggedSources(turn: number): Array<{ slug: Slug; source: string }> {
-  return memorySqlite
-    .query(
-      `SELECT slug, source FROM memory_v3_selections
-         WHERE conversation_id = ? AND turn = ? ORDER BY rowid`,
-    )
-    .all(CONV, turn) as Array<{ slug: Slug; source: string }>;
+async function loggedSources(
+  turn: number,
+): Promise<Array<{ slug: Slug; source: string }>> {
+  return await requireMainDb().all<{ slug: Slug; source: string }>(
+    `SELECT slug, source FROM memory_v3_selections
+       WHERE conversation_id = ? AND turn = ? ORDER BY ctid`,
+    [CONV, turn],
+  );
 }
 
 /** Drive one turn end-to-end: orchestrate → attribute → write. */
@@ -334,7 +347,7 @@ async function runTurn(
       stableSlugs.map((slug) => [slug, renderCard(slug, RAW[slug] ?? "")]),
     ),
   });
-  writeTurnLog(
+  await writeTurnLog(
     CONV,
     turnNumber,
     attributeSelections(result),
@@ -343,12 +356,13 @@ async function runTurn(
   return result;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   mockActive = true;
   providerStub = null;
   denseHits = [];
   lastPool = [];
   selectCalls = 0;
+  await prepareStore();
   testDb = makeDb();
 });
 
@@ -363,7 +377,7 @@ afterAll(() => {
 // their content — not by always being appended.
 // ---------------------------------------------------------------------------
 
-describe("memory-v3 integration — candidate pool", () => {
+describePg("memory-v3 integration — candidate pool", () => {
   test("pool unions needle ∪ dense ∪ edge; one select per turn", async () => {
     const lanes = await buildLanes();
     // "apple" hits page-a (needle). Dense returns page-b (denseK enables the
@@ -394,7 +408,7 @@ describe("memory-v3 integration — candidate pool", () => {
 // source tags. Selections are current-turn only — nothing carries.
 // ---------------------------------------------------------------------------
 
-describe("memory-v3 integration — core + hot stable prefix", () => {
+describePg("memory-v3 integration — core + hot stable prefix", () => {
   test("core and hot head the pool every turn and log lane-correct sources", async () => {
     const lanes = await buildLanes();
     const prefix = { core: ["topic-x"], hot: ["page-b"] };
@@ -408,7 +422,7 @@ describe("memory-v3 integration — core + hot stable prefix", () => {
     expect(lastPool).toEqual(["topic-x", "page-b", "page-a"]);
     expect(t1.lanes.core).toEqual(["topic-x"]);
     expect(t1.lanes.hot).toEqual(["page-b"]);
-    expect(loggedSources(1)).toEqual([
+    expect(await loggedSources(1)).toEqual([
       { slug: "topic-x", source: "core" },
       { slug: "page-a", source: "needle" },
     ]);
@@ -419,7 +433,7 @@ describe("memory-v3 integration — core + hot stable prefix", () => {
     const t2 = await runTurn(2, "durian", ["page-b"], { lanes, ...prefix });
     expect(lastPool.slice(0, 2)).toEqual(["topic-x", "page-b"]);
     expect(t2.selections.map((s) => s.slug)).toEqual(["page-b"]);
-    expect(loggedSources(2)).toEqual([{ slug: "page-b", source: "hot" }]);
+    expect(await loggedSources(2)).toEqual([{ slug: "page-b", source: "hot" }]);
   });
 
   test("a finder hit on a core page logs core, not the finder lane", async () => {
@@ -436,7 +450,9 @@ describe("memory-v3 integration — core + hot stable prefix", () => {
     expect(result.selections.map((s) => s.slug)).toEqual(["page-a"]);
     expect(result.selections[0]!.sections).toHaveLength(1);
     expect(result.lanes.finder.map((c) => c.slug)).toContain("page-a");
-    expect(loggedSources(1)).toEqual([{ slug: "page-a", source: "core" }]);
+    expect(await loggedSources(1)).toEqual([
+      { slug: "page-a", source: "core" },
+    ]);
   });
 });
 
@@ -446,7 +462,7 @@ describe("memory-v3 integration — core + hot stable prefix", () => {
 // matched section and is attributed `needle` — exactly like a concept page.
 // ---------------------------------------------------------------------------
 
-describe("memory-v3 integration — lane-source attribution", () => {
+describePg("memory-v3 integration — lane-source attribution", () => {
   test("a needle-ranked capability selection is logged with the needle source", async () => {
     const lanes = await buildLanes();
     // "durian" matches the capability page's content section, so its finder
@@ -454,7 +470,7 @@ describe("memory-v3 integration — lane-source attribution", () => {
     // `needle` (capabilities are indexed pages, not sectionless add-ins).
     const result = await runTurn(1, "durian", [CAPABILITY_SLUG], { lanes });
     expect(result.selections.map((s) => s.slug)).toEqual([CAPABILITY_SLUG]);
-    expect(loggedSources(1)).toEqual([
+    expect(await loggedSources(1)).toEqual([
       { slug: CAPABILITY_SLUG, source: "needle" },
     ]);
   });
@@ -465,7 +481,7 @@ describe("memory-v3 integration — lane-source attribution", () => {
 // source, and reports turn count + distinct-slug selection footprint.
 // ---------------------------------------------------------------------------
 
-describe("memory-v3 integration — selection-log readout", () => {
+describePg("memory-v3 integration — selection-log readout", () => {
   test("summarizeSelections aggregates a multi-turn run by source", async () => {
     const lanes = await buildLanes();
     const prefix = { hot: ["topic-x"] };
@@ -485,7 +501,7 @@ describe("memory-v3 integration — selection-log readout", () => {
     denseHits = [];
     await runTurn(3, "durian", [CAPABILITY_SLUG], { lanes, ...prefix });
 
-    const summary = summarizeSelections(CONV);
+    const summary = await summarizeSelections(CONV);
     // needle: page-a (t1) + page-b (t2) + capability page (t3) = 3.
     expect(summary.bySource.needle).toBe(3);
     // hot: topic-x (t1).
@@ -502,8 +518,8 @@ describe("memory-v3 integration — selection-log readout", () => {
     expect(summary.distinctSlugs).toBe(4);
   });
 
-  test("summarizeSelections reports zeros for a conversation with no rows", () => {
-    const summary = summarizeSelections("conv-empty");
+  test("summarizeSelections reports zeros for a conversation with no rows", async () => {
+    const summary = await summarizeSelections("conv-empty");
     expect(summary).toEqual({
       bySource: {
         core: 0,

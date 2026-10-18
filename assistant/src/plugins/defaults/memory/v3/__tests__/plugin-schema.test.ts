@@ -8,20 +8,18 @@
  * a conversation's legacy rows for the compaction reset; `memory_v3_pools`
  * is created idempotently; the selection log's `section_key` column is added
  * to the `memory_v3_selections` table migration 338 creates. Every ensure
- * takes the raw handle, and the sections ensure its ledger, so these tests
- * run on in-memory databases (a file-backed one where a second connection
- * matters) with no connection stub, and the once-per-connection wrapper the
- * stores share is exercised on plain handles the same way.
+ * takes the async facade, and the sections ensure its ledger, so these tests
+ * run on the Postgres test database with the once-per-connection wrapper the
+ * stores share exercised on stable facade handles.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Database } from "bun:sqlite";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
-import { ensureMemoryV3SelectionsSchema } from "../../../../../persistence/migrations/338-move-memory-v3-selections-to-memory-db.js";
-import { ensureMemoryV3EverInjectedSchema } from "../../../../../persistence/migrations/345-move-memory-v3-ever-injected-to-memory-db.js";
+setDefaultTimeout(30_000);
+
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
+import type { AsyncDb } from "../../../../../persistence/db-facade.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import {
   deleteLegacyCardRows,
   ensureMemoryV3InjectedSectionsSchema,
@@ -41,38 +39,47 @@ interface Row {
   pruned_at: number | null;
 }
 
-function rows(db: Database): Row[] {
-  return db
-    .query(
-      `SELECT conversation_id, slug, section_key, injected_at, bytes, pruned_at
-       FROM memory_v3_injected_sections ORDER BY conversation_id, slug, section_key`,
-    )
-    .all() as Row[];
+async function rows(db: AsyncDb): Promise<Row[]> {
+  return await db.all<Row>(
+    `SELECT conversation_id, slug, section_key, injected_at, bytes, pruned_at
+     FROM memory_v3_injected_sections ORDER BY conversation_id, slug, section_key`,
+  );
 }
 
-function legacyRows(
-  db: Database,
-): Array<{ conversation_id: string; slug: string }> {
-  return db
-    .query(
-      `SELECT conversation_id, slug FROM memory_v3_ever_injected
-       ORDER BY conversation_id, slug`,
-    )
-    .all() as Array<{ conversation_id: string; slug: string }>;
+async function legacyRows(
+  db: AsyncDb,
+): Promise<Array<{ conversation_id: string; slug: string }>> {
+  return await db.all<{ conversation_id: string; slug: string }>(
+    `SELECT conversation_id, slug FROM memory_v3_ever_injected
+     ORDER BY conversation_id, slug`,
+  );
 }
 
-function objectNames(db: Database, type: "table" | "index"): string[] {
-  return (
-    db
-      .query(`SELECT name FROM sqlite_master WHERE type = ?`)
-      .all(type) as Array<{ name: string }>
-  ).map((row) => row.name);
+async function objectNames(
+  db: AsyncDb,
+  type: "table" | "index",
+): Promise<string[]> {
+  if (type === "table") {
+    const result = await db.all<{ name: string }>(
+      `SELECT table_name AS name FROM information_schema.tables
+        WHERE table_schema = current_schema()`,
+    );
+    return result.map((row) => row.name);
+  }
+  const result = await db.all<{ name: string }>(
+    `SELECT indexname AS name FROM pg_indexes
+      WHERE schemaname = current_schema()`,
+  );
+  return result.map((row) => row.name);
 }
 
-function columnNames(db: Database, table: string): string[] {
-  return (
-    db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
-  ).map((column) => column.name);
+async function columnNames(db: AsyncDb, table: string): Promise<string[]> {
+  const result = await db.all<{ name: string }>(
+    `SELECT column_name AS name FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = ?`,
+    [table],
+  );
+  return result.map((column) => column.name);
 }
 
 /** A map-backed checkpoint ledger whose reads or writes can be made to
@@ -97,37 +104,73 @@ function ledger() {
   return { ...api, values, fails };
 }
 
-let memorySqlite: Database;
+let db: AsyncDb;
 
 /** The superseded card-grain table exactly as migration 345 leaves it on
  *  the memory connection (frozen; nothing writes it), the copy's source. */
-function createLegacyCardsTable(db: Database): void {
-  ensureMemoryV3EverInjectedSchema(db);
+async function createLegacyCardsTable(raw: AsyncDb): Promise<void> {
+  await raw.exec(/*sql*/ `
+    CREATE TABLE IF NOT EXISTS memory_v3_ever_injected (
+      conversation_id TEXT NOT NULL,
+      slug TEXT NOT NULL,
+      injected_at BIGINT NOT NULL,
+      bytes BIGINT NOT NULL DEFAULT 0,
+      pruned_at BIGINT,
+      PRIMARY KEY (conversation_id, slug)
+    )
+  `);
 }
 
-beforeEach(() => {
-  memorySqlite = new Database(":memory:");
+/** The selection log table migration 338 creates, without the `section_key`
+ *  column this build adds. */
+async function createSelectionsTableWithoutSectionKey(
+  raw: AsyncDb,
+): Promise<void> {
+  await raw.exec(/*sql*/ `
+    CREATE TABLE memory_v3_selections (
+      conversation_id TEXT NOT NULL,
+      turn BIGINT NOT NULL,
+      slug TEXT NOT NULL,
+      source TEXT NOT NULL,
+      pinned BIGINT NOT NULL DEFAULT 0,
+      created_at BIGINT NOT NULL,
+      message_id TEXT,
+      section_ordinal BIGINT,
+      section_title TEXT,
+      PRIMARY KEY (conversation_id, turn, slug)
+    )
+  `);
+}
+
+beforeEach(async () => {
+  db = requireMainDb();
+  await db.exec("DROP TABLE IF EXISTS memory_v3_injected_sections");
+  await db.exec("DROP TABLE IF EXISTS memory_v3_pools");
+  await db.exec("DROP TABLE IF EXISTS memory_v3_pool_inputs");
+  await db.exec("DROP TABLE IF EXISTS memory_v3_pool_texts");
+  await db.exec("DROP TABLE IF EXISTS memory_v3_ever_injected");
+  await db.exec("DROP TABLE IF EXISTS memory_v3_selections");
 });
 
-describe("ensureMemoryV3InjectedSectionsSchema", () => {
+describePg("ensureMemoryV3InjectedSectionsSchema", () => {
   test("creates the table and its conversation index when no legacy table exists, recording nothing", async () => {
     const checkpoints = ledger();
 
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite, checkpoints);
+    await ensureMemoryV3InjectedSectionsSchema(db, checkpoints);
 
-    expect(objectNames(memorySqlite, "table")).toContain(
+    expect(await objectNames(db, "table")).toContain(
       "memory_v3_injected_sections",
     );
-    expect(objectNames(memorySqlite, "index")).toContain(
+    expect(await objectNames(db, "index")).toContain(
       "idx_memory_v3_injected_sections_conv",
     );
-    expect(rows(memorySqlite)).toEqual([]);
+    expect(await rows(db)).toEqual([]);
     expect(checkpoints.values.size).toBe(0);
   });
 
   test("copies every legacy card row as that page's lead entry at zero bytes, injected_at and pruned_at preserved, and records the copy", async () => {
-    createLegacyCardsTable(memorySqlite);
-    memorySqlite.exec(/*sql*/ `
+    await createLegacyCardsTable(db);
+    await db.run(/*sql*/ `
       INSERT INTO memory_v3_ever_injected
         (conversation_id, slug, injected_at, bytes, pruned_at)
       VALUES
@@ -137,9 +180,9 @@ describe("ensureMemoryV3InjectedSectionsSchema", () => {
     `);
     const checkpoints = ledger();
 
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite, checkpoints);
+    await ensureMemoryV3InjectedSectionsSchema(db, checkpoints);
 
-    expect(rows(memorySqlite)).toEqual([
+    expect(await rows(db)).toEqual([
       {
         conversation_id: "conv-1",
         slug: "topics/page-a",
@@ -167,53 +210,42 @@ describe("ensureMemoryV3InjectedSectionsSchema", () => {
     ]);
     expect(checkpoints.values.get(SECTIONS_LEGACY_COPY_DONE_KEY)).toBe("1");
     // The legacy table is left in place, its rows untouched.
-    expect(legacyRows(memorySqlite)).toHaveLength(3);
+    expect(await legacyRows(db)).toHaveLength(3);
   });
 
   test("copies once per database: a second connection's ensure finds the copy on record and re-imports nothing", async () => {
-    // File-backed, so a second connection sees the first one's rows, as a
-    // later process does.
-    const dir = mkdtempSync(join(tmpdir(), "memory-v3-plugin-schema-"));
-    try {
-      const path = join(dir, "assistant-memory.db");
-      const checkpoints = ledger();
-      const first = new Database(path);
-      createLegacyCardsTable(first);
-      first.exec(/*sql*/ `
-        INSERT INTO memory_v3_ever_injected
-          (conversation_id, slug, injected_at, bytes, pruned_at)
-        VALUES
-          ('conv-1', 'topics/page-a', 1000, 120, NULL),
-          ('conv-2', 'topics/page-a', 2000, 120, NULL)
-      `);
-      await ensureMemoryV3InjectedSectionsSchema(first, checkpoints);
-      expect(rows(first).map((row) => row.conversation_id)).toEqual([
-        "conv-1",
-        "conv-2",
-      ]);
-      // Compaction cleared conv-1's record. Its legacy rows stay here on
-      // purpose: the record alone must keep the copy from bringing them
-      // back.
-      first.exec(/*sql*/ `
-        DELETE FROM memory_v3_injected_sections WHERE conversation_id = 'conv-1'
-      `);
-      first.close();
+    const checkpoints = ledger();
+    const first = requireMainDb();
+    await createLegacyCardsTable(first);
+    await first.run(/*sql*/ `
+      INSERT INTO memory_v3_ever_injected
+        (conversation_id, slug, injected_at, bytes, pruned_at)
+      VALUES
+        ('conv-1', 'topics/page-a', 1000, 120, NULL),
+        ('conv-2', 'topics/page-a', 2000, 120, NULL)
+    `);
+    await ensureMemoryV3InjectedSectionsSchema(first, checkpoints);
+    expect((await rows(first)).map((row) => row.conversation_id)).toEqual([
+      "conv-1",
+      "conv-2",
+    ]);
+    // Compaction cleared conv-1's record. Its legacy rows stay here on
+    // purpose: the record alone must keep the copy from bringing them back.
+    await first.run(/*sql*/ `
+      DELETE FROM memory_v3_injected_sections WHERE conversation_id = 'conv-1'
+    `);
 
-      const second = new Database(path);
-      await ensureMemoryV3InjectedSectionsSchema(second, checkpoints);
+    const second = requireMainDb();
+    await ensureMemoryV3InjectedSectionsSchema(second, checkpoints);
 
-      expect(rows(second).map((row) => row.conversation_id)).toEqual([
-        "conv-2",
-      ]);
-      second.close();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    expect((await rows(second)).map((row) => row.conversation_id)).toEqual([
+      "conv-2",
+    ]);
   });
 
   test("an unreadable ledger skips the copy rather than repeating it; a later ensure copies once the ledger reads", async () => {
-    createLegacyCardsTable(memorySqlite);
-    memorySqlite.exec(/*sql*/ `
+    await createLegacyCardsTable(db);
+    await db.run(/*sql*/ `
       INSERT INTO memory_v3_ever_injected
         (conversation_id, slug, injected_at, bytes, pruned_at)
       VALUES ('conv-1', 'topics/page-a', 1000, 120, NULL)
@@ -222,28 +254,26 @@ describe("ensureMemoryV3InjectedSectionsSchema", () => {
     checkpoints.fails.reads = true;
 
     await expect(
-      ensureMemoryV3InjectedSectionsSchema(memorySqlite, checkpoints),
+      ensureMemoryV3InjectedSectionsSchema(db, checkpoints),
     ).resolves.toBeUndefined();
 
     // The table is usable; the copy waits.
-    expect(objectNames(memorySqlite, "table")).toContain(
+    expect(await objectNames(db, "table")).toContain(
       "memory_v3_injected_sections",
     );
-    expect(rows(memorySqlite)).toEqual([]);
+    expect(await rows(db)).toEqual([]);
     expect(checkpoints.values.size).toBe(0);
 
     checkpoints.fails.reads = false;
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite, checkpoints);
+    await ensureMemoryV3InjectedSectionsSchema(db, checkpoints);
 
-    expect(rows(memorySqlite).map((row) => row.slug)).toEqual([
-      "topics/page-a",
-    ]);
+    expect((await rows(db)).map((row) => row.slug)).toEqual(["topics/page-a"]);
     expect(checkpoints.values.get(SECTIONS_LEGACY_COPY_DONE_KEY)).toBe("1");
   });
 
   test("a copy whose record cannot be written stays in place and is repeated until the record lands, neither duplicating rows nor overwriting entries refreshed since", async () => {
-    createLegacyCardsTable(memorySqlite);
-    memorySqlite.exec(/*sql*/ `
+    await createLegacyCardsTable(db);
+    await db.run(/*sql*/ `
       INSERT INTO memory_v3_ever_injected
         (conversation_id, slug, injected_at, bytes, pruned_at)
       VALUES ('conv-1', 'topics/page-a', 1000, 120, 5000)
@@ -252,23 +282,21 @@ describe("ensureMemoryV3InjectedSectionsSchema", () => {
     checkpoints.fails.writes = true;
 
     await expect(
-      ensureMemoryV3InjectedSectionsSchema(memorySqlite, checkpoints),
+      ensureMemoryV3InjectedSectionsSchema(db, checkpoints),
     ).resolves.toBeUndefined();
-    expect(rows(memorySqlite).map((row) => row.slug)).toEqual([
-      "topics/page-a",
-    ]);
+    expect((await rows(db)).map((row) => row.slug)).toEqual(["topics/page-a"]);
     expect(checkpoints.values.size).toBe(0);
     // The section store re-injects the lead after the copy: pruned_at clears.
-    memorySqlite.exec(/*sql*/ `
+    await db.run(/*sql*/ `
       UPDATE memory_v3_injected_sections
       SET injected_at = 9000, bytes = 150, pruned_at = NULL
       WHERE conversation_id = 'conv-1' AND slug = 'topics/page-a'
     `);
 
     checkpoints.fails.writes = false;
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite, checkpoints);
+    await ensureMemoryV3InjectedSectionsSchema(db, checkpoints);
 
-    expect(rows(memorySqlite)).toEqual([
+    expect(await rows(db)).toEqual([
       {
         conversation_id: "conv-1",
         slug: "topics/page-a",
@@ -282,25 +310,26 @@ describe("ensureMemoryV3InjectedSectionsSchema", () => {
   });
 
   test("creates a fresh table with last_selected_at, and adds it to a table created without it, keeping its rows", async () => {
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite, ledger());
-    expect(columnNames(memorySqlite, "memory_v3_injected_sections")).toContain(
+    await ensureMemoryV3InjectedSectionsSchema(db, ledger());
+    expect(await columnNames(db, "memory_v3_injected_sections")).toContain(
       "last_selected_at",
     );
 
     // A table an earlier build created, carrying a row.
-    const older = new Database(":memory:");
-    older.exec(/*sql*/ `
+    const older = requireMainDb();
+    await older.exec("DROP TABLE IF EXISTS memory_v3_injected_sections");
+    await older.exec(/*sql*/ `
       CREATE TABLE memory_v3_injected_sections (
         conversation_id TEXT NOT NULL,
         slug TEXT NOT NULL,
         section_key TEXT NOT NULL,
-        injected_at INTEGER NOT NULL,
-        bytes INTEGER NOT NULL DEFAULT 0,
-        pruned_at INTEGER,
+        injected_at BIGINT NOT NULL,
+        bytes BIGINT NOT NULL DEFAULT 0,
+        pruned_at BIGINT,
         PRIMARY KEY (conversation_id, slug, section_key)
       )
     `);
-    older.exec(/*sql*/ `
+    await older.run(/*sql*/ `
       INSERT INTO memory_v3_injected_sections
         (conversation_id, slug, section_key, injected_at, bytes, pruned_at)
       VALUES ('conv-1', 'topics/page-a', 'Notes', 1000, 120, NULL)
@@ -308,16 +337,14 @@ describe("ensureMemoryV3InjectedSectionsSchema", () => {
 
     await ensureMemoryV3InjectedSectionsSchema(older, ledger());
 
-    expect(columnNames(older, "memory_v3_injected_sections")).toContain(
+    expect(await columnNames(older, "memory_v3_injected_sections")).toContain(
       "last_selected_at",
     );
     expect(
-      older
-        .query(
-          `SELECT slug, section_key, bytes, last_selected_at
+      await older.all(
+        `SELECT slug, section_key, bytes, last_selected_at
            FROM memory_v3_injected_sections`,
-        )
-        .all(),
+      ),
     ).toEqual([
       {
         slug: "topics/page-a",
@@ -327,65 +354,67 @@ describe("ensureMemoryV3InjectedSectionsSchema", () => {
       },
     ]);
     // A second ensure adds nothing.
-    const columns = columnNames(older, "memory_v3_injected_sections");
+    const columns = await columnNames(older, "memory_v3_injected_sections");
     await ensureMemoryV3InjectedSectionsSchema(older, ledger());
-    expect(columnNames(older, "memory_v3_injected_sections")).toEqual(columns);
+    expect(await columnNames(older, "memory_v3_injected_sections")).toEqual(
+      columns,
+    );
   });
 
   test("a table carrying an extra nullable column is left as is and still takes the copy", async () => {
-    memorySqlite.exec(/*sql*/ `
+    await db.exec(/*sql*/ `
       CREATE TABLE memory_v3_injected_sections (
         conversation_id TEXT NOT NULL,
         slug TEXT NOT NULL,
         section_key TEXT NOT NULL,
-        injected_at INTEGER NOT NULL,
-        bytes INTEGER NOT NULL DEFAULT 0,
-        pruned_at INTEGER,
-        frozen_card_bytes INTEGER,
+        injected_at BIGINT NOT NULL,
+        bytes BIGINT NOT NULL DEFAULT 0,
+        pruned_at BIGINT,
+        frozen_card_bytes BIGINT,
         PRIMARY KEY (conversation_id, slug, section_key)
       )
     `);
-    createLegacyCardsTable(memorySqlite);
-    memorySqlite.exec(/*sql*/ `
+    await createLegacyCardsTable(db);
+    await db.run(/*sql*/ `
       INSERT INTO memory_v3_ever_injected
         (conversation_id, slug, injected_at, bytes, pruned_at)
       VALUES ('conv-1', 'topics/page-a', 1000, 120, NULL)
     `);
 
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite, ledger());
+    await ensureMemoryV3InjectedSectionsSchema(db, ledger());
 
-    expect(rows(memorySqlite).map((row) => [row.slug, row.bytes])).toEqual([
+    expect((await rows(db)).map((row) => [row.slug, row.bytes])).toEqual([
       ["topics/page-a", 0],
     ]);
   });
 
   test("a legacy table that appears after the first ensure is copied by the next one", async () => {
     const checkpoints = ledger();
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite, checkpoints);
-    expect(rows(memorySqlite)).toEqual([]);
+    await ensureMemoryV3InjectedSectionsSchema(db, checkpoints);
+    expect(await rows(db)).toEqual([]);
     expect(checkpoints.values.size).toBe(0);
-    createLegacyCardsTable(memorySqlite);
-    memorySqlite.exec(/*sql*/ `
+    await createLegacyCardsTable(db);
+    await db.run(/*sql*/ `
       INSERT INTO memory_v3_ever_injected
         (conversation_id, slug, injected_at, bytes, pruned_at)
       VALUES ('conv-1', 'topics/page-a', 1000, 120, NULL)
     `);
 
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite, checkpoints);
+    await ensureMemoryV3InjectedSectionsSchema(db, checkpoints);
 
-    expect(rows(memorySqlite).map((row) => [row.slug, row.bytes])).toEqual([
+    expect((await rows(db)).map((row) => [row.slug, row.bytes])).toEqual([
       ["topics/page-a", 0],
     ]);
     expect(checkpoints.values.get(SECTIONS_LEGACY_COPY_DONE_KEY)).toBe("1");
   });
 });
 
-describe("deleteLegacyCardRows", () => {
+describePg("deleteLegacyCardRows", () => {
   test("deletes only the conversation's legacy rows, and no-ops without the table", async () => {
-    expect(() => deleteLegacyCardRows(memorySqlite, "conv-1")).not.toThrow();
+    await expect(deleteLegacyCardRows(db, "conv-1")).resolves.toBeUndefined();
 
-    createLegacyCardsTable(memorySqlite);
-    memorySqlite.exec(/*sql*/ `
+    await createLegacyCardsTable(db);
+    await db.run(/*sql*/ `
       INSERT INTO memory_v3_ever_injected
         (conversation_id, slug, injected_at, bytes, pruned_at)
       VALUES
@@ -394,47 +423,47 @@ describe("deleteLegacyCardRows", () => {
         ('conv-2', 'topics/page-a', 4000, 0, NULL)
     `);
 
-    deleteLegacyCardRows(memorySqlite, "conv-1");
+    await deleteLegacyCardRows(db, "conv-1");
 
-    expect(legacyRows(memorySqlite)).toEqual([
+    expect(await legacyRows(db)).toEqual([
       { conversation_id: "conv-2", slug: "topics/page-a" },
     ]);
   });
 
   test("keeps a compacted conversation's leads out of a copy that runs after the reset", async () => {
-    createLegacyCardsTable(memorySqlite);
-    memorySqlite.exec(/*sql*/ `
+    await createLegacyCardsTable(db);
+    await db.run(/*sql*/ `
       INSERT INTO memory_v3_ever_injected
         (conversation_id, slug, injected_at, bytes, pruned_at)
       VALUES
         ('conv-1', 'topics/page-a', 1000, 120, NULL),
         ('conv-2', 'topics/page-a', 2000, 120, NULL)
     `);
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite, ledger());
+    await ensureMemoryV3InjectedSectionsSchema(db, ledger());
     // The compaction reset: the section record and the legacy rows go
     // together.
-    memorySqlite.exec(/*sql*/ `
+    await db.run(/*sql*/ `
       DELETE FROM memory_v3_injected_sections WHERE conversation_id = 'conv-1'
     `);
-    deleteLegacyCardRows(memorySqlite, "conv-1");
+    await deleteLegacyCardRows(db, "conv-1");
 
     // A copy with no record of the first (a fresh ledger) finds nothing of
     // conv-1 to bring back.
-    await ensureMemoryV3InjectedSectionsSchema(memorySqlite, ledger());
+    await ensureMemoryV3InjectedSectionsSchema(db, ledger());
 
-    expect(rows(memorySqlite).map((row) => row.conversation_id)).toEqual([
+    expect((await rows(db)).map((row) => row.conversation_id)).toEqual([
       "conv-2",
     ]);
   });
 });
 
-describe("ensureMemoryV3PoolsSchema", () => {
+describePg("ensureMemoryV3PoolsSchema", () => {
   test("creates the table and its indexes, idempotently", async () => {
-    ensureMemoryV3PoolsSchema(memorySqlite);
-    ensureMemoryV3PoolsSchema(memorySqlite);
+    await ensureMemoryV3PoolsSchema(db);
+    await ensureMemoryV3PoolsSchema(db);
 
-    expect(objectNames(memorySqlite, "table")).toContain("memory_v3_pools");
-    expect(objectNames(memorySqlite, "index")).toEqual(
+    expect(await objectNames(db, "table")).toContain("memory_v3_pools");
+    expect(await objectNames(db, "index")).toEqual(
       expect.arrayContaining([
         "idx_memory_v3_pools_message",
         "idx_memory_v3_pools_conv",
@@ -443,82 +472,72 @@ describe("ensureMemoryV3PoolsSchema", () => {
   });
 });
 
-describe("ensureMemoryV3PoolInputsSchema", () => {
+describePg("ensureMemoryV3PoolInputsSchema", () => {
   test("creates the input and text tables, idempotently", async () => {
-    ensureMemoryV3PoolInputsSchema(memorySqlite);
-    ensureMemoryV3PoolInputsSchema(memorySqlite);
+    await ensureMemoryV3PoolInputsSchema(db);
+    await ensureMemoryV3PoolInputsSchema(db);
 
-    expect(objectNames(memorySqlite, "table")).toEqual(
+    expect(await objectNames(db, "table")).toEqual(
       expect.arrayContaining(["memory_v3_pool_inputs", "memory_v3_pool_texts"]),
     );
   });
 });
 
-describe("ensureMemoryV3SelectionsSectionKeyOnce", () => {
+describePg("ensureMemoryV3SelectionsSectionKeyOnce", () => {
   test("adds section_key to the table migration 338 creates, keeping its rows", async () => {
-    ensureMemoryV3SelectionsSchema(memorySqlite);
-    memorySqlite.exec(/*sql*/ `
+    await createSelectionsTableWithoutSectionKey(db);
+    await db.run(/*sql*/ `
       INSERT INTO memory_v3_selections
         (conversation_id, turn, slug, source, created_at, section_ordinal,
          section_title)
       VALUES ('conv-1', 0, 'topics/page-a', 'needle', 1000, 2, 'Notes')
     `);
 
-    await ensureMemoryV3SelectionsSectionKeyOnce(memorySqlite);
+    await ensureMemoryV3SelectionsSectionKeyOnce(db);
 
-    expect(columnNames(memorySqlite, "memory_v3_selections")).toContain(
+    expect(await columnNames(db, "memory_v3_selections")).toContain(
       "section_key",
     );
     expect(
-      memorySqlite
-        .query(
-          `SELECT slug, section_title, section_key FROM memory_v3_selections`,
-        )
-        .all(),
+      await db.all(
+        `SELECT slug, section_title, section_key FROM memory_v3_selections`,
+      ),
     ).toEqual([
       { slug: "topics/page-a", section_title: "Notes", section_key: null },
     ]);
   });
 
   test("is a no-op on a table that already has the column (another process's connection to the same database)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "memory-v3-selections-"));
-    const path = join(dir, "assistant-memory.db");
-    const first = new Database(path);
-    const second = new Database(path);
-    try {
-      ensureMemoryV3SelectionsSchema(first);
-      await ensureMemoryV3SelectionsSectionKeyOnce(first);
-      const columns = columnNames(first, "memory_v3_selections");
+    await createSelectionsTableWithoutSectionKey(db);
+    const first = requireMainDb();
+    const second = requireMainDb();
+    await ensureMemoryV3SelectionsSectionKeyOnce(first);
+    const columns = await columnNames(first, "memory_v3_selections");
 
-      await ensureMemoryV3SelectionsSectionKeyOnce(second);
+    await ensureMemoryV3SelectionsSectionKeyOnce(second);
 
-      expect(columnNames(second, "memory_v3_selections")).toEqual(columns);
-      expect(columns.filter((name) => name === "section_key")).toHaveLength(1);
-    } finally {
-      first.close();
-      second.close();
-      rmSync(dir, { recursive: true, force: true });
-    }
+    expect(await columnNames(second, "memory_v3_selections")).toEqual(columns);
+    expect(columns.filter((name) => name === "section_key")).toHaveLength(1);
   });
 
   test("fails open on a connection without the table and retries once the table is there", async () => {
     await expect(
-      ensureMemoryV3SelectionsSectionKeyOnce(memorySqlite),
+      ensureMemoryV3SelectionsSectionKeyOnce(db),
     ).resolves.toBeUndefined();
-    expect(objectNames(memorySqlite, "table")).not.toContain(
+    expect(await objectNames(db, "table")).not.toContain(
       "memory_v3_selections",
     );
 
-    ensureMemoryV3SelectionsSchema(memorySqlite);
-    await ensureMemoryV3SelectionsSectionKeyOnce(memorySqlite);
+    await createSelectionsTableWithoutSectionKey(db);
+    await ensureMemoryV3SelectionsSectionKeyOnce(db);
 
-    expect(columnNames(memorySqlite, "memory_v3_selections")).toContain(
+    expect(await columnNames(db, "memory_v3_selections")).toContain(
       "section_key",
     );
   });
 });
 
-describe("ensureOncePerConnection", () => {
+describePg("ensureOncePerConnection", () => {
   test("runs the ensure once per connection, again for a new connection, and retries a connection whose ensure failed", async () => {
     const runs: unknown[] = [];
     let failing = true;
@@ -529,18 +548,19 @@ describe("ensureOncePerConnection", () => {
       }
     }, "degraded");
 
-    ensureOnce(memorySqlite);
-    ensureOnce(memorySqlite);
+    const first = requireMainDb();
+    await ensureOnce(first);
+    await ensureOnce(first);
     expect(runs).toHaveLength(2);
 
     failing = false;
-    ensureOnce(memorySqlite);
-    ensureOnce(memorySqlite);
+    await ensureOnce(first);
+    await ensureOnce(first);
     expect(runs).toHaveLength(3);
 
-    const reopened = new Database(":memory:");
-    ensureOnce(reopened);
-    ensureOnce(reopened);
+    const reopened = requireMainDb();
+    await ensureOnce(reopened);
+    await ensureOnce(reopened);
     expect(runs).toHaveLength(4);
   });
 });

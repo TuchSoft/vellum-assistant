@@ -27,8 +27,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { drizzle } from "drizzle-orm/bun-sqlite";
 
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
 import type { DrizzleDb } from "../../../../../persistence/db-connection.js";
 import { getSqliteFrom } from "../../../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import {
   clearStoredDb,
   setStoredDb,
@@ -61,8 +63,9 @@ const CHECKPOINTS_DDL = /*sql*/ `
 let sqlite: Database;
 let database: DrizzleDb;
 let memorySqlite: Database;
+let pendingDdl: Promise<void> | null = null;
 
-beforeEach(() => {
+beforeEach(async () => {
   sqlite = new Database(":memory:");
   database = drizzle(sqlite, { schema });
   getSqliteFrom(database).exec(CHECKPOINTS_DDL);
@@ -75,6 +78,25 @@ beforeEach(() => {
   setStoredDb("memory", drizzle(memorySqlite, { schema }), () =>
     memorySqlite.close(),
   );
+
+  if (process.env.VELLUM_DATABASE_URL) {
+    const db = requireMainDb();
+    const ddl = (async () => {
+      await db.exec("DROP TABLE IF EXISTS memory_v2_injection_events");
+      await db.exec(/*sql*/ `
+        CREATE TABLE memory_v2_injection_events (
+          id BIGSERIAL PRIMARY KEY,
+          slug TEXT NOT NULL,
+          injected_at BIGINT NOT NULL
+        )
+      `);
+    })();
+    pendingDdl = ddl;
+  }
+  if (pendingDdl) {
+    await pendingDdl;
+    pendingDdl = null;
+  }
 });
 
 afterEach(() => {
@@ -111,7 +133,7 @@ function insertActivationLog(
 }
 
 describe("migrateMemoryV2InjectionEvents", () => {
-  test("creates table and both indexes; safe to re-run", () => {
+  test("creates table and both indexes; safe to re-run", async () => {
     migrateMemoryV2InjectionEvents(database);
     migrateMemoryV2InjectionEvents(database);
 
@@ -138,7 +160,7 @@ describe("migrateMemoryV2InjectionEvents", () => {
     expect(indexNames.has("idx_memory_v2_injection_events_time")).toBe(true);
   });
 
-  test("backfill replays router-sourced concepts and ignores carry_over", () => {
+  test("backfill replays router-sourced concepts and ignores carry_over", async () => {
     migrateMemoryV2ActivationLogs(database);
     const raw = getSqliteFrom(database);
     insertActivationLog(raw, {
@@ -170,7 +192,7 @@ describe("migrateMemoryV2InjectionEvents", () => {
     ]);
   });
 
-  test("backfill is a no-op when memory_v2_activation_logs is absent", () => {
+  test("backfill is a no-op when memory_v2_activation_logs is absent", async () => {
     // No activation-logs migration applied first.
     expect(() => migrateMemoryV2InjectionEvents(database)).not.toThrow();
     const { n } = getSqliteFrom(database)
@@ -179,7 +201,7 @@ describe("migrateMemoryV2InjectionEvents", () => {
     expect(n).toBe(0);
   });
 
-  test("forced re-run does not double-insert existing events", () => {
+  test("forced re-run does not double-insert existing events", async () => {
     migrateMemoryV2ActivationLogs(database);
     const raw = getSqliteFrom(database);
     insertActivationLog(raw, {
@@ -204,7 +226,7 @@ describe("migrateMemoryV2InjectionEvents", () => {
     expect(n).toBe(1);
   });
 
-  test("downMemoryV2InjectionEvents drops the table", () => {
+  test("downMemoryV2InjectionEvents drops the table", async () => {
     migrateMemoryV2InjectionEvents(database);
     downMemoryV2InjectionEvents(database);
     const table = getSqliteFrom(database)
@@ -216,15 +238,13 @@ describe("migrateMemoryV2InjectionEvents", () => {
   });
 });
 
-describe("recordInjectionEvents", () => {
-  test("appends one row per slug at the same timestamp", () => {
+describePg("recordInjectionEvents", () => {
+  test("appends one row per slug at the same timestamp", async () => {
     const t = 1_000_000;
-    recordInjectionEvents(["alice", "bob", "alice"], t);
-    const rows = memorySqlite
-      .query(
-        `SELECT slug, injected_at FROM memory_v2_injection_events ORDER BY id`,
-      )
-      .all();
+    await recordInjectionEvents(["alice", "bob", "alice"], t);
+    const rows = await requireMainDb().all(
+      `SELECT slug, injected_at FROM memory_v2_injection_events ORDER BY id`,
+    );
     expect(rows).toEqual([
       { slug: "alice", injected_at: t },
       { slug: "bob", injected_at: t },
@@ -232,79 +252,85 @@ describe("recordInjectionEvents", () => {
     ]);
   });
 
-  test("writes land in the memory connection, not the main DB handle", () => {
-    recordInjectionEvents(["alice"], 1_000_000);
+  test("writes land in the memory connection, not the main DB handle", async () => {
+    await recordInjectionEvents(["alice"], 1_000_000);
     const inMain = getSqliteFrom(database)
       .query(
         `SELECT name FROM sqlite_master WHERE type='table' AND name='memory_v2_injection_events'`,
       )
       .get();
     expect(inMain).toBeFalsy();
-    const { n } = memorySqlite
-      .query(`SELECT COUNT(*) as n FROM memory_v2_injection_events`)
-      .get() as { n: number };
+    const { n } = (await requireMainDb().get<{ n: number }>(
+      `SELECT COUNT(*) as n FROM memory_v2_injection_events`,
+    ))!;
     expect(n).toBe(1);
   });
 
-  test("empty list is a no-op", () => {
-    recordInjectionEvents([], 1_000_000);
-    const { n } = memorySqlite
-      .query(`SELECT COUNT(*) as n FROM memory_v2_injection_events`)
-      .get() as { n: number };
+  test("empty list is a no-op", async () => {
+    await recordInjectionEvents([], 1_000_000);
+    const { n } = (await requireMainDb().get<{ n: number }>(
+      `SELECT COUNT(*) as n FROM memory_v2_injection_events`,
+    ))!;
     expect(n).toBe(0);
   });
 });
 
-describe("computeInjectionScore", () => {
-  test("returns 0 for a slug with no events", () => {
-    expect(computeInjectionScore("missing", Date.now())).toBe(0);
+describePg("computeInjectionScore", () => {
+  test("returns 0 for a slug with no events", async () => {
+    expect(await computeInjectionScore("missing", Date.now())).toBe(0);
   });
 
-  test("single event 0 days ago → score ≈ 1", () => {
+  test("single event 0 days ago → score ≈ 1", async () => {
     const now = 10_000_000_000;
-    recordInjectionEvents(["alice"], now);
-    expect(computeInjectionScore("alice", now)).toBeCloseTo(1, 5);
+    await recordInjectionEvents(["alice"], now);
+    expect(await computeInjectionScore("alice", now)).toBeCloseTo(1, 5);
   });
 
-  test("single event 3 days (one half-life) ago → score ≈ 0.5", () => {
+  test("single event 3 days (one half-life) ago → score ≈ 0.5", async () => {
     const now = 10_000_000_000;
-    recordInjectionEvents(["alice"], now - INJECTION_SCORE_HALF_LIFE_MS);
-    expect(computeInjectionScore("alice", now)).toBeCloseTo(0.5, 5);
+    await recordInjectionEvents(["alice"], now - INJECTION_SCORE_HALF_LIFE_MS);
+    expect(await computeInjectionScore("alice", now)).toBeCloseTo(0.5, 5);
   });
 
-  test("single event 6 days (two half-lives) ago → score ≈ 0.25", () => {
+  test("single event 6 days (two half-lives) ago → score ≈ 0.25", async () => {
     const now = 10_000_000_000;
-    recordInjectionEvents(["alice"], now - 2 * INJECTION_SCORE_HALF_LIFE_MS);
-    expect(computeInjectionScore("alice", now)).toBeCloseTo(0.25, 5);
+    await recordInjectionEvents(
+      ["alice"],
+      now - 2 * INJECTION_SCORE_HALF_LIFE_MS,
+    );
+    expect(await computeInjectionScore("alice", now)).toBeCloseTo(0.25, 5);
   });
 
-  test("multiple events sum independently", () => {
+  test("multiple events sum independently", async () => {
     const now = 10_000_000_000;
-    recordInjectionEvents(["alice"], now);
-    recordInjectionEvents(["alice"], now - INJECTION_SCORE_HALF_LIFE_MS);
-    recordInjectionEvents(["alice"], now - 2 * INJECTION_SCORE_HALF_LIFE_MS);
-    expect(computeInjectionScore("alice", now)).toBeCloseTo(1.75, 5);
+    await recordInjectionEvents(["alice"], now);
+    await recordInjectionEvents(["alice"], now - INJECTION_SCORE_HALF_LIFE_MS);
+    await recordInjectionEvents(
+      ["alice"],
+      now - 2 * INJECTION_SCORE_HALF_LIFE_MS,
+    );
+    expect(await computeInjectionScore("alice", now)).toBeCloseTo(1.75, 5);
   });
 });
 
-describe("computeInjectionScores", () => {
-  test("returns the same per-slug values as the single-slug helper", () => {
+describePg("computeInjectionScores", () => {
+  test("returns the same per-slug values as the single-slug helper", async () => {
     const now = 10_000_000_000;
-    recordInjectionEvents(["alice", "bob"], now);
-    recordInjectionEvents(["alice"], now - INJECTION_SCORE_HALF_LIFE_MS);
+    await recordInjectionEvents(["alice", "bob"], now);
+    await recordInjectionEvents(["alice"], now - INJECTION_SCORE_HALF_LIFE_MS);
 
-    const scores = computeInjectionScores(["alice", "bob", "ghost"], now);
+    const scores = await computeInjectionScores(["alice", "bob", "ghost"], now);
     expect(scores.get("alice")).toBeCloseTo(1.5, 5);
     expect(scores.get("bob")).toBeCloseTo(1, 5);
     // ghost has no events — omitted from the result, not present as 0.
     expect(scores.has("ghost")).toBe(false);
     expect(scores.get("alice")).toBeCloseTo(
-      computeInjectionScore("alice", now),
+      await computeInjectionScore("alice", now),
       5,
     );
   });
 
-  test("empty slug list returns empty map", () => {
-    expect(computeInjectionScores([], Date.now()).size).toBe(0);
+  test("empty slug list returns empty map", async () => {
+    expect((await computeInjectionScores([], Date.now())).size).toBe(0);
   });
 });

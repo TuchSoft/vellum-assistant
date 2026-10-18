@@ -30,7 +30,9 @@
  * 4. A run whose checkpoint went live before a later rejection stays
  *    `invoked: true` (its side effects landed and are honored).
  */
-import { beforeEach, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, setDefaultTimeout, test } from "bun:test";
+
+setDefaultTimeout(30_000);
 
 import { describePg } from "../../../../__tests__/pg-test-db.js";
 import { AgentLoop } from "../../../../agent/loop.js";
@@ -381,7 +383,7 @@ beforeEach(async () => {
 describePg("memory retrospective wake state chain (real AgentLoop)", () => {
   test("provider rejection: no cursor advance, no log mutation, prior kept, fork cleaned up, window retryable", async () => {
     const fixture = await stageChainFixture();
-    const stateBefore = getRetrospectiveState(fixture.sourceId);
+    const stateBefore = await getRetrospectiveState(fixture.sourceId);
 
     // The real loop swallows this into agent_loop_exit("error"); nothing is
     // scripted at the event level.
@@ -400,7 +402,7 @@ describePg("memory retrospective wake state chain (real AgentLoop)", () => {
     }
 
     // (1) No successful finalization: cursor and remembered log unchanged.
-    const stateAfter = getRetrospectiveState(fixture.sourceId);
+    const stateAfter = await getRetrospectiveState(fixture.sourceId);
     expect(stateAfter?.lastProcessedMessageId).toBe(fixture.seededCursorId);
     expect(stateAfter?.rememberedLog).toEqual([PRIOR_FACT]);
     // Cooldown applies to the failed attempt.
@@ -423,7 +425,7 @@ describePg("memory retrospective wake state chain (real AgentLoop)", () => {
       chainConfig,
     );
     expect(retry.kind).toBe("invoked");
-    const stateRetried = getRetrospectiveState(fixture.sourceId);
+    const stateRetried = await getRetrospectiveState(fixture.sourceId);
     expect(stateRetried?.lastProcessedMessageId).toBe(fixture.newMessageId);
   });
 
@@ -457,7 +459,7 @@ describePg("memory retrospective wake state chain (real AgentLoop)", () => {
 
     // No finalization: cursor, log, and the prior retrospective untouched;
     // the orphan fork is cleaned up.
-    const state = getRetrospectiveState(fixture.sourceId);
+    const state = await getRetrospectiveState(fixture.sourceId);
     expect(state?.lastProcessedMessageId).toBe(fixture.seededCursorId);
     expect(state?.rememberedLog).toEqual([PRIOR_FACT]);
     expect(await getConversation(fixture.priorRetroId)).not.toBeNull();
@@ -474,7 +476,7 @@ describePg("memory retrospective wake state chain (real AgentLoop)", () => {
     );
     expect(retry.kind).toBe("invoked");
     expect(
-      getRetrospectiveState(fixture.sourceId)?.lastProcessedMessageId,
+      (await getRetrospectiveState(fixture.sourceId))?.lastProcessedMessageId,
     ).toBe(fixture.newMessageId);
   });
 
@@ -497,7 +499,7 @@ describePg("memory retrospective wake state chain (real AgentLoop)", () => {
     if (outcome.kind === "invoked") {
       expect(outcome.noFindings).toBe(true);
     }
-    const state = getRetrospectiveState(fixture.sourceId);
+    const state = await getRetrospectiveState(fixture.sourceId);
     expect(state?.lastProcessedMessageId).toBe(fixture.newMessageId);
     // A pass that saved nothing adds nothing to the dedup baseline.
     expect(state?.rememberedLog).toEqual([PRIOR_FACT]);
@@ -525,10 +527,10 @@ describePg("memory retrospective wake state chain (real AgentLoop)", () => {
     // (3) Real finalization against real rows: cursor advanced, this run's
     // remember (extracted from the fork's persisted tail) appended to the
     // cumulative log, superseded prior GC'd.
-    const state = getRetrospectiveState(fixture.sourceId);
+    const state = await getRetrospectiveState(fixture.sourceId);
     expect(state?.lastProcessedMessageId).toBe(fixture.newMessageId);
     expect(state?.rememberedLog).toEqual([PRIOR_FACT, "User moved to Lisbon"]);
-    expect(getConversation(fixture.priorRetroId)).toBeNull();
+    expect(await getConversation(fixture.priorRetroId)).toBeNull();
   });
 
   test("rejection after a live checkpoint stays invoked: landed side effects are honored", async () => {
@@ -550,7 +552,7 @@ describePg("memory retrospective wake state chain (real AgentLoop)", () => {
     // (4) The run's `remember` executed, so it must not read as skipped:
     // the wake reports invoked and finalization honors the landed work.
     expect(outcome.kind).toBe("invoked");
-    const state = getRetrospectiveState(fixture.sourceId);
+    const state = await getRetrospectiveState(fixture.sourceId);
     expect(state?.lastProcessedMessageId).toBe(fixture.newMessageId);
     expect(state?.rememberedLog).toEqual([PRIOR_FACT, "User moved to Lisbon"]);
   });

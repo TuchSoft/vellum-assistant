@@ -1,20 +1,13 @@
 /**
  * Tests for the memory v2 activation-log store. The store reads and writes
- * `memory_v2_activation_logs` over the dedicated memory connection, so each
- * test installs a fresh in-memory database into the `memory` singleton slot
- * with the relocated table's schema (mirroring injection-events.test.ts).
+ * `memory_v2_activation_logs` in the shared Postgres database.
  */
-import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
+setDefaultTimeout(30_000);
 
-import {
-  clearStoredDb,
-  setStoredDb,
-} from "../../../../persistence/db-singleton.js";
-import { ensureActivationLogsSchema } from "../../../../persistence/migrations/336-move-memory-v2-activation-logs-to-memory-db.js";
-import * as schema from "../../../../persistence/schema/index.js";
+import { describePg } from "../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import {
   backfillMemoryV2ActivationMessageId,
   getMemoryV2ActivationLogByMessageIds,
@@ -26,40 +19,28 @@ import {
   sampleConfig,
 } from "./fixtures/memory-v2-activation-fixtures.js";
 
-let memorySqlite: Database;
-
-beforeEach(() => {
-  memorySqlite = new Database(":memory:");
-  ensureActivationLogsSchema(memorySqlite);
-  setStoredDb("memory", drizzle(memorySqlite, { schema }), () =>
-    memorySqlite.close(),
-  );
-});
-
-afterEach(() => {
-  clearStoredDb("memory");
-});
-
 interface LogRow {
   message_id: string | null;
   turn: number;
   mode: string;
 }
 
-function allRows(): LogRow[] {
-  return memorySqlite
-    .query(
-      `SELECT message_id, turn, mode FROM memory_v2_activation_logs ORDER BY turn`,
-    )
-    .all() as LogRow[];
+async function allRows(): Promise<LogRow[]> {
+  return await requireMainDb().all<LogRow>(
+    `SELECT message_id, turn, mode FROM memory_v2_activation_logs ORDER BY turn`,
+  );
 }
 
-describe("memory-v2-activation-log-store", () => {
-  test("round-trip: record → backfill messageId → query by messageId", () => {
+describePg("memory-v2-activation-log-store", () => {
+  beforeEach(async () => {
+    await requireMainDb().run(`DELETE FROM memory_v2_activation_logs`);
+  });
+
+  test("round-trip: record → backfill messageId → query by messageId", async () => {
     const conversationId = "conv-1";
     const messageId = "msg-1";
 
-    recordMemoryV2ActivationLog({
+    await recordMemoryV2ActivationLog({
       conversationId,
       turn: 3,
       mode: "per-turn",
@@ -67,9 +48,9 @@ describe("memory-v2-activation-log-store", () => {
       config: sampleConfig,
     });
 
-    backfillMemoryV2ActivationMessageId(conversationId, messageId);
+    await backfillMemoryV2ActivationMessageId(conversationId, messageId);
 
-    const result = getMemoryV2ActivationLogByMessageIds([messageId]);
+    const result = await getMemoryV2ActivationLogByMessageIds([messageId]);
     expect(result).not.toBeNull();
     expect(result!.conversationId).toBe(conversationId);
     expect(result!.turn).toBe(3);
@@ -78,7 +59,7 @@ describe("memory-v2-activation-log-store", () => {
     expect(result!.config).toEqual(sampleConfig);
   });
 
-  test("round-trip: router-mode log row with zeroed activations and source: 'router'", () => {
+  test("round-trip: router-mode log row with zeroed activations and source: 'router'", async () => {
     const conversationId = "conv-router";
     const messageId = "msg-router";
 
@@ -115,7 +96,7 @@ describe("memory-v2-activation-log-store", () => {
       },
     ];
 
-    recordMemoryV2ActivationLog({
+    await recordMemoryV2ActivationLog({
       conversationId,
       turn: 7,
       mode: "router",
@@ -123,9 +104,9 @@ describe("memory-v2-activation-log-store", () => {
       config: sampleConfig,
     });
 
-    backfillMemoryV2ActivationMessageId(conversationId, messageId);
+    await backfillMemoryV2ActivationMessageId(conversationId, messageId);
 
-    const result = getMemoryV2ActivationLogByMessageIds([messageId]);
+    const result = await getMemoryV2ActivationLogByMessageIds([messageId]);
     expect(result).not.toBeNull();
     expect(result!.conversationId).toBe(conversationId);
     expect(result!.turn).toBe(7);
@@ -146,36 +127,36 @@ describe("memory-v2-activation-log-store", () => {
     }
   });
 
-  test("returns null for empty messageIds array", () => {
-    const result = getMemoryV2ActivationLogByMessageIds([]);
+  test("returns null for empty messageIds array", async () => {
+    const result = await getMemoryV2ActivationLogByMessageIds([]);
     expect(result).toBeNull();
   });
 
-  test("writes land in the memory connection", () => {
-    recordMemoryV2ActivationLog({
+  test("writes land in the memory connection", async () => {
+    await recordMemoryV2ActivationLog({
       conversationId: "conv-mem",
       turn: 1,
       mode: "per-turn",
       concepts: sampleConcepts,
       config: sampleConfig,
     });
-    const { n } = memorySqlite
-      .query(`SELECT COUNT(*) AS n FROM memory_v2_activation_logs`)
-      .get() as { n: number };
-    expect(n).toBe(1);
+    const row = await requireMainDb().get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM memory_v2_activation_logs`,
+    );
+    expect(row!.n).toBe(1);
   });
 
-  test("backfill only updates rows with NULL messageId", () => {
+  test("backfill only updates rows with NULL messageId", async () => {
     const conversationId = "conv-2";
 
-    recordMemoryV2ActivationLog({
+    await recordMemoryV2ActivationLog({
       conversationId,
       turn: 1,
       mode: "context-load",
       concepts: sampleConcepts,
       config: sampleConfig,
     });
-    recordMemoryV2ActivationLog({
+    await recordMemoryV2ActivationLog({
       conversationId,
       turn: 2,
       mode: "per-turn",
@@ -184,16 +165,16 @@ describe("memory-v2-activation-log-store", () => {
     });
 
     // First backfill: both rows should now have msg-a.
-    backfillMemoryV2ActivationMessageId(conversationId, "msg-a");
+    await backfillMemoryV2ActivationMessageId(conversationId, "msg-a");
 
-    const afterFirstBackfill = allRows();
+    const afterFirstBackfill = await allRows();
     expect(afterFirstBackfill).toHaveLength(2);
     for (const row of afterFirstBackfill) {
       expect(row.message_id).toBe("msg-a");
     }
 
     // Record a third row (messageId is NULL initially).
-    recordMemoryV2ActivationLog({
+    await recordMemoryV2ActivationLog({
       conversationId,
       turn: 3,
       mode: "per-turn",
@@ -203,27 +184,27 @@ describe("memory-v2-activation-log-store", () => {
 
     // Second backfill with msg-b should only set the third row,
     // and must not overwrite the first two rows already set to msg-a.
-    backfillMemoryV2ActivationMessageId(conversationId, "msg-b");
+    await backfillMemoryV2ActivationMessageId(conversationId, "msg-b");
 
-    const byTurn = new Map(allRows().map((r) => [r.turn, r]));
+    const byTurn = new Map((await allRows()).map((r) => [r.turn, r]));
     expect(byTurn.get(1)!.message_id).toBe("msg-a");
     expect(byTurn.get(2)!.message_id).toBe("msg-a");
     expect(byTurn.get(3)!.message_id).toBe("msg-b");
   });
 
-  test("backfill skips v3_shadow rows, leaving their messageId null", () => {
+  test("backfill skips v3_shadow rows, leaving their messageId null", async () => {
     const conversationId = "conv-shadow-backfill";
 
     // A live router row (null messageId) and a detached v3_shadow row (null
     // messageId) coexist in the same conversation.
-    recordMemoryV2ActivationLog({
+    await recordMemoryV2ActivationLog({
       conversationId,
       turn: 5,
       mode: "router",
       concepts: sampleConcepts,
       config: sampleConfig,
     });
-    recordMemoryV2ActivationLog({
+    await recordMemoryV2ActivationLog({
       conversationId,
       turn: 5,
       mode: "v3_shadow",
@@ -231,9 +212,9 @@ describe("memory-v2-activation-log-store", () => {
       config: sampleConfig,
     });
 
-    backfillMemoryV2ActivationMessageId(conversationId, "msg-live");
+    await backfillMemoryV2ActivationMessageId(conversationId, "msg-live");
 
-    const byMode = new Map(allRows().map((r) => [r.mode, r]));
+    const byMode = new Map((await allRows()).map((r) => [r.mode, r]));
     // The live router row got stamped; the shadow row stayed null (not
     // mis-attributed to the live message).
     expect(byMode.get("router")!.message_id).toBe("msg-live");

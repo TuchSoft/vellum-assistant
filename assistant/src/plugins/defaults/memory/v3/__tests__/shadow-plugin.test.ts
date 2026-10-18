@@ -21,22 +21,31 @@
  *
  * All heavy dependencies (config, flag resolver, conversation reads, v2 page
  * index + page store, the lane builders, orchestrate) are mocked BEFORE
- * importing the plugin so the module observes them at load time. A real
- * in-memory SQLite DB backs the write assertions via the
- * `memory_v3_selections` migration.
+ * importing the plugin so the module observes them at load time. The Postgres
+ * test database backs the write assertions.
  */
 
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
 
 import { VOICE_ESCALATION_CONTINUATION_MESSAGE_KIND } from "@vellumai/plugin-api";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 
 import { setConfig } from "../../../../../__tests__/helpers/set-config.js";
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
 import { ESCALATION_CONTINUATION_CONTENT } from "../../../../../calls/voice-triage-escalate.js";
 import { MemoryV3GateSchema } from "../../../../../config/schemas/memory-v3.js";
-import { ensureMemoryV3SelectionsSchema } from "../../../../../persistence/migrations/338-move-memory-v3-selections-to-memory-db.js";
+import type { AsyncDb } from "../../../../../persistence/db-facade.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import * as schema from "../../../../../persistence/schema/index.js";
 import { stripOrphanedSurrogates } from "../../../../../util/unicode.js";
 import type { HotSetEntry, HotSetOptions } from "../hot-set.js";
@@ -45,6 +54,7 @@ import {
   ensureMemoryV3InjectedSectionsSchema,
   ensureMemoryV3PoolInputsSchema,
   ensureMemoryV3PoolsSchema,
+  ensureMemoryV3SelectionsSectionKeyOnce,
 } from "../plugin-schema.js";
 import { MEMORY_V3_FULL_PROFILE_MIN_PAGES } from "../tuning-profile.js";
 import {
@@ -181,37 +191,35 @@ const DEFAULT_FINDER = [
   { slug: "page-4", descriptor: "", lane: "reply" as const },
   { slug: "page-5", descriptor: "", lane: "learned" as const },
 ];
-const orchestrateSpy = mock(
-  async (): Promise<OrchestrateResult> => ({
-    selections: [
-      { slug: "page-core", sections: [] },
-      { slug: "page-hot", sections: [] },
-      { slug: "page-fresh", sections: [] },
-      { slug: "page-1", sections: [PAGE_1_LEAD] },
-      { slug: "page-2", sections: [PAGE_2_LEAD] },
-      { slug: "page-3", sections: [] },
-      { slug: "page-4", sections: [] },
-      { slug: "page-5", sections: [] },
+const orchestrateSpy = mock(async (): Promise<OrchestrateResult> => ({
+  selections: [
+    { slug: "page-core", sections: [] },
+    { slug: "page-hot", sections: [] },
+    { slug: "page-fresh", sections: [] },
+    { slug: "page-1", sections: [PAGE_1_LEAD] },
+    { slug: "page-2", sections: [PAGE_2_LEAD] },
+    { slug: "page-3", sections: [] },
+    { slug: "page-4", sections: [] },
+    { slug: "page-5", sections: [] },
+  ],
+  lanes: {
+    core: ["page-core"],
+    hot: ["page-hot"],
+    fresh: ["page-fresh"],
+    always: [CAPABILITY_SLUG],
+    finder: DEFAULT_FINDER,
+  },
+  selectorRan: true,
+  pool: {
+    stable: [
+      { slug: "page-core", card: "core card", lane: "core" },
+      { slug: "page-hot", card: "hot card", lane: "hot" },
+      { slug: "page-fresh", card: "fresh card", lane: "fresh" },
+      { slug: CAPABILITY_SLUG, card: "skill card", lane: "always" },
     ],
-    lanes: {
-      core: ["page-core"],
-      hot: ["page-hot"],
-      fresh: ["page-fresh"],
-      always: [CAPABILITY_SLUG],
-      finder: DEFAULT_FINDER,
-    },
-    selectorRan: true,
-    pool: {
-      stable: [
-        { slug: "page-core", card: "core card", lane: "core" },
-        { slug: "page-hot", card: "hot card", lane: "hot" },
-        { slug: "page-fresh", card: "fresh card", lane: "fresh" },
-        { slug: CAPABILITY_SLUG, card: "skill card", lane: "always" },
-      ],
-      finder: DEFAULT_FINDER,
-    },
-  }),
-);
+    finder: DEFAULT_FINDER,
+  },
+}));
 
 let sectionBuilds = 0;
 let needleBuilds = 0;
@@ -240,27 +248,29 @@ let hotSetOpts: HotSetOptions | null = null;
 // page body.
 let capturedPageBody: ((slug: string) => Promise<string>) | null = null;
 
-// Shared in-memory DBs so writes are observable from the test. The selection
-// and injected-section rows live on the dedicated memory connection (`memorySqlite`,
-// resolved through the stubbed `getMemorySqlite`).
+// Shared DBs so writes are observable from the test. Selection, section, and
+// pool rows live in the shared Postgres database.
 let testSqlite: Database;
-let memorySqlite: Database;
-// When false, the stubbed `getMemorySqlite` resolves to null — the contract
-// the plugin sees when the dedicated memory database cannot be opened.
-let memoryDbAvailable = true;
-let testDb = await makeDb();
-async function makeDb() {
+let db: AsyncDb;
+let previousDatabaseUrl: string | undefined;
+let testDb = makeTestDb();
+function makeTestDb() {
   testSqlite = new Database(":memory:");
-  testSqlite.exec("PRAGMA journal_mode=WAL");
-  const db = drizzle(testSqlite, { schema });
-  memorySqlite = new Database(":memory:");
-  ensureMemoryV3SelectionsSchema(memorySqlite);
-  // The live injector's net-new dedup reads/writes the everInjected store.
-  await ensureMemoryV3InjectedSectionsSchema(memorySqlite);
-  // `observeTurn` records each turn's candidate pool next to its selections.
-  ensureMemoryV3PoolsSchema(memorySqlite);
-  ensureMemoryV3PoolInputsSchema(memorySqlite);
-  return db;
+  return drizzle(testSqlite, { schema });
+}
+async function prepareStore(): Promise<void> {
+  db = requireMainDb();
+  // Drop the plugin tables so a trigger or schema a previous test installed
+  // cannot leak into this one, then stand them back up.
+  await db.exec("DROP TABLE IF EXISTS memory_v3_injected_sections");
+  await db.exec("DROP TABLE IF EXISTS memory_v3_pools");
+  await db.exec("DROP TABLE IF EXISTS memory_v3_pool_inputs");
+  await db.exec("DROP TABLE IF EXISTS memory_v3_pool_texts");
+  await ensureMemoryV3SelectionsSectionKeyOnce(db);
+  await ensureMemoryV3InjectedSectionsSchema(db);
+  await ensureMemoryV3PoolsSchema(db);
+  await ensureMemoryV3PoolInputsSchema(db);
+  await db.run(`DELETE FROM memory_v3_selections`);
 }
 
 // The fake index lists the LIVE pages — `initLanes` filters the core and hot
@@ -335,11 +345,11 @@ mock.module("../core-set.js", () => ({
 
 mock.module("../hot-set.js", () => ({
   ...realHotSet,
-  computeHotSet: (
+  computeHotSet: async (
     ...args: Parameters<typeof realHotSet.computeHotSet>
-  ): HotSetEntry[] => {
+  ): Promise<HotSetEntry[]> => {
     if (!shadowMockActive) {
-      return realHotSet.computeHotSet(...args);
+      return await realHotSet.computeHotSet(...args);
     }
     hotSetOpts = args[0];
     return hotSetResult;
@@ -356,9 +366,6 @@ mock.module("../../../../../persistence/conversation-crud.js", () => ({
 mock.module("../../../../../persistence/db-connection.js", () => ({
   getDb: () => testDb,
   getSqliteFrom: () => testSqlite,
-  getMemorySqlite: () => (memoryDbAvailable ? memorySqlite : null),
-  getMemoryDb: () =>
-    memoryDbAvailable ? drizzle(memorySqlite, { schema }) : null,
 }));
 
 mock.module("../../substrate/page-index.js", () => ({
@@ -624,20 +631,22 @@ afterAll(() => {
   shadowMockActive = false;
 });
 
-function readRows() {
-  return memorySqlite
-    .query(`SELECT slug, source FROM memory_v3_selections ORDER BY slug`)
-    .all() as Array<{ slug: string; source: SelectionSource }>;
+afterEach(() => {
+  if (previousDatabaseUrl === undefined) {
+    delete process.env.VELLUM_DATABASE_URL;
+  } else {
+    process.env.VELLUM_DATABASE_URL = previousDatabaseUrl;
+  }
+});
+
+async function readRows() {
+  return await db.all<{ slug: string; source: SelectionSource }>(
+    `SELECT slug, source FROM memory_v3_selections ORDER BY slug`,
+  );
 }
 
-function readPools() {
-  return memorySqlite
-    .query(
-      `SELECT conversation_id, turn, message_id, pool_size, selected_count,
-              selector_ran, candidates_json
-       FROM memory_v3_pools ORDER BY turn`,
-    )
-    .all() as Array<{
+async function readPools() {
+  return await db.all<{
     conversation_id: string;
     turn: number;
     message_id: string | null;
@@ -645,29 +654,31 @@ function readPools() {
     selected_count: number;
     selector_ran: number;
     candidates_json: string;
-  }>;
+  }>(
+    `SELECT conversation_id, turn, message_id, pool_size, selected_count,
+            selector_ran, candidates_json
+     FROM memory_v3_pools ORDER BY turn`,
+  );
 }
 
-function readPoolInputs() {
-  return memorySqlite
-    .query(
-      `SELECT conversation_id, turn, current_message, kept_all, gate_reason,
-              candidate_text_hashes_json
-       FROM memory_v3_pool_inputs ORDER BY turn`,
-    )
-    .all() as Array<{
+async function readPoolInputs() {
+  return await db.all<{
     conversation_id: string;
     turn: number;
     current_message: string;
     kept_all: number;
     gate_reason: string | null;
     candidate_text_hashes_json: string;
-  }>;
+  }>(
+    `SELECT conversation_id, turn, current_message, kept_all, gate_reason,
+            candidate_text_hashes_json
+     FROM memory_v3_pool_inputs ORDER BY turn`,
+  );
 }
 
 /** The `chosen` verdict per pooled slug, read from the single pool row. */
-function chosenBySlug(): Record<string, boolean> {
-  const pools = readPools();
+async function chosenBySlug(): Promise<Record<string, boolean>> {
+  const pools = await readPools();
   expect(pools).toHaveLength(1);
   const candidates = JSON.parse(pools[0]!.candidates_json) as Array<{
     slug: string;
@@ -703,7 +714,7 @@ beforeEach(async () => {
   shadowMockActive = true;
   liveEnabled = false;
   memoryEnabled = true;
-  memoryDbAvailable = true;
+  previousDatabaseUrl = process.env.VELLUM_DATABASE_URL;
   learnedEdgesCap = 0;
   extraRealConceptPages = 0;
   selectorEnabledCfg = false;
@@ -730,7 +741,8 @@ beforeEach(async () => {
   coreSetSlugs = [];
   hotSetResult = [];
   hotSetOpts = null;
-  testDb = await makeDb();
+  testDb = makeTestDb();
+  await prepareStore();
   mockLanesVersion = null;
   lanesVersionReadThrows = false;
   bumpCounter = 0;
@@ -756,12 +768,12 @@ async function produce(conversationId: string, turnIndex: number) {
   });
   const commit = block?.meta?.[MEMORY_V3_COMMIT_META_KEY];
   if (typeof commit === "function") {
-    (commit as () => void)();
+    await (commit as () => unknown)();
   }
   return block;
 }
 
-describe("memory-v3 engine", () => {
+describePg("memory-v3 engine", () => {
   test("global memory disabled → observation is skipped", async () => {
     memoryEnabled = false;
 
@@ -769,35 +781,31 @@ describe("memory-v3 engine", () => {
 
     expect(orchestrateSpy).not.toHaveBeenCalled();
     expect(sectionBuilds).toBe(0);
-    expect(readRows()).toHaveLength(0);
+    expect(await readRows()).toHaveLength(0);
   });
 
-  test("the turn-log write and the message-id backfill no-op when the memory database is unavailable", () => {
-    memoryDbAvailable = false;
+  test("the turn-log write and the message-id backfill no-op when the memory database is unavailable", async () => {
+    delete process.env.VELLUM_DATABASE_URL;
     const result = poolOf(["page-1"]);
-    expect(() =>
-      writeTurnLog(
-        "conv-1",
-        1,
-        attributeSelections(result),
-        buildPoolRecord(result),
-      ),
-    ).not.toThrow();
-    expect(() =>
-      backfillMemoryV3SelectionMessageId("conv-1", 1, "m-1"),
-    ).not.toThrow();
+    await writeTurnLog(
+      "conv-1",
+      1,
+      attributeSelections(result),
+      buildPoolRecord(result),
+    );
+    await backfillMemoryV3SelectionMessageId("conv-1", 1, "m-1");
 
     // Nothing landed while the connection was down.
-    memoryDbAvailable = true;
-    expect(readRows()).toHaveLength(0);
-    expect(readPools()).toHaveLength(0);
+    process.env.VELLUM_DATABASE_URL = previousDatabaseUrl!;
+    expect(await readRows()).toHaveLength(0);
+    expect(await readPools()).toHaveLength(0);
   });
 
-  test("the turn log persists each row's section key, adding the column to a selections table created without it", () => {
+  test("the turn log persists each row's section key, adding the column to a selections table created without it", async () => {
     // `makeDb` stands the table up as migration 338 leaves it, without
     // `section_key`; the writer's first use of the connection adds it.
     const result = poolOf(["page-1"]);
-    writeTurnLog(
+    await writeTurnLog(
       "conv-1",
       1,
       [
@@ -813,12 +821,10 @@ describe("memory-v3 engine", () => {
     );
 
     expect(
-      memorySqlite
-        .query(
-          `SELECT slug, section_ordinal, section_title, section_key
+      await db.all(
+        `SELECT slug, section_ordinal, section_title, section_key
            FROM memory_v3_selections`,
-        )
-        .all(),
+      ),
     ).toEqual([
       {
         slug: "page-1",
@@ -833,7 +839,7 @@ describe("memory-v3 engine", () => {
     await observeTurn("conv-1", 2);
 
     expect(orchestrateSpy).toHaveBeenCalledTimes(1);
-    const rows = readRows();
+    const rows = await readRows();
     // Each selection is attributed to the lane that pooled it
     // (`result.lanes`), not re-derived from section presence — so the
     // dense-only page-2 logs "dense", not "needle". The result is
@@ -860,7 +866,7 @@ describe("memory-v3 engine", () => {
     // (core, hot, fresh, always) and every finder line in pool order, each
     // `chosen` iff the slug has a selection row above. The always-candidate
     // skill was pooled but not selected, so it is the one unchosen entry.
-    const pools = readPools();
+    const pools = await readPools();
     expect(pools).toHaveLength(1);
     expect(pools[0]).toMatchObject({
       conversation_id: "conv-1",
@@ -934,8 +940,8 @@ describe("memory-v3 engine", () => {
 
     await observeTurn("conv-1", 2);
 
-    expect(readRows()).toEqual([{ slug: "page-rare", source: "rare" }]);
-    expect(JSON.parse(readPools()[0]!.candidates_json)).toEqual([
+    expect(await readRows()).toEqual([{ slug: "page-rare", source: "rare" }]);
+    expect(JSON.parse((await readPools())[0]!.candidates_json)).toEqual([
       {
         slug: "page-rare",
         lane: "rare",
@@ -949,13 +955,15 @@ describe("memory-v3 engine", () => {
   test("the turn-end backfill stamps the message id onto the turn's selections and pool", async () => {
     await observeTurn("conv-1", 2);
 
-    backfillMemoryV3SelectionMessageId("conv-1", 2, "m-assistant");
+    await backfillMemoryV3SelectionMessageId("conv-1", 2, "m-assistant");
 
-    const stamped = memorySqlite
-      .query(`SELECT DISTINCT message_id FROM memory_v3_selections`)
-      .all();
+    const stamped = await db.all(
+      `SELECT DISTINCT message_id FROM memory_v3_selections`,
+    );
     expect(stamped).toEqual([{ message_id: "m-assistant" }]);
-    expect(readPools().map((pool) => pool.message_id)).toEqual(["m-assistant"]);
+    expect((await readPools()).map((pool) => pool.message_id)).toEqual([
+      "m-assistant",
+    ]);
   });
 
   test("the turn-end backfill leaves an earlier turn's unstamped rows alone", async () => {
@@ -965,24 +973,24 @@ describe("memory-v3 engine", () => {
     await observeTurn("conv-1", 1);
     await observeTurn("conv-1", 2);
 
-    backfillMemoryV3SelectionMessageId("conv-1", 2, "m-turn-2");
+    await backfillMemoryV3SelectionMessageId("conv-1", 2, "m-turn-2");
 
-    const stamped = memorySqlite
-      .query(
-        `SELECT DISTINCT turn, message_id FROM memory_v3_selections ORDER BY turn`,
-      )
-      .all();
+    const stamped = await db.all(
+      `SELECT DISTINCT turn, message_id FROM memory_v3_selections ORDER BY turn`,
+    );
     expect(stamped).toEqual([
       { turn: 1, message_id: null },
       { turn: 2, message_id: "m-turn-2" },
     ]);
-    expect(readPools().map((pool) => [pool.turn, pool.message_id])).toEqual([
+    expect(
+      (await readPools()).map((pool) => [pool.turn, pool.message_id]),
+    ).toEqual([
       [1, null],
       [2, "m-turn-2"],
     ]);
     // The inspector resolves turn 2's message to turn 2's pool, never to the
     // stale earlier row.
-    expect(readPoolForMessageIds(["m-turn-2"])?.turn).toBe(2);
+    expect((await readPoolForMessageIds(["m-turn-2"]))?.turn).toBe(2);
   });
 
   test("a closed-gate turn persists an empty pool with selector_ran = 0, not the stable prefix as rejected", async () => {
@@ -1002,8 +1010,8 @@ describe("memory-v3 engine", () => {
 
     await observeTurn("conv-1", 2);
 
-    expect(readRows()).toHaveLength(0);
-    const pools = readPools();
+    expect(await readRows()).toHaveLength(0);
+    const pools = await readPools();
     expect(pools).toHaveLength(1);
     expect(pools[0]).toMatchObject({
       conversation_id: "conv-1",
@@ -1015,15 +1023,17 @@ describe("memory-v3 engine", () => {
     });
 
     // The pool-only turn is still stamped, so the inspector can find it.
-    backfillMemoryV3SelectionMessageId("conv-1", 2, "m-skipped");
-    expect(readPools().map((pool) => pool.message_id)).toEqual(["m-skipped"]);
+    await backfillMemoryV3SelectionMessageId("conv-1", 2, "m-skipped");
+    expect((await readPools()).map((pool) => pool.message_id)).toEqual([
+      "m-skipped",
+    ]);
   });
 
   test("the selector's input is not captured unless memory.v3.poolLog.captureInput is on", async () => {
     await observeTurn("conv-1", 2);
 
-    expect(readPools()).toHaveLength(1);
-    expect(readPoolInputs()).toHaveLength(0);
+    expect(await readPools()).toHaveLength(1);
+    expect(await readPoolInputs()).toHaveLength(0);
   });
 
   test("with memory.v3.poolLog.captureInput on, the turn log writes the selector's input and every pooled candidate's text", async () => {
@@ -1049,10 +1059,10 @@ describe("memory-v3 engine", () => {
 
     await observeTurn("conv-1", 2);
 
-    const pools = readPools();
+    const pools = await readPools();
     expect(pools).toHaveLength(1);
     expect(pools[0]!.pool_size).toBe(3);
-    const inputs = readPoolInputs();
+    const inputs = await readPoolInputs();
     expect(inputs).toHaveLength(1);
     expect(inputs[0]).toMatchObject({
       conversation_id: "conv-1",
@@ -1067,11 +1077,9 @@ describe("memory-v3 engine", () => {
     const hashes = JSON.parse(
       inputs[0]!.candidate_text_hashes_json,
     ) as string[];
-    expect(hashes.map((hash) => readPoolText(hash))).toEqual([
-      "core card",
-      renderFinderLine(finder[0]!),
-      renderFinderLine(finder[1]!),
-    ]);
+    expect(await Promise.all(hashes.map((hash) => readPoolText(hash)))).toEqual(
+      ["core card", renderFinderLine(finder[0]!), renderFinderLine(finder[1]!)],
+    );
   });
 
   test("a turn observed again replaces its selection rows in step with its pool", async () => {
@@ -1079,7 +1087,7 @@ describe("memory-v3 engine", () => {
       poolOf(["page-1", "page-2"]),
     );
     await observeTurn("conv-1", 2);
-    backfillMemoryV3SelectionMessageId("conv-1", 2, "m-first");
+    await backfillMemoryV3SelectionMessageId("conv-1", 2, "m-first");
 
     // The same turn index is observed again (a retried turn) and the selector
     // now keeps page-3 instead of page-1.
@@ -1090,30 +1098,31 @@ describe("memory-v3 engine", () => {
 
     // Exactly the later observation's rows: page-1, kept only by the earlier
     // observation, does not survive as a stale selection.
-    expect(readRows()).toEqual([
+    expect(await readRows()).toEqual([
       { slug: "page-2", source: "dense" },
       { slug: "page-3", source: "edge" },
     ]);
     // The single pool row records the same verdict.
-    expect(chosenBySlug()).toEqual({
+    expect(await chosenBySlug()).toEqual({
       "page-1": false,
       "page-2": true,
       "page-3": true,
     });
-    expect(readPools()[0]).toMatchObject({ turn: 2, selected_count: 2 });
+    expect((await readPools())[0]).toMatchObject({
+      turn: 2,
+      selected_count: 2,
+    });
 
     // The re-observation is a fresh, unstamped turn in both tables: the
     // earlier message id no longer resolves it, and its own turn-end backfill
     // stamps every row.
-    expect(readPoolForMessageIds(["m-first"])).toBeNull();
-    const stampedIds = () =>
-      memorySqlite
-        .query(`SELECT DISTINCT message_id FROM memory_v3_selections`)
-        .all();
-    expect(stampedIds()).toEqual([{ message_id: null }]);
-    backfillMemoryV3SelectionMessageId("conv-1", 2, "m-second");
-    expect(stampedIds()).toEqual([{ message_id: "m-second" }]);
-    expect(readPoolForMessageIds(["m-second"])?.turn).toBe(2);
+    expect(await readPoolForMessageIds(["m-first"])).toBeNull();
+    const stampedIds = async () =>
+      await db.all(`SELECT DISTINCT message_id FROM memory_v3_selections`);
+    expect(await stampedIds()).toEqual([{ message_id: null }]);
+    await backfillMemoryV3SelectionMessageId("conv-1", 2, "m-second");
+    expect(await stampedIds()).toEqual([{ message_id: "m-second" }]);
+    expect((await readPoolForMessageIds(["m-second"]))?.turn).toBe(2);
   });
 
   test("a failed pool write leaves the earlier observation's selections and pool in place", async () => {
@@ -1125,21 +1134,28 @@ describe("memory-v3 engine", () => {
     // Refuse every pool write from here on: the re-observation's pool
     // statement fails after its selection rows were replaced, and the
     // transaction rolls the replacement back with it.
-    memorySqlite.run(
-      `CREATE TRIGGER refuse_pool_writes BEFORE INSERT ON memory_v3_pools
-       BEGIN SELECT RAISE(ABORT, 'pool write refused'); END`,
-    );
+    await db.exec(`
+      CREATE OR REPLACE FUNCTION refuse_pool_writes() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'pool write refused';
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await db.exec(`
+      CREATE TRIGGER refuse_pool_writes BEFORE INSERT ON memory_v3_pools
+      FOR EACH ROW EXECUTE FUNCTION refuse_pool_writes()
+    `);
     orchestrateSpy.mockImplementationOnce(async () =>
       poolOf(["page-2", "page-3"]),
     );
     // The write is best-effort: the turn itself still gets its result.
     expect(await observeTurn("conv-1", 2)).not.toBeNull();
 
-    expect(readRows()).toEqual([
+    expect(await readRows()).toEqual([
       { slug: "page-1", source: "needle" },
       { slug: "page-2", source: "dense" },
     ]);
-    expect(chosenBySlug()).toEqual({
+    expect(await chosenBySlug()).toEqual({
       "page-1": true,
       "page-2": true,
       "page-3": false,
@@ -1212,7 +1228,7 @@ describe("memory-v3 engine", () => {
     expect(reply.endsWith(tail)).toBe(true);
   });
 
-  test("a page with lines from two lanes is attributed the lane of the line whose section was selected", () => {
+  test("a page with lines from two lanes is attributed the lane of the line whose section was selected", async () => {
     const bulk: Section = {
       article: "page-two",
       title: "Bulk theme",
@@ -1262,7 +1278,7 @@ describe("memory-v3 engine", () => {
     expect(sourceOf([])).toBe("needle");
   });
 
-  test("a turn whose selector could not run attributes no rows, so unjudged pages never feed frecency or learned edges", () => {
+  test("a turn whose selector could not run attributes no rows, so unjudged pages never feed frecency or learned edges", async () => {
     const rows = attributeSelections({
       selections: [
         { slug: "page-core", sections: [] },
@@ -1283,7 +1299,7 @@ describe("memory-v3 engine", () => {
     expect(rows).toEqual([]);
   });
 
-  test("a selection of a core page a finder also hit attributes to core (pool position wins)", () => {
+  test("a selection of a core page a finder also hit attributes to core (pool position wins)", async () => {
     const rows = attributeSelections({
       selections: [{ slug: "page-core", sections: [] }],
       lanes: {
@@ -1308,7 +1324,7 @@ describe("memory-v3 engine", () => {
     ]);
   });
 
-  test("a finder hit records the matched section's key beside its title and ordinal, so a repeat of a heading keeps its occurrence", () => {
+  test("a finder hit records the matched section's key beside its title and ordinal, so a repeat of a heading keeps its occurrence", async () => {
     const repeatedNotes: Section = {
       article: "page-1",
       title: "Notes",
@@ -1345,7 +1361,7 @@ describe("memory-v3 engine", () => {
     ]);
   });
 
-  test("a page selected on several sections logs its first selected section under the lane of that section's line", () => {
+  test("a page selected on several sections logs its first selected section under the lane of that section's line", async () => {
     const details: Section = {
       article: "page-1",
       title: "Details",
@@ -1384,7 +1400,7 @@ describe("memory-v3 engine", () => {
     ]);
   });
 
-  test("a selection of a rare-term line records source rare with its section", () => {
+  test("a selection of a rare-term line records source rare with its section", async () => {
     const inventory: Section = {
       article: "page-1",
       title: "Inventory",
@@ -1676,7 +1692,7 @@ describe("memory-v3 engine", () => {
     const block = await produce("conv-1", 0);
     expect(block).toBeNull();
     expect(orchestrateSpy).not.toHaveBeenCalled();
-    expect(readRows()).toHaveLength(0);
+    expect(await readRows()).toHaveLength(0);
   });
 
   test("live on → produce returns the net-new SECTION block and logs", async () => {
@@ -1698,7 +1714,7 @@ describe("memory-v3 engine", () => {
     expect(block!.text).toContain("# memory/concepts/page-1.md\nx");
     expect(block!.text).toContain("# memory/concepts/page-2.md\ny");
     // Selections are still logged in live mode.
-    expect(readRows().length).toBeGreaterThan(0);
+    expect((await readRows()).length).toBeGreaterThan(0);
   });
 
   test("live on → a later turn re-selecting the same pages renders an EMPTY block (net-new dedup)", async () => {
@@ -1722,7 +1738,7 @@ describe("memory-v3 engine", () => {
     const block = await produce("conv-1", 0);
     expect(block).toBeNull();
     expect(orchestrateSpy).toHaveBeenCalledTimes(1);
-    expect(readRows()).toHaveLength(0);
+    expect(await readRows()).toHaveLength(0);
   });
 
   test("lazy-init runs the lane builders only once across turns", async () => {
@@ -1789,7 +1805,7 @@ describe("memory-v3 engine", () => {
     expect(needleBuilds).toBe(2);
   });
 
-  test("invalidateLanes writes a new, distinct lanes-version token each call", () => {
+  test("invalidateLanes writes a new, distinct lanes-version token each call", async () => {
     invalidateLanes();
     const first = mockLanesVersion;
     invalidateLanes();
@@ -1837,7 +1853,7 @@ describe("memory-v3 engine", () => {
     ];
     await observeTurn("conv-1", 0);
     expect(orchestrateSpy).not.toHaveBeenCalled();
-    expect(readRows()).toHaveLength(0);
+    expect(await readRows()).toHaveLength(0);
   });
 
   describe("initLanes feeds synthetic capability pages into the section index", () => {
@@ -1879,7 +1895,7 @@ describe("memory-v3 engine", () => {
   });
 });
 
-describe("memory-v3 infrastructure-failure handling", () => {
+describePg("memory-v3 infrastructure-failure handling", () => {
   const throwInfra = () =>
     orchestrateSpy.mockImplementationOnce(async () => {
       throw new MemoryV3RetrievalUnavailableError(
@@ -1912,7 +1928,7 @@ describe("memory-v3 infrastructure-failure handling", () => {
   });
 });
 
-describe("memory-v3 dense read hold at lane init", () => {
+describePg("memory-v3 dense read hold at lane init", () => {
   test("a lane init that starts the hold enqueues the maintain job at once", async () => {
     holdDenseReadsSlot = true;
 

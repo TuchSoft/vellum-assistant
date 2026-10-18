@@ -23,14 +23,21 @@
  * beforeEach/afterAll). Mirrors `shadow-plugin.test.ts`.
  */
 
-import { Database } from "bun:sqlite";
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  expect,
+  mock,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 
-import { drizzle } from "drizzle-orm/bun-sqlite";
+setDefaultTimeout(30_000);
 
 import { setConfig } from "../../../../../__tests__/helpers/set-config.js";
-import { ensureMemoryV3SelectionsSchema } from "../../../../../persistence/migrations/338-move-memory-v3-selections-to-memory-db.js";
-import * as schema from "../../../../../persistence/schema/index.js";
+import { describePg } from "../../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../../persistence/db-facade.js";
 import {
   ensureMemoryV3PoolsSchema,
   ensureMemoryV3SelectionsSectionKeyOnce,
@@ -41,38 +48,12 @@ import { type Section, sectionKey } from "../types.js";
 const realFlags = {
   ...(await import("../../../../../config/assistant-feature-flags.js")),
 };
-const realDb = {
-  ...(await import("../../../../../persistence/db-connection.js")),
-};
 const realPageContent = { ...(await import("../page-content.js")) };
 const realPageStore = { ...(await import("../../substrate/page-store.js")) };
 
 let storeMockActive = false;
 let liveEnabled = false;
-// When false, the stubbed `getMemorySqlite` resolves to null — the contract
-// the store sees when the dedicated memory database cannot be opened.
-let memoryDbAvailable = true;
-
-let testSqlite: Database;
-// Selection rows live on the dedicated memory connection, resolved via
-// `getMemorySqlite` — stubbed to a second in-memory DB carrying the relocated
-// table's schema. The fork-source fallback still reads `messages` from main.
-let memorySqlite: Database;
-let testDb = await makeDb();
-async function makeDb() {
-  testSqlite = new Database(":memory:");
-  testSqlite.exec("PRAGMA journal_mode=WAL");
-  const db = drizzle(testSqlite, { schema });
-  // The fork-source fallback reads `messages.metadata.forkSourceMessageId`; the
-  // inspector store touches only these two columns, so a minimal table suffices.
-  testSqlite.exec(`CREATE TABLE messages (id TEXT PRIMARY KEY, metadata TEXT)`);
-  memorySqlite = new Database(":memory:");
-  ensureMemoryV3SelectionsSchema(memorySqlite);
-  // The plugin's own column on the relocated table, so `seed` can write keys.
-  await ensureMemoryV3SelectionsSectionKeyOnce(memorySqlite);
-  ensureMemoryV3PoolsSchema(memorySqlite);
-  return db;
-}
+let previousDatabaseUrl: string | undefined;
 
 /** One pooled candidate in the persisted shape `writePool` stores. */
 function candidate(
@@ -90,7 +71,26 @@ function candidate(
   };
 }
 
-function seed(
+/** A selections table shaped like migration 338's, without the
+ *  `section_key` column this build adds. */
+async function createSelectionsTableWithoutSectionKey(): Promise<void> {
+  await requireMainDb().exec(/*sql*/ `
+    CREATE TABLE memory_v3_selections (
+      conversation_id TEXT NOT NULL,
+      turn BIGINT NOT NULL,
+      slug TEXT NOT NULL,
+      source TEXT NOT NULL,
+      pinned BIGINT NOT NULL DEFAULT 0,
+      created_at BIGINT NOT NULL,
+      message_id TEXT,
+      section_ordinal BIGINT,
+      section_title TEXT,
+      PRIMARY KEY (conversation_id, turn, slug)
+    )
+  `);
+}
+
+async function seed(
   conversationId: string,
   turn: number,
   rows: Array<{
@@ -101,50 +101,59 @@ function seed(
     sectionKey?: string;
   }>,
   messageId: string | null = null,
-): void {
-  const stmt = memorySqlite.query(
-    `INSERT INTO memory_v3_selections
-       (conversation_id, turn, slug, source, created_at,
-        message_id, section_ordinal, section_title, section_key)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
+): Promise<void> {
+  const db = requireMainDb();
   for (const r of rows) {
-    stmt.run(
-      conversationId,
-      turn,
-      r.slug,
-      r.source,
-      1000 + turn,
-      messageId,
-      r.sectionOrdinal ?? null,
-      r.sectionTitle ?? null,
-      r.sectionKey ?? null,
+    await db.run(
+      `INSERT INTO memory_v3_selections
+         (conversation_id, turn, slug, source, created_at,
+          message_id, section_ordinal, section_title, section_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        conversationId,
+        turn,
+        r.slug,
+        r.source,
+        1000 + turn,
+        messageId,
+        r.sectionOrdinal ?? null,
+        r.sectionTitle ?? null,
+        r.sectionKey ?? null,
+      ],
     );
   }
 }
 
-function seedMessage(id: string, forkSourceMessageId?: string): void {
+async function seedMessage(
+  id: string,
+  forkSourceMessageId?: string,
+): Promise<void> {
   const metadata = JSON.stringify(
     forkSourceMessageId != null ? { forkSourceMessageId } : {},
   );
-  testSqlite
-    .query(`INSERT INTO messages (id, metadata) VALUES (?, ?)`)
-    .run(id, metadata);
+  await requireMainDb().run(
+    `INSERT INTO conversations (id, created_at, updated_at)
+     VALUES ('conv-seed', 0, 0) ON CONFLICT DO NOTHING`,
+  );
+  await requireMainDb().run(
+    `INSERT INTO messages (id, conversation_id, role, content, created_at, metadata)
+     VALUES (?, 'conv-seed', 'user', '[]', 0, ?)`,
+    [id, metadata],
+  );
 }
 
 /** Stamp a pool row with its assistant message id, as the turn-end backfill
  *  does for the pool and selection rows together. */
-function stampPool(
+async function stampPool(
   conversationId: string,
   turn: number,
   messageId: string,
-): void {
-  memorySqlite
-    .query(
-      `UPDATE memory_v3_pools SET message_id = ?
-       WHERE conversation_id = ? AND turn = ?`,
-    )
-    .run(messageId, conversationId, turn);
+): Promise<void> {
+  await requireMainDb().run(
+    `UPDATE memory_v3_pools SET message_id = ?
+     WHERE conversation_id = ? AND turn = ?`,
+    [messageId, conversationId, turn],
+  );
 }
 
 mock.module("../../../../../config/assistant-feature-flags.js", () => ({
@@ -160,21 +169,6 @@ mock.module("../../../../../config/assistant-feature-flags.js", () => ({
             typeof realFlags.isAssistantFeatureFlagEnabled
           >[1],
         ),
-}));
-
-mock.module("../../../../../persistence/db-connection.js", () => ({
-  ...realDb,
-  getDb: () => (storeMockActive ? testDb : realDb.getDb()),
-  getSqliteFrom: (db: unknown) =>
-    storeMockActive
-      ? testSqlite
-      : realDb.getSqliteFrom(db as Parameters<typeof realDb.getSqliteFrom>[0]),
-  getMemorySqlite: () =>
-    storeMockActive
-      ? memoryDbAvailable
-        ? memorySqlite
-        : null
-      : realDb.getMemorySqlite(),
 }));
 
 // Bodies of the pages the inspector reconstructs matched sections from; a
@@ -209,28 +203,41 @@ const {
   getMemoryV3SelectionForInspectorByMessageIds,
   summarizeSelections,
 } = await import("../selection-log-store.js");
-// The pool writer resolves the same stubbed memory connection, so tests seed
-// pool rows through it and read them back through the inspector store.
+// The pool writer resolves the same memory connection, so tests seed pool
+// rows through it and read them back through the inspector store.
 const { writePool } = await import("../pool-log-store.js");
 
 beforeEach(async () => {
   storeMockActive = true;
   liveEnabled = false;
-  memoryDbAvailable = true;
+  previousDatabaseUrl = process.env.VELLUM_DATABASE_URL;
   // The inspector's `live` flag comes from `isMemoryV3Live(getConfig())`,
   // which reads `memory.v3.live` — seed it for real.
   setConfig("memory", { v3: { live: false } });
   pageBodies.clear();
-  testDb = await makeDb();
+  const db = requireMainDb();
+  await ensureMemoryV3SelectionsSectionKeyOnce(db);
+  await ensureMemoryV3PoolsSchema(db);
+  await db.run(`DELETE FROM memory_v3_selections`);
+  await db.run(`DELETE FROM memory_v3_pools`);
+  await db.run(`DELETE FROM messages`);
+});
+
+afterEach(() => {
+  if (previousDatabaseUrl === undefined) {
+    delete process.env.VELLUM_DATABASE_URL;
+  } else {
+    process.env.VELLUM_DATABASE_URL = previousDatabaseUrl;
+  }
 });
 
 afterAll(() => {
   storeMockActive = false;
 });
 
-describe("getMemoryV3SelectionForInspector", () => {
+describePg("getMemoryV3SelectionForInspector", () => {
   test("returns null for a null/undefined turn", async () => {
-    seed("conv-x", 3, [{ slug: "domain-a/page-1", source: "needle" }]);
+    await seed("conv-x", 3, [{ slug: "domain-a/page-1", source: "needle" }]);
     expect(await getMemoryV3SelectionForInspector("conv-x", null)).toBeNull();
     expect(
       await getMemoryV3SelectionForInspector("conv-x", undefined),
@@ -238,8 +245,8 @@ describe("getMemoryV3SelectionForInspector", () => {
   });
 
   test("returns the selection for the exact turn", async () => {
-    seed("conv-2", 2, [{ slug: "domain-a/page-1", source: "needle" }]);
-    seed("conv-2", 7, [{ slug: "domain-b/page-9", source: "needle" }]);
+    await seed("conv-2", 2, [{ slug: "domain-a/page-1", source: "needle" }]);
+    await seed("conv-2", 7, [{ slug: "domain-b/page-9", source: "needle" }]);
 
     const log = await getMemoryV3SelectionForInspector("conv-2", 2);
     expect(log?.turn).toBe(2);
@@ -247,14 +254,14 @@ describe("getMemoryV3SelectionForInspector", () => {
   });
 
   test("returns null when the turn has no v3 rows", async () => {
-    seed("conv-1", 3, [{ slug: "domain-a/page-1", source: "needle" }]);
+    await seed("conv-1", 3, [{ slug: "domain-a/page-1", source: "needle" }]);
     expect(await getMemoryV3SelectionForInspector("conv-1", 4)).toBeNull();
   });
 
   test("does NOT fall back to another turn for an unmatched lookup", async () => {
     // Turn 5 has rows, but inspecting turn 3 (no rows) must return null —
     // never turn 5's selection, which would misattribute it to turn 3.
-    seed("conv-3", 5, [{ slug: "domain-a/page-1", source: "needle" }]);
+    await seed("conv-3", 5, [{ slug: "domain-a/page-1", source: "needle" }]);
     expect(await getMemoryV3SelectionForInspector("conv-3", 3)).toBeNull();
   });
 
@@ -263,7 +270,7 @@ describe("getMemoryV3SelectionForInspector", () => {
     // permissive); the inspector passes it through verbatim. Neither row has a
     // matched section, so section fields are null and the block falls back to
     // each page's lead.
-    seed("conv-4", 1, [
+    await seed("conv-4", 1, [
       { slug: "domain-a/page-1", source: "edge" },
       { slug: "domain-b/page-2", source: "legacy-carry" },
     ]);
@@ -289,7 +296,7 @@ describe("getMemoryV3SelectionForInspector", () => {
   });
 
   test("live reflects the config gate", async () => {
-    seed("conv-5", 1, [{ slug: "domain-a/page-1", source: "needle" }]);
+    await seed("conv-5", 1, [{ slug: "domain-a/page-1", source: "needle" }]);
 
     const off = await getMemoryV3SelectionForInspector("conv-5", 1);
     expect(off?.live).toBe(false);
@@ -301,9 +308,9 @@ describe("getMemoryV3SelectionForInspector", () => {
   });
 });
 
-describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
+describePg("getMemoryV3SelectionForInspectorByMessageIds", () => {
   test("returns the turn's selection (with section fields) keyed by message id", async () => {
-    seed(
+    await seed(
       "conv-m",
       0,
       [
@@ -318,7 +325,7 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
       "msg-assistant-1",
     );
     // A different turn under a different message must not bleed in.
-    seed(
+    await seed(
       "conv-m",
       1,
       [{ slug: "domain-c/page-9", source: "dense" }],
@@ -347,7 +354,7 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
   });
 
   test("includes the turn's candidate pool when one was persisted", async () => {
-    seed(
+    await seed(
       "conv-m",
       3,
       [
@@ -364,7 +371,7 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
     // The pool the selector saw: the core card, an unchosen hot card, and the
     // needle line with its matched section. The join is by the selection rows'
     // (conversation, turn), so the pool row needs no message id of its own.
-    writePool(memorySqlite, "conv-m", 3, {
+    await writePool(requireMainDb(), "conv-m", 3, {
       candidates: [
         candidate("domain-a/page-1", "core", true),
         candidate("domain-c/page-9", "hot", false),
@@ -375,7 +382,7 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
       selector_ran: true,
     });
     // A pool for a neighbouring turn must not bleed in.
-    writePool(memorySqlite, "conv-m", 4, {
+    await writePool(requireMainDb(), "conv-m", 4, {
       candidates: [candidate("other/page", "core", true)],
       pool_size: 1,
       selected_count: 1,
@@ -419,26 +426,31 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
   });
 
   test("pool is null for a turn logged before pools were persisted", async () => {
-    seed("conv-m", 0, [{ slug: "domain-a/page-1", source: "needle" }], "msg-1");
+    await seed(
+      "conv-m",
+      0,
+      [{ slug: "domain-a/page-1", source: "needle" }],
+      "msg-1",
+    );
     const log = await getMemoryV3SelectionForInspectorByMessageIds(["msg-1"]);
     expect(log?.selections).toHaveLength(1);
     expect(log?.pool).toBeNull();
   });
 
   test("resolves the parent's pool for a forked (inherited) turn", async () => {
-    seed(
+    await seed(
       "conv-parent",
       4,
       [{ slug: "domain-a/page-1", source: "needle" }],
       "parent-msg",
     );
-    writePool(memorySqlite, "conv-parent", 4, {
+    await writePool(requireMainDb(), "conv-parent", 4, {
       candidates: [candidate("domain-a/page-1", "needle", true)],
       pool_size: 1,
       selected_count: 1,
       selector_ran: true,
     });
-    seedMessage("fork-msg", "parent-msg");
+    await seedMessage("fork-msg", "parent-msg");
 
     const log = await getMemoryV3SelectionForInspectorByMessageIds([
       "fork-msg",
@@ -451,7 +463,7 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
   test("a pool-only turn resolves through its stamped message id to an empty selection with the pool", async () => {
     // The selector saw two candidates and rejected both: no selection rows,
     // one pool row, stamped at turn end like the selection rows would be.
-    writePool(memorySqlite, "conv-m", 5, {
+    await writePool(requireMainDb(), "conv-m", 5, {
       candidates: [
         candidate("domain-a/page-1", "core", false),
         candidate("domain-b/page-2", "needle", false, { title: "Heading B" }),
@@ -460,9 +472,14 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
       selected_count: 0,
       selector_ran: true,
     });
-    stampPool("conv-m", 5, "msg-rejected");
+    await stampPool("conv-m", 5, "msg-rejected");
     // A selection under another message must not be mistaken for this turn.
-    seed("conv-m", 6, [{ slug: "domain-c/page-9", source: "hot" }], "msg-6");
+    await seed(
+      "conv-m",
+      6,
+      [{ slug: "domain-c/page-9", source: "hot" }],
+      "msg-6",
+    );
 
     const log = await getMemoryV3SelectionForInspectorByMessageIds([
       "msg-rejected",
@@ -499,13 +516,13 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
   });
 
   test("a hard-skipped turn resolves to an empty selection whose pool records the selector as not run", async () => {
-    writePool(memorySqlite, "conv-m", 5, {
+    await writePool(requireMainDb(), "conv-m", 5, {
       candidates: [],
       pool_size: 0,
       selected_count: 0,
       selector_ran: false,
     });
-    stampPool("conv-m", 5, "msg-skipped");
+    await stampPool("conv-m", 5, "msg-skipped");
 
     const log = await getMemoryV3SelectionForInspectorByMessageIds([
       "msg-skipped",
@@ -521,16 +538,16 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
   });
 
   test("a fork copy of a pool-only turn resolves through the back-pointer walk", async () => {
-    writePool(memorySqlite, "conv-parent", 4, {
+    await writePool(requireMainDb(), "conv-parent", 4, {
       candidates: [candidate("domain-a/page-1", "dense", false)],
       pool_size: 1,
       selected_count: 0,
       selector_ran: true,
     });
-    stampPool("conv-parent", 4, "parent-msg");
+    await stampPool("conv-parent", 4, "parent-msg");
     // A fork of a fork: neither copy carries rows of its own.
-    seedMessage("mid-msg", "parent-msg");
-    seedMessage("fork2-msg", "mid-msg");
+    await seedMessage("mid-msg", "parent-msg");
+    await seedMessage("fork2-msg", "mid-msg");
 
     const log = await getMemoryV3SelectionForInspectorByMessageIds([
       "fork2-msg",
@@ -543,7 +560,7 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
   });
 
   test("does not match a pool row that predates the message-id backfill (null message_id)", async () => {
-    writePool(memorySqlite, "conv-m", 5, {
+    await writePool(requireMainDb(), "conv-m", 5, {
       candidates: [],
       pool_size: 0,
       selected_count: 0,
@@ -555,7 +572,12 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
   });
 
   test("returns null for empty message ids and for an unmatched id", async () => {
-    seed("conv-m", 0, [{ slug: "domain-a/page-1", source: "needle" }], "msg-1");
+    await seed(
+      "conv-m",
+      0,
+      [{ slug: "domain-a/page-1", source: "needle" }],
+      "msg-1",
+    );
     expect(await getMemoryV3SelectionForInspectorByMessageIds([])).toBeNull();
     expect(
       await getMemoryV3SelectionForInspectorByMessageIds(["nope"]),
@@ -563,7 +585,7 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
   });
 
   test("does not match rows that predate the message-id backfill (null message_id)", async () => {
-    seed("conv-m", 0, [{ slug: "domain-a/page-1", source: "needle" }]); // message_id null
+    await seed("conv-m", 0, [{ slug: "domain-a/page-1", source: "needle" }]); // message_id null
     expect(
       await getMemoryV3SelectionForInspectorByMessageIds(["any"]),
     ).toBeNull();
@@ -571,7 +593,7 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
 
   test("falls back to the parent's selection for a forked (inherited) turn", async () => {
     // The parent logged its selection under the parent assistant message id.
-    seed(
+    await seed(
       "conv-parent",
       4,
       [{ slug: "domain-a/page-1", source: "needle" }],
@@ -579,7 +601,7 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
     );
     // The fork copied that message under a fresh id with a back-pointer and has
     // no selection rows of its own.
-    seedMessage("fork-msg", "parent-msg");
+    await seedMessage("fork-msg", "parent-msg");
 
     const log = await getMemoryV3SelectionForInspectorByMessageIds([
       "fork-msg",
@@ -588,7 +610,7 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
   });
 
   test("walks a fork-of-a-fork chain to the original selection", async () => {
-    seed(
+    await seed(
       "conv-orig",
       2,
       [{ slug: "domain-b/page-2", source: "core" }],
@@ -596,8 +618,8 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
     );
     // The mid fork copied orig; the second fork copied mid. Neither carries its
     // own rows, so resolution must hop twice to reach orig.
-    seedMessage("mid-msg", "orig-msg");
-    seedMessage("fork2-msg", "mid-msg");
+    await seedMessage("mid-msg", "orig-msg");
+    await seedMessage("fork2-msg", "mid-msg");
 
     const log = await getMemoryV3SelectionForInspectorByMessageIds([
       "fork2-msg",
@@ -608,9 +630,19 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
   test("prefers the message's own rows over the fork-source fallback", async () => {
     // A post-fork native turn has its own rows AND a back-pointer; the direct
     // rows must win so a native turn is never misattributed to the parent.
-    seed("conv-parent", 4, [{ slug: "parent/page", source: "needle" }], "src");
-    seed("conv-fork", 0, [{ slug: "own/page", source: "core" }], "native-msg");
-    seedMessage("native-msg", "src");
+    await seed(
+      "conv-parent",
+      4,
+      [{ slug: "parent/page", source: "needle" }],
+      "src",
+    );
+    await seed(
+      "conv-fork",
+      0,
+      [{ slug: "own/page", source: "core" }],
+      "native-msg",
+    );
+    await seedMessage("native-msg", "src");
 
     const log = await getMemoryV3SelectionForInspectorByMessageIds([
       "native-msg",
@@ -621,7 +653,7 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
   test("returns null for a fork copy whose ancestors logged nothing", async () => {
     // A fork copy (has a back-pointer) where neither it nor its source ever
     // logged a v3 selection.
-    seedMessage("fork-msg", "parent-msg");
+    await seedMessage("fork-msg", "parent-msg");
     expect(
       await getMemoryV3SelectionForInspectorByMessageIds(["fork-msg"]),
     ).toBeNull();
@@ -631,13 +663,16 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
     // Rows exist for both lookup keys, but with the memory connection down
     // both inspector reads (including the fork-fallback walk, which still
     // touches the main-DB `messages` table) must degrade to null, not throw.
-    seed(
+    await seed(
       "conv-deg",
       1,
       [{ slug: "domain-a/page-1", source: "needle" }],
       "msg-deg",
     );
-    memoryDbAvailable = false;
+    // The memory store's tables are gone, so every read degrades while the
+    // main-message fallback path stays reachable.
+    await requireMainDb().exec("DROP TABLE IF EXISTS memory_v3_selections");
+    await requireMainDb().exec("DROP TABLE IF EXISTS memory_v3_pools");
     expect(await getMemoryV3SelectionForInspector("conv-deg", 1)).toBeNull();
     expect(
       await getMemoryV3SelectionForInspectorByMessageIds(["msg-deg"]),
@@ -645,22 +680,22 @@ describe("getMemoryV3SelectionForInspectorByMessageIds", () => {
   });
 });
 
-describe("summarizeSelections", () => {
-  test("aggregates per-source counts, turn count, and distinct slugs", () => {
+describePg("summarizeSelections", () => {
+  test("aggregates per-source counts, turn count, and distinct slugs", async () => {
     // Turn 1: a needle + an edge selection.
-    seed("conv-a", 1, [
+    await seed("conv-a", 1, [
       { slug: "domain-a/page-1", source: "needle" },
       { slug: "domain-b/page-2", source: "edge" },
     ]);
     // Turn 2: page-1 re-selected (needle) + page-2 re-surfaced by edge.
-    seed("conv-a", 2, [
+    await seed("conv-a", 2, [
       { slug: "domain-a/page-1", source: "needle" },
       { slug: "domain-b/page-2", source: "edge" },
     ]);
     // A different conversation must not bleed into the aggregate.
-    seed("conv-b", 1, [{ slug: "domain-c/page-9", source: "dense" }]);
+    await seed("conv-b", 1, [{ slug: "domain-c/page-9", source: "dense" }]);
 
-    const summary = summarizeSelections("conv-a");
+    const summary = await summarizeSelections("conv-a");
     expect(summary.bySource).toEqual({
       core: 0,
       hot: 0,
@@ -679,8 +714,8 @@ describe("summarizeSelections", () => {
     expect(summary.distinctSlugs).toBe(2);
   });
 
-  test("returns zeroed counts for a conversation with no rows", () => {
-    expect(summarizeSelections("conv-none")).toEqual({
+  test("returns zeroed counts for a conversation with no rows", async () => {
+    expect(await summarizeSelections("conv-none")).toEqual({
       bySource: {
         core: 0,
         hot: 0,
@@ -699,12 +734,12 @@ describe("summarizeSelections", () => {
     });
   });
 
-  test("returns zeroed results when the memory database is unavailable", () => {
+  test("returns zeroed results when the memory database is unavailable", async () => {
     // Rows exist, but with the memory connection down the summary must
     // degrade to zeroes rather than throw.
-    seed("conv-deg", 1, [{ slug: "domain-a/page-1", source: "needle" }]);
-    memoryDbAvailable = false;
-    expect(summarizeSelections("conv-deg")).toEqual({
+    await seed("conv-deg", 1, [{ slug: "domain-a/page-1", source: "needle" }]);
+    delete process.env.VELLUM_DATABASE_URL;
+    expect(await summarizeSelections("conv-deg")).toEqual({
       bySource: {
         core: 0,
         hot: 0,
@@ -723,14 +758,14 @@ describe("summarizeSelections", () => {
     });
   });
 
-  test("ignores unknown/free-text historical source labels in bySource but counts the turn", () => {
+  test("ignores unknown/free-text historical source labels in bySource but counts the turn", async () => {
     // A pre-lane historical row with a legacy label (column is free-text) —
     // retired labels like the old per-turn carry source land here too.
-    seed("conv-c", 1, [
+    await seed("conv-c", 1, [
       { slug: "domain-a/page-1", source: "l1+l2" },
       { slug: "domain-a/page-2", source: "needle" },
     ]);
-    const summary = summarizeSelections("conv-c");
+    const summary = await summarizeSelections("conv-c");
     expect(summary.bySource.needle).toBe(1);
     // The unknown label is not counted in any known bucket.
     const total = Object.values(summary.bySource).reduce((a, b) => a + b, 0);
@@ -741,7 +776,7 @@ describe("summarizeSelections", () => {
   });
 });
 
-describe("matched-section reconstruction", () => {
+describePg("matched-section reconstruction", () => {
   const page = [
     "Lead.",
     "",
@@ -771,7 +806,7 @@ describe("matched-section reconstruction", () => {
     // recorded before a section above the headings was removed, so each
     // recorded ordinal now sits on the OTHER occurrence of the title.
     pageBodies.set("domain-a/page-1", repeated);
-    seed(
+    await seed(
       "conv-k",
       0,
       [
@@ -785,7 +820,7 @@ describe("matched-section reconstruction", () => {
       ],
       "msg-k-1",
     );
-    seed(
+    await seed(
       "conv-k",
       1,
       [
@@ -829,7 +864,7 @@ describe("matched-section reconstruction", () => {
       "domain-a/page-1",
       ["Lead.", "", "## Notes", "", "Only."].join("\n"),
     );
-    seed(
+    await seed(
       "conv-k",
       0,
       [
@@ -850,38 +885,38 @@ describe("matched-section reconstruction", () => {
   });
 
   test("a selections table created without section_key (as migration 338 leaves it) gains the column on the first read", async () => {
-    memorySqlite = new Database(":memory:");
-    ensureMemoryV3SelectionsSchema(memorySqlite);
-    ensureMemoryV3PoolsSchema(memorySqlite);
-    memorySqlite
-      .query(
-        `INSERT INTO memory_v3_selections
-           (conversation_id, turn, slug, source, created_at, message_id,
-            section_ordinal, section_title)
-         VALUES ('conv-l', 0, 'domain-a/page-1', 'needle', 1000, 'msg-l', 1,
-                 'Heading A')`,
-      )
-      .run();
+    const db = requireMainDb();
+    await db.exec("DROP TABLE IF EXISTS memory_v3_selections");
+    await createSelectionsTableWithoutSectionKey();
+    await ensureMemoryV3PoolsSchema(db);
+    await db.run(
+      `INSERT INTO memory_v3_selections
+         (conversation_id, turn, slug, source, created_at, message_id,
+          section_ordinal, section_title)
+       VALUES ('conv-l', 0, 'domain-a/page-1', 'needle', 1000, 'msg-l', 1,
+               'Heading A')`,
+    );
     pageBodies.set("domain-a/page-1", page);
 
     const log = await getMemoryV3SelectionForInspectorByMessageIds(["msg-l"]);
     expect(log?.injectedText).toContain(
       "section[Heading A] for domain-a/page-1",
     );
-    expect(
-      (
-        memorySqlite
-          .query(`PRAGMA table_info(memory_v3_selections)`)
-          .all() as Array<{ name: string }>
-      ).map((column) => column.name),
-    ).toContain("section_key");
+    const columns = await db.all<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'memory_v3_selections'`,
+    );
+    expect(columns.map((column) => column.column_name)).toContain(
+      "section_key",
+    );
   });
 
   test("a row recorded without a key resolves by its title first, so a page re-chunked since the turn still renders the section that was injected", async () => {
     // At the turn, "Heading A" sat at ordinal 2; the page has since been
     // edited and "Heading B" holds that ordinal.
     pageBodies.set("domain-a/page-1", page);
-    seed(
+    await seed(
       "conv-r",
       0,
       [
@@ -904,7 +939,7 @@ describe("matched-section reconstruction", () => {
 
   test("for a row recorded without a key, the ordinal picks among repeats of the title while it still points at one; otherwise the first occurrence", async () => {
     pageBodies.set("domain-a/page-1", repeated);
-    seed(
+    await seed(
       "conv-r",
       0,
       [
@@ -917,7 +952,7 @@ describe("matched-section reconstruction", () => {
       ],
       "msg-r-2",
     );
-    seed(
+    await seed(
       "conv-r",
       1,
       [
@@ -948,7 +983,7 @@ describe("matched-section reconstruction", () => {
 
   test("a title no longer on the page renders the lead; a row recorded without a title falls back to its ordinal", async () => {
     pageBodies.set("domain-a/page-1", page);
-    seed(
+    await seed(
       "conv-r",
       0,
       [
@@ -961,7 +996,7 @@ describe("matched-section reconstruction", () => {
       ],
       "msg-r-4",
     );
-    seed(
+    await seed(
       "conv-r",
       1,
       [{ slug: "domain-a/page-1", source: "needle", sectionOrdinal: 1 }],
@@ -982,30 +1017,48 @@ describe("matched-section reconstruction", () => {
   });
 });
 
-describe("selection reads after a failed section_key ensure", () => {
+describePg("selection reads after a failed section_key ensure", () => {
   test("a selections table whose column ensure failed reads as no v3 diagnostic rather than an error", async () => {
     // A memory database created before the column existed, on storage the
     // ALTER cannot reach: the ensure fails open, so every read that names
     // `section_key` throws, and the inspector must see no v3 diagnostic
     // instead of a failed route.
-    memorySqlite = new Database(":memory:");
-    ensureMemoryV3SelectionsSchema(memorySqlite);
-    memorySqlite
-      .query(
-        `INSERT INTO memory_v3_selections
-           (conversation_id, turn, slug, source, created_at, message_id)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run("conv-ro", 0, "domain-a/page-1", "needle", 1000, "msg-ro-1");
-    memorySqlite.exec("PRAGMA query_only = ON");
-
-    await expect(
-      getMemoryV3SelectionForInspectorByMessageIds(["msg-ro-1"]),
-    ).resolves.toBeNull();
-    await expect(
-      getMemoryV3SelectionForInspector("conv-ro", 0),
-    ).resolves.toBeNull();
-    // A read that names no `section_key` still serves.
-    expect(summarizeSelections("conv-ro").turns).toBe(1);
+    const db = requireMainDb();
+    await db.exec("DROP TABLE IF EXISTS memory_v3_selections");
+    await createSelectionsTableWithoutSectionKey();
+    await db.run(
+      `INSERT INTO memory_v3_selections
+         (conversation_id, turn, slug, source, created_at, message_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ["conv-ro", 0, "domain-a/page-1", "needle", 1000, "msg-ro-1"],
+    );
+    // Storage that refuses the column ALTER, as a read-only database does.
+    await db.exec(`
+      CREATE OR REPLACE FUNCTION block_selection_alter() RETURNS event_trigger AS $$
+      BEGIN
+        IF current_query() LIKE '%ALTER TABLE%memory_v3_selections%' THEN
+          RAISE EXCEPTION 'cannot alter memory_v3_selections';
+        END IF;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await db.exec(`
+      CREATE EVENT TRIGGER block_selection_alter
+      ON ddl_command_start WHEN TAG IN ('ALTER TABLE')
+      EXECUTE FUNCTION block_selection_alter()
+    `);
+    try {
+      await expect(
+        getMemoryV3SelectionForInspectorByMessageIds(["msg-ro-1"]),
+      ).resolves.toBeNull();
+      await expect(
+        getMemoryV3SelectionForInspector("conv-ro", 0),
+      ).resolves.toBeNull();
+      // A read that names no `section_key` still serves.
+      expect((await summarizeSelections("conv-ro")).turns).toBe(1);
+    } finally {
+      await db.exec("DROP EVENT TRIGGER IF EXISTS block_selection_alter");
+      await db.exec("DROP FUNCTION IF EXISTS block_selection_alter()");
+    }
   });
 });

@@ -14,8 +14,16 @@ import {
 const CONV_ID = "conv-test-1";
 const NOW = Date.now();
 
-function parse(input: Record<string, unknown>, candidateIds: string[] = []) {
-  return parseExtractionResponse(input, CONV_ID, new Set(candidateIds), NOW);
+async function parse(
+  input: Record<string, unknown>,
+  candidateIds: string[] = [],
+) {
+  return await parseExtractionResponse(
+    input,
+    CONV_ID,
+    new Set(candidateIds),
+    NOW,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -23,8 +31,8 @@ function parse(input: Record<string, unknown>, candidateIds: string[] = []) {
 // ---------------------------------------------------------------------------
 
 describe("parseExtractionResponse — node creation", () => {
-  test("parses a valid create_node into a NewNode", () => {
-    const { diff } = parse({
+  test("parses a valid create_node into a NewNode", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "User loves hiking.",
@@ -62,8 +70,8 @@ describe("parseExtractionResponse — node creation", () => {
     expect(node.sourceConversations).toEqual([CONV_ID]);
   });
 
-  test("prospective nodes get stability=5", () => {
-    const { diff } = parse({
+  test("prospective nodes get stability=5", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "Deploy the new version tomorrow.",
@@ -85,8 +93,8 @@ describe("parseExtractionResponse — node creation", () => {
     expect(diff.createNodes[0].stability).toBe(5);
   });
 
-  test("non-prospective nodes get default stability=14", () => {
-    const { diff } = parse({
+  test("non-prospective nodes get default stability=14", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "User graduated from MIT.",
@@ -108,8 +116,8 @@ describe("parseExtractionResponse — node creation", () => {
     expect(diff.createNodes[0].stability).toBe(14);
   });
 
-  test("procedural nodes get stability=60", () => {
-    const { diff } = parse({
+  test("procedural nodes get stability=60", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "ffmpeg needs -ac 2 to force stereo output.",
@@ -131,8 +139,8 @@ describe("parseExtractionResponse — node creation", () => {
     expect(diff.createNodes[0].stability).toBe(60);
   });
 
-  test("clamps significance to [0, 1]", () => {
-    const { diff } = parse({
+  test("clamps significance to [0, 1]", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "Test",
@@ -153,8 +161,8 @@ describe("parseExtractionResponse — node creation", () => {
     expect(diff.createNodes[0].significance).toBe(1.0);
   });
 
-  test("clamps negative significance to 0", () => {
-    const { diff } = parse({
+  test("clamps negative significance to 0", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "Test",
@@ -175,8 +183,8 @@ describe("parseExtractionResponse — node creation", () => {
     expect(diff.createNodes[0].significance).toBe(0);
   });
 
-  test("clamps valence to [-1, 1]", () => {
-    const { diff } = parse({
+  test("clamps valence to [-1, 1]", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "Test",
@@ -197,8 +205,8 @@ describe("parseExtractionResponse — node creation", () => {
     expect(diff.createNodes[0].emotionalCharge.valence).toBe(1);
   });
 
-  test("defaults invalid decay_curve to linear", () => {
-    const { diff } = parse({
+  test("defaults invalid decay_curve to linear", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "Test",
@@ -219,8 +227,8 @@ describe("parseExtractionResponse — node creation", () => {
     expect(diff.createNodes[0].emotionalCharge.decayCurve).toBe("linear");
   });
 
-  test("defaults invalid source_type to inferred", () => {
-    const { diff } = parse({
+  test("defaults invalid source_type to inferred", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "Test",
@@ -241,16 +249,16 @@ describe("parseExtractionResponse — node creation", () => {
     expect(diff.createNodes[0].sourceType).toBe("inferred");
   });
 
-  test("skips nodes with missing content", () => {
-    const { diff } = parse({
+  test("skips nodes with missing content", async () => {
+    const { diff } = await parse({
       create_nodes: [{ type: "semantic" }],
       reinforce_node_ids: [],
     });
     expect(diff.createNodes).toHaveLength(0);
   });
 
-  test("skips nodes with invalid type", () => {
-    const { diff } = parse({
+  test("skips nodes with invalid type", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "Test",
@@ -271,8 +279,8 @@ describe("parseExtractionResponse — node creation", () => {
     expect(diff.createNodes).toHaveLength(0);
   });
 
-  test("defaults missing emotional_charge fields", () => {
-    const { diff } = parse({
+  test("defaults missing emotional_charge fields", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "Test",
@@ -299,8 +307,8 @@ describe("parseExtractionResponse — node creation", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseExtractionResponse — reinforcement", () => {
-  test("only includes IDs that exist in candidate set", () => {
-    const { diff } = parse(
+  test("only includes IDs that exist in candidate set", async () => {
+    const { diff } = await parse(
       {
         create_nodes: [],
         reinforce_node_ids: ["existing-1", "fake-id", "existing-2"],
@@ -310,8 +318,8 @@ describe("parseExtractionResponse — reinforcement", () => {
     expect(diff.reinforceNodeIds).toEqual(["existing-1", "existing-2"]);
   });
 
-  test("returns empty array when no IDs match candidates", () => {
-    const { diff } = parse(
+  test("returns empty array when no IDs match candidates", async () => {
+    const { diff } = await parse(
       {
         create_nodes: [],
         reinforce_node_ids: ["fake-1", "fake-2"],
@@ -327,8 +335,8 @@ describe("parseExtractionResponse — reinforcement", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseExtractionResponse — updates", () => {
-  test("parses content update for existing node", () => {
-    const { diff } = parse(
+  test("parses content update for existing node", async () => {
+    const { diff } = await parse(
       {
         create_nodes: [],
         reinforce_node_ids: [],
@@ -341,8 +349,8 @@ describe("parseExtractionResponse — updates", () => {
     expect(diff.updateNodes[0].changes.content).toBe("Updated content.");
   });
 
-  test("parses fidelity downgrade", () => {
-    const { diff } = parse(
+  test("parses fidelity downgrade", async () => {
+    const { diff } = await parse(
       {
         create_nodes: [],
         reinforce_node_ids: [],
@@ -353,8 +361,8 @@ describe("parseExtractionResponse — updates", () => {
     expect(diff.updateNodes[0].changes.fidelity).toBe("gist");
   });
 
-  test("ignores invalid fidelity values", () => {
-    const { diff } = parse(
+  test("ignores invalid fidelity values", async () => {
+    const { diff } = await parse(
       {
         create_nodes: [],
         reinforce_node_ids: [],
@@ -366,8 +374,8 @@ describe("parseExtractionResponse — updates", () => {
     expect(diff.updateNodes).toHaveLength(0);
   });
 
-  test("clamps updated significance to [0, 1]", () => {
-    const { diff } = parse(
+  test("clamps updated significance to [0, 1]", async () => {
+    const { diff } = await parse(
       {
         create_nodes: [],
         reinforce_node_ids: [],
@@ -378,8 +386,8 @@ describe("parseExtractionResponse — updates", () => {
     expect(diff.updateNodes[0].changes.significance).toBe(1.0);
   });
 
-  test("skips updates for nodes not in candidate set", () => {
-    const { diff } = parse(
+  test("skips updates for nodes not in candidate set", async () => {
+    const { diff } = await parse(
       {
         create_nodes: [],
         reinforce_node_ids: [],
@@ -396,8 +404,8 @@ describe("parseExtractionResponse — updates", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseExtractionResponse — edges", () => {
-  test("creates edges between existing candidate nodes", () => {
-    const { diff } = parse(
+  test("creates edges between existing candidate nodes", async () => {
+    const { diff } = await parse(
       {
         create_nodes: [],
         reinforce_node_ids: [],
@@ -419,8 +427,8 @@ describe("parseExtractionResponse — edges", () => {
     expect(diff.createEdges[0].weight).toBe(0.8);
   });
 
-  test("skips edges referencing non-candidate nodes", () => {
-    const { diff } = parse(
+  test("skips edges referencing non-candidate nodes", async () => {
+    const { diff } = await parse(
       {
         create_nodes: [],
         reinforce_node_ids: [],
@@ -437,8 +445,8 @@ describe("parseExtractionResponse — edges", () => {
     expect(diff.createEdges).toHaveLength(0);
   });
 
-  test("skips edges with invalid relationships", () => {
-    const { diff } = parse(
+  test("skips edges with invalid relationships", async () => {
+    const { diff } = await parse(
       {
         create_nodes: [],
         reinforce_node_ids: [],
@@ -455,8 +463,8 @@ describe("parseExtractionResponse — edges", () => {
     expect(diff.createEdges).toHaveLength(0);
   });
 
-  test("new_edges resolves temp_ids to new→new deferred edges", () => {
-    const { diff, deferredEdges } = parse({
+  test("new_edges resolves temp_ids to new→new deferred edges", async () => {
+    const { diff, deferredEdges } = await parse({
       create_nodes: [
         {
           temp_id: "new-1",
@@ -505,8 +513,8 @@ describe("parseExtractionResponse — edges", () => {
     expect(deferredEdges[0].relationship).toBe("part-of");
   });
 
-  test("new_edges resolves existing→new via temp_id", () => {
-    const { diff, deferredEdges } = parse(
+  test("new_edges resolves existing→new via temp_id", async () => {
+    const { diff, deferredEdges } = await parse(
       {
         create_nodes: [
           {
@@ -545,8 +553,8 @@ describe("parseExtractionResponse — edges", () => {
     expect(deferredEdges[0].target).toEqual({ kind: "new", newNodeIndex: 0 });
   });
 
-  test("new_edges with two existing endpoints lands in diff.createEdges", () => {
-    const { diff, deferredEdges } = parse(
+  test("new_edges with two existing endpoints lands in diff.createEdges", async () => {
+    const { diff, deferredEdges } = await parse(
       {
         create_nodes: [],
         reinforce_node_ids: [],
@@ -568,8 +576,8 @@ describe("parseExtractionResponse — edges", () => {
     expect(deferredEdges).toHaveLength(0);
   });
 
-  test("new_edges skips references to unknown temp_ids", () => {
-    const { diff, deferredEdges } = parse(
+  test("new_edges skips references to unknown temp_ids", async () => {
+    const { diff, deferredEdges } = await parse(
       {
         create_nodes: [
           {
@@ -603,8 +611,8 @@ describe("parseExtractionResponse — edges", () => {
     expect(deferredEdges).toHaveLength(0);
   });
 
-  test("candidate ID takes precedence over colliding temp_id", () => {
-    const { diff, deferredEdges } = parse(
+  test("candidate ID takes precedence over colliding temp_id", async () => {
+    const { diff, deferredEdges } = await parse(
       {
         create_nodes: [
           {
@@ -640,8 +648,8 @@ describe("parseExtractionResponse — edges", () => {
     expect(deferredEdges).toHaveLength(0);
   });
 
-  test("edges_to_existing self-loop (same-node temp_id) is dropped", () => {
-    const { deferredEdges, diff } = parse({
+  test("edges_to_existing self-loop (same-node temp_id) is dropped", async () => {
+    const { deferredEdges, diff } = await parse({
       create_nodes: [
         {
           temp_id: "n1",
@@ -670,8 +678,8 @@ describe("parseExtractionResponse — edges", () => {
     expect(deferredEdges).toHaveLength(0);
   });
 
-  test("defaults edge weight to 1.0", () => {
-    const { diff } = parse(
+  test("defaults edge weight to 1.0", async () => {
+    const { diff } = await parse(
       {
         create_nodes: [],
         reinforce_node_ids: [],
@@ -694,8 +702,8 @@ describe("parseExtractionResponse — edges", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseExtractionResponse — deferred edges", () => {
-  test("collects edges from new nodes to existing candidates", () => {
-    const { deferredEdges } = parse(
+  test("collects edges from new nodes to existing candidates", async () => {
+    const { deferredEdges } = await parse(
       {
         create_nodes: [
           {
@@ -733,8 +741,8 @@ describe("parseExtractionResponse — deferred edges", () => {
     expect(deferredEdges[0].weight).toBe(0.7);
   });
 
-  test("resolves new→new edges in edges_to_existing via temp_ids", () => {
-    const { deferredEdges, diff } = parse({
+  test("resolves new→new edges in edges_to_existing via temp_ids", async () => {
+    const { deferredEdges, diff } = await parse({
       create_nodes: [
         {
           temp_id: "n1",
@@ -785,8 +793,8 @@ describe("parseExtractionResponse — deferred edges", () => {
     expect(deferredEdges[0].weight).toBe(0.9);
   });
 
-  test("ignores deferred edges to non-candidate targets", () => {
-    const { deferredEdges } = parse(
+  test("ignores deferred edges to non-candidate targets", async () => {
+    const { deferredEdges } = await parse(
       {
         create_nodes: [
           {
@@ -822,8 +830,8 @@ describe("parseExtractionResponse — deferred edges", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseExtractionResponse — deferred triggers", () => {
-  test("collects temporal triggers for new nodes", () => {
-    const { deferredTriggers } = parse({
+  test("collects temporal triggers for new nodes", async () => {
+    const { deferredTriggers } = await parse({
       create_nodes: [
         {
           content: "Check in every Monday.",
@@ -857,8 +865,8 @@ describe("parseExtractionResponse — deferred triggers", () => {
     expect(deferredTriggers[0].trigger.cooldownMs).toBe(1000 * 60 * 60 * 12);
   });
 
-  test("collects semantic triggers with default threshold 0.7", () => {
-    const { deferredTriggers } = parse({
+  test("collects semantic triggers with default threshold 0.7", async () => {
+    const { deferredTriggers } = await parse({
       create_nodes: [
         {
           content: "When cooking comes up, mention the recipe.",
@@ -890,9 +898,9 @@ describe("parseExtractionResponse — deferred triggers", () => {
     );
   });
 
-  test("collects event triggers with date and ramp settings", () => {
+  test("collects event triggers with date and ramp settings", async () => {
     const eventDate = Date.now() + 7 * 24 * 60 * 60 * 1000;
-    const { deferredTriggers } = parse({
+    const { deferredTriggers } = await parse({
       create_nodes: [
         {
           content: "Trip next week.",
@@ -925,8 +933,8 @@ describe("parseExtractionResponse — deferred triggers", () => {
     expect(deferredTriggers[0].trigger.followUpDays).toBe(3);
   });
 
-  test("skips triggers with invalid types", () => {
-    const { deferredTriggers } = parse({
+  test("skips triggers with invalid types", async () => {
+    const { deferredTriggers } = await parse({
       create_nodes: [
         {
           content: "Test.",
@@ -948,8 +956,8 @@ describe("parseExtractionResponse — deferred triggers", () => {
     expect(deferredTriggers).toHaveLength(0);
   });
 
-  test("non-recurring triggers get null cooldownMs", () => {
-    const { deferredTriggers } = parse({
+  test("non-recurring triggers get null cooldownMs", async () => {
+    const { deferredTriggers } = await parse({
       create_nodes: [
         {
           content: "One-time check.",
@@ -984,9 +992,9 @@ describe("parseExtractionResponse — deferred triggers", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseExtractionResponse — event_date parsing", () => {
-  test("parses event_date onto node.eventDate", () => {
+  test("parses event_date onto node.eventDate", async () => {
     const eventDate = NOW + 7 * 24 * 60 * 60 * 1000;
-    const { diff } = parse({
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "Flight to NYC on April 8.",
@@ -1010,8 +1018,8 @@ describe("parseExtractionResponse — event_date parsing", () => {
     expect(diff.createNodes[0].eventDate).toBe(eventDate);
   });
 
-  test("event_date: null results in eventDate: null", () => {
-    const { diff } = parse({
+  test("event_date: null results in eventDate: null", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "User likes hiking.",
@@ -1034,8 +1042,8 @@ describe("parseExtractionResponse — event_date parsing", () => {
     expect(diff.createNodes[0].eventDate).toBeNull();
   });
 
-  test("missing event_date results in eventDate: null", () => {
-    const { diff } = parse({
+  test("missing event_date results in eventDate: null", async () => {
+    const { diff } = await parse({
       create_nodes: [
         {
           content: "User likes dark mode.",
@@ -1063,9 +1071,9 @@ describe("parseExtractionResponse — event_date parsing", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseExtractionResponse — event_date auto-trigger", () => {
-  test("auto-creates event trigger when event_date is set but no event trigger provided", () => {
+  test("auto-creates event trigger when event_date is set but no event trigger provided", async () => {
     const eventDate = NOW + 7 * 24 * 60 * 60 * 1000;
-    const { diff, deferredTriggers } = parse({
+    const { diff, deferredTriggers } = await parse({
       create_nodes: [
         {
           content: "Dentist appointment next week.",
@@ -1098,9 +1106,9 @@ describe("parseExtractionResponse — event_date auto-trigger", () => {
     expect(deferredTriggers[0].trigger.cooldownMs).toBeNull();
   });
 
-  test("no duplicate trigger when LLM already provided an event trigger", () => {
+  test("no duplicate trigger when LLM already provided an event trigger", async () => {
     const eventDate = NOW + 7 * 24 * 60 * 60 * 1000;
-    const { deferredTriggers } = parse({
+    const { deferredTriggers } = await parse({
       create_nodes: [
         {
           content: "Trip to Paris next week.",
@@ -1134,9 +1142,9 @@ describe("parseExtractionResponse — event_date auto-trigger", () => {
     expect(deferredTriggers[0].trigger.rampDays).toBe(5); // LLM's value, not auto-trigger's 7
   });
 
-  test("auto-creates event trigger alongside non-event triggers", () => {
+  test("auto-creates event trigger alongside non-event triggers", async () => {
     const eventDate = NOW + 14 * 24 * 60 * 60 * 1000;
-    const { deferredTriggers } = parse({
+    const { deferredTriggers } = await parse({
       create_nodes: [
         {
           content: "Project deadline in two weeks.",
@@ -1175,8 +1183,8 @@ describe("parseExtractionResponse — event_date auto-trigger", () => {
     expect(autoTrigger.trigger.rampDays).toBe(7);
   });
 
-  test("no auto-trigger when event_date is not set", () => {
-    const { deferredTriggers } = parse({
+  test("no auto-trigger when event_date is not set", async () => {
+    const { deferredTriggers } = await parse({
       create_nodes: [
         {
           content: "User likes functional programming.",
@@ -1204,8 +1212,8 @@ describe("parseExtractionResponse — event_date auto-trigger", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseExtractionResponse — robustness", () => {
-  test("handles completely empty input", () => {
-    const { diff, deferredEdges, deferredTriggers } = parse({});
+  test("handles completely empty input", async () => {
+    const { diff, deferredEdges, deferredTriggers } = await parse({});
     expect(diff.createNodes).toHaveLength(0);
     expect(diff.updateNodes).toHaveLength(0);
     expect(diff.reinforceNodeIds).toEqual([]);
@@ -1214,13 +1222,13 @@ describe("parseExtractionResponse — robustness", () => {
     expect(deferredTriggers).toHaveLength(0);
   });
 
-  test("handles missing create_nodes gracefully", () => {
-    const { diff } = parse({ reinforce_node_ids: [] });
+  test("handles missing create_nodes gracefully", async () => {
+    const { diff } = await parse({ reinforce_node_ids: [] });
     expect(diff.createNodes).toHaveLength(0);
   });
 
-  test("handles missing reinforce_node_ids gracefully", () => {
-    const { diff } = parse({ create_nodes: [] });
+  test("handles missing reinforce_node_ids gracefully", async () => {
+    const { diff } = await parse({ create_nodes: [] });
     expect(diff.reinforceNodeIds).toEqual([]);
   });
 });
@@ -1304,7 +1312,7 @@ function newNodeStub(overrides: Partial<NewNode> = {}): NewNode {
 }
 
 describe("applySupersessionDurability — new→existing", () => {
-  test("new node inherits stability from superseded node when old is higher", () => {
+  test("new node inherits stability from superseded node when old is higher", async () => {
     const diff = emptyDiff();
     diff.createNodes.push(newNodeStub({ stability: 14 }));
 
@@ -1326,7 +1334,7 @@ describe("applySupersessionDurability — new→existing", () => {
     expect(diff.createNodes[0].stability).toBe(45);
   });
 
-  test("new node keeps its own higher stability when it exceeds old node", () => {
+  test("new node keeps its own higher stability when it exceeds old node", async () => {
     const diff = emptyDiff();
     diff.createNodes.push(newNodeStub({ stability: 60 }));
 
@@ -1348,7 +1356,7 @@ describe("applySupersessionDurability — new→existing", () => {
     expect(diff.createNodes[0].stability).toBe(60);
   });
 
-  test("new node inherits reinforcementCount from superseded node", () => {
+  test("new node inherits reinforcementCount from superseded node", async () => {
     const diff = emptyDiff();
     diff.createNodes.push(newNodeStub({ reinforcementCount: 0 }));
 
@@ -1370,7 +1378,7 @@ describe("applySupersessionDurability — new→existing", () => {
     expect(diff.createNodes[0].reinforcementCount).toBe(3);
   });
 
-  test("new node significance becomes max of new and old", () => {
+  test("new node significance becomes max of new and old", async () => {
     const diff = emptyDiff();
     diff.createNodes.push(newNodeStub({ significance: 0.4 }));
 
@@ -1392,7 +1400,7 @@ describe("applySupersessionDurability — new→existing", () => {
     expect(diff.createNodes[0].significance).toBe(0.8);
   });
 
-  test("non-supersedes edges are not touched", () => {
+  test("non-supersedes edges are not touched", async () => {
     const diff = emptyDiff();
     diff.createNodes.push(
       newNodeStub({ stability: 14, reinforcementCount: 0 }),
@@ -1420,7 +1428,7 @@ describe("applySupersessionDurability — new→existing", () => {
     expect(diff.createNodes[0].reinforcementCount).toBe(0);
   });
 
-  test("skips gracefully when target not in candidate map", () => {
+  test("skips gracefully when target not in candidate map", async () => {
     const diff = emptyDiff();
     diff.createNodes.push(newNodeStub({ stability: 14 }));
 
@@ -1440,7 +1448,7 @@ describe("applySupersessionDurability — new→existing", () => {
 });
 
 describe("applySupersessionDurability — existing→existing", () => {
-  test("adds updateNode entry for superseding existing node", () => {
+  test("adds updateNode entry for superseding existing node", async () => {
     const diff = emptyDiff();
     diff.createEdges.push({
       sourceNodeId: "new-fact",
@@ -1481,7 +1489,7 @@ describe("applySupersessionDurability — existing→existing", () => {
     expect(update.changes.significance).toBe(0.7);
   });
 
-  test("merges into existing updateNode rather than adding a duplicate", () => {
+  test("merges into existing updateNode rather than adding a duplicate", async () => {
     const diff = emptyDiff();
     diff.updateNodes.push({
       id: "new-fact",
@@ -1527,7 +1535,7 @@ describe("applySupersessionDurability — existing→existing", () => {
     expect(update.changes.significance).toBe(0.9);
   });
 
-  test("skips gracefully when target not in candidate map", () => {
+  test("skips gracefully when target not in candidate map", async () => {
     const diff = emptyDiff();
     diff.createEdges.push({
       sourceNodeId: "new-fact",

@@ -243,13 +243,13 @@ function buildStubProvider(textPerCall: string[] | string): Provider {
 // ---------------------------------------------------------------------------
 
 describe("gatherV1State", () => {
-  test("returns empty state for an empty workspace + empty DB", () => {
+  test("returns empty state for an empty workspace + empty DB", async () => {
     const { items, edges } = gatherV1State(database, workspaceDir);
     expect(items).toEqual([]);
     expect(edges).toEqual([]);
   });
 
-  test("reads graph nodes from the v1 store", () => {
+  test("reads graph nodes from the v1 store", async () => {
     const id = insertNode(database, {
       content: "Alice ships to Vellum at end of day.",
       type: "semantic",
@@ -266,7 +266,7 @@ describe("gatherV1State", () => {
     });
   });
 
-  test("reads graph edges from the v1 store", () => {
+  test("reads graph edges from the v1 store", async () => {
     const a = insertNode(database, { id: "node-a" });
     const b = insertNode(database, { id: "node-b" });
     insertEdge(database, a, b);
@@ -278,7 +278,7 @@ describe("gatherV1State", () => {
     });
   });
 
-  test("reads pkb/buffer.md", () => {
+  test("reads pkb/buffer.md", async () => {
     writeFileSync(
       join(workspaceDir, "pkb", "buffer.md"),
       "- Alice's preferred IDE is VS Code\n",
@@ -290,7 +290,7 @@ describe("gatherV1State", () => {
     expect(buffer?.text).toBe("- Alice's preferred IDE is VS Code\n");
   });
 
-  test("reads pkb/archive/*.md and pkb/<topic>.md files", () => {
+  test("reads pkb/archive/*.md and pkb/<topic>.md files", async () => {
     mkdirSync(join(workspaceDir, "pkb", "archive"), { recursive: true });
     writeFileSync(
       join(workspaceDir, "pkb", "archive", "2026-01-01.md"),
@@ -311,7 +311,7 @@ describe("gatherV1State", () => {
     });
   });
 
-  test("ignores non-.md files in pkb/ and pkb/archive/", () => {
+  test("ignores non-.md files in pkb/ and pkb/archive/", async () => {
     mkdirSync(join(workspaceDir, "pkb", "archive"), { recursive: true });
     writeFileSync(join(workspaceDir, "pkb", "ignored.txt"), "skip me", "utf-8");
     writeFileSync(
@@ -323,7 +323,7 @@ describe("gatherV1State", () => {
     expect(items.filter((i) => i.source !== "graph_node")).toEqual([]);
   });
 
-  test("gracefully handles a missing pkb/ directory", () => {
+  test("gracefully handles a missing pkb/ directory", async () => {
     rmSync(join(workspaceDir, "pkb"), { recursive: true, force: true });
     expect(() => gatherV1State(database, workspaceDir)).not.toThrow();
   });
@@ -334,7 +334,7 @@ describe("gatherV1State", () => {
 // ---------------------------------------------------------------------------
 
 describe("clusterByTopic", () => {
-  test("emits one cluster per item in input order", () => {
+  test("emits one cluster per item in input order", async () => {
     const items: V1Item[] = [
       buildItem({ id: "n1", text: "Alice IDE preference is VS Code" }),
       buildItem({ id: "n2", text: "Bob coffee order is double espresso" }),
@@ -345,7 +345,7 @@ describe("clusterByTopic", () => {
     expect(clusters[1].items[0].id).toBe("n2");
   });
 
-  test("topic file → slug-hint matches filename", () => {
+  test("topic file → slug-hint matches filename", async () => {
     const items: V1Item[] = [
       buildItem({
         id: "pkb:topic:ides.md",
@@ -358,7 +358,7 @@ describe("clusterByTopic", () => {
     expect(cluster.slugHint).toBe("ides");
   });
 
-  test("archive entry → slug hint includes the date stamp", () => {
+  test("archive entry → slug hint includes the date stamp", async () => {
     const items: V1Item[] = [
       buildItem({
         id: "pkb:archive:2026-01-01.md",
@@ -371,7 +371,7 @@ describe("clusterByTopic", () => {
     expect(cluster.slugHint).toBe("archive-2026-01-01");
   });
 
-  test("graph node → slug hint is first few words of content", () => {
+  test("graph node → slug hint is first few words of content", async () => {
     const items: V1Item[] = [
       buildItem({
         id: "node-1",
@@ -460,7 +460,7 @@ describe("synthesizeConceptPage", () => {
 // ---------------------------------------------------------------------------
 
 describe("derivePromotions", () => {
-  test("high significance → essentials", () => {
+  test("high significance → essentials", async () => {
     const items: V1Item[] = [
       buildItem({
         id: "n1",
@@ -474,7 +474,7 @@ describe("derivePromotions", () => {
     expect(result.archive).toEqual([]);
   });
 
-  test("prospective type → threads (regardless of significance)", () => {
+  test("prospective type → threads (regardless of significance)", async () => {
     const items: V1Item[] = [
       buildItem({
         id: "n1",
@@ -489,7 +489,7 @@ describe("derivePromotions", () => {
     expect(result.archive).toEqual([]);
   });
 
-  test("low significance → archive", () => {
+  test("low significance → archive", async () => {
     const items: V1Item[] = [
       buildItem({
         id: "n1",
@@ -503,7 +503,7 @@ describe("derivePromotions", () => {
     expect(result.threads).toEqual([]);
   });
 
-  test("middle significance → no promotion (concept page only)", () => {
+  test("middle significance → no promotion (concept page only)", async () => {
     const items: V1Item[] = [
       buildItem({
         id: "n1",
@@ -517,7 +517,7 @@ describe("derivePromotions", () => {
     expect(result.archive).toEqual([]);
   });
 
-  test("PKB items are never promoted (concept page only)", () => {
+  test("PKB items are never promoted (concept page only)", async () => {
     const items: V1Item[] = [
       buildItem({
         id: "pkb:buffer",
@@ -532,7 +532,7 @@ describe("derivePromotions", () => {
     expect(result.archive).toEqual([]);
   });
 
-  test("essentials threshold takes precedence over prospective", () => {
+  test("essentials threshold takes precedence over prospective", async () => {
     // High-significance prospective node is essential first; threads is the
     // bucket for *active* follow-ups, not core identity.
     const items: V1Item[] = [
@@ -554,7 +554,7 @@ describe("derivePromotions", () => {
 // ---------------------------------------------------------------------------
 
 describe("collapseEdges", () => {
-  test("maps v1 ids to v2 slugs and preserves direction (source → target)", () => {
+  test("maps v1 ids to v2 slugs and preserves direction (source → target)", async () => {
     const v1: V1Edge[] = [
       { sourceNodeId: "node-a", targetNodeId: "node-b" },
       { sourceNodeId: "node-b", targetNodeId: "node-c" },
@@ -573,7 +573,7 @@ describe("collapseEdges", () => {
     expect(outgoing.has("carol")).toBe(false);
   });
 
-  test("drops edges whose endpoints aren't in the slug map", () => {
+  test("drops edges whose endpoints aren't in the slug map", async () => {
     const v1: V1Edge[] = [
       { sourceNodeId: "node-a", targetNodeId: "ghost" },
       { sourceNodeId: "ghost", targetNodeId: "node-b" },
@@ -586,7 +586,7 @@ describe("collapseEdges", () => {
     expect(outgoing.size).toBe(0);
   });
 
-  test("drops self-loops introduced by the slug mapping", () => {
+  test("drops self-loops introduced by the slug mapping", async () => {
     // Two distinct v1 nodes mapped to the same v2 slug (e.g. clustered
     // together) cannot produce a self-edge — concept-page graphs are simple,
     // so we filter at collapse time.
@@ -599,7 +599,7 @@ describe("collapseEdges", () => {
     expect(outgoing.size).toBe(0);
   });
 
-  test("collapses duplicate (source, target) pairs into a single entry", () => {
+  test("collapses duplicate (source, target) pairs into a single entry", async () => {
     const v1: V1Edge[] = [
       { sourceNodeId: "node-a", targetNodeId: "node-b" },
       { sourceNodeId: "node-a", targetNodeId: "node-b" },
@@ -612,7 +612,7 @@ describe("collapseEdges", () => {
     expect([...(outgoing.get("alice") ?? new Set<string>())]).toEqual(["bob"]);
   });
 
-  test("keeps A→B and B→A as separate directed edges", () => {
+  test("keeps A→B and B→A as separate directed edges", async () => {
     const v1: V1Edge[] = [
       { sourceNodeId: "node-a", targetNodeId: "node-b" },
       { sourceNodeId: "node-b", targetNodeId: "node-a" },
@@ -632,8 +632,8 @@ describe("collapseEdges", () => {
 // ---------------------------------------------------------------------------
 
 describe("enqueueEmbeds", () => {
-  test("enqueues one embed_concept_page job per slug", () => {
-    expect(enqueueEmbeds(["alice", "bob", "carol"])).toBe(3);
+  test("enqueues one embed_concept_page job per slug", async () => {
+    expect(await enqueueEmbeds(["alice", "bob", "carol"])).toBe(3);
     expect(enqueuedJobs).toEqual([
       { type: "embed_concept_page", payload: { slug: "alice" } },
       { type: "embed_concept_page", payload: { slug: "bob" } },
@@ -641,8 +641,8 @@ describe("enqueueEmbeds", () => {
     ]);
   });
 
-  test("empty list is a no-op", () => {
-    expect(enqueueEmbeds([])).toBe(0);
+  test("empty list is a no-op", async () => {
+    expect(await enqueueEmbeds([])).toBe(0);
     expect(enqueuedJobs).toEqual([]);
   });
 });

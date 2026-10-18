@@ -1,7 +1,9 @@
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 
-import { getMemorySqlite } from "../../../../persistence/db-connection.js";
-import { initializeDb } from "../../../../persistence/db-init.js";
+setDefaultTimeout(30_000);
+
+import { describePg } from "../../../../__tests__/pg-test-db.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import {
   applyDiff,
   countNodes,
@@ -60,79 +62,74 @@ function makeNewNode(overrides: Partial<NewNode> = {}): NewNode {
   };
 }
 
-beforeAll(async () => {
-  await initializeDb();
-});
-
-beforeEach(() => {
-  // The graph cluster lives in the dedicated memory database now; reset it on
-  // that connection. Deleting nodes cascades to edges, triggers, and edits.
-  getMemorySqlite()!.run("DELETE FROM memory_graph_nodes");
+beforeEach(async () => {
+  // Deleting nodes cascades to edges, triggers, and edits.
+  await requireMainDb().run("DELETE FROM memory_graph_nodes");
 });
 
 // ---------------------------------------------------------------------------
 // Node CRUD
 // ---------------------------------------------------------------------------
 
-describe("node CRUD", () => {
-  test("createNode assigns an ID and returns the full node", () => {
-    const node = createNode(makeNewNode({ content: "Hello world." }));
+describePg("node CRUD", () => {
+  test("createNode assigns an ID and returns the full node", async () => {
+    const node = await createNode(makeNewNode({ content: "Hello world." }));
     expect(node.id).toBeTruthy();
     expect(typeof node.id).toBe("string");
     expect(node.content).toBe("Hello world.");
     expect(node.type).toBe("episodic");
   });
 
-  test("getNode returns the node by ID", () => {
-    const created = createNode(makeNewNode({ content: "Find me." }));
-    const found = getNode(created.id);
+  test("getNode returns the node by ID", async () => {
+    const created = await createNode(makeNewNode({ content: "Find me." }));
+    const found = await getNode(created.id);
     expect(found).not.toBeNull();
     expect(found!.id).toBe(created.id);
     expect(found!.content).toBe("Find me.");
   });
 
-  test("getNode returns null for non-existent ID", () => {
-    expect(getNode("non-existent")).toBeNull();
+  test("getNode returns null for non-existent ID", async () => {
+    expect(await getNode("non-existent")).toBeNull();
   });
 
-  test("getNodesByIds returns multiple nodes", () => {
-    const a = createNode(makeNewNode({ content: "Node A." }));
-    const b = createNode(makeNewNode({ content: "Node B." }));
-    createNode(makeNewNode({ content: "Node C." }));
+  test("getNodesByIds returns multiple nodes", async () => {
+    const a = await createNode(makeNewNode({ content: "Node A." }));
+    const b = await createNode(makeNewNode({ content: "Node B." }));
+    await createNode(makeNewNode({ content: "Node C." }));
 
-    const found = getNodesByIds([a.id, b.id]);
+    const found = await getNodesByIds([a.id, b.id]);
     expect(found).toHaveLength(2);
     const contents = found.map((n) => n.content).sort();
     expect(contents).toEqual(["Node A.", "Node B."]);
   });
 
-  test("getNodesByIds returns empty for empty input", () => {
-    expect(getNodesByIds([])).toEqual([]);
+  test("getNodesByIds returns empty for empty input", async () => {
+    expect(await getNodesByIds([])).toEqual([]);
   });
 
-  test("updateNode modifies specified fields", () => {
-    const node = createNode(makeNewNode({ content: "Original." }));
-    updateNode(node.id, {
+  test("updateNode modifies specified fields", async () => {
+    const node = await createNode(makeNewNode({ content: "Original." }));
+    await updateNode(node.id, {
       content: "Updated.",
       significance: 0.9,
     });
-    const updated = getNode(node.id);
+    const updated = await getNode(node.id);
     expect(updated!.content).toBe("Updated.");
     expect(updated!.significance).toBe(0.9);
     // Untouched fields should remain
     expect(updated!.type).toBe("episodic");
   });
 
-  test("updateNode with empty changes is a no-op", () => {
-    const node = createNode(makeNewNode({ content: "Unchanged." }));
-    updateNode(node.id, {});
-    const same = getNode(node.id);
+  test("updateNode with empty changes is a no-op", async () => {
+    const node = await createNode(makeNewNode({ content: "Unchanged." }));
+    await updateNode(node.id, {});
+    const same = await getNode(node.id);
     expect(same!.content).toBe("Unchanged.");
   });
 
-  test("updateNode serializes emotionalCharge as JSON", () => {
-    const node = createNode(makeNewNode());
-    updateNode(node.id, {
+  test("updateNode serializes emotionalCharge as JSON", async () => {
+    const node = await createNode(makeNewNode());
+    await updateNode(node.id, {
       emotionalCharge: {
         valence: 0.8,
         intensity: 0.9,
@@ -141,46 +138,46 @@ describe("node CRUD", () => {
         originalIntensity: 0.9,
       },
     });
-    const updated = getNode(node.id);
+    const updated = await getNode(node.id);
     expect(updated!.emotionalCharge.valence).toBe(0.8);
     expect(updated!.emotionalCharge.decayCurve).toBe("permanent");
   });
 
-  test("createNode with eventDate round-trips through getNode", () => {
+  test("createNode with eventDate round-trips through getNode", async () => {
     const eventDate = Date.now() - 86400000; // yesterday
-    const node = createNode(makeNewNode({ eventDate }));
-    const found = getNode(node.id);
+    const node = await createNode(makeNewNode({ eventDate }));
+    const found = await getNode(node.id);
     expect(found).not.toBeNull();
     expect(found!.eventDate).toBe(eventDate);
   });
 
-  test("createNode with null eventDate round-trips as null", () => {
-    const node = createNode(makeNewNode({ eventDate: null }));
-    const found = getNode(node.id);
+  test("createNode with null eventDate round-trips as null", async () => {
+    const node = await createNode(makeNewNode({ eventDate: null }));
+    const found = await getNode(node.id);
     expect(found).not.toBeNull();
     expect(found!.eventDate).toBeNull();
   });
 
-  test("updateNode updates eventDate", () => {
-    const node = createNode(makeNewNode({ eventDate: null }));
+  test("updateNode updates eventDate", async () => {
+    const node = await createNode(makeNewNode({ eventDate: null }));
     const newEventDate = Date.now() - 86400000;
-    updateNode(node.id, { eventDate: newEventDate });
-    const updated = getNode(node.id);
+    await updateNode(node.id, { eventDate: newEventDate });
+    const updated = await getNode(node.id);
     expect(updated!.eventDate).toBe(newEventDate);
   });
 
-  test("updateNode can set eventDate to null", () => {
+  test("updateNode can set eventDate to null", async () => {
     const eventDate = Date.now() - 86400000;
-    const node = createNode(makeNewNode({ eventDate }));
-    updateNode(node.id, { eventDate: null });
-    const updated = getNode(node.id);
+    const node = await createNode(makeNewNode({ eventDate }));
+    await updateNode(node.id, { eventDate: null });
+    const updated = await getNode(node.id);
     expect(updated!.eventDate).toBeNull();
   });
 
-  test("deleteNode soft-deletes the node by setting fidelity to gone", () => {
-    const node = createNode(makeNewNode());
-    deleteNode(node.id);
-    const deleted = getNode(node.id);
+  test("deleteNode soft-deletes the node by setting fidelity to gone", async () => {
+    const node = await createNode(makeNewNode());
+    await deleteNode(node.id);
+    const deleted = await getNode(node.id);
     expect(deleted).not.toBeNull();
     expect(deleted!.fidelity).toBe("gone");
   });
@@ -190,88 +187,104 @@ describe("node CRUD", () => {
 // Node queries
 // ---------------------------------------------------------------------------
 
-describe("queryNodes", () => {
-  test("filters by type", () => {
-    createNode(makeNewNode({ type: "episodic", content: "Ep." }));
-    createNode(makeNewNode({ type: "semantic", content: "Sem." }));
-    createNode(makeNewNode({ type: "emotional", content: "Em." }));
+describePg("queryNodes", () => {
+  test("filters by type", async () => {
+    await createNode(makeNewNode({ type: "episodic", content: "Ep." }));
+    await createNode(makeNewNode({ type: "semantic", content: "Sem." }));
+    await createNode(makeNewNode({ type: "emotional", content: "Em." }));
 
-    const results = queryNodes({ types: ["semantic", "emotional"] });
+    const results = await queryNodes({ types: ["semantic", "emotional"] });
     expect(results).toHaveLength(2);
   });
 
-  test("excludes fidelity levels", () => {
-    createNode(makeNewNode({ fidelity: "vivid", content: "Vivid." }));
-    createNode(makeNewNode({ fidelity: "gone", content: "Gone." }));
+  test("excludes fidelity levels", async () => {
+    await createNode(makeNewNode({ fidelity: "vivid", content: "Vivid." }));
+    await createNode(makeNewNode({ fidelity: "gone", content: "Gone." }));
 
-    const results = queryNodes({ fidelityNot: ["gone"] });
+    const results = await queryNodes({ fidelityNot: ["gone"] });
     expect(results).toHaveLength(1);
     expect(results[0].content).toBe("Vivid.");
   });
 
-  test("filters by minimum significance", () => {
-    createNode(makeNewNode({ significance: 0.3, content: "Low." }));
-    createNode(makeNewNode({ significance: 0.7, content: "High." }));
+  test("filters by minimum significance", async () => {
+    await createNode(makeNewNode({ significance: 0.3, content: "Low." }));
+    await createNode(makeNewNode({ significance: 0.7, content: "High." }));
 
-    const results = queryNodes({ minSignificance: 0.5 });
+    const results = await queryNodes({ minSignificance: 0.5 });
     expect(results).toHaveLength(1);
     expect(results[0].content).toBe("High.");
   });
 
-  test("respects limit", () => {
+  test("respects limit", async () => {
     for (let i = 0; i < 5; i++) {
-      createNode(makeNewNode({ content: `Node ${i}.` }));
+      await createNode(makeNewNode({ content: `Node ${i}.` }));
     }
-    const results = queryNodes({ limit: 3 });
+    const results = await queryNodes({ limit: 3 });
     expect(results).toHaveLength(3);
   });
 
-  test("orders by significance descending", () => {
-    createNode(makeNewNode({ significance: 0.3 }));
-    createNode(makeNewNode({ significance: 0.9 }));
-    createNode(makeNewNode({ significance: 0.6 }));
+  test("orders by significance descending", async () => {
+    await createNode(makeNewNode({ significance: 0.3 }));
+    await createNode(makeNewNode({ significance: 0.9 }));
+    await createNode(makeNewNode({ significance: 0.6 }));
 
-    const results = queryNodes({});
+    const results = await queryNodes({});
     expect(results[0].significance).toBe(0.9);
     expect(results[1].significance).toBe(0.6);
     expect(results[2].significance).toBe(0.3);
   });
 
-  test("filters by hasEventDate", () => {
-    createNode(makeNewNode({ content: "Dated.", eventDate: 1700000000000 }));
-    createNode(makeNewNode({ content: "Undated.", eventDate: null }));
+  test("filters by hasEventDate", async () => {
+    await createNode(
+      makeNewNode({ content: "Dated.", eventDate: 1700000000000 }),
+    );
+    await createNode(makeNewNode({ content: "Undated.", eventDate: null }));
 
-    const results = queryNodes({ hasEventDate: true });
+    const results = await queryNodes({ hasEventDate: true });
     expect(results).toHaveLength(1);
     expect(results[0].content).toBe("Dated.");
   });
 
-  test("filters by eventDateAfter", () => {
-    createNode(makeNewNode({ content: "Old.", eventDate: 1700000000000 }));
-    createNode(makeNewNode({ content: "Recent.", eventDate: 1710000000000 }));
-    createNode(makeNewNode({ content: "None.", eventDate: null }));
+  test("filters by eventDateAfter", async () => {
+    await createNode(
+      makeNewNode({ content: "Old.", eventDate: 1700000000000 }),
+    );
+    await createNode(
+      makeNewNode({ content: "Recent.", eventDate: 1710000000000 }),
+    );
+    await createNode(makeNewNode({ content: "None.", eventDate: null }));
 
-    const results = queryNodes({ eventDateAfter: 1705000000000 });
+    const results = await queryNodes({ eventDateAfter: 1705000000000 });
     expect(results).toHaveLength(1);
     expect(results[0].content).toBe("Recent.");
   });
 
-  test("filters by eventDateBefore", () => {
-    createNode(makeNewNode({ content: "Old.", eventDate: 1700000000000 }));
-    createNode(makeNewNode({ content: "Recent.", eventDate: 1710000000000 }));
-    createNode(makeNewNode({ content: "None.", eventDate: null }));
+  test("filters by eventDateBefore", async () => {
+    await createNode(
+      makeNewNode({ content: "Old.", eventDate: 1700000000000 }),
+    );
+    await createNode(
+      makeNewNode({ content: "Recent.", eventDate: 1710000000000 }),
+    );
+    await createNode(makeNewNode({ content: "None.", eventDate: null }));
 
-    const results = queryNodes({ eventDateBefore: 1705000000000 });
+    const results = await queryNodes({ eventDateBefore: 1705000000000 });
     expect(results).toHaveLength(1);
     expect(results[0].content).toBe("Old.");
   });
 
-  test("combines eventDateAfter and eventDateBefore for range query", () => {
-    createNode(makeNewNode({ content: "Before.", eventDate: 1690000000000 }));
-    createNode(makeNewNode({ content: "In range.", eventDate: 1700000000000 }));
-    createNode(makeNewNode({ content: "After.", eventDate: 1720000000000 }));
+  test("combines eventDateAfter and eventDateBefore for range query", async () => {
+    await createNode(
+      makeNewNode({ content: "Before.", eventDate: 1690000000000 }),
+    );
+    await createNode(
+      makeNewNode({ content: "In range.", eventDate: 1700000000000 }),
+    );
+    await createNode(
+      makeNewNode({ content: "After.", eventDate: 1720000000000 }),
+    );
 
-    const results = queryNodes({
+    const results = await queryNodes({
       eventDateAfter: 1695000000000,
       eventDateBefore: 1710000000000,
     });
@@ -280,13 +293,13 @@ describe("queryNodes", () => {
   });
 });
 
-describe("countNodes", () => {
-  test("counts non-gone nodes", () => {
-    createNode(makeNewNode({ fidelity: "vivid" }));
-    createNode(makeNewNode({ fidelity: "clear" }));
-    createNode(makeNewNode({ fidelity: "gone" }));
+describePg("countNodes", () => {
+  test("counts non-gone nodes", async () => {
+    await createNode(makeNewNode({ fidelity: "vivid" }));
+    await createNode(makeNewNode({ fidelity: "clear" }));
+    await createNode(makeNewNode({ fidelity: "gone" }));
 
-    expect(countNodes()).toBe(2);
+    expect(await countNodes()).toBe(2);
   });
 });
 
@@ -294,11 +307,11 @@ describe("countNodes", () => {
 // Edge CRUD
 // ---------------------------------------------------------------------------
 
-describe("edge CRUD", () => {
-  test("createEdge assigns an ID and returns the full edge", () => {
-    const a = createNode(makeNewNode());
-    const b = createNode(makeNewNode());
-    const edge = createEdge({
+describePg("edge CRUD", () => {
+  test("createEdge assigns an ID and returns the full edge", async () => {
+    const a = await createNode(makeNewNode());
+    const b = await createNode(makeNewNode());
+    const edge = await createEdge({
       sourceNodeId: a.id,
       targetNodeId: b.id,
       relationship: "caused-by",
@@ -312,18 +325,18 @@ describe("edge CRUD", () => {
     expect(edge.weight).toBe(0.8);
   });
 
-  test("getEdgesForNode returns all edges (both directions)", () => {
-    const a = createNode(makeNewNode());
-    const b = createNode(makeNewNode());
-    const c = createNode(makeNewNode());
-    createEdge({
+  test("getEdgesForNode returns all edges (both directions)", async () => {
+    const a = await createNode(makeNewNode());
+    const b = await createNode(makeNewNode());
+    const c = await createNode(makeNewNode());
+    await createEdge({
       sourceNodeId: a.id,
       targetNodeId: b.id,
       relationship: "reminds-of",
       weight: 1.0,
       created: Date.now(),
     });
-    createEdge({
+    await createEdge({
       sourceNodeId: c.id,
       targetNodeId: a.id,
       relationship: "part-of",
@@ -331,21 +344,21 @@ describe("edge CRUD", () => {
       created: Date.now(),
     });
 
-    const edges = getEdgesForNode(a.id);
+    const edges = await getEdgesForNode(a.id);
     expect(edges).toHaveLength(2);
   });
 
-  test("getEdgesForNode with outgoing direction", () => {
-    const a = createNode(makeNewNode());
-    const b = createNode(makeNewNode());
-    createEdge({
+  test("getEdgesForNode with outgoing direction", async () => {
+    const a = await createNode(makeNewNode());
+    const b = await createNode(makeNewNode());
+    await createEdge({
       sourceNodeId: a.id,
       targetNodeId: b.id,
       relationship: "reminds-of",
       weight: 1.0,
       created: Date.now(),
     });
-    createEdge({
+    await createEdge({
       sourceNodeId: b.id,
       targetNodeId: a.id,
       relationship: "caused-by",
@@ -353,15 +366,15 @@ describe("edge CRUD", () => {
       created: Date.now(),
     });
 
-    const outgoing = getEdgesForNode(a.id, "outgoing");
+    const outgoing = await getEdgesForNode(a.id, "outgoing");
     expect(outgoing).toHaveLength(1);
     expect(outgoing[0].targetNodeId).toBe(b.id);
   });
 
-  test("getEdgesForNode with incoming direction", () => {
-    const a = createNode(makeNewNode());
-    const b = createNode(makeNewNode());
-    createEdge({
+  test("getEdgesForNode with incoming direction", async () => {
+    const a = await createNode(makeNewNode());
+    const b = await createNode(makeNewNode());
+    await createEdge({
       sourceNodeId: b.id,
       targetNodeId: a.id,
       relationship: "caused-by",
@@ -369,23 +382,23 @@ describe("edge CRUD", () => {
       created: Date.now(),
     });
 
-    const incoming = getEdgesForNode(a.id, "incoming");
+    const incoming = await getEdgesForNode(a.id, "incoming");
     expect(incoming).toHaveLength(1);
     expect(incoming[0].sourceNodeId).toBe(b.id);
   });
 
-  test("deleteEdge removes the edge", () => {
-    const a = createNode(makeNewNode());
-    const b = createNode(makeNewNode());
-    const edge = createEdge({
+  test("deleteEdge removes the edge", async () => {
+    const a = await createNode(makeNewNode());
+    const b = await createNode(makeNewNode());
+    const edge = await createEdge({
       sourceNodeId: a.id,
       targetNodeId: b.id,
       relationship: "reminds-of",
       weight: 1.0,
       created: Date.now(),
     });
-    deleteEdge(edge.id);
-    expect(getEdgesForNode(a.id)).toHaveLength(0);
+    await deleteEdge(edge.id);
+    expect(await getEdgesForNode(a.id)).toHaveLength(0);
   });
 });
 
@@ -393,10 +406,10 @@ describe("edge CRUD", () => {
 // Trigger CRUD
 // ---------------------------------------------------------------------------
 
-describe("trigger CRUD", () => {
-  test("createTrigger assigns an ID and returns the full trigger", () => {
-    const node = createNode(makeNewNode());
-    const trigger = createTrigger({
+describePg("trigger CRUD", () => {
+  test("createTrigger assigns an ID and returns the full trigger", async () => {
+    const node = await createNode(makeNewNode());
+    const trigger = await createTrigger({
       nodeId: node.id,
       type: "temporal",
       schedule: "day-of-week:monday",
@@ -417,9 +430,9 @@ describe("trigger CRUD", () => {
     expect(trigger.recurring).toBe(true);
   });
 
-  test("getTriggersForNode returns triggers for a given node", () => {
-    const node = createNode(makeNewNode());
-    createTrigger({
+  test("getTriggersForNode returns triggers for a given node", async () => {
+    const node = await createNode(makeNewNode());
+    await createTrigger({
       nodeId: node.id,
       type: "temporal",
       schedule: "time:morning",
@@ -434,7 +447,7 @@ describe("trigger CRUD", () => {
       cooldownMs: null,
       lastFired: null,
     });
-    createTrigger({
+    await createTrigger({
       nodeId: node.id,
       type: "semantic",
       schedule: null,
@@ -450,13 +463,13 @@ describe("trigger CRUD", () => {
       lastFired: null,
     });
 
-    const triggers = getTriggersForNode(node.id);
+    const triggers = await getTriggersForNode(node.id);
     expect(triggers).toHaveLength(2);
   });
 
-  test("updateTrigger modifies consumed and lastFired", () => {
-    const node = createNode(makeNewNode());
-    const trigger = createTrigger({
+  test("updateTrigger modifies consumed and lastFired", async () => {
+    const node = await createNode(makeNewNode());
+    const trigger = await createTrigger({
       nodeId: node.id,
       type: "temporal",
       schedule: "date:04-08",
@@ -473,16 +486,16 @@ describe("trigger CRUD", () => {
     });
 
     const now = Date.now();
-    updateTrigger(trigger.id, { consumed: true, lastFired: now });
+    await updateTrigger(trigger.id, { consumed: true, lastFired: now });
 
-    const updated = getTriggersForNode(node.id);
+    const updated = await getTriggersForNode(node.id);
     expect(updated[0].consumed).toBe(true);
     expect(updated[0].lastFired).toBe(now);
   });
 
-  test("getActiveTriggersByType returns only non-consumed triggers", () => {
-    const node = createNode(makeNewNode());
-    createTrigger({
+  test("getActiveTriggersByType returns only non-consumed triggers", async () => {
+    const node = await createNode(makeNewNode());
+    await createTrigger({
       nodeId: node.id,
       type: "temporal",
       schedule: "time:morning",
@@ -497,7 +510,7 @@ describe("trigger CRUD", () => {
       cooldownMs: null,
       lastFired: null,
     });
-    createTrigger({
+    await createTrigger({
       nodeId: node.id,
       type: "temporal",
       schedule: "time:evening",
@@ -513,7 +526,7 @@ describe("trigger CRUD", () => {
       lastFired: null,
     });
 
-    const active = getActiveTriggersByType("temporal");
+    const active = await getActiveTriggersByType("temporal");
     expect(active).toHaveLength(1);
     expect(active[0].schedule).toBe("time:morning");
   });
@@ -523,51 +536,51 @@ describe("trigger CRUD", () => {
 // Reinforcement
 // ---------------------------------------------------------------------------
 
-describe("reinforceNode", () => {
-  test("increments reinforcementCount", () => {
-    const node = createNode(
+describePg("reinforceNode", () => {
+  test("increments reinforcementCount", async () => {
+    const node = await createNode(
       makeNewNode({ reinforcementCount: 0, stability: 14, significance: 0.5 }),
     );
-    reinforceNode(node.id);
-    const updated = getNode(node.id)!;
+    await reinforceNode(node.id);
+    const updated = (await getNode(node.id))!;
     expect(updated.reinforcementCount).toBe(1);
   });
 
-  test("multiplies stability by 1.5", () => {
-    const node = createNode(makeNewNode({ stability: 14 }));
-    reinforceNode(node.id);
-    const updated = getNode(node.id)!;
+  test("multiplies stability by 1.5", async () => {
+    const node = await createNode(makeNewNode({ stability: 14 }));
+    await reinforceNode(node.id);
+    const updated = (await getNode(node.id))!;
     expect(updated.stability).toBeCloseTo(21, 5); // 14 × 1.5
   });
 
-  test("boosts significance by 10%, capped at 1.0", () => {
-    const node = createNode(makeNewNode({ significance: 0.5 }));
-    reinforceNode(node.id);
-    const updated = getNode(node.id)!;
+  test("boosts significance by 10%, capped at 1.0", async () => {
+    const node = await createNode(makeNewNode({ significance: 0.5 }));
+    await reinforceNode(node.id);
+    const updated = (await getNode(node.id))!;
     expect(updated.significance).toBeCloseTo(0.55, 5); // 0.5 × 1.1
   });
 
-  test("significance does not exceed 1.0", () => {
-    const node = createNode(makeNewNode({ significance: 0.95 }));
-    reinforceNode(node.id);
-    const updated = getNode(node.id)!;
+  test("significance does not exceed 1.0", async () => {
+    const node = await createNode(makeNewNode({ significance: 0.95 }));
+    await reinforceNode(node.id);
+    const updated = (await getNode(node.id))!;
     expect(updated.significance).toBeLessThanOrEqual(1.0);
   });
 
-  test("updates lastReinforced timestamp", () => {
+  test("updates lastReinforced timestamp", async () => {
     const oldTime = Date.now() - 10000;
-    const node = createNode(makeNewNode({ lastReinforced: oldTime }));
-    reinforceNode(node.id);
-    const updated = getNode(node.id)!;
+    const node = await createNode(makeNewNode({ lastReinforced: oldTime }));
+    await reinforceNode(node.id);
+    const updated = (await getNode(node.id))!;
     expect(updated.lastReinforced).toBeGreaterThan(oldTime);
   });
 
-  test("multiple reinforcements compound stability", () => {
-    const node = createNode(makeNewNode({ stability: 14 }));
-    reinforceNode(node.id);
-    reinforceNode(node.id);
-    reinforceNode(node.id);
-    const updated = getNode(node.id)!;
+  test("multiple reinforcements compound stability", async () => {
+    const node = await createNode(makeNewNode({ stability: 14 }));
+    await reinforceNode(node.id);
+    await reinforceNode(node.id);
+    await reinforceNode(node.id);
+    const updated = (await getNode(node.id))!;
     expect(updated.reinforcementCount).toBe(3);
     // 14 × 1.5^3 = 47.25
     expect(updated.stability).toBeCloseTo(47.25, 1);
@@ -578,9 +591,9 @@ describe("reinforceNode", () => {
 // Supersession
 // ---------------------------------------------------------------------------
 
-describe("supersedeNode", () => {
-  test("creates new node with inherited durability", () => {
-    const old = createNode(
+describePg("supersedeNode", () => {
+  test("creates new node with inherited durability", async () => {
+    const old = await createNode(
       makeNewNode({
         content: "Old fact.",
         stability: 50,
@@ -595,7 +608,7 @@ describe("supersedeNode", () => {
       significance: 0.5,
     });
 
-    const { newNode, oldNode } = supersedeNode(old.id, newNodeInput);
+    const { newNode, oldNode } = await supersedeNode(old.id, newNodeInput);
 
     expect(newNode.content).toBe("Updated fact.");
     // Inherits max of each durability metric
@@ -606,20 +619,23 @@ describe("supersedeNode", () => {
     expect(oldNode!.id).toBe(old.id);
   });
 
-  test("creates a supersedes edge between new and old node", () => {
-    const old = createNode(makeNewNode({ content: "Old." }));
-    const { newNode } = supersedeNode(old.id, makeNewNode({ content: "New." }));
+  test("creates a supersedes edge between new and old node", async () => {
+    const old = await createNode(makeNewNode({ content: "Old." }));
+    const { newNode } = await supersedeNode(
+      old.id,
+      makeNewNode({ content: "New." }),
+    );
 
-    const edges = getEdgesForNode(newNode.id, "outgoing");
+    const edges = await getEdgesForNode(newNode.id, "outgoing");
     expect(edges).toHaveLength(1);
     expect(edges[0].relationship).toBe("supersedes");
     expect(edges[0].targetNodeId).toBe(old.id);
     expect(edges[0].weight).toBe(1.0);
   });
 
-  test("inherits eventDate from old node when new node has null eventDate", () => {
+  test("inherits eventDate from old node when new node has null eventDate", async () => {
     const eventDate = 1712534400000; // April 8 2024
-    const old = createNode(
+    const old = await createNode(
       makeNewNode({ content: "Dentist April 8.", eventDate }),
     );
     const newNodeInput = makeNewNode({
@@ -627,13 +643,13 @@ describe("supersedeNode", () => {
       eventDate: null,
     });
 
-    const { newNode } = supersedeNode(old.id, newNodeInput);
+    const { newNode } = await supersedeNode(old.id, newNodeInput);
 
     expect(newNode.eventDate).toBe(eventDate);
   });
 
-  test("uses new node eventDate when both nodes have eventDate", () => {
-    const old = createNode(
+  test("uses new node eventDate when both nodes have eventDate", async () => {
+    const old = await createNode(
       makeNewNode({ content: "Flight Tuesday.", eventDate: 1712534400000 }),
     );
     const newEventDate = 1712620800000;
@@ -642,13 +658,13 @@ describe("supersedeNode", () => {
       eventDate: newEventDate,
     });
 
-    const { newNode } = supersedeNode(old.id, newNodeInput);
+    const { newNode } = await supersedeNode(old.id, newNodeInput);
 
     expect(newNode.eventDate).toBe(newEventDate);
   });
 
-  test("handles non-existent old node by just creating new node", () => {
-    const { newNode, oldNode } = supersedeNode(
+  test("handles non-existent old node by just creating new node", async () => {
+    const { newNode, oldNode } = await supersedeNode(
       "non-existent",
       makeNewNode({ content: "Brand new." }),
     );
@@ -661,9 +677,9 @@ describe("supersedeNode", () => {
 // applyDiff
 // ---------------------------------------------------------------------------
 
-describe("applyDiff", () => {
-  test("creates nodes and returns counts", () => {
-    const result = applyDiff({
+describePg("applyDiff", () => {
+  test("creates nodes and returns counts", async () => {
+    const result = await applyDiff({
       createNodes: [
         makeNewNode({ content: "Node 1." }),
         makeNewNode({ content: "Node 2." }),
@@ -681,9 +697,9 @@ describe("applyDiff", () => {
     expect(result.createdNodeIds).toHaveLength(2);
   });
 
-  test("deletes nodes", () => {
-    const node = createNode(makeNewNode());
-    const result = applyDiff({
+  test("deletes nodes", async () => {
+    const node = await createNode(makeNewNode());
+    const result = await applyDiff({
       createNodes: [],
       updateNodes: [],
       deleteNodeIds: [node.id],
@@ -694,14 +710,14 @@ describe("applyDiff", () => {
       reinforceNodeIds: [],
     });
     expect(result.nodesDeleted).toBe(1);
-    const deleted = getNode(node.id);
+    const deleted = await getNode(node.id);
     expect(deleted).not.toBeNull();
     expect(deleted!.fidelity).toBe("gone");
   });
 
-  test("updates nodes", () => {
-    const node = createNode(makeNewNode({ content: "Before." }));
-    const result = applyDiff({
+  test("updates nodes", async () => {
+    const node = await createNode(makeNewNode({ content: "Before." }));
+    const result = await applyDiff({
       createNodes: [],
       updateNodes: [{ id: node.id, changes: { content: "After." } }],
       deleteNodeIds: [],
@@ -712,12 +728,12 @@ describe("applyDiff", () => {
       reinforceNodeIds: [],
     });
     expect(result.nodesUpdated).toBe(1);
-    expect(getNode(node.id)!.content).toBe("After.");
+    expect((await getNode(node.id))!.content).toBe("After.");
   });
 
-  test("reinforces nodes", () => {
-    const node = createNode(makeNewNode({ reinforcementCount: 0 }));
-    const result = applyDiff({
+  test("reinforces nodes", async () => {
+    const node = await createNode(makeNewNode({ reinforcementCount: 0 }));
+    const result = await applyDiff({
       createNodes: [],
       updateNodes: [],
       deleteNodeIds: [],
@@ -728,13 +744,13 @@ describe("applyDiff", () => {
       reinforceNodeIds: [node.id],
     });
     expect(result.nodesReinforced).toBe(1);
-    expect(getNode(node.id)!.reinforcementCount).toBe(1);
+    expect((await getNode(node.id))!.reinforcementCount).toBe(1);
   });
 
-  test("creates and deletes edges", () => {
-    const a = createNode(makeNewNode());
-    const b = createNode(makeNewNode());
-    const existingEdge = createEdge({
+  test("creates and deletes edges", async () => {
+    const a = await createNode(makeNewNode());
+    const b = await createNode(makeNewNode());
+    const existingEdge = await createEdge({
       sourceNodeId: a.id,
       targetNodeId: b.id,
       relationship: "reminds-of",
@@ -742,7 +758,7 @@ describe("applyDiff", () => {
       created: Date.now(),
     });
 
-    const result = applyDiff({
+    const result = await applyDiff({
       createNodes: [],
       updateNodes: [],
       deleteNodeIds: [],
@@ -764,9 +780,9 @@ describe("applyDiff", () => {
     expect(result.edgesDeleted).toBe(1);
   });
 
-  test("creates and deletes triggers", () => {
-    const node = createNode(makeNewNode());
-    const existingTrigger = createTrigger({
+  test("creates and deletes triggers", async () => {
+    const node = await createNode(makeNewNode());
+    const existingTrigger = await createTrigger({
       nodeId: node.id,
       type: "temporal",
       schedule: "time:morning",
@@ -782,7 +798,7 @@ describe("applyDiff", () => {
       lastFired: null,
     });
 
-    const result = applyDiff({
+    const result = await applyDiff({
       createNodes: [],
       updateNodes: [],
       deleteNodeIds: [],
@@ -810,17 +826,19 @@ describe("applyDiff", () => {
     });
     expect(result.triggersCreated).toBe(1);
     expect(result.triggersDeleted).toBe(1);
-    const remaining = getTriggersForNode(node.id);
+    const remaining = await getTriggersForNode(node.id);
     expect(remaining).toHaveLength(1);
     expect(remaining[0].type).toBe("semantic");
   });
 
-  test("applies all operations atomically", () => {
+  test("applies all operations atomically", async () => {
     // Verify all operations are in the same transaction by creating
     // a complex diff and checking the result counts.
-    const existingNode = createNode(makeNewNode({ content: "Existing." }));
+    const existingNode = await createNode(
+      makeNewNode({ content: "Existing." }),
+    );
 
-    const result = applyDiff({
+    const result = await applyDiff({
       createNodes: [makeNewNode({ content: "New 1." })],
       updateNodes: [{ id: existingNode.id, changes: { content: "Updated." } }],
       deleteNodeIds: [],
@@ -834,8 +852,8 @@ describe("applyDiff", () => {
     expect(result.nodesCreated).toBe(1);
     expect(result.nodesUpdated).toBe(1);
     expect(result.nodesReinforced).toBe(1);
-    expect(getNode(existingNode.id)!.content).toBe("Updated.");
-    expect(getNode(existingNode.id)!.reinforcementCount).toBe(1);
+    expect((await getNode(existingNode.id))!.content).toBe("Updated.");
+    expect((await getNode(existingNode.id))!.reinforcementCount).toBe(1);
   });
 });
 
@@ -843,10 +861,10 @@ describe("applyDiff", () => {
 // deleteTrigger
 // ---------------------------------------------------------------------------
 
-describe("deleteTrigger", () => {
-  test("removes a trigger by ID", () => {
-    const node = createNode(makeNewNode());
-    const trigger = createTrigger({
+describePg("deleteTrigger", () => {
+  test("removes a trigger by ID", async () => {
+    const node = await createNode(makeNewNode());
+    const trigger = await createTrigger({
       nodeId: node.id,
       type: "event",
       schedule: null,
@@ -861,8 +879,8 @@ describe("deleteTrigger", () => {
       cooldownMs: null,
       lastFired: null,
     });
-    deleteTrigger(trigger.id);
-    expect(getTriggersForNode(node.id)).toHaveLength(0);
+    await deleteTrigger(trigger.id);
+    expect(await getTriggersForNode(node.id)).toHaveLength(0);
   });
 });
 
@@ -870,12 +888,12 @@ describe("deleteTrigger", () => {
 // updateNode — event trigger sync
 // ---------------------------------------------------------------------------
 
-describe("updateNode event trigger sync", () => {
-  test("syncs event trigger eventDate when node eventDate is updated", () => {
+describePg("updateNode event trigger sync", () => {
+  test("syncs event trigger eventDate when node eventDate is updated", async () => {
     const originalDate = 1712534400000;
     const newDate = 1712620800000;
-    const node = createNode(makeNewNode({ eventDate: originalDate }));
-    createTrigger({
+    const node = await createNode(makeNewNode({ eventDate: originalDate }));
+    await createTrigger({
       nodeId: node.id,
       type: "event",
       schedule: null,
@@ -891,17 +909,17 @@ describe("updateNode event trigger sync", () => {
       lastFired: null,
     });
 
-    updateNode(node.id, { eventDate: newDate });
+    await updateNode(node.id, { eventDate: newDate });
 
-    const triggers = getTriggersForNode(node.id);
+    const triggers = await getTriggersForNode(node.id);
     expect(triggers).toHaveLength(1);
     expect(triggers[0].eventDate).toBe(newDate);
   });
 
-  test("deletes event trigger when node eventDate is cleared to null", () => {
+  test("deletes event trigger when node eventDate is cleared to null", async () => {
     const eventDate = 1712534400000;
-    const node = createNode(makeNewNode({ eventDate }));
-    createTrigger({
+    const node = await createNode(makeNewNode({ eventDate }));
+    await createTrigger({
       nodeId: node.id,
       type: "event",
       schedule: null,
@@ -917,15 +935,15 @@ describe("updateNode event trigger sync", () => {
       lastFired: null,
     });
 
-    updateNode(node.id, { eventDate: null });
+    await updateNode(node.id, { eventDate: null });
 
-    const triggers = getTriggersForNode(node.id);
+    const triggers = await getTriggersForNode(node.id);
     expect(triggers).toHaveLength(0);
   });
 
-  test("does not affect non-event triggers when eventDate changes", () => {
-    const node = createNode(makeNewNode({ eventDate: 1712534400000 }));
-    createTrigger({
+  test("does not affect non-event triggers when eventDate changes", async () => {
+    const node = await createNode(makeNewNode({ eventDate: 1712534400000 }));
+    await createTrigger({
       nodeId: node.id,
       type: "event",
       schedule: null,
@@ -940,7 +958,7 @@ describe("updateNode event trigger sync", () => {
       cooldownMs: null,
       lastFired: null,
     });
-    createTrigger({
+    await createTrigger({
       nodeId: node.id,
       type: "semantic",
       schedule: null,
@@ -956,17 +974,17 @@ describe("updateNode event trigger sync", () => {
       lastFired: null,
     });
 
-    updateNode(node.id, { eventDate: null });
+    await updateNode(node.id, { eventDate: null });
 
-    const triggers = getTriggersForNode(node.id);
+    const triggers = await getTriggersForNode(node.id);
     expect(triggers).toHaveLength(1);
     expect(triggers[0].type).toBe("semantic");
   });
 
-  test("does not touch triggers when eventDate is not in changes", () => {
+  test("does not touch triggers when eventDate is not in changes", async () => {
     const eventDate = 1712534400000;
-    const node = createNode(makeNewNode({ eventDate }));
-    createTrigger({
+    const node = await createNode(makeNewNode({ eventDate }));
+    await createTrigger({
       nodeId: node.id,
       type: "event",
       schedule: null,
@@ -983,9 +1001,9 @@ describe("updateNode event trigger sync", () => {
     });
 
     // Update something other than eventDate
-    updateNode(node.id, { content: "Updated content." });
+    await updateNode(node.id, { content: "Updated content." });
 
-    const triggers = getTriggersForNode(node.id);
+    const triggers = await getTriggersForNode(node.id);
     expect(triggers).toHaveLength(1);
     expect(triggers[0].eventDate).toBe(eventDate);
   });
@@ -995,44 +1013,44 @@ describe("updateNode event trigger sync", () => {
 // Paragraph deduplication
 // ---------------------------------------------------------------------------
 
-describe("deduplicateParagraphs", () => {
-  test("content with no duplicates passes through unchanged", () => {
+describePg("deduplicateParagraphs", () => {
+  test("content with no duplicates passes through unchanged", async () => {
     const input = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph.";
     expect(deduplicateParagraphs(input)).toBe(input);
   });
 
-  test("two identical paragraphs separated by \\n\\n collapses to one", () => {
+  test("two identical paragraphs separated by \\n\\n collapses to one", async () => {
     const input = "Hello world.\n\nHello world.";
     expect(deduplicateParagraphs(input)).toBe("Hello world.");
   });
 
-  test("paragraphs that differ only in trailing whitespace are treated as duplicates", () => {
+  test("paragraphs that differ only in trailing whitespace are treated as duplicates", async () => {
     const input = "Hello world.  \n\nHello world.";
     expect(deduplicateParagraphs(input)).toBe("Hello world.  ");
   });
 
-  test("bullet lists with repeated items are deduped", () => {
+  test("bullet lists with repeated items are deduped", async () => {
     const input = "- item one\n- item two\n- item one\n- item three";
     expect(deduplicateParagraphs(input)).toBe(
       "- item one\n- item two\n- item three",
     );
   });
 
-  test("empty content returns empty string", () => {
+  test("empty content returns empty string", async () => {
     expect(deduplicateParagraphs("")).toBe("");
   });
 
-  test("multiple duplicate paragraphs with different content", () => {
+  test("multiple duplicate paragraphs with different content", async () => {
     const input = "Alpha.\n\nBeta.\n\nAlpha.\n\nGamma.\n\nBeta.";
     expect(deduplicateParagraphs(input)).toBe("Alpha.\n\nBeta.\n\nGamma.");
   });
 
-  test("bullet dedup within a paragraph preserves non-bullet lines", () => {
+  test("bullet dedup within a paragraph preserves non-bullet lines", async () => {
     const input = "Header:\n- item A\n- item B\n- item A";
     expect(deduplicateParagraphs(input)).toBe("Header:\n- item A\n- item B");
   });
 
-  test("paragraphs differing only in internal whitespace are treated as duplicates", () => {
+  test("paragraphs differing only in internal whitespace are treated as duplicates", async () => {
     const input = "hello   world\n\nhello world";
     expect(deduplicateParagraphs(input)).toBe("hello   world");
   });

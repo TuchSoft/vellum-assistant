@@ -2,10 +2,9 @@
 
 The mechanical guide for porting a data-layer slice from the legacy SQLite
 accessors to the Postgres-only `AsyncDb` facade
-(`assistant/src/persistence/db-facade.ts`). The facade has a single backend, so
-this map is what a call site written against `bun:sqlite` has to change. The
-legacy synchronous helpers still exist for the slices that have not been ported
-and are removed as each slice converts.
+(`assistant/src/persistence/db-facade.ts`). The port is complete: every runtime
+store and route resolves the facade, and the synchronous SQLite helpers remain
+only in the legacy migration chain and the out-of-process database tooling.
 
 ## Calling convention
 
@@ -32,6 +31,12 @@ and are removed as each slice converts.
 4. `AsyncDb.orm` is the Postgres Drizzle instance and `AsyncDb.schema` is the
    `pg-schema/` barrel, so the table objects a query uses come from the same
    dialect as the connection.
+5. `db.transaction(cb)` opens one connection and hands `cb` a transaction-scoped
+   `AsyncDb`. Its raw methods (`run`/`all`/`get`/`exec`) and its `orm` root both
+   use that connection. Any helper that must join the transaction takes an
+   optional `db: AsyncDb` parameter and is called with the callback's `tx`;
+   helpers that call `requireMainDb()` internally run on a different pooled
+   connection and cannot see uncommitted rows.
 
 ## SQL constructs
 

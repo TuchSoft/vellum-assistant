@@ -187,7 +187,7 @@ Each instance gets its own:
 - **`CES_BOOTSTRAP_SOCKET_DIR`**: Set to `<instanceDir>/.vellum/protected/credential-executor`. CES binds `ces.sock` here; the assistant and its children discover the same path. Not derived from `VELLUM_WORKSPACE_DIR`.
 - **Daemon port** (`RUNTIME_HTTP_PORT`), **Gateway port** (`GATEWAY_PORT`), **Qdrant port** (`QDRANT_HTTP_PORT`): Allocated by scanning upward from the environment's base port — see "Port allocation" below.
 - **PID file**: `<instanceDir>/.vellum/vellum.pid`
-- **SQLite database, logs, memory indices**: All under `<instanceDir>/.vellum/workspace/data/`
+- **Postgres database** (`VELLUM_DATABASE_URL`): the single runtime store for the main, memory, telemetry, and request-log tables. Workspace files and indices remain under `<instanceDir>/.vellum/workspace/data/`; LLM request logs are also stored in Postgres, while trace/analytics logs go to ClickHouse.
 
 ### Port allocation
 
@@ -374,7 +374,7 @@ subgraph "Text Q&A Session"
             JOBS_WORKER["MemoryJobsWorker<br/>poll every 1.5s<br/>embed, extract, cleanup_stale"]
         end
 
-        subgraph "SQLite Database ($VELLUM_WORKSPACE_DIR/data/db/assistant.db)"
+        subgraph "Postgres Database (VELLUM_DATABASE_URL)"
             DB_CONV["conversations"]
             DB_MSG["messages"]
             DB_TOOL["tool_invocations"]
@@ -390,9 +390,6 @@ subgraph "Text Q&A Session"
             DB_TASKS["tasks"]
             DB_TASK_RUNS["task_runs"]
             DB_CONTACTS["contacts<br/>(migrating to gateway)"]
-        end
-
-        subgraph "SQLite Database ($VELLUM_WORKSPACE_DIR/data/db/assistant-memory.db)"
             DB_SEG["memory_segments"]
             DB_SUM["memory_summaries"]
             DB_EMB["memory_embeddings"]

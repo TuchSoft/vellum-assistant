@@ -100,6 +100,20 @@ jobs:
     name: Test
     runs-on: ubuntu-latest-8-cores
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: vellum_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     defaults:
       run:
         working-directory: assistant
@@ -131,6 +145,7 @@ jobs:
         env:
           EXCLUDE_EXPERIMENTAL: 'true'
           TEST_WORKERS: '8'
+          VELLUM_PG_TEST_URL: postgres://postgres@localhost:5432/vellum_test
 
   artifact:
     name: Upload Artifact

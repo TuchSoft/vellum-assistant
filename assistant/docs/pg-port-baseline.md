@@ -30,8 +30,14 @@ translated for their resolved type: `0`/`1` -> `false`/`true` on a boolean
 column, and a SQLite time function on a `bigint` column becomes epoch-ms
 `(floor(extract(epoch from now()) * 1000))::bigint`.
 
-Excluded: `llm_request_logs` (ClickHouse). Compaction logs have no SQLite table
-(they are ClickHouse-only), so there is nothing else to exclude.
+Excluded: none. The consolidated Postgres database also carries
+`llm_request_logs`, which the conversation store reads directly. Compaction logs
+have no SQLite table (they are ClickHouse-only), so there is nothing to exclude
+for them.
+
+Partial indexes keep their predicate: `sqlite-model.ts` reads the stored index
+DDL and the translator appends its `WHERE` clause, so a unique index that only
+covers one slice of a table stays partial on Postgres.
 
 Every statement is idempotent: `CREATE TABLE/INDEX IF NOT EXISTS`, and foreign
 keys are added as `DO $$ ... EXCEPTION WHEN duplicate_object THEN NULL $$`

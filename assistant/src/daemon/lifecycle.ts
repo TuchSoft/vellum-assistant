@@ -6,6 +6,7 @@ import { TwilioVoiceProvider } from "../calls/twilio-provider.js";
 import { expireInteractionBoundGuardianRequests } from "../channels/gateway-guardian-requests.js";
 import { initFeatureFlagOverrides } from "../config/assistant-feature-flags.js";
 import { setIngressPublicBaseUrl, validateEnv } from "../config/env.js";
+import { refreshCatalog } from "../config/llm-catalog.js";
 import {
   hasPendingDefaultWorkspaceConfig,
   loadConfig,
@@ -721,6 +722,12 @@ export async function runDaemon(): Promise<void> {
   // requests while Qdrant initializes, then best-effort sync the workspace
   // identity name and avatar to the platform record.
   await initializeProviders(config);
+  // Warm the gateway alias catalog (the resolver reads it synchronously).
+  // Best-effort: a cold gateway leaves the on-disk snapshot or the
+  // code-owned fallback in place.
+  void refreshCatalog().catch((err) =>
+    log.warn({ err }, "Model catalog warm-up failed"),
+  );
   syncWorkspaceIdentityToPlatform();
   syncAvatarToPlatform();
 

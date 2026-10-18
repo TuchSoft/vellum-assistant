@@ -112,6 +112,7 @@ import { ROUTES as INTERNAL_TWILIO_ROUTES } from "./internal-twilio-routes.js";
 import { ROUTES as LIFECYCLE_ROUTES } from "./lifecycle-routes.js";
 import { ROUTES as LIVE_VOICE_ROUTES } from "./live-voice-routes.js";
 import { ROUTES as LLM_CALL_SITES_ROUTES } from "./llm-call-sites-routes.js";
+import { ROUTES as LLM_CATALOG_ROUTES } from "./llm-catalog-routes.js";
 import { ROUTES as LOG_EXPORT_ROUTES } from "./log-export-routes.js";
 import { ROUTES as MCP_AUTH_ROUTES } from "./mcp-auth-routes.js";
 import { ROUTES as MESSAGES_LEXICAL_ROUTES } from "./messages-lexical-routes.js";
@@ -265,6 +266,7 @@ export const ROUTES: RouteDefinition[] = [
   ...LIVE_VOICE_ROUTES,
   ...LOG_EXPORT_ROUTES,
   ...LLM_CALL_SITES_ROUTES,
+  ...LLM_CATALOG_ROUTES,
   ...MEMORY_EVAL_ROUTES,
   ...MEMORY_GRAPH_ROUTES,
   ...MEMORY_INGEST_ROUTES,

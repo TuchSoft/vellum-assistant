@@ -161,7 +161,7 @@ export const ROUTES: RouteDefinition[] = [
     },
     summary: "Stop all in-flight work",
     description:
-      "Stops every category of in-flight work the drain snapshot enumerates: processing conversations (plus their subagents and ACP sessions), background tools, running schedule/heartbeat runs, and in-flight workflow runs. Memory jobs are reported in `unsupported` and left untouched. The optional mode defaults to hard.",
+      "Stops every category of in-flight work the drain snapshot enumerates: processing conversations (plus their subagents and ACP sessions), background tools, running schedule/heartbeat runs, and in-flight workflow runs. Memory jobs are reported in `unsupported` and left untouched. The optional mode defaults to hard. `main-only` acts only on processing conversations: background tools and scheduled work stay alive.",
     tags: ["system"],
     requestBody: z.object({
       mode: z

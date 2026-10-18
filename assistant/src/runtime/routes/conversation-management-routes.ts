@@ -1219,7 +1219,8 @@ export const ROUTES: RouteDefinition[] = [
       "Abort the in-progress assistant response for a conversation. The " +
       "optional mode defaults to `hard`; `graceful` waits for the turn's own " +
       "teardown and lets the queue drain, while `main-only` leaves child " +
-      "subagents and ACP sessions running.",
+      "subagents and ACP sessions running. `main-only` uses the `user_cancel` " +
+      "reason, so queued messages drain exactly as they do for `graceful`.",
     tags: ["conversations"],
     pathParams: [{ name: "id" }],
     requestBody: z.object({

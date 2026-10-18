@@ -3,11 +3,14 @@
  * enumerate, using the same enumerators as `GET /lifecycle/drain-status`.
  *
  * Stop modes apply per conversation (see {@link cancelGenerationWithMode}).
- * Background tools are cancelled unconditionally: their cancel path has no
- * modes. Schedule and heartbeat runs are stopped through the conversation that
- * owns their turn. Workflow runs are aborted through the in-flight registry,
- * and a `running` row this process does not own is reported as unreachable
- * rather than rewritten: the engine owns its own row's terminal status.
+ * `hard` and `graceful` stop every enumerated category. `main-only` is
+ * conversation-scoped: it signals only the main turn of each processing
+ * conversation and leaves background tools, schedule runs, workflow runs,
+ * and heartbeat runs alive. Schedule and heartbeat runs are stopped through
+ * the conversation that owns their turn. Workflow runs are aborted through
+ * the in-flight registry, and a `running` row this process does not own is
+ * reported as unreachable rather than rewritten: the engine owns its own
+ * row's terminal status.
  *
  * Memory jobs are listed but never touched. Their manager exposes no safe
  * per-job cancel, so the category is reported in `unsupported` instead of a
@@ -138,6 +141,11 @@ export async function stopAllWork(
     unsupported: [],
   };
   const stoppedConversationIds = new Set<string>();
+  // `main-only` is deliberately conversation-scoped: it leaves work that is
+  // not a conversation's main turn alone, including background tools, schedule
+  // runs, workflow runs, and heartbeat runs. `hard` and `graceful` stop every
+  // category the drain snapshot enumerates.
+  const stopAllCategories = mode !== "main-only";
 
   const activeConversations = await deps.listProcessingConversations();
   for (const conversation of activeConversations) {
@@ -151,62 +159,64 @@ export async function stopAllWork(
     stoppedConversationIds.add(conversation.conversationId);
   }
 
-  counts.backgroundTools = deps.cancelBackgroundTools(
-    () => true,
-    `stop-all:${mode}`,
-  ).length;
+  if (stopAllCategories) {
+    counts.backgroundTools = deps.cancelBackgroundTools(
+      () => true,
+      `stop-all:${mode}`,
+    ).length;
 
-  const scheduleRuns = await deps.listRunningScheduleRuns();
-  for (const run of scheduleRuns) {
-    const conversation = deps.findConversationOrSubagent(
-      run.conversationId ?? undefined,
-    );
-    if (!conversation) {
-      log.warn(
-        { runId: run.runId, conversationId: run.conversationId },
-        "Running schedule run has no live conversation in this process",
+    const scheduleRuns = await deps.listRunningScheduleRuns();
+    for (const run of scheduleRuns) {
+      const conversation = deps.findConversationOrSubagent(
+        run.conversationId ?? undefined,
       );
-      continue;
-    }
-    conversation.abortScheduledRun(run.runId);
-    counts.scheduleRuns += 1;
-  }
-
-  const workflowRuns = await deps.listRunningWorkflowRuns();
-  for (const run of workflowRuns) {
-    if (deps.abortWorkflowRun(run.runId)) {
-      counts.workflowRuns += 1;
-    } else {
-      log.warn(
-        { runId: run.runId },
-        "Running workflow run is not in flight in this process; leaving its row to its owner",
-      );
-    }
-  }
-
-  const heartbeatRuns = await deps.listRunningHeartbeatRuns();
-  for (const run of heartbeatRuns) {
-    const conversationId = run.conversationId ?? undefined;
-    if (!conversationId) {
-      log.warn(
-        { runId: run.runId },
-        "Running heartbeat run has no conversation to stop",
-      );
-      continue;
-    }
-    if (!stoppedConversationIds.has(conversationId)) {
-      const outcome = deps.cancelGeneration(conversationId, mode);
-      if (!outcome.found) {
+      if (!conversation) {
         log.warn(
-          { runId: run.runId, conversationId },
-          "Running heartbeat run has no live conversation in this process",
+          { runId: run.runId, conversationId: run.conversationId },
+          "Running schedule run has no live conversation in this process",
         );
         continue;
       }
-      counts.subagents += outcome.subagents;
-      counts.acpSessions += outcome.acpSessions;
+      conversation.abortScheduledRun(run.runId);
+      counts.scheduleRuns += 1;
     }
-    counts.heartbeatRuns += 1;
+
+    const workflowRuns = await deps.listRunningWorkflowRuns();
+    for (const run of workflowRuns) {
+      if (deps.abortWorkflowRun(run.runId)) {
+        counts.workflowRuns += 1;
+      } else {
+        log.warn(
+          { runId: run.runId },
+          "Running workflow run is not in flight in this process; leaving its row to its owner",
+        );
+      }
+    }
+
+    const heartbeatRuns = await deps.listRunningHeartbeatRuns();
+    for (const run of heartbeatRuns) {
+      const conversationId = run.conversationId ?? undefined;
+      if (!conversationId) {
+        log.warn(
+          { runId: run.runId },
+          "Running heartbeat run has no conversation to stop",
+        );
+        continue;
+      }
+      if (!stoppedConversationIds.has(conversationId)) {
+        const outcome = deps.cancelGeneration(conversationId, mode);
+        if (!outcome.found) {
+          log.warn(
+            { runId: run.runId, conversationId },
+            "Running heartbeat run has no live conversation in this process",
+          );
+          continue;
+        }
+        counts.subagents += outcome.subagents;
+        counts.acpSessions += outcome.acpSessions;
+      }
+      counts.heartbeatRuns += 1;
+    }
   }
 
   const memoryJobs = await deps.listRunningMemoryJobs();

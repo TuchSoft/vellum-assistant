@@ -14,6 +14,7 @@ import { resolvePendingQuestion } from "../../runtime/question-resolution.js";
 import { getSubagentManager } from "../../subagent/index.js";
 import { createAbortReason } from "../../util/abort-reasons.js";
 import { UserError } from "../../util/errors.js";
+import type { StopMode } from "../../util/stop-mode.js";
 import type { Conversation } from "../conversation.js";
 import { touchConversation } from "../conversation-evictor.js";
 import { forceClearStaleProcessing } from "../conversation-lifecycle.js";
@@ -95,45 +96,90 @@ export async function switchConversation(conversationId: string): Promise<{
     inferenceProfile: conversation.inferenceProfile ?? undefined,
   };
 }
+export interface CancelGenerationOutcome {
+  /** Whether a resident conversation was found and signalled. */
+  found: boolean;
+  /** Child subagents aborted by this stop. */
+  subagents: number;
+  /** ACP agent sessions a cancel was kicked off for. */
+  acpSessions: number;
+}
+
 /**
- * Cancel generation for a conversation. Returns true if a conversation was found and cancelled.
+ * Cancel generation for a conversation under an explicit stop mode.
  *
- * Uses the `hard_cancel` reason: the turn is torn down like a user interrupt,
- * but the messages queued behind it are parked instead of draining into the
- * next turn. The reason reaches whatever abort controller the running turn
+ * `hard` uses the `hard_cancel` reason (turn torn down like a user interrupt,
+ * but the messages queued behind it are parked) and force-clears the
+ * conversation's processing state immediately. `graceful` uses the ordinary
+ * `user_cancel` reason and leaves the processing flag to the turn's `finally`.
+ * `main-only` aborts only the main turn: no child subagents, no ACP sessions,
+ * and no queue intervention.
+ *
+ * The stop reason reaches whatever abort controller the running turn
  * installed, including a woken (background) turn.
  */
-export function cancelGeneration(conversationId: string): boolean {
+export function cancelGenerationWithMode(
+  conversationId: string,
+  mode: StopMode,
+): CancelGenerationOutcome {
   const conversation = findConversation(conversationId);
   if (!conversation) {
-    return false;
+    return { found: false, subagents: 0, acpSessions: 0 };
   }
   touchConversation(conversationId);
   conversation.abort(
-    createAbortReason("hard_cancel", "cancelGeneration", conversationId),
+    createAbortReason(
+      mode === "hard" ? "hard_cancel" : "user_cancel",
+      `cancelGeneration:${mode}`,
+      conversationId,
+    ),
   );
+  if (mode === "main-only") {
+    return { found: true, subagents: 0, acpSessions: 0 };
+  }
   // Also abort any in-flight child subagents spawned by this conversation.
   // Omit sendToClient to suppress parent notifications — the parent is
   // being cancelled, so enqueuing synthetic messages would trigger
   // unwanted model activity after the user pressed stop. Terminal children
   // stay readable: the conversation survives the stop, and its next turn may
   // still `subagent_read` a completed child's result.
-  getSubagentManager().abortAllForParent(conversationId, undefined, {
-    userCancelled: true,
-  });
+  const subagents = getSubagentManager().abortAllForParent(
+    conversationId,
+    undefined,
+    { userCancelled: true },
+  );
   // Cancel any in-flight ACP agent sessions this conversation spawned, for the
   // same reason: a backgrounded ACP prompt would otherwise keep running (and
   // holding a child process) past the stop and, on completion, enqueue a
   // follow-up message back into the conversation the user just cancelled. Peek
   // the singleton so a conversation that never used ACP doesn't spin one up.
-  peekAcpSessionManager()?.cancelForParent(conversationId);
-  // The processing flag is cleared by the in-flight turn's `finally`, not here.
-  // Abort propagates into the provider call and tool execution (and is backed
-  // by the agent loop's abort watchdog), so the turn reaches its `finally`
-  // within a bounded time and tears down its own state there — which publishes
-  // the metadata sync invalidation that drives clients to the authoritative
-  // idle state.
-  return true;
+  const acpSessions =
+    peekAcpSessionManager()?.cancelForParent(conversationId) ?? 0;
+  if (mode === "hard") {
+    // The turn's `finally` normally clears the flag after its abort unwinds.
+    // A hard stop does not wait: clear the in-memory flag and the advisory
+    // `processing_started_at` column now, and let releaseTurn's controller
+    // identity check keep the unwinding turn from clobbering a newer turn.
+    conversation.setProcessing(false);
+    log.info(
+      { conversationId },
+      "Hard cancel: force-cleared the processing flag",
+    );
+  }
+  return { found: true, subagents, acpSessions };
+}
+
+/**
+ * Cancel generation for a conversation. Returns true if a conversation was
+ * found and signalled. The default mode is `hard`, matching the Stop button's
+ * contract; callers that need the per-category counts use
+ * {@link cancelGenerationWithMode}.
+ */
+export function cancelGeneration(
+  conversationId: string,
+  mode: StopMode = "hard",
+): boolean {
+  return cancelGenerationWithMode(conversationId, mode).found;
 }
 
 /**

@@ -114,6 +114,7 @@ function makeContext(opts: {
       [Symbol.iterator]: () => queuedItems[Symbol.iterator](),
     },
     pendingInterruptRepair: false,
+    suppressNextQueueDrain: false,
     kickDrainQueue: async (_reason?: string, origin?: string) => {
       drainKicks.push(origin ?? "");
     },
@@ -208,6 +209,54 @@ describe("abortConversation", () => {
     expect(h.drainKicks).toEqual([]);
     // AND the drain is told to repair tool_use blocks the killed turn abandoned
     expect(h.ctx.pendingInterruptRepair).toBe(true);
+  });
+
+  test("a hard cancel parks the queued messages instead of letting them drain", () => {
+    // GIVEN a live turn with two messages queued behind it
+    const controller = new AbortController();
+    const h = makeContext({
+      processing: true,
+      controller,
+      queued: ["req-a", "req-b"],
+    });
+
+    // WHEN the user issues a hard Stop
+    abortConversation(
+      h.ctx,
+      createAbortReason("hard_cancel", "test", "abort-null-controller-test"),
+    );
+
+    // THEN the queue survives (the messages were not discarded)
+    expect(h.queueClearedCount()).toBe(0);
+    expect(h.ctx.queue.length).toBe(2);
+    // AND the unwinding turn's own drain is absorbed, so the queue stays
+    // parked until an explicit later drain
+    expect(h.ctx.suppressNextQueueDrain).toBe(true);
+    // AND this path does not kick a drain itself
+    expect(h.drainKicks).toEqual([]);
+  });
+
+  test("a graceful cancel leaves the queue for the turn's own drain", () => {
+    // GIVEN a live turn with queued messages
+    const controller = new AbortController();
+    const h = makeContext({
+      processing: true,
+      controller,
+      queued: ["req-a"],
+    });
+
+    // WHEN the user issues a graceful Stop
+    abortConversation(
+      h.ctx,
+      createAbortReason("user_cancel", "test", "abort-null-controller-test"),
+    );
+
+    // THEN the queue is untouched and no parking flag is armed: the turn's
+    // `finally` drains the messages normally
+    expect(h.queueClearedCount()).toBe(0);
+    expect(h.ctx.queue.length).toBe(1);
+    expect(h.ctx.suppressNextQueueDrain).toBe(false);
+    expect(h.drainKicks).toEqual([]);
   });
 
   for (const kind of ["user", "other-request", "internal", "mixed"] as const) {

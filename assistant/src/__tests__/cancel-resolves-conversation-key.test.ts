@@ -11,9 +11,11 @@ import { expect, mock, setDefaultTimeout, test } from "bun:test";
 mock.module("../config/env.js", () => ({ isHttpAuthDisabled: () => true }));
 
 let cancelledId: string | undefined;
+let cancelledMode: string | undefined;
 mock.module("../daemon/handlers/conversations.js", () => ({
-  cancelGeneration: (id: string) => {
+  cancelGeneration: (id: string, mode = "hard") => {
     cancelledId = id;
+    cancelledMode = mode;
     return true;
   },
   switchConversation: async () => null,
@@ -30,6 +32,56 @@ describePg("POST /v1/conversations/:id/cancel", () => {
   const cancelRoute = ROUTES.find(
     (r) => r.operationId === "cancelConversationGeneration",
   )!;
+
+  test("defaults to the hard stop mode when no body names one", async () => {
+    cancelledId = undefined;
+    cancelledMode = undefined;
+    const directId = "direct-hard-mode-conversation";
+
+    await cancelRoute.handler({
+      pathParams: { id: directId },
+      body: {},
+      headers: {},
+    });
+
+    expect(cancelledMode!).toBe("hard");
+  });
+
+  test("passes an explicit mode through to cancelGeneration", async () => {
+    cancelledId = undefined;
+    cancelledMode = undefined;
+    const directId = "direct-graceful-mode-conversation";
+
+    await cancelRoute.handler({
+      pathParams: { id: directId },
+      body: { mode: "graceful" },
+      headers: {},
+    });
+
+    expect(cancelledMode!).toBe("graceful");
+  });
+
+  test("rejects an unknown mode with 400", async () => {
+    cancelledId = undefined;
+    const directId = "direct-invalid-mode-conversation";
+    const [httpRoute] = routeDefinitionsToHTTPRoutes([cancelRoute]);
+    const url = new URL(`http://localhost/v1/conversations/${directId}/cancel`);
+
+    const response = await httpRoute.handler({
+      req: new Request(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "eventually" }),
+      }),
+      url,
+      params: { id: directId },
+      authContext: {} as never,
+      server: {} as never,
+    });
+
+    expect(response.status).toBe(400);
+    expect(cancelledId).toBeUndefined();
+  });
 
   test("resolves conversation key to internal ID before cancelling", async () => {
     cancelledId = undefined;

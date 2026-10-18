@@ -1,47 +1,58 @@
 /**
- * Cancel contract: a user cancel raises the conversation's AbortController and
- * defers clearing the `processing` flag to the in-flight turn's `finally`.
+ * Cancel contract for the three stop modes.
  *
- * `cancelGeneration` no longer force-clears `processing` itself. Abort now
- * propagates into the provider call and tool execution — and is backed by the
- * agent loop's abort watchdog — so a cancelled turn always reaches its
- * `finally` within a bounded time and tears down its own state there. The
- * watchdog-driven path (turn reaches `finally`, processing clears) is covered
- * by `conversation-agent-loop.test.ts`; this file pins the handler-side
- * contract: cancel signals abort and leaves the flag to the turn.
+ * - `hard` (the default) signals `hard_cancel` and force-clears the
+ *   conversation's processing flag, so Stop is not left waiting on a turn that
+ *   ignores its signal.
+ * - `graceful` signals `user_cancel` and leaves the flag to the turn's
+ *   `finally`, so the queue drains normally.
+ * - `main-only` signals only the main turn: child subagents are left running.
+ *
+ * This file pins the handler-side contract. The queue parking itself is covered
+ * by `daemon/__tests__/abort-null-controller.test.ts`.
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import type { Conversation } from "../daemon/conversation.js";
 import {
   deleteConversation,
   setConversation,
 } from "../daemon/conversation-registry.js";
-import { cancelGeneration } from "../daemon/handlers/conversations.js";
+import {
+  cancelGeneration,
+  cancelGenerationWithMode,
+} from "../daemon/handlers/conversations.js";
+import { getSubagentManager } from "../subagent/index.js";
+import { isAbortReason } from "../util/abort-reasons.js";
 
 interface CancelledConversation {
   isProcessing: () => boolean;
   setProcessingCalls: () => boolean[];
   abortCount: () => number;
+  abortReasonKinds: () => string[];
 }
 
 /**
  * Register a conversation whose in-flight turn is processing. The fake records
- * abort calls and any `setProcessing` writes so the test can assert that
- * `cancelGeneration` signals abort without flipping the flag itself.
+ * abort reasons and any `setProcessing` writes so the test can assert what each
+ * mode does without running a real turn.
  */
 function registerProcessingTurn(id: string): CancelledConversation {
   let processing = true;
   let abortCount = 0;
   const setProcessingCalls: boolean[] = [];
+  const abortReasonKinds: string[] = [];
   const fake = {
     isProcessing: () => processing,
     setProcessing: (value: boolean) => {
       setProcessingCalls.push(value);
       processing = value;
     },
-    abort: () => {
+    abort: (reason?: unknown) => {
       abortCount += 1;
+      if (isAbortReason(reason)) {
+        abortReasonKinds.push(reason.kind);
+      }
     },
   };
   setConversation(id, fake as unknown as Conversation);
@@ -49,30 +60,74 @@ function registerProcessingTurn(id: string): CancelledConversation {
     isProcessing: () => processing,
     setProcessingCalls: () => setProcessingCalls,
     abortCount: () => abortCount,
+    abortReasonKinds: () => abortReasonKinds,
   };
 }
 
-describe("cancelGeneration", () => {
+describe("cancelGeneration modes", () => {
   const conversationId = "cancel-clears-processing-test-conversation";
+  const manager = getSubagentManager();
+  let abortAllSpy: ReturnType<typeof spyOn> | undefined;
 
   afterEach(() => {
+    abortAllSpy?.mockRestore();
+    abortAllSpy = undefined;
     deleteConversation(conversationId);
   });
 
-  test("raises abort and defers clearing processing to the turn's finally", () => {
-    // GIVEN a registered conversation that is processing
+  test("default mode is hard: signals hard_cancel and force-clears processing", () => {
+    // GIVEN a registered conversation that is processing, with child subagents
     const fake = registerProcessingTurn(conversationId);
-    expect(fake.isProcessing()).toBe(true);
+    abortAllSpy = spyOn(manager, "abortAllForParent").mockReturnValue(2);
 
-    // WHEN the user cancels generation
+    // WHEN the user cancels generation without naming a mode
     const cancelled = cancelGeneration(conversationId);
 
     // THEN the cancel is acknowledged
     expect(cancelled).toBe(true);
-    // AND the abort signal is raised on the conversation
+    // AND the turn is signalled with the hard-cancel reason
     expect(fake.abortCount()).toBe(1);
-    // AND cancelGeneration does NOT force-clear the flag itself — the in-flight
-    // turn's `finally` owns that teardown once abort drives it there.
+    expect(fake.abortReasonKinds()).toEqual(["hard_cancel"]);
+    // AND processing is force-cleared without waiting for the turn's finally
+    expect(fake.setProcessingCalls()).toContain(false);
+    expect(fake.isProcessing()).toBe(false);
+    // AND child subagents are stopped
+    expect(abortAllSpy.mock.calls).toHaveLength(1);
+  });
+
+  test("graceful signals user_cancel and leaves processing to the turn", () => {
+    // GIVEN a registered conversation that is processing
+    const fake = registerProcessingTurn(conversationId);
+    abortAllSpy = spyOn(manager, "abortAllForParent").mockReturnValue(1);
+
+    // WHEN the user cancels gracefully
+    const outcome = cancelGenerationWithMode(conversationId, "graceful");
+
+    // THEN the turn is signalled with the cooperative reason
+    expect(outcome.found).toBe(true);
+    expect(fake.abortReasonKinds()).toEqual(["user_cancel"]);
+    // AND the processing flag is left for the turn's `finally`
+    expect(fake.setProcessingCalls()).not.toContain(false);
+    expect(fake.isProcessing()).toBe(true);
+    // AND child subagents are still stopped
+    expect(outcome.subagents).toBe(1);
+    expect(abortAllSpy.mock.calls).toHaveLength(1);
+  });
+
+  test("main-only signals the main turn and leaves child subagents running", () => {
+    // GIVEN a registered conversation that is processing
+    const fake = registerProcessingTurn(conversationId);
+    abortAllSpy = spyOn(manager, "abortAllForParent").mockReturnValue(3);
+
+    // WHEN the user stops only the main turn
+    const outcome = cancelGenerationWithMode(conversationId, "main-only");
+
+    // THEN the main turn is signalled
+    expect(outcome.found).toBe(true);
+    expect(fake.abortReasonKinds()).toEqual(["user_cancel"]);
+    // AND nothing else is touched: no subagents, no force-clear
+    expect(outcome.subagents).toBe(0);
+    expect(abortAllSpy.mock.calls).toHaveLength(0);
     expect(fake.setProcessingCalls()).not.toContain(false);
     expect(fake.isProcessing()).toBe(true);
   });

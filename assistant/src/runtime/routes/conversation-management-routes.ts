@@ -92,6 +92,7 @@ import {
   UnprocessableEntityError,
 } from "./errors.js";
 import { setInferenceProfileSession } from "./inference-profile-session-handler.js";
+import { parseStopMode } from "./stop-mode.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
 import { resolveVellumActorTrustContext } from "./vellum-actor-trust.js";
 
@@ -304,8 +305,9 @@ async function handleSummarizeConversation({ body = {} }: RouteHandlerArgs) {
     // but the hard-error path persists no card, so the idle emit in
     // `finally` is what guarantees the indicator always clears.
     let terminalReason:
-      "message_complete" | "error_terminal" | "generation_cancelled" =
-      "message_complete";
+      | "message_complete"
+      | "error_terminal"
+      | "generation_cancelled" = "message_complete";
     try {
       conversation.emitActivityState("thinking", "context_compacting", {
         statusText: "Summarizing conversation",
@@ -654,10 +656,14 @@ async function handleSurfaceConversation({
   };
 }
 
-async function handleCancelGeneration({ pathParams = {} }: RouteHandlerArgs) {
+async function handleCancelGeneration({
+  pathParams = {},
+  body,
+}: RouteHandlerArgs) {
+  const mode = parseStopMode(body);
   const resolvedId =
     (await resolveConversationId(pathParams.id!)) ?? pathParams.id!;
-  const cancelled = cancelGeneration(resolvedId);
+  const cancelled = cancelGeneration(resolvedId, mode);
   return { ok: true, cancelled, conversationId: resolvedId };
 }
 
@@ -1209,9 +1215,21 @@ export const ROUTES: RouteDefinition[] = [
       allowedPrincipalTypes: ACTOR_PRINCIPALS,
     },
     summary: "Cancel generation",
-    description: "Abort the in-progress assistant response for a conversation.",
+    description:
+      "Abort the in-progress assistant response for a conversation. The " +
+      "optional mode defaults to `hard`; `graceful` waits for the turn's own " +
+      "teardown and lets the queue drain, while `main-only` leaves child " +
+      "subagents and ACP sessions running.",
     tags: ["conversations"],
     pathParams: [{ name: "id" }],
+    requestBody: z.object({
+      mode: z
+        .enum(["hard", "graceful", "main-only"])
+        .optional()
+        .describe(
+          "Stop mode. Defaults to hard when omitted, preserving the existing client contract.",
+        ),
+    }),
     responseStatus: "202",
     responseBody: z.object({
       ok: z.boolean(),

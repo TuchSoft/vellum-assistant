@@ -19,7 +19,6 @@ import {
   listBookmarks,
 } from "../../persistence/bookmark-crud.js";
 import { getMessageById } from "../../persistence/conversation-crud.js";
-import { getDb } from "../../persistence/db-connection.js";
 import { broadcastMessage } from "../assistant-event-hub.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { BadRequestError, NotFoundError } from "./errors.js";
@@ -41,8 +40,10 @@ function publishBookmarkDeleted(payload: { messageId: string }): void {
 // Handlers
 // ---------------------------------------------------------------------------
 
-function handleListBookmarks(): { bookmarks: BookmarkSummary[] } {
-  return { bookmarks: listBookmarks(getDb()) };
+async function handleListBookmarks(): Promise<{
+  bookmarks: BookmarkSummary[];
+}> {
+  return { bookmarks: await listBookmarks() };
 }
 
 async function handleCreateBookmark({
@@ -68,21 +69,21 @@ async function handleCreateBookmark({
     );
   }
 
-  const result = createBookmark(getDb(), { messageId });
+  const result = await createBookmark({ messageId });
   if (result.inserted) {
     publishBookmarkCreated(result.bookmark);
   }
   return result.bookmark;
 }
 
-function handleDeleteBookmarkByMessage({ pathParams = {} }: RouteHandlerArgs): {
-  success: true;
-} {
+async function handleDeleteBookmarkByMessage({
+  pathParams = {},
+}: RouteHandlerArgs): Promise<{ success: true }> {
   const messageId = pathParams.messageId;
   if (!messageId) {
     throw new BadRequestError("messageId is required");
   }
-  const removed = deleteBookmarkByMessageId(getDb(), messageId);
+  const removed = await deleteBookmarkByMessageId(messageId);
   if (removed) {
     publishBookmarkDeleted({ messageId });
   }

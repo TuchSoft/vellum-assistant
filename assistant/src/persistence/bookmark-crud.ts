@@ -1,9 +1,9 @@
 import { and, desc, eq, type SQL } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
-import type { DrizzleDb } from "./db-connection.js";
+import type { AsyncDb } from "./db-facade.js";
+import { requireMainDb } from "./db-facade.js";
 import { stringifyMessageContent } from "./message-content.js";
-import { conversations, messageBookmarks, messages } from "./schema.js";
 import { projectPersistedRowText } from "./user-facing-content.js";
 
 /**
@@ -18,7 +18,7 @@ export interface BookmarkSummary {
   conversationId: string;
   conversationTitle: string | null;
   messagePreview: string;
-  /** "user" | "assistant" — kept as a free-form string so it round-trips raw. */
+  /** "user" | "assistant", kept as a free-form string so it round-trips raw. */
   messageRole: string;
   /** Unix milliseconds. */
   messageCreatedAt: number;
@@ -51,17 +51,20 @@ function buildPreview(content: string, metadata: string | null): string {
  * Shared SELECT shape used by the JOIN-based readers. Pulling this out
  * avoids duplicating the column list and the row-mapping below.
  */
-const BOOKMARK_JOIN_COLUMNS = {
-  id: messageBookmarks.id,
-  messageId: messageBookmarks.messageId,
-  conversationId: messageBookmarks.conversationId,
-  createdAt: messageBookmarks.createdAt,
-  conversationTitle: conversations.title,
-  messageContent: messages.content,
-  messageMetadata: messages.metadata,
-  messageRole: messages.role,
-  messageCreatedAt: messages.createdAt,
-} as const;
+function bookmarkJoinColumns(db: AsyncDb) {
+  const { conversations, messageBookmarks, messages } = db.schema;
+  return {
+    id: messageBookmarks.id,
+    messageId: messageBookmarks.messageId,
+    conversationId: messageBookmarks.conversationId,
+    createdAt: messageBookmarks.createdAt,
+    conversationTitle: conversations.title,
+    messageContent: messages.content,
+    messageMetadata: messages.metadata,
+    messageRole: messages.role,
+    messageCreatedAt: messages.createdAt,
+  } as const;
+}
 
 type BookmarkJoinRow = {
   id: string;
@@ -89,19 +92,18 @@ function rowToSummary(row: BookmarkJoinRow): BookmarkSummary {
 }
 
 /**
- * CROSS JOIN constrains SQLite's join order to start from message_bookmarks,
- * which the planner would otherwise skip in favor of a full messages scan
- * because an empty table never has statistics. The join predicates live in
- * WHERE with identical semantics; callers pass extra conditions through
- * `filter` because chaining `.where()` would replace the predicates.
+ * Join bookmarks against `messages` and `conversations` with the match
+ * predicates in WHERE. Callers pass extra conditions through `filter`
+ * because chaining `.where()` would replace the predicates.
  */
-function selectBookmarkJoin(db: DrizzleDb, filter?: SQL) {
+function selectBookmarkJoin(db: AsyncDb, filter?: SQL) {
+  const { conversations, messageBookmarks, messages } = db.schema;
   const joinMatch = and(
     eq(messages.id, messageBookmarks.messageId),
     eq(conversations.id, messageBookmarks.conversationId),
   );
-  return db
-    .select(BOOKMARK_JOIN_COLUMNS)
+  return db.orm
+    .select(bookmarkJoinColumns(db))
     .from(messageBookmarks)
     .crossJoin(messages)
     .crossJoin(conversations)
@@ -115,10 +117,11 @@ function selectBookmarkJoin(db: DrizzleDb, filter?: SQL) {
  * `ON DELETE CASCADE` on the FKs means rows should never end up in this
  * orphan state, but the join provides a defense-in-depth guarantee.
  */
-export function listBookmarks(db: DrizzleDb): BookmarkSummary[] {
-  const rows = selectBookmarkJoin(db)
-    .orderBy(desc(messageBookmarks.createdAt))
-    .all();
+export async function listBookmarks(): Promise<BookmarkSummary[]> {
+  const db = requireMainDb();
+  const rows = await selectBookmarkJoin(db).orderBy(
+    desc(db.schema.messageBookmarks.createdAt),
+  );
   return rows.map(rowToSummary);
 }
 
@@ -135,69 +138,73 @@ export type CreateBookmarkResult =
 /**
  * Create a bookmark for the given message and return a discriminated
  * result indicating whether a new row was actually inserted. Idempotent
- * on the unique `message_id` index — if a bookmark already exists for
+ * on the unique `message_id` index: if a bookmark already exists for
  * `messageId`, the existing summary is returned with `inserted: false`.
  *
  * `conversationId` is derived from the message row rather than trusted from
  * the caller, so a buggy or malicious caller cannot persist a bookmark
  * whose `conversationId` disagrees with the message's actual conversation.
  */
-export function createBookmark(
-  db: DrizzleDb,
-  params: { messageId: string },
-): CreateBookmarkResult {
+export async function createBookmark(params: {
+  messageId: string;
+}): Promise<CreateBookmarkResult> {
+  const db = requireMainDb();
+  const { messageBookmarks, messages } = db.schema;
   const { messageId } = params;
-  const messageRow = db
+  const [messageRow] = await db.orm
     .select({ conversationId: messages.conversationId })
     .from(messages)
-    .where(eq(messages.id, messageId))
-    .get();
+    .where(eq(messages.id, messageId));
   const conversationId = messageRow?.conversationId ?? null;
   if (conversationId === null) {
     throw new Error(`Message ${messageId} not found`);
   }
 
-  const existing = db
+  const [existing] = await db.orm
     .select({ id: messageBookmarks.id })
     .from(messageBookmarks)
-    .where(eq(messageBookmarks.messageId, messageId))
-    .get();
+    .where(eq(messageBookmarks.messageId, messageId));
   if (existing) {
     return {
       inserted: false,
-      bookmark: readBookmarkSummaryOrThrow(db, existing.id),
+      bookmark: await readBookmarkSummaryOrThrow(db, existing.id),
     };
   }
 
   const id = uuid();
   try {
-    db.insert(messageBookmarks)
-      .values({ id, messageId, conversationId, createdAt: Date.now() })
-      .run();
+    await db.orm
+      .insert(messageBookmarks)
+      .values({ id, messageId, conversationId, createdAt: Date.now() });
   } catch (err) {
-    // Lost a race against a concurrent create — fall back to fetch by
+    // Lost a race against a concurrent create. Fall back to fetch by
     // messageId so we still return the winning row.
-    const winner = db
+    const [winner] = await db.orm
       .select({ id: messageBookmarks.id })
       .from(messageBookmarks)
-      .where(eq(messageBookmarks.messageId, messageId))
-      .get();
+      .where(eq(messageBookmarks.messageId, messageId));
     if (!winner) {
       throw err;
     }
     return {
       inserted: false,
-      bookmark: readBookmarkSummaryOrThrow(db, winner.id),
+      bookmark: await readBookmarkSummaryOrThrow(db, winner.id),
     };
   }
-  return { inserted: true, bookmark: readBookmarkSummaryOrThrow(db, id) };
+  return {
+    inserted: true,
+    bookmark: await readBookmarkSummaryOrThrow(db, id),
+  };
 }
 
-function readBookmarkSummaryOrThrow(
-  db: DrizzleDb,
+async function readBookmarkSummaryOrThrow(
+  db: AsyncDb,
   id: string,
-): BookmarkSummary {
-  const row = selectBookmarkJoin(db, eq(messageBookmarks.id, id)).get();
+): Promise<BookmarkSummary> {
+  const [row] = await selectBookmarkJoin(
+    db,
+    eq(db.schema.messageBookmarks.id, id),
+  );
   if (!row) {
     // Unreachable: caller just observed (or inserted) this id.
     throw new Error(`Bookmark ${id} disappeared between insert and read`);
@@ -209,24 +216,24 @@ function readBookmarkSummaryOrThrow(
  * Delete the bookmark (if any) attached to the given `messageId`.
  * Returns true iff a row was removed.
  *
- * Drizzle's high-level `.run()` is typed as `void` for the sync sqlite
- * driver, so we check existence with a follow-up SELECT instead of
- * relying on a row-count from the delete statement.
+ * Drizzle's delete statement does not expose a portable row count here, so
+ * the existence check drives the result and the delete runs only when a
+ * matching row is present.
  */
-export function deleteBookmarkByMessageId(
-  db: DrizzleDb,
+export async function deleteBookmarkByMessageId(
   messageId: string,
-): boolean {
-  const existed = db
+): Promise<boolean> {
+  const db = requireMainDb();
+  const { messageBookmarks } = db.schema;
+  const [existed] = await db.orm
     .select({ id: messageBookmarks.id })
     .from(messageBookmarks)
-    .where(eq(messageBookmarks.messageId, messageId))
-    .get();
+    .where(eq(messageBookmarks.messageId, messageId));
   if (!existed) {
     return false;
   }
-  db.delete(messageBookmarks)
-    .where(eq(messageBookmarks.messageId, messageId))
-    .run();
+  await db.orm
+    .delete(messageBookmarks)
+    .where(eq(messageBookmarks.messageId, messageId));
   return true;
 }

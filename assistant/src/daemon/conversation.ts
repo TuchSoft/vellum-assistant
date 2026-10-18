@@ -1465,14 +1465,12 @@ export class Conversation {
     // re-applies the filter on every load — that is what makes a prune
     // survive daemon restarts. Defensive catch: a store failure degrades to
     // an unfiltered (pre-prune) rehydration rather than a failed load.
-    let v3PrunedSectionsMemo: SectionRefSet | null = null;
-    const v3PrunedSections = (): SectionRefSet => {
+    let v3PrunedSectionsMemo: Promise<SectionRefSet> | null = null;
+    const v3PrunedSections = (): Promise<SectionRefSet> => {
       if (v3PrunedSectionsMemo === null) {
-        try {
-          v3PrunedSectionsMemo = getPrunedSections(this.conversationId);
-        } catch {
-          v3PrunedSectionsMemo = new Map();
-        }
+        v3PrunedSectionsMemo = getPrunedSections(this.conversationId).catch(
+          () => new Map(),
+        );
       }
       return v3PrunedSectionsMemo;
     };
@@ -1540,309 +1538,320 @@ export class Conversation {
       }
       return v3NewestCopyMemo;
     };
-    const parsedMessages: Message[] = slicedDbMessages.map((m, index, arr) => {
-      const isPreStripped = index < preStrippedCount;
-      const role = m.role as "user" | "assistant";
-      let content: ContentBlock[] = m.content;
+    const parsedMessages: Message[] = await Promise.all(
+      slicedDbMessages.map(async (m, index, arr) => {
+        const isPreStripped = index < preStrippedCount;
+        const role = m.role as "user" | "assistant";
+        let content: ContentBlock[] = m.content;
 
-      content = reinjectAttachmentPathAnnotations(content, role, m.metadata);
-      content = reinjectInterruptTurnNote(content, role, m.metadata);
+        content = reinjectAttachmentPathAnnotations(content, role, m.metadata);
+        content = reinjectInterruptTurnNote(content, role, m.metadata);
 
-      // Channel facts stamped in metadata render at load time rather than
-      // at persist time, so every stored row reads correctly whenever it
-      // was written: a reaction row's "[reaction]" sentinel renders as who
-      // reacted with what to which message, and a deleted row's original
-      // text gives way to a deletion marker (the delete intercepts stamp
-      // metadata and deliberately leave the content column untouched). The
-      // substring guard keeps the per-row metadata parse off rows that can
-      // carry neither fact: both envelopes spell these keys literally, in
-      // providerMeta and in nested slackMeta alike.
-      if (
-        m.metadata &&
-        (m.metadata.includes("reaction") || m.metadata.includes("deletedAt"))
-      ) {
-        const providerMeta = readProviderMetadata(m.metadata);
-        if (providerMeta?.eventKind === "reaction") {
-          const rendered = renderReactionHistoryText(
-            providerMeta,
-            resolveReactionTarget,
-            // An assistant-role reaction row is the assistant's own act,
-            // persisted by the react tool.
-            { selfAuthored: role === "assistant" },
-          );
-          if (rendered) {
-            content = [{ type: "text", text: rendered }];
-          }
-        } else if (role === "user" && providerMeta?.deletedAt !== undefined) {
-          // Neutral marker, no actor: Discord deletes can be authorless
-          // (`actorUnattributed`), so the marker never claims who deleted.
-          content = [{ type: "text", text: "[This message was deleted]" }];
-        } else if (
-          role === "assistant" &&
-          providerMeta?.deletedAt !== undefined
+        // Channel facts stamped in metadata render at load time rather than
+        // at persist time, so every stored row reads correctly whenever it
+        // was written: a reaction row's "[reaction]" sentinel renders as who
+        // reacted with what to which message, and a deleted row's original
+        // text gives way to a deletion marker (the delete intercepts stamp
+        // metadata and deliberately leave the content column untouched). The
+        // substring guard keeps the per-row metadata parse off rows that can
+        // carry neither fact: both envelopes spell these keys literally, in
+        // providerMeta and in nested slackMeta alike.
+        if (
+          m.metadata &&
+          (m.metadata.includes("reaction") || m.metadata.includes("deletedAt"))
         ) {
-          // The assistant's own deleted post keeps its content: erasure is
-          // how a retracted USER message is honored, but rewriting what the
-          // assistant said would falsify its memory of its own output. The
-          // rendered fact is visibility: the message no longer exists on the
-          // channel, so the assistant should not refer to it as something
-          // participants can see.
-          content = [
-            ...content,
-            {
-              type: "text",
-              text: "[This message was deleted from the channel and is no longer visible to participants]",
-            },
-          ];
-        }
-      }
-
-      // Re-inject persisted injection blocks from metadata so it survives
-      // conversation reloads (eviction, restart, fork).
-      if (role === "user" && m.metadata && !isPreStripped) {
-        try {
-          const meta = JSON.parse(m.metadata);
-          const isTail = index === arr.length - 1;
-
-          // `<non_interactive_context>` is the only rehydrated block that
-          // APPENDS to the tail (live injection appends it in Step 3), so it
-          // must land after the original content. Apply it first — before the
-          // prepends below — so the prepends stack in front of it and it stays
-          // last, matching the live layout.
-          if (!isTail && typeof meta.nonInteractiveContextBlock === "string") {
-            content = [
-              ...content,
-              { type: "text" as const, text: meta.nonInteractiveContextBlock },
-            ];
-          }
-
-          // Rehydrate in reverse injection order (innermost block first)
-          // so the resulting layout matches `applyRuntimeInjections`'s
-          // after-memory-prefix splices in ascending injector order
-          // (pkb-context 30, pkb-reminder 35, memory-v2-static 38,
-          // now-md 40, memory-v3-shadow 1000 — the v2 static block lands
-          // inside the memory prefix, so now-md splices *after* it; the
-          // v3 section block is `<memory>`-wrapped and splices LAST, landing
-          // at the memory boundary after the `<info>` block but before
-          // now-md's earlier splice):
-          //   [<workspace>, <turn_context>, <memory>dynamic</memory>,
-          //    <info>v2static</info>, <memory>v3sections</memory>,
-          //    <memory_pointer>, <NOW.md>,
-          //    <system_reminder>, <knowledge_base>, ...original]
-          // The v2 static block is replayed verbatim from stored metadata,
-          // so rows may carry either `<info>…</info>` or `<memory>…</memory>`
-          // depending on when they were persisted.
-          // Required so Anthropic's prefix cache keeps matching msg[0]
-          // across daemon restart and conversation eviction. The tail
-          // row only rehydrates `memoryInjectedBlock` and the v3 section
-          // block — the next turn re-injects the rest fresh.
-          if (!isTail && typeof meta.pkbContextBlock === "string") {
-            content = [
-              { type: "text" as const, text: meta.pkbContextBlock },
-              ...content,
-            ];
-          }
-
-          if (!isTail && typeof meta.pkbSystemReminderBlock === "string") {
-            content = [
-              { type: "text" as const, text: meta.pkbSystemReminderBlock },
-              ...content,
-            ];
-          }
-
-          if (!isTail && typeof meta.nowScratchpadBlock === "string") {
-            content = [
-              { type: "text" as const, text: meta.nowScratchpadBlock },
-              ...content,
-            ];
-          }
-
-          // The memory-v3 per-turn `<memory_pointer>` persists under its own
-          // key as the wrapped block that was sent. Rehydrated on ALL rows
-          // (tail included), matching frozen sections: after a reload the
-          // last completed turn is the tail, and the next user message is
-          // appended without re-running loadFromDb. Prepended here, after
-          // now-md and before the v3 section block, so the inverted prepends
-          // land as [sections, pointer, now-md, ...]. Trust-gated on
-          // `personalMemoryAllowed` like the sections: the pointer names
-          // personal-memory pages and headings. A pruned section's line, and
-          // a line naming a section whose newest copy sits on a later message
-          // (the pointer predates its re-injection), are filtered out here
-          // the way the section is filtered out of its frozen block below; a
-          // pointer left with no entries is skipped entirely (matching the
-          // live strip in `memory/v3/prune.ts`).
-          if (
-            personalMemoryAllowed &&
-            typeof meta[MEMORY_V3_POINTER_BLOCK_METADATA_KEY] === "string"
-          ) {
-            const pointer = filterResidentPointerEntries(
-              meta[MEMORY_V3_POINTER_BLOCK_METADATA_KEY] as string,
-              index,
-              v3PrunedSections(),
-              v3NewestCopy(),
+          const providerMeta = readProviderMetadata(m.metadata);
+          if (providerMeta?.eventKind === "reaction") {
+            const rendered = renderReactionHistoryText(
+              providerMeta,
+              resolveReactionTarget,
+              // An assistant-role reaction row is the assistant's own act,
+              // persisted by the react tool.
+              { selfAuthored: role === "assistant" },
             );
-            if (pointer.length > 0) {
-              content = [{ type: "text" as const, text: pointer }, ...content];
+            if (rendered) {
+              content = [{ type: "text", text: rendered }];
             }
-          }
-
-          // Rows persisted by builds that shipped the per-turn
-          // `<memory_spotlight>` layer carry that turn's wrapped block under
-          // the legacy key. No producer writes it; it is rehydrated verbatim,
-          // in the slot those builds spliced it (the pointer's), so the
-          // prompts those turns were sent with stay byte-identical across
-          // the upgrade. Trust-gated like the pointer.
-          if (
-            personalMemoryAllowed &&
-            typeof meta[LEGACY_MEMORY_V3_SPOTLIGHT_BLOCK_METADATA_KEY] ===
-              "string"
+          } else if (role === "user" && providerMeta?.deletedAt !== undefined) {
+            // Neutral marker, no actor: Discord deletes can be authorless
+            // (`actorUnattributed`), so the marker never claims who deleted.
+            content = [{ type: "text", text: "[This message was deleted]" }];
+          } else if (
+            role === "assistant" &&
+            providerMeta?.deletedAt !== undefined
           ) {
+            // The assistant's own deleted post keeps its content: erasure is
+            // how a retracted USER message is honored, but rewriting what the
+            // assistant said would falsify its memory of its own output. The
+            // rendered fact is visibility: the message no longer exists on the
+            // channel, so the assistant should not refer to it as something
+            // participants can see.
             content = [
-              {
-                type: "text" as const,
-                text: meta[
-                  LEGACY_MEMORY_V3_SPOTLIGHT_BLOCK_METADATA_KEY
-                ] as string,
-              },
               ...content,
+              {
+                type: "text",
+                text: "[This message was deleted from the channel and is no longer visible to participants]",
+              },
             ];
           }
+        }
 
-          // The memory-v3 frozen section block (net-new sections) persists
-          // under its own key, stored UNWRAPPED like v2's dynamic block below.
-          // Rehydrated on ALL rows (tail included): the next turn injects only
-          // net-new sections, deduped via the v3 section store, so this
-          // row's block must be back in history byte-identical for the dedup
-          // (and the provider prefix cache) to hold. A row carries at most one
-          // of the v3 and v2-dynamic keys (the user-prompt-submit hook
-          // persists them mutually exclusively). Spliced here — before the v2
-          // static and dynamic blocks — because prepends invert: executing
-          // first leaves it BELOW both in the final content, matching the
-          // live after-memory-prefix splice (order 1000 lands at the memory
-          // boundary, after `<info>` / `<memory>` prefix blocks).
-          // Pruned sections, and copies superseded by a re-injection on a
-          // later message, are filtered out here by their header span (the
-          // metadata itself is never rewritten, auditable and reversible);
-          // a block left with nothing is skipped entirely, matching the live
-          // strip in `memory/v3/prune.ts`.
-          // Trust-gated on `personalMemoryAllowed`, mirroring the v2 static
-          // block below and the live v3 injector: v3 sections carry personal
-          // user memory (memory pages, PKB, matched sections), so an
-          // untrusted-actor view must not read them back through persisted
-          // metadata. The tail is still rehydrated for trusted views (unlike
-          // v2), the gate is the only constraint added here.
-          if (
-            personalMemoryAllowed &&
-            typeof meta[MEMORY_V3_INJECTED_BLOCK_METADATA_KEY] === "string"
-          ) {
-            const v3Block = meta[
-              MEMORY_V3_INJECTED_BLOCK_METADATA_KEY
-            ] as string;
-            // The block's rendering format is the row's own provenance (the
-            // persisting build's stamp, absent on pre-stamp rows), never
-            // read off the block's content: a current block is filtered by
-            // section, a legacy block by card under each card's lead ref.
-            const v3Format = v3BlockFormatOf(meta);
-            const v3Resident = filterResidentSections(
-              unwrapMemoryBlock(v3Block),
-              v3Format,
-              index,
-              v3PrunedSections(),
-              v3NewestCopy(),
-            );
-            if (v3Resident.length > 0) {
+        // Re-inject persisted injection blocks from metadata so it survives
+        // conversation reloads (eviction, restart, fork).
+        if (role === "user" && m.metadata && !isPreStripped) {
+          try {
+            const meta = JSON.parse(m.metadata);
+            const isTail = index === arr.length - 1;
+
+            // `<non_interactive_context>` is the only rehydrated block that
+            // APPENDS to the tail (live injection appends it in Step 3), so it
+            // must land after the original content. Apply it first — before the
+            // prepends below — so the prepends stack in front of it and it stays
+            // last, matching the live layout.
+            if (
+              !isTail &&
+              typeof meta.nonInteractiveContextBlock === "string"
+            ) {
               content = [
-                markV3LiveBlock(
-                  {
-                    type: "text" as const,
-                    text: wrapMemoryBlock(v3Resident),
-                  },
-                  v3Format,
-                ),
+                ...content,
+                {
+                  type: "text" as const,
+                  text: meta.nonInteractiveContextBlock,
+                },
+              ];
+            }
+
+            // Rehydrate in reverse injection order (innermost block first)
+            // so the resulting layout matches `applyRuntimeInjections`'s
+            // after-memory-prefix splices in ascending injector order
+            // (pkb-context 30, pkb-reminder 35, memory-v2-static 38,
+            // now-md 40, memory-v3-shadow 1000 — the v2 static block lands
+            // inside the memory prefix, so now-md splices *after* it; the
+            // v3 section block is `<memory>`-wrapped and splices LAST, landing
+            // at the memory boundary after the `<info>` block but before
+            // now-md's earlier splice):
+            //   [<workspace>, <turn_context>, <memory>dynamic</memory>,
+            //    <info>v2static</info>, <memory>v3sections</memory>,
+            //    <memory_pointer>, <NOW.md>,
+            //    <system_reminder>, <knowledge_base>, ...original]
+            // The v2 static block is replayed verbatim from stored metadata,
+            // so rows may carry either `<info>…</info>` or `<memory>…</memory>`
+            // depending on when they were persisted.
+            // Required so Anthropic's prefix cache keeps matching msg[0]
+            // across daemon restart and conversation eviction. The tail
+            // row only rehydrates `memoryInjectedBlock` and the v3 section
+            // block — the next turn re-injects the rest fresh.
+            if (!isTail && typeof meta.pkbContextBlock === "string") {
+              content = [
+                { type: "text" as const, text: meta.pkbContextBlock },
                 ...content,
               ];
             }
-          }
 
-          // The v2 static memory block (essentials/threads/recent/buffer
-          // wrapped in either `<info>…</info>` or `<memory>…</memory>`)
-          // carries personal user memory. Trust-gated to mirror
-          // `isPersonalMemoryAllowed` at injection time — untrusted-actor
-          // views must not read persisted personal memory back through
-          // metadata. Skipped on the tail row because the next turn
-          // re-injects fresh content on full-mode turns.
-          if (
-            !isTail &&
-            personalMemoryAllowed &&
-            typeof meta.memoryV2StaticBlock === "string"
-          ) {
-            content = [
-              { type: "text" as const, text: meta.memoryV2StaticBlock },
-              ...content,
-            ];
-          }
+            if (!isTail && typeof meta.pkbSystemReminderBlock === "string") {
+              content = [
+                { type: "text" as const, text: meta.pkbSystemReminderBlock },
+                ...content,
+              ];
+            }
 
-          // Memory remains rehydrated on all rows (existing behavior).
-          // Strip any pre-existing wrapper before re-wrapping so historical
-          // rows persisted with the wrapper (v2 path before the
-          // injectedBlockText contract was unified with v1's unwrapped form)
-          // don't render double-wrapped after rehydrate. Only unwrap when
-          // the full <memory>...</memory> pair is present so we don't mutate
-          // legitimate unwrapped payloads that happen to start with
-          // "<memory>\n" or end with "\n</memory>".
-          if (typeof meta.memoryInjectedBlock === "string") {
-            content = [
-              {
-                type: "text" as const,
-                text: wrapMemoryBlock(
-                  unwrapMemoryBlock(meta.memoryInjectedBlock),
-                ),
-              },
-              ...content,
-            ];
-          }
+            if (!isTail && typeof meta.nowScratchpadBlock === "string") {
+              content = [
+                { type: "text" as const, text: meta.nowScratchpadBlock },
+                ...content,
+              ];
+            }
 
-          // `<channel_capabilities>` lands just below `<turn_context>`: live
-          // injection prepends it (Step 3) before the prepend-user-tail chain
-          // blocks (Step 4), so it must be prepended BEFORE turnContextBlock
-          // here to land one slot deeper than `<turn_context>`.
-          if (!isTail && typeof meta.channelCapabilitiesBlock === "string") {
-            content = [
-              { type: "text" as const, text: meta.channelCapabilitiesBlock },
-              ...content,
-            ];
-          }
+            // The memory-v3 per-turn `<memory_pointer>` persists under its own
+            // key as the wrapped block that was sent. Rehydrated on ALL rows
+            // (tail included), matching frozen sections: after a reload the
+            // last completed turn is the tail, and the next user message is
+            // appended without re-running loadFromDb. Prepended here, after
+            // now-md and before the v3 section block, so the inverted prepends
+            // land as [sections, pointer, now-md, ...]. Trust-gated on
+            // `personalMemoryAllowed` like the sections: the pointer names
+            // personal-memory pages and headings. A pruned section's line, and
+            // a line naming a section whose newest copy sits on a later message
+            // (the pointer predates its re-injection), are filtered out here
+            // the way the section is filtered out of its frozen block below; a
+            // pointer left with no entries is skipped entirely (matching the
+            // live strip in `memory/v3/prune.ts`).
+            if (
+              personalMemoryAllowed &&
+              typeof meta[MEMORY_V3_POINTER_BLOCK_METADATA_KEY] === "string"
+            ) {
+              const pointer = filterResidentPointerEntries(
+                meta[MEMORY_V3_POINTER_BLOCK_METADATA_KEY] as string,
+                index,
+                await v3PrunedSections(),
+                v3NewestCopy(),
+              );
+              if (pointer.length > 0) {
+                content = [
+                  { type: "text" as const, text: pointer },
+                  ...content,
+                ];
+              }
+            }
 
-          if (!isTail && typeof meta.turnContextBlock === "string") {
-            content = [
-              { type: "text" as const, text: meta.turnContextBlock },
-              ...content,
-            ];
-          }
+            // Rows persisted by builds that shipped the per-turn
+            // `<memory_spotlight>` layer carry that turn's wrapped block under
+            // the legacy key. No producer writes it; it is rehydrated verbatim,
+            // in the slot those builds spliced it (the pointer's), so the
+            // prompts those turns were sent with stay byte-identical across
+            // the upgrade. Trust-gated like the pointer.
+            if (
+              personalMemoryAllowed &&
+              typeof meta[LEGACY_MEMORY_V3_SPOTLIGHT_BLOCK_METADATA_KEY] ===
+                "string"
+            ) {
+              content = [
+                {
+                  type: "text" as const,
+                  text: meta[
+                    LEGACY_MEMORY_V3_SPOTLIGHT_BLOCK_METADATA_KEY
+                  ] as string,
+                },
+                ...content,
+              ];
+            }
 
-          // `<background_turn>` lands between `<workspace>` and `<turn_context>`
-          // (injector order 15, between workspace 10 and unified-turn-context
-          // 20), so prepend it AFTER turnContextBlock and BEFORE workspaceBlock.
-          if (!isTail && typeof meta.backgroundTurnBlock === "string") {
-            content = [
-              { type: "text" as const, text: meta.backgroundTurnBlock },
-              ...content,
-            ];
-          }
+            // The memory-v3 frozen section block (net-new sections) persists
+            // under its own key, stored UNWRAPPED like v2's dynamic block below.
+            // Rehydrated on ALL rows (tail included): the next turn injects only
+            // net-new sections, deduped via the v3 section store, so this
+            // row's block must be back in history byte-identical for the dedup
+            // (and the provider prefix cache) to hold. A row carries at most one
+            // of the v3 and v2-dynamic keys (the user-prompt-submit hook
+            // persists them mutually exclusively). Spliced here — before the v2
+            // static and dynamic blocks — because prepends invert: executing
+            // first leaves it BELOW both in the final content, matching the
+            // live after-memory-prefix splice (order 1000 lands at the memory
+            // boundary, after `<info>` / `<memory>` prefix blocks).
+            // Pruned sections, and copies superseded by a re-injection on a
+            // later message, are filtered out here by their header span (the
+            // metadata itself is never rewritten, auditable and reversible);
+            // a block left with nothing is skipped entirely, matching the live
+            // strip in `memory/v3/prune.ts`.
+            // Trust-gated on `personalMemoryAllowed`, mirroring the v2 static
+            // block below and the live v3 injector: v3 sections carry personal
+            // user memory (memory pages, PKB, matched sections), so an
+            // untrusted-actor view must not read them back through persisted
+            // metadata. The tail is still rehydrated for trusted views (unlike
+            // v2), the gate is the only constraint added here.
+            if (
+              personalMemoryAllowed &&
+              typeof meta[MEMORY_V3_INJECTED_BLOCK_METADATA_KEY] === "string"
+            ) {
+              const v3Block = meta[
+                MEMORY_V3_INJECTED_BLOCK_METADATA_KEY
+              ] as string;
+              // The block's rendering format is the row's own provenance (the
+              // persisting build's stamp, absent on pre-stamp rows), never
+              // read off the block's content: a current block is filtered by
+              // section, a legacy block by card under each card's lead ref.
+              const v3Format = v3BlockFormatOf(meta);
+              const v3Resident = filterResidentSections(
+                unwrapMemoryBlock(v3Block),
+                v3Format,
+                index,
+                await v3PrunedSections(),
+                v3NewestCopy(),
+              );
+              if (v3Resident.length > 0) {
+                content = [
+                  markV3LiveBlock(
+                    {
+                      type: "text" as const,
+                      text: wrapMemoryBlock(v3Resident),
+                    },
+                    v3Format,
+                  ),
+                  ...content,
+                ];
+              }
+            }
 
-          if (!isTail && typeof meta.workspaceBlock === "string") {
-            content = [
-              { type: "text" as const, text: meta.workspaceBlock },
-              ...content,
-            ];
+            // The v2 static memory block (essentials/threads/recent/buffer
+            // wrapped in either `<info>…</info>` or `<memory>…</memory>`)
+            // carries personal user memory. Trust-gated to mirror
+            // `isPersonalMemoryAllowed` at injection time — untrusted-actor
+            // views must not read persisted personal memory back through
+            // metadata. Skipped on the tail row because the next turn
+            // re-injects fresh content on full-mode turns.
+            if (
+              !isTail &&
+              personalMemoryAllowed &&
+              typeof meta.memoryV2StaticBlock === "string"
+            ) {
+              content = [
+                { type: "text" as const, text: meta.memoryV2StaticBlock },
+                ...content,
+              ];
+            }
+
+            // Memory remains rehydrated on all rows (existing behavior).
+            // Strip any pre-existing wrapper before re-wrapping so historical
+            // rows persisted with the wrapper (v2 path before the
+            // injectedBlockText contract was unified with v1's unwrapped form)
+            // don't render double-wrapped after rehydrate. Only unwrap when
+            // the full <memory>...</memory> pair is present so we don't mutate
+            // legitimate unwrapped payloads that happen to start with
+            // "<memory>\n" or end with "\n</memory>".
+            if (typeof meta.memoryInjectedBlock === "string") {
+              content = [
+                {
+                  type: "text" as const,
+                  text: wrapMemoryBlock(
+                    unwrapMemoryBlock(meta.memoryInjectedBlock),
+                  ),
+                },
+                ...content,
+              ];
+            }
+
+            // `<channel_capabilities>` lands just below `<turn_context>`: live
+            // injection prepends it (Step 3) before the prepend-user-tail chain
+            // blocks (Step 4), so it must be prepended BEFORE turnContextBlock
+            // here to land one slot deeper than `<turn_context>`.
+            if (!isTail && typeof meta.channelCapabilitiesBlock === "string") {
+              content = [
+                { type: "text" as const, text: meta.channelCapabilitiesBlock },
+                ...content,
+              ];
+            }
+
+            if (!isTail && typeof meta.turnContextBlock === "string") {
+              content = [
+                { type: "text" as const, text: meta.turnContextBlock },
+                ...content,
+              ];
+            }
+
+            // `<background_turn>` lands between `<workspace>` and `<turn_context>`
+            // (injector order 15, between workspace 10 and unified-turn-context
+            // 20), so prepend it AFTER turnContextBlock and BEFORE workspaceBlock.
+            if (!isTail && typeof meta.backgroundTurnBlock === "string") {
+              content = [
+                { type: "text" as const, text: meta.backgroundTurnBlock },
+                ...content,
+              ];
+            }
+
+            if (!isTail && typeof meta.workspaceBlock === "string") {
+              content = [
+                { type: "text" as const, text: meta.workspaceBlock },
+                ...content,
+              ];
+            }
+          } catch {
+            /* ignore parse errors — metadata may be malformed */
           }
-        } catch {
-          /* ignore parse errors — metadata may be malformed */
         }
-      }
 
-      return { role, content };
-    });
+        return { role, content };
+      }),
+    );
 
     // Strip pre-clean messages only; post-clean messages keep the fresh
     // injections they were generated with. Applied per message — block

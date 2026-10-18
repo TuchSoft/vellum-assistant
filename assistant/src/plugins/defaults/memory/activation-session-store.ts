@@ -1,5 +1,5 @@
 import { getLogger } from "./logging.js";
-import { memorySqliteOrNull } from "./memory-db.js";
+import { memoryDbOrNull } from "./memory-db.js";
 
 const log = getLogger("activation-session-store");
 
@@ -9,17 +9,19 @@ const log = getLogger("activation-session-store");
  * database or a write failure is logged and swallowed so it never blocks the
  * turn that triggered it.
  */
-export function markActivationSession(conversationId: string): void {
+export async function markActivationSession(
+  conversationId: string,
+): Promise<void> {
   try {
-    const raw = memorySqliteOrNull("markActivationSession");
-    if (!raw) {
+    const db = memoryDbOrNull("markActivationSession");
+    if (!db) {
       return;
     }
-    raw
-      .query(
-        /*sql*/ `INSERT OR IGNORE INTO activation_sessions (conversation_id, created_at) VALUES (?, ?)`,
-      )
-      .run(conversationId, Date.now());
+    await db.run(
+      /*sql*/ `INSERT INTO activation_sessions (conversation_id, created_at) VALUES (?, ?)
+              ON CONFLICT (conversation_id) DO NOTHING`,
+      [conversationId, Date.now()],
+    );
   } catch (err) {
     log.warn({ err, conversationId }, "Failed to mark activation session");
   }
@@ -30,19 +32,19 @@ export function markActivationSession(conversationId: string): void {
  * Best-effort: an unavailable memory database or a read failure is logged and
  * treated as "not an activation session".
  */
-export function isActivationSession(conversationId: string): boolean {
+export async function isActivationSession(
+  conversationId: string,
+): Promise<boolean> {
   try {
-    const raw = memorySqliteOrNull("isActivationSession");
-    if (!raw) {
+    const db = memoryDbOrNull("isActivationSession");
+    if (!db) {
       return false;
     }
-    return (
-      raw
-        .query(
-          /*sql*/ `SELECT 1 FROM activation_sessions WHERE conversation_id = ?`,
-        )
-        .get(conversationId) != null
+    const row = await db.get(
+      /*sql*/ `SELECT 1 FROM activation_sessions WHERE conversation_id = ?`,
+      [conversationId],
     );
+    return row != null;
   } catch (err) {
     log.warn({ err, conversationId }, "Failed to read activation session");
     return false;

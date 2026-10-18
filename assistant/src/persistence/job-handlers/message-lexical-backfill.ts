@@ -75,7 +75,7 @@ export async function maybeEnqueueLexicalBackfillOnUpgrade(): Promise<void> {
     if (await isLexicalBackfillComplete()) {
       return;
     }
-    if (hasActiveJobOfType("backfill_lexical_index")) {
+    if (await hasActiveJobOfType("backfill_lexical_index")) {
       return;
     }
     const jobId = enqueueMemoryJob("backfill_lexical_index", {});

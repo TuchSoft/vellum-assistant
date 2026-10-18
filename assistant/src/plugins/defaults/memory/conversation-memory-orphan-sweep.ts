@@ -25,10 +25,10 @@
 // after a long disabled window never materializes all ids at once or holds the
 // event loop.
 
-import { getSqlite } from "../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../persistence/db-facade.js";
 import { CONVERSATION_KEYED_MEMORY_TABLES } from "./conversation-memory-purge.js";
 import { getLogger } from "./logging.js";
-import { memorySqliteOrNull } from "./memory-db.js";
+import { memoryDbOrNull } from "./memory-db.js";
 
 const log = getLogger("conversation-memory-orphan-sweep");
 
@@ -52,16 +52,16 @@ function breathe(): Promise<void> {
  * rest still run.
  */
 export async function sweepOrphanConversationMemoryTables(): Promise<OrphanSweepResult> {
-  const memoryRaw = memorySqliteOrNull("sweepOrphanConversationMemoryTables");
-  if (!memoryRaw) {
+  const memoryDb = memoryDbOrNull("sweepOrphanConversationMemoryTables");
+  if (!memoryDb) {
     return { swept: 0 };
   }
-  const mainRaw = getSqlite();
+  const mainDb = requireMainDb();
 
   let swept = 0;
   for (const table of CONVERSATION_KEYED_MEMORY_TABLES) {
     try {
-      swept += await sweepTable(table, memoryRaw, mainRaw);
+      swept += await sweepTable(table, memoryDb, mainDb);
     } catch (err) {
       log.warn(
         { err, table },
@@ -77,8 +77,8 @@ export async function sweepOrphanConversationMemoryTables(): Promise<OrphanSweep
 
 async function sweepTable(
   table: string,
-  memoryRaw: NonNullable<ReturnType<typeof memorySqliteOrNull>>,
-  mainRaw: ReturnType<typeof getSqlite>,
+  memoryDb: NonNullable<ReturnType<typeof memoryDbOrNull>>,
+  mainDb: ReturnType<typeof requireMainDb>,
 ): Promise<number> {
   let deleted = 0;
   // Keyset cursor over distinct conversation ids. The empty string sorts before
@@ -90,12 +90,11 @@ async function sweepTable(
     // (which would re-scan the whole table per batch). Only this page's ids are
     // ever held in memory.
     const page = (
-      memoryRaw
-        .query(
-          `SELECT DISTINCT conversation_id AS id FROM ${table}
-           WHERE conversation_id > ? ORDER BY conversation_id LIMIT ?`,
-        )
-        .all(cursor, SWEEP_BATCH) as Array<{ id: string }>
+      await memoryDb.all<{ id: string }>(
+        `SELECT DISTINCT conversation_id AS id FROM ${table}
+         WHERE conversation_id > ? ORDER BY conversation_id LIMIT ?`,
+        [cursor, SWEEP_BATCH],
+      )
     ).map((row) => row.id);
     if (page.length === 0) {
       break;
@@ -107,17 +106,19 @@ async function sweepTable(
     const placeholders = page.map(() => "?").join(", ");
     const alive = new Set(
       (
-        mainRaw
-          .query(`SELECT id FROM conversations WHERE id IN (${placeholders})`)
-          .all(...page) as Array<{ id: string }>
+        await mainDb.all<{ id: string }>(
+          `SELECT id FROM conversations WHERE id IN (${placeholders})`,
+          page,
+        )
       ).map((row) => row.id),
     );
     const orphans = page.filter((id) => !alive.has(id));
     if (orphans.length > 0) {
       const del = orphans.map(() => "?").join(", ");
-      memoryRaw
-        .query(`DELETE FROM ${table} WHERE conversation_id IN (${del})`)
-        .run(...orphans);
+      await memoryDb.run(
+        `DELETE FROM ${table} WHERE conversation_id IN (${del})`,
+        orphans,
+      );
       deleted += orphans.length;
     }
 

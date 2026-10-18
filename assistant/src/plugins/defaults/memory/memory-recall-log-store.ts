@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 
 import { getLogger } from "./logging.js";
-import { memorySqliteOrNull } from "./memory-db.js";
+import { memoryDbOrNull } from "./memory-db.js";
 
 const log = getLogger("memory-recall-log-store");
 
@@ -27,28 +27,26 @@ export interface RecordMemoryRecallLogParams {
   queryContext?: string;
 }
 
-export function recordMemoryRecallLog(
+export async function recordMemoryRecallLog(
   params: RecordMemoryRecallLogParams,
-): void {
-  // Best-effort — telemetry writes must never abort the agent turn, so a
+): Promise<void> {
+  // Best-effort, telemetry writes must never abort the agent turn, so a
   // degraded memory connection or a failed insert only logs a warning.
   try {
-    const raw = memorySqliteOrNull("recordMemoryRecallLog");
-    if (!raw) {
+    const db = memoryDbOrNull("recordMemoryRecallLog");
+    if (!db) {
       return;
     }
-    raw
-      .prepare(
-        `INSERT INTO memory_recall_logs (
-           id, conversation_id, message_id, enabled, degraded, provider,
-           model, degradation_json, semantic_hits, merged_count,
-           selected_count, tier1_count, tier2_count,
-           hybrid_search_latency_ms, sparse_vector_used, injected_tokens,
-           latency_ms, top_candidates_json, injected_text, reason,
-           query_context, created_at
-         ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+    await db.run(
+      `INSERT INTO memory_recall_logs (
+         id, conversation_id, message_id, enabled, degraded, provider,
+         model, degradation_json, semantic_hits, merged_count,
+         selected_count, tier1_count, tier2_count,
+         hybrid_search_latency_ms, sparse_vector_used, injected_tokens,
+         latency_ms, top_candidates_json, injected_text, reason,
+         query_context, created_at
+       ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
         uuid(),
         params.conversationId,
         params.enabled ? 1 : 0,
@@ -70,28 +68,28 @@ export function recordMemoryRecallLog(
         params.reason ?? null,
         params.queryContext ?? null,
         Date.now(),
-      );
+      ],
+    );
   } catch (err) {
     log.warn({ err }, "failed to record memory recall log; continuing");
   }
 }
 
-export function backfillMemoryRecallLogMessageId(
+export async function backfillMemoryRecallLogMessageId(
   conversationId: string,
   messageId: string,
-): void {
+): Promise<void> {
   try {
-    const raw = memorySqliteOrNull("backfillMemoryRecallLogMessageId");
-    if (!raw) {
+    const db = memoryDbOrNull("backfillMemoryRecallLogMessageId");
+    if (!db) {
       return;
     }
-    raw
-      .prepare(
-        `UPDATE memory_recall_logs
-           SET message_id = ?
-         WHERE conversation_id = ? AND message_id IS NULL`,
-      )
-      .run(messageId, conversationId);
+    await db.run(
+      `UPDATE memory_recall_logs
+         SET message_id = ?
+       WHERE conversation_id = ? AND message_id IS NULL`,
+      [messageId, conversationId],
+    );
   } catch (err) {
     log.warn(
       { err },
@@ -186,29 +184,28 @@ interface MemoryRecallLogRow {
   query_context: string | null;
 }
 
-export function getMemoryRecallLogByMessageIds(
+export async function getMemoryRecallLogByMessageIds(
   messageIds: string[],
-): MemoryRecallLog | null {
+): Promise<MemoryRecallLog | null> {
   if (messageIds.length === 0) {
     return null;
   }
-  const raw = memorySqliteOrNull("getMemoryRecallLogByMessageIds");
-  if (!raw) {
+  const db = memoryDbOrNull("getMemoryRecallLogByMessageIds");
+  if (!db) {
     return null;
   }
   const placeholders = messageIds.map(() => "?").join(",");
-  const row = raw
-    .query(
-      `SELECT enabled, degraded, provider, model, degradation_json,
-              semantic_hits, merged_count, selected_count, tier1_count,
-              tier2_count, hybrid_search_latency_ms, sparse_vector_used,
-              injected_tokens, latency_ms, top_candidates_json,
-              injected_text, reason, query_context
-         FROM memory_recall_logs
-        WHERE message_id IN (${placeholders})
-        LIMIT 1`,
-    )
-    .get(...messageIds) as MemoryRecallLogRow | null;
+  const row = await db.get<MemoryRecallLogRow>(
+    `SELECT enabled, degraded, provider, model, degradation_json,
+            semantic_hits, merged_count, selected_count, tier1_count,
+            tier2_count, hybrid_search_latency_ms, sparse_vector_used,
+            injected_tokens, latency_ms, top_candidates_json,
+            injected_text, reason, query_context
+       FROM memory_recall_logs
+      WHERE message_id IN (${placeholders})
+      LIMIT 1`,
+    messageIds,
+  );
   if (!row) {
     return null;
   }

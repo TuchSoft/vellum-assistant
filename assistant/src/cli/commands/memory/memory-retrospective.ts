@@ -72,7 +72,7 @@ export function registerMemoryRetrospectiveCommand(memory: Command): void {
 
       const { listRetrospectiveStates } =
         await import("../../../plugins/defaults/memory/memory-retrospective-state.js");
-      const rows = listRetrospectiveStates(limit);
+      const rows = await listRetrospectiveStates(limit);
 
       if (opts.json) {
         writeOutput(cmd, { rows, total: rows.length });

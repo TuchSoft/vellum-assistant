@@ -11,7 +11,7 @@ import { getUserSelectableProfilesForProvider } from "../../../../config/default
 import { loadConfig } from "../../../../config/loader.js";
 import { usesConceptPageMemory } from "../../../../config/memory-v3-gate.js";
 import type { AssistantConfig } from "../../../../config/types.js";
-import { getDb } from "../../../../persistence/db-connection.js";
+import { requireMainDb } from "../../../../persistence/db-facade.js";
 import {
   enqueueMemoryJob,
   type MemoryJobType,
@@ -317,7 +317,10 @@ async function handleConceptFrequency({
   const { conversationId, sinceMs } =
     MemoryV2ConceptFrequencyParams.parse(body);
   const workspaceDir = getWorkspaceDir();
-  return getConceptFrequencySummary(workspaceDir, { conversationId, sinceMs });
+  return await getConceptFrequencySummary(workspaceDir, {
+    conversationId,
+    sinceMs,
+  });
 }
 
 // ── EMA scores ──────────────────────────────────────────────────────────
@@ -347,7 +350,7 @@ async function handleEmaScores({
 
   const pageIndex = await getPageIndex(getWorkspaceDir());
   const slugs = pageIndex.entries.map((e) => e.slug);
-  const scores = computeInjectionScores(slugs, Date.now());
+  const scores = await computeInjectionScores(slugs, Date.now());
 
   const entries: MemoryV2EmaScoresEntry[] = pageIndex.entries.map((entry) => ({
     slug: entry.slug,
@@ -567,7 +570,10 @@ export async function handleSimulateRouter({
   });
 
   const pageIndex = await getPageIndex(workspaceDir);
-  const scores = computeInjectionScores(routerResult.selectedSlugs, Date.now());
+  const scores = await computeInjectionScores(
+    routerResult.selectedSlugs,
+    Date.now(),
+  );
 
   const sourceBySlug: Record<string, RouterSource> = {};
   for (const [slug, source] of routerResult.sourceBySlug.entries()) {
@@ -669,7 +675,7 @@ export async function handleCompareRetrievers({
   const config = loadConfig();
   const workspaceDir = getWorkspaceDir();
   const pageIndex = await getPageIndex(workspaceDir);
-  const db = getDb();
+  const db = requireMainDb();
 
   // The router is always comparand #1 (the harness self-test against its own
   // logged ground truth).

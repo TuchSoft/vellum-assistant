@@ -2675,7 +2675,7 @@ export async function applyRuntimeInjections(
   if (memoryV3Live) {
     stripPrunedSectionsFromMessages(
       runMessagesForAssembly,
-      getPrunedSections(conversationId),
+      await getPrunedSections(conversationId),
     );
   }
 

@@ -254,7 +254,7 @@ export async function skillUpdateReceiptJob(
     return undefined;
   }
 
-  if (hasPendingJobOfType("skill_update_receipt")) {
+  if (await hasPendingJobOfType("skill_update_receipt")) {
     // An entry landed while this row was being evaluated and opened a
     // sibling. The sibling carries the burst: merge into it and announce
     // nothing, so the two rows do not become two bell rows.

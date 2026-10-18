@@ -1,5 +1,5 @@
 import { getLogger } from "./logging.js";
-import { memorySqliteOrNull } from "./memory-db.js";
+import { memoryDbOrNull } from "./memory-db.js";
 
 const log = getLogger("conversation-memory-purge");
 
@@ -42,16 +42,18 @@ export const CONVERSATION_KEYED_MEMORY_TABLES: readonly string[] = [
  * lost purge must never break conversation deletion — for these derived tables
  * a stray orphan row is harmless garbage.
  */
-export function purgeConversationMemoryTables(conversationId: string): void {
-  const raw = memorySqliteOrNull("purgeConversationMemoryTables");
-  if (!raw) {
+export async function purgeConversationMemoryTables(
+  conversationId: string,
+): Promise<void> {
+  const db = memoryDbOrNull("purgeConversationMemoryTables");
+  if (!db) {
     return;
   }
   for (const table of CONVERSATION_KEYED_MEMORY_TABLES) {
     try {
-      raw
-        .query(`DELETE FROM ${table} WHERE conversation_id = ?`)
-        .run(conversationId);
+      await db.run(`DELETE FROM ${table} WHERE conversation_id = ?`, [
+        conversationId,
+      ]);
     } catch (err) {
       log.warn(
         { err, conversationId, table },
@@ -69,14 +71,14 @@ export function purgeConversationMemoryTables(conversationId: string): void {
  * {@link purgeConversationMemoryTables}: an unavailable memory database no-ops,
  * and a single table's failing delete is logged and swallowed.
  */
-export function clearAllConversationMemoryTables(): void {
-  const raw = memorySqliteOrNull("clearAllConversationMemoryTables");
-  if (!raw) {
+export async function clearAllConversationMemoryTables(): Promise<void> {
+  const db = memoryDbOrNull("clearAllConversationMemoryTables");
+  if (!db) {
     return;
   }
   for (const table of CONVERSATION_KEYED_MEMORY_TABLES) {
     try {
-      raw.query(`DELETE FROM ${table}`).run();
+      await db.run(`DELETE FROM ${table}`);
     } catch (err) {
       log.warn(
         { err, table },

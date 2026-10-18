@@ -131,11 +131,11 @@ function servedAttribution(
  * dispatcher. Failures are swallowed (warn-logged) so a DB hiccup never
  * escalates compaction into a failure.
  */
-function recordCompactionRequestLog(
+async function recordCompactionRequestLog(
   conversationId: string,
   response: ProviderResponse,
   provider: Provider,
-): string | null {
+): Promise<string | null> {
   if (!response.rawRequest || !response.rawResponse) {
     return null;
   }
@@ -143,7 +143,7 @@ function recordCompactionRequestLog(
     // Inserted unlinked (no message id) — user-initiated compaction flows
     // (/compact, summarize-up-to) link the row to their result card after
     // it persists, via `linkRequestLogsToMessage`.
-    return recordRequestLog(
+    return await recordRequestLog(
       conversationId,
       JSON.stringify(response.rawRequest),
       JSON.stringify(response.rawResponse),
@@ -1414,7 +1414,7 @@ export async function runAssistantDrivenCompaction(
 
   // Persist the compaction LLM call into `llm_request_logs` with
   // `call_site = "compactionAgent"`. Non-fatal on DB error — see helper.
-  const summaryRequestLogId = recordCompactionRequestLog(
+  const summaryRequestLogId = await recordCompactionRequestLog(
     args.conversationId,
     response,
     args.provider,
@@ -1884,7 +1884,11 @@ export async function runEmergencyCompaction(
 
   // Persist the emergency compaction LLM call into `llm_request_logs` with
   // `call_site = "compactionAgent"`. Non-fatal on DB error — see helper.
-  recordCompactionRequestLog(args.conversationId, response, args.provider);
+  await recordCompactionRequestLog(
+    args.conversationId,
+    response,
+    args.provider,
+  );
 
   const rawText = extractTextFromResponse(response.content);
   // The emergency prompt asks for summary + key_state only — the split

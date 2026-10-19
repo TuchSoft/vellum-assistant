@@ -1,4 +1,3 @@
-import { getConfig } from "../config/loader.js";
 import type { ProviderResponse } from "../providers/types.js";
 import { getLogger } from "../util/logger.js";
 import {
@@ -250,13 +249,7 @@ export function resolveStructuredPricing(
   usage: PricingUsage,
 ): PricingResult {
   try {
-    const config = getConfig();
-    return resolvePricingForUsageWithOverrides(
-      providerName,
-      model,
-      usage,
-      config.llm.pricingOverrides,
-    );
+    return resolvePricingForUsageWithOverrides(providerName, model, usage, []);
   } catch (err) {
     log.warn({ err, model, providerName }, "Failed to resolve usage pricing");
     return { estimatedCostUsd: null, pricingStatus: "unpriced" };

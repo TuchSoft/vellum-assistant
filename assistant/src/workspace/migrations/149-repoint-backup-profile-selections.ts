@@ -14,13 +14,24 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 
-import { FALLBACK_PROFILE_BY_KEY } from "../../config/default-profile-names.js";
 import { getLogger } from "../../util/logger.js";
 import type { WorkspaceMigration } from "./types.js";
 
 const log = getLogger(
   "workspace-migration-149-repoint-backup-profile-selections",
 );
+
+/**
+ * Frozen copy of the historical backup mapping. This migration predates the
+ * alias catalog and must keep operating on the profile keys it was written
+ * for, so it cannot read the live config modules.
+ */
+const FALLBACK_PROFILE_BY_KEY: Record<string, string> = {
+  balanced: "balanced-backup",
+  "quality-optimized": "quality-optimized-backup",
+  "cost-optimized": "cost-optimized-backup",
+  "latency-optimized": "latency-optimized-backup",
+};
 
 /** Mapping of every managed backup to its direct-selectable primary. */
 const BACKUP_TO_PRIMARY: Record<string, string> = Object.fromEntries(

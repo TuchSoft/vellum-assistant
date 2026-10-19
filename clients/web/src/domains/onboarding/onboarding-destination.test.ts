@@ -34,9 +34,9 @@ describe("onboardingDestinationAfterConsent", () => {
   });
 
   test("local hosting routes to hatching first (foreground local hatch → research)", () => {
-    expect(
-      onboardingDestinationAfterConsent({ isLocalHatch: true }),
-    ).toBe(routes.onboarding.hatching);
+    expect(onboardingDestinationAfterConsent({ isLocalHatch: true })).toBe(
+      routes.onboarding.hatching,
+    );
   });
 
   test("skip-to-chat routes platform onboarding to hatching so the assistant is provisioned", () => {
@@ -167,9 +167,9 @@ describe("shouldSkipResearchAfterHatch", () => {
         "staging",
       ),
     ).toBe(true);
-    expect(
-      shouldSkipResearchAfterHatch(new URLSearchParams(), "staging"),
-    ).toBe(false);
+    expect(shouldSkipResearchAfterHatch(new URLSearchParams(), "staging")).toBe(
+      false,
+    );
     expect(
       shouldSkipResearchAfterHatch(
         new URLSearchParams("skip_research=0"),

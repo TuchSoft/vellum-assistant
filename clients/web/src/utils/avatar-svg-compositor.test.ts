@@ -38,9 +38,7 @@ const components: CharacterComponents = {
 const countPaths = (svg: string): number =>
   (svg.match(/<path\b/g) ?? []).length;
 
-function expectComposedSvg(
-  ...args: Parameters<typeof composeSvg>
-): string {
+function expectComposedSvg(...args: Parameters<typeof composeSvg>): string {
   const svg = composeSvg(...args);
   expect(svg).not.toBeNull();
   if (svg == null) {

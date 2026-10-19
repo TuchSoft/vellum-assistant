@@ -198,7 +198,11 @@ import { VoiceInputDiagnostics } from "./voice-input-diagnostics.js";
 const log = getLogger("live-voice-session");
 
 type LiveVoiceSessionState =
-  "initializing" | "active" | "interrupted" | "failed" | "closed";
+  | "initializing"
+  | "active"
+  | "interrupted"
+  | "failed"
+  | "closed";
 
 type VadEnergyClassification = "speech" | "silence" | "echo";
 
@@ -1181,7 +1185,8 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
   // Reads the interrupted turn's teardown promise so the barge-in path can wait
   // for it to settle before forking the continuation.
   private readonly getTurnTeardown:
-    ((conversationId: string) => Promise<void> | undefined) | null;
+    | ((conversationId: string) => Promise<void> | undefined)
+    | null;
   private readonly detachTeardownSettleTimeoutMs: number;
   private readonly continuationAnnounceSilenceMs: number;
   // Abort handles for background continuations started when a barge-in detached
@@ -4458,7 +4463,7 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
     approvalRequestId?: string,
     detail?: Pick<
       Extract<LiveVoiceServerFramePayload, { type: "activity" }>,
-      "kind" | "profile" | "profileSource"
+      "kind" | "model" | "modelSource"
     >,
   ): void {
     // De-duplicated on the request id as well as the wording. The two move
@@ -4495,8 +4500,8 @@ export class LiveVoiceSession implements LiveVoiceSessionContract {
   ): void {
     this.publishActivity(turn, "", undefined, {
       kind: "escalation",
-      profile: target.profile,
-      profileSource: target.source,
+      model: target.model,
+      modelSource: target.source,
     });
   }
 

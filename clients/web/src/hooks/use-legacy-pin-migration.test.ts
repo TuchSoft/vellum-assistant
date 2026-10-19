@@ -108,7 +108,9 @@ describe("planLegacyPinClaim", () => {
   test("never claims a plugin app, whose id every assistant shares", () => {
     const pin = legacyPin("plugins~demo~widget", 1);
 
-    expect(planLegacyPinClaim([pin], [pluginApp("demo", "widget")])).toEqual([]);
+    expect(planLegacyPinClaim([pin], [pluginApp("demo", "widget")])).toEqual(
+      [],
+    );
   });
 
   test("claims the workspace apps beside an unclaimable plugin app", () => {
@@ -123,8 +125,8 @@ describe("planLegacyPinClaim", () => {
   /* An older cached response carries no origin, so nothing about it is
      attributable and the conservative answer is to leave it. */
   test("never claims an app whose origin is unknown", () => {
-    expect(planLegacyPinClaim([legacyPin("mine", 1)], [{ id: "mine" }])).toEqual(
-      [],
-    );
+    expect(
+      planLegacyPinClaim([legacyPin("mine", 1)], [{ id: "mine" }]),
+    ).toEqual([]);
   });
 });

@@ -24,7 +24,10 @@ import { bestEffortModeSessionTracking } from "./mode-session-tracking.js";
 const log = getLogger("conversation-mode-session");
 
 export type ModeSessionStructuralKind =
-  "question" | "confirmation" | "secret" | "surface";
+  | "question"
+  | "confirmation"
+  | "secret"
+  | "surface";
 
 interface ModeSessionSourceRegistration {
   sourceId: string;

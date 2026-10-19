@@ -81,15 +81,11 @@ const { ScheduleProfileRebaseDialog, useScheduleProfileRebase } =
 
 type RebaseSchedule = Parameters<typeof useScheduleProfileRebase>[1][number];
 
-function schedule(
-  id: string,
-  inferenceProfile: string | null,
-  status: string = "active",
-) {
+function schedule(id: string, model: string | null, status: string = "active") {
   return {
     id,
     name: id,
-    inferenceProfile,
+    model,
     status,
   } as unknown as RebaseSchedule;
 }

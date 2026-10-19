@@ -26,8 +26,7 @@ import { useBusSubscription } from "@/hooks/use-bus-subscription";
 type AssistantEvent = AssistantEventEnvelope["message"];
 
 export type AssistantStatusFetchResult<TStatus> =
-  | { ok: true; data: { status: TStatus } }
-  | { ok: false };
+  { ok: true; data: { status: TStatus } } | { ok: false };
 
 export interface UseAssistantStatusMonitorOptions<TStatus, TMode> {
   assistantId: string | null;
@@ -112,8 +111,9 @@ export function useAssistantStatusMonitor<TStatus, TMode>({
   TStatus,
   TMode
 >): UseAssistantStatusMonitorResult<TStatus, TMode> {
-  const [snapshot, setSnapshot] =
-    useState<AssistantStatusMonitorSnapshot<TStatus>>(EMPTY_MONITOR_SNAPSHOT);
+  const [snapshot, setSnapshot] = useState<
+    AssistantStatusMonitorSnapshot<TStatus>
+  >(EMPTY_MONITOR_SNAPSHOT);
   const activeAssistantIdRef = useRef<string | null>(assistantId);
   const enabledRef = useRef(enabled);
   const generationRef = useRef(0);

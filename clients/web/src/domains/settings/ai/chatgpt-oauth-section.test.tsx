@@ -29,9 +29,8 @@ import type { PollOutcome } from "@/utils/poll-until-settled";
 
 const ASSISTANT_ID = "asst-1";
 
-const actualApi = await import(
-  "@/domains/settings/ai/chatgpt-subscription-api"
-);
+const actualApi =
+  await import("@/domains/settings/ai/chatgpt-subscription-api");
 const { CHATGPT_ACCESS_TOKEN_CREDENTIAL, DeviceAuthUnsupportedError } =
   actualApi;
 
@@ -92,19 +91,19 @@ mock.module("@/utils/poll-until-settled", () => ({
     settle === "never" ? new Promise(() => {}) : Promise.resolve(settle),
 }));
 
-const { useClientFeatureFlagStore } = await import(
-  "@/stores/client-feature-flag-store"
-);
+const { useClientFeatureFlagStore } =
+  await import("@/stores/client-feature-flag-store");
 
-const { ChatgptOAuthSection } = await import(
-  "@/domains/settings/ai/chatgpt-oauth-section"
-);
+const { ChatgptOAuthSection } =
+  await import("@/domains/settings/ai/chatgpt-oauth-section");
 
 function setDeviceCodeLoginFlag(value: boolean) {
   useClientFeatureFlagStore.setState({ chatgptDeviceCodeLogin: value });
 }
 
-function renderSection(onConnected: (c: ProviderConnection) => void = () => {}) {
+function renderSection(
+  onConnected: (c: ProviderConnection) => void = () => {},
+) {
   return render(
     <ChatgptOAuthSection
       assistantId={ASSISTANT_ID}
@@ -223,9 +222,7 @@ describe("ChatgptOAuthSection with device-code login on", () => {
 
     fireEvent.click(screen.getByText("Sign in with ChatGPT"));
 
-    await screen.findByText(
-      "This code expired. Start again to get a new one.",
-    );
+    await screen.findByText("This code expired. Start again to get a new one.");
     expect(screen.queryByText("ABCD-1234")).toBeNull();
 
     fireEvent.click(screen.getByText("Try again"));

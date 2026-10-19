@@ -33,12 +33,9 @@ const downloadDocumentPdf = mock(
 const captureError = mock(() => {});
 const selection = useResolvedAssistantsStore.getState();
 const documentComments = await import("../api/document-comments");
-mock.module(
-  "../api/surfaces",
-  (): Partial<typeof Surfaces> => ({
-    downloadDocumentPdf,
-  }),
-);
+mock.module("../api/surfaces", (): Partial<typeof Surfaces> => ({
+  downloadDocumentPdf,
+}));
 mock.module(
   "../api/document-comments",
   (): Partial<typeof DocumentComments> => ({
@@ -46,12 +43,9 @@ mock.module(
     fetchComments: async () => [],
   }),
 );
-mock.module(
-  "@/lib/sentry/capture-error",
-  (): Partial<typeof ErrorCapture> => ({
-    captureError,
-  }),
-);
+mock.module("@/lib/sentry/capture-error", (): Partial<typeof ErrorCapture> => ({
+  captureError,
+}));
 mock.module(
   "./document-comment-panel",
   (): Partial<typeof DocumentCommentPanel> => ({

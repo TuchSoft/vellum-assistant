@@ -185,20 +185,10 @@ export interface SubagentConfig {
    */
   parentSystemPrompt?: string;
   /**
-   * Optional ad-hoc inference-profile override the parent inherits down to this
-   * subagent. When set, every LLM call the subagent issues carries
-   * `SendMessageOptions.config.overrideProfile = <name>` so the resolver layers
-   * `llm.profiles[<name>]` between the workspace's `activeProfile` and the
-   * call-site's named profile. If a parent conversation is pinned to a
-   * profile, every spawned subagent inherits it automatically.
+   * Optional alias pinned for every LLM call this subagent issues. When set,
+   * the subagent's calls carry `SendMessageOptions.config.model = <alias>`.
    */
-  overrideProfile?: string;
-  /**
-   * When true, the subagent's `overrideProfile` is an explicit spawn-time
-   * request and must float above call-site layers. Inherited parent profiles
-   * leave this unset so existing call-site precedence stays intact.
-   */
-  forceOverrideProfile?: boolean;
+  model?: string;
   /**
    * The `cron_runs.id` of the schedule firing that spawned this subagent.
    * Passed into the subagent's `runAgentLoop` so its usage rows carry the same

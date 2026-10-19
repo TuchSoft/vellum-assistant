@@ -307,7 +307,7 @@ export function stepLines(
 
   // The ordinary wrap at the full width, and how many lines it takes.
   const ordinary: string[] = [];
-  for (let from = 0; from < n; ) {
+  for (let from = 0; from < n;) {
     let to = from + 1;
     while (to < n && widths[from][to + 1] <= maxWidth) {
       to += 1;

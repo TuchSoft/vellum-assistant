@@ -3,7 +3,8 @@ import { recoverActiveConversationModeSessions } from "../persistence/conversati
 import { setDbReady } from "./daemon-readiness.js";
 
 export type ModeSessionStartupRecoveryResult =
-  { ok: true; interruptedCount: number } | { ok: false; error: unknown };
+  | { ok: true; interruptedCount: number }
+  | { ok: false; error: unknown };
 
 /** Runs after migrations; auxiliary recovery failure disables tracking for this boot. */
 export async function recoverModeSessionsBeforeDbReady(

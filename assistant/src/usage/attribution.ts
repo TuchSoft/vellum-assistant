@@ -1,91 +1,58 @@
 import {
+  resolveCallSite,
   resolveCallSiteConfig,
-  selectWinningProfile,
 } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import type { LLMCallSite } from "../config/schemas/llm.js";
-import { ROUTING_IDENTITY_PROVIDERS } from "../providers/inference/auth.js";
-import { resolveRoutingIdentity } from "../providers/routing-identity.js";
 import { safeStringSlice } from "../util/unicode.js";
 
 const MAX_METADATA_VALUE_LENGTH = 128;
 
-/** `profileSource` reported for a turn whose profile the Auto router chose. */
-export const AUTO_PROFILE_SOURCE = "auto";
-
-export type UsageAttributionProfileSource =
+export type UsageModelSource =
+  | "pinned"
   | "call_site"
-  | "conversation"
-  | "active"
+  | "chat"
   | "default"
-  | typeof AUTO_PROFILE_SOURCE
   | "unknown";
 
 export interface UsageAttributionInput {
   callSite: LLMCallSite | null;
   /**
-   * Call site used to pick the winning profile. Defaults to {@link callSite}.
+   * Call site used to resolve the model. Defaults to {@link callSite}.
    * Compaction invokes the provider as `mainAgent` (prefix cache) but tags
-   * the usage row as `compactionAgent`; pass `mainAgent` here so
-   * `appliedProfile` / `profileSource` match the request that ran.
+   * the usage row as `compactionAgent`; pass `mainAgent` here so the
+   * attribution matches the request that ran.
    */
-  profileResolutionCallSite?: LLMCallSite | null;
-  overrideProfile?: string | null;
-  /**
-   * Who chose `overrideProfile`. `"auto"` marks a profile the Auto profile's
-   * router picked for the turn, so usage rows can tell an Auto pick from a
-   * user pin that landed on the same profile. Absent for a user pin.
-   */
-  overrideProfileOrigin?: "auto" | null;
-  /**
-   * Mirrors `ResolveCallSiteOpts.forceOverrideProfile`: the override profile
-   * was floated above the call-site layers for this request, so attribution
-   * must credit it ahead of the call-site profile too.
-   */
-  forceOverrideProfile?: boolean;
-  /**
-   * Per-conversation seed for `mix`-profile expansion (the conversation id).
-   * When the applied profile is a mix, threading the same seed the dispatch
-   * path uses ensures `resolvedModel`/`resolvedMixArm` reflect the arm the
-   * request actually ran on. Omitted by one-shot callers (the snapshot's
-   * `resolvedMixArm` is then null even if a mix was involved).
-   */
-  selectionSeed?: string;
+  modelResolutionCallSite?: LLMCallSite | null;
+  /** Explicit alias pin for this request. */
+  model?: string | null;
+  /** Interactive conversation selection. */
+  conversationModel?: string | null;
 }
 
 export interface UsageAttributionSnapshot {
   callSite: LLMCallSite | null;
-  activeProfile: string | null;
-  overrideProfile: string | null;
-  callSiteProfile: string | null;
-  appliedProfile: string | null;
-  profileSource: UsageAttributionProfileSource;
+  /** The alias the request ran on. */
+  model: string | null;
+  modelSource: UsageModelSource;
   resolvedProvider: string;
   resolvedModel: string;
-  /**
-   * When `appliedProfile` is a mix profile, the constituent arm chosen for
-   * this request; null otherwise. Lets A/B analysis attribute usage to the
-   * specific arm (mix name lives in `appliedProfile`).
-   */
-  resolvedMixArm: string | null;
 }
 
 /**
- * The four nullable attribution columns shared by telemetry events
+ * The nullable attribution columns shared by telemetry events
  * (`tool_invocations` rows, `skill_loaded` outbox payloads).
  */
 export interface UsageAttributionColumns {
   provider: string | null;
   model: string | null;
-  inferenceProfile: string | null;
-  inferenceProfileSource: string | null;
+  modelSource: UsageModelSource | null;
 }
 
 /**
- * Maps an attribution snapshot to the shared telemetry columns — the same
- * mapping `llm_usage` reporting uses (`appliedProfile` → inference_profile,
- * `profileSource` → inference_profile_source). Accepts a missing snapshot so
- * producers that resolve attribution best-effort can pass it through as-is.
+ * Maps an attribution snapshot to the shared telemetry columns. Accepts a
+ * missing snapshot so producers that resolve attribution best-effort can pass
+ * it through as-is.
  */
 export function toAttributionColumns(
   snapshot: UsageAttributionSnapshot | null | undefined,
@@ -93,21 +60,15 @@ export function toAttributionColumns(
   return {
     provider: snapshot?.resolvedProvider ?? null,
     model: snapshot?.resolvedModel ?? null,
-    inferenceProfile: snapshot?.appliedProfile ?? null,
-    inferenceProfileSource: snapshot?.profileSource ?? null,
+    modelSource: snapshot?.modelSource ?? null,
   };
 }
 
-/**
- * Sanitizes values before they are copied into external metadata surfaces.
- * Empty strings and control-character-bearing strings are dropped, and long
- * values are capped so later forwarding cannot create unbounded headers.
- */
+/** Sanitizes values before they are copied into external metadata surfaces. */
 export function sanitizeUsageMetadataValue(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
   }
-
   const trimmed = value.trim();
   if (trimmed.length === 0) {
     return null;
@@ -115,31 +76,7 @@ export function sanitizeUsageMetadataValue(value: unknown): string | null {
   if (containsControlCharacter(trimmed)) {
     return null;
   }
-
   return safeStringSlice(trimmed, 0, MAX_METADATA_VALUE_LENGTH);
-}
-
-/**
- * Attribution records the billed upstream: a routing-identity provider
- * ("vellum"/"chatgpt") translates to the upstream that actually serves the
- * request, matching what dispatch resolves. Unroutable identity models fall
- * back to the stored value rather than throwing — attribution must never
- * take dispatch down.
- */
-function attributedProvider(
-  provider: string | undefined,
-  model: string | undefined,
-): string | undefined {
-  if (provider === undefined || !ROUTING_IDENTITY_PROVIDERS.has(provider)) {
-    return provider;
-  }
-  try {
-    return (
-      resolveRoutingIdentity(provider, model)?.expectedProvider ?? provider
-    );
-  } catch {
-    return provider;
-  }
 }
 
 export function resolveUsageAttribution(
@@ -147,111 +84,58 @@ export function resolveUsageAttribution(
 ): UsageAttributionSnapshot {
   const llm = getConfig().llm;
   const callSite = input.callSite;
-  const resolutionCallSite = input.profileResolutionCallSite ?? callSite;
-  const overrideProfile = normalizeProfileId(input.overrideProfile);
+  const resolutionCallSite = input.modelResolutionCallSite ?? callSite;
+  const model = normalizeModel(input.model);
+  const conversationModel = normalizeModel(input.conversationModel);
 
-  if (resolutionCallSite == null) {
-    const resolvedMainAgent = resolveCallSiteConfig("mainAgent", llm, {
-      ...(input.selectionSeed != null
-        ? { selectionSeed: input.selectionSeed }
-        : {}),
+  try {
+    if (resolutionCallSite == null) {
+      const resolved = resolveCallSiteConfig("mainAgent", llm, {
+        ...(conversationModel != null ? { conversationModel } : {}),
+      });
+      return {
+        callSite: null,
+        model: resolved.model,
+        modelSource: "unknown",
+        resolvedProvider: "llm-gateway",
+        resolvedModel: resolved.model,
+      };
+    }
+
+    const resolution = resolveCallSite(resolutionCallSite, llm, {
+      ...(model != null ? { model } : {}),
+      ...(conversationModel != null ? { conversationModel } : {}),
     });
+    if (resolution.status === "disabled") {
+      return {
+        callSite,
+        model: null,
+        modelSource: "unknown",
+        resolvedProvider: "llm-gateway",
+        resolvedModel: "",
+      };
+    }
     return {
-      callSite: null,
-      activeProfile: normalizeProfileId(llm.activeProfile),
-      overrideProfile,
-      callSiteProfile: null,
-      appliedProfile: null,
-      profileSource: "unknown",
-      resolvedProvider:
-        attributedProvider(
-          resolvedMainAgent.provider,
-          resolvedMainAgent.model,
-        ) ?? resolvedMainAgent.provider,
-      resolvedModel: resolvedMainAgent.model,
-      resolvedMixArm: null,
+      callSite,
+      model: resolution.model,
+      modelSource: resolution.source,
+      resolvedProvider: "llm-gateway",
+      resolvedModel: resolution.model,
+    };
+  } catch {
+    return {
+      callSite,
+      model: model ?? conversationModel ?? null,
+      modelSource: "unknown",
+      resolvedProvider: "llm-gateway",
+      resolvedModel: model ?? conversationModel ?? "",
     };
   }
-
-  // Capture which arm each expanded mix resolved to so we can attribute usage
-  // to the arm behind the applied (mix) profile below.
-  const mixSelections = new Map<string, string>();
-  const resolved = resolveCallSiteConfig(resolutionCallSite, llm, {
-    ...(overrideProfile != null ? { overrideProfile } : {}),
-    ...(input.forceOverrideProfile === true
-      ? { forceOverrideProfile: true }
-      : {}),
-    ...(input.selectionSeed != null
-      ? { selectionSeed: input.selectionSeed }
-      : {}),
-    onMixSelected: ({ mixProfile, chosenProfile }) =>
-      mixSelections.set(mixProfile, chosenProfile),
-  });
-  const activeProfile = normalizeProfileId(llm.activeProfile);
-  const callSiteProfile = normalizeProfileId(
-    llm.callSites?.[resolutionCallSite]?.profile,
-  );
-  // The resolver's own winner selection is the single source of truth for which
-  // profile applied — attribution must never re-derive precedence and drift
-  // from dispatch.
-  const profile = appliedProfileFromWinnerSelection(
-    resolutionCallSite,
-    llm,
-    overrideProfile,
-    input,
-  );
-
-  return {
-    callSite,
-    activeProfile,
-    overrideProfile,
-    callSiteProfile,
-    appliedProfile: profile.appliedProfile,
-    profileSource: profile.profileSource,
-    resolvedProvider:
-      attributedProvider(resolved.provider, resolved.model) ??
-      resolved.provider,
-    resolvedModel: resolved.model,
-    resolvedMixArm:
-      profile.appliedProfile != null
-        ? (mixSelections.get(profile.appliedProfile) ?? null)
-        : null,
-  };
 }
 
-function appliedProfileFromWinnerSelection(
-  callSite: LLMCallSite,
-  llm: Parameters<typeof selectWinningProfile>[1],
-  overrideProfile: string | null,
-  input: UsageAttributionInput,
-): Pick<UsageAttributionSnapshot, "appliedProfile" | "profileSource"> {
-  const selection = selectWinningProfile(callSite, llm, {
-    ...(overrideProfile != null ? { overrideProfile } : {}),
-    ...(input.selectionSeed != null
-      ? { selectionSeed: input.selectionSeed }
-      : {}),
-  });
-  const sourceBySelection = {
-    override: "conversation",
-    active: "active",
-    call_site: "call_site",
-    default: "default",
-  } as const;
-  // An override the Auto router chose is reported as its own source: the
-  // applied profile is the routed arm, so without this a routed turn would
-  // be indistinguishable from a user who pinned that arm.
-  const profileSource =
-    selection.source === "override" && input.overrideProfileOrigin === "auto"
-      ? AUTO_PROFILE_SOURCE
-      : sourceBySelection[selection.source];
-  return {
-    appliedProfile: selection.profileName,
-    profileSource,
-  };
-}
-
-function normalizeProfileId(value: string | null | undefined): string | null {
-  return value ?? null;
+function normalizeModel(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed != null && trimmed.length > 0 ? trimmed : null;
 }
 
 function containsControlCharacter(value: string): boolean {

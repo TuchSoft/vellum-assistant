@@ -75,8 +75,7 @@ interface RegisteredToken {
   runtimeAssistantId: string;
 }
 
-interface AndroidPushRegistrationPlugin
-  extends AndroidNotificationOwnershipBridge {
+interface AndroidPushRegistrationPlugin extends AndroidNotificationOwnershipBridge {
   register(): Promise<void>;
   unregister(): Promise<void>;
   getCapabilities(): Promise<{ capabilities: string[] }>;
@@ -375,9 +374,7 @@ export function extractScopedPushTapPayload(
     identity: { scopeId, assistantId, nativeSenderId },
     ...(presentation ? { presentation } : {}),
     ...(nameProvenance ? { nameProvenance } : {}),
-    ...(record.suppressGroupTitle === true
-      ? { suppressGroupTitle: true }
-      : {}),
+    ...(record.suppressGroupTitle === true ? { suppressGroupTitle: true } : {}),
   };
 }
 

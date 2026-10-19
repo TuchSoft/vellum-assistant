@@ -2,17 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import {
-  type ProfileDispatchOptions,
-  type ProfilePickerIssue,
-  profilePickerIssue,
+  aliasMapFromLlm,
+  isDispatchableProfile,
   profilePickerLabel,
-  undispatchableProfileReason,
-  visibleProfilesForPicker,
+  type ProfilePickerEntry,
 } from "@/assistant/profile-pickers";
-import { buildOrderedProfiles } from "@/domains/settings/ai/utils";
 import { configGetOptions } from "@/generated/daemon/@tanstack/react-query.gen";
-import { useSupportsCompleteProfileSnapshots } from "@/lib/backwards-compat/complete-profile-snapshots";
-
 import type { ConfigGetResponse } from "@/generated/daemon/types.gen";
 
 type LlmConfig = ConfigGetResponse["llm"];
@@ -20,39 +15,21 @@ type LlmConfig = ConfigGetResponse["llm"];
 export interface ProfileOption {
   readonly value: string | null;
   readonly label: string;
-  /** Set when the resolver would skip this profile; the view renders it. */
-  readonly issue?: ProfilePickerIssue;
-  /** Hover copy for an `"undispatchable"` option. */
-  readonly reason?: string;
 }
 
 export function buildProfileOptions(
   llm: LlmConfig | undefined,
-  selectedProfile: string | null | undefined,
-  options: ProfileDispatchOptions,
+  _selectedProfile?: string | null,
 ): ProfileOption[] {
-  const profiles = llm?.profiles ?? {};
-  const profileOrder = llm?.profileOrder ?? [];
-  const orderedProfiles = buildOrderedProfiles(profiles, profileOrder);
-  const visibleProfiles = visibleProfilesForPicker(
-    orderedProfiles,
-    [selectedProfile],
-    options,
+  const aliases = Object.values(aliasMapFromLlm(llm)).filter((alias) =>
+    isDispatchableProfile(alias),
   );
-
   return [
     { value: null, label: "Default" },
-    ...visibleProfiles.map((profile) => {
-      const issue = profilePickerIssue(profile, orderedProfiles, options);
-      return {
-        value: profile.name,
-        label: profilePickerLabel(profile),
-        ...(issue ? { issue } : {}),
-        ...(issue === "undispatchable"
-          ? { reason: undispatchableProfileReason(profile) }
-          : {}),
-      };
-    }),
+    ...aliases.map((alias) => ({
+      value: alias.name,
+      label: profilePickerLabel(alias),
+    })),
   ];
 }
 
@@ -66,13 +43,10 @@ export function useProfileOptions(
     staleTime: 60_000,
   });
 
-  const requireOwnProviderAndModel = useSupportsCompleteProfileSnapshots();
-
   return useMemo(
-    () =>
-      buildProfileOptions(daemonConfig?.llm, selectedProfile, {
-        requireOwnProviderAndModel,
-      }),
-    [daemonConfig?.llm, selectedProfile, requireOwnProviderAndModel],
+    () => buildProfileOptions(daemonConfig?.llm, selectedProfile),
+    [daemonConfig?.llm, selectedProfile],
   );
 }
+
+export type { ProfilePickerEntry };

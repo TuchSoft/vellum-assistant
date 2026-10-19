@@ -80,7 +80,7 @@ function makeCtx(
     messages,
     additionalContext: null,
     model: "claude-test-model",
-    modelProfileKey: "claude-test-model",
+    modelKey: "claude-test-model",
     maxInputTokens: 10_000,
     callSite: "mainAgent",
     supportsDynamicUi: true,

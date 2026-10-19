@@ -5,7 +5,15 @@
  * that it reads no audio in any phase: no frame loop, no amplitude property.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
 
 import { memo } from "react";
 

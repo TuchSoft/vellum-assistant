@@ -102,14 +102,13 @@ export const conversations = pgTable(
      * never automatically.
      */
     surfacedAt: bigint("surfaced_at", { mode: "number" }),
-    inferenceProfile: text("inference_profile"),
+    /** Gateway alias pinned for interactive turns; null = default model. */
+    model: text("model"),
+    /** Conversation-level reasoning effort; null = alias default. */
+    reasoningEffort: text("reasoning_effort"),
     // JSON-encoded string[] of plugin ids scoping this chat; null = default (all globally-enabled).
     enabledPlugins: text("enabled_plugins"),
-    inferenceProfileSessionId: text("inference_profile_session_id"),
-    inferenceProfileExpiresAt: bigint("inference_profile_expires_at", {
-      mode: "number",
-    }),
-    lastNotifiedInferenceProfile: text("last_notified_inference_profile"),
+    lastNotifiedModel: text("last_notified_model"),
     /**
      * Epoch-ms timestamp set when the agent loop starts a turn for this
      * conversation, cleared (NULL) when the turn ends. NULL means not
@@ -280,8 +279,7 @@ export const toolInvocations = pgTable(
     resultBytes: bigint("result_bytes", { mode: "number" }),
     provider: text("provider"),
     model: text("model"),
-    inferenceProfile: text("inference_profile"),
-    inferenceProfileSource: text("inference_profile_source"),
+    modelSource: text("model_source"),
   },
   (table) => [
     index("idx_tool_invocations_conversation_id").on(table.conversationId),

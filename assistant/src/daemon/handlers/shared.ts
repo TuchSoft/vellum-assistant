@@ -18,7 +18,7 @@ import type {
 } from "../../api/responses/conversation-message.js";
 import { ConfirmationDecisionSchema } from "../../api/responses/conversation-message.js";
 import { getConfig } from "../../config/loader.js";
-import type { LLMCallSite, Speed } from "../../config/schemas/llm.js";
+import type { LLMCallSite } from "../../config/schemas/llm.js";
 import {
   resolveStoredMessageText,
   type SupportedLocale,
@@ -182,7 +182,6 @@ export interface SlackInboundMessageMetadata {
 export interface ConversationCreateOptions {
   systemPromptOverride?: string;
   maxResponseTokens?: number;
-  speed?: Speed;
   transport?: ConversationTransportMetadata;
   assistantId?: string;
   trustContext?: TrustContext;

@@ -243,7 +243,9 @@ describe("PrivacyScreen — Start navigation", () => {
       assistants: [
         {
           id: "asst-1",
-          hatchedAt: new Date(Date.now() - ONBOARDED_HATCH_AGE_MS).toISOString(),
+          hatchedAt: new Date(
+            Date.now() - ONBOARDED_HATCH_AGE_MS,
+          ).toISOString(),
           isLocal: false,
           isPlatformHosted: true,
           isPaired: false,
@@ -268,7 +270,9 @@ describe("PrivacyScreen — Start navigation", () => {
       assistants: [
         {
           id: "asst-old",
-          hatchedAt: new Date(Date.now() - ONBOARDED_HATCH_AGE_MS).toISOString(),
+          hatchedAt: new Date(
+            Date.now() - ONBOARDED_HATCH_AGE_MS,
+          ).toISOString(),
           isLocal: false,
           isPlatformHosted: true,
           isPaired: false,

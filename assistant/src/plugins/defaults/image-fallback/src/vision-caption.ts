@@ -11,7 +11,7 @@
 import {
   doesSupportVision,
   getConfiguredProvider,
-  getModelProfiles,
+  getModelCatalog,
   type ImageContent,
   type PluginLogger,
   type Provider,
@@ -47,18 +47,15 @@ const CAPTION_USER_PROMPT =
 /**
  * Find a vision-capable, enabled profile key for captioning.
  *
- * Scans the workspace's profiles in `getModelProfiles()` order (the same order
+ * Scans the workspace's profiles in `getModelCatalog()` order (the same order
  * the `/model` picker shows them) and returns the first enabled profile whose
  * resolved model supports vision. Returns `null` when no vision profile exists
  * — the hook fails-open in that case, leaving a placeholder text block.
  */
 export function findVisionProfile(): string | null {
-  for (const profile of getModelProfiles()) {
-    if (profile.isDisabled) {
-      continue;
-    }
-    if (doesSupportVision(profile)) {
-      return profile.key;
+  for (const model of getModelCatalog()) {
+    if (doesSupportVision(model)) {
+      return model.alias;
     }
   }
   return null;
@@ -95,8 +92,7 @@ export async function captionImage(
 
   try {
     const provider = await getConfiguredProvider("vision", {
-      overrideProfile: profileKey,
-      forceOverrideProfile: true,
+      model: profileKey,
     });
     if (!provider) {
       logger.warn(
@@ -148,8 +144,8 @@ export async function captionImage(
  * Label of the vision profile used for captioning, for timeout prompt text.
  */
 export function visionProfileLabel(profileKey: string): string {
-  const profile = getModelProfiles().find((p) => p.key === profileKey);
-  return profile?.label ?? profileKey;
+  const model = getModelCatalog().find((m) => m.alias === profileKey);
+  return model?.label ?? profileKey;
 }
 
 function isCaptionTimeoutError(err: unknown): boolean {
@@ -206,8 +202,7 @@ async function sendCaptionRequest(
       config: {
         callSite: "vision",
         conversationId: args.conversationId,
-        overrideProfile: args.profileKey,
-        forceOverrideProfile: true,
+        model: args.profileKey,
         tool_choice: { type: "none" },
       },
       signal,

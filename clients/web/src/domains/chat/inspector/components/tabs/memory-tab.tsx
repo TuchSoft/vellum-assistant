@@ -891,4 +891,3 @@ function fmt(n: number): string {
 function fmtScore(n: number): string {
   return n.toFixed(3);
 }
-

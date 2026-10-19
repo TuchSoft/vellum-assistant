@@ -101,4 +101,123 @@ export const PG_STEPS: readonly PgMigrationStep[] = [
     },
   },
   // --- Data backfills appended below, one named step each. ---
+  {
+    name: "0002_alias_model_columns",
+    up: async (db) => {
+      // Additive first, so an interrupted run can always be re-entered.
+      await db.exec(
+        `ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "model" text`,
+      );
+      await db.exec(
+        `ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "reasoning_effort" text`,
+      );
+      await db.exec(
+        `ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "last_notified_model" text`,
+      );
+      await db.exec(
+        `ALTER TABLE "cron_jobs" ADD COLUMN IF NOT EXISTS "model" text`,
+      );
+      await db.exec(
+        `ALTER TABLE "tool_invocations" ADD COLUMN IF NOT EXISTS "model_source" text`,
+      );
+      await db.exec(
+        `ALTER TABLE "llm_usage_events" ADD COLUMN IF NOT EXISTS "model_source" text`,
+      );
+
+      // Legacy profile keys map onto the shipped aliases. Custom names and
+      // dangling references ("kimi", "browseruse", "computer-use") become
+      // NULL, which means "use defaultModel".
+      const mapped = `CASE "inference_profile"
+        WHEN 'balanced' THEN 'main'
+        WHEN 'quality-optimized' THEN 'main-pro'
+        WHEN 'cost-optimized' THEN 'small'
+        WHEN 'latency-optimized' THEN 'fast'
+        WHEN 'jev-managed' THEN 'fast'
+        WHEN 'main' THEN 'main'
+        WHEN 'main-pro' THEN 'main-pro'
+        WHEN 'small' THEN 'small'
+        WHEN 'fast' THEN 'fast'
+        ELSE NULL
+      END`;
+      await db.exec(
+        `UPDATE "conversations" SET "model" = ${mapped} WHERE "model" IS NULL AND "inference_profile" IS NOT NULL`,
+      );
+      await db.exec(
+        `UPDATE "cron_jobs" SET "model" = ${mapped} WHERE "model" IS NULL AND "inference_profile" IS NOT NULL`,
+      );
+
+      const source = `CASE "inference_profile_source"
+        WHEN 'override' THEN 'chat'
+        WHEN 'active' THEN 'chat'
+        WHEN 'auto' THEN 'chat'
+        WHEN 'call_site' THEN 'call_site'
+        WHEN 'default' THEN 'default'
+        ELSE NULL
+      END`;
+      await db.exec(
+        `UPDATE "tool_invocations" SET "model_source" = ${source} WHERE "model_source" IS NULL AND "inference_profile_source" IS NOT NULL`,
+      );
+      await db.exec(
+        `UPDATE "llm_usage_events" SET "model_source" = ${source} WHERE "model_source" IS NULL AND "inference_profile_source" IS NOT NULL`,
+      );
+
+      // Remove the retired columns only after the data has landed.
+      for (const [table, column] of [
+        ["conversations", "inference_profile"],
+        ["conversations", "inference_profile_session_id"],
+        ["conversations", "inference_profile_expires_at"],
+        ["conversations", "last_notified_inference_profile"],
+        ["cron_jobs", "inference_profile"],
+        ["tool_invocations", "inference_profile"],
+        ["tool_invocations", "inference_profile_source"],
+        ["llm_usage_events", "inference_profile"],
+        ["llm_usage_events", "inference_profile_source"],
+      ]) {
+        await db.exec(
+          `ALTER TABLE "${table}" DROP COLUMN IF EXISTS "${column}"`,
+        );
+      }
+    },
+    down: async (db) => {
+      await db.exec(
+        `ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "inference_profile" text`,
+      );
+      await db.exec(
+        `ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "inference_profile_session_id" text`,
+      );
+      await db.exec(
+        `ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "inference_profile_expires_at" bigint`,
+      );
+      await db.exec(
+        `ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "last_notified_inference_profile" text`,
+      );
+      await db.exec(
+        `ALTER TABLE "cron_jobs" ADD COLUMN IF NOT EXISTS "inference_profile" text`,
+      );
+      await db.exec(
+        `ALTER TABLE "tool_invocations" ADD COLUMN IF NOT EXISTS "inference_profile" text`,
+      );
+      await db.exec(
+        `ALTER TABLE "tool_invocations" ADD COLUMN IF NOT EXISTS "inference_profile_source" text`,
+      );
+      await db.exec(
+        `ALTER TABLE "llm_usage_events" ADD COLUMN IF NOT EXISTS "inference_profile" text`,
+      );
+      await db.exec(
+        `ALTER TABLE "llm_usage_events" ADD COLUMN IF NOT EXISTS "inference_profile_source" text`,
+      );
+      await db.exec(
+        `UPDATE "conversations" SET "inference_profile" = "model" WHERE "inference_profile" IS NULL`,
+      );
+      await db.exec(
+        `UPDATE "cron_jobs" SET "inference_profile" = "model" WHERE "inference_profile" IS NULL`,
+      );
+      await db.exec(
+        `UPDATE "tool_invocations" SET "inference_profile_source" = "model_source" WHERE "inference_profile_source" IS NULL`,
+      );
+      await db.exec(
+        `UPDATE "llm_usage_events" SET "inference_profile_source" = "model_source" WHERE "inference_profile_source" IS NULL`,
+      );
+    },
+  },
 ];

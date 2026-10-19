@@ -116,9 +116,7 @@ export function YourOwnTab({
       setClientId("");
       setClientSecret("");
       setIsShowingAddAppForm(false);
-      toast.success(
-        t("yourOwnOauthTab.appAddedToast", { name: displayName }),
-      );
+      toast.success(t("yourOwnOauthTab.appAddedToast", { name: displayName }));
     },
     onError: (err) => {
       toast.error(err.message || t("yourOwnOauthTab.createFailedToast"));

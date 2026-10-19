@@ -135,7 +135,9 @@ describe("salvageXmlToolCalls", () => {
 \`\`\``;
 
     const salvaged = salvageXmlToolCalls(text, OFFERED);
-    expect(salvaged!.calls).toEqual([{ name: "bash", input: { command: "pwd" } }]);
+    expect(salvaged!.calls).toEqual([
+      { name: "bash", input: { command: "pwd" } },
+    ]);
     expect(salvaged!.text).toContain('name="file_read"');
   });
 });
@@ -186,7 +188,9 @@ describe("salvageXmlToolCalls DSML dialects", () => {
 </||DSML||tool_calls>`;
 
     const salvaged = salvageXmlToolCalls(text, OFFERED);
-    expect(salvaged!.calls).toEqual([{ name: "bash", input: { command: "pwd" } }]);
+    expect(salvaged!.calls).toEqual([
+      { name: "bash", input: { command: "pwd" } },
+    ]);
   });
 
   test("strips a wrapper-only DSML block and emits an error call", () => {
@@ -225,16 +229,16 @@ describe("shouldSalvageXmlToolCalls", () => {
 
   test("is false for other models", () => {
     expect(shouldSalvageXmlToolCalls("gpt-5.6")).toBe(false);
-    expect(shouldSalvageXmlToolCalls("accounts/fireworks/models/minimax-m3")).toBe(
-      false,
-    );
+    expect(
+      shouldSalvageXmlToolCalls("accounts/fireworks/models/minimax-m3"),
+    ).toBe(false);
     expect(shouldSalvageXmlToolCalls(undefined)).toBe(false);
   });
 });
 
 describe("splitXmlToolCallHoldback", () => {
   test("holds a complete invoke opener and the rest of the buffer", () => {
-    expect(splitXmlToolCallHoldback("Sure.\n<invoke name=\"bash\">")).toEqual({
+    expect(splitXmlToolCallHoldback('Sure.\n<invoke name="bash">')).toEqual({
       visible: "Sure.\n",
       held: `<invoke name="bash">`,
     });

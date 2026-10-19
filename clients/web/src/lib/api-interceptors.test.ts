@@ -39,32 +39,29 @@ const primeGatewayWithRepairMock = mock(() => primeGatewayWithRepairImpl());
 // assistant switch or logout landing while the re-prime is in flight.
 let selectedAssistantImpl: () => LockfileAssistant | undefined = () =>
   undefined;
-mock.module(
-  "@/lib/local-mode",
-  (): Partial<typeof LocalMode> => ({
-    getActiveAssistant: () => undefined,
-    getLocalAssistants: () => [],
-    getLocalGatewayUrl: () => undefined,
-    getLockfile: () => ({ assistants: [], activeAssistant: null }),
-    getPlatformAssistants: () => [],
-    getPlatformRuntimeUrl: () => window.location.origin,
-    getSelectedAssistant: () => selectedAssistantImpl(),
-    hasAssistants: () => false,
-    isLocalAssistant: () => false,
-    isLocalClient: isLocalClientMock,
-    isPlatformDisabled: isPlatformDisabledMock,
-    isPlatformAssistant: () => false,
-    isRemoteGatewayMode: isRemoteGatewayModeMock,
-    loadLockfile: async () => ({ assistants: [], activeAssistant: null }),
-    primeLocalGatewayConnection: async () => {},
-    primeLocalGatewayConnectionWithRepair: primeGatewayWithRepairMock,
-    reconcileSelectedAssistant: () => {},
-    retireLocalAssistant: async () => ({ ok: false }),
-    saveLockfileAssistant: async () => {},
-    setActiveLockfileAssistant: async () => {},
-    syncPlatformAssistantsToLockfile: async () => {},
-  }),
-);
+mock.module("@/lib/local-mode", (): Partial<typeof LocalMode> => ({
+  getActiveAssistant: () => undefined,
+  getLocalAssistants: () => [],
+  getLocalGatewayUrl: () => undefined,
+  getLockfile: () => ({ assistants: [], activeAssistant: null }),
+  getPlatformAssistants: () => [],
+  getPlatformRuntimeUrl: () => window.location.origin,
+  getSelectedAssistant: () => selectedAssistantImpl(),
+  hasAssistants: () => false,
+  isLocalAssistant: () => false,
+  isLocalClient: isLocalClientMock,
+  isPlatformDisabled: isPlatformDisabledMock,
+  isPlatformAssistant: () => false,
+  isRemoteGatewayMode: isRemoteGatewayModeMock,
+  loadLockfile: async () => ({ assistants: [], activeAssistant: null }),
+  primeLocalGatewayConnection: async () => {},
+  primeLocalGatewayConnectionWithRepair: primeGatewayWithRepairMock,
+  reconcileSelectedAssistant: () => {},
+  retireLocalAssistant: async () => ({ ok: false }),
+  saveLockfileAssistant: async () => {},
+  setActiveLockfileAssistant: async () => {},
+  syncPlatformAssistantsToLockfile: async () => {},
+}));
 
 // Auth store — mocked so the interceptor's `useAuthStore.getState()` reads a
 // controllable `sessionStatus` + `refreshSession` without pulling in the real
@@ -107,12 +104,9 @@ mock.module("@/lib/auth/hard-navigate", () => ({
 // Sentry capture, stubbed so a failed in-place recovery doesn't touch the
 // real client and the capture can be asserted.
 const captureErrorMock = mock((_err: unknown, _ctx?: unknown) => {});
-mock.module(
-  "@/lib/sentry/capture-error",
-  (): Partial<typeof CaptureError> => ({
-    captureError: captureErrorMock,
-  }),
-);
+mock.module("@/lib/sentry/capture-error", (): Partial<typeof CaptureError> => ({
+  captureError: captureErrorMock,
+}));
 
 // Paired-browser refresh, stubbed so remote-gateway recovery is driven
 // without a live pairing cookie; a test flips it to model a rejected refresh.
@@ -2870,7 +2864,9 @@ describe("daemon request activity", () => {
       try {
         respond(await start(), status);
         expect(useAssistantRequestActivity.getState().responded).toBe(false);
-        expect(event).toHaveBeenCalledTimes([502, 503, 504].includes(status) ? 1 : 0);
+        expect(event).toHaveBeenCalledTimes(
+          [502, 503, 504].includes(status) ? 1 : 0,
+        );
       } finally {
         unsubscribe();
       }
@@ -2885,7 +2881,9 @@ describe("daemon request activity", () => {
         method: kind === "OPTIONS" ? "OPTIONS" : "GET",
         signal: controller.signal,
       });
-      if (kind === "aborted") {controller.abort();}
+      if (kind === "aborted") {
+        controller.abort();
+      }
       assistantActivityResponseInterceptor(
         new Response(null, {
           headers:

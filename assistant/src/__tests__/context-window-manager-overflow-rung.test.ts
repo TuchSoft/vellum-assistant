@@ -322,13 +322,13 @@ describe("ContextWindowManager.reduceOverflowOneRung", () => {
     await manager.reduceOverflowOneRung(makeMessages(10), {
       actualTokens: null,
       allowAutoCompressLatestTurn: true,
-      overrideProfile: "fast",
+      model: "fast",
     });
 
     // THEN the manager passes the policy decision and profile through to the
     // reducer config alongside the budget it owns
     expect(reduceCalls[0]?.config.allowAutoCompressLatestTurn).toBe(true);
-    expect(reduceCalls[0]?.config.overrideProfile).toBe("fast");
+    expect(reduceCalls[0]?.config.model).toBe("fast");
     expect(reduceCalls[0]?.config.maxMiddleTierAttempts).toBe(3);
   });
 });

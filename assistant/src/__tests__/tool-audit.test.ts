@@ -52,14 +52,10 @@ import {
 
 const ATTRIBUTION = {
   callSite: "mainAgent" as const,
-  activeProfile: "balanced",
-  overrideProfile: null,
-  callSiteProfile: null,
-  appliedProfile: "balanced",
-  profileSource: "active" as const,
+  model: "main",
+  modelSource: "chat" as const,
   resolvedProvider: "anthropic",
   resolvedModel: "model-a",
-  resolvedMixArm: null,
 };
 
 describe("tool audit terminals", () => {
@@ -366,8 +362,7 @@ describe("tool audit terminals", () => {
       expect(record.resultBytes).toBeNull();
       expect(record.provider).toBeNull();
       expect(record.model).toBeNull();
-      expect(record.inferenceProfile).toBeNull();
-      expect(record.inferenceProfileSource).toBeNull();
+      expect(record.modelSource).toBeNull();
     }
     // The audit row itself is unaffected by the opt-out.
     expect(records[0]).toMatchObject({
@@ -409,8 +404,7 @@ describe("tool audit terminals", () => {
       resultBytes: 99,
       provider: "anthropic",
       model: "model-a",
-      inferenceProfile: "balanced",
-      inferenceProfileSource: "active",
+      modelSource: "chat",
     });
   });
 
@@ -450,14 +444,12 @@ describe("tool audit terminals", () => {
     expect(records[0]).toMatchObject({
       provider: "anthropic",
       model: "model-a",
-      inferenceProfile: "balanced",
-      inferenceProfileSource: "active",
+      modelSource: "chat",
     });
     expect(records[1]).toMatchObject({
       provider: null,
       model: null,
-      inferenceProfile: null,
-      inferenceProfileSource: null,
+      modelSource: null,
     });
     expect(records[2].provider).toBeUndefined();
     expect(records[2].argBytes).toBeUndefined();

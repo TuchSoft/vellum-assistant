@@ -110,7 +110,10 @@ describe("requestSystemPermission", () => {
   });
 
   test("keeps callers without presentation unchanged", async () => {
-    const request = mock(async () => ({ ...permissionItem, kind: "microphone" }));
+    const request = mock(async () => ({
+      ...permissionItem,
+      kind: "microphone",
+    }));
     installBridge("macos", request);
 
     await requestSystemPermission("microphone");

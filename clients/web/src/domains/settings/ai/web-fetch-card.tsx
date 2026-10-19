@@ -86,8 +86,7 @@ export function WebFetchCard() {
 
   const serverApiBase = useMemo((): string => {
     const service = daemonConfig?.services?.["web-fetch"] as
-      | { apiBase?: string }
-      | undefined;
+      { apiBase?: string } | undefined;
     return service?.apiBase ?? "";
   }, [daemonConfig]);
 

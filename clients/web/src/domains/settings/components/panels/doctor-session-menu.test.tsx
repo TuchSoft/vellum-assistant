@@ -30,10 +30,7 @@ describe("DoctorSessionMenu on a pointer surface", () => {
 
   test("shows one labelled trigger and no commands until it is opened", () => {
     render(
-      <DoctorSessionMenu
-        onShareFeedback={() => {}}
-        onCopySession={() => {}}
-      />,
+      <DoctorSessionMenu onShareFeedback={() => {}} onCopySession={() => {}} />,
     );
 
     expect(screen.getByRole("button", { name: MENU_NAME })).toBeTruthy();
@@ -77,7 +74,9 @@ describe("DoctorSessionMenu on a pointer surface", () => {
   test("omits the command the caller did not supply", () => {
     render(<DoctorSessionMenu defaultOpen onCopySession={() => {}} />);
 
-    expect(screen.queryByRole("menuitem", { name: "Share Feedback" })).toBeNull();
+    expect(
+      screen.queryByRole("menuitem", { name: "Share Feedback" }),
+    ).toBeNull();
     expect(screen.getByRole("menuitem", { name: "Copy Session" })).toBeTruthy();
   });
 

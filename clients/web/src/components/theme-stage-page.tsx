@@ -117,7 +117,9 @@ function ButtonRow() {
       <SectionLabel>{t("themeStagePage.sectionButtons")}</SectionLabel>
       <div className="flex items-center gap-3">
         <Button>{t("themeStagePage.buttonPrimary")}</Button>
-        <Button variant="outlined">{t("themeStagePage.buttonSecondary")}</Button>
+        <Button variant="outlined">
+          {t("themeStagePage.buttonSecondary")}
+        </Button>
         <Button disabled>{t("themeStagePage.buttonDisabled")}</Button>
       </div>
     </div>

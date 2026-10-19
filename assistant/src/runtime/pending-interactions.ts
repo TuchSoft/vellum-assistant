@@ -23,10 +23,7 @@ import type { QuestionEntry } from "../api/events/question-request.js";
 import { findConversationOrSubagent } from "../daemon/conversation-registry.js";
 import type { UserDecision } from "../permissions/types.js";
 import { getLogger } from "../util/logger.js";
-import {
-  assistantEventHub,
-  broadcastMessage,
-} from "./assistant-event-hub.js";
+import { assistantEventHub, broadcastMessage } from "./assistant-event-hub.js";
 
 const log = getLogger("pending-interactions");
 

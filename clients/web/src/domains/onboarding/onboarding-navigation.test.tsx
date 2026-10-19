@@ -123,15 +123,12 @@ mock.module("@vellumai/design-library/components/input", () => ({
   Input: () => null,
 }));
 
-const { WelcomeScreen } = await import(
-  "@/domains/onboarding/pages/welcome-screen"
-);
-const { HostingScreen } = await import(
-  "@/domains/onboarding/pages/hosting-screen"
-);
-const { ApiKeyScreen } = await import(
-  "@/domains/onboarding/pages/api-key-screen"
-);
+const { WelcomeScreen } =
+  await import("@/domains/onboarding/pages/welcome-screen");
+const { HostingScreen } =
+  await import("@/domains/onboarding/pages/hosting-screen");
+const { ApiKeyScreen } =
+  await import("@/domains/onboarding/pages/api-key-screen");
 
 /** The options argument of the single `navigate()` this click produced. */
 function navigatedWith(): { to: string; opts: unknown } {

@@ -59,8 +59,7 @@ mock.module("motion/react", () => ({
     {
       get: (_target, tag) => (props: Record<string, unknown>) => {
         completeAnimation = props.onAnimationComplete as
-          | (() => void)
-          | undefined;
+          (() => void) | undefined;
         const domProps: Record<string, unknown> = {};
         for (const key in props) {
           if (!MOTION_ONLY_PROPS.has(key)) {

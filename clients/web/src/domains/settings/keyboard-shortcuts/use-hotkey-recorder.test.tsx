@@ -37,9 +37,8 @@ mock.module("@/runtime/hotkeys", () => ({
   onHotkeysChange,
 }));
 
-const { useHotkeyRecorder } = await import(
-  "@/domains/settings/keyboard-shortcuts/use-hotkey-recorder"
-);
+const { useHotkeyRecorder } =
+  await import("@/domains/settings/keyboard-shortcuts/use-hotkey-recorder");
 
 const onBound = mock((_key: string) => {});
 

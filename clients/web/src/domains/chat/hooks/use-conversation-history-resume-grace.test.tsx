@@ -12,11 +12,11 @@ import type { PaginatedHistoryResult } from "@/domains/chat/transcript/types";
 import { useChatSessionStore } from "@/domains/chat/chat-session-store";
 
 const realHistoryApi = await import("@/domains/chat/api/history");
-const fetchLatestHistoryPage = mock(
-  async (): Promise<PaginatedHistoryResult> => page(),
+const fetchLatestHistoryPage = mock(async (): Promise<PaginatedHistoryResult> =>
+  page(),
 );
-const fetchOlderHistoryPage = mock(
-  async (): Promise<PaginatedHistoryResult> => page(),
+const fetchOlderHistoryPage = mock(async (): Promise<PaginatedHistoryResult> =>
+  page(),
 );
 
 mock.module("@/domains/chat/api/history", () => ({
@@ -33,9 +33,8 @@ mock.module("@/lib/sentry/capture-error", () => ({
   captureError: () => {},
 }));
 
-const { useConversationHistory } = await import(
-  "@/domains/chat/hooks/use-conversation-history"
-);
+const { useConversationHistory } =
+  await import("@/domains/chat/hooks/use-conversation-history");
 
 const DEFAULT_RESUME_GRACE_MS = 15_000;
 const HISTORY_ERROR = "Failed to load conversation history. Please try again.";
@@ -43,7 +42,9 @@ let queryClient: QueryClient;
 
 function page(empty = false): PaginatedHistoryResult {
   return {
-    messages: empty ? [] : [{ id: "msg-1", role: "user", textSegments: ["Hello"] }],
+    messages: empty
+      ? []
+      : [{ id: "msg-1", role: "user", textSegments: ["Hello"] }],
     hasMore: false,
     oldestTimestamp: null,
     oldestMessageId: null,
@@ -96,7 +97,11 @@ beforeEach(() => {
   fetchLatestHistoryPage.mockImplementation(async () => page());
   fetchOlderHistoryPage.mockReset();
   fetchOlderHistoryPage.mockImplementation(async () => page());
-  useChatSessionStore.setState({ error: null, snapshot: null, optimisticSends: [] });
+  useChatSessionStore.setState({
+    error: null,
+    snapshot: null,
+    optimisticSends: [],
+  });
 });
 
 afterEach(() => {
@@ -104,7 +109,11 @@ afterEach(() => {
   queryClient.clear();
   __resetForTesting();
   __setResumeGraceMsForTesting(DEFAULT_RESUME_GRACE_MS);
-  useChatSessionStore.setState({ error: null, snapshot: null, optimisticSends: [] });
+  useChatSessionStore.setState({
+    error: null,
+    snapshot: null,
+    optimisticSends: [],
+  });
 });
 
 describe("useConversationHistory resume and fetch errors", () => {
@@ -140,7 +149,9 @@ describe("useConversationHistory resume and fetch errors", () => {
       __setResumeGraceMsForTesting(20);
       fetchLatestHistoryPage.mockImplementation(async () => page(empty));
       const { result } = renderHistory();
-      await waitFor(() => expect(result.current.pagination.isSuccess).toBe(true));
+      await waitFor(() =>
+        expect(result.current.pagination.isSuccess).toBe(true),
+      );
       const snapshot = useChatSessionStore.getState().snapshot;
       expect(snapshot?.messages).toEqual(page(empty).messages);
 
@@ -157,11 +168,17 @@ describe("useConversationHistory resume and fetch errors", () => {
 
       fetchLatestHistoryPage.mockImplementation(async () => ({
         ...page(),
-        messages: [{ id: "msg-2", role: "user", textSegments: ["New message"] }],
+        messages: [
+          { id: "msg-2", role: "user", textSegments: ["New message"] },
+        ],
       }));
-      act(() => publish("sse.opened", { assistantId: "asst-1", cause: "error" }));
+      act(() =>
+        publish("sse.opened", { assistantId: "asst-1", cause: "error" }),
+      );
       await waitFor(() => {
-        expect(useChatSessionStore.getState().snapshot?.messages[0]?.id).toBe("msg-2");
+        expect(useChatSessionStore.getState().snapshot?.messages[0]?.id).toBe(
+          "msg-2",
+        );
       });
       expect(currentError()).toBeNull();
     },

@@ -148,13 +148,15 @@ export function buildPoolRecord(result: OrchestrateResult): PoolRecord {
     ]),
   );
   const candidates: PoolCandidateRecord[] = [
-    ...pool.stable.map((candidate): PoolCandidateRecord => ({
-      slug: candidate.slug,
-      lane: candidate.lane,
-      section_title: null,
-      section_key: null,
-      chosen: selected.has(candidate.slug),
-    })),
+    ...pool.stable.map(
+      (candidate): PoolCandidateRecord => ({
+        slug: candidate.slug,
+        lane: candidate.lane,
+        section_title: null,
+        section_key: null,
+        chosen: selected.has(candidate.slug),
+      }),
+    ),
     ...pool.finder.map((candidate): PoolCandidateRecord => {
       const key = candidate.section ? sectionKey(candidate.section) : null;
       return {

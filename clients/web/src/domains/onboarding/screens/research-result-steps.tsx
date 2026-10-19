@@ -554,7 +554,9 @@ export function ResearchResultsStep({
             color: tone.isLight ? "#FFFFFF" : "#1A1A1A",
           }}
         >
-          {canContinue ? t("actions.continue") : t("researchResultsStep.stillSearching")}
+          {canContinue
+            ? t("actions.continue")
+            : t("researchResultsStep.stillSearching")}
           {canContinue && <ArrowRight className="h-4 w-4" />}
         </button>
       </div>
@@ -658,9 +660,7 @@ function PluginSetupNote({
           ns="onboarding"
           count={pluginLabels.length}
           components={{
-            plugins: (
-              <>{joinPills(pluginLabels, pillTone, listConnectors)}</>
-            ),
+            plugins: <>{joinPills(pluginLabels, pillTone, listConnectors)}</>,
           }}
         />
       </motion.p>
@@ -788,11 +788,7 @@ export function SuggestionsStep({
   // Show real suggestions as they arrive; only fall back once the turn settles
   // with nothing, so we never flash generic prompts over an in-flight result.
   const items =
-    suggestions.length > 0
-      ? suggestions
-      : loading
-        ? []
-        : fallbackSuggestions;
+    suggestions.length > 0 ? suggestions : loading ? [] : fallbackSuggestions;
 
   const pluginLabels = installedPlugins
     .map(pluginDisplayName)

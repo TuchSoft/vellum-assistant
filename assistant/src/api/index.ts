@@ -42,7 +42,7 @@ import { ContactsChangedEventSchema } from "./events/contacts-changed.js";
 import { ContextCompactedEventSchema } from "./events/context-compacted.js";
 import { ContextWindowUsageEventSchema } from "./events/context-window-usage.js";
 import { ConversationErrorEventSchema } from "./events/conversation-error.js";
-import { ConversationInferenceProfileUpdatedEventSchema } from "./events/conversation-inference-profile-updated.js";
+import { ConversationModelUpdatedEventSchema } from "./events/conversation-model-updated.js";
 import { ConversationNoticeEventSchema } from "./events/conversation-notice.js";
 import { ConversationTitleUpdatedEventSchema } from "./events/conversation-title-updated.js";
 import { DesktopActivityChangedEventSchema } from "./events/desktop-activity-changed.js";
@@ -341,9 +341,9 @@ export {
   ConversationErrorEventSchema,
 } from "./events/conversation-error.js";
 export {
-  type ConversationInferenceProfileUpdatedEvent,
-  ConversationInferenceProfileUpdatedEventSchema,
-} from "./events/conversation-inference-profile-updated.js";
+  type ConversationModelUpdatedEvent,
+  ConversationModelUpdatedEventSchema,
+} from "./events/conversation-model-updated.js";
 export {
   type ConversationNoticeEvent,
   ConversationNoticeEventSchema,
@@ -1036,7 +1036,7 @@ export const AssistantEventSchema = z.discriminatedUnion("type", [
   ContextCompactedEventSchema,
   ContextWindowUsageEventSchema,
   ConversationErrorEventSchema,
-  ConversationInferenceProfileUpdatedEventSchema,
+  ConversationModelUpdatedEventSchema,
   ConversationNoticeEventSchema,
   ConversationTitleUpdatedEventSchema,
   DesktopActivityChangedEventSchema,

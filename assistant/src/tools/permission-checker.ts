@@ -130,8 +130,7 @@ export function approvalFlagsBlockAutoApprove(
   context: Pick<ToolContext, "requireFreshApproval" | "forceFreshApproval">,
 ): boolean {
   return (
-    context.requireFreshApproval === true ||
-    context.forceFreshApproval === true
+    context.requireFreshApproval === true || context.forceFreshApproval === true
   );
 }
 

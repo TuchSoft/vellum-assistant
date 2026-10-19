@@ -153,7 +153,6 @@ describe("openDiscordDmChannel", () => {
       recipient_id: "900000000000000043",
     });
   });
-
 });
 
 describe("discordTransport with dm=1", () => {

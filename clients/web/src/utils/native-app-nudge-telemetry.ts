@@ -20,11 +20,7 @@ export type NudgeSurface = "banner" | "settings";
 
 /** Which app the nudge promoted. */
 export type NudgeTelemetryTarget =
-  | "ios"
-  | "android"
-  | "generic"
-  | "macos"
-  | "windows";
+  "ios" | "android" | "generic" | "macos" | "windows";
 
 export type NudgeTelemetryAction = "impression" | "click" | "dismiss";
 

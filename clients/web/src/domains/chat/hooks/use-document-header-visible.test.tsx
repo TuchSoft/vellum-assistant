@@ -59,56 +59,49 @@ mock.module(
     }),
   }),
 );
-mock.module(
-  "../components/setup-screen",
-  (): Partial<typeof Setup> => ({ SetupScreen: () => <div>Setting up</div> }),
-);
-mock.module(
-  "../components/cleanup-screen",
-  (): Partial<typeof Cleanup> => ({
-    CleanupScreen: () => <div>Cleaning up</div>,
-  }),
-);
+mock.module("../components/setup-screen", (): Partial<typeof Setup> => ({
+  SetupScreen: () => <div>Setting up</div>,
+}));
+mock.module("../components/cleanup-screen", (): Partial<typeof Cleanup> => ({
+  CleanupScreen: () => <div>Cleaning up</div>,
+}));
 mock.module(
   "../components/self-hosted-screen",
   (): Partial<typeof SelfHosted> => ({
     SelfHostedScreen: () => <div>Self-hosted setup</div>,
   }),
 );
-mock.module(
-  "../active-chat-view",
-  (): Partial<typeof ActiveChat> => ({
-    ActiveChatView: () => {
-      const editorRef = useRef<DocumentViewerContainerHandle>(null);
-      const location = useLocation();
-      const navigate = useNavigate();
-      const route = getDocumentConversationRoute(location.search);
-      if (firstMessageSetup) {
-        return <div>Starting first message</div>;
-      }
-      return (
-        <DocumentChatContent
-          assistantId="assistant-1"
-          surfaceId={route.surfaceId}
-          document={null}
-          loading={documentPhase === "loading"}
-          error={documentPhase === "error" ? "Document unavailable" : null}
-          editorRef={editorRef}
-          onRetry={() => {}}
-          onSubmitFeedback={() => {}}
-          onClose={() =>
-            returnFromDocument(
-              navigate,
-              route.surfaceId ?? "",
-              route.returnTo,
-              location.state,
-            )
-          }
-        />
-      );
-    },
-  }),
-);
+mock.module("../active-chat-view", (): Partial<typeof ActiveChat> => ({
+  ActiveChatView: () => {
+    const editorRef = useRef<DocumentViewerContainerHandle>(null);
+    const location = useLocation();
+    const navigate = useNavigate();
+    const route = getDocumentConversationRoute(location.search);
+    if (firstMessageSetup) {
+      return <div>Starting first message</div>;
+    }
+    return (
+      <DocumentChatContent
+        assistantId="assistant-1"
+        surfaceId={route.surfaceId}
+        document={null}
+        loading={documentPhase === "loading"}
+        error={documentPhase === "error" ? "Document unavailable" : null}
+        editorRef={editorRef}
+        onRetry={() => {}}
+        onSubmitFeedback={() => {}}
+        onClose={() =>
+          returnFromDocument(
+            navigate,
+            route.surfaceId ?? "",
+            route.returnTo,
+            location.state,
+          )
+        }
+      />
+    );
+  },
+}));
 
 const { ChatPage } = await import("../chat-page");
 const viewport = viewportAxesStub();

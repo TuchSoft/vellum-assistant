@@ -1,4 +1,3 @@
-
 import { useTranslation } from "@/i18n";
 /**
  * A plan checklist in the ACP chat transcript.

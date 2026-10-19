@@ -88,25 +88,21 @@ const calls: string[] = [];
 /** Where the route stood at each `closeChatInfo`, for the open sequence. */
 const routeAtClose: string[] = [];
 
-const { ChatInfoPanel } = await import(
-  "@/domains/chat/components/chat-info-panel"
-);
+const { ChatInfoPanel } =
+  await import("@/domains/chat/components/chat-info-panel");
 const { useViewerStore } = await import("@/stores/viewer-store");
-const { useResolvedAssistantsStore } = await import(
-  "@/stores/resolved-assistants-store"
-);
+const { useResolvedAssistantsStore } =
+  await import("@/stores/resolved-assistants-store");
 const { showPath } = await import("@/stores/open-app.test-helper");
-const { useUnseenDocumentChangesStore } = await import(
-  "@/domains/chat/unseen-document-changes-store"
-);
+const { useUnseenDocumentChangesStore } =
+  await import("@/domains/chat/unseen-document-changes-store");
 const {
   appsGetQueryKey,
   attachmentsGetInfiniteQueryKey,
   documentsGetQueryKey,
 } = await import("@/generated/daemon/@tanstack/react-query.gen");
-const { makeDisplayAttachment, SAMPLE_PREVIEWS } = await import(
-  "@/domains/chat/components/chat-attachments/attachment-fixtures"
-);
+const { makeDisplayAttachment, SAMPLE_PREVIEWS } =
+  await import("@/domains/chat/components/chat-attachments/attachment-fixtures");
 
 // ---------------------------------------------------------------------------
 // Fixtures

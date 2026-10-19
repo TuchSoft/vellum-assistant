@@ -196,7 +196,7 @@ async function makeForkConversationDouble(
     currentTurnRequestOrigin: undefined,
     wakePersonaOverride: undefined,
     currentCallSite: undefined,
-    currentTurnOverrideProfile: undefined,
+    currentTurnModel: undefined,
     hasNoClient: false,
     get currentTurnTrustContext() {
       return turnTrust;

@@ -10,7 +10,7 @@
  * `post-compact` hooks run. All three share {@link captionImageBlocks}.
  *
  * Capability is read from the turn's effective profile key
- * (`ctx.modelProfileKey`), the same input the `user-prompt-submit` and
+ * (`ctx.modelKey`), the same input the `user-prompt-submit` and
  * `post-compact` hooks judge, so the profile's authored `inputModalities`
  * policy decides and a rewritten provider-reported model id cannot force a
  * caption. The hook receives a deep clone of the tool result, so the caption
@@ -39,7 +39,7 @@ const postToolUse: HookFunction<PostToolUseContext> = async (ctx) => {
   }
 
   // If the turn's profile supports vision, leave the image in place.
-  if (!needsImageFallback(ctx.modelProfileKey)) {
+  if (!needsImageFallback(ctx.modelKey)) {
     return;
   }
 

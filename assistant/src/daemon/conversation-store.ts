@@ -388,7 +388,6 @@ async function acquireConversation(
         workingDir,
         {
           maxTokens,
-          speedOverride: storedOptions?.speed,
           modelOverride: storedOptions?.modelOverride,
           systemPromptIsOverride:
             storedOptions?.systemPromptOverride !== undefined,

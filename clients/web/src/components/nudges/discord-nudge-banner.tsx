@@ -21,7 +21,9 @@ export function DiscordNudgeBanner({
       title={t("discordNudgeBanner.title")}
       subtitle={
         <>
-          <span className="sm:hidden">{t("discordNudgeBanner.subtitleShort")}</span>
+          <span className="sm:hidden">
+            {t("discordNudgeBanner.subtitleShort")}
+          </span>
           <span className="hidden sm:inline">
             {t("discordNudgeBanner.subtitleLong")}
           </span>

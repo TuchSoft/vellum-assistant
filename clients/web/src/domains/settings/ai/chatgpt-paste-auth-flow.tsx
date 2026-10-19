@@ -25,12 +25,7 @@ import { resolveChatgptConnection } from "./chatgpt-subscription-api";
  * two: see {@link ChatgptPasteAuthFlowProps.standalone}.
  */
 type ChatgptPasteAuthState =
-  | "idle"
-  | "starting"
-  | "paste_url"
-  | "exchanging"
-  | "completed"
-  | "failed";
+  "idle" | "starting" | "paste_url" | "exchanging" | "completed" | "failed";
 
 interface ChatgptPasteAuthFlowProps {
   assistantId: string;

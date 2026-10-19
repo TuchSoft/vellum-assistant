@@ -159,8 +159,7 @@ const ASSISTANT_PATH_RE = /^\/v1\/assistants\/[^/]+\/(([^/?#]+)(?:\/.*)?)$/;
  * Same resource match as {@link ASSISTANT_PATH_RE}, but allows an ingress
  * path prefix (`/assistant-123/v1/assistants/...`).
  */
-const ASSISTANT_RESOURCE_RE =
-  /\/v1\/assistants\/[^/]+\/(([^/?#]+)(?:\/.*)?)$/;
+const ASSISTANT_RESOURCE_RE = /\/v1\/assistants\/[^/]+\/(([^/?#]+)(?:\/.*)?)$/;
 
 /**
  * First segments whose `/v1/assistants/{id}/` prefix is stripped before

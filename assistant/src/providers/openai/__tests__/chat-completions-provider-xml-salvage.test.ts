@@ -59,7 +59,11 @@ function stubProvider(
   provider: OpenAIChatCompletionsProvider;
   events: Array<{ type: string; text?: string }>;
 } {
-  const provider = new OpenAIChatCompletionsProvider("test-key", model, options);
+  const provider = new OpenAIChatCompletionsProvider(
+    "test-key",
+    model,
+    options,
+  );
   (provider as unknown as { client: unknown }).client = {
     chat: {
       completions: {
@@ -137,10 +141,10 @@ describe("OpenAIChatCompletionsProvider XML tool-call salvage", () => {
   });
 
   test("salvages invoke XML when parseThinkTags is enabled", async () => {
-    const { provider } = stubProvider(
-      contentChunks([`Okay.\n${INVOKE_XML}`]),
-      { parseThinkTags: true, salvageXmlToolCalls: true },
-    );
+    const { provider } = stubProvider(contentChunks([`Okay.\n${INVOKE_XML}`]), {
+      parseThinkTags: true,
+      salvageXmlToolCalls: true,
+    });
 
     const response = await provider.sendMessage(
       [{ role: "user", content: [{ type: "text", text: "hi" }] }],
@@ -157,29 +161,29 @@ describe("OpenAIChatCompletionsProvider XML tool-call salvage", () => {
   test("leaves XML as text when native tool_calls are already present", async () => {
     const { provider } = stubProvider(
       [
-      { choices: [{ delta: { content: `${INVOKE_XML}\n` } }] },
-      {
-        choices: [
-          {
-            delta: {
-              tool_calls: [
-                {
-                  index: 0,
-                  id: "call_native",
-                  function: {
-                    name: "bash",
-                    arguments: '{"command":"pwd"}',
+        { choices: [{ delta: { content: `${INVOKE_XML}\n` } }] },
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_native",
+                    function: {
+                      name: "bash",
+                      arguments: '{"command":"pwd"}',
+                    },
                   },
-                },
-              ],
+                ],
+              },
             },
-          },
-        ],
-      },
-      {
-        choices: [{ delta: {}, finish_reason: "tool_calls" }],
-        usage: { prompt_tokens: 1, completion_tokens: 2 },
-      },
+          ],
+        },
+        {
+          choices: [{ delta: {}, finish_reason: "tool_calls" }],
+          usage: { prompt_tokens: 1, completion_tokens: 2 },
+        },
       ],
       { salvageXmlToolCalls: true },
     );

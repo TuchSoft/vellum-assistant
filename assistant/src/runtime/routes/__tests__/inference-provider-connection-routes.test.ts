@@ -14,7 +14,6 @@ import { beforeEach, describe, expect, test } from "bun:test";
 
 // ── Real imports ──────────────────────────────────────────────────────────────
 import { setConfig } from "../../../__tests__/helpers/set-config.js";
-import { LLMSchema } from "../../../config/schemas/llm.js";
 import { getDb } from "../../../persistence/db-connection.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import { providerConnections } from "../../../persistence/schema/inference.js";
@@ -1261,25 +1260,6 @@ describe("DELETE guards the llm.defaultProvider reference", () => {
       auth: { type: "platform" },
     });
     setConfig("llm", {});
-
-    const result = (await call(
-      findHandler("inference_provider_connections_delete"),
-      { pathParams: { name: "some-conn" } },
-    )) as { ok: boolean };
-    expect(result.ok).toBe(true);
-  });
-
-  test("succeeds when defaultProvider is malformed (dropped by the schema catch)", async () => {
-    seedConnection({
-      name: "some-conn",
-      provider: "openai",
-      auth: { type: "platform" },
-    });
-    const parsed = LLMSchema.parse({
-      defaultProvider: { provider: "not-a-provider" },
-    });
-    expect(parsed.defaultProvider).toBeUndefined();
-    setConfig("llm", parsed);
 
     const result = (await call(
       findHandler("inference_provider_connections_delete"),

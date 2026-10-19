@@ -218,7 +218,9 @@ export function QueuedMessagesDrawer({
         {/* Header */}
         <div className="mb-0.5 flex items-center justify-between md:mb-1">
           <span className="text-label-medium-default text-[var(--content-secondary)]">
-            {t("queuedMessagesDrawer.queueHeading", { count: queuedMessages.length })}
+            {t("queuedMessagesDrawer.queueHeading", {
+              count: queuedMessages.length,
+            })}
           </span>
           <Button
             variant="ghost"

@@ -114,7 +114,7 @@ Examples:
         {
           flags: "-g, --group-by <dimension>",
           description:
-            "Grouping dimension: call_site, inference_profile, provider, model, conversation, actor",
+            "Grouping dimension: call_site, provider, model, conversation, actor",
           defaultValue: "model",
         },
       ],
@@ -122,7 +122,6 @@ Examples:
 Grouping dimensions:
   call_site          Groups by user-facing task (Main Agent, Memory Extraction,
                      Conversation Title, etc.)
-  inference_profile  Groups by inference profile; unset historical rows are
                      shown as Default / Unset
   provider           Groups by LLM provider (anthropic, openai, etc.)
   model              Groups by model name (claude-sonnet-5, etc.)
@@ -138,7 +137,7 @@ run windows. Find schedule ids with 'assistant schedules list'.
 Examples:
   $ assistant usage breakdown
   $ assistant usage breakdown --group-by call_site
-  $ assistant usage breakdown --group-by inference_profile
+  $ assistant usage breakdown --group-by model
   $ assistant usage breakdown --group-by provider
   $ assistant usage breakdown --schedule sched-abc123
   $ assistant usage breakdown --group-by actor --range week`,

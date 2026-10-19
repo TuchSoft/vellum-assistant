@@ -36,9 +36,8 @@ mock.module("@/lib/self-hosted/connection", () => ({
   getSelfHostedActorToken: () => "actor-token",
 }));
 
-const { resolvePlatformAssistantId } = await import(
-  "@/lib/platform-assistant-id"
-);
+const { resolvePlatformAssistantId } =
+  await import("@/lib/platform-assistant-id");
 
 beforeEach(() => {
   remoteGatewayMode = false;
@@ -83,9 +82,8 @@ describe("resolvePlatformAssistantId", () => {
   });
 
   test("takes the registered id off an injection failure", async () => {
-    const { PlatformIdentityInjectionError } = await import(
-      "@/lib/platform-identity-errors"
-    );
+    const { PlatformIdentityInjectionError } =
+      await import("@/lib/platform-identity-errors");
     resolveLocalAssistantPlatformIdentityMock.mockImplementationOnce(
       async () => {
         throw new PlatformIdentityInjectionError(

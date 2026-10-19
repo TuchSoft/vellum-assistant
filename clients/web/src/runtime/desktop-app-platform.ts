@@ -44,9 +44,7 @@ export function isKnownUnsupportedDesktopBrowser(): boolean {
     return false;
   }
   const platformSignals = `${getBrowserPlatform()} ${navigator.userAgent}`;
-  return /\b(?:CrOS|Linux|X11|FreeBSD|OpenBSD|NetBSD)\b/i.test(
-    platformSignals,
-  );
+  return /\b(?:CrOS|Linux|X11|FreeBSD|OpenBSD|NetBSD)\b/i.test(platformSignals);
 }
 
 const noop = () => () => {};

@@ -3,8 +3,8 @@
  *
  * Covers:
  * - Schema path: validates and extracts forced-tool-choice output + usage.
- * - Profile override: an unknown profile throws WorkflowUnknownProfileError;
- *   a known profile is forwarded as `overrideProfile`.
+ * - Profile override: an unknown profile throws WorkflowUnknownModelError;
+ *   a known profile is forwarded as `model`.
  * - Abort: a pre-aborted signal propagates out of the provider call.
  * - Tool path: executes ONLY the supplied toolset and returns usage + tool-call
  *   counts.
@@ -25,11 +25,11 @@ import { setConfig } from "../__tests__/helpers/set-config.js";
 // Mocks — defined before importing the module under test.
 // ---------------------------------------------------------------------------
 
-// The leaf runner reads `llm.activeProfile` (persona override resolution),
+// The leaf runner reads `llm.defaultModel` (persona override resolution),
 // `llm.profiles` (profile validation), and `memory.enabled` (persona memory
 // pipeline) via the real config loader; tests seed those via `setConfig`. The
-// default inference profiles (`balanced`, `cost-optimized`) always resolve from
-// the code catalog, so only `activeProfile` needs seeding, and `memory.enabled`
+// default inference profiles (`balanced`, `small`) always resolve from
+// the code catalog, so only `defaultModel` needs seeding, and `memory.enabled`
 // defaults to true.
 
 // Persona path — identity system prompt. A sentinel marks the persona prompt
@@ -79,7 +79,7 @@ mock.module("../runtime/assistant-event-hub.js", () => ({
 }));
 
 // Captures the most recent provider resolution + sendMessage invocation so
-// tests can assert on call site, overrideProfile, tool_choice, and signal.
+// tests can assert on call site, model, tool_choice, and signal.
 interface SendCall {
   messages: unknown;
   options: {
@@ -87,14 +87,14 @@ interface SendCall {
     systemPrompt?: string;
     config?: {
       callSite?: string;
-      overrideProfile?: string;
+      model?: string;
       tool_choice?: { type: string; name: string };
     };
     signal?: AbortSignal;
   };
 }
 
-let lastResolveOpts: { overrideProfile?: string } | undefined;
+let lastResolveOpts: { model?: string } | undefined;
 let lastSendCall: SendCall | undefined;
 
 // Programmable provider response. Each test sets this before invoking runLeaf.
@@ -116,7 +116,7 @@ const sendMessage = mock(
 );
 
 const getConfiguredProvider = mock(
-  async (_callSite: string, opts: { overrideProfile?: string } = {}) => {
+  async (_callSite: string, opts: { model?: string } = {}) => {
     lastResolveOpts = opts;
     return { name: "test-provider", sendMessage };
   },
@@ -138,7 +138,7 @@ import { initializeDb } from "../persistence/db-init.js";
 import { conversations } from "../persistence/schema/index.js";
 import type { Tool, ToolContext, ToolExecutionResult } from "../tools/types.js";
 import { getWorkspaceDir } from "../util/platform.js";
-import { runLeaf, WorkflowUnknownProfileError } from "./leaf-runner.js";
+import { runLeaf, WorkflowUnknownModelError } from "./leaf-runner.js";
 
 await initializeDb();
 
@@ -310,16 +310,16 @@ describe("runLeaf — schema path", () => {
 });
 
 describe("runLeaf — profile override", () => {
-  test("unknown profile throws WorkflowUnknownProfileError", async () => {
+  test("unknown profile throws WorkflowUnknownModelError", async () => {
     const schema = z.object({ a: z.string() });
     await expect(
-      runLeaf({ prompt: "x", schema, profile: "nope", trustContext }),
-    ).rejects.toBeInstanceOf(WorkflowUnknownProfileError);
+      runLeaf({ prompt: "x", schema, model: "nope", trustContext }),
+    ).rejects.toBeInstanceOf(WorkflowUnknownModelError);
     // Provider never resolved — failed before the call.
     expect(getConfiguredProvider).not.toHaveBeenCalled();
   });
 
-  test("known profile is forwarded as overrideProfile", async () => {
+  test("known profile is forwarded as model", async () => {
     const schema = z.object({ a: z.string() });
     responseQueue = [
       {
@@ -340,21 +340,19 @@ describe("runLeaf — profile override", () => {
     await runLeaf({
       prompt: "x",
       schema,
-      profile: "cost-optimized",
+      model: "small",
       trustContext,
     });
-    expect(lastResolveOpts?.overrideProfile).toBe("cost-optimized");
+    expect(lastResolveOpts?.model).toBe("small");
     // The override must ALSO ride on the per-call send config. The schema path
     // sets `callSite`, and CallSiteConfiguredProvider only injects its stored
     // override when the per-call config omits `callSite` — so without an
     // explicit pass-through the leaf silently resolves the default profile.
     expect(lastSendCall?.options.config?.callSite).toBe("workflowLeaf");
-    expect(lastSendCall?.options.config?.overrideProfile).toBe(
-      "cost-optimized",
-    );
+    expect(lastSendCall?.options.config?.model).toBe("small");
   });
 
-  test("no profile sends config without an overrideProfile", async () => {
+  test("no profile sends config without an model", async () => {
     const schema = z.object({ a: z.string() });
     responseQueue = [
       {
@@ -373,8 +371,8 @@ describe("runLeaf — profile override", () => {
     ];
 
     await runLeaf({ prompt: "x", schema, trustContext });
-    expect(lastResolveOpts?.overrideProfile).toBeUndefined();
-    expect(lastSendCall?.options.config?.overrideProfile).toBeUndefined();
+    expect(lastResolveOpts?.model).toBeUndefined();
+    expect(lastSendCall?.options.config?.model).toBeUndefined();
   });
 });
 
@@ -683,7 +681,7 @@ describe("runLeaf — persona path", () => {
   };
 
   test("injects identity system prompt and runs the memory pipeline", async () => {
-    setConfig("llm", { activeProfile: "balanced" });
+    setConfig("llm", { defaultModel: "main" });
     const schema = z.object({ a: z.string() });
     responseQueue = [personaResponse];
 
@@ -714,17 +712,17 @@ describe("runLeaf — persona path", () => {
   });
 
   test("resolves the workspace active profile by default", async () => {
-    setConfig("llm", { activeProfile: "balanced" });
+    setConfig("llm", { defaultModel: "main" });
     const schema = z.object({ a: z.string() });
     responseQueue = [personaResponse];
 
     await runLeaf({ prompt: "x", schema, persona: true, trustContext });
 
-    expect(lastResolveOpts?.overrideProfile).toBe("balanced");
+    expect(lastResolveOpts?.model).toBe("main");
   });
 
   test("explicit profile beats the persona active-profile default", async () => {
-    setConfig("llm", { activeProfile: "balanced" });
+    setConfig("llm", { defaultModel: "main" });
     const schema = z.object({ a: z.string() });
     responseQueue = [personaResponse];
 
@@ -732,26 +730,15 @@ describe("runLeaf — persona path", () => {
       prompt: "x",
       schema,
       persona: true,
-      profile: "cost-optimized",
+      model: "small",
       trustContext,
     });
 
-    expect(lastResolveOpts?.overrideProfile).toBe("cost-optimized");
-  });
-
-  test("missing active profile falls through (no override)", async () => {
-    // No `activeProfile` set (beforeEach resets it) → persona resolves no
-    // overrideProfile, deferring to the shipped call-site default.
-    const schema = z.object({ a: z.string() });
-    responseQueue = [personaResponse];
-
-    await runLeaf({ prompt: "x", schema, persona: true, trustContext });
-
-    expect(lastResolveOpts?.overrideProfile).toBeUndefined();
+    expect(lastResolveOpts?.model).toBe("small");
   });
 
   test("anonymous leaf carries no identity and skips the memory pipeline", async () => {
-    setConfig("llm", { activeProfile: "balanced" });
+    setConfig("llm", { defaultModel: "main" });
     const schema = z.object({ a: z.string() });
     responseQueue = [personaResponse];
 
@@ -765,7 +752,7 @@ describe("runLeaf — persona path", () => {
     expect(lastSendCall?.options.systemPrompt).not.toBe(
       PERSONA_IDENTITY_PROMPT,
     );
-    expect(lastResolveOpts?.overrideProfile).toBeUndefined();
+    expect(lastResolveOpts?.model).toBeUndefined();
   });
 
   test("persona leaf skips the memory pipeline for an untrusted actor", async () => {
@@ -777,7 +764,7 @@ describe("runLeaf — persona path", () => {
     const savedAuth = process.env.DISABLE_HTTP_AUTH;
     delete process.env.DISABLE_HTTP_AUTH;
     try {
-      setConfig("llm", { activeProfile: "balanced" });
+      setConfig("llm", { defaultModel: "main" });
       const schema = z.object({ a: z.string() });
       responseQueue = [personaResponse];
 

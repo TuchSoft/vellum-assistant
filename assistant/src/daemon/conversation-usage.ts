@@ -1,5 +1,4 @@
 import type { AssistantEvent } from "../api/index.js";
-import { getConfig } from "../config/loader.js";
 import { updateConversationUsage } from "../persistence/conversation-crud.js";
 import { recordUsageEvent } from "../persistence/llm-usage-store.js";
 import type { UsageActor } from "../usage/actors.js";
@@ -127,13 +126,7 @@ function resolveStructuredPricing(
   usage: PricingUsage,
 ): PricingResult {
   try {
-    const config = getConfig();
-    return resolvePricingForUsageWithOverrides(
-      providerName,
-      model,
-      usage,
-      config.llm.pricingOverrides,
-    );
+    return resolvePricingForUsageWithOverrides(providerName, model, usage, []);
   } catch (err) {
     log.warn({ err, model, providerName }, "Failed to resolve usage pricing");
     return { estimatedCostUsd: null, pricingStatus: "unpriced" };
@@ -352,8 +345,7 @@ export async function recordUsage(
         requestId,
         llmCallCount,
         callSite: attributionSnapshot?.callSite ?? null,
-        inferenceProfile: attributionSnapshot?.appliedProfile ?? null,
-        inferenceProfileSource: attributionSnapshot?.profileSource ?? null,
+        modelSource: attributionSnapshot?.modelSource ?? null,
       },
       pricing,
     );

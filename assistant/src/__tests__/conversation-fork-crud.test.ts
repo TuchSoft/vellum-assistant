@@ -936,12 +936,12 @@ describePg("forkConversation", () => {
     });
     await requireMainDb()
       .orm.update(conversations)
-      .set({ inferenceProfile: "balanced" })
+      .set({ model: "balanced" })
       .where(eq(conversations.id, source.id));
 
     const fork = await forkConversation({ conversationId: source.id });
 
-    expect(fork.inferenceProfile).toBe("balanced");
+    expect(fork.model).toBe("balanced");
   });
 
   test("leaves inference profile null when source has no override", async () => {
@@ -952,7 +952,7 @@ describePg("forkConversation", () => {
 
     const fork = await forkConversation({ conversationId: source.id });
 
-    expect(fork.inferenceProfile).toBeNull();
+    expect(fork.model).toBeNull();
   });
 
   test("marks copied assistant history as seen and excludes request logs, queued work, and inbound events", async () => {

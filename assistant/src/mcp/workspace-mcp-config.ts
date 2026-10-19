@@ -91,7 +91,9 @@ export function readWorkspaceMcpFile(
   const servers: Record<string, McpServerConfig> = {};
   const issues: string[] = [];
 
-  for (const [serverKey, rawEntry] of Object.entries(document.data.mcpServers)) {
+  for (const [serverKey, rawEntry] of Object.entries(
+    document.data.mcpServers,
+  )) {
     if (serverKey.trim().length === 0) {
       issues.push("server key must be a non-empty string; skipping");
       continue;
@@ -101,7 +103,9 @@ export function readWorkspaceMcpFile(
     if (!entry.success) {
       issues.push(
         `invalid server entry "${serverKey}": ${entry.error.issues
-          .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+          .map(
+            (issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`,
+          )
           .join("; ")}`,
       );
       continue;

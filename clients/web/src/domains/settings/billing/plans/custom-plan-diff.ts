@@ -92,8 +92,14 @@ export function computeCustomPlanDiff(input: {
    */
   noBundleLabel: string;
 }): CustomPlanDiff {
-  const { proPlan, seed, machineTier, storageTier, creditChoice, noBundleLabel } =
-    input;
+  const {
+    proPlan,
+    seed,
+    machineTier,
+    storageTier,
+    creditChoice,
+    noBundleLabel,
+  } = input;
 
   // Resolve against the full catalog, legacy tiers included: a tier a
   // subscriber still holds has to price and label even where the modal no

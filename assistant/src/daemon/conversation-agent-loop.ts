@@ -25,8 +25,6 @@ import type {
   TurnChannelContext,
   TurnInterfaceContext,
 } from "../channels/types.js";
-import { getConversationProfilesForProvider } from "../config/default-profile-catalog.js";
-import { AUTO_PROFILE_KEY } from "../config/default-profile-names.js";
 import {
   contextWindowConfigFromEffective,
   type EffectiveContextWindow,
@@ -34,9 +32,7 @@ import {
 } from "../config/llm-context-resolution.js";
 import {
   resolveCallSiteConfig,
-  resolveCallSiteConfigWithProfile,
-  resolveProfilelessModelKey,
-  selectWinningProfile,
+  resolveEffectiveModel,
 } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import type { LLMCallSite } from "../config/schemas/llm.js";
@@ -55,7 +51,7 @@ import {
   getMessageById,
   provenanceFromTrustContext,
   PROVIDER_ERROR_MESSAGE_KIND,
-  resolveOverrideProfile,
+  resolveConversationModel,
   updateConversationContextWindow,
   updateConversationSlackContextWatermark,
   updateMessageMetadata,
@@ -70,15 +66,8 @@ import { HOOKS } from "../plugin-api/constants.js";
 import type { ConversationGraphMemory } from "../plugins/defaults/memory/graph/conversation-graph-memory.js";
 import { enqueueMemoryRetrospectiveOnCompaction } from "../plugins/defaults/memory/memory-retrospective-enqueue.js";
 import { runHook } from "../plugins/pipeline.js";
-import {
-  dispatchProviderResolvable,
-  isManagedConnectionRoute,
-  resolveEntryConnectionName,
-} from "../providers/connection-resolution.js";
-import {
-  ConnectionResolutionError,
-  resolveRoutingIdentity,
-} from "../providers/routing-identity.js";
+import {} from "../providers/connection-resolution.js";
+import {} from "../providers/routing-identity.js";
 import type { ContentBlock, Message } from "../providers/types.js";
 import type { Provider } from "../providers/types.js";
 import { resolveCapabilities } from "../runtime/capabilities.js";
@@ -106,12 +95,6 @@ import {
   DEFAULT_TURN_COMMIT_MAX_WAIT_MS,
 } from "./abort-watchdog.js";
 import { cleanAssistantContent } from "./assistant-attachments.js";
-import {
-  type AutoProfileRoute,
-  plainTextOf,
-  routeAutoProfile,
-  takeAutoProfilePreview,
-} from "./auto-profile-router.js";
 import { conversationSupportsDynamicUi } from "./channel-ui-capability.js";
 import type { Conversation } from "./conversation.js";
 import {
@@ -514,21 +497,8 @@ export async function runAgentLoopImpl(
      * call site. The semantic call site still controls tools and UI behavior.
      */
     inferenceCallSite?: LLMCallSite;
-    /**
-     * Optional ad-hoc inference-profile override applied to every LLM call
-     * the loop issues. When set, the agent loop sets
-     * `SendMessageOptions.config.overrideProfile` on each provider call so
-     * the resolver layers `llm.profiles[<name>]` between the workspace's
-     * `activeProfile` and the call-site's named profile. Used by
-     * per-conversation pinned profiles (and inherited by subagents the loop
-     * spawns).
-     */
-    overrideProfile?: string;
-    /**
-     * Float `overrideProfile` above call-site layers for non-main-agent call
-     * sites. Used when a caller explicitly pins a background run to a profile.
-     */
-    forceOverrideProfile?: boolean;
+    /** Optional alias pin applied to every LLM call this turn issues. */
+    model?: string;
     /** Observe the first finalized model request without delaying it. */
     onFirstModelCallPrepared?: (prepared: PreparedModelCall) => void;
     /**
@@ -675,92 +645,15 @@ export async function runAgentLoopImpl(
   // the row.
   const config = getConfig();
 
-  // With no explicit override, the resolver's own chain (the active profile
-  // for the main agent, then the call site's pin) may still select the Auto
-  // profile. That winner is named here so the router below covers every path
-  // that would otherwise dispatch the Auto body.
-  const readRequestedOverrideProfile = (): string | undefined => {
-    const explicit = options?.overrideProfile ?? resolveOverrideProfile(ctx);
-    if (explicit !== undefined) {
-      return explicit;
-    }
-    const winner = selectWinningProfile(inferenceCallSite, config.llm, {
-      selectionSeed: ctx.conversationId,
-    }).profileName;
-    return winner === AUTO_PROFILE_KEY ? AUTO_PROFILE_KEY : undefined;
-  };
+  // The turn's model: an explicit caller pin (subagent inheritance, scheduled
+  // run) wins over the conversation's own selection.
+  const readRequestedModel = (): string | undefined =>
+    options?.model ?? resolveConversationModel(ctx);
+  const requestedModel = readRequestedModel();
+  const userExplicitModel = requestedModel;
+  const turnModel = userExplicitModel;
 
-  // The Auto profile is a selection over the default profiles, made once per
-  // turn: the routed profile stands in for the Auto name on every read, so
-  // the whole turn (and any subagent inheriting the override) runs on one
-  // profile. A user profile that shadows the managed name is a profile of
-  // its own and is not routed. Nothing here may throw: the turn's processing
-  // state is already held and its release lives in the loop's `finally`
-  // further down, so a routing failure degrades to the Auto body instead.
-  const routeAutoProfileForTurn =
-    async (): Promise<AutoProfileRoute | null> => {
-      try {
-        const profiles = getConversationProfilesForProvider(
-          config.llm.profiles,
-          config.llm.defaultProvider ?? null,
-        );
-        if (profiles[AUTO_PROFILE_KEY]?.source !== "managed") {
-          return null;
-        }
-        const userMessage = plainTextOf(
-          (await getMessageById(userMessageId))?.content ?? [],
-        );
-        // A draft the composer already previewed carries its pick over, so
-        // the reply lands on the profile the pill showed with no second call.
-        const previewed = takeAutoProfilePreview({
-          conversationId: ctx.conversationId,
-          text: userMessage,
-          history: ctx.messages,
-          profiles,
-        });
-        const route =
-          previewed ??
-          (await routeAutoProfile({
-            conversationId: ctx.conversationId,
-            history: ctx.messages,
-            userMessage,
-            profiles,
-            signal: abortController.signal,
-          }));
-        rlog.info(
-          {
-            outcome: route.outcome,
-            profile: route.profile,
-            confidence: route.confidence ?? null,
-            latencyMs: route.latencyMs,
-            reusedPreview: previewed !== undefined,
-          },
-          "Auto profile routed the turn",
-        );
-        return route;
-      } catch (err) {
-        rlog.warn(
-          { err },
-          "Auto profile routing failed; running the Auto body",
-        );
-        return null;
-      }
-    };
-  const requestedOverrideProfile = readRequestedOverrideProfile();
-  const autoRoute =
-    requestedOverrideProfile === AUTO_PROFILE_KEY
-      ? await routeAutoProfileForTurn()
-      : null;
-  const withAutoRoute = (profile: string | undefined): string | undefined =>
-    profile === AUTO_PROFILE_KEY && autoRoute ? autoRoute.profile : profile;
-
-  const userExplicitOverride = withAutoRoute(requestedOverrideProfile);
-
-  const turnOverrideProfile = userExplicitOverride;
-  const forceOverrideProfile = options?.forceOverrideProfile === true;
-
-  const readCurrentOverrideProfile = (): string | undefined =>
-    withAutoRoute(readRequestedOverrideProfile());
+  const readCurrentModel = (): string | undefined => readRequestedModel();
 
   // Best-effort attribution for error classification: names the resolved
   // connection and profile so credential/connection errors point at the
@@ -768,47 +661,10 @@ export async function runAgentLoopImpl(
   // throw on a broken config — attribution must never mask the real error.
   const turnErrorAttribution = (): ConversationErrorAttribution => {
     try {
-      const overrideProfile = readCurrentOverrideProfile();
-      // Mirrors dispatch's selection (including the resolvable-provider
-      // healing) so attribution names the profile that actually ran.
-      const resolveOpts = {
-        overrideProfile,
-        forceOverrideProfile,
-        selectionSeed: ctx.conversationId,
-        isResolvableProvider: dispatchProviderResolvable,
-      };
-      const { config: resolved, profileName } =
-        resolveCallSiteConfigWithProfile(
-          inferenceCallSite,
-          config.llm,
-          resolveOpts,
-        );
-      let connectionName = resolved.provider_connection;
-      try {
-        connectionName =
-          resolveRoutingIdentity(resolved.provider, resolved.model)
-            ?.connectionName ?? connectionName;
-      } catch (error) {
-        if (!(error instanceof ConnectionResolutionError)) {
-          throw error;
-        }
-        connectionName = error.connectionName;
-      }
-      // An entry-name provider IS the connection name, matching the
-      // dispatch-side translation.
-      connectionName ??=
-        resolveEntryConnectionName(resolved.provider) ?? undefined;
-      // Managed-ness comes from the connection row, matching what dispatch
-      // decides. The profile's own provider can't stand in: a concrete
-      // provider tweak over a managed winner keeps the managed connection
-      // while replacing the provider (`llm-resolver.ts`).
-      const isManagedRoute = connectionName
-        ? isManagedConnectionRoute(connectionName)
-        : undefined;
+      const model = readCurrentModel();
       return {
-        ...(connectionName ? { connectionName } : {}),
-        ...(profileName ? { profileName } : {}),
-        ...(isManagedRoute !== undefined ? { isManagedRoute } : {}),
+        ...(model ? { profileName: model } : {}),
+        isManagedRoute: false,
       };
     } catch {
       return {};
@@ -818,10 +674,12 @@ export async function runAgentLoopImpl(
   const effectiveContextWindow = resolveEffectiveContextWindow({
     llm: config.llm,
     callSite: inferenceCallSite,
-    overrideProfile: turnOverrideProfile ?? undefined,
-    forceOverrideProfile,
-    selectionSeed: ctx.conversationId,
+    ...(turnModel != null ? { model: turnModel } : {}),
+    conversationModel: ctx.model ?? undefined,
   });
+  if (effectiveContextWindow == null) {
+    throw new Error(`Call site "${inferenceCallSite}" is disabled.`);
+  }
   let currentEffectiveContextWindow: EffectiveContextWindow =
     effectiveContextWindow;
   const logResolutionFallback = (info: {
@@ -837,48 +695,53 @@ export async function runAgentLoopImpl(
 
   let currentContextWindowConfig = contextWindowConfigFromEffective(
     resolveCallSiteConfig(inferenceCallSite, config.llm, {
-      overrideProfile: turnOverrideProfile ?? undefined,
-      forceOverrideProfile,
-      selectionSeed: ctx.conversationId,
+      ...(turnModel != null ? { model: turnModel } : {}),
+      conversationModel: ctx.model ?? undefined,
       onResolutionFallback: logResolutionFallback,
     }).contextWindow,
     currentEffectiveContextWindow,
   );
   ctx.contextWindowManager.updateConfig(currentContextWindowConfig);
 
-  let appliedOverrideProfile = turnOverrideProfile;
-  const refreshCurrentProfileState = (): string | undefined => {
-    const currentOverrideProfile = readCurrentOverrideProfile();
-    if (currentOverrideProfile !== appliedOverrideProfile) {
-      currentEffectiveContextWindow = resolveEffectiveContextWindow({
+  let appliedModel = turnModel;
+  const refreshCurrentModelState = (): string | undefined => {
+    const currentOverrideProfile = readCurrentModel();
+    if (currentOverrideProfile !== appliedModel) {
+      const nextContextWindow = resolveEffectiveContextWindow({
         llm: config.llm,
         callSite: inferenceCallSite,
-        overrideProfile: currentOverrideProfile,
-        forceOverrideProfile,
-        selectionSeed: ctx.conversationId,
+        ...(currentOverrideProfile != null
+          ? { model: currentOverrideProfile }
+          : {}),
+        conversationModel: ctx.model ?? undefined,
       });
+      if (nextContextWindow == null) {
+        return currentOverrideProfile;
+      }
+      currentEffectiveContextWindow = nextContextWindow;
       currentContextWindowConfig = contextWindowConfigFromEffective(
         resolveCallSiteConfig(inferenceCallSite, config.llm, {
-          overrideProfile: currentOverrideProfile,
-          forceOverrideProfile,
+          ...(currentOverrideProfile != null
+            ? { model: currentOverrideProfile }
+            : {}),
+          conversationModel: ctx.model ?? undefined,
           onResolutionFallback: logResolutionFallback,
-          selectionSeed: ctx.conversationId,
         }).contextWindow,
         currentEffectiveContextWindow,
       );
       ctx.contextWindowManager.updateConfig(currentContextWindowConfig);
-      appliedOverrideProfile = currentOverrideProfile;
+      appliedModel = currentOverrideProfile;
       rlog.info(
-        { overrideProfile: currentOverrideProfile ?? null },
+        { model: currentOverrideProfile ?? null },
         "Turn inference profile changed mid-loop",
       );
     }
 
-    ctx.currentTurnOverrideProfile = currentOverrideProfile;
+    ctx.currentTurnModel = currentOverrideProfile;
     return currentOverrideProfile;
   };
   const resolveCurrentMaxInputTokens = (): number => {
-    refreshCurrentProfileState();
+    refreshCurrentModelState();
     return currentEffectiveContextWindow.maxInputTokens;
   };
   /**
@@ -892,7 +755,7 @@ export async function runAgentLoopImpl(
     maxInputTokens: number;
     overflowRecovery: { enabled: boolean; safetyMarginRatio: number };
   } => {
-    refreshCurrentProfileState();
+    refreshCurrentModelState();
     const { enabled, safetyMarginRatio } =
       currentEffectiveContextWindow.overflowRecovery;
     return {
@@ -902,10 +765,10 @@ export async function runAgentLoopImpl(
   };
 
   // Initial value for `createToolExecutor` to read into
-  // `ToolContext.overrideProfile`. `refreshCurrentProfileState` refreshes
+  // `ToolContext.overrideProfile`. `refreshCurrentModelState` refreshes
   // this between model calls so a confirmed profile session opened by a tool
   // applies to later tool executions and nested subagents in the same turn.
-  ctx.currentTurnOverrideProfile = turnOverrideProfile;
+  ctx.currentTurnModel = turnModel;
 
   // Capture the turn channel context *before* any awaits so a second
   // message from a different channel can't overwrite it mid-flight.
@@ -990,7 +853,6 @@ export async function runAgentLoopImpl(
   startToolProfilingRequest(ctx.conversationId);
   let turnStarted = false;
   const state = createEventHandlerState();
-  state.autoRoutedProfile = autoRoute?.profile;
   // Publish this turn's flushed-content watermark so the worker → daemon
   // persist hand-off can cap a snapshot anchor at flushed content rather than
   // the live seq counter, which runs ahead while the turn streams. Cleared in
@@ -1170,7 +1032,7 @@ export async function runAgentLoopImpl(
     ctx.allowedToolNames = undefined;
     ctx.diskPressureCleanupModeActive = false;
     ctx.preactivatedSkillIds = undefined;
-    ctx.currentTurnOverrideProfile = undefined;
+    ctx.currentTurnModel = undefined;
     ctx.currentTurnCronRunId = undefined;
     ctx.currentTurnWorkOrigins = undefined;
     ctx.currentTurnModelProfileNoticeKey = undefined;
@@ -1549,40 +1411,30 @@ export async function runAgentLoopImpl(
     ctx.currentTurnVisibleAppId = ctx.visibleAppId ?? undefined;
 
     // Resolve the effective profile key for this turn and detect changes.
-    // `modelProfileKey` is the actual profile used for this turn. The
+    // `modelKey` is the actual profile used for this turn. The
     // notice key is narrower: it only marks turns where runtime context should
     // remind the model that the profile changed.
     // The reported key must come from the same winner selection dispatch used —
     // a hand-rolled chain would credit profiles the resolver never consulted
     // (e.g. activeProfile on a non-mainAgent turn).
     const effectiveProfileKey =
-      selectWinningProfile(inferenceCallSite, config.llm, {
-        ...(turnOverrideProfile != null
-          ? { overrideProfile: turnOverrideProfile }
-          : {}),
-        selectionSeed: ctx.conversationId,
-      }).profileName ??
-      resolveProfilelessModelKey(inferenceCallSite, config.llm, {
-        ...(turnOverrideProfile != null
-          ? { overrideProfile: turnOverrideProfile }
-          : {}),
-        ...(forceOverrideProfile ? { forceOverrideProfile: true } : {}),
-        selectionSeed: ctx.conversationId,
-      });
-    const lastNotified = ctx.lastNotifiedInferenceProfile;
-    const modelProfileKey = effectiveProfileKey;
-    const modelProfileNoticeKey =
-      modelProfileKey !== lastNotified ? modelProfileKey : null;
-    ctx.currentTurnModelProfileNoticeKey = modelProfileNoticeKey ?? undefined;
+      resolveEffectiveModel(inferenceCallSite, config.llm, {
+        ...(turnModel != null ? { model: turnModel } : {}),
+        conversationModel: ctx.model ?? undefined,
+      })?.model ?? config.llm.defaultModel;
+    const lastNotified = ctx.lastNotifiedModel;
+    const modelKey = effectiveProfileKey;
+    const modelNoticeKey = modelKey !== lastNotified ? modelKey : null;
+    ctx.currentTurnModelProfileNoticeKey = modelNoticeKey ?? undefined;
     // Persist the notice only after delivery; hooks still receive
-    // `modelProfileKey` as the effective profile for this turn.
-    if (modelProfileNoticeKey != null) {
+    // `modelKey` as the effective profile for this turn.
+    if (modelNoticeKey != null) {
       // Record the notification for persistence on delivery rather than here:
       // the model only "learns" the profile once it receives this turn
       // context, signalled by the first `message_complete`. Persisting inline
       // would mark the profile notified even if the turn is cancelled or fails
       // before the model ever sees the notice.
-      state.pendingNotifiedInferenceProfile = modelProfileNoticeKey;
+      state.pendingNotifiedModel = modelNoticeKey;
     }
 
     // user-prompt-submit hook chain. Fires once per user turn at the primary
@@ -1607,7 +1459,7 @@ export async function runAgentLoopImpl(
       messageKind: options?.messageKind,
       originalMessages: Object.freeze([...ctx.messages]),
       latestMessages: ctx.messages,
-      modelProfileKey,
+      modelKey,
       isNonInteractive,
     };
     latencyTracker.mark("prompt_hook_start");
@@ -1753,15 +1605,14 @@ export async function runAgentLoopImpl(
           suppressAssistantText: sendUserMessageActive,
           supportsDynamicUi: conversationSupportsDynamicUi(ctx),
           trust: loopTrust,
-          overrideProfile: turnOverrideProfile,
-          ...(autoRoute ? { overrideProfileOrigin: "auto" as const } : {}),
-          ...(forceOverrideProfile ? { forceOverrideProfile: true } : {}),
-          resolveOverrideProfile: refreshCurrentProfileState,
+          model: turnModel,
+          conversationModel: ctx.model ?? undefined,
+          resolveModel: refreshCurrentModelState,
           ...(onModelCallPrepared !== undefined ? { onModelCallPrepared } : {}),
           resolveContextWindow,
           compactInPlace,
           isNonInteractive,
-          modelProfileKey,
+          modelKey,
           latencyTracker,
           injectionLedgerResets: state.injectionLedgerResets,
           ...(ctx.modelOverride ? { model: ctx.modelOverride } : {}),
@@ -2186,7 +2037,7 @@ export async function runAgentLoopImpl(
 
     // The row's override is whichever profile served the last call.
     const mainRowOverrideProfile =
-      state.exchangeInferenceProfile ?? refreshCurrentProfileState() ?? null;
+      state.exchangeModel ?? refreshCurrentModelState() ?? null;
     emitUsage(
       ctx,
       state.exchangeInputTokens,
@@ -2216,12 +2067,7 @@ export async function runAgentLoopImpl(
       // pick: a profile switched in mid-turn is the user's.
       {
         callSite: inferenceCallSite,
-        overrideProfile: mainRowOverrideProfile,
-        ...(state.exchangeInferenceProfile !== undefined
-          ? { forceOverrideProfile: true }
-          : autoRoute && mainRowOverrideProfile === autoRoute.profile
-            ? { overrideProfileOrigin: "auto" as const }
-            : {}),
+        model: mainRowOverrideProfile,
       },
       turnCronRunId,
     );
@@ -2328,9 +2174,7 @@ export async function runAgentLoopImpl(
           ...(state.lastAssistantMessageId
             ? { messageId: state.lastAssistantMessageId }
             : {}),
-          ...(state.autoRoutedProfile
-            ? { autoRoutedProfile: state.autoRoutedProfile }
-            : {}),
+
           modeSession: ctx.modeSessions.getTurnOwner(reqId),
         });
         publishLoopMessagesChanged();
@@ -2358,9 +2202,6 @@ export async function runAgentLoopImpl(
           // per-row treatment the history projection will hand it.
           ...(state.lastAssistantTextVisibility
             ? { assistantTextVisibility: state.lastAssistantTextVisibility }
-            : {}),
-          ...(state.autoRoutedProfile
-            ? { autoRoutedProfile: state.autoRoutedProfile }
             : {}),
         });
         if (shouldEmitQueuedConversationNotices) {
@@ -2700,14 +2541,7 @@ function emitUsage(
   contextWindow?: { tokens: number; maxTokens: number },
   attribution?: {
     callSite: LLMCallSite | null;
-    overrideProfile?: string | null;
-    /**
-     * Float `overrideProfile` above the call-site profile, matching how the
-     * dispatch path floated it. Set when the profile being attributed is the
-     * one a reroute actually served under rather than the caller's own
-     * resolution.
-     */
-    forceOverrideProfile?: boolean;
+    model?: string | null;
   },
   cronRunId: string | null = null,
 ): void {
@@ -2784,9 +2618,9 @@ export async function applyCompactionResult(
     summaryRawResponses?: unknown[];
     summaryCallSite?: LLMCallSite;
     summaryResolutionCallSite?: LLMCallSite;
-    summaryOverrideProfile?: string | null;
+    summaryModelPin?: string | null;
     summaryActualProvider?: string;
-    summaryActualInferenceProfile?: string;
+    summaryActualModel?: string;
   },
   onEvent: (msg: AssistantEvent) => void,
   reqId: string | null,
@@ -2888,15 +2722,9 @@ export async function applyCompactionResult(
     {
       callSite: result.summaryCallSite ?? null,
       ...(result.summaryResolutionCallSite != null
-        ? { profileResolutionCallSite: result.summaryResolutionCallSite }
+        ? { modelResolutionCallSite: result.summaryResolutionCallSite }
         : {}),
-      overrideProfile:
-        result.summaryActualInferenceProfile ??
-        result.summaryOverrideProfile ??
-        null,
-      ...(result.summaryActualInferenceProfile !== undefined
-        ? { forceOverrideProfile: true }
-        : {}),
+      model: result.summaryActualModel ?? result.summaryModelPin ?? null,
     },
     options.cronRunId ?? null,
   );

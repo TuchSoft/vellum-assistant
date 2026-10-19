@@ -337,8 +337,8 @@ export function sttLanguageGroupsFor(
   if (suggestedCode != null) {
     feature(suggestedCode);
   }
-  const featured = featuredCodes.map(
-    (code) => options.find((option) => option.code === code)!,
+  const featured = featuredCodes.map((code) =>
+    options.find((option) => option.code === code)!,
   );
   const rest = options
     .filter((option) => !featuredCodes.includes(option.code))

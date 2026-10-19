@@ -141,7 +141,11 @@ export class ApiError extends Error {
   readonly code?: string;
   readonly details?: unknown;
 
-  constructor(status: number, message: string, envelope: ApiErrorEnvelope = {}) {
+  constructor(
+    status: number,
+    message: string,
+    envelope: ApiErrorEnvelope = {},
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;

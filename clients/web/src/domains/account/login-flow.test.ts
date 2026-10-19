@@ -64,7 +64,9 @@ describe("login flow routing", () => {
       assistants: [
         {
           id: "asst-1",
-          hatchedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+          hatchedAt: new Date(
+            Date.now() - 8 * 24 * 60 * 60 * 1000,
+          ).toISOString(),
           isLocal: false,
           isPlatformHosted: true,
           isPaired: false,

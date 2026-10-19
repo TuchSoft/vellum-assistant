@@ -435,7 +435,7 @@ describe("managed proxy integration — credential precedence", () => {
         {
           config: {
             callSite: "mainAgent",
-            overrideProfile: "conversation-profile",
+            model: "conversation-profile",
           },
         },
       );

@@ -100,33 +100,26 @@ export interface InitContext {
   assistantVersion: string;
 }
 
-// ─── Model profiles ──────────────────────────────────────────────────────────
+// ─── Model aliases ───────────────────────────────────────────────────────────
 
 /**
- * A workspace inference profile a plugin can route to. Returned by
- * {@link getModelProfiles}; {@link key} is the value a `pre-model-call` hook
- * assigns to `PreModelCallContext.modelProfile` to route a call. A model router
- * reads this list (typically at `init`) to learn which profiles exist before
- * mapping a classified message onto one.
+ * A gateway alias a plugin can route to. Returned by {@link getModelCatalog};
+ * {@link alias} is the value a `pre-model-call` hook assigns to
+ * `PreModelCallContext.model` to route a call.
  */
-export interface ModelProfileInfo {
-  /** Profile key in `llm.profiles`; assignable to `PreModelCallContext.modelProfile`. */
-  readonly key: string;
-  /** Human-readable label, falling back to {@link key} when none is set. */
+export interface ModelInfo {
+  /** Gateway alias; assignable to `PreModelCallContext.model`. */
+  readonly alias: string;
+  /** Human-readable label, falling back to the alias when none is set. */
   readonly label: string;
-  /** Author-supplied description, or `null` when none is set. */
-  readonly description: string | null;
-  /** Whether this is the workspace's active profile. */
-  readonly isActive: boolean;
-  /** Whether the profile is disabled; routing to it is rejected by the resolver. */
-  readonly isDisabled: boolean;
-  /**
-   * Whether this is a weighted "mix" profile — an A/B blend that resolves to one
-   * of its constituent profiles per conversation via a seeded weighted pick.
-   * Routing to its {@link key} is valid; it directs the call into the blend
-   * rather than at a single fixed model.
-   */
-  readonly isMix: boolean;
+  readonly maxInputTokens?: number;
+  readonly maxOutputTokens?: number;
+  /** Whether the alias accepts image input. */
+  readonly supportsVision: boolean;
+  /** Whether the alias accepts tool definitions. */
+  readonly supportsTools: boolean;
+  /** Whether this alias is the workspace default model. */
+  readonly isDefault: boolean;
 }
 
 // ─── Shutdown context ────────────────────────────────────────────────────────

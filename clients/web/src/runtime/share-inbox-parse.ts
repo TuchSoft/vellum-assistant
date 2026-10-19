@@ -6,8 +6,7 @@
  */
 
 export type ShareInboxDestination =
-  | { type: "new" }
-  | { type: "thread"; threadId: string };
+  { type: "new" } | { type: "thread"; threadId: string };
 
 export interface ShareInboxFileRef {
   name: string;

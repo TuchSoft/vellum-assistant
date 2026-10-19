@@ -604,7 +604,8 @@ function makeProviderStub(): Provider {
     sendMessage: async (messages) => {
       selectCalls += 1;
       const first = messages[0]!.content[0] as
-        (ContentBlock & { cache_control?: unknown }) | undefined;
+        | (ContentBlock & { cache_control?: unknown })
+        | undefined;
       stablePrefixCaptures.push(
         first && first.type === "text" && first.cache_control
           ? { text: first.text, cacheControl: first.cache_control }

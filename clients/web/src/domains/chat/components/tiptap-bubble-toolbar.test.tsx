@@ -95,7 +95,9 @@ test("list, quote and mark buttons toggle and report their state", async () => {
   const bullets = screen.getByRole("button", { name: "Bulleted list" });
   await user.click(bullets);
   expect(getEditorMarkdown(ed)).toBe("- item");
-  await waitFor(() => expect(bullets.getAttribute("aria-pressed")).toBe("true"));
+  await waitFor(() =>
+    expect(bullets.getAttribute("aria-pressed")).toBe("true"),
+  );
 
   await user.click(screen.getByRole("button", { name: "Numbered list" }));
   expect(getEditorMarkdown(ed)).toBe("1. item");

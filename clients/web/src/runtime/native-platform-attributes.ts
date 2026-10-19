@@ -1,7 +1,4 @@
-import {
-  isNativeAndroid,
-  isNativeIOS,
-} from "@/runtime/platform-detection";
+import { isNativeAndroid, isNativeIOS } from "@/runtime/platform-detection";
 
 /**
  * Stamp the native platform on <html> so CSS can gate shell-specific styling

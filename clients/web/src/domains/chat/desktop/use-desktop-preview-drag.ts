@@ -70,7 +70,10 @@ export function useDesktopPreviewDrag() {
       ),
       y: Math.max(
         0,
-        Math.min(start.top + start.height - height, bounds.clientHeight - height),
+        Math.min(
+          start.top + start.height - height,
+          bounds.clientHeight - height,
+        ),
       ),
     });
   };

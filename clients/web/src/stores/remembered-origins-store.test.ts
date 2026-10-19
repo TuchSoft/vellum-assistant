@@ -13,7 +13,6 @@ function watchRef(): WatchRef {
   return { fn: null };
 }
 
-
 import {
   REMEMBERED_ORIGINS_STORAGE_KEY,
   localStorageProvider,
@@ -516,7 +515,10 @@ describe("providers and hydration", () => {
     window.localStorage.setItem(
       REMEMBERED_ORIGINS_STORAGE_KEY,
       JSON.stringify([
-        { url: "https://other-tab.example.com", addedAt: "2026-01-01T00:00:00Z" },
+        {
+          url: "https://other-tab.example.com",
+          addedAt: "2026-01-01T00:00:00Z",
+        },
       ]),
     );
     window.dispatchEvent(

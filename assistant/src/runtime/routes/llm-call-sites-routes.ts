@@ -1,9 +1,9 @@
 import { z } from "zod";
 
-import { getUserSelectableProfilesForProvider } from "../../config/default-profile-catalog.js";
 import {
-  resolveDefaultProfileKey,
-  resolveShippedDefaultProfileKey,
+  isCallSiteDisabled,
+  resolveEffectiveModel,
+  shippedCallSiteModel,
 } from "../../config/llm-resolver.js";
 import { loadConfig } from "../../config/loader.js";
 import {
@@ -24,18 +24,14 @@ const callSiteEntrySchema = z.object({
   displayName: z.string(),
   description: z.string(),
   domain: z.string(),
-  /** The effective winning profile key: includes per-call-site pins. */
-  defaultProfile: z.string().optional(),
-  /**
-   * The code-owned `CALL_SITE_DEFAULTS` tier key, independent of pins and
-   * tier remaps. Clients group call sites by tier with this; grouping by
-   * `defaultProfile` would scatter pinned or remapped sites across their
-   * winners. Profileless call sites report `balanced`: the resolver's
-   * fallback anchor consults the balanced remap for them, so they follow
-   * the Balanced tier like any balanced-keyed site. A managed-only tier is
-   * omitted when it has no body under the workspace's default provider.
-   */
-  shippedDefaultProfile: z.string().optional(),
+  /** The alias the call site resolves to, absent when it is disabled. */
+  model: z.string().optional(),
+  /** The ladder rung that supplied the alias. */
+  source: z.string().optional(),
+  /** The code-owned alias default, independent of workspace pins. */
+  shippedModel: z.string().optional(),
+  /** Whether the call site is disabled. */
+  enabled: z.boolean(),
 });
 
 const callSiteCatalogResponseSchema = z.object({
@@ -44,14 +40,19 @@ const callSiteCatalogResponseSchema = z.object({
 });
 
 export function buildCallSiteCatalog(llm: LLMConfig) {
-  return CALL_SITE_CATALOG.map((entry) => ({
-    ...entry,
-    defaultProfile: resolveDefaultProfileKey(entry.id as LLMCallSite, llm),
-    shippedDefaultProfile: resolveShippedDefaultProfileKey(
-      entry.id as LLMCallSite,
-      llm,
-    ),
-  }));
+  return CALL_SITE_CATALOG.map((entry) => {
+    const id = entry.id as LLMCallSite;
+    const effective = resolveEffectiveModel(id, llm);
+    return {
+      ...entry,
+      enabled: !isCallSiteDisabled(id, llm),
+      ...(effective != null ? { model: effective.model } : {}),
+      ...(effective != null ? { source: effective.source } : {}),
+      ...(shippedCallSiteModel(id) != null
+        ? { shippedModel: shippedCallSiteModel(id) }
+        : {}),
+    };
+  });
 }
 
 async function handleGetCallSites() {
@@ -59,30 +60,6 @@ async function handleGetCallSites() {
   return {
     domains: CALL_SITE_DOMAINS,
     callSites: buildCallSiteCatalog(llm),
-  };
-}
-
-const llmProfilesListResponseSchema = z.object({
-  /** Sorted list of profile names defined in `llm.profiles`. */
-  profiles: z.array(z.string()),
-  /** The workspace-wide active profile name, if one is set. */
-  activeProfile: z.string().nullable(),
-});
-
-export type LlmProfilesListResult = z.infer<
-  typeof llmProfilesListResponseSchema
->;
-
-async function handleListProfiles(): Promise<LlmProfilesListResult> {
-  const { llm } = loadConfig();
-  const profiles = getUserSelectableProfilesForProvider(
-    llm?.profiles,
-    llm?.defaultProvider ?? null,
-  );
-  return {
-    profiles: Object.keys(profiles).sort(),
-    activeProfile:
-      typeof llm?.activeProfile === "string" ? llm.activeProfile : null,
   };
 }
 
@@ -98,23 +75,8 @@ export const ROUTES: RouteDefinition[] = [
     handler: handleGetCallSites,
     summary: "List LLM call sites",
     description:
-      "Returns the full catalog of LLM call sites with display names, descriptions, and domain groupings. Used by clients to render the per-call-site override settings UI.",
+      "Returns the full catalog of LLM call sites with display names, descriptions, and domain groupings. Used by clients to render the per-call-site alias settings UI.",
     tags: ["config"],
     responseBody: callSiteCatalogResponseSchema,
-  },
-  {
-    operationId: "llm_profiles_list",
-    method: "GET",
-    policy: {
-      requiredScopes: ["settings.read"],
-      allowedPrincipalTypes: ACTOR_PRINCIPALS,
-    },
-    endpoint: "config/llm/profiles",
-    handler: handleListProfiles,
-    summary: "List defined LLM profiles",
-    description:
-      "Returns the sorted list of profile names defined in `llm.profiles` plus the workspace-wide active profile. Used to populate per-call profile dropdowns (e.g. memory router playground) without requiring the caller to type profile names.",
-    tags: ["config"],
-    responseBody: llmProfilesListResponseSchema,
   },
 ];

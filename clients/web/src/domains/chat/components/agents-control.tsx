@@ -34,8 +34,14 @@ export interface AgentsControlProps {
    * what the floating cluster wants; the transcript passes its own handler so
    * the click stays on the callbacks that message was rendered with.
    */
-  onOpenRow?: (kind: ConversationActivity["running"][number]["kind"], id: string) => void;
-  onStopRow?: (kind: ConversationActivity["running"][number]["kind"], id: string) => void;
+  onOpenRow?: (
+    kind: ConversationActivity["running"][number]["kind"],
+    id: string,
+  ) => void;
+  onStopRow?: (
+    kind: ConversationActivity["running"][number]["kind"],
+    id: string,
+  ) => void;
   "data-testid"?: string;
 }
 

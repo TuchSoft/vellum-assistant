@@ -7,23 +7,17 @@ import type { AuthUser } from "@/stores/auth-store";
 const setUserMock = mock((_user: { id: string } | null) => {});
 let deviceId: string | null = null;
 
-mock.module(
-  "@/lib/sentry/flavor",
-  (): Partial<typeof Flavor> => ({
-    selectSentryFlavor: () => ({
-      init: () => {},
-      close: () => {},
-      getClientEnabled: () => true,
-      setUser: setUserMock,
-    }),
+mock.module("@/lib/sentry/flavor", (): Partial<typeof Flavor> => ({
+  selectSentryFlavor: () => ({
+    init: () => {},
+    close: () => {},
+    getClientEnabled: () => true,
+    setUser: setUserMock,
   }),
-);
-mock.module(
-  "@/runtime/device-id",
-  (): Partial<typeof DeviceId> => ({
-    getDeviceId: () => deviceId,
-  }),
-);
+}));
+mock.module("@/runtime/device-id", (): Partial<typeof DeviceId> => ({
+  getDeviceId: () => deviceId,
+}));
 
 const { installSentryUserSync, reapplySentryUser } =
   await import("@/lib/sentry/user-sync");

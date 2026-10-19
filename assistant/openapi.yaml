@@ -2597,58 +2597,6 @@ paths:
                   - userId
                   - authenticated
                 additionalProperties: false
-  /v1/auto-profile/preview:
-    post:
-      operationId: autoprofile_preview_post
-      summary: Preview the Auto profile's pick for a draft
-      description:
-        Ask the Auto profile which default profile a draft message would run on, using the conversation's recent
-        history when one is given. The pick is kept briefly so the turn that sends the same text reuses it. Spends one
-        Jev call per request.
-      tags:
-        - conversations
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                text:
-                  type: string
-                  minLength: 1
-                  maxLength: 20000
-                conversationId:
-                  type: string
-                  description: Conversation the draft belongs to, for recent history. Omit for a new chat.
-              required:
-                - text
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  profile:
-                    anyOf:
-                      - type: string
-                      - type: "null"
-                  outcome:
-                    type: string
-                    enum:
-                      - routed
-                      - unavailable
-                      - timeout
-                      - error
-                      - fallback
-                  confidence:
-                    type: number
-                required:
-                  - profile
-                  - outcome
-                additionalProperties: false
   /v1/avatar/accent:
     post:
       operationId: avatar_accent_post
@@ -6061,7 +6009,7 @@ paths:
       summary: List LLM call sites
       description:
         Returns the full catalog of LLM call sites with display names, descriptions, and domain groupings. Used by
-        clients to render the per-call-site override settings UI.
+        clients to render the per-call-site alias settings UI.
       tags:
         - config
       responses:
@@ -6098,294 +6046,25 @@ paths:
                           type: string
                         domain:
                           type: string
-                        defaultProfile:
+                        model:
                           type: string
-                        shippedDefaultProfile:
+                        source:
                           type: string
+                        shippedModel:
+                          type: string
+                        enabled:
+                          type: boolean
                       required:
                         - id
                         - displayName
                         - description
                         - domain
+                        - enabled
                       additionalProperties: false
                 required:
                   - domains
                   - callSites
                 additionalProperties: false
-  /v1/config/llm/default-provider:
-    get:
-      operationId: config_llm_defaultprovider_get
-      summary: Get the default provider and its availability
-      description:
-        Returns `llm.defaultProvider`, the connection name it resolves to, and whether that connection is currently
-        usable (connection exists, credential stored, Vellum authenticated). Availability is informational — a broken
-        default is a valid persisted state that surfaces explainable errors at resolution time.
-      tags:
-        - config
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DefaultProviderStatus"
-    put:
-      operationId: config_llm_defaultprovider_put
-      summary: Set the default provider
-      description:
-        Replaces `llm.defaultProvider`. Strict-validates the body (unlike the generic config write paths, which
-        silently drop invalid values). Does not require the referenced connection to exist — a dangling name is allowed
-        by design and reported via the availability status.
-      tags:
-        - config
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                provider:
-                  type: string
-                  enum:
-                    - anthropic
-                    - openai
-                    - gemini
-                    - fireworks
-                    - openrouter
-                    - chatgpt
-                    - vellum
-                    - together
-                    - vercel-ai-gateway
-                    - minimax
-                    - atlascloud
-                    - baseten
-                    - ionet
-                    - poolside
-                connectionName:
-                  type: string
-                  minLength: 1
-              required:
-                - provider
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DefaultProviderStatus"
-  /v1/config/llm/profiles:
-    get:
-      operationId: config_llm_profiles_get
-      summary: List defined LLM profiles
-      description:
-        Returns the sorted list of profile names defined in `llm.profiles` plus the workspace-wide active profile.
-        Used to populate per-call profile dropdowns (e.g. memory router playground) without requiring the caller to type
-        profile names.
-      tags:
-        - config
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  profiles:
-                    type: array
-                    items:
-                      type: string
-                  activeProfile:
-                    anyOf:
-                      - type: string
-                      - type: "null"
-                required:
-                  - profiles
-                  - activeProfile
-                additionalProperties: false
-  /v1/config/llm/profiles/{name}:
-    put:
-      operationId: config_llm_profiles_by_name_put
-      summary: Replace an inference profile
-      description: Replace the settings-UI-managed leaves of a single llm.profiles entry while preserving non-UI leaves.
-      tags:
-        - config
-      parameters:
-        - name: name
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                provider:
-                  $ref: "#/components/schemas/LLMProvider"
-                model:
-                  type: string
-                  minLength: 1
-                maxTokens:
-                  type: integer
-                  exclusiveMinimum: 0
-                  maximum: 9007199254740991
-                effort:
-                  type: string
-                  enum:
-                    - none
-                    - low
-                    - medium
-                    - high
-                    - xhigh
-                    - max
-                speed:
-                  type: string
-                  enum:
-                    - standard
-                    - fast
-                verbosity:
-                  type: string
-                  enum:
-                    - low
-                    - medium
-                    - high
-                temperature:
-                  anyOf:
-                    - type: number
-                      minimum: 0
-                      maximum: 2
-                    - type: "null"
-                topP:
-                  anyOf:
-                    - type: number
-                      minimum: 0
-                      maximum: 1
-                    - type: "null"
-                thinking:
-                  type: object
-                  properties:
-                    enabled:
-                      type: boolean
-                    streamThinking:
-                      type: boolean
-                    level:
-                      type: string
-                      enum:
-                        - minimal
-                        - low
-                        - medium
-                        - high
-                contextWindow:
-                  type: object
-                  properties:
-                    enabled:
-                      type: boolean
-                    maxInputTokens:
-                      type: integer
-                      exclusiveMinimum: 0
-                      maximum: 9007199254740991
-                    targetBudgetRatio:
-                      type: number
-                      exclusiveMinimum: 0
-                      maximum: 1
-                    compactThreshold:
-                      type: number
-                      exclusiveMinimum: 0
-                      maximum: 1
-                    summaryBudgetRatio:
-                      type: number
-                      exclusiveMinimum: 0
-                      maximum: 1
-                    overflowRecovery:
-                      type: object
-                      properties:
-                        enabled:
-                          type: boolean
-                        safetyMarginRatio:
-                          type: number
-                          exclusiveMinimum: 0
-                          exclusiveMaximum: 1
-                        maxAttempts:
-                          type: integer
-                          exclusiveMinimum: 0
-                          maximum: 9007199254740991
-                        interactiveLatestTurnCompression:
-                          type: string
-                          enum:
-                            - truncate
-                            - summarize
-                            - drop
-                        nonInteractiveLatestTurnCompression:
-                          type: string
-                          enum:
-                            - truncate
-                            - summarize
-                            - drop
-                openrouter:
-                  type: object
-                  properties:
-                    only:
-                      type: array
-                      items:
-                        type: string
-                        minLength: 1
-                logitBias:
-                  type: string
-                  enum:
-                    - suppress-cjk
-                disableCache:
-                  type: boolean
-                source:
-                  type: string
-                  enum:
-                    - managed
-                    - user
-                label:
-                  anyOf:
-                    - type: string
-                      minLength: 1
-                    - type: "null"
-                description:
-                  type: string
-                provider_connection:
-                  type: string
-                  minLength: 1
-                allowUnlisted:
-                  type: boolean
-                inputModalities:
-                  anyOf:
-                    - $ref: "#/components/schemas/InputModalities"
-                    - type: "null"
-                status:
-                  anyOf:
-                    - $ref: "#/components/schemas/ProfileStatus"
-                    - type: "null"
-                mix:
-                  minItems: 2
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      profile:
-                        type: string
-                        minLength: 1
-                      weight:
-                        type: number
-                        exclusiveMinimum: 0
-                    required:
-                      - profile
-                      - weight
-                fallbackProfile:
-                  readOnly: true
-                  type: string
-                  minLength: 1
-      responses:
-        "200":
-          description: Successful response
   /v1/config/platform:
     get:
       operationId: config_platform_get
@@ -8283,6 +7962,21 @@ paths:
                             - scheduled
                         source:
                           type: string
+                        model:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        reasoningEffort:
+                          anyOf:
+                            - type: string
+                              enum:
+                                - none
+                                - low
+                                - medium
+                                - high
+                                - xhigh
+                                - max
+                            - type: "null"
                         scheduleJobId:
                           type: string
                         channelBinding:
@@ -8654,6 +8348,21 @@ paths:
                           - scheduled
                       source:
                         type: string
+                      model:
+                        anyOf:
+                          - type: string
+                          - type: "null"
+                      reasoningEffort:
+                        anyOf:
+                          - type: string
+                            enum:
+                              - none
+                              - low
+                              - medium
+                              - high
+                              - xhigh
+                              - max
+                          - type: "null"
                       scheduleJobId:
                         type: string
                       channelBinding:
@@ -9090,13 +8799,11 @@ paths:
                   - conversationId
                   - enabledPlugins
                 additionalProperties: false
-  /v1/conversations/{id}/inference-profile:
+  /v1/conversations/{id}/model:
     put:
-      operationId: conversations_by_id_inferenceprofile_put
-      summary: Set conversation inference profile
-      description:
-        Override the LLM inference profile for a single conversation. Optionally supply ttlSeconds to create a
-        session-backed (expiring) override.
+      operationId: conversations_by_id_model_put
+      summary: Set conversation model
+      description: Pin a gateway alias for a single conversation. Null clears the pin.
       tags:
         - conversations
       parameters:
@@ -9112,21 +8819,12 @@ paths:
             schema:
               type: object
               properties:
-                profile:
+                model:
                   anyOf:
                     - type: string
                     - type: "null"
-                ttlSeconds:
-                  anyOf:
-                    - type: number
-                      exclusiveMinimum: 0
-                    - type: "null"
-                sessionId:
-                  type: string
-                  format: uuid
-                  pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
               required:
-                - profile
+                - model
       responses:
         "200":
           description: Successful response
@@ -9135,52 +8833,10 @@ paths:
               schema:
                 type: object
                 properties:
-                  conversationId:
-                    type: string
-                  profile:
-                    anyOf:
-                      - type: string
-                      - type: "null"
-                  sessionId:
-                    anyOf:
-                      - type: string
-                      - type: "null"
-                  expiresAt:
-                    anyOf:
-                      - type: number
-                      - type: "null"
-                  ttlSeconds:
-                    anyOf:
-                      - type: number
-                      - type: "null"
-                  replaced:
-                    anyOf:
-                      - type: object
-                        properties:
-                          profile:
-                            anyOf:
-                              - type: string
-                              - type: "null"
-                          sessionId:
-                            anyOf:
-                              - type: string
-                              - type: "null"
-                          expiresAt:
-                            anyOf:
-                              - type: number
-                              - type: "null"
-                        required:
-                          - profile
-                          - sessionId
-                          - expiresAt
-                        additionalProperties: false
-                      - type: "null"
+                  ok:
+                    type: boolean
                 required:
-                  - conversationId
-                  - profile
-                  - sessionId
-                  - expiresAt
-                  - replaced
+                  - ok
                 additionalProperties: false
   /v1/conversations/{id}/name:
     patch:
@@ -9887,6 +9543,21 @@ paths:
                           - scheduled
                       source:
                         type: string
+                      model:
+                        anyOf:
+                          - type: string
+                          - type: "null"
+                      reasoningEffort:
+                        anyOf:
+                          - type: string
+                            enum:
+                              - none
+                              - low
+                              - medium
+                              - high
+                              - xhigh
+                              - max
+                          - type: "null"
                       scheduleJobId:
                         type: string
                       channelBinding:
@@ -10162,203 +9833,6 @@ paths:
                   - skipped
                   - messages
                   - errors
-                additionalProperties: false
-  /v1/conversations/inference-profile-session:
-    post:
-      operationId: conversations_inferenceprofilesession_post
-      summary: Open an inference-profile session
-      description:
-        Open (or replace) a session-backed inference-profile override for a conversation. Supports an optional TTL
-        — omit for a sticky (non-expiring) override. A profile that provably cannot dispatch is rejected rather than
-        pinned.
-      tags:
-        - conversations
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                conversationId:
-                  type: string
-                  minLength: 1
-                profile:
-                  type: string
-                  minLength: 1
-                ttlSeconds:
-                  anyOf:
-                    - type: number
-                      exclusiveMinimum: 0
-                    - type: "null"
-                sessionId:
-                  type: string
-                  format: uuid
-                  pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
-              required:
-                - conversationId
-                - profile
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  conversationId:
-                    type: string
-                  profile:
-                    anyOf:
-                      - type: string
-                      - type: "null"
-                  sessionId:
-                    anyOf:
-                      - type: string
-                      - type: "null"
-                  expiresAt:
-                    anyOf:
-                      - type: number
-                      - type: "null"
-                  ttlSeconds:
-                    anyOf:
-                      - type: number
-                      - type: "null"
-                  replaced:
-                    anyOf:
-                      - type: object
-                        properties:
-                          profile:
-                            anyOf:
-                              - type: string
-                              - type: "null"
-                          sessionId:
-                            anyOf:
-                              - type: string
-                              - type: "null"
-                          expiresAt:
-                            anyOf:
-                              - type: number
-                              - type: "null"
-                        required:
-                          - profile
-                          - sessionId
-                          - expiresAt
-                        additionalProperties: false
-                      - type: "null"
-                required:
-                  - conversationId
-                  - profile
-                  - sessionId
-                  - expiresAt
-                  - replaced
-                additionalProperties: false
-  /v1/conversations/inference-profile-session/close:
-    post:
-      operationId: conversations_inferenceprofilesession_close_post
-      summary: Close an inference-profile session
-      description:
-        Close the active session-backed inference-profile override for a conversation. Only closes session-backed
-        overrides; sticky overrides are left untouched.
-      tags:
-        - conversations
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                conversationId:
-                  type: string
-                  minLength: 1
-              required:
-                - conversationId
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  conversationId:
-                    type: string
-                  closed:
-                    anyOf:
-                      - type: object
-                        properties:
-                          profile:
-                            anyOf:
-                              - type: string
-                              - type: "null"
-                          sessionId:
-                            anyOf:
-                              - type: string
-                              - type: "null"
-                        required:
-                          - profile
-                          - sessionId
-                        additionalProperties: false
-                      - type: "null"
-                  noop:
-                    type: boolean
-                required:
-                  - conversationId
-                  - closed
-                  - noop
-                additionalProperties: false
-  /v1/conversations/inference-profile-sessions:
-    get:
-      operationId: conversations_inferenceprofilesessions_get
-      summary: List active inference-profile sessions
-      description: List all active (non-expired) session-backed inference-profile overrides, optionally filtered by conversationId.
-      tags:
-        - conversations
-      parameters:
-        - name: conversationId
-          in: query
-          required: false
-          schema:
-            type: string
-          description: Optional conversation ID filter
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  sessions:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        conversationId:
-                          type: string
-                        conversationTitle:
-                          anyOf:
-                            - type: string
-                            - type: "null"
-                        profile:
-                          type: string
-                        sessionId:
-                          type: string
-                        expiresAt:
-                          type: number
-                        remainingSeconds:
-                          type: number
-                      required:
-                        - conversationId
-                        - conversationTitle
-                        - profile
-                        - sessionId
-                        - expiresAt
-                        - remainingSeconds
-                      additionalProperties: false
-                required:
-                  - sessions
                 additionalProperties: false
   /v1/conversations/llm-context:
     get:
@@ -11302,7 +10776,7 @@ paths:
                     type: string
                   conversationType:
                     type: string
-                  inferenceProfile:
+                  model:
                     type: string
                 required:
                   - conversationId
@@ -16778,55 +16252,11 @@ paths:
                   - images
                   - resolvedModel
                 additionalProperties: false
-  /v1/inference/active-profile:
-    put:
-      operationId: inference_activeprofile_put
-      summary: Set the active (chat) inference profile
-      description:
-        Set llm.activeProfile after validating the name against the effective profile catalog (provider-aware
-        default expansion included). Unknown or disabled profiles are rejected so the chat-model selection cannot be
-        silently stripped on the next config load. A profile that provably cannot dispatch is also rejected — there is
-        no escape hatch, because an unusable active profile locks the user out of chat.
-      tags:
-        - inference
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                  minLength: 1
-              required:
-                - name
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    const: true
-                  activeProfile:
-                    type: string
-                required:
-                  - ok
-                  - activeProfile
-                additionalProperties: false
-        "400":
-          description: Unknown or disabled profile name, or a profile that cannot serve requests
   /v1/inference/callsites:
     get:
       operationId: inference_callsites_get
       summary: List call-site resolutions
-      description:
-        "Return the effective resolution for every LLM call site: the winning profile, its source (override /
-        active / call-site pin / shipped default), and the resolved provider/model plus notable tuning."
+      description: Return the effective alias for every LLM call site, its source rung, and the resolved input budget.
       tags:
         - inference
       responses:
@@ -16849,9 +16279,8 @@ paths:
       operationId: inference_callsites_by_site_get
       summary: Get a call-site resolution detail
       description:
-        "Return the full resolution for one call site: the winner, the resolution chain (rungs considered and
-        skipped), the shipped default fragment, the user's pin fragment, and a preflight-derived resolution error when
-        dispatch would provably fail."
+        "Return the full resolution for one call site: the winner, the resolution chain, the shipped default
+        fragment, the user's pin, and a preflight-derived error when dispatch would provably fail."
       tags:
         - inference
       parameters:
@@ -17070,245 +16499,6 @@ paths:
                 additionalProperties: false
         "400":
           description: Unknown provider filter
-  /v1/inference/profiles:
-    get:
-      operationId: inference_profiles_get
-      summary: List effective inference profiles
-      description:
-        "Return the effective profile catalog: code-defined managed defaults merged with user profiles, each
-        annotated with source and (when it has a connection) availability."
-      tags:
-        - inference
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  profiles:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/InferenceProfileSummary"
-                required:
-                  - profiles
-                additionalProperties: false
-    post:
-      operationId: inference_profiles_post
-      summary: Create an inference profile
-      description:
-        Create a validated custom profile. The provider must be a known LLM provider, the model must be in the
-        catalog (unless allowUnlisted), a referenced connection must exist, and the profile must be able to dispatch — a
-        valid provider id with no credentialed connection behind it is rejected unless allowUnavailable is set, in which
-        case it is created with a warning.
-      tags:
-        - inference
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                  minLength: 1
-                provider:
-                  type: string
-                  minLength: 1
-                model:
-                  type: string
-                  minLength: 1
-                connection:
-                  type: string
-                  minLength: 1
-                label:
-                  type: string
-                  minLength: 1
-                effort:
-                  type: string
-                maxTokens:
-                  type: integer
-                  exclusiveMinimum: 0
-                  maximum: 9007199254740991
-                temperature:
-                  type: number
-                thinking:
-                  type: boolean
-                description:
-                  type: string
-                allowUnlisted:
-                  type: boolean
-                allowUnavailable:
-                  type: boolean
-              required:
-                - name
-                - provider
-                - model
-      responses:
-        "201":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InferenceProfileWriteResult"
-        "400":
-          description: Invalid provider, uncataloged model, missing connection, or a profile that cannot serve requests
-        "409":
-          description: A profile with this name already exists
-  /v1/inference/profiles/{name}:
-    delete:
-      operationId: inference_profiles_by_name_delete
-      summary: Delete an inference profile
-      description: Delete a custom profile. Managed default profiles cannot be deleted (they are re-seeded on boot).
-      tags:
-        - inference
-      parameters:
-        - name: name
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    const: true
-                  name:
-                    type: string
-                required:
-                  - ok
-                  - name
-                additionalProperties: false
-        "400":
-          description: Attempt to delete a managed profile
-        "404":
-          description: Profile not found
-        "409":
-          description:
-            Profile is still referenced by activeProfile, advisorProfile, a call site, a default-tier override, a mix
-            arm, or another profile's fallbackProfile
-    get:
-      operationId: inference_profiles_by_name_get
-      summary: Get an effective inference profile
-      description: Return a single effective profile by name, with availability.
-      tags:
-        - inference
-      parameters:
-        - name: name
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InferenceProfileDetail"
-        "404":
-          description: Profile not found
-    patch:
-      operationId: inference_profiles_by_name_patch
-      summary: Update an inference profile
-      description:
-        Partial update of a custom profile with the same write-time validation as create. The dispatch-availability
-        guard (and its allowUnavailable escape hatch) applies when the update changes provider, model, or connection;
-        metadata-only edits skip it. Managed default profiles are read-only.
-      tags:
-        - inference
-      parameters:
-        - name: name
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                provider:
-                  type: string
-                  minLength: 1
-                model:
-                  type: string
-                  minLength: 1
-                connection:
-                  type: string
-                  minLength: 1
-                label:
-                  type: string
-                  minLength: 1
-                effort:
-                  type: string
-                maxTokens:
-                  type: integer
-                  exclusiveMinimum: 0
-                  maximum: 9007199254740991
-                temperature:
-                  type: number
-                thinking:
-                  type: boolean
-                description:
-                  type: string
-                allowUnlisted:
-                  type: boolean
-                allowUnavailable:
-                  type: boolean
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InferenceProfileWriteResult"
-        "400":
-          description: Invalid fields, a profile that cannot serve requests, or attempt to edit a managed profile
-        "404":
-          description: Profile not found
-  /v1/inference/profiles/{name}/validate:
-    post:
-      operationId: inference_profiles_by_name_validate_post
-      summary: Probe a saved profile with one minimal request
-      description:
-        "Dispatch one minimal test request through the named profile's resolved model and connection, and classify
-        any failure by which object the user should fix (the profile vs its provider connection). Advisory: the probe
-        never mutates the profile. Returns a null check when there is no verdict to give (missing, disabled, managed, or
-        routing-identity profiles, or a probe timeout). The probe spends one tiny request on the profile's own key."
-      tags:
-        - inference
-      parameters:
-        - name: name
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  check:
-                    anyOf:
-                      - $ref: "#/components/schemas/InferenceProfileCheck"
-                      - type: "null"
-                required:
-                  - check
-                additionalProperties: false
   /v1/inference/provider-connections:
     get:
       operationId: inference_providerconnections_get
@@ -17513,7 +16703,7 @@ paths:
       summary: Send a message to the configured LLM
       description:
         Send a user message to the configured LLM provider and return the model response. Optionally specify a
-        system prompt, model override, named profile, or max tokens.
+        system prompt, model alias, or max tokens.
       tags:
         - inference
       requestBody:
@@ -17529,8 +16719,6 @@ paths:
                 systemPrompt:
                   type: string
                 model:
-                  type: string
-                profile:
                   type: string
                 maxTokens:
                   type: integer
@@ -19961,6 +19149,71 @@ paths:
                   - id
                   - requestPayload
                   - responsePayload
+                additionalProperties: false
+  /v1/llm/catalog:
+    get:
+      operationId: llm_catalog_get
+      summary: Get the gateway model catalog
+      description:
+        Returns the aliases the LLM gateway advertises, with context windows, capabilities and mode. The catalog is
+        cached in memory and on disk; a stale cache is refreshed in the background before the response is built.
+      tags:
+        - config
+        - inference
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        alias:
+                          type: string
+                        label:
+                          type: string
+                        maxInputTokens:
+                          type: number
+                        maxOutputTokens:
+                          type: number
+                        supportsVision:
+                          type: boolean
+                        supportsTools:
+                          type: boolean
+                        supportsReasoning:
+                          type: boolean
+                        mode:
+                          type: string
+                          enum:
+                            - chat
+                            - embedding
+                            - audio_transcription
+                            - audio_speech
+                            - image_generation
+                      required:
+                        - alias
+                        - label
+                        - supportsVision
+                        - supportsTools
+                        - mode
+                      additionalProperties: false
+                  source:
+                    type: string
+                    enum:
+                      - gateway
+                      - disk
+                      - fallback
+                  fetchedAt:
+                    type: number
+                required:
+                  - models
+                  - source
+                  - fetchedAt
                 additionalProperties: false
   /v1/logs/export:
     post:
@@ -23070,7 +22323,7 @@ paths:
                     Client-generated idempotency nonce. Persisted on the row and echoed back on the message_echo event and the
                     messages snapshot so the client can correlate its optimistic row by identity. Duplicate sends for
                     the same (conversation, clientMessageId) are deduplicated server-side.
-                inferenceProfile:
+                model:
                   anyOf:
                     - type: string
                     - type: "null"
@@ -29797,7 +29050,7 @@ paths:
           schema:
             type: string
           description: When 'true', include deferred schedules that are normally hidden.
-        - name: inference_profile
+        - name: model
           in: query
           required: false
           schema:
@@ -29865,7 +29118,7 @@ paths:
                           anyOf:
                             - type: number
                             - type: "null"
-                        inferenceProfile:
+                        model:
                           anyOf:
                             - type: string
                             - type: "null"
@@ -29969,7 +29222,7 @@ paths:
                         - maxRetries
                         - retryBackoffMs
                         - timeoutMs
-                        - inferenceProfile
+                        - model
                         - groupId
                         - createdFromConversationId
                         - createdFromConversationExists
@@ -30044,7 +29297,7 @@ paths:
                     - type: number
                     - type: "null"
                   description: Script execution timeout override in ms (script mode)
-                inferenceProfile:
+                model:
                   anyOf:
                     - type: string
                     - type: "null"
@@ -30116,7 +29369,7 @@ paths:
                         anyOf:
                           - type: number
                           - type: "null"
-                      inferenceProfile:
+                      model:
                         anyOf:
                           - type: string
                           - type: "null"
@@ -30220,7 +29473,7 @@ paths:
                       - maxRetries
                       - retryBackoffMs
                       - timeoutMs
-                      - inferenceProfile
+                      - model
                       - groupId
                       - createdFromConversationId
                       - createdFromConversationExists
@@ -30319,7 +29572,7 @@ paths:
                           anyOf:
                             - type: number
                             - type: "null"
-                        inferenceProfile:
+                        model:
                           anyOf:
                             - type: string
                             - type: "null"
@@ -30423,7 +29676,7 @@ paths:
                         - maxRetries
                         - retryBackoffMs
                         - timeoutMs
-                        - inferenceProfile
+                        - model
                         - groupId
                         - createdFromConversationId
                         - createdFromConversationExists
@@ -30519,7 +29772,7 @@ paths:
                         anyOf:
                           - type: number
                           - type: "null"
-                      inferenceProfile:
+                      model:
                         anyOf:
                           - type: string
                           - type: "null"
@@ -30623,7 +29876,7 @@ paths:
                       - maxRetries
                       - retryBackoffMs
                       - timeoutMs
-                      - inferenceProfile
+                      - model
                       - groupId
                       - createdFromConversationId
                       - createdFromConversationExists
@@ -30709,7 +29962,7 @@ paths:
                     - type: number
                     - type: "null"
                   description: Script-mode execution timeout in ms; null = use default
-                inferenceProfile:
+                model:
                   anyOf:
                     - type: string
                     - type: "null"
@@ -30779,7 +30032,7 @@ paths:
                           anyOf:
                             - type: number
                             - type: "null"
-                        inferenceProfile:
+                        model:
                           anyOf:
                             - type: string
                             - type: "null"
@@ -30883,7 +30136,7 @@ paths:
                         - maxRetries
                         - retryBackoffMs
                         - timeoutMs
-                        - inferenceProfile
+                        - model
                         - groupId
                         - createdFromConversationId
                         - createdFromConversationExists
@@ -30982,7 +30235,7 @@ paths:
                           anyOf:
                             - type: number
                             - type: "null"
-                        inferenceProfile:
+                        model:
                           anyOf:
                             - type: string
                             - type: "null"
@@ -31086,7 +30339,7 @@ paths:
                         - maxRetries
                         - retryBackoffMs
                         - timeoutMs
-                        - inferenceProfile
+                        - model
                         - groupId
                         - createdFromConversationId
                         - createdFromConversationExists
@@ -31188,7 +30441,7 @@ paths:
                           anyOf:
                             - type: number
                             - type: "null"
-                        inferenceProfile:
+                        model:
                           anyOf:
                             - type: string
                             - type: "null"
@@ -31292,7 +30545,7 @@ paths:
                         - maxRetries
                         - retryBackoffMs
                         - timeoutMs
-                        - inferenceProfile
+                        - model
                         - groupId
                         - createdFromConversationId
                         - createdFromConversationExists
@@ -31530,7 +30783,7 @@ paths:
                           anyOf:
                             - type: number
                             - type: "null"
-                        inferenceProfile:
+                        model:
                           anyOf:
                             - type: string
                             - type: "null"
@@ -31634,7 +30887,7 @@ paths:
                         - maxRetries
                         - retryBackoffMs
                         - timeoutMs
-                        - inferenceProfile
+                        - model
                         - groupId
                         - createdFromConversationId
                         - createdFromConversationExists
@@ -36686,7 +35939,7 @@ paths:
           required: false
           schema:
             type: string
-          description: "Group by: actor, provider, model, conversation, call_site, inference_profile, schedule (required)"
+          description: "Group by: actor, provider, model, conversation, call_site, schedule (required)"
         - name: scheduleId
           in: query
           required: false
@@ -36863,7 +36116,7 @@ paths:
           required: false
           schema:
             type: string
-          description: "Group by: actor, provider, model, call_site, inference_profile, schedule (required)"
+          description: "Group by: actor, provider, model, call_site, schedule (required)"
         - name: tz
           in: query
           required: false
@@ -38536,193 +37789,30 @@ components:
         llm:
           type: object
           properties:
-            default:
-              anyOf:
-                - type: object
-                  properties:
-                    provider:
-                      anyOf:
-                        - $ref: "#/components/schemas/LLMProvider"
-                        - type: "null"
-                    model:
-                      anyOf:
-                        - type: string
-                          minLength: 1
-                        - type: "null"
-                    maxTokens:
-                      anyOf:
-                        - type: integer
-                          exclusiveMinimum: 0
-                          maximum: 9007199254740991
-                        - type: "null"
-                    effort:
-                      anyOf:
-                        - type: string
-                          enum:
-                            - none
-                            - low
-                            - medium
-                            - high
-                            - xhigh
-                            - max
-                        - type: "null"
-                    speed:
-                      anyOf:
-                        - type: string
-                          enum:
-                            - standard
-                            - fast
-                        - type: "null"
-                    verbosity:
-                      anyOf:
-                        - type: string
-                          enum:
-                            - low
-                            - medium
-                            - high
-                        - type: "null"
-                    temperature:
-                      anyOf:
-                        - anyOf:
-                            - type: number
-                              minimum: 0
-                              maximum: 2
-                            - type: "null"
-                        - type: "null"
-                    topP:
-                      anyOf:
-                        - anyOf:
-                            - type: number
-                              minimum: 0
-                              maximum: 1
-                            - type: "null"
-                        - type: "null"
-                    thinking:
-                      anyOf:
-                        - type: object
-                          properties:
-                            enabled:
-                              type: boolean
-                            streamThinking:
-                              type: boolean
-                            level:
-                              type: string
-                              enum:
-                                - minimal
-                                - low
-                                - medium
-                                - high
-                        - type: "null"
-                    contextWindow:
-                      anyOf:
-                        - type: object
-                          properties:
-                            enabled:
-                              type: boolean
-                            maxInputTokens:
-                              type: integer
-                              exclusiveMinimum: 0
-                              maximum: 9007199254740991
-                            targetBudgetRatio:
-                              type: number
-                              exclusiveMinimum: 0
-                              maximum: 1
-                            compactThreshold:
-                              type: number
-                              exclusiveMinimum: 0
-                              maximum: 1
-                            summaryBudgetRatio:
-                              type: number
-                              exclusiveMinimum: 0
-                              maximum: 1
-                            overflowRecovery:
-                              type: object
-                              properties:
-                                enabled:
-                                  type: boolean
-                                safetyMarginRatio:
-                                  type: number
-                                  exclusiveMinimum: 0
-                                  exclusiveMaximum: 1
-                                maxAttempts:
-                                  type: integer
-                                  exclusiveMinimum: 0
-                                  maximum: 9007199254740991
-                                interactiveLatestTurnCompression:
-                                  type: string
-                                  enum:
-                                    - truncate
-                                    - summarize
-                                    - drop
-                                nonInteractiveLatestTurnCompression:
-                                  type: string
-                                  enum:
-                                    - truncate
-                                    - summarize
-                                    - drop
-                        - type: "null"
-                    openrouter:
-                      anyOf:
-                        - type: object
-                          properties:
-                            only:
-                              type: array
-                              items:
-                                type: string
-                                minLength: 1
-                        - type: "null"
-                    logitBias:
-                      anyOf:
-                        - type: string
-                          enum:
-                            - suppress-cjk
-                        - type: "null"
-                    disableCache:
-                      anyOf:
-                        - type: boolean
-                        - type: "null"
-                    provider_connection:
-                      anyOf:
-                        - type: string
-                        - type: "null"
-                  additionalProperties: {}
-                - type: "null"
-            profiles:
-              type: object
-              propertyNames:
-                type: string
-              additionalProperties:
-                anyOf:
-                  - $ref: "#/components/schemas/ProfilePatchEntry"
-                  - type: "null"
-            profileOrder:
-              type: array
-              items:
-                type: string
-            activeProfile:
-              anyOf:
-                - type: string
-                - type: "null"
-            advisorProfile:
+            defaultModel:
               anyOf:
                 - type: string
                 - type: "null"
             callSites:
-              type: object
-              propertyNames:
-                type: string
-              additionalProperties:
-                anyOf:
-                  - $ref: "#/components/schemas/CallSiteOverrideDraft"
-                  - type: "null"
-            profileSession:
               anyOf:
                 - type: object
-                  properties:
-                    defaultTtlSeconds:
-                      type: number
-                    maxTtlSeconds:
-                      type: number
+                  propertyNames:
+                    type: string
+                  additionalProperties:
+                    anyOf:
+                      - $ref: "#/components/schemas/LLMCallSiteConfig"
+                      - type: "null"
+                - type: "null"
+            streamThinking:
+              anyOf:
+                - type: boolean
+                - type: "null"
+            catalogOverrides:
+              anyOf:
+                - type: object
+                  propertyNames:
+                    type: string
+                  additionalProperties: {}
                 - type: "null"
           additionalProperties: {}
         memory:
@@ -38768,388 +37858,62 @@ components:
                 - type: "null"
           additionalProperties: {}
       additionalProperties: {}
-    LLMProvider:
-      type: string
-      minLength: 1
-    ProfilePatchEntry:
-      type: object
-      properties:
-        provider:
-          anyOf:
-            - $ref: "#/components/schemas/LLMProvider"
-            - type: "null"
-        model:
-          anyOf:
-            - type: string
-              minLength: 1
-            - type: "null"
-        maxTokens:
-          anyOf:
-            - type: integer
-              exclusiveMinimum: 0
-              maximum: 9007199254740991
-            - type: "null"
-        effort:
-          anyOf:
-            - type: string
-              enum:
-                - none
-                - low
-                - medium
-                - high
-                - xhigh
-                - max
-            - type: "null"
-        speed:
-          anyOf:
-            - type: string
-              enum:
-                - standard
-                - fast
-            - type: "null"
-        verbosity:
-          anyOf:
-            - type: string
-              enum:
-                - low
-                - medium
-                - high
-            - type: "null"
-        temperature:
-          anyOf:
-            - anyOf:
-                - type: number
-                  minimum: 0
-                  maximum: 2
-                - type: "null"
-            - type: "null"
-        topP:
-          anyOf:
-            - anyOf:
-                - type: number
-                  minimum: 0
-                  maximum: 1
-                - type: "null"
-            - type: "null"
-        thinking:
-          anyOf:
-            - type: object
-              properties:
-                enabled:
-                  type: boolean
-                streamThinking:
-                  type: boolean
-                level:
-                  type: string
-                  enum:
-                    - minimal
-                    - low
-                    - medium
-                    - high
-            - type: "null"
-        contextWindow:
-          anyOf:
-            - type: object
-              properties:
-                enabled:
-                  type: boolean
-                maxInputTokens:
-                  type: integer
-                  exclusiveMinimum: 0
-                  maximum: 9007199254740991
-                targetBudgetRatio:
-                  type: number
-                  exclusiveMinimum: 0
-                  maximum: 1
-                compactThreshold:
-                  type: number
-                  exclusiveMinimum: 0
-                  maximum: 1
-                summaryBudgetRatio:
-                  type: number
-                  exclusiveMinimum: 0
-                  maximum: 1
-                overflowRecovery:
-                  type: object
-                  properties:
-                    enabled:
-                      type: boolean
-                    safetyMarginRatio:
-                      type: number
-                      exclusiveMinimum: 0
-                      exclusiveMaximum: 1
-                    maxAttempts:
-                      type: integer
-                      exclusiveMinimum: 0
-                      maximum: 9007199254740991
-                    interactiveLatestTurnCompression:
-                      type: string
-                      enum:
-                        - truncate
-                        - summarize
-                        - drop
-                    nonInteractiveLatestTurnCompression:
-                      type: string
-                      enum:
-                        - truncate
-                        - summarize
-                        - drop
-            - type: "null"
-        openrouter:
-          anyOf:
-            - type: object
-              properties:
-                only:
-                  type: array
-                  items:
-                    type: string
-                    minLength: 1
-            - type: "null"
-        logitBias:
-          anyOf:
-            - type: string
-              enum:
-                - suppress-cjk
-            - type: "null"
-        disableCache:
-          anyOf:
-            - type: boolean
-            - type: "null"
-        source:
-          anyOf:
-            - type: string
-              enum:
-                - managed
-                - user
-            - type: "null"
-        label:
-          anyOf:
-            - anyOf:
-                - type: string
-                  minLength: 1
-                - type: "null"
-            - type: "null"
-        description:
-          anyOf:
-            - type: string
-            - type: "null"
-        provider_connection:
-          anyOf:
-            - type: string
-              minLength: 1
-            - type: "null"
-        allowUnlisted:
-          anyOf:
-            - type: boolean
-            - type: "null"
-        inputModalities:
-          anyOf:
-            - anyOf:
-                - $ref: "#/components/schemas/InputModalities"
-                - type: "null"
-            - type: "null"
-        status:
-          anyOf:
-            - anyOf:
-                - $ref: "#/components/schemas/ProfileStatus"
-                - type: "null"
-            - type: "null"
-        mix:
-          anyOf:
-            - minItems: 2
-              type: array
-              items:
-                type: object
-                properties:
-                  profile:
-                    type: string
-                    minLength: 1
-                  weight:
-                    type: number
-                    exclusiveMinimum: 0
-                required:
-                  - profile
-                  - weight
-            - type: "null"
-        fallbackProfile:
-          anyOf:
-            - readOnly: true
-              type: string
-              minLength: 1
-            - type: "null"
-      additionalProperties: {}
-    InputModalities:
-      type: object
-      properties:
-        text:
-          $ref: "#/components/schemas/ModalityOverride"
-        image:
-          $ref: "#/components/schemas/ModalityOverride"
-        audio:
-          $ref: "#/components/schemas/ModalityOverride"
-        video:
-          $ref: "#/components/schemas/ModalityOverride"
-    ModalityOverride:
+    LLMCallSiteConfig:
       type: object
       properties:
         enabled:
           type: boolean
-        supported:
-          type: boolean
-    ProfileStatus:
-      type: string
-      enum:
-        - active
-        - disabled
-    CallSiteOverrideDraft:
-      type: object
-      properties:
-        provider:
-          anyOf:
-            - $ref: "#/components/schemas/LLMProvider"
-            - type: "null"
         model:
-          anyOf:
-            - type: string
-              minLength: 1
-            - type: "null"
-        maxTokens:
-          anyOf:
-            - type: integer
+          type: string
+          minLength: 1
+        disableCache:
+          type: boolean
+        contextWindow:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            maxInputTokens:
+              type: integer
               exclusiveMinimum: 0
               maximum: 9007199254740991
-            - type: "null"
-        effort:
-          anyOf:
-            - type: string
-              enum:
-                - none
-                - low
-                - medium
-                - high
-                - xhigh
-                - max
-            - type: "null"
-        speed:
-          anyOf:
-            - type: string
-              enum:
-                - standard
-                - fast
-            - type: "null"
-        verbosity:
-          anyOf:
-            - type: string
-              enum:
-                - low
-                - medium
-                - high
-            - type: "null"
-        temperature:
-          anyOf:
-            - anyOf:
-                - type: number
-                  minimum: 0
-                  maximum: 2
-                - type: "null"
-            - type: "null"
-        topP:
-          anyOf:
-            - anyOf:
-                - type: number
-                  minimum: 0
-                  maximum: 1
-                - type: "null"
-            - type: "null"
-        thinking:
-          anyOf:
-            - type: object
+            targetBudgetRatio:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 1
+            compactThreshold:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 1
+            summaryBudgetRatio:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 1
+            overflowRecovery:
+              type: object
               properties:
                 enabled:
                   type: boolean
-                streamThinking:
-                  type: boolean
-                level:
-                  type: string
-                  enum:
-                    - minimal
-                    - low
-                    - medium
-                    - high
-            - type: "null"
-        contextWindow:
-          anyOf:
-            - type: object
-              properties:
-                enabled:
-                  type: boolean
-                maxInputTokens:
+                safetyMarginRatio:
+                  type: number
+                  exclusiveMinimum: 0
+                  exclusiveMaximum: 1
+                maxAttempts:
                   type: integer
                   exclusiveMinimum: 0
                   maximum: 9007199254740991
-                targetBudgetRatio:
-                  type: number
-                  exclusiveMinimum: 0
-                  maximum: 1
-                compactThreshold:
-                  type: number
-                  exclusiveMinimum: 0
-                  maximum: 1
-                summaryBudgetRatio:
-                  type: number
-                  exclusiveMinimum: 0
-                  maximum: 1
-                overflowRecovery:
-                  type: object
-                  properties:
-                    enabled:
-                      type: boolean
-                    safetyMarginRatio:
-                      type: number
-                      exclusiveMinimum: 0
-                      exclusiveMaximum: 1
-                    maxAttempts:
-                      type: integer
-                      exclusiveMinimum: 0
-                      maximum: 9007199254740991
-                    interactiveLatestTurnCompression:
-                      type: string
-                      enum:
-                        - truncate
-                        - summarize
-                        - drop
-                    nonInteractiveLatestTurnCompression:
-                      type: string
-                      enum:
-                        - truncate
-                        - summarize
-                        - drop
-            - type: "null"
-        openrouter:
-          anyOf:
-            - type: object
-              properties:
-                only:
-                  type: array
-                  items:
-                    type: string
-                    minLength: 1
-            - type: "null"
-        logitBias:
-          anyOf:
-            - type: string
-              enum:
-                - suppress-cjk
-            - type: "null"
-        disableCache:
-          anyOf:
-            - type: boolean
-            - type: "null"
-        profile:
-          anyOf:
-            - type: string
-            - type: "null"
-      additionalProperties: {}
+                interactiveLatestTurnCompression:
+                  type: string
+                  enum:
+                    - truncate
+                    - summarize
+                    - drop
+                nonInteractiveLatestTurnCompression:
+                  type: string
+                  enum:
+                    - truncate
+                    - summarize
+                    - drop
     MemoryConfig:
       type: object
       properties:
@@ -39300,170 +38064,7 @@ components:
         llm:
           type: object
           properties:
-            default:
-              type: object
-              properties:
-                provider:
-                  $ref: "#/components/schemas/LLMProvider"
-                model:
-                  type: string
-                  minLength: 1
-                maxTokens:
-                  type: integer
-                  exclusiveMinimum: 0
-                  maximum: 9007199254740991
-                effort:
-                  type: string
-                  enum:
-                    - none
-                    - low
-                    - medium
-                    - high
-                    - xhigh
-                    - max
-                speed:
-                  type: string
-                  enum:
-                    - standard
-                    - fast
-                verbosity:
-                  type: string
-                  enum:
-                    - low
-                    - medium
-                    - high
-                temperature:
-                  anyOf:
-                    - type: number
-                      minimum: 0
-                      maximum: 2
-                    - type: "null"
-                topP:
-                  anyOf:
-                    - type: number
-                      minimum: 0
-                      maximum: 1
-                    - type: "null"
-                thinking:
-                  type: object
-                  properties:
-                    enabled:
-                      type: boolean
-                    streamThinking:
-                      type: boolean
-                    level:
-                      type: string
-                      enum:
-                        - minimal
-                        - low
-                        - medium
-                        - high
-                  additionalProperties: false
-                contextWindow:
-                  type: object
-                  properties:
-                    enabled:
-                      type: boolean
-                    maxInputTokens:
-                      type: integer
-                      exclusiveMinimum: 0
-                      maximum: 9007199254740991
-                    targetBudgetRatio:
-                      type: number
-                      exclusiveMinimum: 0
-                      maximum: 1
-                    compactThreshold:
-                      type: number
-                      exclusiveMinimum: 0
-                      maximum: 1
-                    summaryBudgetRatio:
-                      type: number
-                      exclusiveMinimum: 0
-                      maximum: 1
-                    overflowRecovery:
-                      type: object
-                      properties:
-                        enabled:
-                          type: boolean
-                        safetyMarginRatio:
-                          type: number
-                          exclusiveMinimum: 0
-                          exclusiveMaximum: 1
-                        maxAttempts:
-                          type: integer
-                          exclusiveMinimum: 0
-                          maximum: 9007199254740991
-                        interactiveLatestTurnCompression:
-                          type: string
-                          enum:
-                            - truncate
-                            - summarize
-                            - drop
-                        nonInteractiveLatestTurnCompression:
-                          type: string
-                          enum:
-                            - truncate
-                            - summarize
-                            - drop
-                      additionalProperties: false
-                  additionalProperties: false
-                openrouter:
-                  type: object
-                  properties:
-                    only:
-                      type: array
-                      items:
-                        type: string
-                        minLength: 1
-                  additionalProperties: false
-                logitBias:
-                  type: string
-                  enum:
-                    - suppress-cjk
-                disableCache:
-                  type: boolean
-                provider_connection:
-                  type: string
-              additionalProperties: false
-            defaultProvider:
-              type: object
-              properties:
-                provider:
-                  type: string
-                  enum:
-                    - anthropic
-                    - openai
-                    - gemini
-                    - fireworks
-                    - openrouter
-                    - chatgpt
-                    - vellum
-                    - together
-                    - vercel-ai-gateway
-                    - minimax
-                    - atlascloud
-                    - baseten
-                    - ionet
-                    - poolside
-                connectionName:
-                  type: string
-                  minLength: 1
-              required:
-                - provider
-              additionalProperties: false
-            profiles:
-              type: object
-              propertyNames:
-                type: string
-              additionalProperties:
-                $ref: "#/components/schemas/ProfileEntry"
-            profileOrder:
-              type: array
-              items:
-                type: string
-            activeProfile:
-              type: string
-            advisorProfile:
+            defaultModel:
               type: string
             callSites:
               type: object
@@ -39471,142 +38072,15 @@ components:
                 type: string
               additionalProperties:
                 anyOf:
-                  - type: object
-                    properties:
-                      provider:
-                        $ref: "#/components/schemas/LLMProvider"
-                      model:
-                        type: string
-                        minLength: 1
-                      maxTokens:
-                        type: integer
-                        exclusiveMinimum: 0
-                        maximum: 9007199254740991
-                      effort:
-                        type: string
-                        enum:
-                          - none
-                          - low
-                          - medium
-                          - high
-                          - xhigh
-                          - max
-                      speed:
-                        type: string
-                        enum:
-                          - standard
-                          - fast
-                      verbosity:
-                        type: string
-                        enum:
-                          - low
-                          - medium
-                          - high
-                      temperature:
-                        anyOf:
-                          - type: number
-                            minimum: 0
-                            maximum: 2
-                          - type: "null"
-                      topP:
-                        anyOf:
-                          - type: number
-                            minimum: 0
-                            maximum: 1
-                          - type: "null"
-                      thinking:
-                        type: object
-                        properties:
-                          enabled:
-                            type: boolean
-                          streamThinking:
-                            type: boolean
-                          level:
-                            type: string
-                            enum:
-                              - minimal
-                              - low
-                              - medium
-                              - high
-                        additionalProperties: false
-                      contextWindow:
-                        type: object
-                        properties:
-                          enabled:
-                            type: boolean
-                          maxInputTokens:
-                            type: integer
-                            exclusiveMinimum: 0
-                            maximum: 9007199254740991
-                          targetBudgetRatio:
-                            type: number
-                            exclusiveMinimum: 0
-                            maximum: 1
-                          compactThreshold:
-                            type: number
-                            exclusiveMinimum: 0
-                            maximum: 1
-                          summaryBudgetRatio:
-                            type: number
-                            exclusiveMinimum: 0
-                            maximum: 1
-                          overflowRecovery:
-                            type: object
-                            properties:
-                              enabled:
-                                type: boolean
-                              safetyMarginRatio:
-                                type: number
-                                exclusiveMinimum: 0
-                                exclusiveMaximum: 1
-                              maxAttempts:
-                                type: integer
-                                exclusiveMinimum: 0
-                                maximum: 9007199254740991
-                              interactiveLatestTurnCompression:
-                                type: string
-                                enum:
-                                  - truncate
-                                  - summarize
-                                  - drop
-                              nonInteractiveLatestTurnCompression:
-                                type: string
-                                enum:
-                                  - truncate
-                                  - summarize
-                                  - drop
-                            additionalProperties: false
-                        additionalProperties: false
-                      openrouter:
-                        type: object
-                        properties:
-                          only:
-                            type: array
-                            items:
-                              type: string
-                              minLength: 1
-                        additionalProperties: false
-                      logitBias:
-                        type: string
-                        enum:
-                          - suppress-cjk
-                      disableCache:
-                        type: boolean
-                      profile:
-                        type: string
-                    additionalProperties: false
+                  - $ref: "#/components/schemas/LLMCallSiteConfigOutput"
                   - type: "null"
-            profileSession:
+            streamThinking:
+              type: boolean
+            catalogOverrides:
               type: object
-              properties:
-                defaultTtlSeconds:
-                  type: number
-                maxTtlSeconds:
-                  type: number
-              additionalProperties: false
-            pricingOverrides:
-              type: array
-              items: {}
+              propertyNames:
+                type: string
+              additionalProperties: {}
           additionalProperties: {}
         memory:
           $ref: "#/components/schemas/MemoryConfig"
@@ -39641,270 +38115,29 @@ components:
               additionalProperties: {}
           additionalProperties: {}
       additionalProperties: {}
-    ProfileEntry:
-      type: object
-      properties:
-        provider:
-          $ref: "#/components/schemas/LLMProvider"
-        model:
-          type: string
-          minLength: 1
-        maxTokens:
-          type: integer
-          exclusiveMinimum: 0
-          maximum: 9007199254740991
-        effort:
-          type: string
-          enum:
-            - none
-            - low
-            - medium
-            - high
-            - xhigh
-            - max
-        speed:
-          type: string
-          enum:
-            - standard
-            - fast
-        verbosity:
-          type: string
-          enum:
-            - low
-            - medium
-            - high
-        temperature:
-          anyOf:
-            - type: number
-              minimum: 0
-              maximum: 2
-            - type: "null"
-        topP:
-          anyOf:
-            - type: number
-              minimum: 0
-              maximum: 1
-            - type: "null"
-        thinking:
-          type: object
-          properties:
-            enabled:
-              type: boolean
-            streamThinking:
-              type: boolean
-            level:
-              type: string
-              enum:
-                - minimal
-                - low
-                - medium
-                - high
-          additionalProperties: false
-        contextWindow:
-          type: object
-          properties:
-            enabled:
-              type: boolean
-            maxInputTokens:
-              type: integer
-              exclusiveMinimum: 0
-              maximum: 9007199254740991
-            targetBudgetRatio:
-              type: number
-              exclusiveMinimum: 0
-              maximum: 1
-            compactThreshold:
-              type: number
-              exclusiveMinimum: 0
-              maximum: 1
-            summaryBudgetRatio:
-              type: number
-              exclusiveMinimum: 0
-              maximum: 1
-            overflowRecovery:
-              type: object
-              properties:
-                enabled:
-                  type: boolean
-                safetyMarginRatio:
-                  type: number
-                  exclusiveMinimum: 0
-                  exclusiveMaximum: 1
-                maxAttempts:
-                  type: integer
-                  exclusiveMinimum: 0
-                  maximum: 9007199254740991
-                interactiveLatestTurnCompression:
-                  type: string
-                  enum:
-                    - truncate
-                    - summarize
-                    - drop
-                nonInteractiveLatestTurnCompression:
-                  type: string
-                  enum:
-                    - truncate
-                    - summarize
-                    - drop
-              additionalProperties: false
-          additionalProperties: false
-        openrouter:
-          type: object
-          properties:
-            only:
-              type: array
-              items:
-                type: string
-                minLength: 1
-          additionalProperties: false
-        logitBias:
-          type: string
-          enum:
-            - suppress-cjk
-        disableCache:
-          type: boolean
-        source:
-          type: string
-          enum:
-            - managed
-            - user
-        label:
-          anyOf:
-            - type: string
-              minLength: 1
-            - type: "null"
-        description:
-          type: string
-        provider_connection:
-          type: string
-          minLength: 1
-        allowUnlisted:
-          type: boolean
-        inputModalities:
-          anyOf:
-            - $ref: "#/components/schemas/InputModalitiesOutput"
-            - type: "null"
-        status:
-          anyOf:
-            - $ref: "#/components/schemas/ProfileStatus"
-            - type: "null"
-        mix:
-          minItems: 2
-          type: array
-          items:
-            type: object
-            properties:
-              profile:
-                type: string
-                minLength: 1
-              weight:
-                type: number
-                exclusiveMinimum: 0
-            required:
-              - profile
-              - weight
-            additionalProperties: false
-        fallbackProfile:
-          readOnly: true
-          type: string
-          minLength: 1
-        supportsVision:
-          type: boolean
-        invariant:
-          type: boolean
-      additionalProperties: {}
-    DefaultProviderStatus:
-      type: object
-      properties:
-        provider:
-          anyOf:
-            - type: string
-              enum:
-                - anthropic
-                - openai
-                - gemini
-                - fireworks
-                - openrouter
-                - chatgpt
-                - vellum
-                - together
-                - vercel-ai-gateway
-                - minimax
-                - atlascloud
-                - baseten
-                - ionet
-                - poolside
-            - type: "null"
-        connectionName:
-          type: string
-        resolvedConnectionName:
-          anyOf:
-            - type: string
-            - type: "null"
-        availability:
-          type: object
-          properties:
-            status:
-              type: string
-              enum:
-                - ok
-                - incomplete
-                - missing_connection
-                - missing_credential
-                - provider_mismatch
-                - unsupported_auth
-                - vellum_unauthenticated
-                - unknown
-                - missing_default
-            message:
-              type: string
-          required:
-            - status
-          additionalProperties: false
-      required:
-        - provider
-        - resolvedConnectionName
-        - availability
-      additionalProperties: false
     CallSiteResolutionSummary:
       type: object
       properties:
         callSite:
           type: string
-        profile:
-          anyOf:
-            - type: string
-            - type: "null"
-        label:
+        model:
           anyOf:
             - type: string
             - type: "null"
         source:
           type: string
           enum:
-            - override
-            - active
+            - pinned
             - call_site
+            - chat
             - default
-        provider:
-          type: string
-        model:
-          type: string
-        effort:
-          type: string
-        maxTokens:
-          type: number
+            - disabled
         maxInputTokens:
           type: number
       required:
         - callSite
-        - profile
-        - label
-        - source
-        - provider
         - model
-        - effort
-        - maxTokens
+        - source
       additionalProperties: false
     CallSiteResolutionDetail:
       type: object
@@ -39914,50 +38147,38 @@ components:
         winner:
           type: object
           properties:
-            profile:
-              anyOf:
-                - type: string
-                - type: "null"
-            label:
+            model:
               anyOf:
                 - type: string
                 - type: "null"
             source:
               type: string
               enum:
-                - override
-                - active
+                - pinned
                 - call_site
+                - chat
                 - default
+                - disabled
           required:
-            - profile
-            - label
+            - model
             - source
           additionalProperties: false
         resolved:
-          type: object
-          properties:
-            provider:
-              type: string
-            model:
-              type: string
-            maxTokens:
-              type: number
-            effort:
-              type: string
-            temperature:
-              anyOf:
-                - type: number
-                - type: "null"
-            maxInputTokens:
-              type: number
-          required:
-            - provider
-            - model
-            - maxTokens
-            - effort
-            - temperature
-          additionalProperties: false
+          anyOf:
+            - type: object
+              properties:
+                model:
+                  type: string
+                maxInputTokens:
+                  type: number
+                disableCache:
+                  type: boolean
+              required:
+                - model
+                - maxInputTokens
+                - disableCache
+              additionalProperties: false
+            - type: "null"
         resolutionChain:
           type: array
           items:
@@ -39968,9 +38189,7 @@ components:
               reason:
                 type: string
                 enum:
-                  - missing
-                  - disabled
-                  - incomplete
+                  - unknown_alias
             required:
               - requested
               - reason
@@ -40031,154 +38250,6 @@ components:
         - provider
         - id
         - displayName
-      additionalProperties: false
-    InferenceProfileSummary:
-      type: object
-      properties:
-        name:
-          type: string
-        label:
-          anyOf:
-            - type: string
-            - type: "null"
-        provider:
-          anyOf:
-            - type: string
-            - type: "null"
-        model:
-          anyOf:
-            - type: string
-            - type: "null"
-        status:
-          type: string
-          enum:
-            - active
-            - disabled
-        source:
-          type: string
-          enum:
-            - managed
-            - user
-        provider_connection:
-          type: string
-        availability:
-          anyOf:
-            - $ref: "#/components/schemas/ProfileConnectionAvailability"
-            - type: "null"
-        config_issue:
-          $ref: "#/components/schemas/InferenceProfileConfigIssue"
-      required:
-        - name
-        - label
-        - provider
-        - model
-        - status
-        - source
-        - availability
-      additionalProperties: false
-    ProfileConnectionAvailability:
-      type: object
-      properties:
-        status:
-          type: string
-          enum:
-            - ok
-            - incomplete
-            - missing_connection
-            - missing_credential
-            - provider_mismatch
-            - unsupported_auth
-            - vellum_unauthenticated
-            - unknown
-        message:
-          type: string
-      required:
-        - status
-      additionalProperties: false
-    InferenceProfileConfigIssue:
-      type: object
-      properties:
-        code:
-          type: string
-          enum:
-            - model_unknown
-            - over_output_cap
-            - no_input_room
-        message:
-          type: string
-      required:
-        - code
-        - message
-      additionalProperties: false
-    InferenceProfileWriteResult:
-      type: object
-      properties:
-        ok:
-          type: boolean
-          const: true
-        name:
-          type: string
-        entry:
-          type: object
-          propertyNames:
-            type: string
-          additionalProperties: {}
-        warnings:
-          type: array
-          items:
-            type: string
-        verify:
-          type: string
-      required:
-        - ok
-        - name
-        - entry
-        - warnings
-        - verify
-      additionalProperties: false
-    InferenceProfileDetail:
-      type: object
-      properties:
-        name:
-          type: string
-        entry:
-          type: object
-          propertyNames:
-            type: string
-          additionalProperties: {}
-        availability:
-          anyOf:
-            - $ref: "#/components/schemas/ProfileConnectionAvailability"
-            - type: "null"
-        config_issue:
-          $ref: "#/components/schemas/InferenceProfileConfigIssue"
-      required:
-        - name
-        - entry
-        - availability
-      additionalProperties: false
-    InferenceProfileCheck:
-      type: object
-      properties:
-        ok:
-          type: boolean
-        blame:
-          type: string
-          enum:
-            - profile
-            - provider
-            - transient
-            - unknown
-        reason:
-          type: string
-        detail:
-          type: string
-        connection:
-          type: string
-        message:
-          type: string
-      required:
-        - ok
       additionalProperties: false
     ProviderConnection:
       type: object
@@ -40327,25 +38398,64 @@ components:
         - status
         - origin
       additionalProperties: false
-    InputModalitiesOutput:
-      type: object
-      properties:
-        text:
-          $ref: "#/components/schemas/ModalityOverrideOutput"
-        image:
-          $ref: "#/components/schemas/ModalityOverrideOutput"
-        audio:
-          $ref: "#/components/schemas/ModalityOverrideOutput"
-        video:
-          $ref: "#/components/schemas/ModalityOverrideOutput"
-      additionalProperties: false
-    ModalityOverrideOutput:
+    LLMCallSiteConfigOutput:
       type: object
       properties:
         enabled:
           type: boolean
-        supported:
+        model:
+          type: string
+          minLength: 1
+        disableCache:
           type: boolean
+        contextWindow:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            maxInputTokens:
+              type: integer
+              exclusiveMinimum: 0
+              maximum: 9007199254740991
+            targetBudgetRatio:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 1
+            compactThreshold:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 1
+            summaryBudgetRatio:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 1
+            overflowRecovery:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                safetyMarginRatio:
+                  type: number
+                  exclusiveMinimum: 0
+                  exclusiveMaximum: 1
+                maxAttempts:
+                  type: integer
+                  exclusiveMinimum: 0
+                  maximum: 9007199254740991
+                interactiveLatestTurnCompression:
+                  type: string
+                  enum:
+                    - truncate
+                    - summarize
+                    - drop
+                nonInteractiveLatestTurnCompression:
+                  type: string
+                  enum:
+                    - truncate
+                    - summarize
+                    - drop
+              additionalProperties: false
+          additionalProperties: false
       additionalProperties: false
     AuthOutput:
       oneOf:

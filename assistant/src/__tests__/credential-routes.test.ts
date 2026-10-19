@@ -553,7 +553,6 @@ describe("credentials routes", () => {
       expect(secureStore.get("acp:claude_oauth_expires_at")).toBe("111");
     });
 
-
     test("a successful set scrubs the normalized value from transcripts exactly once", async () => {
       /**
        * The pasted plaintext may already sit in recent transcripts, so a

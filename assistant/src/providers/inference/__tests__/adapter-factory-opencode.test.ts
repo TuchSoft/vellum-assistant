@@ -32,9 +32,8 @@ describe("opencode adapter factory", () => {
       streamTimeoutMs: 60_000,
       useNativeWebSearch: false,
     }) as OpenCodeProvider;
-    const client = (
-      adapter as unknown as { client: { baseURL?: string } }
-    ).client;
+    const client = (adapter as unknown as { client: { baseURL?: string } })
+      .client;
     expect(client.baseURL).toBe(OPENCODE_ZEN_BASE_URL);
   });
 

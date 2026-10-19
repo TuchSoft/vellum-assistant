@@ -2570,5 +2570,14 @@
     "checkingDescription": "Checking notification permission…",
     "openTabDescription": "Keep a Vellum tab open to receive alerts. Closing or suspending the tab, or going offline, pauses delivery.",
     "enable": "Enable notifications"
+  },
+  "modelsCard": {
+    "title": "Models",
+    "description": "Every inference call runs through the LLM gateway. Aliases and their tuning are configured on the gateway.",
+    "callSite": "Call site",
+    "model": "Model",
+    "source": "Source",
+    "disabled": "disabled",
+    "inherit": "inherit"
   }
 }

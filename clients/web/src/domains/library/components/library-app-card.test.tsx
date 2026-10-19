@@ -27,18 +27,18 @@ function stubMatchMedia(touchSurface: boolean): void {
   })) as unknown as typeof window.matchMedia;
 }
 
-const { LibraryAppCardActionsMenu } = await import(
-  "@/domains/library/components/library-app-card"
-);
+const { LibraryAppCardActionsMenu } =
+  await import("@/domains/library/components/library-app-card");
 
 const APP_NAME = "Notes";
 const MENU_NAME = `Options for ${APP_NAME}`;
 
 function renderMenu(
-  overrides: Partial<
-    Parameters<typeof LibraryAppCardActionsMenu>[0]
-  > = {},
-): { onDelete: ReturnType<typeof mock>; onOpenChange: ReturnType<typeof mock> } {
+  overrides: Partial<Parameters<typeof LibraryAppCardActionsMenu>[0]> = {},
+): {
+  onDelete: ReturnType<typeof mock>;
+  onOpenChange: ReturnType<typeof mock>;
+} {
   const onDelete = mock();
   const onOpenChange = mock();
   render(

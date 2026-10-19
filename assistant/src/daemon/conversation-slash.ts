@@ -1,17 +1,11 @@
 import type { InterfaceId } from "../channels/types.js";
-import { getConversationProfilesForProvider } from "../config/default-profile-catalog.js";
 import { resolveEffectiveContextWindow } from "../config/llm-context-resolution.js";
-import { resolveCallSiteConfig } from "../config/llm-resolver.js";
+import { knownAliases } from "../config/llm-resolver.js";
+import { getConfig } from "../config/loader.js";
 import {
-  getConfig,
-  invalidateConfigCache,
-  loadRawConfig,
-  saveRawConfig,
-} from "../config/loader.js";
-import { orderProfileKeys } from "../config/profile-order.js";
-import { getConversationOverrideProfile } from "../persistence/conversation-crud.js";
-import { getConfiguredProviders } from "../providers/provider-availability.js";
-import { getVisibleProviderCatalog } from "../providers/provider-catalog-visibility.js";
+  getConversationModel,
+  setConversationModel,
+} from "../persistence/conversation-crud.js";
 
 export type SlashResolution =
   | { kind: "passthrough"; content: string }
@@ -60,6 +54,7 @@ function parseCleanCommand(trimmed: string): CleanParse | null {
 // ── /context and /status commands ────────────────────────────────────
 
 export interface SlashContext {
+  conversationId?: string;
   messageCount: number;
   inputTokens: number;
   outputTokens: number;
@@ -91,11 +86,13 @@ export async function buildSlashContextForContent(
   const contextWindow = resolveEffectiveContextWindow({
     llm: config.llm,
     callSite: "mainAgent",
-    overrideProfile: await getConversationOverrideProfile(
-      source.conversationId,
-    ),
+    conversationModel: await getConversationModel(source.conversationId),
   });
+  if (contextWindow == null) {
+    throw new Error('Call site "mainAgent" is disabled.');
+  }
   return {
+    conversationId: source.conversationId,
     messageCount: source.messageCount,
     inputTokens: source.inputTokens,
     outputTokens: source.outputTokens,
@@ -124,105 +121,73 @@ const DEPRECATED_MODEL_SHORTCUTS = new Set([
 
 // ── /model command (inference profile switcher) ──────────────────────
 
-type ModelCommandParse =
-  { kind: "list" } | { kind: "switch"; profileName: string };
+type ModelCommandParse = { kind: "list" } | { kind: "switch"; alias: string };
 
-/**
- * Parse `/model` and `/model <name>` forms. Returns `null` for any input
- * that isn't a `/model` invocation (so the caller can fall through).
- */
 function parseModelCommand(trimmed: string): ModelCommandParse | null {
-  if (trimmed === "/model") {
-    return { kind: "list" };
-  }
-  if (!trimmed.startsWith("/model ")) {
+  if (!/^\/model(?:\s|$)/i.test(trimmed)) {
     return null;
   }
-  const rest = trimmed.slice("/model ".length).trim();
+  const rest = trimmed.replace(/^\/model\s*/i, "").trim();
   if (rest.length === 0) {
     return { kind: "list" };
   }
-  return { kind: "switch", profileName: rest };
+  return { kind: "switch", alias: rest };
 }
 
 async function resolveModelCommand(
   parse: ModelCommandParse,
+  conversationId: string | undefined,
 ): Promise<SlashResolution> {
   const config = getConfig();
-  const profiles = getConversationProfilesForProvider(
-    config.llm.profiles,
-    config.llm.defaultProvider ?? null,
-  );
-  const profileNames = orderProfileKeys(profiles, config.llm.profileOrder);
-  const activeProfile = config.llm.activeProfile;
+  const aliases = knownAliases(config.llm);
+  const current =
+    (conversationId != null
+      ? await getConversationModel(conversationId)
+      : undefined) ?? config.llm.defaultModel;
 
   if (parse.kind === "list") {
-    if (profileNames.length === 0) {
+    if (aliases.length === 0) {
       return {
         kind: "unknown",
-        message:
-          "No inference profiles are defined. Use **Settings → Models & Services** to create one.",
+        message: "The gateway catalog is empty. Check the gateway connection.",
       };
     }
-    const lines = ["Inference profiles:\n"];
-    for (const name of profileNames) {
-      const profile = profiles[name];
-      const label = profile.label ?? name;
-      const isCurrent = name === activeProfile;
-      const isDisabled = profile.status === "disabled";
-      const marker = isCurrent ? " **[current]**" : "";
-      const disabled = isDisabled ? " *(disabled)*" : "";
-      const description = profile.description
-        ? ` — ${profile.description}`
-        : "";
-      lines.push(
-        `  - \`${name}\` (${label})${marker}${disabled}${description}`,
-      );
+    const lines = ["Available models:\n"];
+    for (const alias of aliases) {
+      const marker = alias === current ? " **[current]**" : "";
+      lines.push(`  - \`${alias}\`${marker}`);
     }
-    lines.push("\nSwitch with `/model <name>`.");
+    lines.push("\nSwitch with `/model <alias>`.");
     return { kind: "unknown", message: lines.join("\n") };
   }
 
-  const target = parse.profileName;
-  if (!(target in profiles)) {
-    const available = profileNames.map((n) => `\`${n}\``).join(", ");
+  const target = parse.alias;
+  if (!aliases.includes(target)) {
+    const available = aliases.map((n) => `\`${n}\``).join(", ");
     const hint = available.length > 0 ? ` Available: ${available}.` : "";
     return {
       kind: "unknown",
-      message: `Profile \`${target}\` not found.${hint}`,
+      message: `Model \`${target}\` not found.${hint}`,
     };
   }
-  if (profiles[target].status === "disabled") {
+  if (target === current) {
     return {
       kind: "unknown",
-      message: `Profile \`${target}\` is disabled. Enable it in **Settings → Models & Services** first.`,
-    };
-  }
-  if (target === activeProfile) {
-    const label = profiles[target].label ?? target;
-    return {
-      kind: "unknown",
-      message: `Already using profile \`${target}\` (${label}).`,
+      message: `Already using model \`${target}\`.`,
     };
   }
 
-  // Write `llm.activeProfile` directly to the raw config file. We invalidate
-  // the in-process cache so the very next `getConfig()` reflects the switch;
-  // the file watcher will also pick this up but its debounce can lag a tick.
-  const raw = loadRawConfig();
-  const llm: Record<string, unknown> =
-    raw.llm != null && typeof raw.llm === "object" && !Array.isArray(raw.llm)
-      ? (raw.llm as Record<string, unknown>)
-      : {};
-  llm.activeProfile = target;
-  raw.llm = llm;
-  saveRawConfig(raw);
-  invalidateConfigCache();
-
-  const label = profiles[target].label ?? target;
+  if (conversationId == null) {
+    return {
+      kind: "unknown",
+      message:
+        "Model switching needs a conversation context. Pick the model in the composer.",
+    };
+  }
+  await setConversationModel(conversationId, target);
   return {
     kind: "unknown",
-    message: `Switched to profile \`${target}\` (${label}).`,
+    message: `Switched to model \`${target}\`.`,
   };
 }
 
@@ -230,36 +195,13 @@ async function resolveModelCommand(
 
 async function resolveModelList(): Promise<SlashResolution> {
   const config = getConfig();
-  const resolvedMainAgent = resolveCallSiteConfig("mainAgent", config.llm);
-  const configuredProviders = new Set<string>(await getConfiguredProviders());
-
+  const aliases = knownAliases(config.llm);
   const lines = ["Available models:\n"];
-
-  for (const {
-    id: provider,
-    displayName: providerName,
-    models,
-  } of getVisibleProviderCatalog(config)) {
-    const hasKey = configuredProviders.has(provider);
-    const status = hasKey ? "✓" : "✗";
-    lines.push(`**${providerName}** ${status}`);
-    for (const { id, displayName } of models) {
-      const isCurrent =
-        resolvedMainAgent.provider === provider &&
-        resolvedMainAgent.model === id;
-      const current = isCurrent ? " **[current]**" : "";
-      lines.push(`  - ${displayName} (\`${id}\`)${current}`);
-    }
-    lines.push("");
+  for (const alias of aliases) {
+    const marker = alias === config.llm.defaultModel ? " **[default]**" : "";
+    lines.push(`  - \`${alias}\`${marker}`);
   }
-
-  lines.push("✓ = API key configured, ✗ = not configured");
-  lines.push("\nTip: Configure a provider with `keys set <provider> <key>`");
-
-  return {
-    kind: "unknown",
-    message: lines.join("\n"),
-  };
+  return { kind: "unknown", message: lines.join("\n") };
 }
 
 function resolveStatusCommand(context: SlashContext): SlashResolution {
@@ -407,7 +349,7 @@ export async function resolveSlash(
   const trimmed = content.trim();
   const modelParse = parseModelCommand(trimmed);
   if (modelParse != null) {
-    return await resolveModelCommand(modelParse);
+    return await resolveModelCommand(modelParse, context?.conversationId);
   }
 
   // Reject deprecated provider shortcut commands (/opus, /sonnet, /haiku, etc.)

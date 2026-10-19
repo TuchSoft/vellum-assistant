@@ -6,7 +6,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 
@@ -175,14 +181,18 @@ function seedClient(
     organizationsBillingSubscriptionRetrieveOptions().queryKey,
     makeSubscription(),
   );
-  client.setQueryData(
-    assistantsDomainsListOptions({ path }).queryKey,
-    { count: 1, next: null, previous: null, results: [makeDomain()] },
-  );
-  client.setQueryData(
-    assistantsEmailAddressesListOptions({ path }).queryKey,
-    { count: 1, next: null, previous: null, results: [makeAddress()] },
-  );
+  client.setQueryData(assistantsDomainsListOptions({ path }).queryKey, {
+    count: 1,
+    next: null,
+    previous: null,
+    results: [makeDomain()],
+  });
+  client.setQueryData(assistantsEmailAddressesListOptions({ path }).queryKey, {
+    count: 1,
+    next: null,
+    previous: null,
+    results: [makeAddress()],
+  });
   client.setQueryData(
     assistantsDomainsVerificationStatusRetrieveOptions({
       path: { ...path, id: DOMAIN_ID },
@@ -314,29 +324,29 @@ describe("EmailManagedContent domain setup repair", () => {
     ).toBeTruthy();
   });
 
-  test.each([
-    "pending",
-    "verified",
-    "failed",
-    "unknown",
-  ] as const)("%s does not render the repair action", (status) => {
-    renderManaged(status);
+  test.each(["pending", "verified", "failed", "unknown"] as const)(
+    "%s does not render the repair action",
+    (status) => {
+      renderManaged(status);
 
-    expect(screen.getByDisplayValue(ADDRESS)).toBeTruthy();
-    expect(
-      screen.queryByRole("button", { name: "Complete domain setup" }),
-    ).toBeNull();
-    expect(
-      screen.queryByText(
-        "Your email address is ready, but this domain is not set up with the email provider yet. Complete setup to start sending and receiving mail.",
-      ),
-    ).toBeNull();
-  });
+      expect(screen.getByDisplayValue(ADDRESS)).toBeTruthy();
+      expect(
+        screen.queryByRole("button", { name: "Complete domain setup" }),
+      ).toBeNull();
+      expect(
+        screen.queryByText(
+          "Your email address is ready, but this domain is not set up with the email provider yet. Complete setup to start sending and receiving mail.",
+        ),
+      ).toBeNull();
+    },
+  );
 
   test("confirming repair calls the provision mutation once with the existing ids and no body", async () => {
     renderManaged("not_started");
 
-    fireEvent.click(screen.getByRole("button", { name: "Complete domain setup" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Complete domain setup" }),
+    );
     fireEvent.click(confirmRepairButton()!);
 
     await waitFor(() => {
@@ -356,17 +366,21 @@ describe("EmailManagedContent domain setup repair", () => {
   });
 
   test("duplicate submissions are disabled while pending", async () => {
-    let resolveProvision: ((value: {
-      data: DomainVerificationStatus;
-      response: { ok: boolean };
-    }) => void) | undefined;
+    let resolveProvision:
+      | ((value: {
+          data: DomainVerificationStatus;
+          response: { ok: boolean };
+        }) => void)
+      | undefined;
     provisionImpl = () =>
       new Promise((resolve) => {
         resolveProvision = resolve;
       });
 
     renderManaged("not_started");
-    fireEvent.click(screen.getByRole("button", { name: "Complete domain setup" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Complete domain setup" }),
+    );
     fireEvent.click(confirmRepairButton()!);
 
     await waitFor(() => {
@@ -395,7 +409,9 @@ describe("EmailManagedContent domain setup repair", () => {
       ).toBe(false);
     }
 
-    fireEvent.click(screen.getByRole("button", { name: "Complete domain setup" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Complete domain setup" }),
+    );
     fireEvent.click(confirmRepairButton()!);
 
     await waitFor(() => {
@@ -432,7 +448,9 @@ describe("EmailManagedContent domain setup repair", () => {
     };
 
     renderManaged("not_started");
-    fireEvent.click(screen.getByRole("button", { name: "Complete domain setup" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Complete domain setup" }),
+    );
     fireEvent.click(confirmRepairButton()!);
 
     await waitFor(() => {
@@ -458,9 +476,9 @@ describe("EmailManagedContent domain setup repair", () => {
     const interval = verificationRefetchInterval(client);
     expect(typeof interval).toBe("function");
     if (typeof interval === "function") {
-      expect(
-        interval({ state: { data: { status: "not_started" } } }),
-      ).toBe(false);
+      expect(interval({ state: { data: { status: "not_started" } } })).toBe(
+        false,
+      );
     }
   });
 });

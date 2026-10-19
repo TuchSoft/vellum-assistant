@@ -1,15 +1,12 @@
 /**
- * Route definitions for read-only inference call-site resolution inspection.
+ * Route definitions for read-only call-site resolution inspection.
  *
  * GET /v1/inference/callsites        — effective resolution for every call site
  * GET /v1/inference/callsites/:site  — resolution detail + chain for one site
  *
- * These expose what `resolveCallSiteConfig` / `selectWinningProfile` already
- * compute so the assistant can inspect which profile wins each call site
- * without reading raw `llm.callSites.*` config paths. The detail view reuses
- * the resolver's own fallback reporting (`onResolutionFallback`) for the
- * resolution chain and the dispatch preflight (`preflightResolvedConfig`) for
- * the usability check — no explanation logic is duplicated here.
+ * These expose what `resolveCallSite` computes so the assistant can inspect
+ * which alias wins each call site without reading raw `llm.callSites.*`
+ * config paths.
  */
 
 import { z } from "zod";
@@ -17,8 +14,7 @@ import { z } from "zod";
 import { CALL_SITE_DEFAULTS } from "../../config/call-site-defaults.js";
 import {
   type ResolutionFallbackReason,
-  resolveCallSiteConfig,
-  selectWinningProfile,
+  resolveCallSite,
 } from "../../config/llm-resolver.js";
 import { getConfigReadOnly } from "../../config/loader.js";
 import { type LLMCallSite, LLMCallSiteEnum } from "../../config/schemas/llm.js";
@@ -26,22 +22,24 @@ import {
   ConnectionResolutionError,
   preflightResolvedConfig,
 } from "../../providers/connection-resolution.js";
+import { resolveGatewayConnectionName } from "../../providers/gateway.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { BadRequestError } from "./errors.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
 
-const sourceEnum = z.enum(["override", "active", "call_site", "default"]);
+const sourceEnum = z.enum([
+  "pinned",
+  "call_site",
+  "chat",
+  "default",
+  "disabled",
+]);
 
 const callSiteSummarySchema = z
   .object({
     callSite: z.string(),
-    profile: z.string().nullable(),
-    label: z.string().nullable(),
+    model: z.string().nullable(),
     source: sourceEnum,
-    provider: z.string(),
-    model: z.string(),
-    effort: z.string(),
-    maxTokens: z.number(),
     /** Notable tuning: the resolved context-window input cap, when set. */
     maxInputTokens: z.number().optional(),
   })
@@ -49,25 +47,23 @@ const callSiteSummarySchema = z
 
 const resolutionChainEntrySchema = z.object({
   requested: z.string(),
-  reason: z.enum(["missing", "disabled", "incomplete"]),
+  reason: z.enum(["unknown_alias"]),
 });
 
 const callSiteDetailSchema = z
   .object({
     callSite: z.string(),
     winner: z.object({
-      profile: z.string().nullable(),
-      label: z.string().nullable(),
+      model: z.string().nullable(),
       source: sourceEnum,
     }),
-    resolved: z.object({
-      provider: z.string(),
-      model: z.string(),
-      maxTokens: z.number(),
-      effort: z.string(),
-      temperature: z.number().nullable(),
-      maxInputTokens: z.number().optional(),
-    }),
+    resolved: z
+      .object({
+        model: z.string(),
+        maxInputTokens: z.number(),
+        disableCache: z.boolean(),
+      })
+      .nullable(),
     /** Rungs the resolver considered and skipped, oldest-first. */
     resolutionChain: z.array(resolutionChainEntrySchema),
     /** The shipped default fragment for this call site (code-owned). */
@@ -83,22 +79,17 @@ const callSiteDetailSchema = z
 
 function summarizeCallSite(
   callSite: LLMCallSite,
-  llm: Parameters<typeof resolveCallSiteConfig>[1],
+  llm: Parameters<typeof resolveCallSite>[1],
 ) {
-  const selection = selectWinningProfile(callSite, llm, {});
-  const resolved = resolveCallSiteConfig(callSite, llm, {});
-  const label =
-    typeof selection.entry?.label === "string" ? selection.entry.label : null;
-  const maxInputTokens = resolved.contextWindow?.maxInputTokens;
+  const resolution = resolveCallSite(callSite, llm, {});
+  if (resolution.status === "disabled") {
+    return { callSite, model: null, source: "disabled" as const };
+  }
+  const maxInputTokens = resolution.config.contextWindow.maxInputTokens;
   return {
     callSite,
-    profile: selection.profileName,
-    label,
-    source: selection.source,
-    provider: resolved.provider,
-    model: resolved.model,
-    effort: resolved.effort,
-    maxTokens: resolved.maxTokens,
+    model: resolution.model,
+    source: resolution.source,
     ...(typeof maxInputTokens === "number" ? { maxInputTokens } : {}),
   };
 }
@@ -126,45 +117,44 @@ async function handleGetCallSite({ pathParams = {} }: RouteHandlerArgs) {
     requested: string;
     reason: ResolutionFallbackReason;
   }[] = [];
-  const selection = selectWinningProfile(callSite, llm, {
+  const resolution = resolveCallSite(callSite, llm, {
     onResolutionFallback: ({ requested, reason }) => {
       resolutionChain.push({ requested, reason });
     },
   });
-  const resolved = resolveCallSiteConfig(callSite, llm, {});
 
   let resolutionError: { reason: string; message: string } | undefined;
-  try {
-    await preflightResolvedConfig(resolved, {
-      profileName: selection.profileName ?? undefined,
-    });
-  } catch (err) {
-    if (err instanceof ConnectionResolutionError) {
-      resolutionError = { reason: err.reason, message: err.message };
-    } else {
-      throw err;
+  const connectionName = resolveGatewayConnectionName();
+  if (resolution.status === "ok" && connectionName != null) {
+    try {
+      await preflightResolvedConfig({
+        connectionName,
+        model: resolution.model,
+      });
+    } catch (err) {
+      if (err instanceof ConnectionResolutionError) {
+        resolutionError = { reason: err.reason, message: err.message };
+      } else {
+        throw err;
+      }
     }
   }
 
-  const maxInputTokens = resolved.contextWindow?.maxInputTokens;
   return {
     callSite,
     winner: {
-      profile: selection.profileName,
-      label:
-        typeof selection.entry?.label === "string"
-          ? selection.entry.label
-          : null,
-      source: selection.source,
+      model: resolution.status === "ok" ? resolution.model : null,
+      source:
+        resolution.status === "ok" ? resolution.source : ("disabled" as const),
     },
-    resolved: {
-      provider: resolved.provider,
-      model: resolved.model,
-      maxTokens: resolved.maxTokens,
-      effort: resolved.effort,
-      temperature: resolved.temperature ?? null,
-      ...(typeof maxInputTokens === "number" ? { maxInputTokens } : {}),
-    },
+    resolved:
+      resolution.status === "ok"
+        ? {
+            model: resolution.model,
+            maxInputTokens: resolution.config.contextWindow.maxInputTokens,
+            disableCache: resolution.config.disableCache,
+          }
+        : null,
     resolutionChain,
     shippedDefault: CALL_SITE_DEFAULTS[callSite] as Record<string, unknown>,
     userPin: (llm.callSites?.[callSite] ?? null) as Record<
@@ -186,7 +176,7 @@ export const ROUTES: RouteDefinition[] = [
     },
     summary: "List call-site resolutions",
     description:
-      "Return the effective resolution for every LLM call site: the winning profile, its source (override / active / call-site pin / shipped default), and the resolved provider/model plus notable tuning.",
+      "Return the effective alias for every LLM call site, its source rung, and the resolved input budget.",
     tags: ["inference"],
     responseBody: z.object({ callSites: z.array(callSiteSummarySchema) }),
     handler: handleListCallSites,
@@ -201,7 +191,7 @@ export const ROUTES: RouteDefinition[] = [
     },
     summary: "Get a call-site resolution detail",
     description:
-      "Return the full resolution for one call site: the winner, the resolution chain (rungs considered and skipped), the shipped default fragment, the user's pin fragment, and a preflight-derived resolution error when dispatch would provably fail.",
+      "Return the full resolution for one call site: the winner, the resolution chain, the shipped default fragment, the user's pin, and a preflight-derived error when dispatch would provably fail.",
     tags: ["inference"],
     pathParams: [{ name: "site", description: "LLM call-site id" }],
     responseBody: callSiteDetailSchema,

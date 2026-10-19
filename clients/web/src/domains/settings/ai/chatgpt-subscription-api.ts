@@ -78,11 +78,12 @@ export async function pollChatgptDeviceAuthStatus(
   assistantId: string,
   state: string,
 ): Promise<PollStatusResponse> {
-  const { data } =
-    await inferenceChatgptsubscriptionDeviceauthStatusByStateGet({
+  const { data } = await inferenceChatgptsubscriptionDeviceauthStatusByStateGet(
+    {
       path: { assistant_id: assistantId, state },
       throwOnError: true,
-    });
+    },
+  );
   return { status: data.status, error: data.error };
 }
 

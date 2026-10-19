@@ -70,10 +70,7 @@ mock.module("@/lib/self-hosted/connection", () => ({
 }));
 
 const avatarCalls: Array<
-  [
-    string | null,
-    { supportsManifest?: boolean; enabled?: boolean } | undefined,
-  ]
+  [string | null, { supportsManifest?: boolean; enabled?: boolean } | undefined]
 > = [];
 const actualAssistantAvatar = await import("@/hooks/use-assistant-avatar");
 mock.module("@/hooks/use-assistant-avatar", () => ({
@@ -93,9 +90,8 @@ mock.module("@/hooks/use-assistant-avatar", () => ({
   },
 }));
 
-const { AssistantSwitcher } = await import(
-  "@/domains/chat/components/assistant-switcher"
-);
+const { AssistantSwitcher } =
+  await import("@/domains/chat/components/assistant-switcher");
 
 function renderSwitcher(
   props: Partial<Parameters<typeof AssistantSwitcher>[0]> = {},
@@ -288,7 +284,9 @@ describe("AssistantSwitcher expanded card", () => {
     /* Bob's 0.9.0 runtime serves the manifest; Carol's 0.5.0 predates it.
        The current row carries no override, deferring to the active gate. */
     expect(
-      avatarCalls.some(([id, o]) => id === "a2" && o?.supportsManifest === true),
+      avatarCalls.some(
+        ([id, o]) => id === "a2" && o?.supportsManifest === true,
+      ),
     ).toBe(true);
     expect(
       avatarCalls.some(

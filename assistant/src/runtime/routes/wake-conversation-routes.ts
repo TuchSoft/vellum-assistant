@@ -102,7 +102,7 @@ export const ROUTES: RouteDefinition[] = [
       // A schedule with no pin resolves as any other turn does.
       const scheduleProfile =
         isLocal && scheduleId
-          ? ((await getSchedule(scheduleId))?.inferenceProfile ?? null)
+          ? ((await getSchedule(scheduleId))?.model ?? null)
           : null;
 
       const wakeOptions: Parameters<typeof wakeAgentForOpportunity>[0] = {

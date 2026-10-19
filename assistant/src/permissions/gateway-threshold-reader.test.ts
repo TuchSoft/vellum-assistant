@@ -179,9 +179,7 @@ describe("refreshAutoApproveThreshold", () => {
 
     // A wake of a conversation whose picker override is stricter than the
     // global resolves to that override, exactly like an interactive turn.
-    expect(await getAutoApproveThreshold("conv-6", "background")).toBe(
-      "none",
-    );
+    expect(await getAutoApproveThreshold("conv-6", "background")).toBe("none");
     expect(await refreshAutoApproveThreshold("conv-6", "background")).toBe(
       "none",
     );

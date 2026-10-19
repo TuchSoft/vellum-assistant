@@ -226,9 +226,7 @@ export function IntegrationConnectModal({
     }
     const gone =
       requested.kind === "tools" &&
-      !connections.some(
-        (candidate) => candidate.id === requested.connectionId,
-      );
+      !connections.some((candidate) => candidate.id === requested.connectionId);
     return gone ? { kind: "connections" } : requested;
   }
   const view = resolveView(requestedView);
@@ -617,7 +615,9 @@ function AttemptNotice({
           </div>
         }
       >
-        <p>{attempt.error ?? t("integrationConnect.attemptFailed", { name })}</p>
+        <p>
+          {attempt.error ?? t("integrationConnect.attemptFailed", { name })}
+        </p>
       </Notice>
     );
   }

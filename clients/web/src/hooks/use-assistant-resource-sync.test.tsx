@@ -21,7 +21,7 @@ import {
   homeFeedGetQueryKey,
   homeStateGetQueryKey,
   configLlmCallsitesGetQueryKey,
-  inferenceProfilesGetQueryKey,
+  llmCatalogGetQueryKey,
   pluginsGetQueryKey,
   pluginsSearchGetQueryKey,
   schedulesGetQueryKey,
@@ -247,7 +247,7 @@ describe("useAssistantResourceSync", () => {
       expect(queryKeys).toEqual(
         expect.arrayContaining([
           configGetQueryKey(pathOpts),
-          inferenceProfilesGetQueryKey(pathOpts),
+          llmCatalogGetQueryKey(pathOpts),
           configLlmCallsitesGetQueryKey(pathOpts),
           mcpQueryKeys.list("asst-1"),
           mcpQueryKeys.details("asst-1"),
@@ -339,8 +339,7 @@ describe("useAssistantResourceSync", () => {
   test("invalidates app list queries on apps:list sync tag", async () => {
     const queryClient = freshQueryClient();
     let predicate:
-      | ((query: { queryKey: readonly unknown[] }) => boolean)
-      | undefined;
+      ((query: { queryKey: readonly unknown[] }) => boolean) | undefined;
     queryClient.invalidateQueries = ((arg: unknown) => {
       predicate = (
         arg as {
@@ -897,8 +896,7 @@ describe("useAssistantResourceSync", () => {
   test("invalidates home-feed query on home_feed_updated", async () => {
     const queryClient = freshQueryClient();
     let predicate:
-      | ((query: { queryKey: readonly unknown[] }) => boolean)
-      | undefined;
+      ((query: { queryKey: readonly unknown[] }) => boolean) | undefined;
     queryClient.invalidateQueries = ((arg: unknown) => {
       predicate = (
         arg as {

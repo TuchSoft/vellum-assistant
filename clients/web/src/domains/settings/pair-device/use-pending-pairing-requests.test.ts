@@ -127,9 +127,14 @@ describe("usePendingPairingRequests: polling", () => {
   });
 
   test("an interval tick replaces the list", async () => {
-    const { result } = await renderWithList([pendingRequest({ requestId: "req-1" })]);
+    const { result } = await renderWithList([
+      pendingRequest({ requestId: "req-1" }),
+    ]);
 
-    serveList([pendingRequest({ requestId: "req-1" }), pendingRequest({ requestId: "req-2" })]);
+    serveList([
+      pendingRequest({ requestId: "req-1" }),
+      pendingRequest({ requestId: "req-2" }),
+    ]);
     await tickPoll();
 
     expect(listCalls()).toHaveLength(2);
@@ -140,7 +145,9 @@ describe("usePendingPairingRequests: polling", () => {
   });
 
   test("an unchanged poll keeps the same list reference", async () => {
-    const { result } = await renderWithList([pendingRequest({ requestId: "req-1" })]);
+    const { result } = await renderWithList([
+      pendingRequest({ requestId: "req-1" }),
+    ]);
     const initial = result.current.requests;
 
     await tickPoll();
@@ -186,7 +193,10 @@ describe("usePendingPairingRequests: polling", () => {
 
 describe("usePendingPairingRequests: approve/deny", () => {
   test("approve tracks the in-flight action and removes the row on success", async () => {
-    serveList([pendingRequest({ requestId: "req-1" }), pendingRequest({ requestId: "req-2" })]);
+    serveList([
+      pendingRequest({ requestId: "req-1" }),
+      pendingRequest({ requestId: "req-2" }),
+    ]);
     let resolveApprove!: (response: Response) => void;
     installRoutedFetch({
       [APPROVE_URL]: () =>
@@ -278,7 +288,9 @@ describe("usePendingPairingRequests: approve/deny", () => {
       await result.current.approve("req-1");
     });
 
-    expect(result.current.requests).toEqual([pendingRequest({ requestId: "req-1" })]);
+    expect(result.current.requests).toEqual([
+      pendingRequest({ requestId: "req-1" }),
+    ]);
     expect(result.current.actingOn).toBeNull();
     expect(result.current.error).toBe("Approval failed.");
 
@@ -402,7 +414,6 @@ describe("usePendingPairingRequests: approve/deny", () => {
     expect(result.current.requests).toEqual([]);
     expect(result.current.error).toBeNull();
   });
-
 });
 
 describe("usePendingPairingRequests: deny racing an approve", () => {

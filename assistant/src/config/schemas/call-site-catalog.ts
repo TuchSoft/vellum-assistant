@@ -177,13 +177,6 @@ const CATALOG_RECORD: CatalogRecord = {
   },
 
   // ui
-  conversationStarters: {
-    id: "conversationStarters",
-    displayName: "Conversation Starters",
-    description:
-      "Generates the personalized starter chips on the empty conversation page.",
-    domain: "ui",
-  },
   replySuggestion: {
     id: "replySuggestion",
     displayName: "Reply Suggestion",
@@ -209,12 +202,7 @@ const CATALOG_RECORD: CatalogRecord = {
     description: "Generates a greeting shown on the empty conversation screen.",
     domain: "ui",
   },
-  guardianQuestionCopy: {
-    id: "guardianQuestionCopy",
-    displayName: "Guardian Question Copy",
-    description: "Generates copy for guardian onboarding questions.",
-    domain: "ui",
-  },
+
   approvalCopy: {
     id: "approvalCopy",
     displayName: "Approval Copy",
@@ -307,42 +295,22 @@ const CATALOG_RECORD: CatalogRecord = {
     id: "voiceEscalationJudge",
     displayName: "Voice Escalation Judge",
     description:
-      "Second opinion on the voice front door's escalate decision. Uses managed Jev when Vellum-managed inference is available, or an explicitly configured TypeSafe profile; a confident 'needs tools' verdict hands the turn to the escalated leg.",
+      "Second opinion on the voice front door's escalate decision. A confident 'needs tools' verdict hands the turn to the escalated leg.",
     domain: "agentLoop",
   },
   voiceContinuationJudge: {
     id: "voiceContinuationJudge",
     displayName: "Voice Continuation Judge",
     description:
-      "Decides from the caller's interruption whether a barged-in request should keep running in the background. Runs only when pinned to a TypeSafe profile.",
+      "Decides from the caller's interruption whether a barged-in request should keep running in the background.",
     domain: "agentLoop",
   },
-  autoProfileRouter: {
-    id: "autoProfileRouter",
-    displayName: "Auto Profile Router",
-    description:
-      "Picks which default profile answers a message when the conversation runs on the Auto profile. Asks managed Jev one choice question over the latest message; when unavailable the turn runs on Balanced.",
-    domain: "agentLoop",
-  },
+
   voiceContinuationLabel: {
     id: "voiceContinuationLabel",
     displayName: "Voice Continuation Label",
     description:
       "Names the background task that finishes a live-voice reply the user interrupted.",
-    domain: "ui",
-  },
-  homeGreeting: {
-    id: "homeGreeting",
-    displayName: "Home Greeting",
-    description:
-      "Generates the personalized greeting shown on the Home page in the assistant's tone/persona.",
-    domain: "ui",
-  },
-  homeSuggestedPrompts: {
-    id: "homeSuggestedPrompts",
-    displayName: "Home Suggested Prompts",
-    description:
-      "Generates contextual conversation-starter suggestions for the Home page.",
     domain: "ui",
   },
 };

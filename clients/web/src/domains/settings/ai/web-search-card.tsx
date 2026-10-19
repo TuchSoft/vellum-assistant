@@ -81,8 +81,7 @@ export function WebSearchCard() {
       );
     }
     const wsService = daemonConfig.services?.["web-search"] as
-      | { provider?: string; mode?: string; apiBase?: string }
-      | undefined;
+      { provider?: string; mode?: string; apiBase?: string } | undefined;
     // A config written by the legacy mode toggle marks managed via `mode`
     // while `provider` holds the BYOK restore value — the daemon routes it to
     // Vellum, so the card must render it as Vellum too. Provider Native is
@@ -100,8 +99,7 @@ export function WebSearchCard() {
 
   const serverApiBase = useMemo((): string => {
     const wsService = daemonConfig?.services?.["web-search"] as
-      | { apiBase?: string }
-      | undefined;
+      { apiBase?: string } | undefined;
     return wsService?.apiBase ?? "";
   }, [daemonConfig]);
 

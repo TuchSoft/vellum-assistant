@@ -23,7 +23,11 @@ test("preserves a confirmed empty selection", async () => {
 });
 
 test("preserves an editable selection", async () => {
-  const selection = { text: "Example passage", truncated: false, editable: true };
+  const selection = {
+    text: "Example passage",
+    truncated: false,
+    editable: true,
+  };
   installReader(async () => selection);
   expect(await readFrontSelection()).toEqual(selection);
 });
@@ -34,7 +38,9 @@ test("preserves a native capture failure", async () => {
 });
 
 test("does not turn an IPC failure into an empty selection", async () => {
-  installReader(async () => { throw new Error("bridge unavailable"); });
+  installReader(async () => {
+    throw new Error("bridge unavailable");
+  });
   expect(await readFrontSelection()).toEqual({ unavailable: true });
 });
 

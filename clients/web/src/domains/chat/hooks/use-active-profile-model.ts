@@ -5,7 +5,6 @@ import {
   configGetOptions,
   conversationsByIdGetOptions,
 } from "@/generated/daemon/@tanstack/react-query.gen";
-import type { ConfigGetResponse } from "@/generated/daemon/types.gen";
 
 /**
  * Resolves the (provider, model) pair currently in effect for a chat
@@ -30,10 +29,6 @@ export interface ActiveProfileModel {
   model: string;
   supportsVision?: boolean;
 }
-
-type ProfileEntry = NonNullable<
-  NonNullable<ConfigGetResponse["llm"]>["profiles"]
->[string];
 
 /**
  * @param pendingProfile Profile stashed in the composer for a conversation
@@ -64,26 +59,14 @@ export function useActiveProfileModel(
     if (!config) {
       return null;
     }
-    const llm = config.llm;
-    const profiles = llm?.profiles ?? {};
-    const globalActive = llm?.activeProfile ?? null;
-
-    const convOverride = convData?.conversation.inferenceProfile ?? null;
-    const effective = convOverride ?? pendingProfile ?? globalActive;
-
+    const effective =
+      convData?.conversation.model ??
+      pendingProfile ??
+      config.llm?.defaultModel ??
+      null;
     if (!effective) {
       return null;
     }
-    const entry: ProfileEntry | undefined = profiles[effective];
-    if (!entry?.provider || !entry.model) {
-      return null;
-    }
-    return {
-      provider: entry.provider,
-      model: entry.model,
-      ...(typeof entry.supportsVision === "boolean"
-        ? { supportsVision: entry.supportsVision }
-        : {}),
-    };
+    return { provider: "llm-gateway", model: effective };
   }, [config, convData, pendingProfile]);
 }

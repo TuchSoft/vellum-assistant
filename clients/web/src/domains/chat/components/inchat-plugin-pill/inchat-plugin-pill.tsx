@@ -125,7 +125,9 @@ export function InChatPluginPill({
         <BottomSheet.Trigger asChild>{trigger}</BottomSheet.Trigger>
         <BottomSheet.Content>
           <BottomSheet.Header>
-            <BottomSheet.Title>{t("inChatPluginPill.plugins")}</BottomSheet.Title>
+            <BottomSheet.Title>
+              {t("inChatPluginPill.plugins")}
+            </BottomSheet.Title>
           </BottomSheet.Header>
           <BottomSheet.Body className="pt-0">
             {pluginRows}

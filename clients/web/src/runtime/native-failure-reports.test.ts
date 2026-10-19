@@ -64,7 +64,8 @@ test("forwards queued Android failures only while diagnostics reporting is enabl
     {
       message: "Unable to prepare the Android voice launch",
       exceptionType: "java.lang.IllegalStateException",
-      stackTrace: "java.lang.IllegalStateException\n  at Example.call(Example.java:1)",
+      stackTrace:
+        "java.lang.IllegalStateException\n  at Example.call(Example.java:1)",
       timestamp: 123,
     },
   ];
@@ -97,7 +98,8 @@ test("forwards queued Android failures only while diagnostics reporting is enabl
     {
       message: "Unable to receive the Android push token",
       exceptionType: "java.lang.RuntimeException",
-      stackTrace: "java.lang.RuntimeException\n  at Example.push(Example.java:2)",
+      stackTrace:
+        "java.lang.RuntimeException\n  at Example.push(Example.java:2)",
       timestamp: 456,
     },
   ];

@@ -52,7 +52,6 @@ export const USAGE_GROUP_BY_DIMENSIONS = [
   "model",
   "conversation",
   "call_site",
-  "inference_profile",
   "schedule",
 ] as const;
 

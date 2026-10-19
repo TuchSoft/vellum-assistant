@@ -34,8 +34,7 @@ export interface ToolInvocationSeedSpec {
   resultBytes?: number | null;
   provider?: string | null;
   model?: string | null;
-  inferenceProfile?: string | null;
-  inferenceProfileSource?: string | null;
+  modelSource?: string | null;
 }
 
 /**
@@ -75,8 +74,7 @@ export function seedToolInvocation(
       resultBytes: spec.resultBytes !== undefined ? spec.resultBytes : 9,
       provider: spec.provider ?? null,
       model: spec.model ?? null,
-      inferenceProfile: spec.inferenceProfile ?? null,
-      inferenceProfileSource: spec.inferenceProfileSource ?? null,
+      modelSource: spec.modelSource ?? null,
     })
     .run();
 }

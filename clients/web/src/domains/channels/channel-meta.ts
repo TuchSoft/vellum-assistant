@@ -2,10 +2,7 @@ import type { SetupChannelId } from "@/types/channel-types";
 
 /** A credential form a channel can declare it is set up through. */
 export type ChannelCredentialForm =
-  | "slack-wizard"
-  | "telegram-token"
-  | "discord-token"
-  | "twilio-credentials";
+  "slack-wizard" | "telegram-token" | "discord-token" | "twilio-credentials";
 
 /**
  * Per-adapter presentation metadata for the Channels tab.

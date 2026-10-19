@@ -252,7 +252,9 @@ export function VoiceFirstRunCard({
                     className="mt-0.5 size-4 shrink-0 text-[var(--content-secondary)]"
                   />
                   <span className="text-body-medium-default">
-                    {t("voiceFirstRunCard.speakNaturally", { name: displayName })}
+                    {t("voiceFirstRunCard.speakNaturally", {
+                      name: displayName,
+                    })}
                   </span>
                 </li>
                 <li className="flex items-start gap-2.5">
@@ -320,7 +322,9 @@ export function VoiceFirstRunCard({
                 className="flex cursor-pointer items-center gap-1.5 rounded text-left text-label-small-default text-[var(--content-tertiary)] underline-offset-2 transition-colors hover:text-[var(--content-secondary)]"
               >
                 <Settings aria-hidden className="size-3.5 shrink-0" />
-                <span className="hover:underline">{t("voiceFirstRunCard.voiceSettings")}</span>
+                <span className="hover:underline">
+                  {t("voiceFirstRunCard.voiceSettings")}
+                </span>
               </button>
               {/* Start waits out an in-flight language write (mirroring the
                   Voices view's voice-write gate) so the session cannot open
@@ -434,7 +438,9 @@ function VoiceSettingsView({
         <div className="flex items-center gap-2">
           <BackButton onClick={onBack} />
           <div className="flex min-w-0 flex-col">
-            <Modal.Title className="leading-tight">{t("voiceFirstRunCard.voiceSettings")}</Modal.Title>
+            <Modal.Title className="leading-tight">
+              {t("voiceFirstRunCard.voiceSettings")}
+            </Modal.Title>
             {available && (
               <Modal.Description>
                 {MANAGED_VOICE_CREDITS_NOTE}

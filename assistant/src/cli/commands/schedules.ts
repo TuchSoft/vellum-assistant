@@ -244,8 +244,8 @@ export function registerSchedulesCommand(program: Command): void {
 
           // Lazily loaded so the schedule module stays out of the CLI's
           // static graph (cli/no-daemon-internals).
-          const { formatScheduleInferenceProfile } =
-            await import("../../schedule/inference-profile.js");
+          const { formatScheduleModel } =
+            await import("../../schedule/schedule-model.js");
 
           const fields: Array<[string, string]> = [
             ["ID", schedule.id],
@@ -264,10 +264,7 @@ export function registerSchedulesCommand(program: Command): void {
             ["One-shot", schedule.isOneShot ? "yes" : "no"],
             ["Message", schedule.message || "—"],
             ["Script", schedule.script ?? "—"],
-            [
-              "Inference profile",
-              formatScheduleInferenceProfile(schedule.inferenceProfile),
-            ],
+            ["Model alias", formatScheduleModel(schedule.inferenceProfile)],
             ["Routing intent", schedule.routingIntent],
             ["Quiet", schedule.quiet ? "yes" : "no"],
             ["Reuse conversation", schedule.reuseConversation ? "yes" : "no"],
@@ -402,7 +399,7 @@ export function registerSchedulesCommand(program: Command): void {
             script?: string;
             timeoutMs?: string;
             timezone?: string;
-            profile?: string;
+            model?: string;
             enabled: boolean;
             json?: boolean;
           },
@@ -476,8 +473,8 @@ export function registerSchedulesCommand(program: Command): void {
           if (opts.timezone != null) {
             body.timezone = opts.timezone;
           }
-          if (opts.profile != null) {
-            body.inferenceProfile = opts.profile;
+          if (opts.model != null) {
+            body.model = opts.model;
           }
 
           const result = await cliIpcCall<GetScheduleResponse>(
@@ -516,8 +513,8 @@ export function registerSchedulesCommand(program: Command): void {
             retryBackoffMs?: string;
             timeoutMs?: string;
             clearTimeout?: boolean;
-            profile?: string;
-            clearProfile?: boolean;
+            model?: string;
+            clearModel?: boolean;
             json?: boolean;
           },
           cmd: Command,
@@ -548,9 +545,9 @@ export function registerSchedulesCommand(program: Command): void {
             return;
           }
 
-          if (opts.clearProfile && opts.profile != null) {
+          if (opts.clearModel && opts.model != null) {
             fail(
-              "--profile and --clear-profile are mutually exclusive; pass --profile to pin a specific profile or --clear-profile to re-pin the schedule to your current default profile",
+              "--model and --clear-model are mutually exclusive; pass --model to pin a specific alias or --clear-model to re-pin the schedule to your current default model",
             );
             return;
           }
@@ -633,11 +630,11 @@ export function registerSchedulesCommand(program: Command): void {
           if (opts.clearTimeout) {
             body.timeoutMs = null;
           }
-          if (opts.profile != null) {
-            body.inferenceProfile = opts.profile;
+          if (opts.model != null) {
+            body.model = opts.model;
           }
-          if (opts.clearProfile) {
-            body.inferenceProfile = null;
+          if (opts.clearModel) {
+            body.model = null;
           }
 
           if (Object.keys(body).length === 0) {

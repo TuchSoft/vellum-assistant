@@ -22,9 +22,8 @@ mock.module("@/generated/daemon/sdk.gen", () =>
 );
 
 const { renderHook } = await import("@testing-library/react");
-const { useCurrentRunActivity } = await import(
-  "@/domains/chat/hooks/use-conversation-activity"
-);
+const { useCurrentRunActivity } =
+  await import("@/domains/chat/hooks/use-conversation-activity");
 const { useSubagentStore } = await import("@/domains/chat/subagent-store");
 
 const CONV = "conv-1";

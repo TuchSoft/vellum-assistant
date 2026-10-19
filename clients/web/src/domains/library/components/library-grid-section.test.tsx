@@ -17,9 +17,8 @@ stubModule(
   },
 );
 
-const { LibraryGridSection } = await import(
-  "@/domains/library/components/library-grid-section"
-);
+const { LibraryGridSection } =
+  await import("@/domains/library/components/library-grid-section");
 
 const APP: AppSummary = {
   id: "app-123",

@@ -45,8 +45,7 @@ const ASSISTANT_ID = "asst-1";
 
 function eventFromCall(callIndex: number): Record<string, unknown> {
   const options = ingestMock.mock.calls[callIndex]?.[0] as
-    | { body: { events: Array<Record<string, unknown>> } }
-    | undefined;
+    { body: { events: Array<Record<string, unknown>> } } | undefined;
   if (!options) {
     throw new Error(`No ingest call at index ${callIndex}`);
   }

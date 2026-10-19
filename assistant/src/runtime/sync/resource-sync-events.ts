@@ -297,22 +297,20 @@ export function publishConversationEnabledPluginsChanged(
   );
 }
 
-export function publishConversationInferenceProfileChanged(
+export function publishConversationModelChanged(
   params: {
     conversationId: string;
-    profile: string | null;
-    sessionId?: string | null;
-    expiresAt?: number | null;
+    model: string | null;
+    reasoningEffort?: string | null;
   },
   originClientId?: string,
 ): void {
   broadcastMessage(
     {
-      type: "conversation_inference_profile_updated",
+      type: "conversation_model_updated",
       conversationId: params.conversationId,
-      profile: params.profile,
-      sessionId: params.sessionId,
-      expiresAt: params.expiresAt,
+      model: params.model,
+      reasoningEffort: params.reasoningEffort,
     },
     params.conversationId,
   );

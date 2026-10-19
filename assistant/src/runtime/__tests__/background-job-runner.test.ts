@@ -321,13 +321,13 @@ describe("runBackgroundJob", () => {
     );
   });
 
-  test("a usable overrideProfile scopes the cause-keyed dedupe", async () => {
+  test("a usable model scopes the cause-keyed dedupe", async () => {
     processMessageImpl = async () => ({
       messageId: "msg-failed-turn",
       turnFailure: { failureCode: "PROVIDER_BILLING" },
     });
 
-    await runBackgroundJob(baseOpts({ overrideProfile: "balanced" }));
+    await runBackgroundJob(baseOpts({ model: "balanced" }));
 
     expect(emitCalls).toHaveLength(1);
     expect(emitCalls[0].dedupeKey as string).toMatch(

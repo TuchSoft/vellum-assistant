@@ -150,7 +150,7 @@ mock.module("../../../../persistence/conversation-crud.js", () => ({
     deletedConversationIds.push(id);
     return { segmentIds: [], deletedSummaryIds: [] };
   },
-  resolveOverrideProfile: () => undefined,
+  resolveModel: () => undefined,
   getConversationOverrideProfile: () => undefined,
   provenanceFromTrustContext: () => ({}),
   reserveMessage: async () => ({ id: "msg-reserve" }),

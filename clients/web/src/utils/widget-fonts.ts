@@ -21,7 +21,11 @@
 import { encodeBase64Bytes } from "@/utils/base64";
 
 /** Font families inlined into widgets. Anything else the host loads is ignored. */
-const WIDGET_FONT_FAMILIES = new Set(["dm sans", "dm mono", "instrument serif"]);
+const WIDGET_FONT_FAMILIES = new Set([
+  "dm sans",
+  "dm mono",
+  "instrument serif",
+]);
 
 /** Per-file ceiling. A font larger than this is skipped rather than inlined. */
 const MAX_FONT_BYTES = 400_000;

@@ -37,7 +37,7 @@
 import {
   type ContentBlock,
   doesSupportVision,
-  getModelProfiles,
+  getModelCatalog,
   type ImageContent,
   lastToolResultUserMessageIndex,
   type Message,
@@ -79,13 +79,12 @@ function captionPromptText(
  * identity. Profileless configs use the resolved model id, which
  * `doesSupportVision` can check directly.
  */
-export function needsImageFallback(modelProfileKey: string): boolean {
-  const profiles = getModelProfiles();
-  const profile = profiles.find((p) => p.key === modelProfileKey);
-  if (profile == null) {
-    return !doesSupportVision(modelProfileKey);
+export function needsImageFallback(modelKey: string): boolean {
+  const model = getModelCatalog().find((m) => m.alias === modelKey);
+  if (model == null) {
+    return !doesSupportVision(modelKey);
   }
-  return !doesSupportVision(profile);
+  return !doesSupportVision(model);
 }
 
 /**

@@ -88,7 +88,15 @@ type UsageBreakdownState = {
   response: UsageBreakdownResponse;
 };
 
-const USAGE_RANGE_KEYS: Record<UsageTimeRange, "usageTab.rangeToday" | "usageTab.rangeYesterday" | "usageTab.range7d" | "usageTab.range30d" | "usageTab.range90d" | "usageTab.rangeAll"> = {
+const USAGE_RANGE_KEYS: Record<
+  UsageTimeRange,
+  | "usageTab.rangeToday"
+  | "usageTab.rangeYesterday"
+  | "usageTab.range7d"
+  | "usageTab.range30d"
+  | "usageTab.range90d"
+  | "usageTab.rangeAll"
+> = {
   today: "usageTab.rangeToday",
   yesterday: "usageTab.rangeYesterday",
   "7d": "usageTab.range7d",
@@ -97,7 +105,16 @@ const USAGE_RANGE_KEYS: Record<UsageTimeRange, "usageTab.rangeToday" | "usageTab
   all: "usageTab.rangeAll",
 };
 
-const USAGE_GROUP_BY_KEYS: Record<UsageGroupBy, "usageTab.groupByTask" | "usageTab.groupByProfile" | "usageTab.groupByModel" | "usageTab.groupByProvider" | "usageTab.groupByActor" | "usageTab.groupByConversation" | "usageTab.groupBySchedule"> = {
+const USAGE_GROUP_BY_KEYS: Record<
+  UsageGroupBy,
+  | "usageTab.groupByTask"
+  | "usageTab.groupByProfile"
+  | "usageTab.groupByModel"
+  | "usageTab.groupByProvider"
+  | "usageTab.groupByActor"
+  | "usageTab.groupByConversation"
+  | "usageTab.groupBySchedule"
+> = {
   task: "usageTab.groupByTask",
   profile: "usageTab.groupByProfile",
   model: "usageTab.groupByModel",
@@ -411,11 +428,7 @@ export function UsageTab({ assistantId }: UsageTabProps) {
       return undefined;
     }
 
-    return buildSelectedScheduleLegendItems(
-      schedulesQuery.data,
-      scheduleId,
-      t,
-    );
+    return buildSelectedScheduleLegendItems(schedulesQuery.data, scheduleId, t);
   }, [effectiveGroupBy, scheduleId, schedulesQuery.data, t]);
 
   const handleGroupByChange = (nextGroupBy: UsageGroupBy) => {

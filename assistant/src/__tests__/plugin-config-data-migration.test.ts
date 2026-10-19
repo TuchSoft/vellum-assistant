@@ -92,7 +92,11 @@ describe("PRESERVED_ENTRIES", () => {
   });
 
   test("user-state entries are the preserved set minus the provenance sidecar", () => {
-    expect([...USER_STATE_ENTRIES]).toEqual(["config.json", "data", ".disabled"]);
+    expect([...USER_STATE_ENTRIES]).toEqual([
+      "config.json",
+      "data",
+      ".disabled",
+    ]);
   });
 });
 

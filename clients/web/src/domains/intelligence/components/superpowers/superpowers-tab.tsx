@@ -37,15 +37,8 @@ import type {
   PluginFilter,
   PluginListItem,
 } from "@/lib/plugins/types";
-import {
-  SYSTEM_CATEGORY,
-  usePluginsList,
-} from "@/hooks/use-plugins-list";
-import {
-  filterByStatus,
-  matchesQuery,
-  shortSha,
-} from "@/lib/plugins/utils";
+import { SYSTEM_CATEGORY, usePluginsList } from "@/hooks/use-plugins-list";
+import { filterByStatus, matchesQuery, shortSha } from "@/lib/plugins/utils";
 import {
   isInstalledSkill,
   type SkillInfo,
@@ -356,9 +349,7 @@ export function SuperpowersTab({ assistantId }: SuperpowersTabProps) {
   const installMutation = usePluginsInstallPostMutation({
     onMutate: (variables) => setInstallingName(variables.body.name),
     onSuccess: (_data, variables) =>
-      toast.success(
-        t("pluginToast.installed", { name: variables.body.name }),
-      ),
+      toast.success(t("pluginToast.installed", { name: variables.body.name })),
     onError: () => toast.error(PLUGIN_INSTALL_ERROR),
     onSettled: (_data, _error, variables) => {
       setInstallingName(null);

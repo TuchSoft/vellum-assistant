@@ -1,4 +1,3 @@
-
 import { useTranslation } from "@/i18n";
 /**
  * "Back to top" pill for the sidebar's conversation list.

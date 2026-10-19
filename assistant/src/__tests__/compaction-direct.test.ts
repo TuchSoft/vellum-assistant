@@ -126,7 +126,7 @@ describe("defaultCompact", () => {
       conversationId: "conv-options",
       messages: [] as never,
       force: true,
-      overrideProfile: "fast-profile",
+      model: "fast-profile",
       precomputedEstimate: 1234,
       minKeepRecentUserTurns: 0,
       actorTrustClass: "guardian",
@@ -137,7 +137,7 @@ describe("defaultCompact", () => {
     expect(observed).toHaveLength(1);
     expect(observed[0]!.options).toEqual({
       force: true,
-      overrideProfile: "fast-profile",
+      model: "fast-profile",
       precomputedEstimate: 1234,
       minKeepRecentUserTurns: 0,
       actorTrustClass: "guardian",

@@ -10,13 +10,7 @@
 
 import { z } from "zod";
 
-import { getEffectiveProfilesForProvider } from "../../config/default-profile-catalog.js";
-import {
-  getDefaultProviderFromConfig,
-  resolveDefaultConnectionName,
-} from "../../config/default-provider-resolution.js";
 import { getIsPlatform } from "../../config/env-registry.js";
-import { getConfigReadOnly } from "../../config/loader.js";
 import { requireMainDb } from "../../persistence/db-facade.js";
 import {
   type Auth,
@@ -619,71 +613,8 @@ async function handleDeleteConnection({ pathParams = {} }: RouteHandlerArgs) {
     );
   }
 
-  const config = getConfigReadOnly();
-
-  // llm.defaultProvider: guards both the resolved connection name (explicit
-  // `connectionName` or the `<provider>-personal` convention) and the case
-  // where the convention name is dangling but this is the last remaining
-  // connection for the default's provider — resolution treats a dangling
-  // default as an explainable error; this guard keeps UI deletes from
-  // orphaning it silently. The last-connection fallback only applies to
-  // convention resolution: an explicit `connectionName` pins exactly one row
-  // (protected above), so unrelated same-provider rows stay deletable. Legacy
-  // managed rows are excluded from the count for the same reason the list
-  // route hides them — they aren't user-manageable connections.
-  const dp = getDefaultProviderFromConfig(config);
-  // A `vellum` default resolves to the canonical name, so this guard would
-  // otherwise block deleting a row that merely claims that name. Deleting it
-  // does not orphan the default: boot seeding writes the real managed
-  // connection under the same name on the next restart.
-  if (dp && !claimsManagedName) {
-    if (name === resolveDefaultConnectionName(dp)) {
-      throw new ConflictError(
-        `Connection "${name}" is referenced by llm.defaultProvider. Update llm.defaultProvider before deleting.`,
-        { referencedBy: ["llm.defaultProvider"] },
-      );
-    }
-    if (
-      !dp.connectionName &&
-      existing.provider === dp.provider &&
-      (
-        await listConnections(requireMainDb(), { provider: dp.provider })
-      ).filter((c) => !LEGACY_MANAGED_CONNECTION_NAMES.has(c.name)).length === 1
-    ) {
-      throw new ConflictError(
-        `Connection "${name}" is the only connection for provider "${dp.provider}", which llm.defaultProvider depends on. Update llm.defaultProvider or add another connection for provider "${dp.provider}" before deleting.`,
-        { referencedBy: ["llm.defaultProvider"] },
-      );
-    }
-  }
-
-  // llm.profiles.*: only ProfileEntry has provider_connection. Resolved
-  // provider-aware so the scan sees the same bodies the runtime resolver
-  // produces: on a BYO install the default profiles carry the
-  // `provider_connection` they actually dispatch through. Today every name
-  // the defaults can stamp is also caught by the `llm.defaultProvider` guard
-  // above; this keeps the scan a faithful backstop rather than one that
-  // silently skips the defaults.
-  const profiles = getEffectiveProfilesForProvider(config.llm?.profiles, dp);
-  // A binding lives in `provider` (the entry name) under the entries model,
-  // or in the legacy `provider_connection` field; both count, or deleting a
-  // bound entry would dangle the profile behind selection's silent healing.
-  // Provider values count only for non-vendor names: a profile saying
-  // "vellum" references the routing identity, never a row that happens to
-  // claim that name, and the claiming-row delete is the recovery path.
-  const nameIsEntryName = !VALID_CONNECTION_PROVIDERS.includes(name);
-  const referencingProfiles = Object.entries(profiles)
-    .filter(([, p]) => {
-      const entry = p as Record<string, unknown>;
-      return (
-        entry.provider_connection === name ||
-        (nameIsEntryName && entry.provider === name)
-      );
-    })
-    .map(([profileName]) => profileName);
-
   const result = await deleteConnection(requireMainDb(), name, {
-    referencingProfiles,
+    referencingProfiles: [],
   });
 
   if (!result.ok) {
@@ -692,8 +623,8 @@ async function handleDeleteConnection({ pathParams = {} }: RouteHandlerArgs) {
     }
     if (result.error.code === "has_references") {
       throw new ConflictError(
-        `Connection "${name}" is referenced by ${result.error.count} profile(s): ${referencingProfiles.join(", ")}.`,
-        { referencedBy: referencingProfiles },
+        `Connection "${name}" is referenced by ${result.error.count} config entr(ies).`,
+        { referencedBy: [] },
       );
     }
     throw new BadRequestError("Delete failed.");

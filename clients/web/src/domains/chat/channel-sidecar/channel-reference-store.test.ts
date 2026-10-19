@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { ChannelReference } from "@/domains/chat/channel-sidecar/channel-reference";
 import { useChannelReferenceStore } from "@/domains/chat/channel-sidecar/channel-reference-store";
 
-function reference(overrides: Partial<ChannelReference> = {}): ChannelReference {
+function reference(
+  overrides: Partial<ChannelReference> = {},
+): ChannelReference {
   return {
     messageId: "msg-1",
     conversationId: "conv-1",

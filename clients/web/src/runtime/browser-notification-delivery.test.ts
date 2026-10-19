@@ -40,23 +40,35 @@ test("two independent pages post once for the same scoped signal", async () => {
   ]);
   expect(results).toEqual(["posted", "duplicate"]);
   expect(post).toHaveBeenCalledTimes(1);
-  expect(await secondTab.post('["account-2","assistant-1","signal-1"]', post)).toBe("posted");
-  expect(await secondTab.post('["account-1","assistant-2","signal-1"]', post)).toBe("posted");
+  expect(
+    await secondTab.post('["account-2","assistant-1","signal-1"]', post),
+  ).toBe("posted");
+  expect(
+    await secondTab.post('["account-1","assistant-2","signal-1"]', post),
+  ).toBe("posted");
 });
 
 test("two pages share sound ownership separately from accepted banner receipts", async () => {
   const firstTab = new BrowserNotificationDelivery();
   const secondTab = new BrowserNotificationDelivery();
   const key = '["account-1","assistant-1","signal-1"]';
-  expect(await Promise.all([firstTab.claimSound(key), secondTab.claimSound(key)]))
-    .toEqual(["claimed", "duplicate"]);
-  expect(localStorage.getItem("vellum:browser-notification-deliveries:v1")).toBeNull();
-  expect(JSON.parse(localStorage.getItem("vellum:browser-notification-sounds:v1")!))
-    .toHaveLength(1);
+  expect(
+    await Promise.all([firstTab.claimSound(key), secondTab.claimSound(key)]),
+  ).toEqual(["claimed", "duplicate"]);
+  expect(
+    localStorage.getItem("vellum:browser-notification-deliveries:v1"),
+  ).toBeNull();
+  expect(
+    JSON.parse(localStorage.getItem("vellum:browser-notification-sounds:v1")!),
+  ).toHaveLength(1);
   expect(await secondTab.post(key, () => undefined)).toBe("posted");
   expect(await secondTab.claimSound(key)).toBe("duplicate");
-  expect(await secondTab.claimSound('["account-2","assistant-1","signal-1"]')).toBe("claimed");
-  expect(await secondTab.claimSound('["account-1","assistant-2","signal-1"]')).toBe("claimed");
+  expect(
+    await secondTab.claimSound('["account-2","assistant-1","signal-1"]'),
+  ).toBe("claimed");
+  expect(
+    await secondTab.claimSound('["account-1","assistant-2","signal-1"]'),
+  ).toBe("claimed");
 });
 
 test("cancelled and attended sound claims retain no ownership receipt", async () => {
@@ -67,8 +79,12 @@ test("cancelled and attended sound claims retain no ownership receipt", async ()
   expect(await pending).toBe("cancelled");
   const stop = tab.trackAttention(() => "conversation-key");
   try {
-    expect(await tab.claimSound("signal-2", undefined, "conversation-key")).toBe("suppressed");
-    expect(localStorage.getItem("vellum:browser-notification-sounds:v1")).toBeNull();
+    expect(
+      await tab.claimSound("signal-2", undefined, "conversation-key"),
+    ).toBe("suppressed");
+    expect(
+      localStorage.getItem("vellum:browser-notification-sounds:v1"),
+    ).toBeNull();
   } finally {
     stop();
   }
@@ -77,7 +93,9 @@ test("cancelled and attended sound claims retain no ownership receipt", async ()
 test("a failed post releases its claim for another tab", async () => {
   const firstTab = new BrowserNotificationDelivery();
   const secondTab = new BrowserNotificationDelivery();
-  const first = firstTab.post("signal-1", () => { throw new Error("Browser refused"); });
+  const first = firstTab.post("signal-1", () => {
+    throw new Error("Browser refused");
+  });
   const second = secondTab.post("signal-1", () => undefined);
   await expect(first).rejects.toThrow("Browser refused");
   expect(await second).toBe("posted");
@@ -98,16 +116,26 @@ test("receipts expire and are bounded", async () => {
   for (let i = 0; i < 150; i++) {
     await tab.post(`signal-${i}`, () => undefined);
   }
-  const receipts = JSON.parse(localStorage.getItem("vellum:browser-notification-deliveries:v1")!);
+  const receipts = JSON.parse(
+    localStorage.getItem("vellum:browser-notification-deliveries:v1")!,
+  );
   expect(receipts).toHaveLength(128);
-  localStorage.setItem("vellum:browser-notification-deliveries:v1", JSON.stringify([["expired", Date.now() - 1]]));
-  expect(await new BrowserNotificationDelivery().post("expired", () => undefined)).toBe("posted");
+  localStorage.setItem(
+    "vellum:browser-notification-deliveries:v1",
+    JSON.stringify([["expired", Date.now() - 1]]),
+  );
+  expect(
+    await new BrowserNotificationDelivery().post("expired", () => undefined),
+  ).toBe("posted");
 });
 
 test("a rejected Web Locks request preserves delivery without retrying a failed post", async () => {
   Object.defineProperty(navigator, "locks", {
     configurable: true,
-    value: { request: () => Promise.reject(new DOMException("Blocked", "SecurityError")) },
+    value: {
+      request: () =>
+        Promise.reject(new DOMException("Blocked", "SecurityError")),
+    },
   });
   const tab = new BrowserNotificationDelivery();
   const post = mock(() => undefined);
@@ -117,7 +145,10 @@ test("a rejected Web Locks request preserves delivery without retrying a failed 
 });
 
 test("delivery remains available when Web Locks is absent", async () => {
-  Object.defineProperty(navigator, "locks", { configurable: true, value: undefined });
+  Object.defineProperty(navigator, "locks", {
+    configurable: true,
+    value: undefined,
+  });
   const tab = new BrowserNotificationDelivery();
   const post = mock(() => undefined);
   expect(await tab.post("fallback", post)).toBe("posted");
@@ -128,18 +159,27 @@ test("delivery remains available when Web Locks is absent", async () => {
 test("attended conversation suppresses a hidden tab before either tab receives its intent", async () => {
   const focusedTab = new BrowserNotificationDelivery();
   const hiddenTab = new BrowserNotificationDelivery();
-  let conversationKey: string | null = '["account-1","assistant-1","conversation-1"]';
+  let conversationKey: string | null =
+    '["account-1","assistant-1","conversation-1"]';
   const stop = focusedTab.trackAttention(() => conversationKey);
   const post = mock(() => undefined);
   try {
-    expect(await hiddenTab.post("signal-1", post, undefined, conversationKey)).toBe("suppressed");
-    expect(await focusedTab.post("signal-1", post, undefined, conversationKey)).toBe("suppressed");
+    expect(
+      await hiddenTab.post("signal-1", post, undefined, conversationKey),
+    ).toBe("suppressed");
+    expect(
+      await focusedTab.post("signal-1", post, undefined, conversationKey),
+    ).toBe("suppressed");
     expect(post).not.toHaveBeenCalled();
-    expect(localStorage.getItem("vellum:browser-notification-deliveries:v1")).toBeNull();
+    expect(
+      localStorage.getItem("vellum:browser-notification-deliveries:v1"),
+    ).toBeNull();
     const previousKey = conversationKey;
     conversationKey = null;
     publish("app.attention", { attended: false });
-    expect(await hiddenTab.post("signal-2", post, undefined, previousKey)).toBe("posted");
+    expect(await hiddenTab.post("signal-2", post, undefined, previousKey)).toBe(
+      "posted",
+    );
   } finally {
     stop();
   }
@@ -165,11 +205,19 @@ test("attention respects account, assistant, and conversation scope and cleanup"
 test("expired, corrupt, and impossible future attention leases cannot suppress delivery", async () => {
   const prefix = "vellum:browser-notification-attention:v1:";
   const key = '["account-1","assistant-1","conversation-1"]';
-  localStorage.setItem(`${prefix}expired`, JSON.stringify([key, Date.now() - 1]));
-  localStorage.setItem(`${prefix}future`, JSON.stringify([key, Date.now() + 60_000]));
+  localStorage.setItem(
+    `${prefix}expired`,
+    JSON.stringify([key, Date.now() - 1]),
+  );
+  localStorage.setItem(
+    `${prefix}future`,
+    JSON.stringify([key, Date.now() + 60_000]),
+  );
   localStorage.setItem(`${prefix}corrupt`, "{");
   const tab = new BrowserNotificationDelivery();
-  expect(await tab.post("signal", () => undefined, undefined, key)).toBe("posted");
+  expect(await tab.post("signal", () => undefined, undefined, key)).toBe(
+    "posted",
+  );
   expect(localStorage.getItem(`${prefix}expired`)).toBeNull();
   expect(localStorage.getItem(`${prefix}future`)).toBeNull();
   expect(localStorage.getItem(`${prefix}corrupt`)).toBeNull();

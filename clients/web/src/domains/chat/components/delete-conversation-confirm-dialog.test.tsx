@@ -32,10 +32,7 @@ function Harness({
     useDeleteConversationConfirmation({ assistantId, deleteConversation });
   return (
     <>
-      <button
-        type="button"
-        onClick={() => requestDelete(requestConversation)}
-      >
+      <button type="button" onClick={() => requestDelete(requestConversation)}>
         request
       </button>
       <DeleteConversationConfirmDialog
@@ -66,9 +63,7 @@ function getConfirmButton(): HTMLButtonElement {
 }
 
 function getAcknowledgmentCheckbox(): HTMLElement {
-  const checkbox = document.querySelector<HTMLElement>(
-    '[role="checkbox"]',
-  );
+  const checkbox = document.querySelector<HTMLElement>('[role="checkbox"]');
   expect(checkbox).not.toBeNull();
   return checkbox!;
 }

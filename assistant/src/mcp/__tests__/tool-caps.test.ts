@@ -76,12 +76,8 @@ describe("applyMcpToolCaps", () => {
     const b = applyMcpToolCaps(reversed, { globalMax: 50, perServerMax: 20 });
 
     expect(setsOf(a.servers)).toEqual(setsOf(b.servers));
-    expect(
-      a.servers.every((server) => server.tools.length > 0),
-    ).toBe(true);
-    expect(
-      b.servers.every((server) => server.tools.length > 0),
-    ).toBe(true);
+    expect(a.servers.every((server) => server.tools.length > 0)).toBe(true);
+    expect(b.servers.every((server) => server.tools.length > 0)).toBe(true);
   });
 
   test("does not use insertion order to empty a later server", () => {
@@ -94,12 +90,12 @@ describe("applyMcpToolCaps", () => {
       { globalMax: 12, perServerMax: 20 },
     );
 
-    expect(result.servers.find((s) => s.serverId === "late")?.tools.length).toBe(
-      4,
-    );
-    expect(result.servers.find((s) => s.serverId === "early")?.tools.length).toBe(
-      4,
-    );
+    expect(
+      result.servers.find((s) => s.serverId === "late")?.tools.length,
+    ).toBe(4);
+    expect(
+      result.servers.find((s) => s.serverId === "early")?.tools.length,
+    ).toBe(4);
     expect(result.servers.find((s) => s.serverId === "mid")?.tools.length).toBe(
       4,
     );
@@ -111,7 +107,10 @@ describe("applyMcpToolCaps", () => {
       tools: toolsNamed(`s${i + 1}`, 10),
     }));
 
-    const result = applyMcpToolCaps(servers, { globalMax: 80, perServerMax: 20 });
+    const result = applyMcpToolCaps(servers, {
+      globalMax: 80,
+      perServerMax: 20,
+    });
 
     expect(result.keptToolCount).toBe(80);
     expect(result.droppedToolCount).toBe(0);

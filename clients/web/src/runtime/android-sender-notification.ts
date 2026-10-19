@@ -27,8 +27,7 @@ interface AndroidSenderNotificationCapabilities {
   capabilities?: unknown;
 }
 
-export interface AndroidSenderNotificationPostRequest
-  extends NotificationDeliveryIdentifiers {
+export interface AndroidSenderNotificationPostRequest extends NotificationDeliveryIdentifiers {
   id: number;
   title: string;
   body: string;
@@ -53,9 +52,7 @@ interface AndroidSenderNotificationPlugin {
   prepare(
     payload: PrepareNotificationIdentityPayload,
   ): Promise<{ ok?: boolean }>;
-  reset(
-    payload: ResetNotificationIdentitiesPayload,
-  ): Promise<{ ok?: boolean }>;
+  reset(payload: ResetNotificationIdentitiesPayload): Promise<{ ok?: boolean }>;
   post(
     payload: AndroidSenderNotificationPostRequest,
   ): Promise<NotificationDeliveryResult>;
@@ -84,9 +81,10 @@ let watchdogMs = DEFAULT_WATCHDOG_MS;
 let capabilityRequest: Promise<ReadonlySet<string> | null> | null = null;
 let ownershipEnabled = false;
 let ownershipGeneration: number | null = null;
-let ownershipTransition:
-  | { promise: Promise<void>; resolve: () => void }
-  | null = null;
+let ownershipTransition: {
+  promise: Promise<void>;
+  resolve: () => void;
+} | null = null;
 
 function isAndroidBridgeRegistered(): boolean {
   return (
@@ -211,7 +209,9 @@ async function callPreparedIdentityMethod(
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      Promise.resolve().then(call).catch(() => undefined),
+      Promise.resolve()
+        .then(call)
+        .catch(() => undefined),
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, watchdogMs);
       }),
@@ -226,13 +226,17 @@ async function callPreparedIdentityMethod(
 export async function prepareAndroidSenderNotificationIdentity(
   payload: PrepareNotificationIdentityPayload,
 ): Promise<void> {
-  await callPreparedIdentityMethod(() => AndroidSenderNotification.prepare(payload));
+  await callPreparedIdentityMethod(() =>
+    AndroidSenderNotification.prepare(payload),
+  );
 }
 
 export async function resetAndroidSenderNotificationIdentities(
   payload: ResetNotificationIdentitiesPayload,
 ): Promise<void> {
-  await callPreparedIdentityMethod(() => AndroidSenderNotification.reset(payload));
+  await callPreparedIdentityMethod(() =>
+    AndroidSenderNotification.reset(payload),
+  );
 }
 
 async function registerAndroidSenderNotificationIdentityPublisher(
@@ -252,8 +256,7 @@ async function registerAndroidSenderNotificationIdentityPublisher(
 }
 
 const identityAdapter = {
-  registerIdentityPublisher:
-    registerAndroidSenderNotificationIdentityPublisher,
+  registerIdentityPublisher: registerAndroidSenderNotificationIdentityPublisher,
   prepareIdentity: prepareAndroidSenderNotificationIdentity,
   resetIdentities: resetAndroidSenderNotificationIdentities,
 };
@@ -370,9 +373,7 @@ export async function enableAndroidNotificationOwnership(
       return false;
     }
 
-    const generation = ownershipGenerationFrom(
-      await generationRequest(bridge),
-    );
+    const generation = ownershipGenerationFrom(await generationRequest(bridge));
     if (generation === null) {
       ownershipEnabled = false;
       ownershipGeneration = null;
@@ -480,6 +481,8 @@ export function __resetAndroidSenderNotificationForTests(): void {
   settleOwnershipTransition();
 }
 
-export function __setAndroidSenderNotificationWatchdogForTests(ms: number): void {
+export function __setAndroidSenderNotificationWatchdogForTests(
+  ms: number,
+): void {
   watchdogMs = ms;
 }

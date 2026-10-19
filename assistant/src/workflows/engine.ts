@@ -70,7 +70,8 @@ const log = getLogger("workflow-engine");
 
 /** A progress event forwarded from the script's `phase`/`log` host calls. */
 export type WorkflowProgressEvent =
-  { type: "phase"; title: string } | { type: "log"; message: string };
+  | { type: "phase"; title: string }
+  | { type: "log"; message: string };
 
 /**
  * An observe-only lifecycle event for a single leaf — the source of a live leaf

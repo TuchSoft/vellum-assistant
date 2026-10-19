@@ -41,10 +41,8 @@ import {
 
 const restoreDomStubs = installChatInfoDomStubs();
 const viewport = viewportAxesStub();
-mock.module(
-  "@/hooks/use-element-size",
-  (): Partial<typeof ElementSize> =>
-    makeElementSizeMock(() => CHAT_INFO_BODY_WIDTH_PX),
+mock.module("@/hooks/use-element-size", (): Partial<typeof ElementSize> =>
+  makeElementSizeMock(() => CHAT_INFO_BODY_WIDTH_PX),
 );
 const { ChatInfoPanel } = await import("./chat-info-panel");
 

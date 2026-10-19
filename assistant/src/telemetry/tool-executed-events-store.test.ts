@@ -29,8 +29,7 @@ interface InvocationSpec {
   resultBytes?: number | null;
   provider?: string | null;
   model?: string | null;
-  inferenceProfile?: string | null;
-  inferenceProfileSource?: string | null;
+  modelSource?: string | null;
 }
 
 async function waitForToolRows(count: number): Promise<void> {
@@ -75,8 +74,7 @@ async function insertInvocation(spec: InvocationSpec): Promise<void> {
       spec.resultBytes !== undefined ? spec.resultBytes : 9,
       spec.provider ?? null,
       spec.model ?? null,
-      spec.inferenceProfile ?? null,
-      spec.inferenceProfileSource ?? null,
+      spec.modelSource ?? null,
     ],
   );
 }
@@ -104,8 +102,7 @@ describePg("tool-executed-events-store", () => {
       resultBytes: 9001,
       provider: "anthropic",
       model: "model-a",
-      inferenceProfile: "balanced",
-      inferenceProfileSource: "active",
+      modelSource: "chat",
     });
 
     const rows = await queryUnreportedToolExecutedEvents(0, undefined, 100);
@@ -119,8 +116,7 @@ describePg("tool-executed-events-store", () => {
       resultBytes: 9001,
       provider: "anthropic",
       model: "model-a",
-      inferenceProfile: "balanced",
-      inferenceProfileSource: "active",
+      modelSource: "chat",
       conversationId: CONVERSATION_ID,
       createdAt: 1000,
     });
@@ -214,9 +210,8 @@ describePg("tool-executed-events-store", () => {
       provider: string | null;
       model: string | null;
       inferenceProfile: string | null;
-      inferenceProfileSource: string | null;
     }>(
-      `SELECT tool_name AS "toolName", decision, arg_bytes AS "argBytes", result_bytes AS "resultBytes", provider, model, inference_profile AS "inferenceProfile", inference_profile_source AS "inferenceProfileSource" FROM tool_invocations`,
+      `SELECT tool_name AS "toolName", decision, arg_bytes AS "argBytes", result_bytes AS "resultBytes", provider, model, model_source AS "modelSource" FROM tool_invocations`,
     );
     expect(auditRows).toHaveLength(3);
     const optedOut = auditRows.find((r) => r.toolName === "t-opted-out");
@@ -226,8 +221,7 @@ describePg("tool-executed-events-store", () => {
       resultBytes: null,
       provider: null,
       model: null,
-      inferenceProfile: null,
-      inferenceProfileSource: null,
+      modelSource: null,
     });
   });
 
@@ -240,8 +234,7 @@ describePg("tool-executed-events-store", () => {
       resultBytes: 9,
       provider: null,
       model: null,
-      inferenceProfile: null,
-      inferenceProfileSource: null,
+      modelSource: null,
     });
   });
 

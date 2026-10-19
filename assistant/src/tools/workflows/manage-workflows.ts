@@ -15,7 +15,7 @@
 
 import { z } from "zod";
 
-import { getConversationProfilesForProvider } from "../../config/default-profile-catalog.js";
+import { knownAliases } from "../../config/llm-resolver.js";
 import { loadConfig } from "../../config/loader.js";
 import { callerOwnsWorkflowRun } from "../../workflows/capabilities.js";
 import type { WorkflowRun } from "../../workflows/journal-store.js";
@@ -194,22 +194,14 @@ export async function executeManageWorkflows(
         isError: false,
       };
     }
-    case "list_profiles": {
-      // Mirror the `config/llm/profiles` route: sorted profile names plus the
-      // workspace-wide active profile. Read-only — leaves use this to pick a
-      // valid `profile` for `run_workflow` (an unknown profile throws).
+    case "list_models": {
+      // Read-only: leaves use this to pick a valid `model` for
+      // `run_workflow` (an unknown alias throws).
       const { llm } = loadConfig();
-      // A workflow leaf runs chat turns, so this is the conversation view,
-      // which leaves out the managed Jev profile.
-      const profiles = getConversationProfilesForProvider(
-        llm?.profiles,
-        llm?.defaultProvider ?? null,
-      );
       return {
         content: JSON.stringify({
-          profiles: Object.keys(profiles).sort(),
-          activeProfile:
-            typeof llm?.activeProfile === "string" ? llm.activeProfile : null,
+          models: knownAliases(llm),
+          defaultModel: llm.defaultModel,
         }),
         isError: false,
       };
@@ -217,7 +209,7 @@ export async function executeManageWorkflows(
     default:
       return {
         content:
-          'Unknown action. Use one of: "status", "get_result", "abort", "resume", "list_runs", "list_profiles".',
+          'Unknown action. Use one of: "status", "get_result", "abort", "resume", "list_runs", "list_models".',
         isError: true,
       };
   }

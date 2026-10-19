@@ -163,7 +163,9 @@ export function EnrollTotpModal({ open, onOpenChange }: EnrollTotpModalProps) {
       <Modal.Content size="sm">
         <Modal.Header>
           <Modal.Title>{t("enrollTotpModal.title")}</Modal.Title>
-          <Modal.Description>{t("enrollTotpModal.description")}</Modal.Description>
+          <Modal.Description>
+            {t("enrollTotpModal.description")}
+          </Modal.Description>
         </Modal.Header>
         <Modal.Body>
           {enrollment === null ? (

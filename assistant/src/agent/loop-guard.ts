@@ -101,7 +101,11 @@ function countTailRepeats(buffer: string, p: number): number {
 function sampleOf(buffer: string, p: number): string {
   const end = buffer.length;
   const start = Math.max(0, end - p);
-  return safeStringSlice(buffer, start, Math.min(end, start + SAMPLE_MAX_CHARS));
+  return safeStringSlice(
+    buffer,
+    start,
+    Math.min(end, start + SAMPLE_MAX_CHARS),
+  );
 }
 
 /** True when the last p code units are all whitespace (space, tab, newline...). */
@@ -180,7 +184,11 @@ export function detectRepetition(
           ? opts.minLargeBlockRepeats * opts.whitespaceRepeatMultiplier
           : opts.minLargeBlockRepeats;
         if (copies >= threshold) {
-          return { blockLength: p, repeats: copies, sample: sampleOf(buffer, p) };
+          return {
+            blockLength: p,
+            repeats: copies,
+            sample: sampleOf(buffer, p),
+          };
         }
       }
     }
@@ -234,7 +242,10 @@ export class LoopGuard {
     this.charsSinceFullScan += text.length;
 
     let det = detectRepetition(this.buffer, this.opts, FAST_PERIOD_CAP);
-    if (det === null && this.charsSinceFullScan >= this.opts.checkIntervalChars) {
+    if (
+      det === null &&
+      this.charsSinceFullScan >= this.opts.checkIntervalChars
+    ) {
       det = detectRepetition(this.buffer, this.opts);
     }
     if (det !== null) {

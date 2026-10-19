@@ -38,13 +38,15 @@ function messagesWithMarker(
   ];
 }
 
-function restore(overrides: {
-  messages?: DisplayMessage[];
-  isCurrent?: () => boolean;
-  checkConnected?: (assistantId: string) => Promise<boolean>;
-  revisionAtRestore?: number;
-  conversationId?: string;
-} = {}) {
+function restore(
+  overrides: {
+    messages?: DisplayMessage[];
+    isCurrent?: () => boolean;
+    checkConnected?: (assistantId: string) => Promise<boolean>;
+    revisionAtRestore?: number;
+    conversationId?: string;
+  } = {},
+) {
   return restoreAcpConnectFromHistory({
     messages:
       overrides.messages ?? messagesWithMarker(ACP_CLAUDE_OAUTH_MISSING_CODE),

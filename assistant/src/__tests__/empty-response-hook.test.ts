@@ -136,7 +136,7 @@ function makeUpsCtx(
     conversationId: "conv-ups",
     userMessageId: "msg-1",
     requestId: "req-1",
-    modelProfileKey: "balanced",
+    modelKey: "balanced",
     isNonInteractive: false,
     prompt: "current message",
     originalMessages: latestMessages,

@@ -714,9 +714,7 @@ function isNameCharacter(character: string): boolean {
 
 /** How a `<` reads against the marker a bounded read is counting. */
 type StartTagMatch =
-  | { kind: "match"; prefix: string }
-  | { kind: "other" }
-  | { kind: "pending" };
+  { kind: "match"; prefix: string } | { kind: "other" } | { kind: "pending" };
 
 const OTHER_TAG: StartTagMatch = { kind: "other" };
 const PENDING_TAG: StartTagMatch = { kind: "pending" };
@@ -790,9 +788,7 @@ const NON_TAG_CONSTRUCTS = [
 
 /** How a `<` reads against those constructs. */
 type NonTagMatch =
-  | { kind: "none" }
-  | { kind: "pending" }
-  | { kind: "skip"; to: number };
+  { kind: "none" } | { kind: "pending" } | { kind: "skip"; to: number };
 
 const NO_CONSTRUCT: NonTagMatch = { kind: "none" };
 const PENDING_CONSTRUCT: NonTagMatch = { kind: "pending" };

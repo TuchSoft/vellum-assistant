@@ -41,7 +41,8 @@ export function SettingsLayout() {
     return () => setWindowsMenuBarSuppressed(false);
   }, [setWindowsMenuBarSuppressed]);
   const { t } = useTranslation("settings");
-  const notificationSettingsAvailable = useIsNativeAndroid() || isBrowserNotificationHost();
+  const notificationSettingsAvailable =
+    useIsNativeAndroid() || isBrowserNotificationHost();
   const activeAssistantId = useResolvedAssistantsStore.use.activeAssistantId();
   // The Bookmarks and Credentials tabs need routes that only newer assistants
   // serve (v0.8.1+ / v0.10.8+); an older assistant 404s them, so hide the

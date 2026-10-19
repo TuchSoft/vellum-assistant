@@ -9,19 +9,22 @@ import {
 } from "@/domains/chat/utils/stream-handlers/error-handlers";
 
 describe("handleStreamError", () => {
-  it.todo("keeps a successful batch sibling active after tail persistence fails", () => {
-    const ctx = makeCtx();
-    handleStreamError(
-      {
-        type: "error",
-        conversationId: "conv-1",
-        message: "Failed to persist batched queued message",
-      },
-      ctx,
-    );
-    expect(ctx.endTurn).not.toHaveBeenCalled();
-    expect(ctx.cancelAndClearStream).not.toHaveBeenCalled();
-  });
+  it.todo(
+    "keeps a successful batch sibling active after tail persistence fails",
+    () => {
+      const ctx = makeCtx();
+      handleStreamError(
+        {
+          type: "error",
+          conversationId: "conv-1",
+          message: "Failed to persist batched queued message",
+        },
+        ctx,
+      );
+      expect(ctx.endTurn).not.toHaveBeenCalled();
+      expect(ctx.cancelAndClearStream).not.toHaveBeenCalled();
+    },
+  );
 
   it("ends the turn with reason=error, sets error, cancels stream", () => {
     const ctx = makeCtx();
@@ -59,9 +62,9 @@ describe("handleStreamError", () => {
 
     // The optimistic row is dropped so nothing dangles unsent.
     expect(ctx.setOptimisticSends).toHaveBeenCalled();
-    const updater = ((ctx.setOptimisticSends as unknown) as ReturnType<
-      typeof Object
-    >).mock.calls[0][0] as (prev: DisplayMessage[]) => DisplayMessage[];
+    const updater = (
+      ctx.setOptimisticSends as unknown as ReturnType<typeof Object>
+    ).mock.calls[0][0] as (prev: DisplayMessage[]) => DisplayMessage[];
     const remaining = updater([
       { id: "cmid-1", role: "user", textSegments: ["hello"] } as DisplayMessage,
       { id: "other", role: "user" } as DisplayMessage,

@@ -127,8 +127,7 @@ export function describeMemoryUnavailable(
       title: t("memoryUnavailable.legacy.title", { ns: "intelligence" }),
       detail: t("memoryUnavailable.legacy.detail", { ns: "intelligence" }),
       action: "upgrade",
-      prompt:
-        tier === "v1" ? memoryV1UpgradePrompt() : memoryV2UpgradePrompt(),
+      prompt: tier === "v1" ? memoryV1UpgradePrompt() : memoryV2UpgradePrompt(),
     };
   }
   return {

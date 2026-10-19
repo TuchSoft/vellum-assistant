@@ -86,8 +86,8 @@ describe("useSupportsIngressStatus", () => {
     useAssistantIdentityStore
       .getState()
       .setIdentity("test-asst", MIN_VERSION, OWNER_ASSISTANT_ID);
-    expect(renderHook(() => useSupportsIngressStatus(null)).result.current).toBe(
-      false,
-    );
+    expect(
+      renderHook(() => useSupportsIngressStatus(null)).result.current,
+    ).toBe(false);
   });
 });

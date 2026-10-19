@@ -495,7 +495,7 @@ describe("ContextWindowManager.emergencyCompact", () => {
     // WHEN emergency compaction runs
     const result = await manager.emergencyCompact(
       messages,
-      { previousEstimatedInputTokens: 242_201, overrideProfile: "fast" },
+      { previousEstimatedInputTokens: 242_201, model: "fast" },
       signal,
     );
 
@@ -511,12 +511,12 @@ describe("ContextWindowManager.emergencyCompact", () => {
     expect(args.signal).toBe(signal);
     expect(args.messages).toBe(messages);
     expect(args.previousEstimatedInputTokens).toBe(242_201);
-    expect(args.overrideProfile).toBe("fast");
+    expect(args.model).toBe("fast");
     expect((args.provider as { name: string }).name).toBe("mock-provider");
     expect(result.summaryText).toBe("emergency summary");
   });
 
-  test("defaults overrideProfile to null when omitted", async () => {
+  test("defaults model to null when omitted", async () => {
     /**
      * Callers that don't resolve a per-conversation profile get an explicit
      * null forwarded to the summary call.
@@ -530,8 +530,8 @@ describe("ContextWindowManager.emergencyCompact", () => {
       previousEstimatedInputTokens: 210_000,
     });
 
-    // THEN overrideProfile is forwarded as null
-    expect(emergencyCalls[0]!.overrideProfile).toBeNull();
+    // THEN model is forwarded as null
+    expect(emergencyCalls[0]!.model).toBeNull();
   });
 
   test("throws when the manager has no conversation id", async () => {

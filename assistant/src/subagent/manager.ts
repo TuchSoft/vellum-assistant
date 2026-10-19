@@ -11,7 +11,6 @@
 import { v4 as uuid } from "uuid";
 
 import type { AssistantEvent } from "../api/index.js";
-import { resolveCallSiteConfig } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import { Conversation } from "../daemon/conversation.js";
 import {
@@ -669,17 +668,6 @@ export class SubagentManager {
         config.systemPromptOverride ??
         buildSubagentSystemPrompt({ ...config, id: subagentId }, role);
     }
-    // Resolve under the same profile the run will use (forwarded via
-    // `SubagentConfig`) so the constructed conversation's default token cap
-    // matches the inherited profile rather than the static `subagentSpawn`
-    // default. Per-call routing re-resolves the model anyway; this keeps the
-    // initial value consistent.
-    const maxTokens = resolveCallSiteConfig("subagentSpawn", appConfig.llm, {
-      ...(config.overrideProfile
-        ? { overrideProfile: config.overrideProfile }
-        : {}),
-      ...(config.forceOverrideProfile ? { forceOverrideProfile: true } : {}),
-    }).maxTokens;
     const workingDir = getSandboxWorkingDir();
 
     // ── Initialise state ────────────────────────────────────────────
@@ -735,7 +723,6 @@ export class SubagentManager {
       wrappedSendToClient,
       workingDir,
       {
-        maxTokens,
         cacheTtl: "5m",
         // Records the parent at construction; drives isSubagent and notify
         // routing from non-writable in-process state.
@@ -1056,11 +1043,8 @@ export class SubagentManager {
       });
       await conversation.runAgentLoop(message, messageId, {
         callSite: "subagentSpawn",
-        ...(managed.state.config.overrideProfile
-          ? { overrideProfile: managed.state.config.overrideProfile }
-          : {}),
-        ...(managed.state.config.forceOverrideProfile
-          ? { forceOverrideProfile: true }
+        ...(managed.state.config.model
+          ? { model: managed.state.config.model }
           : {}),
         // Stamp the child's usage with the firing that spawned it so schedule
         // cost reporting sees delegated spend.
@@ -1613,11 +1597,8 @@ export class SubagentManager {
       conversation
         .runAgentLoop(trimmed, messageId, {
           callSite: "subagentSpawn",
-          ...(managed.state.config.overrideProfile
-            ? { overrideProfile: managed.state.config.overrideProfile }
-            : {}),
-          ...(managed.state.config.forceOverrideProfile
-            ? { forceOverrideProfile: true }
+          ...(managed.state.config.model
+            ? { model: managed.state.config.model }
             : {}),
           ...(opts?.cronRunId ? { cronRunId: opts.cronRunId } : {}),
         })

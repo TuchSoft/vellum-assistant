@@ -47,8 +47,6 @@ test("a standalone guide preserves a server-enabled Velvet preference", async ()
   );
 
   await waitFor(() => {
-    expect(document.documentElement.getAttribute("data-theme")).toBe(
-      "velvet",
-    );
+    expect(document.documentElement.getAttribute("data-theme")).toBe("velvet");
   });
 });

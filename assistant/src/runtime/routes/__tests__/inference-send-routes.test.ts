@@ -25,8 +25,6 @@ import type {
 
 let nextResponse: ProviderResponse;
 let sendMessageImpl: (() => Promise<ProviderResponse>) | undefined;
-let getConfiguredProviderOptions: ConfiguredProviderOptions | undefined;
-let sendMessageOptions: SendMessageOptions | undefined;
 // Connection the stubbed resolution reports, mirroring the real resolver:
 // the connection is chosen while resolving the provider, not while sending.
 let resolutionConnectionName: string | undefined;
@@ -34,9 +32,8 @@ let resolutionConnectionName: string | undefined;
 mock.module("../../../providers/provider-send-message.js", () => ({
   getConfiguredProvider: async (
     _callSite: string,
-    options: ConfiguredProviderOptions,
+    _options: ConfiguredProviderOptions,
   ) => {
-    getConfiguredProviderOptions = options;
     if (resolutionConnectionName) {
       recordProviderRequestDiagnostics({
         connection_name: resolutionConnectionName,
@@ -44,8 +41,7 @@ mock.module("../../../providers/provider-send-message.js", () => ({
     }
     return {
       name: "stub",
-      sendMessage: async (_messages: unknown, options: SendMessageOptions) => {
-        sendMessageOptions = options;
+      sendMessage: async (_messages: unknown, _options: SendMessageOptions) => {
         return sendMessageImpl ? sendMessageImpl() : nextResponse;
       },
     };
@@ -67,7 +63,7 @@ mock.module("../../../config/loader.js", () => ({
 }));
 
 const { ROUTES } = await import("../inference-send-routes.js");
-const { BadRequestError, UpstreamProviderError } = await import("../errors.js");
+const { UpstreamProviderError } = await import("../errors.js");
 const { recordProviderRequestDiagnostics } =
   await import("../../../providers/request-diagnostics.js");
 
@@ -93,30 +89,7 @@ beforeEach(() => {
   configuredLlm = LLMSchema.parse({});
   nextResponse = baseResponse({});
   sendMessageImpl = undefined;
-  getConfiguredProviderOptions = undefined;
-  sendMessageOptions = undefined;
   resolutionConnectionName = undefined;
-});
-
-describe("inference_send profile routing", () => {
-  test("forwards the requested profile and one selection seed through both resolution stages", async () => {
-    const requestedProfile = "quality-optimized";
-
-    await inferenceSendHandler()({
-      body: { message: "hi", profile: requestedProfile },
-    });
-
-    expect(getConfiguredProviderOptions?.overrideProfile).toBe(
-      requestedProfile,
-    );
-    expect(sendMessageOptions?.config?.overrideProfile).toBe(requestedProfile);
-    expect(getConfiguredProviderOptions?.selectionSeed).toEqual(
-      expect.any(String),
-    );
-    expect(sendMessageOptions?.config?.selectionSeed).toBe(
-      getConfiguredProviderOptions?.selectionSeed,
-    );
-  });
 });
 
 describe("inference_send evidence", () => {
@@ -228,36 +201,3 @@ describe("inference_send evidence", () => {
 // silently falls through to this call site's `cost-optimized` default when it
 // does not. The route must reject rather than answer from that other model.
 // ---------------------------------------------------------------------------
-
-describe("inference_send profile usability", () => {
-  const hermes = {
-    provider: "openrouter",
-    model: "nousresearch/hermes-3-llama-3.1-405b",
-    source: "user",
-  };
-
-  function rejection(entry: Record<string, unknown>): Promise<Error> {
-    configuredLlm = LLMSchema.parse({ profiles: { "hermes-405b": entry } });
-    return Promise.resolve(
-      inferenceSendHandler()({
-        body: { message: "hi", profile: "hermes-405b" },
-      }),
-    ).then(
-      () => new Error("expected the request to be rejected"),
-      (err: Error) => err,
-    );
-  }
-
-  test("rejects a disabled profile instead of running the managed default", async () => {
-    const err = await rejection({ ...hermes, status: "disabled" });
-    expect(err).toBeInstanceOf(BadRequestError);
-    expect(err.message).toContain("disabled");
-    expect(err.message).toContain("deepseek-v4p1-flash");
-  });
-
-  test("rejects a profile that lost its provider", async () => {
-    const err = await rejection({ model: hermes.model, source: "user" });
-    expect(err).toBeInstanceOf(BadRequestError);
-    expect(err.message).toContain("incomplete");
-  });
-});

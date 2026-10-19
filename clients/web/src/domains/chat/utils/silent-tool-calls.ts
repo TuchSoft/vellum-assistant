@@ -62,7 +62,9 @@ const BOOKKEEPING_TOOL_NAMES = new Set([
  * renders.
  */
 export function isUiSurfaceToolCall(toolCall: SilentToolCandidate): boolean {
-  return !toolCall.pendingConfirmation && UI_SURFACE_TOOL_NAMES.has(toolCall.name);
+  return (
+    !toolCall.pendingConfirmation && UI_SURFACE_TOOL_NAMES.has(toolCall.name)
+  );
 }
 
 /**

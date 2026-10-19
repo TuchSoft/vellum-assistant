@@ -73,9 +73,7 @@ export class CesRpcRecordBackend implements CredentialRecordBackend {
     }
   }
 
-  async delete(
-    account: string,
-  ): Promise<"deleted" | "not-found" | "error"> {
+  async delete(account: string): Promise<"deleted" | "not-found" | "error"> {
     if (!this.isAvailable()) {
       return "error";
     }

@@ -48,9 +48,8 @@ export async function readShareInboxFiles(
   if (files.length === 0) {
     return [];
   }
-  const { filesFromNativePaths } = await import(
-    "@/domains/chat/components/chat-attachments/native-attachment-pickers"
-  );
+  const { filesFromNativePaths } =
+    await import("@/domains/chat/components/chat-attachments/native-attachment-pickers");
   return filesFromNativePaths(files);
 }
 

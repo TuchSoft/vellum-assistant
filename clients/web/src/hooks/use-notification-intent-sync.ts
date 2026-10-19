@@ -208,7 +208,8 @@ export function useNotificationIntentSync(assistantId: string | null): void {
     void (async () => {
       const soundDisposition = await postLocalNotification({
         canDeliver: () =>
-          originatingIdentity !== null && deliveryOwner.current === originatingIdentity,
+          originatingIdentity !== null &&
+          deliveryOwner.current === originatingIdentity,
         title: event.title,
         body: event.body,
         sourceEventName: event.sourceEventName,

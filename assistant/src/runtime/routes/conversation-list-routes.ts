@@ -101,6 +101,13 @@ export const conversationSummarySchema = z.object({
   lastMessageAt: z.number().nullable(),
   conversationType: z.enum(["standard", "background", "scheduled"]),
   source: z.string(),
+  /** Gateway alias pinned for this conversation; absent = default model. */
+  model: z.string().nullable().optional(),
+  /** Conversation-level reasoning effort; absent = alias default. */
+  reasoningEffort: z
+    .enum(["none", "low", "medium", "high", "xhigh", "max"])
+    .nullable()
+    .optional(),
   scheduleJobId: z.string().optional(),
   channelBinding: channelBindingSchema.optional(),
   conversationOriginChannel: channelIdSchema.nullable().optional(),

@@ -35,6 +35,5 @@ export function composerConfigurationFixture(): ComposerConfiguration {
     selectMode: async () => true,
     selectAutonomy: async () => true,
     newMode: () => {},
-    requireOwnProviderAndModel: true,
   };
 }

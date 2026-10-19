@@ -688,7 +688,8 @@ export function replaceMcpToolsForServer(
         current !== undefined &&
         owner?.kind === "mcp" &&
         owner.id === serverId &&
-        JSON.stringify(current.input_schema) === JSON.stringify(t.input_schema) &&
+        JSON.stringify(current.input_schema) ===
+          JSON.stringify(t.input_schema) &&
         current.description === t.description
       );
     });

@@ -51,7 +51,7 @@ function makeContext(history: Message[]): PostCompactContext {
     requestId: "req-1",
     conversationId: "conv-post-compact",
     isNonInteractive: false,
-    modelProfileKey: "profile-1",
+    modelKey: "profile-1",
     logger: {
       debug() {},
       info() {},

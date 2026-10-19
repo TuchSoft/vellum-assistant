@@ -8,7 +8,7 @@
  * `ToolContext` → `SubagentConfig` → the child's `runAgentLoop`, the delegated
  * spend records a null `cron_run_id` and drops out of the schedule's cost.
  *
- * The threading mirrors `overrideProfile`; the plumbing for that field is
+ * The threading mirrors `model`; the plumbing for that field is
  * pinned by `agent-loop-override-profile.test.ts`.
  */
 
@@ -19,8 +19,7 @@ import { setConfig } from "./helpers/set-config.js";
 
 interface CapturedRunAgentLoopOptions {
   callSite?: string;
-  overrideProfile?: string;
-  forceOverrideProfile?: boolean;
+  model?: string;
   cronRunId?: string | null;
 }
 

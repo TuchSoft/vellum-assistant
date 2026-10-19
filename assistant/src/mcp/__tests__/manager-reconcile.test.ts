@@ -140,12 +140,10 @@ describe("McpServerManager.reconcile", () => {
     );
 
     let settled = false;
-    const callPromise = manager
-      .callTool("alpha", "tool", {})
-      .then((r) => {
-        settled = true;
-        return r;
-      });
+    const callPromise = manager.callTool("alpha", "tool", {}).then((r) => {
+      settled = true;
+      return r;
+    });
     await sleep(30);
     expect(settled).toBe(false);
 
@@ -206,7 +204,10 @@ describe("McpServerManager.reconcile", () => {
   test("disconnects servers that disappear from the config", async () => {
     const manager = new McpServerManager();
     await manager.start(
-      makeConfig({ alpha: { url: "https://a/mcp" }, beta: { url: "https://b/mcp" } }),
+      makeConfig({
+        alpha: { url: "https://a/mcp" },
+        beta: { url: "https://b/mcp" },
+      }),
     );
 
     const result = await manager.reconcile(

@@ -86,7 +86,11 @@ export async function handleHostExec({
     // `request` already converts its own timeout/abort rejections into
     // results; a thrown error here is an unexpected transport failure.
     if (err instanceof HostProxyRequestError) {
-      return { ok: false, error: err.message, timedOut: err.reason === "timeout" };
+      return {
+        ok: false,
+        error: err.message,
+        timedOut: err.reason === "timeout",
+      };
     }
     const message = err instanceof Error ? err.message : String(err);
     log.error({ err, command }, "Host exec IPC request failed");

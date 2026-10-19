@@ -282,7 +282,9 @@ export const MobileWorkspaceImage: Story = {
 export const MobileWorkspaceBinary: Story = {
   ...MobileWorkspaceScreen,
   parameters: {
-    router: { initialEntries: ["/assistant/workspace?file=exports/archive.zip"] },
+    router: {
+      initialEntries: ["/assistant/workspace?file=exports/archive.zip"],
+    },
   },
 };
 

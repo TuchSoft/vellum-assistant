@@ -157,7 +157,7 @@ describe("auto-resolution skips oauth_subscription connections for non-Codex mod
     setOpenAiProfile("gpt-5");
 
     const result = await getConfiguredProvider("mainAgent", {
-      overrideProfile: "openai-any",
+      model: "openai-any",
     });
 
     expect(result).not.toBeNull();
@@ -170,7 +170,7 @@ describe("auto-resolution skips oauth_subscription connections for non-Codex mod
     setOpenAiProfile("gpt-5.5");
 
     const result = await getConfiguredProvider("mainAgent", {
-      overrideProfile: "openai-any",
+      model: "openai-any",
     });
 
     expect(result).not.toBeNull();
@@ -186,7 +186,7 @@ describe("auto-resolution skips oauth_subscription connections for non-Codex mod
     setOpenAiProfile("gpt-5");
 
     const result = await getConfiguredProvider("mainAgent", {
-      overrideProfile: "openai-any",
+      model: "openai-any",
     });
 
     expect(result).toBeNull();
@@ -207,7 +207,7 @@ describe("auto-resolution skips oauth_subscription connections for non-Codex mod
     });
 
     const result = await getConfiguredProvider("mainAgent", {
-      overrideProfile: "openai-pinned",
+      model: "openai-pinned",
     });
 
     // The pinned connection bypasses the auto-resolution gate entirely.

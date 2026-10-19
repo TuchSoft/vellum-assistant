@@ -1,10 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import {
-  configGetOptions,
-  configLlmCallsitesGetOptions,
-} from "@/generated/daemon/@tanstack/react-query.gen";
-import { extractUsageProfileMetadata } from "@/utils/profile-metadata";
+import { configLlmCallsitesGetOptions } from "@/generated/daemon/@tanstack/react-query.gen";
 
 /** LLM call sites whose default profile the UI resolves for display. */
 export type ResolvableCallSite =
@@ -43,20 +39,10 @@ export function useCallSiteDefaultProfile(
     enabled,
     staleTime: 60_000,
   });
-  const { data: daemonConfig } = useQuery({
-    ...configGetOptions({ path: { assistant_id: assistantId } }),
-    enabled,
-    staleTime: 60_000,
-  });
-
   const key =
-    catalog?.callSites.find((entry) => entry.id === callSite)?.defaultProfile ??
-    null;
+    catalog?.callSites.find((entry) => entry.id === callSite)?.model ?? null;
   if (key == null) {
     return { key: null, label: null };
   }
-  const metadata = daemonConfig
-    ? extractUsageProfileMetadata(daemonConfig)
-    : {};
-  return { key, label: metadata[key]?.displayName ?? key };
+  return { key, label: key };
 }

@@ -136,97 +136,96 @@ export function HostingScreen() {
         <div
           className={`flex w-full flex-col items-center ${electron ? "" : "flex-1 justify-center"}`}
         >
-        <h1
-          className={
-            electron
-              ? "text-title-large"
-              : "text-3xl font-semibold tracking-tight"
-          }
-          style={{ animation: "fadeInUp 0.5s ease-out 0.1s both" }}
-        >
-          {t("hostingScreen.title")}
-        </h1>
-        <p
-          className={`text-body-medium-lighter text-[var(--content-tertiary)] ${electron ? "mt-3.5" : "mt-3"}`}
-          style={{ animation: "fadeInUp 0.5s ease-out 0.3s both" }}
-        >
-          {t("hostingScreen.body")}{" "}
-          <ExternalAnchor
-            href={docsUrl(routes.docs.hostingOptions)}
-            tone="quiet"
-            glyph={false}
+          <h1
+            className={
+              electron
+                ? "text-title-large"
+                : "text-3xl font-semibold tracking-tight"
+            }
+            style={{ animation: "fadeInUp 0.5s ease-out 0.1s both" }}
           >
-            {t("hostingScreen.needHelp")}
-          </ExternalAnchor>
-        </p>
-
-        {loginError && (
-          <p className="mt-4 text-body-small-default text-[var(--system-negative-strong)]">
-            {loginError}
+            {t("hostingScreen.title")}
+          </h1>
+          <p
+            className={`text-body-medium-lighter text-[var(--content-tertiary)] ${electron ? "mt-3.5" : "mt-3"}`}
+            style={{ animation: "fadeInUp 0.5s ease-out 0.3s both" }}
+          >
+            {t("hostingScreen.body")}{" "}
+            <ExternalAnchor
+              href={docsUrl(routes.docs.hostingOptions)}
+              tone="quiet"
+              glyph={false}
+            >
+              {t("hostingScreen.needHelp")}
+            </ExternalAnchor>
           </p>
-        )}
 
-        <div
-          role="radiogroup"
-          aria-label={t("hostingScreen.optionsAriaLabel")}
-          onKeyDown={handleRadioCardArrowNav}
-          className={`grid w-full ${electron ? "mt-8 gap-2" : "auto-rows-fr mt-10 gap-3"}`}
-          style={{ animation: "fadeInUp 0.5s ease-out 0.4s both" }}
-        >
-          {options.map((opt) => (
-            <HostingCard
-              key={opt.mode}
-              option={opt}
-              selected={selected === opt.mode}
-              tabStop={selected === opt.mode}
-              onSelect={() => {
-                if (!opt.disabled) {
-                  setSelected(opt.mode);
+          {loginError && (
+            <p className="mt-4 text-body-small-default text-[var(--system-negative-strong)]">
+              {loginError}
+            </p>
+          )}
+
+          <div
+            role="radiogroup"
+            aria-label={t("hostingScreen.optionsAriaLabel")}
+            onKeyDown={handleRadioCardArrowNav}
+            className={`grid w-full ${electron ? "mt-8 gap-2" : "auto-rows-fr mt-10 gap-3"}`}
+            style={{ animation: "fadeInUp 0.5s ease-out 0.4s both" }}
+          >
+            {options.map((opt) => (
+              <HostingCard
+                key={opt.mode}
+                option={opt}
+                selected={selected === opt.mode}
+                tabStop={selected === opt.mode}
+                onSelect={() => {
+                  if (!opt.disabled) {
+                    setSelected(opt.mode);
+                  }
+                }}
+                loginLabel={
+                  loginLoading ? t("actions.cancel") : t("actions.loginToUse")
                 }
-              }}
-              loginLabel={
-                loginLoading ? t("actions.cancel") : t("actions.loginToUse")
-              }
-              onLogin={
-                opt.disabled && opt.mode === "vellum-cloud" && showLogin
-                  ? loginLoading
-                    ? cancelLogin
-                    : () => void login()
-                  : undefined
-              }
-            />
-          ))}
-        </div>
+                onLogin={
+                  opt.disabled && opt.mode === "vellum-cloud" && showLogin
+                    ? loginLoading
+                      ? cancelLogin
+                      : () => void login()
+                    : undefined
+                }
+              />
+            ))}
+          </div>
 
-        <div
-          className="mt-8 w-full"
-          style={{ animation: "fadeInUp 0.5s ease-out 0.5s both" }}
-        >
-          <Button
-            variant="primary"
-            size={electron ? "regular" : "large"}
-            fullWidth
-            onClick={onContinue}
+          <div
+            className="mt-8 w-full"
+            style={{ animation: "fadeInUp 0.5s ease-out 0.5s both" }}
           >
-            {t("actions.continue")}
-          </Button>
-        </div>
-        <div
-          className="mt-3"
-          style={{ animation: "fadeInUp 0.5s ease-out 0.5s both" }}
-        >
-          <Button
-            variant="ghost"
-            size="compact"
-            className="text-[var(--content-tertiary)]"
-            leftIcon={<ArrowLeft />}
-            onClick={onBack}
-            disabled={loginLoading}
+            <Button
+              variant="primary"
+              size={electron ? "regular" : "large"}
+              fullWidth
+              onClick={onContinue}
+            >
+              {t("actions.continue")}
+            </Button>
+          </div>
+          <div
+            className="mt-3"
+            style={{ animation: "fadeInUp 0.5s ease-out 0.5s both" }}
           >
-            {t("actions.back")}
-          </Button>
-        </div>
-
+            <Button
+              variant="ghost"
+              size="compact"
+              className="text-[var(--content-tertiary)]"
+              leftIcon={<ArrowLeft />}
+              onClick={onBack}
+              disabled={loginLoading}
+            >
+              {t("actions.back")}
+            </Button>
+          </div>
         </div>
       </div>
     </OnboardingLayout>

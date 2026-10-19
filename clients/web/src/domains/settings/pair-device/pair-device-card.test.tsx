@@ -91,15 +91,12 @@ mock.module(
 );
 
 const { PairDeviceCard } = await import("./pair-device-card");
-const { MIN_VERSION: INGRESS_STATUS_MIN_VERSION } = await import(
-  "@/lib/backwards-compat/ingress-status-gate"
-);
-const { useAssistantIdentityStore } = await import(
-  "@/stores/assistant-identity-store"
-);
-const { useResolvedAssistantsStore } = await import(
-  "@/stores/resolved-assistants-store"
-);
+const { MIN_VERSION: INGRESS_STATUS_MIN_VERSION } =
+  await import("@/lib/backwards-compat/ingress-status-gate");
+const { useAssistantIdentityStore } =
+  await import("@/stores/assistant-identity-store");
+const { useResolvedAssistantsStore } =
+  await import("@/stores/resolved-assistants-store");
 const PUBLIC_URL = "https://foo.ts.net";
 const PAIR_URL = "https://foo.ts.net/assistant/pair#device_code=DEV-123";
 const ASSISTANT_ID = "self";
@@ -579,7 +576,9 @@ describe("PairDeviceCard: pending pairing requests", () => {
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() => expect(actionCalls("approve")).toHaveLength(1));
-    expect(requestBody(actionCalls("approve")[0])).toEqual({ requestId: "req-1" });
+    expect(requestBody(actionCalls("approve")[0])).toEqual({
+      requestId: "req-1",
+    });
     await waitFor(() => expect(screen.queryByText("QRST-7890")).toBeNull());
     expect(actionCalls("deny")).toHaveLength(0);
   });
@@ -645,7 +644,10 @@ describe("PairDeviceCard: pending pairing requests", () => {
       onPendingRequests: () =>
         jsonResponse({
           requests: [
-            pendingRequestBody({ requesterIp: "127.0.0.1", viaEdgeProxy: false }),
+            pendingRequestBody({
+              requesterIp: "127.0.0.1",
+              viaEdgeProxy: false,
+            }),
           ],
         }),
     });
@@ -661,7 +663,9 @@ describe("PairDeviceCard: pending pairing requests", () => {
   test("a tunnel-edge request keeps showing the requester IP", async () => {
     installPendingFetch({
       onPendingRequests: () =>
-        jsonResponse({ requests: [pendingRequestBody({ viaEdgeProxy: true })] }),
+        jsonResponse({
+          requests: [pendingRequestBody({ viaEdgeProxy: true })],
+        }),
     });
     renderCard();
 

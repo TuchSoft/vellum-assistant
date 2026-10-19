@@ -33,9 +33,8 @@ const { useAuthStore } = await import("@/stores/auth-store");
 const { useOrganizationStore } = await import("@/stores/organization-store");
 const { useResolvedAssistantsStore } =
   await import("@/stores/resolved-assistants-store");
-const { clearSelectedAssistantId, writeSelectedAssistantId } = await import(
-  "@/assistant/selected-assistant-storage"
-);
+const { clearSelectedAssistantId, writeSelectedAssistantId } =
+  await import("@/assistant/selected-assistant-storage");
 
 const initialAuthState = useAuthStore.getState();
 

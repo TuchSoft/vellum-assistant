@@ -23,7 +23,6 @@ import { cliIpcCall } from "../../ipc/cli-client.js";
 import { subcommand } from "../lib/cli-command-help.js";
 import { writeCliError } from "../lib/cli-output.js";
 import { openInHostBrowser } from "../lib/open-browser.js";
-import { attachDefaultProviderSubcommand } from "./inference-providers-default.js";
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -574,5 +573,4 @@ export function attachProvidersSubcommand(inference: Command): void {
   attachCrudVerbs(connections);
 
   attachLoginChatgptSubcommand(providers);
-  attachDefaultProviderSubcommand(providers);
 }

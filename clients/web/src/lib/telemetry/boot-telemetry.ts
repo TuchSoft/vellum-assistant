@@ -729,8 +729,7 @@ export function startBootTelemetry(): () => void {
     nav_type:
       (
         performance.getEntriesByType("navigation")[0] as
-          | PerformanceNavigationTiming
-          | undefined
+          PerformanceNavigationTiming | undefined
       )?.type ?? null,
     route: bootRouteLabel(window.location.pathname),
     lcp_supported: supportsEntryType("largest-contentful-paint"),

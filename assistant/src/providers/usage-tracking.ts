@@ -67,21 +67,19 @@ export class UsageTrackingProvider implements Provider {
 
     try {
       // A fallback-serving wrapper (`RetryProvider`'s escalation) stamps the
-      // profile that actually governed the response; prefer it over the
+      // alias that actually governed the response; prefer it over the
       // original request's resolution so a degraded serve bills under the
-      // backup profile, not the failed primary's. `forceOverrideProfile`
-      // mirrors how the fallback dispatch floated that profile above the
-      // call-site layers.
-      const appliedOverride =
-        response.actualInferenceProfile ?? config.overrideProfile;
+      // backup alias, not the failed primary's.
+      const appliedModel =
+        typeof response.actualModel === "string"
+          ? response.actualModel
+          : typeof config.model === "string"
+            ? config.model
+            : undefined;
       const attribution = resolveUsageAttribution({
         callSite: config.callSite,
-        overrideProfile: appliedOverride,
-        // A rerouted serve ran on the backup the wrapper chose, not on the
-        // router's pick, so the origin applies only to the original route.
-        ...(response.actualInferenceProfile === undefined
-          ? { overrideProfileOrigin: config.overrideProfileOrigin }
-          : { forceOverrideProfile: true }),
+        model: appliedModel,
+        conversationModel: config.conversationModel,
       });
       const providerName = response.actualProvider ?? this.inner.name;
       const pricingUsage = buildPricingUsageFromResponse(
@@ -98,7 +96,7 @@ export class UsageTrackingProvider implements Provider {
         {
           actor: "llm_call_site",
           provider: providerName,
-          model: response.model,
+          model: attribution.model ?? response.model,
           inputTokens: pricingUsage.directInputTokens,
           outputTokens: pricingUsage.outputTokens,
           cacheCreationInputTokens: pricingUsage.cacheCreationInputTokens,
@@ -108,8 +106,7 @@ export class UsageTrackingProvider implements Provider {
           runId: null,
           requestId: null,
           callSite: attribution.callSite,
-          inferenceProfile: attribution.appliedProfile,
-          inferenceProfileSource: attribution.profileSource,
+          modelSource: attribution.modelSource,
           llmCallCount: 1,
         },
         pricing,

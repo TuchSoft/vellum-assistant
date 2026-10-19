@@ -47,12 +47,9 @@ const documentData = {
 };
 const load = mock(async () => ({ data: documentData }));
 let readiness: ReturnType<typeof OrgReadiness.useOrgHeaderReadiness> = "ready";
-mock.module(
-  "@/hooks/use-is-org-ready",
-  (): Partial<typeof OrgReadiness> => ({
-    useOrgHeaderReadiness: () => readiness,
-  }),
-);
+mock.module("@/hooks/use-is-org-ready", (): Partial<typeof OrgReadiness> => ({
+  useOrgHeaderReadiness: () => readiness,
+}));
 mock.module("./chat-route-content", () => ({
   ChatMainPanel: () => {
     const location = useLocation();

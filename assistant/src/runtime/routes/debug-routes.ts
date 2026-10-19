@@ -82,8 +82,8 @@ async function getDebugInfo() {
       startedAt: new Date(startedAt).toISOString(),
     },
     provider: {
-      configuredProvider: resolveCallSiteConfig("mainAgent", config.llm)
-        .provider,
+      configuredProvider: "llm-gateway",
+      configuredModel: resolveCallSiteConfig("mainAgent", config.llm).model,
       registeredProviders,
       routingSources,
     },

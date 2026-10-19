@@ -6,10 +6,7 @@ import type {
   PluginCatalogMatch,
   PluginListItem,
 } from "@/lib/plugins/types";
-import {
-  mergePlugins,
-  sortPlugins,
-} from "@/lib/plugins/utils";
+import { mergePlugins, sortPlugins } from "@/lib/plugins/utils";
 import {
   pluginsGetQueryKey,
   pluginsSearchGetOptions,

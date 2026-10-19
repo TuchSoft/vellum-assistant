@@ -79,7 +79,7 @@ export async function switchConversation(conversationId: string): Promise<{
   conversationId: string;
   title: string;
   conversationType: ReturnType<typeof normalizeConversationType>;
-  inferenceProfile?: string;
+  model?: string;
 } | null> {
   const conversation = await getConversation(conversationId);
   if (!conversation) {
@@ -93,7 +93,7 @@ export async function switchConversation(conversationId: string): Promise<{
     conversationId: conversation.id,
     title: conversation.title ?? "Untitled",
     conversationType: normalizeConversationType(conversation.conversationType),
-    inferenceProfile: conversation.inferenceProfile ?? undefined,
+    model: conversation.model ?? undefined,
   };
 }
 export interface CancelGenerationOutcome {

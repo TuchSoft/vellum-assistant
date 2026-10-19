@@ -78,10 +78,7 @@ import type {
 } from "../agent/loop.js";
 import type { InterfaceId } from "../channels/types.js";
 import { resolveEffectiveContextWindow } from "../config/llm-context-resolution.js";
-import {
-  resolveProfilelessModelKey,
-  selectWinningProfile,
-} from "../config/llm-resolver.js";
+import { resolveEffectiveModel } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import type { LLMCallSite } from "../config/schemas/llm.js";
 import { isSidebarDoneEnabled } from "../config/sidebar-done-gate.js";
@@ -114,7 +111,7 @@ import {
   recordCompactionEndBestEffort,
   recordCompactionStartBestEffort,
 } from "../persistence/compaction-log-store-clickhouse.js";
-import { getConversationOverrideProfile } from "../persistence/conversation-crud.js";
+import { getConversationModel } from "../persistence/conversation-crud.js";
 import {
   buildProviderErrorResponsePayload,
   recordRequestLog,
@@ -247,18 +244,12 @@ export interface WakeOptions {
    */
   callSite?: LLMCallSite;
   /**
-   * Run the wake's LLM calls under this inference profile, floated ABOVE the
-   * call site's named profile and call-site overrides (the resolver's
-   * `forceOverrideProfile` escape hatch). When set, it replaces the
-   * conversation's own pinned-profile lookup. Used by fork-based memory
-   * retrospectives to resolve the SAME model/thinking/effort as the source
-   * conversation's turns so the provider prompt-cache prefix can be reused.
-   * A profile name that no longer exists in `llm.profiles` silently falls
-   * back to normal call-site resolution (the resolver's standard
-   * missing-reference semantics). Logging/attribution still bucket under
-   * `callSite`.
+   * Run the wake's LLM calls under this alias. When set, it replaces the
+   * conversation's own model lookup. Used by fork-based memory retrospectives
+   * to resolve the SAME model as the source conversation's turns so the
+   * provider prompt-cache prefix can be reused.
    */
-  forceOverrideProfile?: string;
+  model?: string;
   /**
    * Role to use for the injected hint message. Defaults to `"assistant"` so
    * the hint is sandwiched between two static user bookends — the canonical
@@ -898,31 +889,24 @@ export async function wakeAgentForOpportunity(
     // user-turn path that computes it for tool-result truncation. Read before
     // `setProcessing(true)` so a thrown DB/config read can't strand the
     // processing flag.
-    const forceOverrideProfile = opts.forceOverrideProfile !== undefined;
     const overrideProfile =
-      opts.forceOverrideProfile ??
-      (await getConversationOverrideProfile(conversationId));
+      opts.model ?? (await getConversationModel(conversationId));
     const callSite = resolveTurnCallSite(opts.callSite, conversation);
     const config = getConfig();
     const effectiveContextWindow = resolveEffectiveContextWindow({
       llm: config.llm,
       callSite,
-      overrideProfile,
-      forceOverrideProfile,
+      ...(overrideProfile != null ? { model: overrideProfile } : {}),
+      conversationModel: conversation.model ?? undefined,
     });
-    // Same winner-selection sourcing as the agent loop's key: a hand-mirrored
-    // chain would disagree with dispatch (a non-forced override wins on every
-    // call site).
-    const modelProfileKey =
-      selectWinningProfile(callSite, config.llm, {
-        ...(overrideProfile != null ? { overrideProfile } : {}),
-        selectionSeed: conversationId,
-      }).profileName ??
-      resolveProfilelessModelKey(callSite, config.llm, {
-        ...(overrideProfile != null ? { overrideProfile } : {}),
-        ...(forceOverrideProfile ? { forceOverrideProfile: true } : {}),
-        selectionSeed: conversationId,
-      });
+    if (effectiveContextWindow == null) {
+      throw new Error(`Call site "${callSite}" is disabled.`);
+    }
+    const modelKey =
+      resolveEffectiveModel(callSite, config.llm, {
+        ...(overrideProfile != null ? { model: overrideProfile } : {}),
+        conversationModel: conversation.model ?? undefined,
+      })?.model ?? config.llm.defaultModel;
 
     // Apply the caller's persona override for the duration of the run. The
     // prompt is built once before `agentLoop.run()` (via
@@ -1004,8 +988,7 @@ export async function wakeAgentForOpportunity(
       try {
         await conversation.maybeCompact({
           callSite,
-          overrideProfile,
-          forceOverrideProfile,
+          ...(overrideProfile != null ? { model: overrideProfile } : {}),
         });
       } catch (err) {
         log.warn(
@@ -1256,12 +1239,7 @@ export async function wakeAgentForOpportunity(
             // writes its own row under the wake's resolution.
             {
               callSite,
-              overrideProfile:
-                event.actualInferenceProfile ?? overrideProfile ?? null,
-              forceOverrideProfile:
-                event.actualInferenceProfile !== undefined ||
-                forceOverrideProfile,
-              selectionSeed: conversationId,
+              model: event.actualModel ?? overrideProfile ?? null,
             },
             opts.cronRunId ?? null,
           );
@@ -1651,7 +1629,7 @@ export async function wakeAgentForOpportunity(
       // children under the wrong one. Restored in the `finally` so a queued
       // user turn or a later background read never inherits the wake's stamps.
       const priorCallSite = conversation.currentCallSite;
-      const priorTurnOverrideProfile = conversation.currentTurnOverrideProfile;
+      const priorTurnModel = conversation.currentTurnModel;
       const priorTurnCronRunId = conversation.currentTurnCronRunId;
       const priorTurnIsNonInteractive =
         conversation.currentTurnIsNonInteractive;
@@ -1659,7 +1637,7 @@ export async function wakeAgentForOpportunity(
       const priorSendUserMessageActive =
         conversation.currentTurnSendUserMessageActive;
       conversation.currentCallSite = callSite;
-      conversation.currentTurnOverrideProfile = overrideProfile;
+      conversation.currentTurnModel = overrideProfile;
       // A wake drives the loop directly rather than through
       // `runAgentLoopImpl`, so it neither suppresses streamed assistant text
       // nor stamps a visibility marker on the rows it persists itself. Offering
@@ -1712,8 +1690,7 @@ export async function wakeAgentForOpportunity(
           callSite,
           supportsDynamicUi: conversationSupportsDynamicUi(conversation),
           trust: wakeTrust,
-          overrideProfile,
-          forceOverrideProfile,
+          ...(overrideProfile != null ? { model: overrideProfile } : {}),
           // The wake's compaction lives in the pre-run gate above
           // (`conversation.maybeCompact()`), never in the loop: the in-loop
           // budget gate and overflow-recovery ladder stay disabled because
@@ -1725,7 +1702,7 @@ export async function wakeAgentForOpportunity(
             maxInputTokens: effectiveContextWindow.maxInputTokens,
             overflowRecovery: { enabled: false, safetyMarginRatio: 0 },
           }),
-          modelProfileKey,
+          modelKey,
           ...(conversation.modelOverride
             ? { model: conversation.modelOverride }
             : {}),
@@ -1778,7 +1755,7 @@ export async function wakeAgentForOpportunity(
         // never observes the wake's stamps. (`runAgentLoopImpl` re-stamps both
         // at the start of the next normal turn regardless.)
         conversation.currentCallSite = priorCallSite;
-        conversation.currentTurnOverrideProfile = priorTurnOverrideProfile;
+        conversation.currentTurnModel = priorTurnModel;
         conversation.currentTurnCronRunId = priorTurnCronRunId;
         conversation.currentTurnIsNonInteractive = priorTurnIsNonInteractive;
         conversation.currentTurnTrustContext = priorTurnTrust;

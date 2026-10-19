@@ -92,9 +92,7 @@ export function DeleteConversationConfirmDialog({
       open={pending !== null}
       title={t("deleteConversationConfirmDialog.title")}
       message={
-        pending
-          ? t("deleteConversationConfirmDialog.message", { title })
-          : ""
+        pending ? t("deleteConversationConfirmDialog.message", { title }) : ""
       }
       confirmLabel={t("deleteConversationConfirmDialog.confirm")}
       cancelLabel={t("deleteConversationConfirmDialog.cancel")}

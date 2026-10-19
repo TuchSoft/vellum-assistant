@@ -15,8 +15,12 @@ afterAll(() => {
 
 describe("formatRelativeTime", () => {
   test("picks the largest fitting unit, past and future", () => {
-    expect(formatRelativeTime(NOW - 2 * 60_000, { locale: "en" })).toBe("2 minutes ago");
-    expect(formatRelativeTime(NOW + 3 * 60 * 60_000, { locale: "en" })).toBe("in 3 hours");
+    expect(formatRelativeTime(NOW - 2 * 60_000, { locale: "en" })).toBe(
+      "2 minutes ago",
+    );
+    expect(formatRelativeTime(NOW + 3 * 60 * 60_000, { locale: "en" })).toBe(
+      "in 3 hours",
+    );
     // numeric: "auto" phrases single units idiomatically.
     expect(
       formatRelativeTime(NOW - 8 * 24 * 60 * 60_000, { locale: "en" }),
@@ -33,10 +37,12 @@ describe("formatRelativeTime", () => {
   });
 
   test("phrases sub-minimum-unit differences as now", () => {
-    expect(formatRelativeTime(NOW - 45_000, { locale: "en", minimumUnit: "minute" })).toBe(
-      "now",
+    expect(
+      formatRelativeTime(NOW - 45_000, { locale: "en", minimumUnit: "minute" }),
+    ).toBe("now");
+    expect(formatRelativeTime(NOW - 45_000, { locale: "en" })).toBe(
+      "45 seconds ago",
     );
-    expect(formatRelativeTime(NOW - 45_000, { locale: "en" })).toBe("45 seconds ago");
   });
 
   test("formats in the requested locale", () => {

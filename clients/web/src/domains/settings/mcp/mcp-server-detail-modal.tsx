@@ -243,7 +243,9 @@ export function McpServerDetailModal({
                         onChange={(e) => setApiKeyValue(e.target.value)}
                         placeholder={
                           server.hasStaticAuth && server.authType === "api-key"
-                            ? t("mcpServerDetailModal.savedApiCredentialPlaceholder")
+                            ? t(
+                                "mcpServerDetailModal.savedApiCredentialPlaceholder",
+                              )
                             : t("mcpServerDetailModal.apiKeyPlaceholder")
                         }
                         fullWidth

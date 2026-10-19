@@ -761,14 +761,10 @@ describe("ToolExecutor audit terminals", () => {
   // rewritten to the main agent's attribution.
   const testAttribution: UsageAttributionSnapshot = {
     callSite: "callAgent",
-    activeProfile: "balanced",
-    overrideProfile: null,
-    callSiteProfile: "voice-profile",
-    appliedProfile: "voice-profile",
-    profileSource: "call_site",
+    model: "voice-profile",
+    modelSource: "call_site",
     resolvedProvider: "anthropic",
     resolvedModel: "test-model",
-    resolvedMixArm: null,
   };
 
   test("forwards context.attribution into the executed terminal", async () => {

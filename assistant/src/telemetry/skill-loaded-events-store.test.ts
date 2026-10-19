@@ -57,8 +57,7 @@ describe("skill-loaded-events-store", () => {
       skillUpdatedAt: "2026-06-01T00:00:00.000Z",
       provider: "anthropic",
       model: "model-a",
-      inferenceProfile: "balanced",
-      inferenceProfileSource: "active-profile",
+      modelSource: "chat",
     });
 
     const rows = await pendingRows();

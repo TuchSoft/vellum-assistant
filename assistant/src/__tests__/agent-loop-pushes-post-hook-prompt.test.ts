@@ -19,7 +19,7 @@ type PreModelCallCtx = {
   conversationId: string;
   callSite: string | null;
   systemPrompt: string | null;
-  modelProfile: string | null;
+  model: string | null;
   deferAssistantOutput: boolean;
   logger: unknown;
 };
@@ -28,7 +28,7 @@ let hookResponse: PreModelCallCtx = {
   callSite: "mainAgent",
   systemPrompt:
     "BASELINE-PROMPT\n\n<!-- advisor:steering -->\nAPPENDED-FROM-HOOK",
-  modelProfile: null,
+  model: null,
   deferAssistantOutput: false,
   logger: {},
 };
@@ -80,7 +80,7 @@ beforeEach(() => {
     callSite: "mainAgent",
     systemPrompt:
       "BASELINE-PROMPT\n\n<!-- advisor:steering -->\nAPPENDED-FROM-HOOK",
-    modelProfile: null,
+    model: null,
     deferAssistantOutput: false,
     logger: {},
   };
@@ -129,7 +129,7 @@ describe("AgentLoop system_prompt_changed event", () => {
       conversationId: "test-conv",
       callSite: "mainAgent",
       systemPrompt: mutatedPrompt,
-      modelProfile: null,
+      model: null,
       deferAssistantOutput: false,
       logger: {},
     };
@@ -170,7 +170,7 @@ describe("AgentLoop system_prompt_changed event", () => {
       conversationId: "test-conv",
       callSite: "subagentSpawn",
       systemPrompt: "MUTATED-BY-HOOK",
-      modelProfile: null,
+      model: null,
       deferAssistantOutput: false,
       logger: {},
     };
@@ -211,7 +211,7 @@ describe("AgentLoop system_prompt_changed event", () => {
       conversationId: "test-conv",
       callSite: "mainAgent",
       systemPrompt: "SAME-PROMPT",
-      modelProfile: null,
+      model: null,
       deferAssistantOutput: false,
       logger: {},
     };
@@ -257,7 +257,7 @@ describe("AgentLoop system_prompt_changed event", () => {
       conversationId: "test-conv",
       callSite: "mainAgent",
       systemPrompt: "BASELINE\n\n<!-- advisor:steering -->",
-      modelProfile: null,
+      model: null,
       deferAssistantOutput: false,
       logger: {},
     };

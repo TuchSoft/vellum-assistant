@@ -74,7 +74,10 @@ describe("resolveRequestedImageModel", () => {
 
   test("qualifies bare built-in IDs for OpenRouter", () => {
     expect(
-      resolveRequestedImageModel("gemini-3.1-flash-image-preview", "openrouter"),
+      resolveRequestedImageModel(
+        "gemini-3.1-flash-image-preview",
+        "openrouter",
+      ),
     ).toEqual({ model: DEFAULT_OPENROUTER_IMAGE_MODEL });
     expect(resolveRequestedImageModel("gpt-image-2", "openrouter")).toEqual({
       model: "openai/gpt-image-2",
@@ -98,7 +101,10 @@ describe("resolveRequestedImageModel", () => {
     expect(gemini.model).toBeUndefined();
     expect(gemini.error).toContain("Unknown model");
 
-    const openai = resolveRequestedImageModel("black-forest-labs/flux", "openai");
+    const openai = resolveRequestedImageModel(
+      "black-forest-labs/flux",
+      "openai",
+    );
     expect(openai.model).toBeUndefined();
     expect(openai.error).toContain("Unknown model");
 

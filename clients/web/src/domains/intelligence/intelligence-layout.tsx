@@ -187,9 +187,7 @@ export function IntelligenceLayout() {
           : undefined
       }
       style={
-        isWorkspace
-          ? { backgroundColor: "var(--surface-base)" }
-          : undefined
+        isWorkspace ? { backgroundColor: "var(--surface-base)" } : undefined
       }
     >
       {/* Desktop section chrome. A phone gets these affordances from the

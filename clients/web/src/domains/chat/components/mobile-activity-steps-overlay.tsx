@@ -25,7 +25,11 @@ export function MobileActivityStepsOverlay({
   assistantId,
 }: MobileActivityStepsOverlayProps) {
   return (
-    <MobileDetailSheet data={payload} onClose={onClose} testId="mobile-activity-steps-overlay">
+    <MobileDetailSheet
+      data={payload}
+      onClose={onClose}
+      testId="mobile-activity-steps-overlay"
+    >
       {(value) => (
         <ActivityStepsPanel
           payload={value}

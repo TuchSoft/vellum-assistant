@@ -100,10 +100,6 @@ import {
   handleReadyz,
 } from "./routes/identity-routes.js";
 import {
-  startInferenceProfileSessionReaper,
-  stopInferenceProfileSessionReaper,
-} from "./routes/inference-profile-session-reaper.js";
-import {
   activeWatchStreamSessions,
   closeWatchIngress,
   drainWatchRetros,
@@ -684,7 +680,7 @@ export class RuntimeHttpServer {
 
   /**
    * Start background sweep timers: retry sweep for failed channel events,
-   * the guardian-request expiry sweep, and the inference-profile session reaper.
+   * and the guardian-request expiry sweep.
    *
    * These all touch the ORM, so the daemon defers this until DB migrations
    * have settled — successfully or in the failed degraded mode, where the DB
@@ -726,9 +722,6 @@ export class RuntimeHttpServer {
     startGuardianExpirySweep();
     log.info("Guardian request expiry sweep started");
 
-    startInferenceProfileSessionReaper();
-    log.info("Inference profile session reaper started");
-
     startTelegramWebhookHealthSweep();
     log.info("Telegram webhook health sweep started");
 
@@ -748,7 +741,6 @@ export class RuntimeHttpServer {
   async stop(): Promise<void> {
     stopGuardianExpirySweep();
     stopAppPinReconcileSweep();
-    stopInferenceProfileSessionReaper();
     stopTelegramWebhookHealthSweep();
     stopPluginScheduleReconcileSweep();
     if (this.retrySweepTimer) {

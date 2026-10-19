@@ -19,7 +19,8 @@ const SAMPLE_MOUNTINFO = `22 1 0:21 / / rw,relatime - overlay overlay rw,lowerdi
 `;
 
 function entry(
-  fields: Partial<MountInfoEntry> & Pick<MountInfoEntry, "mountPoint" | "fsType">,
+  fields: Partial<MountInfoEntry> &
+    Pick<MountInfoEntry, "mountPoint" | "fsType">,
 ): MountInfoEntry {
   return {
     mountId: fields.mountId ?? "1",
@@ -56,7 +57,9 @@ function snapshot(partial: Partial<MountSnapshot>): MountSnapshot {
 
 describe("unescapeMountField", () => {
   test("decodes octal-escaped spaces", () => {
-    expect(unescapeMountField("/workspace/my\\040dir")).toBe("/workspace/my dir");
+    expect(unescapeMountField("/workspace/my\\040dir")).toBe(
+      "/workspace/my dir",
+    );
   });
 });
 
@@ -115,9 +118,9 @@ describe("isWatchedMount", () => {
     expect(
       isWatchedMount(entry({ mountPoint: "/workspace", fsType: "overlay" })),
     ).toBe(true);
-    expect(isWatchedMount(entry({ mountPoint: "/data", fsType: "overlay" }))).toBe(
-      true,
-    );
+    expect(
+      isWatchedMount(entry({ mountPoint: "/data", fsType: "overlay" })),
+    ).toBe(true);
   });
 
   test("drops proc and the root overlay", () => {
@@ -160,7 +163,13 @@ describe("diffMountSnapshots", () => {
       mounts: [entry({ mountPoint: "/workspace", fsType: "virtiofs" })],
     });
     const current = snapshot({
-      mounts: [entry({ mountPoint: "/workspace", fsType: "overlay", source: "overlay" })],
+      mounts: [
+        entry({
+          mountPoint: "/workspace",
+          fsType: "overlay",
+          source: "overlay",
+        }),
+      ],
     });
     const diff = diffMountSnapshots(previous, current);
     expect(diff.changed).toHaveLength(1);
@@ -173,7 +182,9 @@ describe("diffMountSnapshots", () => {
       paths: [pathFs({ path: "/workspace", blocks: 12_884_901 })],
     });
     const current = snapshot({
-      paths: [pathFs({ path: "/workspace", blocks: 25_165_824, type: 0x794c7630 })],
+      paths: [
+        pathFs({ path: "/workspace", blocks: 25_165_824, type: 0x794c7630 }),
+      ],
     });
     const diff = diffMountSnapshots(previous, current);
     expect(diff.pathChanges).toHaveLength(1);
@@ -211,7 +222,14 @@ describe("collectMountSnapshot", () => {
       platform: "linux",
       readMountinfo: () => SAMPLE_MOUNTINFO,
       statPath: (path) =>
-        pathFs({ path, type: null, blockSize: null, blocks: null, files: null, error: "statfs-failed" }),
+        pathFs({
+          path,
+          type: null,
+          blockSize: null,
+          blocks: null,
+          files: null,
+          error: "statfs-failed",
+        }),
       watchedMountPoints: ["/workspace", "/data"],
     });
     expect(snapshot?.paths).toEqual([

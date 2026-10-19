@@ -78,4 +78,3 @@ export function appAmbiguousMessage(
   const listed = matches.map((app) => `  ${formatAppMatch(app)}`).join("\n");
   return `Ambiguous app name "${query}". Matches:\n${listed}\nRun 'assistant apps list' and pass a unique name, slug, or id.`;
 }
-

@@ -3,22 +3,22 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { ConversationSurfaceSnapshot } from "../../../../daemon/conversation-surface-snapshots.js";
 import type { Message } from "../../../../providers/types.js";
 
-let listImpl: (conversationId: string) => ConversationSurfaceSnapshot[] = () =>
-  [];
+let listImpl: (
+  conversationId: string,
+) => ConversationSurfaceSnapshot[] = () => [];
 
 mock.module("../../../../daemon/conversation-surface-snapshots.js", () => ({
   listConversationSurfaceSnapshots: (conversationId: string) =>
     listImpl(conversationId),
 }));
 
-const {
-  formatActiveTaskProgressSnapshot,
-  isActiveTaskProgressSurface,
-} = await import("../src/format-task-progress-context.js");
+const { formatActiveTaskProgressSnapshot, isActiveTaskProgressSurface } =
+  await import("../src/format-task-progress-context.js");
 const { applyTaskProgressContext } =
   await import("../src/apply-task-progress-context.js");
-const userPromptSubmit =
-  await import("../hooks/user-prompt-submit.js").then((m) => m.default);
+const userPromptSubmit = await import("../hooks/user-prompt-submit.js").then(
+  (m) => m.default,
+);
 const postCompact = await import("../hooks/post-compact.js").then(
   (m) => m.default,
 );
@@ -131,7 +131,10 @@ describe("task-progress-context formatting", () => {
           data: { options: [] },
           completed: false,
         },
-        cardSnapshot("surf_other", { template: "work_result", templateData: {} }),
+        cardSnapshot("surf_other", {
+          template: "work_result",
+          templateData: {},
+        }),
         cardSnapshot("surf_broken", { template: "task_progress" }),
       ]),
     ).toBe("");
@@ -267,7 +270,8 @@ describe("task-progress-context injection", () => {
     expect(
       tail?.content.some(
         (block) =>
-          block.type === "text" && block.text.includes("<active_task_progress>"),
+          block.type === "text" &&
+          block.text.includes("<active_task_progress>"),
       ),
     ).toBe(true);
   });
@@ -324,9 +328,7 @@ describe("task-progress-context injection", () => {
       "Update this card with ui_update as the steps change.",
       "</active_task_progress>",
     ].join("\n");
-    const messages: Message[] = [
-      userText(`continue\n${stale}`),
-    ];
+    const messages: Message[] = [userText(`continue\n${stale}`)];
 
     const next = await applyTaskProgressContext("conv-xyz", messages);
     const text = next[0]?.content

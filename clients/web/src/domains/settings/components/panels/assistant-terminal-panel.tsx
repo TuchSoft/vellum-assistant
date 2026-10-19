@@ -50,27 +50,30 @@ export function AssistantTerminalPanel() {
     [],
   );
 
-  const fetchAssistant = useCallback(async (force?: boolean) => {
-    if (!force && fetchedRef.current) {
-      return;
-    }
-    if (!force) {
-      setLoading(true);
-    }
-    try {
-      const result = await getAssistant();
-      if (result.ok) {
-        fetchedRef.current = true;
-        setAssistantId(result.data.id);
-        setMaintenanceMode(result.data.maintenance_mode);
+  const fetchAssistant = useCallback(
+    async (force?: boolean) => {
+      if (!force && fetchedRef.current) {
+        return;
       }
-    } catch (error) {
-      captureError(error, { context: "fetch_assistant_for_terminal" });
-      toast.error(t("assistantTerminalPanel.loadErrorToast"));
-    } finally {
-      setLoading(false);
-    }
-  }, [t]);
+      if (!force) {
+        setLoading(true);
+      }
+      try {
+        const result = await getAssistant();
+        if (result.ok) {
+          fetchedRef.current = true;
+          setAssistantId(result.data.id);
+          setMaintenanceMode(result.data.maintenance_mode);
+        }
+      } catch (error) {
+        captureError(error, { context: "fetch_assistant_for_terminal" });
+        toast.error(t("assistantTerminalPanel.loadErrorToast"));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [t],
+  );
 
   // `getAssistant` is a daemon-side call (safe in every lifecycle state
   // where we have a daemon connection), so fire it eagerly whenever the

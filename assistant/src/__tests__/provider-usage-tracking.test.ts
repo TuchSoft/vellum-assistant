@@ -215,7 +215,7 @@ describePg("UsageTrackingProvider", () => {
 
   test("attributes a fallback-served response to the stamped backup profile", async () => {
     // RetryProvider's fallback escalation stamps `actualProvider` and
-    // `actualInferenceProfile` on the response it serves from the backup
+    // `actualModel` on the response it serves from the backup
     // route. The usage event must follow those stamps, not the original
     // request options, which still carry the failed primary's resolution.
     setLlmConfig({
@@ -241,7 +241,7 @@ describePg("UsageTrackingProvider", () => {
         content: [{ type: "text", text: "Title" }],
         model: "claude-sonnet-4-5",
         actualProvider: "anthropic",
-        actualInferenceProfile: "backup-profile",
+        actualModel: "backup-profile",
         usage: {
           inputTokens: 1_000,
           outputTokens: 2_000,

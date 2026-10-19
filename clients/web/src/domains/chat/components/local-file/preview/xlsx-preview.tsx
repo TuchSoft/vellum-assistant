@@ -56,11 +56,7 @@ function readSheetGrid(sheet: WorkbookSheet | undefined): Promise<SheetGrid> {
 
 /** Which sentence a sheet's counts read as. */
 type SummaryShape =
-  | "plain"
-  | "truncated"
-  | "columnsCut"
-  | "rowsCut"
-  | "bothCut";
+  "plain" | "truncated" | "columnsCut" | "rowsCut" | "bothCut";
 
 /** The sentence naming the sheet, one key per shape. */
 const SHEET_SUMMARY_KEYS = {

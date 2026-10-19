@@ -43,12 +43,9 @@ const downloadDocumentPdf = mock(
     _title: string | null | undefined,
   ) => {},
 );
-mock.module(
-  "./api/surfaces",
-  (): Partial<typeof Surfaces> => ({
-    downloadDocumentPdf,
-  }),
-);
+mock.module("./api/surfaces", (): Partial<typeof Surfaces> => ({
+  downloadDocumentPdf,
+}));
 
 mock.module("@/generated/daemon/sdk.gen", () => ({
   ...daemonSdk,

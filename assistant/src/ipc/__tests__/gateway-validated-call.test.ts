@@ -23,9 +23,8 @@ mock.module("../gateway-client.js", () => ({
   ipcCallPersistent: ipcCallPersistentMock,
 }));
 
-const { ipcCallPersistentValidated } = await import(
-  "../gateway-validated-call.js"
-);
+const { ipcCallPersistentValidated } =
+  await import("../gateway-validated-call.js");
 
 const OkSchema = z.object({ ok: z.literal(true) });
 

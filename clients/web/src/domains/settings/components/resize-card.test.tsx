@@ -20,9 +20,8 @@ mock.module("@/runtime/platform-detection", () => ({
   useIsNativeAndroid: () => nativeAndroid,
 }));
 
-const { ResizeCard } = await import(
-  "@/domains/settings/components/resize-card"
-);
+const { ResizeCard } =
+  await import("@/domains/settings/components/resize-card");
 
 const assistant = {
   id: "assistant-1",
@@ -30,7 +29,9 @@ const assistant = {
   machine_size: "small",
 } as Assistant;
 
-function subscription(planId: SubscriptionResponse["plan_id"]): SubscriptionResponse {
+function subscription(
+  planId: SubscriptionResponse["plan_id"],
+): SubscriptionResponse {
   return {
     plan_id: planId,
     status: "active",

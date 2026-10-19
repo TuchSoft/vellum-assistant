@@ -25,7 +25,6 @@ import { ROUTES as ATTACHMENT_ROUTES } from "./attachment-routes.js";
 import { ROUTES as AUDIO_ROUTES } from "./audio-routes.js";
 import { ROUTES as AUDIT_ROUTES } from "./audit-routes.js";
 import { ROUTES as AUTH_ROUTES } from "./auth-routes.js";
-import { ROUTES as AUTO_PROFILE_ROUTES } from "./auto-profile-routes.js";
 import { ROUTES as AVATAR_ROUTES } from "./avatar-routes.js";
 import { ROUTES as BACKGROUND_TOOL_ROUTES } from "./background-tool-routes.js";
 import { ROUTES as BACKGROUND_WAKE_ROUTES } from "./background-wake-routes.js";
@@ -62,7 +61,6 @@ import { ROUTES as CREDENTIAL_PROMPT_ROUTES } from "./credential-prompt-routes.j
 import { ROUTES as CREDENTIAL_REQUEST_ROUTES } from "./credential-request-routes.js";
 import { ROUTES as CREDENTIAL_ROUTES } from "./credential-routes.js";
 import { ROUTES as DEBUG_ROUTES } from "./debug-routes.js";
-import { ROUTES as DEFAULT_PROVIDER_ROUTES } from "./default-provider-routes.js";
 import { ROUTES as DEFER_ROUTES } from "./defer-routes.js";
 import { ROUTES as DESKTOP_SETUP_ROUTES } from "./desktop-setup-routes.js";
 import { ROUTES as DIAGNOSTICS_ROUTES } from "./diagnostics-routes.js";
@@ -92,8 +90,6 @@ import { ROUTES as IDENTITY_ROUTES } from "./identity-routes.js";
 import { ROUTES as IMAGE_GENERATION_ROUTES } from "./image-generation-routes.js";
 import { ROUTES as INFERENCE_CALLSITES_ROUTES } from "./inference-callsites-routes.js";
 import { ROUTES as INFERENCE_MODELS_ROUTES } from "./inference-models-routes.js";
-import { ROUTES as INFERENCE_PROFILE_SESSION_ROUTES } from "./inference-profile-session-routes.js";
-import { ROUTES as INFERENCE_PROFILES_ROUTES } from "./inference-profiles-routes.js";
 import { ROUTES as INFERENCE_PROVIDER_CONNECTION_ROUTES } from "./inference-provider-connection-routes.js";
 import { ROUTES as INFERENCE_SEND_ROUTES } from "./inference-send-routes.js";
 import { ROUTES as INGRESS_STATUS_ROUTES } from "./ingress-status-routes.js";
@@ -112,6 +108,7 @@ import { ROUTES as INTERNAL_TWILIO_ROUTES } from "./internal-twilio-routes.js";
 import { ROUTES as LIFECYCLE_ROUTES } from "./lifecycle-routes.js";
 import { ROUTES as LIVE_VOICE_ROUTES } from "./live-voice-routes.js";
 import { ROUTES as LLM_CALL_SITES_ROUTES } from "./llm-call-sites-routes.js";
+import { ROUTES as LLM_CATALOG_ROUTES } from "./llm-catalog-routes.js";
 import { ROUTES as LOG_EXPORT_ROUTES } from "./log-export-routes.js";
 import { ROUTES as MCP_AUTH_ROUTES } from "./mcp-auth-routes.js";
 import { ROUTES as MESSAGES_LEXICAL_ROUTES } from "./messages-lexical-routes.js";
@@ -220,9 +217,7 @@ export const ROUTES: RouteDefinition[] = [
   ...CONVERSATION_QUERY_ROUTES,
   ...CONVERSATION_STARTER_ROUTES,
   ...ACTIVATION_ROUTES,
-  ...AUTO_PROFILE_ROUTES,
   ...DEBUG_ROUTES,
-  ...DEFAULT_PROVIDER_ROUTES,
   ...DESKTOP_SETUP_ROUTES,
   ...DIAGNOSTICS_ROUTES,
   ...DISK_PRESSURE_ROUTES,
@@ -251,8 +246,6 @@ export const ROUTES: RouteDefinition[] = [
   ...IDENTITY_ROUTES,
   ...INFERENCE_CALLSITES_ROUTES,
   ...INFERENCE_MODELS_ROUTES,
-  ...INFERENCE_PROFILE_SESSION_ROUTES,
-  ...INFERENCE_PROFILES_ROUTES,
   ...INFERENCE_PROVIDER_CONNECTION_ROUTES,
   ...INFERENCE_SEND_ROUTES,
   ...INGRESS_STATUS_ROUTES,
@@ -265,6 +258,7 @@ export const ROUTES: RouteDefinition[] = [
   ...LIVE_VOICE_ROUTES,
   ...LOG_EXPORT_ROUTES,
   ...LLM_CALL_SITES_ROUTES,
+  ...LLM_CATALOG_ROUTES,
   ...MEMORY_EVAL_ROUTES,
   ...MEMORY_GRAPH_ROUTES,
   ...MEMORY_INGEST_ROUTES,

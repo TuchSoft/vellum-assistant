@@ -48,24 +48,28 @@ const CALL_SITES: ConfigLlmCallsitesGetResponse = {
       displayName: "Chat replies",
       description: "The model call behind each reply in a conversation.",
       domain: "chat",
+      enabled: true,
     },
     {
       id: "chat.title",
       displayName: "Conversation titles",
       description: "Names a conversation after its first exchange.",
       domain: "chat",
+      enabled: true,
     },
     {
       id: "memory.extract",
       displayName: "Memory extraction",
       description: "Pulls durable facts out of a finished conversation.",
       domain: "memory",
+      enabled: true,
     },
     {
       id: "schedules.run",
       displayName: "Scheduled runs",
       description: "Runs a schedule's message when it fires.",
       domain: "schedules",
+      enabled: true,
     },
   ],
 };

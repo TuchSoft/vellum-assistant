@@ -172,7 +172,7 @@ describe("resolveConversationAttribution", () => {
 
     expect(snapshot).toMatchObject({
       callSite: "mainAgent",
-      overrideProfile: null,
+      model: null,
       appliedProfile: "active",
       profileSource: "active",
       resolvedProvider: "openai",
@@ -227,7 +227,7 @@ describe("createToolExecutor attribution threading", () => {
     const { executor, calls } = makeCapturingExecutor();
     const toolFn = makeToolFn(
       executor,
-      makeCtx({ currentTurnOverrideProfile: "pinned" }),
+      makeCtx({ currentTurnModel: "pinned" }),
     );
 
     const result = await toolFn("file_read", { path: "/tmp/a" });

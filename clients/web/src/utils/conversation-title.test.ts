@@ -19,9 +19,9 @@ describe("resolveConversationTitleDisplay", () => {
     expect(
       resolveConversationTitleDisplay("Generating title...", "无标题"),
     ).toBe("Generating title...");
-    expect(
-      resolveConversationTitleDisplay("Sin título", "Untitled"),
-    ).toBe("Sin título");
+    expect(resolveConversationTitleDisplay("Sin título", "Untitled")).toBe(
+      "Sin título",
+    );
   });
 });
 

@@ -83,7 +83,9 @@ export function DocumentCommentForm({
           leftIcon={<Send />}
           disabled={!canSubmit}
         >
-          {submitting ? t("documentCommentForm.sending") : t("documentCommentForm.send")}
+          {submitting
+            ? t("documentCommentForm.sending")
+            : t("documentCommentForm.send")}
         </Button>
       </div>
     </form>

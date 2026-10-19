@@ -61,9 +61,7 @@ mock.module("@/domains/chat/voice/stt-api", () => ({
 interface FakeDictationStreamArgs {
   onPartial: (text: string) => void;
 }
-let dictationStreamImpl: (
-  args: FakeDictationStreamArgs,
-) => {
+let dictationStreamImpl: (args: FakeDictationStreamArgs) => {
   isLive: () => boolean;
   stop: () => Promise<string | null>;
 } | null = () => null;

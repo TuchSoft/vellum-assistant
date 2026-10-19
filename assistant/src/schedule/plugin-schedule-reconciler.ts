@@ -343,7 +343,7 @@ function toDefinition(
     maxRetries: config.maxRetries ?? undefined,
     retryBackoffMs: config.retryBackoffMs ?? undefined,
     quiet: config.quiet ?? undefined,
-    inferenceProfile: config.inferenceProfile,
+    model: config.model,
     timeoutMs: config.timeoutMs,
     enabled: config.enabled,
     definitionHash: declaration.definitionHash,

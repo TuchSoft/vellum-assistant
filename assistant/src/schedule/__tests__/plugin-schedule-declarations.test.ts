@@ -52,7 +52,7 @@ const FULL_DIGEST: Record<string, string> = {
     max_retries: 2,
     retry_backoff_ms: 5000,
     quiet: true,
-    inference_profile: "fast",
+    model: "fast",
     timeout_ms: 30000,
   }),
   "digest/index.md": "Summarize the day.\n",
@@ -102,7 +102,7 @@ describe("parsePluginScheduleDeclarations", () => {
       maxRetries: 2,
       retryBackoffMs: 5000,
       quiet: true,
-      inferenceProfile: "fast",
+      model: "fast",
       timeoutMs: 30000,
       enabled: true,
     });
@@ -126,7 +126,7 @@ describe("parsePluginScheduleDeclarations", () => {
       maxRetries: null,
       retryBackoffMs: null,
       quiet: null,
-      inferenceProfile: null,
+      model: null,
       timeoutMs: null,
       enabled: true,
     });

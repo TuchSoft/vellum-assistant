@@ -168,7 +168,7 @@ mock.module("../../notifications/background-result-producer.js", () => ({
 // it records into the originating conversation's probe.
 // Overridable per test (e.g. to simulate a throwing DB read); reset in
 // beforeEach.
-let mockGetConversationOverrideProfile: (
+let mockGetConversationModel: (
   conversationId: string,
 ) => string | undefined = () => undefined;
 const wakeOutcomeStamps: Array<{
@@ -183,8 +183,8 @@ mock.module("../../persistence/conversation-crud.js", () => ({
   ) => {
     wakeOutcomeStamps.push({ messageId, metadata });
   },
-  getConversationOverrideProfile: (conversationId: string) =>
-    mockGetConversationOverrideProfile(conversationId),
+  getConversationModel: (conversationId: string) =>
+    mockGetConversationModel(conversationId),
   getConversation: () => ({
     archivedAt: null,
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -312,9 +312,7 @@ const recordUsageCalls: Array<{
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
   callSite: unknown;
-  overrideProfile: unknown;
-  forceOverrideProfile: unknown;
-  selectionSeed: unknown;
+  attributionModel: unknown;
 }> = [];
 mock.module("../../daemon/conversation-usage.js", () => ({
   recordUsage: (
@@ -332,9 +330,7 @@ mock.module("../../daemon/conversation-usage.js", () => ({
     _contextWindow?: unknown,
     attribution?: {
       callSite?: unknown;
-      overrideProfile?: unknown;
-      forceOverrideProfile?: unknown;
-      selectionSeed?: unknown;
+      model?: unknown;
     },
   ) => {
     recordUsageCalls.push({
@@ -347,9 +343,7 @@ mock.module("../../daemon/conversation-usage.js", () => ({
       cacheCreationInputTokens,
       cacheReadInputTokens,
       callSite: attribution?.callSite ?? null,
-      overrideProfile: attribution?.overrideProfile ?? null,
-      forceOverrideProfile: attribution?.forceOverrideProfile,
-      selectionSeed: attribution?.selectionSeed,
+      attributionModel: attribution?.model ?? null,
     });
   },
 }));
@@ -678,7 +672,7 @@ beforeEach(() => {
   publishMessagesChangedCalls.length = 0;
   mockGetOrCreateConversationCalls.length = 0;
   mockResolverTarget = null;
-  mockGetConversationOverrideProfile = () => undefined;
+  mockGetConversationModel = () => undefined;
   mockDiskPressureStatus = {
     enabled: false,
     state: "disabled",
@@ -1055,7 +1049,7 @@ describe("wakeAgentForOpportunity", () => {
         content: [{ type: "text", text: "never reached" }],
       },
     });
-    mockGetConversationOverrideProfile = () => {
+    mockGetConversationModel = () => {
       throw new Error("profile read failed");
     };
 
@@ -1803,20 +1797,20 @@ describe("wakeAgentForOpportunity", () => {
     });
 
     // The conversation is pinned to a profile via its row.
-    mockGetConversationOverrideProfile = () => "quality-optimized";
+    mockGetConversationModel = () => "quality-optimized";
 
     // The tool executor reads these fields off the conversation at tool-call
     // time, so they must reflect the wake's resolved turn while the loop runs.
     const ctx = conversation as unknown as {
       currentCallSite?: unknown;
-      currentTurnOverrideProfile?: unknown;
+      currentTurnModel?: unknown;
     };
     let observedCallSite: unknown;
     let observedOverrideProfile: unknown;
     const originalRun = conversation.agentLoop.run;
     conversation.agentLoop.run = async (options: AgentLoopRunOptions) => {
       observedCallSite = ctx.currentCallSite;
-      observedOverrideProfile = ctx.currentTurnOverrideProfile;
+      observedOverrideProfile = ctx.currentTurnModel;
       return originalRun(options);
     };
 
@@ -1836,7 +1830,7 @@ describe("wakeAgentForOpportunity", () => {
 
     // Restored afterwards so a queued user turn / background read can't inherit them.
     expect(ctx.currentCallSite).toBeUndefined();
-    expect(ctx.currentTurnOverrideProfile).toBeUndefined();
+    expect(ctx.currentTurnModel).toBeUndefined();
   });
 
   test("marks processing false even when the agent loop throws", async () => {
@@ -3345,15 +3339,13 @@ describe("wakeAgentForOpportunity", () => {
         // Stand-in for the source conversation's profile, floated above the
         // call-site profile (fork retrospectives). `recordUsage` is mocked, so
         // this value is only threaded through and asserted — not resolved.
-        forceOverrideProfile: "source-profile",
       },
       { resolveTarget: async () => conversation },
     );
 
     expect(recordUsageCalls).toHaveLength(1);
     expect(recordUsageCalls[0]).toMatchObject({
-      overrideProfile: "source-profile",
-      forceOverrideProfile: true,
+      model: "source-profile",
       selectionSeed: conversation.conversationId,
     });
   });
@@ -3362,14 +3354,14 @@ describe("wakeAgentForOpportunity", () => {
     // The wake resolved its own profile before the run; the request then hit
     // an outage-shaped failure and `RetryProvider` escalated to a backup
     // profile on a different provider, stamping both `actualProvider` and
-    // `actualInferenceProfile` on the response the loop reports.
+    // `actualModel` on the response the loop reports.
     const usageEvent: AgentEvent = {
       type: "usage",
       inputTokens: 100,
       outputTokens: 5,
       model: "claude-sonnet-5",
       actualProvider: "anthropic",
-      actualInferenceProfile: "backupProfile",
+      actualModel: "backupProfile",
       providerDurationMs: 10,
       rawRequest: { request: "rerouted wake" },
       rawResponse: { response: "real reply" },
@@ -3400,14 +3392,12 @@ describe("wakeAgentForOpportunity", () => {
     expect(recordUsageCalls[0]).toMatchObject({
       providerName: "anthropic",
       model: "claude-sonnet-5",
-      overrideProfile: "backupProfile",
-      forceOverrideProfile: true,
-      selectionSeed: conversation.conversationId,
+      attributionModel: "backupProfile",
     });
   });
 
   test("non-rerouted wake keeps its own profile resolution", async () => {
-    // No reroute: the event carries no `actualInferenceProfile`, so the wake's
+    // No reroute: the event carries no `actualModel`, so the wake's
     // own pre-run resolution stands and nothing is floated above the call site.
     const usageEvent: AgentEvent = {
       type: "usage",
@@ -3442,9 +3432,6 @@ describe("wakeAgentForOpportunity", () => {
     expect(recordUsageCalls[0]).toMatchObject({
       providerName: "test-provider",
       model: "test-model",
-      overrideProfile: null,
-      forceOverrideProfile: false,
-      selectionSeed: conversation.conversationId,
     });
   });
 
@@ -3929,7 +3916,6 @@ describe("wakeAgentForOpportunity", () => {
           hint: "do work",
           source: "memory-retrospective",
           callSite: "memoryRetrospective",
-          forceOverrideProfile: "forced",
         },
         { resolveTarget: async () => conversation },
       );
@@ -3939,8 +3925,7 @@ describe("wakeAgentForOpportunity", () => {
       expect(conversation.maybeCompactSizings).toEqual([
         {
           callSite: "memoryRetrospective",
-          overrideProfile: "forced",
-          forceOverrideProfile: true,
+          model: "forced",
         },
       ]);
     });
@@ -3962,8 +3947,7 @@ describe("wakeAgentForOpportunity", () => {
       expect(conversation.maybeCompactSizings).toEqual([
         {
           callSite: "mainAgent",
-          overrideProfile: undefined,
-          forceOverrideProfile: false,
+          model: undefined,
         },
       ]);
     });

@@ -18,7 +18,6 @@ import {
   getWorkspaceConfigPath,
 } from "../util/platform.js";
 import { validateChatSettingsWrite } from "./chat-settings.js";
-import { pruneSeededCallsiteDefaultsFromConfig } from "./prune-seeded-callsite-defaults.js";
 import { AssistantConfigSchema } from "./schema.js";
 import type { AssistantConfig } from "./types.js";
 
@@ -923,15 +922,11 @@ export function deepMergeOverwrite(
 
 export type DefaultWorkspaceConfigMergeResult = {
   hadOverlay: boolean;
-  providedLlmProfileNames: Set<string>;
-  providedLlmActiveProfile: boolean;
 };
 
 function emptyDefaultWorkspaceConfigMergeResult(): DefaultWorkspaceConfigMergeResult {
   return {
     hadOverlay: false,
-    providedLlmProfileNames: new Set(),
-    providedLlmActiveProfile: false,
   };
 }
 
@@ -981,18 +976,8 @@ export function mergeDefaultWorkspaceConfig(): DefaultWorkspaceConfigMergeResult
     return emptyDefaultWorkspaceConfigMergeResult();
   }
 
-  const llmDefaults = readPlainObject(
-    (defaults as Record<string, unknown>).llm,
-  );
-  const providedProfiles = readPlainObject(llmDefaults?.profiles);
   const mergeResult: DefaultWorkspaceConfigMergeResult = {
     hadOverlay: true,
-    providedLlmProfileNames: new Set(
-      providedProfiles ? Object.keys(providedProfiles) : [],
-    ),
-    providedLlmActiveProfile:
-      llmDefaults != null &&
-      Object.prototype.hasOwnProperty.call(llmDefaults, "activeProfile"),
   };
 
   const configPath = getWorkspaceConfigPath();
@@ -1007,21 +992,7 @@ export function mergeDefaultWorkspaceConfig(): DefaultWorkspaceConfigMergeResult
     }
   }
 
-  if (mergeResult.providedLlmProfileNames.size > 0) {
-    // Default-config profile entries are authoritative fragments. Remove any
-    // old same-name profile first so recursive merge does not leave stale
-    // provider-specific leaves behind.
-    const existingLlm = readPlainObject(existing.llm);
-    const existingProfiles = readPlainObject(existingLlm?.profiles);
-    if (existingProfiles) {
-      for (const name of mergeResult.providedLlmProfileNames) {
-        delete existingProfiles[name];
-      }
-    }
-  }
-
   deepMergeOverwrite(existing, defaults as Record<string, unknown>);
-  pruneSeededCallsiteDefaultsFromConfig(existing);
 
   const dir = dirname(configPath);
   if (!existsSync(dir)) {

@@ -141,12 +141,7 @@ export const sseService: SseService = {
     let lastAppResumeAt = 0;
     let lastPowerActionAt = 0;
     let nextOpenCause:
-      | "fresh"
-      | "error"
-      | "watchdog"
-      | "resume"
-      | "debug"
-      | "anchor" = "fresh";
+      "fresh" | "error" | "watchdog" | "resume" | "debug" | "anchor" = "fresh";
     // Pending timer for a delayed debug-triggered reconnect, so detach
     // can cancel a reconnect that hasn't fired yet.
     let debugReconnectTimer: ReturnType<typeof setTimeout> | null = null;

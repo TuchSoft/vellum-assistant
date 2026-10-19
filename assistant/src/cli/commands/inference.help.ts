@@ -294,8 +294,7 @@ a profile that uses it:
             },
             {
               flags: "--base-url <url>",
-              description:
-                "Endpoint base URL (openai-compatible or ollama)",
+              description: "Endpoint base URL (openai-compatible or ollama)",
             },
           ],
         },

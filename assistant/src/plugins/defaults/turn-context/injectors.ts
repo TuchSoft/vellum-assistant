@@ -45,7 +45,7 @@ const unifiedTurnContextInjector: Injector = {
       clientTimezone: ctx.clientTimezone,
       detectedTimezone: ctx.detectedTimezone,
       timeSinceLastMessage: ctx.timeSinceLastMessage,
-      modelProfile: ctx.modelProfile,
+      model: ctx.model,
     });
     return {
       id: "unified-turn-context",

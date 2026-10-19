@@ -191,35 +191,37 @@ const DEFAULT_FINDER = [
   { slug: "page-4", descriptor: "", lane: "reply" as const },
   { slug: "page-5", descriptor: "", lane: "learned" as const },
 ];
-const orchestrateSpy = mock(async (): Promise<OrchestrateResult> => ({
-  selections: [
-    { slug: "page-core", sections: [] },
-    { slug: "page-hot", sections: [] },
-    { slug: "page-fresh", sections: [] },
-    { slug: "page-1", sections: [PAGE_1_LEAD] },
-    { slug: "page-2", sections: [PAGE_2_LEAD] },
-    { slug: "page-3", sections: [] },
-    { slug: "page-4", sections: [] },
-    { slug: "page-5", sections: [] },
-  ],
-  lanes: {
-    core: ["page-core"],
-    hot: ["page-hot"],
-    fresh: ["page-fresh"],
-    always: [CAPABILITY_SLUG],
-    finder: DEFAULT_FINDER,
-  },
-  selectorRan: true,
-  pool: {
-    stable: [
-      { slug: "page-core", card: "core card", lane: "core" },
-      { slug: "page-hot", card: "hot card", lane: "hot" },
-      { slug: "page-fresh", card: "fresh card", lane: "fresh" },
-      { slug: CAPABILITY_SLUG, card: "skill card", lane: "always" },
+const orchestrateSpy = mock(
+  async (): Promise<OrchestrateResult> => ({
+    selections: [
+      { slug: "page-core", sections: [] },
+      { slug: "page-hot", sections: [] },
+      { slug: "page-fresh", sections: [] },
+      { slug: "page-1", sections: [PAGE_1_LEAD] },
+      { slug: "page-2", sections: [PAGE_2_LEAD] },
+      { slug: "page-3", sections: [] },
+      { slug: "page-4", sections: [] },
+      { slug: "page-5", sections: [] },
     ],
-    finder: DEFAULT_FINDER,
-  },
-}));
+    lanes: {
+      core: ["page-core"],
+      hot: ["page-hot"],
+      fresh: ["page-fresh"],
+      always: [CAPABILITY_SLUG],
+      finder: DEFAULT_FINDER,
+    },
+    selectorRan: true,
+    pool: {
+      stable: [
+        { slug: "page-core", card: "core card", lane: "core" },
+        { slug: "page-hot", card: "hot card", lane: "hot" },
+        { slug: "page-fresh", card: "fresh card", lane: "fresh" },
+        { slug: CAPABILITY_SLUG, card: "skill card", lane: "always" },
+      ],
+      finder: DEFAULT_FINDER,
+    },
+  }),
+);
 
 let sectionBuilds = 0;
 let needleBuilds = 0;

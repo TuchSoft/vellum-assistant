@@ -36,9 +36,7 @@ import type { QuestionEntry } from "@vellumai/assistant-api";
  *   under related compatibility seams.
  */
 export type ReportedQuestion =
-  | { requestId: string; entries: QuestionEntry[] }
-  | null
-  | undefined;
+  { requestId: string; entries: QuestionEntry[] } | null | undefined;
 
 /** What the caller should do to the card currently on screen. */
 export type PendingQuestionAction =

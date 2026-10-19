@@ -1,5 +1,5 @@
 import type { LLMCallSite } from "../config/schemas/llm.js";
-import type { UsageAttributionProfileSource } from "../usage/types.js";
+import type { UsageModelSource } from "../usage/types.js";
 import type * as wire from "./telemetry-wire.generated.js";
 import { telemetryEventSchema } from "./telemetry-wire.generated.js";
 import type { TurnOutcome } from "./turn-outcome.js";
@@ -54,7 +54,7 @@ export interface ModelTelemetryEventBase extends TelemetryEventBase {
   /** Inference profile slug. Null when no profile applied. */
   inference_profile: string | null;
   /** How the profile was attributed (same enum as llm_usage). */
-  inference_profile_source: UsageAttributionProfileSource | null;
+  inference_profile_source: UsageModelSource | null;
 }
 
 /**
@@ -164,7 +164,7 @@ export interface LlmUsageTelemetryEvent extends TelemetryEventBase {
   actor: string;
   llm_call_site: LLMCallSite | null;
   inference_profile: string | null;
-  inference_profile_source: UsageAttributionProfileSource | null;
+  inference_profile_source: UsageModelSource | null;
   /** Computed estimated cost in USD for this LLM call. Null when pricing data is unavailable. */
   cost: number | null;
 }

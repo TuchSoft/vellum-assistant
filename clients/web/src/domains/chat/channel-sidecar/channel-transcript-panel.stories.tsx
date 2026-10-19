@@ -78,8 +78,7 @@ export const Default: Story = {
         referencedEntryId={referencedEntryId}
         onToggleReference={(entry) =>
           updateArgs({
-            referencedEntryId:
-              referencedEntryId === entry.id ? null : entry.id,
+            referencedEntryId: referencedEntryId === entry.id ? null : entry.id,
           })
         }
       />

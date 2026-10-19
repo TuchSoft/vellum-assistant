@@ -158,12 +158,10 @@ describe("fetch outcome classification", () => {
     // probe/session superseded the fetch (isSameSession true): the resolved
     // org belongs to the active session, so discarding it would strand
     // org-header readiness until the next resume.
-    const outcome = await useOrganizationStore
-      .getState()
-      .fetchOrganizations(
-        () => false,
-        () => true,
-      );
+    const outcome = await useOrganizationStore.getState().fetchOrganizations(
+      () => false,
+      () => true,
+    );
 
     expect(outcome).toEqual({ ok: true });
     const state = useOrganizationStore.getState();
@@ -182,12 +180,10 @@ describe("fetch outcome classification", () => {
         response: new Response(null, { status: 403 }),
       });
 
-    const outcome = await useOrganizationStore
-      .getState()
-      .fetchOrganizations(
-        () => false,
-        () => true,
-      );
+    const outcome = await useOrganizationStore.getState().fetchOrganizations(
+      () => false,
+      () => true,
+    );
 
     // Destructive writes ride only with a fully current sync: the probe
     // already settled "present" past its timeout, so the late rejection must
@@ -309,8 +305,7 @@ describe("fetch outcome classification", () => {
       status: "error",
       error: "Platform session was rejected (HTTP 403).",
     });
-    listOrganizations = () =>
-      Promise.resolve({ data: { results: [ORG_A] } });
+    listOrganizations = () => Promise.resolve({ data: { results: [ORG_A] } });
 
     const outcome = await useOrganizationStore.getState().fetchOrganizations();
 

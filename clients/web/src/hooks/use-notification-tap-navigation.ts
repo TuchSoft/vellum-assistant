@@ -99,8 +99,7 @@ function waitForActiveTapAssistant(
     if (assistantsState.selectedAssistantId !== assistantId) {
       return false;
     }
-    const lifecycleState =
-      useAssistantLifecycleStore.getState().assistantState;
+    const lifecycleState = useAssistantLifecycleStore.getState().assistantState;
     if (
       lifecycleState !== lifecycleStateBeforeSwitch &&
       lifecycleState.kind === "error" &&

@@ -551,9 +551,7 @@ describe("parseShareDeepLink", () => {
     expect(parseShareDeepLink("vellum-assistant://share/foo/../x")).toBeNull();
     expect(parseShareDeepLink("vellum-assistant://thread/abc")).toBeNull();
     expect(
-      parseShareDeepLink(
-        `vellum-assistant://share/${INBOX_ID}?unused=1#frag`,
-      ),
+      parseShareDeepLink(`vellum-assistant://share/${INBOX_ID}?unused=1#frag`),
     ).toEqual({ inboxId: INBOX_ID });
   });
 });

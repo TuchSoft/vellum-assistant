@@ -54,7 +54,10 @@ describe("parseRequestBodyData", () => {
       '{"a":1}',
     );
     expect(
-      parseRequestBodyData("From: user@example.com\r\n\r\nHi", "message/rfc822"),
+      parseRequestBodyData(
+        "From: user@example.com\r\n\r\nHi",
+        "message/rfc822",
+      ),
     ).toBe("From: user@example.com\r\n\r\nHi");
   });
 

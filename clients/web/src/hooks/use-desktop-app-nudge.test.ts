@@ -11,9 +11,8 @@ mock.module("@/utils/native-app-nudge-telemetry", () => ({
   emitNativeAppNudgeEvent: emitNudgeEvent,
 }));
 
-const { openDesktopAppDownload, useDesktopAppNudgeState } = await import(
-  "@/hooks/use-desktop-app-nudge"
-);
+const { openDesktopAppDownload, useDesktopAppNudgeState } =
+  await import("@/hooks/use-desktop-app-nudge");
 
 const originalWindowOpen = window.open;
 
@@ -44,9 +43,7 @@ describe("desktop app download link", () => {
 
   test("tags Windows clicks and dismissals with the Windows target", () => {
     window.open = mock(() => null) as typeof window.open;
-    const { result } = renderHook(() =>
-      useDesktopAppNudgeState("windows"),
-    );
+    const { result } = renderHook(() => useDesktopAppNudgeState("windows"));
 
     act(() => result.current.handleDownload());
     act(() => result.current.handleBannerDismiss());

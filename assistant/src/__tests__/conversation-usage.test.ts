@@ -366,7 +366,7 @@ describePg("recordUsage", () => {
       undefined,
       {
         callSite: "mainAgent",
-        overrideProfile: "conversationProfile",
+        model: "conversationProfile",
       },
     );
 
@@ -458,11 +458,8 @@ describePg("recordUsage", () => {
       undefined,
       {
         callSite: "mainAgent",
-        activeProfile: null,
-        overrideProfile: null,
-        callSiteProfile: null,
-        appliedProfile: null,
-        profileSource: "default",
+        model: "main",
+        modelSource: "default",
         resolvedProvider: "anthropic",
         resolvedModel: "claude-opus-4-6",
       },

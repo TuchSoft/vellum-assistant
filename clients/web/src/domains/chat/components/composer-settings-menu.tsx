@@ -105,10 +105,7 @@ export function ComposerConfigurationContent({
     ? t(AUTONOMY_COPY[configuration.autonomy].label)
     : t("composerConfiguration.loading");
   const available = (entry: ProfilePickerEntry) =>
-    configuration.modeReady &&
-    isDispatchableProfile(entry, configuration.allProfiles, {
-      requireOwnProviderAndModel: configuration.requireOwnProviderAndModel,
-    });
+    configuration.modeReady && isDispatchableProfile(entry);
   const back = () => {
     setView("model");
     requestAnimationFrame(() => moreRef.current?.focus());

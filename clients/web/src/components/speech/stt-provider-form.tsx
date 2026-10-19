@@ -144,8 +144,7 @@ export function SttProviderForm({
   // `services.stt` falls under the ConfigGetResponse index signature
   // (`unknown`), so narrow it explicitly to read the provider.
   const daemonStt = daemonConfig?.services?.stt as
-    | { provider?: string; mode?: string }
-    | undefined;
+    { provider?: string; mode?: string } | undefined;
   // A config written by the legacy mode toggle marks managed via `mode` while
   // `provider` holds the BYOK restore value — the daemon routes it to Vellum,
   // so the form must render it as Vellum too.
@@ -338,9 +337,7 @@ export function SttProviderForm({
       return true;
     } catch (err) {
       toast.error(
-        err instanceof Error
-          ? err.message
-          : t("sttProviderForm.saveFailed"),
+        err instanceof Error ? err.message : t("sttProviderForm.saveFailed"),
       );
       return false;
     } finally {

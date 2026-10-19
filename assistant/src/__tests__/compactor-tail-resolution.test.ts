@@ -218,10 +218,7 @@ describe("resolveTailStartIndex", () => {
   });
 
   it("returns null when neither timestamp nor preview matches", () => {
-    const messages: Message[] = [
-      userText("hello"),
-      assistantText("hi there"),
-    ];
+    const messages: Message[] = [userText("hello"), assistantText("hi there")];
     expect(
       resolveTailStartIndex(
         messages,
@@ -249,9 +246,7 @@ Earlier work, in my voice.
     );
     expect(parsed).not.toBeNull();
     expect(parsed?.tailStartTimestamp).toBe("");
-    expect(parsed?.tailStartPreview).toBe(
-      "Found the duplicate. Let me fix it",
-    );
+    expect(parsed?.tailStartPreview).toBe("Found the duplicate. Let me fix it");
   });
 
   it("rejects a tail_start with neither timestamp nor preview", () => {

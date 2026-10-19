@@ -95,7 +95,6 @@ mock.module("../daemon/date-context.js", () => ({
 }));
 
 import type { SurfaceDataByType } from "../api/surfaces.js";
-import { resolveCallSiteConfig } from "../config/llm-resolver.js";
 import { LLMSchema } from "../config/schemas/llm.js";
 import { REFUSAL_FALLBACK_TEXT } from "../context/refusal-quarantine.js";
 import {
@@ -124,7 +123,7 @@ import {
   NON_INTERACTIVE_CONTEXT_BLOCK,
   resolveChannelCapabilities,
   resolveTurnInboundActorContext,
-  resolveTurnModelProfileLabel,
+  resolveTurnModelLabel,
   stripChannelCapabilityContext,
   stripInjectionsForCompaction,
   stripNowScratchpad,
@@ -1268,7 +1267,7 @@ describe("applyRuntimeInjections — injection mode", () => {
       requestId: "reinject-req",
       conversationId: "injection-mode-conv",
       isNonInteractive: false,
-      modelProfileKey: "balanced",
+      modelKey: "balanced",
       logger: {
         info: () => {},
         warn: () => {},
@@ -1838,10 +1837,10 @@ describe("resolveTurnInboundActorContext", () => {
 });
 
 // ---------------------------------------------------------------------------
-// resolveTurnModelProfileLabel
+// resolveTurnModelLabel
 // ---------------------------------------------------------------------------
 
-describe("resolveTurnModelProfileLabel", () => {
+describe("resolveTurnModelLabel", () => {
   /**
    * A null notice key means there is no `model_profile` line to render this
    * turn.
@@ -1853,7 +1852,7 @@ describe("resolveTurnModelProfileLabel", () => {
     });
 
     // WHEN the label is resolved for a null notice key
-    const label = resolveTurnModelProfileLabel(null, "mainAgent", llm);
+    const label = resolveTurnModelLabel(null, "mainAgent", llm);
 
     // THEN there is no profile line to inject
     expect(label).toBeNull();
@@ -1863,92 +1862,13 @@ describe("resolveTurnModelProfileLabel", () => {
    * A known profile renders its configured display label paired with the model
    * the call site resolves to.
    */
-  test("renders the profile's label with the resolved model", async () => {
-    // GIVEN a workspace with a labelled "fast" profile
-    const llm = LLMSchema.parse({
-      default: { provider: "anthropic", model: "claude-sonnet-4-7" },
-      profiles: {
-        fast: { label: "Fast", provider: "anthropic", model: "claude-haiku-4" },
-      },
-    });
-
-    // WHEN the label is resolved for that profile at the main-agent call site
-    const label = resolveTurnModelProfileLabel("fast", "mainAgent", llm);
-
-    // THEN the rendered line pairs the display label with the resolved model
-    expect(label).toBe("Fast (claude-haiku-4)");
-  });
-
-  /**
-   * A profile with no configured label falls back to its raw key so the model
-   * still gets a stable identifier.
-   */
-  test("falls back to the raw key when the profile has no label", async () => {
-    // GIVEN a profile that sets a model but no display label
-    const llm = LLMSchema.parse({
-      default: { provider: "anthropic", model: "claude-sonnet-4-7" },
-      profiles: {
-        deep: { provider: "anthropic", model: "claude-opus-4" },
-      },
-    });
-
-    // WHEN the label is resolved for that profile
-    const label = resolveTurnModelProfileLabel("deep", "mainAgent", llm);
-
-    // THEN the raw key stands in for the missing label
-    expect(label).toBe("deep (claude-opus-4)");
-  });
-
-  /**
-   * A key naming a `mix` profile must announce the arm the turn's provider
-   * calls actually run on. The conversation id is threaded as the selection
-   * seed so the announced model is a deterministic function of the
-   * conversation, matching the seeded expansion the provider layer performs.
-   */
-  test("announces the seeded mix arm so it matches the turn's model", async () => {
-    // GIVEN a mix profile routing between two models
-    const llm = LLMSchema.parse({
-      default: { provider: "anthropic", model: "claude-sonnet-4-7" },
-      profiles: {
-        a: { label: "Arm A", provider: "anthropic", model: "model-a" },
-        b: { label: "Arm B", provider: "anthropic", model: "model-b" },
-        ab: {
-          label: "AB",
-          mix: [
-            { profile: "a", weight: 50 },
-            { profile: "b", weight: 50 },
-          ],
-        },
-      },
-    });
-
-    // AND the model the provider calls resolve to for this conversation's seed
-    const seededModel = resolveCallSiteConfig("mainAgent", llm, {
-      overrideProfile: "ab",
-      selectionSeed: "conv-seed-1",
-    }).model;
-
-    // WHEN the label is resolved with the same conversation seed
-    const label = resolveTurnModelProfileLabel(
-      "ab",
-      "mainAgent",
-      llm,
-      "conv-seed-1",
+  test("renders the alias the turn ran on", () => {
+    const llm = LLMSchema.parse({ defaultModel: "main" });
+    expect(resolveTurnModelLabel("main-pro", "mainAgent", llm)).toBe(
+      "main-pro",
     );
-
-    // THEN the announced model is the seeded arm (deterministic, not re-rolled)
-    expect(label).toBe(`AB (${seededModel})`);
-    expect(
-      resolveTurnModelProfileLabel("ab", "mainAgent", llm, "conv-seed-1"),
-    ).toBe(label);
   });
-});
 
-// ---------------------------------------------------------------------------
-// buildUnifiedTurnContextBlock
-// ---------------------------------------------------------------------------
-
-describe("buildUnifiedTurnContextBlock", () => {
   test("guardian case: only timestamp + interface, no actor fields", async () => {
     const options: UnifiedTurnContextOptions = {
       timestamp: "2026-04-02T12:00:00Z",

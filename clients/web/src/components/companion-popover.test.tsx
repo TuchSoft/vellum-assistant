@@ -480,7 +480,9 @@ describe("the pickers in the popover", () => {
       />,
     );
 
-    expect(container.querySelector('[role="group"][aria-label="American"]')).not.toBeNull();
+    expect(
+      container.querySelector('[role="group"][aria-label="American"]'),
+    ).not.toBeNull();
     expect(optionsOf(container)[0]!.textContent).toBe("Warm (default)");
     // Only a voice with a sample offers a preview.
     expect(buttonsNamed(container, "Preview Warm")).toHaveLength(0);

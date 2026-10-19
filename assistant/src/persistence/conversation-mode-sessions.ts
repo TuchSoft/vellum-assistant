@@ -15,7 +15,10 @@ import {
 } from "./message-metadata.js";
 
 export type ModeSessionWriteFailureReason =
-  "already_exists" | "not_found" | "stale_revision" | "terminal";
+  | "already_exists"
+  | "not_found"
+  | "stale_revision"
+  | "terminal";
 
 export type ModeSessionWriteResult =
   | { ok: true; session: ModeSessionSummary }

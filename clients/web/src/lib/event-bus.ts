@@ -56,10 +56,7 @@ import type { CommandUrlProvenance } from "@/runtime/native-deep-link";
  * gives the camera back and drops capture consent on a minimize.
  */
 export type AppResumeSignal =
-  | "visibility"
-  | "app_state"
-  | "online"
-  | "window_attention";
+  "visibility" | "app_state" | "online" | "window_attention";
 
 /** Source of a synthetic `"app.hidden"` event. */
 export type AppHiddenSignal = "visibility" | "app_state" | "window_attention";

@@ -13,9 +13,7 @@ describe("usage grouped buckets", () => {
       "unknownCallSite",
     );
     expect(displayUsageGroup("call_site", null)).toBe("Unknown Task");
-    expect(displayUsageGroup("inference_profile", null)).toBe(
-      "Default / Unset",
-    );
+    expect(displayUsageGroup("model", null)).toBe("Other");
   });
 
   test("uses stable collision-proof keys for grouped series values", () => {
@@ -23,12 +21,10 @@ describe("usage grouped buckets", () => {
       "value:mainAgent",
     );
     expect(stableUsageSeriesGroupKey("call_site", null)).toBe("null:call_site");
-    expect(stableUsageSeriesGroupKey("inference_profile", null)).toBe(
-      "null:inference_profile",
+    expect(stableUsageSeriesGroupKey("model", null)).toBe("null:model");
+    expect(stableUsageSeriesGroupKey("model", "null:model")).toBe(
+      "value:null:model",
     );
-    expect(
-      stableUsageSeriesGroupKey("inference_profile", "null:inference_profile"),
-    ).toBe("value:null:inference_profile");
   });
 
   test("does not double-count bucket totals when empty buckets are disabled", () => {
@@ -87,7 +83,7 @@ describe("usage grouped buckets", () => {
           output_tokens: 20,
           estimated_cost_usd: 0.02,
           llm_call_count: 1,
-          group_key: "null:inference_profile",
+          group_key: "null:model",
         },
       ],
       {
@@ -97,20 +93,20 @@ describe("usage grouped buckets", () => {
       "UTC",
       {
         granularity: "daily",
-        groupBy: "inference_profile",
+        groupBy: "model",
         fillEmpty: true,
       },
     );
 
     expect(buckets).toHaveLength(1);
-    expect(buckets[0].groups["null:inference_profile"]).toMatchObject({
-      group: "Default / Unset",
+    expect(buckets[0].groups["null:model"]).toMatchObject({
+      group: "Other",
       groupKey: null,
       totalInputTokens: 100,
     });
-    expect(buckets[0].groups["value:null:inference_profile"]).toMatchObject({
-      group: "null:inference_profile",
-      groupKey: "null:inference_profile",
+    expect(buckets[0].groups["value:null:model"]).toMatchObject({
+      group: "null:model",
+      groupKey: "null:model",
       totalInputTokens: 200,
     });
   });

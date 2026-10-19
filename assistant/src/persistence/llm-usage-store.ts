@@ -84,8 +84,7 @@ export async function recordUsageEvent(
     cronRunId: input.cronRunId ?? null,
     callSite: input.callSite ?? null,
     llmCallCount: input.llmCallCount ?? 1,
-    inferenceProfile: input.inferenceProfile ?? null,
-    inferenceProfileSource: input.inferenceProfileSource ?? null,
+    modelSource: input.modelSource ?? null,
     estimatedCostUsd: pricing.estimatedCostUsd,
     pricingStatus: pricing.pricingStatus,
     assistantVersion: APP_VERSION,
@@ -99,8 +98,7 @@ export async function recordUsageEvent(
     requestId: event.requestId,
     actor: event.actor,
     callSite: event.callSite,
-    inferenceProfile: event.inferenceProfile,
-    inferenceProfileSource: event.inferenceProfileSource,
+    modelSource: event.modelSource,
     provider: event.provider,
     model: event.model,
     inputTokens: event.inputTokens,
@@ -139,8 +137,7 @@ function rowToUsageEvent(row: {
   requestId: string | null;
   actor: string;
   callSite: string | null;
-  inferenceProfile: string | null;
-  inferenceProfileSource: string | null;
+  modelSource: string | null;
   provider: string;
   model: string;
   inputTokens: number;
@@ -162,9 +159,7 @@ function rowToUsageEvent(row: {
     requestId: row.requestId,
     actor: row.actor as UsageEvent["actor"],
     callSite: row.callSite as UsageEvent["callSite"],
-    inferenceProfile: row.inferenceProfile,
-    inferenceProfileSource:
-      row.inferenceProfileSource as UsageEvent["inferenceProfileSource"],
+    modelSource: row.modelSource as UsageEvent["modelSource"],
     provider: row.provider,
     model: row.model,
     inputTokens: row.inputTokens,
@@ -342,8 +337,7 @@ export async function queryUnreportedUsageEvents(
       requestId: llmUsageEvents.requestId,
       actor: llmUsageEvents.actor,
       callSite: llmUsageEvents.callSite,
-      inferenceProfile: llmUsageEvents.inferenceProfile,
-      inferenceProfileSource: llmUsageEvents.inferenceProfileSource,
+      modelSource: llmUsageEvents.modelSource,
       provider: llmUsageEvents.provider,
       model: llmUsageEvents.model,
       inputTokens: llmUsageEvents.inputTokens,
@@ -796,7 +790,6 @@ export const USAGE_SERIES_GROUP_BY_DIMENSIONS = [
   "provider",
   "model",
   "call_site",
-  "inference_profile",
   "schedule",
 ] as const satisfies readonly GroupByDimension[];
 
@@ -808,7 +801,6 @@ const GROUP_BY_COLUMNS: Record<
   provider: "provider",
   model: "model",
   call_site: "call_site",
-  inference_profile: "inference_profile",
 };
 
 const ALLOWED_DIMENSIONS = new Set<string>(USAGE_GROUP_BY_DIMENSIONS);
@@ -825,10 +817,7 @@ function mapGroupRow(
   row: GroupRow,
   groupBy: GroupByDimension,
 ): UsageGroupBreakdown {
-  const includeGroupKey =
-    groupBy === "call_site" ||
-    groupBy === "inference_profile" ||
-    groupBy === "schedule";
+  const includeGroupKey = groupBy === "call_site" || groupBy === "schedule";
   return {
     group: row.group_label ?? displayUsageGroup(groupBy, row.group_key),
     groupId: row.group_id,

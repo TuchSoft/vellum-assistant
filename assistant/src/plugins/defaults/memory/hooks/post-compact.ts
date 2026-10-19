@@ -51,7 +51,7 @@ import { getConfig } from "../../../../config/loader.js";
 import { findConversationOrSubagent } from "../../../../daemon/conversation-registry.js";
 import {
   applyRuntimeInjections,
-  resolveTurnModelProfileLabel,
+  resolveTurnModelLabel,
 } from "../../../../daemon/conversation-runtime-assembly.js";
 import {
   FALLBACK_TURN_TRUST,
@@ -79,10 +79,10 @@ const postCompact: HookFunction<PostCompactContext> = async (ctx) => {
   // values the turn's initial assembly resolved.
   const trust = conversation?.getTurnOrRestingTrust() ?? FALLBACK_TURN_TRUST;
   const actorContext = conversation?.currentTurnInboundActorContext ?? null;
-  // Render the `model_profile:` label from the turn-start notice key, using
+  // Render the `model:` label from the turn-start notice key, using
   // the call site self-resolved from the live conversation — the same
   // derivation the first-call user-prompt-submit assembly uses.
-  const modelProfile = resolveTurnModelProfileLabel(
+  const model = resolveTurnModelLabel(
     conversation?.currentTurnModelProfileNoticeKey ?? null,
     conversation?.currentCallSite ?? "mainAgent",
     config.llm,
@@ -99,7 +99,7 @@ const postCompact: HookFunction<PostCompactContext> = async (ctx) => {
   // never claims a copy a restart cannot rehydrate.
   const result = await applyRuntimeInjections(strippedHistory, {
     isNonInteractive,
-    modelProfile,
+    model,
     actorContext,
     mode,
     requestId,

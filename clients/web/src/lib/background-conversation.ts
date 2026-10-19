@@ -36,8 +36,7 @@ import {
 import { extractErrorMessage } from "@/utils/api-errors";
 
 export type CreateBackgroundConversationResult =
-  | { ok: true; conversationId: string }
-  | { ok: false; error: string };
+  { ok: true; conversationId: string } | { ok: false; error: string };
 
 export interface CreateBackgroundConversationArgs {
   assistantId: string;

@@ -35,7 +35,10 @@ export async function requestHostExec(
     { timeoutMs: (input.timeout_seconds ?? 30) * 1000 + 10_000 },
   );
   if (!result.ok) {
-    return { ok: false, error: result.error ?? "Failed to reach the assistant." };
+    return {
+      ok: false,
+      error: result.error ?? "Failed to reach the assistant.",
+    };
   }
   return result.result!;
 }

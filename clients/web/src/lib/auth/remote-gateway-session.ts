@@ -53,8 +53,7 @@ interface RemoteGatewaySessionCredentials {
 }
 
 export type RemoteWebPairingTokenResult =
-  | RemoteWebPairingTokenPendingResponse
-  | RemoteWebPairingTokenApprovedResponse;
+  RemoteWebPairingTokenPendingResponse | RemoteWebPairingTokenApprovedResponse;
 
 export class RemoteWebPairingError extends Error {
   readonly status: number;

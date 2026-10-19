@@ -422,16 +422,10 @@ describe("notification identities", () => {
     publishPreparedNotificationIdentity(publication, { avatar: AVATAR });
 
     expect(
-      resetPreparedNotificationIdentityByKey(
-        owner.scopeId,
-        owner.assistantId,
-      ),
+      resetPreparedNotificationIdentityByKey(owner.scopeId, owner.assistantId),
     ).toBe(true);
     expect(
-      resetPreparedNotificationIdentityByKey(
-        owner.scopeId,
-        owner.assistantId,
-      ),
+      resetPreparedNotificationIdentityByKey(owner.scopeId, owner.assistantId),
     ).toBe(true);
     expect(
       publishPreparedNotificationIdentity(publication, { avatar: AVATAR }),

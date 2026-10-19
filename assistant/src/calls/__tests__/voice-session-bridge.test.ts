@@ -149,8 +149,6 @@ import {
 } from "../../__tests__/helpers/hub-clients.js";
 import { setConfig } from "../../__tests__/helpers/set-config.js";
 import type { PreparedModelCall } from "../../agent/loop.js";
-import { selectWinningProfile } from "../../config/llm-resolver.js";
-import { getConfig } from "../../config/loader.js";
 import { ABORT_WATCHDOG_MS } from "../../daemon/abort-watchdog.js";
 import { VOICE_ESCALATION_CONTINUATION_MESSAGE_KIND } from "../../plugin-api/constants.js";
 import { assistantEventHub } from "../../runtime/assistant-event-hub.js";
@@ -187,9 +185,8 @@ interface WaitForIdleCall {
 
 interface FakeConversation {
   conversationId: string;
-  /** Per-conversation profile pin an escalated leg follows; absent = none. */
-  inferenceProfile?: string | null;
-  inferenceProfileExpiresAt?: number | null;
+  /** Per-conversation model an escalated leg follows; absent = none. */
+  model?: string | null;
   callSessionId: string | undefined;
   forcePromptSideEffects: boolean;
   currentRequestId: string | undefined;
@@ -237,10 +234,8 @@ function makeFakeConversation(opts: {
   workingDir?: string;
   /** In-memory history the profile pin reads; undefined models a text-only call. */
   messages?: Array<{ role: string; content: unknown[] }>;
-  /** Per-conversation profile pin; undefined models an unpinned conversation. */
-  inferenceProfile?: string;
-  /** Expiry of that pin; a past stamp models a lapsed session pin. */
-  inferenceProfileExpiresAt?: number;
+  /** Per-conversation model; undefined models an unpinned conversation. */
+  model?: string;
 }) {
   const waitForIdleCalls: WaitForIdleCall[] = [];
   const confirmationDecisions: Array<{ requestId: string; decision: string }> =
@@ -257,12 +252,7 @@ function makeFakeConversation(opts: {
     | undefined;
   const conversation: FakeConversation = {
     conversationId: "conv-voice-bridge-test",
-    ...(opts.inferenceProfile !== undefined
-      ? { inferenceProfile: opts.inferenceProfile }
-      : {}),
-    ...(opts.inferenceProfileExpiresAt !== undefined
-      ? { inferenceProfileExpiresAt: opts.inferenceProfileExpiresAt }
-      : {}),
+    ...(opts.model !== undefined ? { model: opts.model } : {}),
     // The workspace boundary the reach check compares paths against. A real
     // conversation always has one; without it the approval gate fails closed.
     workingDir: opts.workingDir ?? "/tmp/workspace-voice-bridge-test",
@@ -3187,8 +3177,7 @@ describe("startVoiceTurn with images in history", () => {
     const runOptions = await runOptionsFor({ messages: PHOTO_HISTORY });
 
     expect(runOptions.callSite).toBe("callAgent");
-    expect(runOptions.overrideProfile).toBeUndefined();
-    expect(runOptions.forceOverrideProfile).toBeUndefined();
+    expect(runOptions.model).toBeUndefined();
   });
 
   test("a front-door leg is left alone — its own call site pins it", async () => {
@@ -3197,17 +3186,17 @@ describe("startVoiceTurn with images in history", () => {
       turn: { routingLeg: "front-door" },
     });
 
-    expect(runOptions.overrideProfile).toBeUndefined();
+    expect(runOptions.model).toBeUndefined();
     expect(runOptions.callSite).toBe("voiceFrontDoor");
   });
 
   test("an explicit routing pin still applies", async () => {
     const runOptions = await runOptionsFor({
       messages: PHOTO_HISTORY,
-      turn: { overrideProfile: "quality-optimized" },
+      turn: { model: "main-pro" },
     });
 
-    expect(runOptions.overrideProfile).toBe("quality-optimized");
+    expect(runOptions.model).toBe("main-pro");
   });
 });
 
@@ -3241,19 +3230,13 @@ describe("startVoiceTurn escalated-leg profile pin", () => {
 
   async function runOptionsFor(opts: {
     messages?: Array<{ role: string; content: unknown[] }>;
-    inferenceProfile?: string;
-    inferenceProfileExpiresAt?: number;
+    model?: string;
     turn?: Record<string, unknown>;
   }): Promise<Record<string, unknown>> {
     const fake = makeFakeConversation({
       processing: false,
       ...(opts.messages ? { messages: opts.messages } : {}),
-      ...(opts.inferenceProfile
-        ? { inferenceProfile: opts.inferenceProfile }
-        : {}),
-      ...(opts.inferenceProfileExpiresAt !== undefined
-        ? { inferenceProfileExpiresAt: opts.inferenceProfileExpiresAt }
-        : {}),
+      ...(opts.model ? { model: opts.model } : {}),
     });
     fakeConversation = fake.conversation;
     let runOptions: Record<string, unknown> = {};
@@ -3270,19 +3253,17 @@ describe("startVoiceTurn escalated-leg profile pin", () => {
 
   function reportPreparedTarget(
     runOptions: Record<string, unknown>,
-    overrideProfile: string,
+    model: string,
   ): void {
     const onPrepared = runOptions.onFirstModelCallPrepared as (prepared: {
       callSite: "mainAgent";
-      overrideProfile: string;
-      forceOverrideProfile: boolean;
+      model: string;
       systemPrompt: string;
       tools: [];
     }) => void;
     onPrepared({
       callSite: "mainAgent",
-      overrideProfile,
-      forceOverrideProfile: true,
+      model,
       systemPrompt: "prepared prompt",
       tools: [],
     });
@@ -3293,22 +3274,15 @@ describe("startVoiceTurn escalated-leg profile pin", () => {
 
     expect(runOptions.callSite).toBe("callAgent");
     expect(runOptions.inferenceCallSite).toBe("mainAgent");
-    expect(runOptions.overrideProfile).toBeUndefined();
-    expect(runOptions.forceOverrideProfile).toBeUndefined();
+    expect(runOptions.model).toBeUndefined();
   });
 
-  test("the workspace chat-model selection pins the leg", async () => {
-    // `callAgent`'s chain never consults `llm.activeProfile`, so without the
-    // pin the hand-off would land on the site's shipped default while the
-    // same conversation's typed turns run on the user's pick.
-    setConfig("llm", { activeProfile: "quality-optimized" });
-
-    const runOptions = await runOptionsFor({});
+  test("the conversation's chat-model selection pins the leg", async () => {
+    const runOptions = await runOptionsFor({ model: "main-pro" });
 
     expect(runOptions.callSite).toBe("callAgent");
     expect(runOptions.inferenceCallSite).toBe("mainAgent");
-    expect(runOptions.overrideProfile).toBe("quality-optimized");
-    expect(runOptions.forceOverrideProfile).toBe(true);
+    expect(runOptions.model).toBe("main-pro");
     expect(runOptions.onFirstModelCallPrepared).toBeFunction();
   });
 
@@ -3332,8 +3306,7 @@ describe("startVoiceTurn escalated-leg profile pin", () => {
     expect(
       onFirstModelCallPrepared({
         callSite: "mainAgent",
-        overrideProfile: "hook-selected-profile",
-        forceOverrideProfile: true,
+        model: "hook-selected-profile",
         signal: turnAbort.signal,
         systemPrompt: "hook-edited prompt",
         tools,
@@ -3342,62 +3315,24 @@ describe("startVoiceTurn escalated-leg profile pin", () => {
 
     expect(warmPromptCache).toHaveBeenCalledWith({
       callSite: "mainAgent",
-      overrideProfile: "hook-selected-profile",
-      forceOverrideProfile: true,
+      model: "hook-selected-profile",
       signal: turnAbort.signal,
       systemPrompt: "hook-edited prompt",
       tools,
     });
   });
 
-  test("reports the conversation profile selected for the handoff", async () => {
-    setConfig("llm", { activeProfile: "quality-optimized" });
+  test("reports the conversation model selected for the handoff", async () => {
     const onEscalationTargetResolved = mock();
 
     const runOptions = await runOptionsFor({
+      model: "main-pro",
       turn: { onEscalationTargetResolved },
     });
-    reportPreparedTarget(runOptions, "quality-optimized");
+    reportPreparedTarget(runOptions, "main-pro");
 
     expect(onEscalationTargetResolved).toHaveBeenCalledWith({
-      profile: "quality-optimized",
-      source: "conversation",
-    });
-  });
-
-  test("reports the concrete profile selected from a mix", async () => {
-    setConfig("llm", {
-      activeProfile: "voice-mix",
-      profiles: {
-        "voice-mix": {
-          mix: [
-            { profile: "quality-optimized", weight: 1 },
-            { profile: "cost-optimized", weight: 1 },
-          ],
-        },
-      },
-    });
-    let selectedProfile: string | undefined;
-    selectWinningProfile("mainAgent", getConfig().llm, {
-      overrideProfile: "voice-mix",
-      forceOverrideProfile: true,
-      selectionSeed: "conv-voice-bridge-test",
-      onMixSelected: ({ chosenProfile }) => {
-        selectedProfile = chosenProfile;
-      },
-    });
-    const onEscalationTargetResolved = mock();
-    const runOptions = await runOptionsFor({
-      turn: { onEscalationTargetResolved },
-    });
-
-    // The leg is pinned to the chosen arm itself (see the mix pin test).
-    expect(runOptions.overrideProfile).toBe(selectedProfile);
-    reportPreparedTarget(runOptions, runOptions.overrideProfile as string);
-
-    expect(selectedProfile).toBeDefined();
-    expect(onEscalationTargetResolved).toHaveBeenCalledWith({
-      profile: selectedProfile,
+      model: "main-pro",
       source: "conversation",
     });
   });
@@ -3411,14 +3346,12 @@ describe("startVoiceTurn escalated-leg profile pin", () => {
     ) => void;
     onFirstModelCallPrepared({
       callSite: "mainAgent",
-      forceOverrideProfile: false,
       systemPrompt: "system prompt",
       tools: [],
     });
 
     expect(warmPromptCache).toHaveBeenCalledWith({
       callSite: "mainAgent",
-      forceOverrideProfile: false,
       signal: undefined,
       systemPrompt: "system prompt",
       tools: [],
@@ -3435,7 +3368,6 @@ describe("startVoiceTurn escalated-leg profile pin", () => {
 
     onFirstModelCallPrepared({
       callSite: "mainAgent",
-      forceOverrideProfile: false,
       disableCache: true,
       systemPrompt: "system prompt",
       tools: [],
@@ -3451,142 +3383,63 @@ describe("startVoiceTurn escalated-leg profile pin", () => {
     fakeConversation.warmPromptCache = warmPromptCache;
 
     expect(runOptions.onFirstModelCallPrepared).toBeFunction();
-    reportPreparedTarget(runOptions, "quality-optimized");
+    reportPreparedTarget(runOptions, "main-pro");
     expect(warmPromptCache).not.toHaveBeenCalled();
   });
 
-  test("reports a profile selected by final pre-model routing", async () => {
-    setConfig("llm", { activeProfile: "quality-optimized" });
+  test("reports a model selected by final pre-model routing", async () => {
     const onEscalationTargetResolved = mock();
 
     const runOptions = await runOptionsFor({
+      model: "main-pro",
       turn: { onEscalationTargetResolved },
     });
-    reportPreparedTarget(runOptions, "cost-optimized");
+    reportPreparedTarget(runOptions, "small");
 
     expect(onEscalationTargetResolved).toHaveBeenCalledWith({
-      profile: "cost-optimized",
+      model: "small",
       source: "pre_model_hook",
     });
   });
 
-  test("the conversation's own pin wins over the workspace selection", async () => {
-    setConfig("llm", { activeProfile: "quality-optimized" });
+  test("the conversation's own pin wins over the workspace default", async () => {
+    setConfig("llm", { defaultModel: "main-pro" });
 
-    const runOptions = await runOptionsFor({
-      inferenceProfile: "cost-optimized",
-    });
+    const runOptions = await runOptionsFor({ model: "small" });
 
-    expect(runOptions.overrideProfile).toBe("cost-optimized");
-    expect(runOptions.forceOverrideProfile).toBe(true);
-  });
-
-  test("a lapsed conversation pin falls back to the workspace selection", async () => {
-    setConfig("llm", { activeProfile: "quality-optimized" });
-
-    const runOptions = await runOptionsFor({
-      inferenceProfile: "cost-optimized",
-      inferenceProfileExpiresAt: Date.now() - 1,
-    });
-
-    expect(runOptions.overrideProfile).toBe("quality-optimized");
+    expect(runOptions.model).toBe("small");
   });
 
   test("only the escalated leg follows the conversation", async () => {
-    setConfig("llm", { activeProfile: "quality-optimized" });
-
     const frontDoor = await runOptionsFor({
       turn: { routingLeg: "front-door" },
     });
     expect(frontDoor.callSite).toBe("voiceFrontDoor");
-    expect(frontDoor.overrideProfile).toBeUndefined();
+    expect(frontDoor.model).toBeUndefined();
 
     const unrouted = await runOptionsFor({ turn: { routingLeg: undefined } });
     expect(unrouted.callSite).toBe("callAgent");
-    expect(unrouted.overrideProfile).toBeUndefined();
+    expect(unrouted.model).toBeUndefined();
   });
 
-  test("an image keeps a text-only conversation profile", async () => {
-    // The escalated leg is the tool-capable brain of the call. Images reach a
-    // text-only model as image-fallback captions, never by swapping the leg
-    // onto the latency-class profile.
-    setConfig("llm", { activeProfile: "quality-optimized" });
+  test("an image keeps a text-only conversation model", async () => {
+    const runOptions = await runOptionsFor({
+      model: "main-pro",
+      messages: PHOTO_HISTORY,
+    });
 
-    const runOptions = await runOptionsFor({ messages: PHOTO_HISTORY });
-
-    expect(runOptions.overrideProfile).toBe("quality-optimized");
-    expect(runOptions.forceOverrideProfile).toBe(true);
+    expect(runOptions.model).toBe("main-pro");
     expect(runOptions.inferenceCallSite).toBe("mainAgent");
   });
 
-  test("a mix pins the arm serving this conversation, not the mix name", async () => {
-    // The image-fallback check judges the pinned profile, and a mix reads as
-    // vision-capable when any arm is. Pinning the chosen arm keeps a
-    // text-only arm from receiving raw images.
-    setConfig("llm", {
-      activeProfile: "voice-mix",
-      profiles: {
-        "voice-mix": {
-          mix: [
-            { profile: "quality-optimized", weight: 1 },
-            { profile: "cost-optimized", weight: 1 },
-          ],
-        },
-      },
-    });
-    let chosenArm: string | undefined;
-    selectWinningProfile("mainAgent", getConfig().llm, {
-      selectionSeed: "conv-voice-bridge-test",
-      onMixSelected: ({ chosenProfile }) => {
-        chosenArm = chosenProfile;
-      },
-    });
-    expect(chosenArm).toBeDefined();
-
-    const runOptions = await runOptionsFor({ messages: PHOTO_HISTORY });
-
-    expect(runOptions.overrideProfile).toBe(chosenArm);
-    expect(runOptions.forceOverrideProfile).toBe(true);
-  });
-
   test("an explicit routing pin wins over the conversation profile", async () => {
-    setConfig("llm", { activeProfile: "quality-optimized" });
+    setConfig("llm", { defaultModel: "main-pro" });
 
     const runOptions = await runOptionsFor({
-      turn: { overrideProfile: "balanced" },
+      turn: { model: "main" },
     });
 
-    expect(runOptions.overrideProfile).toBe("balanced");
-  });
-
-  test("a mix with no resolvable arm falls back to the main-agent profile", async () => {
-    setConfig("llm", {
-      activeProfile: "stale-mix",
-      profiles: {
-        "stale-a": {
-          provider: "deleted-connection-a",
-          model: "model-a",
-        },
-        "stale-b": {
-          provider: "deleted-connection-b",
-          model: "model-b",
-        },
-        "stale-mix": {
-          mix: [
-            { profile: "stale-a", weight: 1 },
-            { profile: "stale-b", weight: 1 },
-          ],
-        },
-      },
-      callSites: {
-        mainAgent: { profile: "quality-optimized" },
-      },
-    });
-    unresolvableProviderNames.add("deleted-connection-a");
-    unresolvableProviderNames.add("deleted-connection-b");
-    const runOptions = await runOptionsFor({ messages: PHOTO_HISTORY });
-
-    expect(runOptions.overrideProfile).toBe("quality-optimized");
+    expect(runOptions.model).toBe("main");
   });
 });
 

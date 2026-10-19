@@ -47,7 +47,7 @@ import { findConversationOrSubagent } from "../../../../daemon/conversation-regi
 import {
   applyRuntimeInjections,
   resolveTurnInboundActorContext,
-  resolveTurnModelProfileLabel,
+  resolveTurnModelLabel,
   type RuntimeInjectionResult,
 } from "../../../../daemon/conversation-runtime-assembly.js";
 import { resolveTrustClass } from "../../../../daemon/trust-context.js";
@@ -358,7 +358,7 @@ const userPromptSubmitMemoryRetrieval: HookFunction<
   // self-resolved from the live conversation's trust context. This first-call
   // assembly always runs at `"full"` volume; overflow reduction only downgrades
   // the mode on later re-injection.
-  const modelProfile = resolveTurnModelProfileLabel(
+  const model = resolveTurnModelLabel(
     conversation?.currentTurnModelProfileNoticeKey ?? null,
     conversation?.currentCallSite ?? "mainAgent",
     config.llm,
@@ -366,7 +366,7 @@ const userPromptSubmitMemoryRetrieval: HookFunction<
   );
   const injection = await applyRuntimeInjections(ctx.latestMessages, {
     isNonInteractive: ctx.isNonInteractive,
-    modelProfile,
+    model,
     actorContext,
     mode: "full",
     requestId: ctx.requestId,

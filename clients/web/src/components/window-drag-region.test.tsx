@@ -19,8 +19,7 @@ mock.module("@/stores/title-bar-store", () => ({
 }));
 
 mock.module("@/runtime/platform-detection", () => ({
-  detectElectronHostOS: () =>
-    isElectronMock ? (hostOSMock ?? "macos") : null,
+  detectElectronHostOS: () => (isElectronMock ? (hostOSMock ?? "macos") : null),
 }));
 
 import { WindowDragRegion } from "@/components/window-drag-region";

@@ -141,7 +141,10 @@ mock.module("@/generated/api/sdk.gen", () => ({
       ...dailyLimitResponse,
       daily_credit_limit_usd: body.daily_credit_limit_usd,
     };
-    return Promise.resolve({ data: dailyLimitResponse, response: { ok: true } });
+    return Promise.resolve({
+      data: dailyLimitResponse,
+      response: { ok: true },
+    });
   },
 }));
 
@@ -659,9 +662,7 @@ describe("AutoTopUpCard enable gate", () => {
     // The pending enable continues into the configure form; the toggle stays
     // visually on (still pendingEnable until Save persists).
     await waitFor(() => {
-      if (
-        !container.querySelector('[data-testid="auto-top-up-save-button"]')
-      ) {
+      if (!container.querySelector('[data-testid="auto-top-up-save-button"]')) {
         throw new Error("form did not open after the card appeared");
       }
     });
@@ -703,9 +704,7 @@ describe("AutoTopUpCard enable gate", () => {
     );
 
     await waitFor(() => {
-      if (
-        !container.querySelector('[data-testid="auto-top-up-save-button"]')
-      ) {
+      if (!container.querySelector('[data-testid="auto-top-up-save-button"]')) {
         throw new Error("form did not open after the cutoff cleared");
       }
     });

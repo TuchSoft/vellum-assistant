@@ -235,7 +235,11 @@ describe("buildConnectPlan", () => {
           },
         }),
       },
-      { platformGate: "full", ownOAuthAvailable: false, mcpServersLoaded: true },
+      {
+        platformGate: "full",
+        ownOAuthAvailable: false,
+        mcpServersLoaded: true,
+      },
     );
 
     expect(plan.primary.kind).toBe("mcp-manual");
@@ -262,7 +266,11 @@ describe("buildConnectPlan", () => {
           logo: "ashby-mcp.png",
         }),
       },
-      { platformGate: "full", ownOAuthAvailable: false, mcpServersLoaded: true },
+      {
+        platformGate: "full",
+        ownOAuthAvailable: false,
+        mcpServersLoaded: true,
+      },
     );
 
     // Matched on the substring, not the whole string: `publicAsset()` prefixes
@@ -284,7 +292,11 @@ describe("buildConnectPlan", () => {
         category: "finance",
         method: pluginMethod({ pluginName: "ramp-mcp", logo: "" }),
       },
-      { platformGate: "full", ownOAuthAvailable: false, mcpServersLoaded: true },
+      {
+        platformGate: "full",
+        ownOAuthAvailable: false,
+        mcpServersLoaded: true,
+      },
     );
 
     expect(plan.logoUrl).toBeNull();

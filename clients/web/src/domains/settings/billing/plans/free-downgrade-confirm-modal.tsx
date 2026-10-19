@@ -83,55 +83,55 @@ function FreeDowngradeConfirmContent({
   const canConfirm = viaPortal || isCancelReasonComplete(survey);
   return (
     <>
-    <Modal.Header icon={AlertTriangle}>
-      <Modal.Title>{t("freeDowngradeConfirmModal.title")}</Modal.Title>
-    </Modal.Header>
-    <Modal.Body>
-      <Typography
-        as="p"
-        variant="body-medium-default"
-        className="text-(--content-secondary)"
-      >
-        {viaPortal
-          ? hasLostFeatures
-            ? t("freeDowngradeConfirmModal.bodyWithFeaturesPortal")
-            : t("freeDowngradeConfirmModal.bodyCancelOnlyPortal")
-          : hasLostFeatures
-            ? t("freeDowngradeConfirmModal.bodyWithFeatures")
-            : t("freeDowngradeConfirmModal.bodyCancelOnly")}
-      </Typography>
-      {hasLostFeatures ? (
-        <ul className="mt-4 list-disc space-y-2 pl-5">
-          {lostFeatures.map((feature) => (
-            <li key={feature}>
-              <Typography as="span" variant="body-medium-default">
-                {feature}
-              </Typography>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {viaPortal ? null : (
-        <CancelReasonSurvey
-          value={survey}
-          onChange={setSurvey}
-          disabled={pending}
-        />
-      )}
-    </Modal.Body>
-    <Modal.Footer>
-      <Button variant="outlined" onClick={onCancel} disabled={pending}>
-        {t("freeDowngradeConfirmModal.cancel")}
-      </Button>
-      <Button
-        variant="danger"
-        onClick={() => onConfirm(survey)}
-        disabled={pending || !canConfirm}
-        data-testid="confirm-free-downgrade-button"
-      >
-        {t("freeDowngradeConfirmModal.confirm")}
-      </Button>
-    </Modal.Footer>
+      <Modal.Header icon={AlertTriangle}>
+        <Modal.Title>{t("freeDowngradeConfirmModal.title")}</Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        <Typography
+          as="p"
+          variant="body-medium-default"
+          className="text-(--content-secondary)"
+        >
+          {viaPortal
+            ? hasLostFeatures
+              ? t("freeDowngradeConfirmModal.bodyWithFeaturesPortal")
+              : t("freeDowngradeConfirmModal.bodyCancelOnlyPortal")
+            : hasLostFeatures
+              ? t("freeDowngradeConfirmModal.bodyWithFeatures")
+              : t("freeDowngradeConfirmModal.bodyCancelOnly")}
+        </Typography>
+        {hasLostFeatures ? (
+          <ul className="mt-4 list-disc space-y-2 pl-5">
+            {lostFeatures.map((feature) => (
+              <li key={feature}>
+                <Typography as="span" variant="body-medium-default">
+                  {feature}
+                </Typography>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {viaPortal ? null : (
+          <CancelReasonSurvey
+            value={survey}
+            onChange={setSurvey}
+            disabled={pending}
+          />
+        )}
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="outlined" onClick={onCancel} disabled={pending}>
+          {t("freeDowngradeConfirmModal.cancel")}
+        </Button>
+        <Button
+          variant="danger"
+          onClick={() => onConfirm(survey)}
+          disabled={pending || !canConfirm}
+          data-testid="confirm-free-downgrade-button"
+        >
+          {t("freeDowngradeConfirmModal.confirm")}
+        </Button>
+      </Modal.Footer>
     </>
   );
 }

@@ -700,7 +700,9 @@ function titleGenerationLogFields(params: GenerateTitleParams) {
 }
 
 type TitleGenerationFallbackReason =
-  "no_provider" | "empty_output" | "generation_error";
+  | "no_provider"
+  | "empty_output"
+  | "generation_error";
 
 function retryableFallbackLogFields(
   params: GenerateTitleParams,

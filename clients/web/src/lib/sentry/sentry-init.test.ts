@@ -106,8 +106,7 @@ describe("initSentry client_os tag", () => {
   function clientOsTag(): unknown {
     return (
       syncedOptions?.initialScope as
-        | { tags?: Record<string, unknown> }
-        | undefined
+        { tags?: Record<string, unknown> } | undefined
     )?.tags?.client_os;
   }
 
@@ -133,8 +132,7 @@ describe("initSentry channel tag", () => {
   function channelTag(): unknown {
     return (
       syncedOptions?.initialScope as
-        | { tags?: Record<string, unknown> }
-        | undefined
+        { tags?: Record<string, unknown> } | undefined
     )?.tags?.channel;
   }
 
@@ -182,8 +180,7 @@ describe("initSentry commit-pressure enrichment", () => {
     );
 
     const pressure = sent?.contexts?.commit_pressure as
-      | { updates: number; sources: Record<string, number> }
-      | undefined;
+      { updates: number; sources: Record<string, number> } | undefined;
     expect(pressure?.updates).toBe(3);
     expect(pressure?.sources["smooth-stream"]).toBe(2);
   });

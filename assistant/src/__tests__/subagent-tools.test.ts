@@ -716,13 +716,13 @@ describe("Subagent spawn success and failure", () => {
         },
         makeContext("sess-spawn-profile", {
           sendToClient: () => {},
-          overrideProfile: "balanced",
+          model: "balanced",
         }),
       );
 
       expect(result.isError).toBe(false);
       expect(capturedConfig).toBeDefined();
-      expect(capturedConfig!.overrideProfile).toBe("quality-optimized");
+      expect(capturedConfig!.model).toBe("quality-optimized");
       expect(capturedConfig!.forceOverrideProfile).toBe(true);
     } finally {
       manager.spawn = originalSpawn;
@@ -752,7 +752,7 @@ describe("Subagent spawn success and failure", () => {
       // No override travels with the spawn. The child runs its loop under
       // `callSite: "subagentSpawn"` and resolves that call site's own profile,
       // which also keeps its usage attribution off `conversation`.
-      expect(capturedConfig!.overrideProfile).toBeUndefined();
+      expect(capturedConfig!.model).toBeUndefined();
       expect(capturedConfig!.forceOverrideProfile).toBeUndefined();
     } finally {
       manager.spawn = originalSpawn;
@@ -782,7 +782,7 @@ describe("Subagent spawn success and failure", () => {
       // A subagent spawned from a heartbeat turn does not pick up
       // heartbeatAgent's cost-optimized default. Delegated work is priced by
       // where it runs, not by which call site happened to delegate it.
-      expect(capturedConfig!.overrideProfile).toBeUndefined();
+      expect(capturedConfig!.model).toBeUndefined();
     } finally {
       manager.spawn = originalSpawn;
     }
@@ -804,7 +804,7 @@ describe("Subagent spawn success and failure", () => {
         makeContext("sess-inherit-override", {
           sendToClient: () => {},
           invokingCallSite: "mainAgent",
-          overrideProfile: "quality-optimized",
+          model: "quality-optimized",
         }),
       );
 
@@ -812,7 +812,7 @@ describe("Subagent spawn success and failure", () => {
       // A profile switched mid-conversation is a choice about that
       // conversation, not about the work it delegates, so it stops at the
       // spawn boundary.
-      expect(capturedConfig!.overrideProfile).toBeUndefined();
+      expect(capturedConfig!.model).toBeUndefined();
       expect(capturedConfig!.forceOverrideProfile).toBeUndefined();
     } finally {
       manager.spawn = originalSpawn;
@@ -843,7 +843,7 @@ describe("Subagent spawn success and failure", () => {
       );
 
       expect(result.isError).toBe(false);
-      expect(capturedConfig!.overrideProfile).toBe("cost-optimized");
+      expect(capturedConfig!.model).toBe("cost-optimized");
       expect(capturedConfig!.forceOverrideProfile).toBe(true);
     } finally {
       manager.spawn = originalSpawn;
@@ -975,16 +975,16 @@ describe("Subagent spawn profile isolation", () => {
     // No override travels with the spawn, which is what lands the child on
     // the subagentSpawn call site's own profile while leaving usage
     // attribution on `call_site` instead of reporting a pin nobody set.
-    expect(config.overrideProfile).toBeUndefined();
+    expect(config.model).toBeUndefined();
     expect(config.forceOverrideProfile).toBeUndefined();
   });
 
   test("keeps the per-turn override profile away from the child", async () => {
     const { config } = await spawnCapturingConfig(
       { label: "Override parent", objective: "Do it" },
-      { invokingCallSite: "mainAgent", overrideProfile: "quality-optimized" },
+      { invokingCallSite: "mainAgent", model: "quality-optimized" },
     );
-    expect(config.overrideProfile).toBeUndefined();
+    expect(config.model).toBeUndefined();
   });
 
   test("still honors an explicit inference_profile", async () => {
@@ -994,7 +994,7 @@ describe("Subagent spawn profile isolation", () => {
       objective: "Do it",
       inference_profile: "quality-optimized",
     });
-    expect(config.overrideProfile).toBe("quality-optimized");
+    expect(config.model).toBe("quality-optimized");
     expect(config.forceOverrideProfile).toBe(true);
     expect(JSON.parse(result.content).note).toBeUndefined();
   });
@@ -1007,7 +1007,7 @@ describe("Subagent spawn profile isolation", () => {
     });
     // Dropping the override is what redirects the child to the call site's
     // profile; naming it explicitly would re-file the spend as a pin.
-    expect(config.overrideProfile).toBeUndefined();
+    expect(config.model).toBeUndefined();
     expect(config.forceOverrideProfile).toBeUndefined();
     const parsed = JSON.parse(result.content);
     expect(parsed.subagentId).toBe("isolation-subagent-id");
@@ -1023,7 +1023,7 @@ describe("Subagent spawn profile isolation", () => {
       objective: "Do it",
       inference_profile: "byok-unknown-model",
     });
-    expect(config.overrideProfile).toBe("byok-unknown-model");
+    expect(config.model).toBe("byok-unknown-model");
     expect(config.forceOverrideProfile).toBe(true);
     expect(JSON.parse(result.content).note).toBeUndefined();
   });
@@ -3035,7 +3035,7 @@ describe("Subagent output contract", () => {
     expect(result.isError).toBe(false);
     // Ahead of the mainAgent default (balanced) this spawn would otherwise
     // inherit, and unforced like every other inheritance rung.
-    expect(config!.overrideProfile).toBe("cost-optimized");
+    expect(config!.model).toBe("cost-optimized");
     expect(config!.forceOverrideProfile).toBeUndefined();
   });
 
@@ -3060,7 +3060,7 @@ describe("Subagent output contract", () => {
       );
       expect(result.isError).toBe(false);
       // No override at all, so the child resolves on the pinned call site.
-      expect(config!.overrideProfile).toBeUndefined();
+      expect(config!.model).toBeUndefined();
       expect(config!.forceOverrideProfile).toBeUndefined();
     } finally {
       setConfig("llm", BASE_LLM_CONFIG);
@@ -3083,7 +3083,7 @@ describe("Subagent output contract", () => {
         { invokingCallSite: "mainAgent" },
       );
       // A pin on some other call site says nothing about delegated checks.
-      expect(config!.overrideProfile).toBe("cost-optimized");
+      expect(config!.model).toBe("cost-optimized");
     } finally {
       setConfig("llm", BASE_LLM_CONFIG);
     }
@@ -3097,7 +3097,7 @@ describe("Subagent output contract", () => {
       output_contract: "verdict",
       inference_profile: "quality-optimized",
     });
-    expect(config!.overrideProfile).toBe("quality-optimized");
+    expect(config!.model).toBe("quality-optimized");
     expect(config!.forceOverrideProfile).toBe(true);
   });
 
@@ -3113,7 +3113,7 @@ describe("Subagent output contract", () => {
     );
     // A report is the default contract, so it applies no preset of its own and
     // leaves the child on the subagentSpawn default like any other spawn.
-    expect(config!.overrideProfile).toBeUndefined();
+    expect(config!.model).toBeUndefined();
     expect(
       buildSubagentSystemPrompt(
         {
@@ -3475,7 +3475,7 @@ describe("Subagent advisor-role consult", () => {
         { label: "Consult", objective: "x", role: "advisor" },
         makeContext("advisor-sess-4", { sendToClient: () => {} }),
       );
-      expect(captured.current!.overrideProfile).toBe("frontier");
+      expect(captured.current!.model).toBe("frontier");
       expect(captured.current!.forceOverrideProfile).toBe(true);
     } finally {
       restore();
@@ -3495,7 +3495,7 @@ describe("Subagent advisor-role consult", () => {
         { label: "Consult", objective: "x", role: "advisor" },
         makeContext("advisor-sess-isolation", { sendToClient: () => {} }),
       );
-      expect(captured.current!.overrideProfile).toBe("frontier");
+      expect(captured.current!.model).toBe("frontier");
       expect(captured.current!.forceOverrideProfile).toBe(true);
     } finally {
       restore();
@@ -3520,7 +3520,7 @@ describe("Subagent advisor-role consult", () => {
         },
         makeContext("advisor-sess-5", { sendToClient: () => {} }),
       );
-      expect(captured.current!.overrideProfile).toBe("quality-optimized");
+      expect(captured.current!.model).toBe("quality-optimized");
       expect(captured.current!.forceOverrideProfile).toBe(true);
     } finally {
       restore();
@@ -3545,7 +3545,7 @@ describe("Subagent advisor-role consult", () => {
       // No override travels with the consult, which is what lands it on the
       // subagentSpawn call site's own profile while leaving usage attribution
       // on call_site instead of reporting a pin nobody set.
-      expect(captured.current!.overrideProfile).toBeUndefined();
+      expect(captured.current!.model).toBeUndefined();
       expect(captured.current!.forceOverrideProfile).toBeUndefined();
       expect(JSON.parse(result.content).note).toContain(
         'profile "no-tool-model" is not verified for tool calling',
@@ -3575,7 +3575,7 @@ describe("Subagent advisor-role consult", () => {
           sendToClient: () => {},
         }),
       );
-      expect(captured.current!.overrideProfile).toBeUndefined();
+      expect(captured.current!.model).toBeUndefined();
       expect(JSON.parse(result.content).note).toContain(
         "is not verified for tool calling",
       );
@@ -3603,7 +3603,7 @@ describe("Subagent advisor-role consult", () => {
         },
         makeContext("advisor-sess-byok", { sendToClient: () => {} }),
       );
-      expect(captured.current!.overrideProfile).toBe("byok-unknown-model");
+      expect(captured.current!.model).toBe("byok-unknown-model");
       expect(JSON.parse(result.content).note).toBeUndefined();
     } finally {
       restore();

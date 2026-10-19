@@ -82,7 +82,11 @@ export function RefreshFeedbackPill({
 
   if (interactive) {
     return (
-      <ChatPill tone={tone} onClick={onRetry} ariaLabel={t("refreshFeedbackPill.retryAria")}>
+      <ChatPill
+        tone={tone}
+        onClick={onRetry}
+        ariaLabel={t("refreshFeedbackPill.retryAria")}
+      >
         {label}
       </ChatPill>
     );

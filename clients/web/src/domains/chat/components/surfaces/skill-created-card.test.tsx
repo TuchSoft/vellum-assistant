@@ -29,16 +29,13 @@ function makeSurface(overrides: Partial<Surface> = {}): Surface {
 }
 
 function renderCard(surface: Surface) {
-  return render(
-    <SkillCreatedCard surface={surface} onAction={() => {}} />,
-  );
+  return render(<SkillCreatedCard surface={surface} onAction={() => {}} />);
 }
 
 describe("SkillCreatedCard", () => {
   test("renders a single learned-sentence row per skill (no generic header)", () => {
-    const { container, getByText, queryByRole, queryByText } = renderCard(
-      makeSurface(),
-    );
+    const { container, getByText, queryByRole, queryByText } =
+      renderCard(makeSurface());
 
     // The card renders no generic header or subline: each row's title
     // carries the full learned sentence, so a header would double-announce.

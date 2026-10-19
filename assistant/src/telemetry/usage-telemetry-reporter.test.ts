@@ -293,8 +293,7 @@ function makeUsageEvent(
     rawUsage: null,
     actor: "main_agent",
     callSite: null,
-    inferenceProfile: null,
-    inferenceProfileSource: null,
+    modelSource: null,
     conversationId: "conv-1",
     runId: null,
     requestId: null,
@@ -341,8 +340,8 @@ async function seedToolInvocation(
       spec.resultBytes !== undefined ? spec.resultBytes : 9,
       spec.provider ?? null,
       spec.model ?? null,
-      spec.inferenceProfile ?? null,
-      spec.inferenceProfileSource ?? null,
+      spec.modelSource ?? null,
+      spec.modelSource ?? null,
     ],
   );
 }
@@ -771,8 +770,7 @@ describe("UsageTelemetryReporter", () => {
       cacheReadInputTokens: 15,
       actor: "context_compactor",
       callSite: "compactionAgent",
-      inferenceProfile: "quality-optimized",
-      inferenceProfileSource: "conversation",
+      modelSource: "chat",
       llmCallCount: 3,
       createdAt: 1700000099000,
     });
@@ -865,8 +863,7 @@ describe("UsageTelemetryReporter", () => {
     const event = makeUsageEvent({
       id: "evt-legacy-usage",
       callSite: null,
-      inferenceProfile: null,
-      inferenceProfileSource: null,
+      modelSource: null,
       llmCallCount: null,
     });
     mockQueryUnreportedUsageEvents.mockResolvedValue([event]);
@@ -2316,8 +2313,7 @@ describe("UsageTelemetryReporter", () => {
       resultBytes: 9001,
       provider: "anthropic",
       model: "model-a",
-      inferenceProfile: "balanced",
-      inferenceProfileSource: "active",
+      modelSource: "chat",
     });
     // Errored invocation without LLM attribution — the attribution columns
     // are null and must pass through as null.
@@ -2724,8 +2720,7 @@ describe("UsageTelemetryReporter", () => {
       skillUpdatedAt: "2026-06-01T00:00:00.000Z",
       provider: "anthropic",
       model: "model-a",
-      inferenceProfile: "balanced",
-      inferenceProfileSource: "active",
+      modelSource: "chat",
     });
     // Minimal record — optional fields persist as null and ship as null.
     await recordSkillLoadedEvent({ skillName: "tasks" });

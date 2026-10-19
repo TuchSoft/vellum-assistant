@@ -29,7 +29,10 @@ describe("resolveStagedImportPath", () => {
     writeFileSync(file, "bundle");
 
     expect(
-      resolveStagedImportPath(`${RESTORE_STAGING_DIRNAME}/backup.vbundle`, workspace),
+      resolveStagedImportPath(
+        `${RESTORE_STAGING_DIRNAME}/backup.vbundle`,
+        workspace,
+      ),
     ).toBe(realpathSync(file));
   });
 
@@ -91,7 +94,10 @@ describe("resolveStagedImportPath", () => {
     writeFileSync(file, "nope");
 
     expect(() =>
-      resolveStagedImportPath(`${RESTORE_STAGING_DIRNAME}/notes.txt`, workspace),
+      resolveStagedImportPath(
+        `${RESTORE_STAGING_DIRNAME}/notes.txt`,
+        workspace,
+      ),
     ).toThrow(StagedImportPathError);
   });
 

@@ -45,7 +45,10 @@ export interface EditNotificationParams {
 }
 
 export type ChannelEditOutcome =
-  "updated" | "unsupported" | "skipped" | "failed";
+  | "updated"
+  | "unsupported"
+  | "skipped"
+  | "failed";
 
 export interface ChannelEditResult {
   channel: NotificationChannel;

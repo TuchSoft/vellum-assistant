@@ -313,8 +313,7 @@ const NULL_TELEMETRY_COLUMNS: TelemetryColumns = {
   resultBytes: null,
   provider: null,
   model: null,
-  inferenceProfile: null,
-  inferenceProfileSource: null,
+  modelSource: null,
 };
 
 /**

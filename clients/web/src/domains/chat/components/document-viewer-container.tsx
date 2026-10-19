@@ -1,4 +1,3 @@
-
 import { useTranslation } from "@/i18n";
 /**
  * Document viewer with integrated comment panel.
@@ -25,7 +24,12 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 
 import { LazyBoundary } from "@/components/lazy-boundary";
-import { ActionMenu, Button, toast, Typography } from "@vellumai/design-library";
+import {
+  ActionMenu,
+  Button,
+  toast,
+  Typography,
+} from "@vellumai/design-library";
 import {
   Check,
   Download,
@@ -207,7 +211,8 @@ function DocumentViewerContent({
         }),
       });
     },
-    onRenameFailed: () => toast.error(t("documentViewerContainer.renameFailed")),
+    onRenameFailed: () =>
+      toast.error(t("documentViewerContainer.renameFailed")),
   });
 
   const handleContentChange = useCallback(
@@ -407,7 +412,9 @@ function DocumentViewerContent({
             {saveStatus === "saving" ? (
               <Loader2 size={12} className="shrink-0 animate-spin" />
             ) : null}
-            {saveStatus === "saved" ? <Check size={12} className="shrink-0" /> : null}
+            {saveStatus === "saved" ? (
+              <Check size={12} className="shrink-0" />
+            ) : null}
             <Typography
               variant="label-small-default"
               className="truncate text-[var(--content-tertiary)]"

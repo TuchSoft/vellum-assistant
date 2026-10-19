@@ -268,8 +268,7 @@ export interface OpenedWorkspaceFilePreviewState {
  * documents API, and a preview saves nowhere.
  */
 export type OpenedDocumentState =
-  | OpenedDbDocumentState
-  | OpenedWorkspaceFilePreviewState;
+  OpenedDbDocumentState | OpenedWorkspaceFilePreviewState;
 
 /**
  * The document the viewer is loading or showing, tracked so a load that

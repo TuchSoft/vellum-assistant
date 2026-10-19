@@ -43,22 +43,14 @@ import { useOpenDocumentFromChat } from "@/domains/chat/hooks/use-open-app-from-
 import { useDocumentConversationRoute } from "@/domains/chat/hooks/use-document-conversation-route";
 import { DocumentChatContent } from "@/domains/chat/components/document-chat-content";
 
-mock.module(
-  "@/hooks/use-is-org-ready",
-  (): Partial<typeof OrgReadiness> => ({
-    useOrgHeaderReadiness: () => "ready",
-  }),
-);
-mock.module(
-  "@/domains/library/library-view",
-  (): Partial<typeof Library> => ({
-    LibraryView: ({ onOpenDocument }) => (
-      <button onClick={() => onOpenDocument?.("surface-1")}>
-        Open document
-      </button>
-    ),
-  }),
-);
+mock.module("@/hooks/use-is-org-ready", (): Partial<typeof OrgReadiness> => ({
+  useOrgHeaderReadiness: () => "ready",
+}));
+mock.module("@/domains/library/library-view", (): Partial<typeof Library> => ({
+  LibraryView: ({ onOpenDocument }) => (
+    <button onClick={() => onOpenDocument?.("surface-1")}>Open document</button>
+  ),
+}));
 mock.module(
   "@/domains/chat/components/document-viewer-container",
   (): Partial<typeof Viewer> => ({

@@ -91,8 +91,15 @@ export function CameraCaptureOverlay({
   const { t } = useTranslation("chat");
   const surfaceRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const { captureFrame, error, flipCamera, flipping, native, open, openCamera } =
-    useVoiceCamera(videoRef);
+  const {
+    captureFrame,
+    error,
+    flipCamera,
+    flipping,
+    native,
+    open,
+    openCamera,
+  } = useVoiceCamera(videoRef);
   const [capturing, setCapturing] = useState(false);
 
   // Read while rendering, which is the last moment it is still true: the focus

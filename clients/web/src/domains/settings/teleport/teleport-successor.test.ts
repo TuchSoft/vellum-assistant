@@ -37,7 +37,10 @@ describe("resolveTeleportSuccessorId", () => {
   test("a local target resolves through its platform registration", async () => {
     // GIVEN a local target whose bootstrap registers it on the platform
     // WHEN resolving the successor
-    const id = await resolveTeleportSuccessorId({ id: "local-1", kind: "local" });
+    const id = await resolveTeleportSuccessorId({
+      id: "local-1",
+      kind: "local",
+    });
 
     // THEN the registration's platform id is the successor
     expect(id).toBe(PLATFORM_ID);
@@ -58,7 +61,10 @@ describe("resolveTeleportSuccessorId", () => {
     };
 
     // WHEN resolving the successor
-    const id = await resolveTeleportSuccessorId({ id: "local-1", kind: "local" });
+    const id = await resolveTeleportSuccessorId({
+      id: "local-1",
+      kind: "local",
+    });
 
     // THEN the registered id is used: the platform can move the connections
     // to it, and the bootstrap finishes the local side later
@@ -72,7 +78,10 @@ describe("resolveTeleportSuccessorId", () => {
     };
 
     // WHEN resolving the successor
-    const id = await resolveTeleportSuccessorId({ id: "local-1", kind: "local" });
+    const id = await resolveTeleportSuccessorId({
+      id: "local-1",
+      kind: "local",
+    });
 
     // THEN the caller retires without a successor
     expect(id).toBeNull();
@@ -83,7 +92,10 @@ describe("resolveTeleportSuccessorId", () => {
     resolveOutcome = async () => "local-1";
 
     // WHEN resolving the successor
-    const id = await resolveTeleportSuccessorId({ id: "local-1", kind: "local" });
+    const id = await resolveTeleportSuccessorId({
+      id: "local-1",
+      kind: "local",
+    });
 
     // THEN there is nothing the platform could receive
     expect(id).toBeNull();

@@ -71,4 +71,3 @@ export function forgetAssistantOnboarded(assistantId: string): void {
 
 /** Test seam: the underlying localStorage key. */
 export const ONBOARDED_ASSISTANTS_STORAGE_KEY = storage.key;
-

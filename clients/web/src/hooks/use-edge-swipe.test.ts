@@ -96,9 +96,9 @@ describe("classifyHorizontalDragSurface", () => {
   });
 
   test("classifies text-drag surfaces as text drags", () => {
-    expect(classifyHorizontalDragSurface(document.createElement("textarea"))).toBe(
-      "text",
-    );
+    expect(
+      classifyHorizontalDragSurface(document.createElement("textarea")),
+    ).toBe("text");
   });
 
   test("classifies plain content and null as none", () => {

@@ -53,7 +53,7 @@ async function seedEvents(): Promise<{ day1: number; day2: number }> {
       requestId: "req-1",
       actor: "main_agent",
       callSite: "mainAgent",
-      inferenceProfile: "balanced",
+      modelSource: "chat",
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
       inputTokens: 850,
@@ -77,7 +77,7 @@ async function seedEvents(): Promise<{ day1: number; day2: number }> {
       requestId: "req-2",
       actor: "context_compactor",
       callSite: "compactionAgent",
-      inferenceProfile: "fast",
+      modelSource: "call_site",
       provider: "anthropic",
       model: "claude-haiku-3",
       inputTokens: 500,
@@ -100,7 +100,7 @@ async function seedEvents(): Promise<{ day1: number; day2: number }> {
       requestId: "req-3",
       actor: "main_agent",
       callSite: null,
-      inferenceProfile: null,
+      modelSource: null,
       provider: "openai",
       model: "gpt-4o",
       inputTokens: 2000,
@@ -134,7 +134,7 @@ async function recordCostAt(
       requestId,
       actor: "main_agent",
       callSite: "mainAgent",
-      inferenceProfile: "balanced",
+      modelSource: "chat",
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
       inputTokens: 100,
@@ -674,30 +674,6 @@ describePg("usage routes", () => {
       ).toBe(2000);
     });
 
-    test("groups by inference profile with unset rows", async () => {
-      const { day1, day2 } = await seedEvents();
-      const from = day1 - 1000;
-      const to = day2 + 1000;
-
-      const body = (await dispatch(
-        "GET",
-        `usage/breakdown?from=${from}&to=${to}&groupBy=inference_profile`,
-      )) as {
-        breakdown: Array<{ group: string; groupKey: string | null }>;
-      };
-
-      expect(body.breakdown.map((row) => row.group)).toEqual([
-        "balanced",
-        "fast",
-        "Default / Unset",
-      ]);
-      expect(body.breakdown.map((row) => row.groupKey)).toEqual([
-        "balanced",
-        "fast",
-        null,
-      ]);
-    });
-
     test("accepts groupBy=schedule and labels groups with schedule names", async () => {
       await seedScheduleRouteEvents();
 
@@ -811,40 +787,6 @@ describePg("usage routes", () => {
       });
       expect(body.buckets[1].groups["null:call_site"]).toMatchObject({
         group: "Unknown Task",
-        groupKey: null,
-        totalInputTokens: 2000,
-      });
-    });
-
-    test("returns grouped inference-profile series buckets", async () => {
-      const { day1, day2 } = await seedEvents();
-      const from = day1 - 1000;
-      const to = day2 + 1000;
-
-      const body = (await dispatch(
-        "GET",
-        `usage/series?from=${from}&to=${to}&groupBy=inference_profile&granularity=daily`,
-      )) as {
-        buckets: Array<{
-          groups: Record<
-            string,
-            { group: string; groupKey: string | null; totalInputTokens: number }
-          >;
-        }>;
-      };
-
-      expect(body.buckets[0].groups["value:balanced"]).toMatchObject({
-        group: "balanced",
-        groupKey: "balanced",
-        totalInputTokens: 850,
-      });
-      expect(body.buckets[0].groups["value:fast"]).toMatchObject({
-        group: "fast",
-        groupKey: "fast",
-        totalInputTokens: 500,
-      });
-      expect(body.buckets[1].groups["null:inference_profile"]).toMatchObject({
-        group: "Default / Unset",
         groupKey: null,
         totalInputTokens: 2000,
       });

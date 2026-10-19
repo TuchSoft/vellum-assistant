@@ -14,7 +14,7 @@
  * (`ConversationGraphMemory.prepareMemory`), so its output is authentically
  * "the assistant" — e.g. drafting a reply in the assistant's voice. This is the
  * costly path by design. Model resolution mirrors `mainAgent`: with no explicit
- * `profile`, the workspace `activeProfile` is used as the `overrideProfile`.
+ * `model`, the workspace `activeProfile` is used as the `model`.
  * Persona leaves keep the same no-persistence guarantee — no conversation row
  * is ever created.
  *
@@ -32,7 +32,7 @@
  *
  * Profile overrides are validated up front (a deliberate deviation from the
  * resolver's silent fall-through — an explicit script request must fail loudly)
- * and threaded through as the `overrideProfile` argument so the per-call-site
+ * and threaded through as the `model` argument so the per-call-site
  * config resolution picks them up. Retry/rate-limit handling is NOT added here:
  * the configured provider is already wrapped by `RetryProvider`/`RateLimitProvider`.
  */
@@ -43,7 +43,7 @@ import { z } from "zod";
 
 import { type AgentEvent, AgentLoop } from "../agent/loop.js";
 import type { AssistantEvent } from "../api/index.js";
-import { resolveDefaultProfileForProvider } from "../config/default-profile-catalog.js";
+import { knownAliases } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import { isMemoryEnabled } from "../config/memory-v3-gate.js";
 import { isPersonalMemoryAllowed } from "../daemon/trust-context.js";
@@ -179,18 +179,16 @@ async function injectPersonaMemory(
 }
 
 /**
- * Thrown when {@link runLeaf} is asked to use an inference profile that does not
- * exist in `llm.profiles`. A DELIBERATE deviation from the resolver's silent
- * fall-through: an explicit script request must fail loudly rather than be
- * downgraded to the default profile without the author noticing.
+ * Thrown when {@link runLeaf} is asked to use an alias the gateway catalog
+ * does not expose. An explicit script request must fail loudly rather than be
+ * silently downgraded.
  */
-export class WorkflowUnknownProfileError extends Error {
-  constructor(readonly profile: string) {
+export class WorkflowUnknownModelError extends Error {
+  constructor(readonly model: string) {
     super(
-      `Workflow leaf requested inference profile "${profile}", which is not ` +
-        `defined in llm.profiles.`,
+      `Workflow leaf requested model "${model}", which is not in the gateway catalog.`,
     );
-    this.name = "WorkflowUnknownProfileError";
+    this.name = "WorkflowUnknownModelError";
   }
 }
 
@@ -220,10 +218,10 @@ export interface RunLeafOptions {
   tools?: Tool[];
   /**
    * Optional inference-profile override. Validated against `llm.profiles`;
-   * an unknown profile throws {@link WorkflowUnknownProfileError}. An explicit
+   * an unknown profile throws {@link WorkflowUnknownModelError}. An explicit
    * profile ALWAYS wins over the persona default (see {@link persona}).
    */
-  profile?: string;
+  model?: string;
   /**
    * Opt-in persona mode. When `true`, the leaf carries the assistant's identity
    * system prompt (`buildSystemPrompt`) AND runs the same memory-injection
@@ -232,7 +230,7 @@ export interface RunLeafOptions {
    * the assistant's voice). This is the costly path by design.
    *
    * Model resolution mirrors `mainAgent`: when no explicit {@link profile} is
-   * given, the workspace `activeProfile` is used as the `overrideProfile`.
+   * given, the workspace `activeProfile` is used as the `model`.
    *
    * When falsy (the default), the leaf stays ANONYMOUS: minimal task prompt, no
    * identity, no memory pipeline. Persona shares the anonymous path's
@@ -273,7 +271,7 @@ export async function runLeaf(opts: RunLeafOptions): Promise<LeafResult> {
     );
   }
 
-  const overrideProfile = resolveLeafOverrideProfile(opts);
+  const model = resolveLeafModel(opts);
 
   // Dispatch on schema presence, NOT on a non-empty tool set: a schema leaf does
   // forced-tool-choice structured output; everything else runs the agent-loop
@@ -283,61 +281,47 @@ export async function runLeaf(opts: RunLeafOptions): Promise<LeafResult> {
   // fires before `initializeTools()` populates it) into `runSchemaLeaf` with no
   // schema, where `schemaToInputSchema(undefined)` throws.
   if (opts.schema !== undefined) {
-    return runSchemaLeaf(opts, overrideProfile);
+    return runSchemaLeaf(opts, model);
   }
-  return runToolLeaf(opts, overrideProfile);
+  return runToolLeaf(opts, model);
 }
 
 /**
- * Resolve the `overrideProfile` forwarded into the per-call-site config
+ * Resolve the `model` forwarded into the per-call-site config
  * resolution for a leaf.
  *
- * An explicit `opts.profile` is validated and always wins. Otherwise, for a
+ * An explicit `opts.model` is validated and always wins. Otherwise, for a
  * persona leaf, the resolution mirrors `mainAgent`: the workspace
- * `activeProfile` is used as the `overrideProfile` (the active profile reflects
+ * `activeProfile` is used as the `model` (the active profile reflects
  * the user's chat-model selection). Anonymous leaves with no explicit profile
  * resolve to `undefined` (shipped call-site defaults apply).
  */
-function resolveLeafOverrideProfile(opts: RunLeafOptions): string | undefined {
-  if (opts.profile !== undefined) {
-    return validateProfile(opts.profile);
+function resolveLeafModel(opts: RunLeafOptions): string | undefined {
+  if (opts.model !== undefined) {
+    return validateModel(opts.model);
   }
   if (opts.persona) {
-    // Mirror `mainAgent`: the workspace active profile floats above the
-    // call-site default. Unlike an explicit request, a missing/deleted active
-    // profile degrades gracefully (it is not statically validated) — a
-    // non-existent `activeProfile` falls through to the shipped default rather
-    // than throwing, matching the `mainAgent` resolver's tolerance for a stale
-    // `activeProfile`.
-    const activeProfile = getConfig().llm.activeProfile;
-    return activeProfile != null && profileExists(activeProfile)
-      ? activeProfile
-      : undefined;
+    // A persona leaf runs on the workspace default alias, matching the
+    // chat-model selection a normal main-agent turn uses.
+    return getConfig().llm.defaultModel;
   }
   return undefined;
 }
 
 /**
  * Validate an explicit profile request against `llm.profiles`. Throws
- * {@link WorkflowUnknownProfileError} for an unknown profile — an explicit
+ * {@link WorkflowUnknownModelError} for an unknown profile — an explicit
  * script request must fail loudly rather than be silently downgraded.
  */
-function validateProfile(profile: string): string {
-  if (!profileExists(profile)) {
-    throw new WorkflowUnknownProfileError(profile);
+function validateModel(model: string): string {
+  if (!modelExists(model)) {
+    throw new WorkflowUnknownModelError(model);
   }
-  return profile;
+  return model;
 }
 
-function profileExists(profile: string): boolean {
-  const { llm } = getConfig();
-  return (
-    resolveDefaultProfileForProvider(
-      llm.profiles,
-      profile,
-      llm.defaultProvider ?? null,
-    ) != null
-  );
+function modelExists(model: string): boolean {
+  return knownAliases(getConfig().llm).includes(model);
 }
 
 /**
@@ -346,14 +330,14 @@ function profileExists(profile: string): boolean {
  */
 async function runSchemaLeaf(
   opts: RunLeafOptions,
-  overrideProfile: string | undefined,
+  model: string | undefined,
 ): Promise<LeafResult> {
   const schema = opts.schema as z.ZodType | Record<string, unknown>;
 
   const { systemPrompt, messages } = await resolveLeafContext(opts);
 
   const provider = await getConfiguredProvider(LEAF_CALL_SITE, {
-    ...(overrideProfile !== undefined ? { overrideProfile } : {}),
+    ...(model !== undefined ? { model } : {}),
   });
   if (!provider) {
     throw new Error(
@@ -375,14 +359,14 @@ async function runSchemaLeaf(
     config: {
       callSite: LEAF_CALL_SITE,
       tool_choice: { type: "tool" as const, name: SCHEMA_TOOL_NAME },
-      // `provider` is a CallSiteConfiguredProvider holding our overrideProfile,
+      // `provider` is a CallSiteConfiguredProvider holding our model,
       // but it only injects that stored override when the per-call config omits
       // `callSite` — and we set `callSite` here to drive resolveCallSiteConfig.
-      // So pass overrideProfile through explicitly (mirroring how AgentLoop
+      // So pass model through explicitly (mirroring how AgentLoop
       // builds its provider config on the tool path), or an explicit/persona
       // profile selection is silently dropped and the leaf runs under the
       // default workflowLeaf profile.
-      ...(overrideProfile !== undefined ? { overrideProfile } : {}),
+      ...(model !== undefined ? { model } : {}),
     },
     ...(opts.signal ? { signal: opts.signal } : {}),
   });
@@ -419,14 +403,14 @@ async function runSchemaLeaf(
  */
 async function runToolLeaf(
   opts: RunLeafOptions,
-  overrideProfile: string | undefined,
+  model: string | undefined,
 ): Promise<LeafResult> {
   const tools = opts.tools ?? [];
 
   const { systemPrompt, messages } = await resolveLeafContext(opts);
 
   const provider = await getConfiguredProvider(LEAF_CALL_SITE, {
-    ...(overrideProfile !== undefined ? { overrideProfile } : {}),
+    ...(model !== undefined ? { model } : {}),
   });
   if (!provider) {
     throw new Error(
@@ -494,7 +478,7 @@ async function runToolLeaf(
     requestId: ephemeralConversationId,
     trust: opts.trustContext,
     ...(opts.signal ? { signal: opts.signal } : {}),
-    ...(overrideProfile !== undefined ? { overrideProfile } : {}),
+    ...(model !== undefined ? { model } : {}),
   });
 
   const output = finalAssistantText(result.history);

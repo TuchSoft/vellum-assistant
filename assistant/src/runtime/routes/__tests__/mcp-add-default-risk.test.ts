@@ -6,8 +6,9 @@
 
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
-let stored: { servers: Record<string, { transport: Record<string, unknown> }> } =
-  { servers: {} };
+let stored: {
+  servers: Record<string, { transport: Record<string, unknown> }>;
+} = { servers: {} };
 let saved:
   | { servers: Record<string, { transport: Record<string, unknown> }> }
   | undefined;

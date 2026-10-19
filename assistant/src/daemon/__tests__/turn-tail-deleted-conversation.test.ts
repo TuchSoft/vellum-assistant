@@ -61,11 +61,10 @@ function makeConversation(): ConversationRow {
     lastMessageAt: null,
     archivedAt: null,
     surfacedAt: null,
-    inferenceProfile: null,
+    model: null,
+    reasoningEffort: null,
     enabledPlugins: null,
-    inferenceProfileSessionId: null,
-    inferenceProfileExpiresAt: null,
-    lastNotifiedInferenceProfile: null,
+    lastNotifiedModel: null,
     processingStartedAt: null,
   };
 }

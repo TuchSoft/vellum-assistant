@@ -7,14 +7,7 @@
  * shared `bun test` run).
  */
 
-import {
-  beforeEach,
-  describe,
-  expect,
-  mock,
-  spyOn,
-  test,
-} from "bun:test";
+import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 
 let isNativeMobileValue = true;
 mock.module("@/runtime/platform-detection", () => ({

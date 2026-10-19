@@ -47,7 +47,8 @@ const setConfigOptionCalls: Array<{
 let setConfigOptionResult: SessionConfigOption[] | Error = [];
 /** Answers per call when set, so one round trip can be slower than the next. */
 let setConfigOptionResponder:
-  ((value: string | boolean) => Promise<SessionConfigOption[]>) | null = null;
+  | ((value: string | boolean) => Promise<SessionConfigOption[]>)
+  | null = null;
 
 // Stub the agent-process module so spawn() does not actually launch a child
 // process. Each fake instance records the cwd it was spawned in and resolves

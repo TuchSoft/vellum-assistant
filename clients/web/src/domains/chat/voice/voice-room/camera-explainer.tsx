@@ -79,11 +79,7 @@ import {
  * variant exposes no drag dismissal, so nothing would ever report it.
  */
 export type CameraExplainerDismissal =
-  | "gotIt"
-  | "tryLive"
-  | "scrim"
-  | "close"
-  | "escape";
+  "gotIt" | "tryLive" | "scrim" | "close" | "escape";
 
 export interface CameraExplainerProps {
   open: boolean;

@@ -11,19 +11,16 @@ mock.module("@/utils/app-html-cache", () => ({
 
 // Pins come from the app list over React Query; stub the hook so this renders
 // without a QueryClient. These cases are about the surface, not about pinning.
-mock.module(
-  "@/hooks/use-pinned-apps",
-  (): Partial<typeof UsePinnedApps> => ({
-    usePinnedApps: () => ({
-      pinnedApps: [],
-      pinnedAppIds: new Set<string>(),
-      source: "daemon" as const,
-      togglePin: () => {},
-      unpin: () => {},
-      setColor: () => {},
-    }),
+mock.module("@/hooks/use-pinned-apps", (): Partial<typeof UsePinnedApps> => ({
+  usePinnedApps: () => ({
+    pinnedApps: [],
+    pinnedAppIds: new Set<string>(),
+    source: "daemon" as const,
+    togglePin: () => {},
+    unpin: () => {},
+    setColor: () => {},
   }),
-);
+}));
 
 import { DynamicPageSurface } from "@/domains/chat/components/surfaces/dynamic-page-surface";
 

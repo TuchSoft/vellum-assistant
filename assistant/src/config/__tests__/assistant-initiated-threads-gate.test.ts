@@ -22,9 +22,8 @@ mock.module("../assistant-feature-flags.js", () => ({
   getAssistantFeatureFlagValue: () => flagValue,
 }));
 
-const { isAssistantInitiatedThreadsEnabled } = await import(
-  "../assistant-initiated-threads-gate.js"
-);
+const { isAssistantInitiatedThreadsEnabled } =
+  await import("../assistant-initiated-threads-gate.js");
 
 afterEach(() => {
   flagValue = "off";

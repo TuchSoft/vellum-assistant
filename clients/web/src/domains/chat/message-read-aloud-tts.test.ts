@@ -17,9 +17,8 @@ mock.module("@/lib/sentry/capture-error", () => ({
   captureError,
 }));
 
-const { synthesizeMessagePlayback } = await import(
-  "@/domains/chat/message-read-aloud-tts"
-);
+const { synthesizeMessagePlayback } =
+  await import("@/domains/chat/message-read-aloud-tts");
 
 afterEach(() => {
   ttsSynthesizePost.mockClear();

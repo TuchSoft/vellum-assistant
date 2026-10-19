@@ -21,11 +21,7 @@ export function MobileBackgroundTaskDetailOverlay({
 }: MobileBackgroundTaskDetailOverlayProps) {
   return (
     <MobileDetailSheet data={entry} onClose={onClose}>
-      {(value) => (
-        <BackgroundTaskDetailPanel
-          entry={value} onClose={onClose}
-        />
-      )}
+      {(value) => <BackgroundTaskDetailPanel entry={value} onClose={onClose} />}
     </MobileDetailSheet>
   );
 }

@@ -114,8 +114,8 @@ export function ProgressCard() {
   const label = isRunning
     ? t("progressRail.title")
     : isStopped
-    ? t("progressRail.titleStopped")
-    : t("progressRail.titleFinished");
+      ? t("progressRail.titleStopped")
+      : t("progressRail.titleFinished");
   const counter = progress
     ? taskProgressCounter(progress.steps)
     : { current: 0, total: 0 };

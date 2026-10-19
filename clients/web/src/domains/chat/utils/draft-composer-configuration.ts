@@ -1,6 +1,9 @@
 import type { QueryClient } from "@tanstack/react-query";
 
-import { isDispatchableProfile } from "@/assistant/profile-pickers";
+import {
+  aliasMapFromLlm,
+  isDispatchableProfile,
+} from "@/assistant/profile-pickers";
 import { useComposerStore } from "@/domains/chat/composer-store";
 import {
   composerProfiles,
@@ -39,19 +42,16 @@ export function initializeDraftComposerConfiguration(
     return;
   }
   const profiles = composerProfiles(
-    llm?.profiles ?? {},
-    llm?.profileOrder ?? [],
+    aliasMapFromLlm(llm),
+    Object.keys(aliasMapFromLlm(llm)),
   );
   const preferred = profiles.find(
     (entry) => entry.name === preferences?.lastModeId,
   );
   const seedMode =
-    preferred &&
-    isDispatchableProfile(preferred, profiles, {
-      requireOwnProviderAndModel: true,
-    })
+    preferred && isDispatchableProfile(preferred)
       ? preferred.name
-      : llm?.activeProfile;
+      : llm?.defaultModel;
   if (!store.pendingDraftProfiles.has(id) && seedMode) {
     store.setPendingDraftProfile(id, seedMode);
   }

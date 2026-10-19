@@ -54,183 +54,158 @@ const downloadDocumentPdf = mock(
     _title: string | null | undefined,
   ) => {},
 );
-mock.module(
-  "../api/surfaces",
-  (): Partial<typeof Surfaces> => ({ downloadDocumentPdf }),
-);
+mock.module("../api/surfaces", (): Partial<typeof Surfaces> => ({
+  downloadDocumentPdf,
+}));
 
-mock.module(
-  "@/hooks/use-is-org-ready",
-  (): Partial<typeof Readiness> => ({
-    useOrgHeaderReadiness: () => useReadiness((state) => state.value),
-  }),
-);
-mock.module(
-  "@/lib/sentry/capture-error",
-  (): Partial<typeof ErrorCapture> => ({
-    captureError: mock(() => {}),
-  }),
-);
-mock.module(
-  "./progress-stack",
-  (): Partial<typeof Progress> => ({ ProgressStack: () => null }),
-);
-mock.module(
-  "./chat-info-panel",
-  (): Partial<typeof ChatInfo> => ({
-    ChatInfoPanel: ({ payload, onClose }) => {
-      const openDocument = useOpenDocumentFromChat(
-        payload.assistantId,
-        onClose,
-      );
-      return (
-        <>
-          <button onClick={onClose}>Close chat info</button>
-          <button onClick={() => void openDocument("surface-1")}>
-            Reopen from chat info
-          </button>
-        </>
-      );
-    },
-  }),
-);
+mock.module("@/hooks/use-is-org-ready", (): Partial<typeof Readiness> => ({
+  useOrgHeaderReadiness: () => useReadiness((state) => state.value),
+}));
+mock.module("@/lib/sentry/capture-error", (): Partial<typeof ErrorCapture> => ({
+  captureError: mock(() => {}),
+}));
+mock.module("./progress-stack", (): Partial<typeof Progress> => ({
+  ProgressStack: () => null,
+}));
+mock.module("./chat-info-panel", (): Partial<typeof ChatInfo> => ({
+  ChatInfoPanel: ({ payload, onClose }) => {
+    const openDocument = useOpenDocumentFromChat(payload.assistantId, onClose);
+    return (
+      <>
+        <button onClick={onClose}>Close chat info</button>
+        <button onClick={() => void openDocument("surface-1")}>
+          Reopen from chat info
+        </button>
+      </>
+    );
+  },
+}));
 const comments = await import("../api/document-comments");
-mock.module(
-  "../api/document-comments",
-  (): Partial<typeof comments> => ({
-    ...comments,
-    fetchComments: async () => [
-      {
-        id: "comment-1",
-        surfaceId: "surface-1",
-        conversationId: "conv-1",
-        author: "user",
-        content: "Please revise this paragraph",
-        anchorStart: null,
-        anchorEnd: null,
-        anchorText: null,
-        parentCommentId: null,
-        status: "open",
-        resolvedBy: null,
-        resolvedAt: null,
-        createdAt: 1,
-        updatedAt: 1,
-      },
-    ],
-  }),
-);
-mock.module(
-  "./tiptap-document-editor",
-  (): Partial<typeof Editor> => ({
-    TiptapDocumentEditor: ({ content, editable, onContentChange }) => {
-      const input = useRef<HTMLTextAreaElement>(null);
-      useEffect(() => {
-        if (input.current) {
-          input.current.value = content;
-        }
-      }, [content]);
-      return (
-        <textarea
-          ref={input}
-          aria-label="Document body"
-          defaultValue={content}
-          disabled={!editable}
-          onChange={(event) => onContentChange?.(event.target.value)}
-        />
-      );
+mock.module("../api/document-comments", (): Partial<typeof comments> => ({
+  ...comments,
+  fetchComments: async () => [
+    {
+      id: "comment-1",
+      surfaceId: "surface-1",
+      conversationId: "conv-1",
+      author: "user",
+      content: "Please revise this paragraph",
+      anchorStart: null,
+      anchorEnd: null,
+      anchorText: null,
+      parentCommentId: null,
+      status: "open",
+      resolvedBy: null,
+      resolvedAt: null,
+      createdAt: 1,
+      updatedAt: 1,
     },
-  }),
-);
+  ],
+}));
+mock.module("./tiptap-document-editor", (): Partial<typeof Editor> => ({
+  TiptapDocumentEditor: ({ content, editable, onContentChange }) => {
+    const input = useRef<HTMLTextAreaElement>(null);
+    useEffect(() => {
+      if (input.current) {
+        input.current.value = content;
+      }
+    }, [content]);
+    return (
+      <textarea
+        ref={input}
+        aria-label="Document body"
+        defaultValue={content}
+        disabled={!editable}
+        onChange={(event) => onContentChange?.(event.target.value)}
+      />
+    );
+  },
+}));
 
 // Keep the production layout, route controller, drawer and editor/save hook.
 // Unrelated chat content, Chat Info and the Tiptap input boundary are stubbed.
-mock.module(
-  "./chat-route-content",
-  (): Partial<typeof Chat> => ({
-    ChatMainPanel: ({
-      documentRoute,
-      documentEditorRef,
-      documentPreparation,
-    }) => {
-      useDocumentEditorSync();
-      const isMobile = useIsMobile();
-      const location = useLocation();
-      const opened = useViewerStore.use.openedDocumentState();
-      const openDocument = useOpenDocumentFromChat();
-      const composer = useComposerSubmit({
-        assistantId: "assistant-1",
-        activeConversationId: "conv-1",
-        inputRef: { current: null },
-        sendMessage: send,
-        scrollToLatest: () => {},
-        isEditing: false,
-        editingMessageId: null,
-        cancelEditing: () => {},
-        canUndoEdit: false,
-        sendDisabled: false,
-        typingDisabled: false,
-        prepareSend: documentPreparation?.prepareSend,
-      });
-      return (
-        <>
-          <div data-testid="url">
-            {location.pathname}
-            {location.search}
-          </div>
-          <div data-testid="document-load-state">
-            {documentRoute.isLoading
-              ? "loading"
-              : documentRoute.error
-                ? "error"
-                : "ready"}
-          </div>
-          <button onClick={() => void openDocument("surface-1")}>
-            Open document
-          </button>
-          <button onClick={() => void openDocument("surface-2")}>
-            Open another document
-          </button>
-          <button onClick={() => void composer.submitMessage()}>
-            Send chat
-          </button>
-          <button
-            onClick={async () => {
-              if (
-                !documentPreparation ||
-                (await documentPreparation.prepareVoice())
-              ) {
-                startVoice();
-              }
-            }}
-          >
-            Start voice
-          </button>
-          <button onClick={documentRoute.viewConversation}>
-            View conversation
-          </button>
-          {documentPreparation?.error && (
-            <Notice tone="error" data-testid="preparation-error">
-              {documentPreparation.error}
-            </Notice>
-          )}
-          {isMobile && documentRoute.surfaceId && (
-            <DocumentChatContent
-              assistantId="assistant-1"
-              surfaceId={documentRoute.surfaceId}
-              document={opened}
-              loading={documentRoute.isLoading}
-              error={documentRoute.error}
-              editorRef={documentEditorRef}
-              onClose={documentRoute.closeDocument}
-              onRetry={documentRoute.reloadDocument}
-              onSubmitFeedback={() => {}}
-            />
-          )}
-        </>
-      );
-    },
-  }),
-);
+mock.module("./chat-route-content", (): Partial<typeof Chat> => ({
+  ChatMainPanel: ({
+    documentRoute,
+    documentEditorRef,
+    documentPreparation,
+  }) => {
+    useDocumentEditorSync();
+    const isMobile = useIsMobile();
+    const location = useLocation();
+    const opened = useViewerStore.use.openedDocumentState();
+    const openDocument = useOpenDocumentFromChat();
+    const composer = useComposerSubmit({
+      assistantId: "assistant-1",
+      activeConversationId: "conv-1",
+      inputRef: { current: null },
+      sendMessage: send,
+      scrollToLatest: () => {},
+      isEditing: false,
+      editingMessageId: null,
+      cancelEditing: () => {},
+      canUndoEdit: false,
+      sendDisabled: false,
+      typingDisabled: false,
+      prepareSend: documentPreparation?.prepareSend,
+    });
+    return (
+      <>
+        <div data-testid="url">
+          {location.pathname}
+          {location.search}
+        </div>
+        <div data-testid="document-load-state">
+          {documentRoute.isLoading
+            ? "loading"
+            : documentRoute.error
+              ? "error"
+              : "ready"}
+        </div>
+        <button onClick={() => void openDocument("surface-1")}>
+          Open document
+        </button>
+        <button onClick={() => void openDocument("surface-2")}>
+          Open another document
+        </button>
+        <button onClick={() => void composer.submitMessage()}>Send chat</button>
+        <button
+          onClick={async () => {
+            if (
+              !documentPreparation ||
+              (await documentPreparation.prepareVoice())
+            ) {
+              startVoice();
+            }
+          }}
+        >
+          Start voice
+        </button>
+        <button onClick={documentRoute.viewConversation}>
+          View conversation
+        </button>
+        {documentPreparation?.error && (
+          <Notice tone="error" data-testid="preparation-error">
+            {documentPreparation.error}
+          </Notice>
+        )}
+        {isMobile && documentRoute.surfaceId && (
+          <DocumentChatContent
+            assistantId="assistant-1"
+            surfaceId={documentRoute.surfaceId}
+            document={opened}
+            loading={documentRoute.isLoading}
+            error={documentRoute.error}
+            editorRef={documentEditorRef}
+            onClose={documentRoute.closeDocument}
+            onRetry={documentRoute.reloadDocument}
+            onSubmitFeedback={() => {}}
+          />
+        )}
+      </>
+    );
+  },
+}));
 const { ChatContentLayout } = await import("./chat-content-layout");
 const { DocumentViewerPage } = await import("../document-viewer-page");
 const viewport = liveViewportAxesStub();

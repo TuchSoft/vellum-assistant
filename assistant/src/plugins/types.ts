@@ -195,7 +195,7 @@ export interface TurnContext {
    * Human-readable active inference profile, only set when it changed since
    * the last turn (or on the first turn).
    */
-  readonly modelProfile?: string | null;
+  readonly model?: string | null;
   /** Pre-built `<active_subagents>` block or null to skip. */
   readonly subagentStatusBlock?: string | null;
   /** Channel capabilities — drives slack gating. */

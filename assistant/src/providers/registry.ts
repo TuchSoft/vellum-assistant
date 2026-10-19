@@ -1,8 +1,4 @@
-import { isAssistantFeatureFlagEnabled } from "../config/assistant-feature-flags.js";
-import { resolveCallSiteConfig } from "../config/llm-resolver.js";
-import type { AssistantConfig } from "../config/schema.js";
 import { type LLMConfig } from "../config/schemas/llm.js";
-import { getProviderKeyAsync } from "../security/secure-keys.js";
 import { ProviderNotConfiguredError } from "../util/errors.js";
 import { getLogger } from "../util/logger.js";
 import {
@@ -10,9 +6,10 @@ import {
   isAnthropicModel,
 } from "./anthropic-gateway-shared.js";
 import {
-  buildProviderAdapter,
-  createAdapterFromConnection,
-} from "./inference/adapter-factory.js";
+  resolveGatewayConnectionName,
+  resolveGatewayModel,
+} from "./gateway.js";
+import { createAdapterFromConnection } from "./inference/adapter-factory.js";
 // ---------------------------------------------------------------------------
 // Per-connection provider cache (mix-and-match support)
 // ---------------------------------------------------------------------------
@@ -21,14 +18,12 @@ import {
   effectiveConnectionAuth,
   ROUTING_IDENTITY_PROVIDERS,
 } from "./inference/auth.js";
-import { resolveAuth } from "./inference/resolve-auth.js";
-import { isModelInCatalog, PROVIDER_CATALOG } from "./model-catalog.js";
-import { getProviderDefaultModel } from "./model-intents.js";
 import {
-  buildManagedBaseUrl,
-  resolveManagedProxyContext,
-} from "./platform-proxy/context.js";
-import { RetryProvider } from "./retry.js";
+  ensureConnectionSnapshot,
+  peekConnection,
+} from "./inference/connections.js";
+import { resolveAuth } from "./inference/resolve-auth.js";
+import { PROVIDER_CATALOG } from "./model-catalog.js";
 import type { Provider } from "./types.js";
 import { UsageTrackingProvider } from "./usage-tracking.js";
 
@@ -113,30 +108,8 @@ export interface ProvidersConfig {
   timeouts?: { providerStreamTimeoutSec?: number };
 }
 
-function isProviderFeatureFlagEnabled(
-  key: string,
-  config: ProvidersConfig,
-): boolean {
-  return isAssistantFeatureFlagEnabled(
-    key,
-    config as unknown as AssistantConfig,
-  );
-}
-
-function resolveModel(config: ProvidersConfig, providerName: string): string {
-  const resolved = resolveCallSiteConfig("mainAgent", config.llm);
-  const inferenceProvider = resolved.provider;
-  const inferenceModel = resolved.model;
-  if (inferenceProvider === providerName) {
-    if (
-      providerName !== "anthropic" &&
-      isModelInCatalog("anthropic", inferenceModel)
-    ) {
-      return getProviderDefaultModel(providerName);
-    }
-    return inferenceModel;
-  }
-  return getProviderDefaultModel(providerName);
+function resolveModel(config: ProvidersConfig): string {
+  return resolveGatewayModel(config.llm);
 }
 
 export function isNativeWebSearchCapableProvider(
@@ -153,14 +126,13 @@ export function isNativeWebSearchCapableProvider(
 }
 
 export function shouldUseNativeWebSearch(
-  config: ProvidersConfig,
-  providerName: string,
-  model: string,
+  _config: ProvidersConfig,
+  _providerName: string,
+  _model: string,
 ): boolean {
-  return (
-    config.services["web-search"].provider === "inference-provider-native" &&
-    isNativeWebSearchCapableProvider(providerName, model)
-  );
+  // The gateway transport does not expose provider-native web search; the
+  // daemon executes the search tool itself.
+  return false;
 }
 
 /**
@@ -170,27 +142,6 @@ export function shouldUseNativeWebSearch(
  * The routing decision is now derived from credential availability rather than
  * the removed `services.inference.mode` config field.
  */
-async function resolveProviderCredentials(providerName: string): Promise<{
-  apiKey: string;
-  baseURL?: string;
-  source: "user-key" | "managed-proxy";
-} | null> {
-  const userKey = await getProviderKeyAsync(providerName);
-  if (userKey) {
-    return { apiKey: userKey, source: "user-key" };
-  }
-  const managedBaseUrl = await buildManagedBaseUrl(providerName);
-  if (managedBaseUrl) {
-    const ctx = await resolveManagedProxyContext();
-    return {
-      apiKey: ctx.assistantApiKey,
-      baseURL: managedBaseUrl,
-      source: "managed-proxy",
-    };
-  }
-  return null;
-}
-
 export async function initializeProviders(
   config: ProvidersConfig,
 ): Promise<void> {
@@ -198,90 +149,33 @@ export async function initializeProviders(
   routingSources.clear();
   connectionProviders.clear();
 
-  const streamTimeoutMs =
-    (config.timeouts?.providerStreamTimeoutSec ?? 1800) * 1000;
-  const mainAgentProvider = resolveCallSiteConfig(
-    "mainAgent",
-    config.llm,
-  ).provider;
-
-  for (const entry of PROVIDER_CATALOG) {
-    if (
-      entry.featureFlag &&
-      !isProviderFeatureFlagEnabled(entry.featureFlag, config)
-    ) {
-      continue;
-    }
-
-    const isKeyless = entry.setupMode === "keyless";
-
-    // Credential resolution: user key first, managed proxy second. Keyless
-    // providers (e.g. ollama) skip both — they only need to be configured as
-    // the mainAgent provider, or have a key present (rare keyed-mode), to
-    // boot. Boot order matches catalog order; routingSources tracks which
-    // credential surface served each provider.
-    let apiKey = "";
-    let baseURL: string | undefined;
-    let source: "user-key" | "managed-proxy" = "user-key";
-    if (isKeyless) {
-      const key = await getProviderKeyAsync(entry.id);
-      const isConfiguredMainAgent = mainAgentProvider === entry.id;
-      if (!key && !isConfiguredMainAgent) {
-        continue;
-      }
-      apiKey = key ?? "";
-    } else {
-      const creds = await resolveProviderCredentials(entry.id);
-      if (!creds) {
-        continue;
-      }
-      apiKey = creds.apiKey;
-      baseURL = creds.baseURL;
-      source = creds.source;
-    }
-
-    const model = resolveModel(config, entry.id);
-    const useNativeWebSearch = shouldUseNativeWebSearch(
-      config,
-      entry.id,
-      model,
-    );
-    const adapter = buildProviderAdapter(entry.id, {
-      apiKey,
-      model,
-      streamTimeoutMs,
-      baseURL,
-      useNativeWebSearch,
-    });
-    if (!adapter) {
-      // Catalog declares a provider with no factory entry. The parity guard
-      // in adapter-factory.ts catches this at module load, so reaching here
-      // means a future refactor regressed the invariant.
-      log.error(
-        { providerId: entry.id },
-        "Catalog entry has no adapter factory — skipping",
-      );
-      continue;
-    }
-
-    registerProvider(
-      entry.id,
-      new RetryProvider(adapter, {
-        forwardUsageAttributionHeaders: source === "managed-proxy",
-        // A keyless provider booted without a key has no credential to blame,
-        // so don't let its rejections render as "update your personal key".
-        credentialSource:
-          source === "managed-proxy"
-            ? "vellum-managed"
-            : isKeyless && !apiKey
-              ? "no-auth"
-              : "byok",
-      }),
-    );
-    routingSources.set(entry.id, source);
+  await ensureConnectionSnapshot();
+  const connectionName = resolveGatewayConnectionName();
+  if (connectionName == null) {
+    log.info("No LLM gateway connection configured yet");
+    return;
   }
-
-  log.info({ providerCount: providers.size }, "Providers initialized");
+  const connection = peekConnection(connectionName);
+  if (connection == null) {
+    log.warn(
+      { connectionName },
+      "Gateway connection row is missing from the snapshot",
+    );
+    return;
+  }
+  const provider = await resolveProviderFromConnection(connection, config, {
+    model: resolveGatewayModel(config.llm),
+  });
+  if (provider == null) {
+    log.warn(
+      { connectionName },
+      "Gateway connection resolved to no adapter; calls will degrade",
+    );
+    return;
+  }
+  registerProvider(connectionName, provider);
+  routingSources.set(connectionName, "user-key");
+  log.info({ connectionName }, "Gateway provider initialized");
 }
 
 // ---------------------------------------------------------------------------
@@ -313,7 +207,7 @@ export async function resolveProviderFromConnection(
   // For every other connection this is `undefined` and the effective provider
   // is the connection's own — no behavior change.
   const effectiveProvider = opts.providerOverride ?? connection.provider;
-  const model = opts.model ?? resolveModel(config, effectiveProvider);
+  const model = opts.model ?? resolveModel(config);
   // Routing identities must already be translated to a factory id
   // (`resolveRoutingIdentity`). `chatgpt` has no factory and must not
   // reach adapter construction. `vellum` is a catalog factory, so it is

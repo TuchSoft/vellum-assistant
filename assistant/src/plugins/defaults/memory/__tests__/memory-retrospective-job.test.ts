@@ -276,7 +276,7 @@ mock.module("../../../../persistence/conversation-crud.js", () => ({
   },
   // Mirrors the real helper's semantics (interactive-only, expiry-aware) so
   // matchConversationProfile tests exercise the same fallback behavior.
-  resolveOverrideProfile: (
+  resolveModel: (
     fields: {
       conversationType?: string | null;
       inferenceProfile?: string | null;
@@ -1711,7 +1711,7 @@ describe("memoryRetrospectiveJob", () => {
     );
 
     expect(wakeCalls).toHaveLength(1);
-    // No resolved profile ⇒ no forceOverrideProfile, but tool-surface parity
+    // No resolved profile ⇒ no  but tool-surface parity
     // (execution mode + tool-context pin) still rides — it's decoupled from
     // profile matching.
     expect("forceOverrideProfile" in wakeCalls[0]!.opts).toBe(false);

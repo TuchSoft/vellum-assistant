@@ -14,12 +14,10 @@ mock.module("@/lib/local-mode", () => ({
   renameLockfileAssistant: renameLockfileAssistantMock,
 }));
 
-const { useLockfileIdentitySync } = await import(
-  "@/hooks/use-lockfile-identity-sync"
-);
-const { useAssistantIdentityStore } = await import(
-  "@/stores/assistant-identity-store"
-);
+const { useLockfileIdentitySync } =
+  await import("@/hooks/use-lockfile-identity-sync");
+const { useAssistantIdentityStore } =
+  await import("@/stores/assistant-identity-store");
 const { useLockfileStore } = await import("@/stores/lockfile-store");
 
 /** bun:test has no fake timers, so retry tests run on a real short delay. */

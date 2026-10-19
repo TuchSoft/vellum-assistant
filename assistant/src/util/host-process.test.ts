@@ -1,7 +1,10 @@
 import { EventEmitter } from "node:events";
 import { expect, mock, test } from "bun:test";
 
-import { terminateProcessTree, watchShellProcessStart } from "./host-process.js";
+import {
+  terminateProcessTree,
+  watchShellProcessStart,
+} from "./host-process.js";
 
 test("Windows process trees use taskkill and fall back to the direct child", () => {
   const kill = mock(() => true);

@@ -21,7 +21,10 @@ import type { AndroidSenderNotificationPostRequest } from "@/runtime/android-sen
 import * as daemonSdk from "@/generated/daemon/sdk.gen";
 import * as i18nRuntime from "@/i18n";
 import * as androidNotificationChannels from "@/runtime/android-notification-channels";
-import { browserNotificationConversationKey, BrowserNotificationDelivery } from "@/runtime/browser-notification-delivery";
+import {
+  browserNotificationConversationKey,
+  BrowserNotificationDelivery,
+} from "@/runtime/browser-notification-delivery";
 import * as nativeAuthRuntime from "@/runtime/native-auth";
 import * as platformDetection from "@/runtime/platform-detection";
 import * as pushRegistration from "@/runtime/push-registration";
@@ -80,9 +83,7 @@ mock.module("@/runtime/push-registration", () => ({
     const scopeId =
       typeof record.scopeId === "string" ? record.scopeId.trim() : "";
     const assistantId =
-      typeof record.assistantId === "string"
-        ? record.assistantId.trim()
-        : "";
+      typeof record.assistantId === "string" ? record.assistantId.trim() : "";
     const nativeSenderId =
       typeof record.nativeSenderId === "string"
         ? record.nativeSenderId.trim()
@@ -509,17 +510,26 @@ describe("postLocalNotification remote-push dedup (native branch)", () => {
   test("enable and disable transitions keep sound with the selected Android route", async () => {
     nativeAndroid = true;
     expect(
-      await postLocalNotification({ ...baseArgs, deliveryId: "delivery-before" }),
+      await postLocalNotification({
+        ...baseArgs,
+        deliveryId: "delivery-before",
+      }),
     ).toBe("native-owned");
 
     androidNotificationOwnership = true;
     expect(
-      await postLocalNotification({ ...baseArgs, deliveryId: "delivery-during" }),
+      await postLocalNotification({
+        ...baseArgs,
+        deliveryId: "delivery-during",
+      }),
     ).toBe("native-owned");
 
     androidNotificationOwnership = false;
     expect(
-      await postLocalNotification({ ...baseArgs, deliveryId: "delivery-after" }),
+      await postLocalNotification({
+        ...baseArgs,
+        deliveryId: "delivery-after",
+      }),
     ).toBe("native-owned");
     expect(scheduleMock).toHaveBeenCalledTimes(2);
     expect(postAndroidSenderNotificationMock).toHaveBeenCalledTimes(3);
@@ -1153,11 +1163,13 @@ describe("postLocalNotification Android coordinator owner", () => {
   test("fails closed on an oversized higher-precedence key and preserves the ack id", async () => {
     const oversized = `\u00A0${"x".repeat(513)}\u3000`;
 
-    expect(await postLocalNotification({
-      ...baseArgs,
-      correlationId: oversized,
-      deliveryId: " original-delivery ",
-    })).toBe("silent");
+    expect(
+      await postLocalNotification({
+        ...baseArgs,
+        correlationId: oversized,
+        deliveryId: " original-delivery ",
+      }),
+    ).toBe("silent");
 
     expect(postAndroidSenderNotificationMock).not.toHaveBeenCalled();
     expect(scheduleMock).not.toHaveBeenCalled();
@@ -1253,9 +1265,9 @@ describe("postLocalNotification Android coordinator owner", () => {
         identity: {},
       },
     });
-    expect(postAndroidSenderNotificationMock.mock.calls[0]?.[0]).not.toHaveProperty(
-      "identity",
-    );
+    expect(
+      postAndroidSenderNotificationMock.mock.calls[0]?.[0],
+    ).not.toHaveProperty("identity");
   });
 
   test("foreground FCM keeps a normalized valid JSON identity for tap routing", async () => {
@@ -1683,7 +1695,11 @@ describe("postLocalNotification browser avatar icons", () => {
       expect(calls).toHaveLength(1);
       expect(calls[0]?.options).toMatchObject({
         body: "Stand up",
-        tag: JSON.stringify([identity.scopeId, identity.assistantId, "delivery-1"]),
+        tag: JSON.stringify([
+          identity.scopeId,
+          identity.assistantId,
+          "delivery-1",
+        ]),
       });
       expect(calls[0]?.options?.icon).toBeUndefined();
       expect(calls[0]?.options).not.toHaveProperty("badge");
@@ -1782,8 +1798,7 @@ describe("notification tap listener adapters", () => {
     });
 
     const listener = actionListener as
-      | ((event: NotificationActionEvent) => void)
-      | null;
+      ((event: NotificationActionEvent) => void) | null;
     if (!listener) {
       throw new Error("expected Electron action listener");
     }
@@ -1844,8 +1859,7 @@ describe("notification tap listener adapters", () => {
 
     expect(onAction).toHaveBeenCalledTimes(2);
     const listener = actionListener as
-      | ((event: NotificationActionEvent) => void)
-      | null;
+      ((event: NotificationActionEvent) => void) | null;
     if (!listener) {
       throw new Error("expected retried Electron action listener");
     }
@@ -2045,11 +2059,17 @@ describe("notification tap listener adapters", () => {
 describe("browser delivery receipts", () => {
   test("native permission denial keeps native sound and acknowledgement behavior", async () => {
     nativePermission = "denied";
-    const args = { ...baseArgs, identity: testIdentity(), correlationId: "signal-1" };
+    const args = {
+      ...baseArgs,
+      identity: testIdentity(),
+      correlationId: "signal-1",
+    };
     expect(await postLocalNotification(args)).toBe("web-sound");
     expect(await postLocalNotification(args)).toBe("web-sound");
     expect(ackArgs.map(({ body }) => body.success)).toEqual([false, false]);
-    expect(localStorage.getItem("vellum:browser-notification-sounds:v1")).toBeNull();
+    expect(
+      localStorage.getItem("vellum:browser-notification-sounds:v1"),
+    ).toBeNull();
   });
 
   for (const permission of ["default", "granted"] as const) {
@@ -2062,11 +2082,18 @@ describe("browser delivery receipts", () => {
         return { data: undefined, error: undefined };
       });
       await withBrowserNotificationMock(async () => {
-        Object.defineProperty(Notification, "permission", { configurable: true, value: permission });
-        expect(await postLocalNotification({
-          ...baseArgs, identity: testIdentity(), correlationId: "signal-1",
-          canDeliver: () => currentSession,
-        })).toBe("silent");
+        Object.defineProperty(Notification, "permission", {
+          configurable: true,
+          value: permission,
+        });
+        expect(
+          await postLocalNotification({
+            ...baseArgs,
+            identity: testIdentity(),
+            correlationId: "signal-1",
+            canDeliver: () => currentSession,
+          }),
+        ).toBe("silent");
         expect(ackArgs).toHaveLength(1);
       });
     });
@@ -2076,36 +2103,73 @@ describe("browser delivery receipts", () => {
     test(`coordinates fallback chimes with browser permission ${permission}`, async () => {
       nativePlatform = false;
       await withBrowserNotificationMock(async (calls) => {
-        Object.defineProperty(Notification, "permission", { configurable: true, value: permission });
-        const args = { ...baseArgs, identity: testIdentity(), correlationId: "signal-1" };
-        expect(await Promise.all([
-          postLocalNotification(args),
-          postLocalNotification({ ...args, deliveryId: "delivery-2" }),
-        ])).toEqual(["web-sound", "silent"]);
+        Object.defineProperty(Notification, "permission", {
+          configurable: true,
+          value: permission,
+        });
+        const args = {
+          ...baseArgs,
+          identity: testIdentity(),
+          correlationId: "signal-1",
+        };
+        expect(
+          await Promise.all([
+            postLocalNotification(args),
+            postLocalNotification({ ...args, deliveryId: "delivery-2" }),
+          ]),
+        ).toEqual(["web-sound", "silent"]);
         expect(calls).toHaveLength(0);
-        expect(ackArgs).toEqual([expect.objectContaining({
-          body: expect.objectContaining({ deliveryId: "delivery-1", success: false }),
-        })]);
-        expect(localStorage.getItem("vellum:browser-notification-deliveries:v1")).toBeNull();
-        expect(JSON.parse(localStorage.getItem("vellum:browser-notification-sounds:v1")!)).toHaveLength(1);
+        expect(ackArgs).toEqual([
+          expect.objectContaining({
+            body: expect.objectContaining({
+              deliveryId: "delivery-1",
+              success: false,
+            }),
+          }),
+        ]);
+        expect(
+          localStorage.getItem("vellum:browser-notification-deliveries:v1"),
+        ).toBeNull();
+        expect(
+          JSON.parse(
+            localStorage.getItem("vellum:browser-notification-sounds:v1")!,
+          ),
+        ).toHaveLength(1);
       });
     });
   }
 
   test("coordinates fallback chimes when the browser Notification API is unavailable", async () => {
     nativePlatform = false;
-    const originalNotification = Object.getOwnPropertyDescriptor(window, "Notification");
+    const originalNotification = Object.getOwnPropertyDescriptor(
+      window,
+      "Notification",
+    );
     Reflect.deleteProperty(window, "Notification");
     try {
-      const args = { ...baseArgs, identity: testIdentity(), correlationId: "signal-1" };
-      expect(await Promise.all([
-        postLocalNotification(args),
-        postLocalNotification({ ...args, deliveryId: "delivery-2" }),
-      ])).toEqual(["web-sound", "silent"]);
-      expect(ackArgs).toEqual([expect.objectContaining({
-        body: { deliveryId: "delivery-1", success: false, errorMessage: "Notifications not supported on this client" },
-      })]);
-      expect(localStorage.getItem("vellum:browser-notification-deliveries:v1")).toBeNull();
+      const args = {
+        ...baseArgs,
+        identity: testIdentity(),
+        correlationId: "signal-1",
+      };
+      expect(
+        await Promise.all([
+          postLocalNotification(args),
+          postLocalNotification({ ...args, deliveryId: "delivery-2" }),
+        ]),
+      ).toEqual(["web-sound", "silent"]);
+      expect(ackArgs).toEqual([
+        expect.objectContaining({
+          body: {
+            deliveryId: "delivery-1",
+            success: false,
+            errorMessage: "Notifications not supported on this client",
+          },
+        }),
+      ]);
+      expect(
+        localStorage.getItem("vellum:browser-notification-deliveries:v1"),
+      ).toBeNull();
     } finally {
       if (originalNotification) {
         Object.defineProperty(window, "Notification", originalNotification);
@@ -2116,11 +2180,23 @@ describe("browser delivery receipts", () => {
   test("a fallback sound does not block posting after permission is granted", async () => {
     nativePlatform = false;
     await withBrowserNotificationMock(async (calls) => {
-      const args = { ...baseArgs, identity: testIdentity(), correlationId: "signal-1" };
-      Object.defineProperty(Notification, "permission", { configurable: true, value: "default" });
+      const args = {
+        ...baseArgs,
+        identity: testIdentity(),
+        correlationId: "signal-1",
+      };
+      Object.defineProperty(Notification, "permission", {
+        configurable: true,
+        value: "default",
+      });
       expect(await postLocalNotification(args)).toBe("web-sound");
-      Object.defineProperty(Notification, "permission", { configurable: true, value: "granted" });
-      expect(await postLocalNotification({ ...args, deliveryId: "delivery-2" })).toBe("silent");
+      Object.defineProperty(Notification, "permission", {
+        configurable: true,
+        value: "granted",
+      });
+      expect(
+        await postLocalNotification({ ...args, deliveryId: "delivery-2" }),
+      ).toBe("silent");
       expect(calls).toHaveLength(1);
       expect(ackArgs.map((args) => args.body?.success)).toEqual([false, true]);
     });
@@ -2128,33 +2204,59 @@ describe("browser delivery receipts", () => {
 
   test("a rejected browser post retries without playing a second fallback chime", async () => {
     nativePlatform = false;
-    await withBrowserNotificationMock(async (calls) => {
-      const args = { ...baseArgs, identity: testIdentity(), correlationId: "signal-1" };
-      expect(await postLocalNotification(args)).toBe("web-sound");
-      expect(localStorage.getItem("vellum:browser-notification-deliveries:v1")).toBeNull();
-      expect(await postLocalNotification({ ...args, deliveryId: "delivery-2" })).toBe("silent");
-      expect(calls).toHaveLength(2);
-      expect(ackArgs.map((args) => args.body?.success)).toEqual([false, true]);
-    }, (_title, _options, attempt) => {
-      if (attempt === 1) {
-        throw new Error("Browser refused");
-      }
-    });
+    await withBrowserNotificationMock(
+      async (calls) => {
+        const args = {
+          ...baseArgs,
+          identity: testIdentity(),
+          correlationId: "signal-1",
+        };
+        expect(await postLocalNotification(args)).toBe("web-sound");
+        expect(
+          localStorage.getItem("vellum:browser-notification-deliveries:v1"),
+        ).toBeNull();
+        expect(
+          await postLocalNotification({ ...args, deliveryId: "delivery-2" }),
+        ).toBe("silent");
+        expect(calls).toHaveLength(2);
+        expect(ackArgs.map((args) => args.body?.success)).toEqual([
+          false,
+          true,
+        ]);
+      },
+      (_title, _options, attempt) => {
+        if (attempt === 1) {
+          throw new Error("Browser refused");
+        }
+      },
+    );
   });
 
   test("another tab watching the conversation suppresses banner and chime without a post receipt", async () => {
     nativePlatform = false;
     const identity = testIdentity();
     const focusedTab = new BrowserNotificationDelivery();
-    const stop = focusedTab.trackAttention(() => browserNotificationConversationKey(identity, "conv-1"));
+    const stop = focusedTab.trackAttention(() =>
+      browserNotificationConversationKey(identity, "conv-1"),
+    );
     try {
       await withBrowserNotificationMock(async (calls) => {
-        expect(await postLocalNotification({
-          ...baseArgs, identity, deepLinkMetadata: { conversationId: "conv-1" },
-        })).toBe("silent");
+        expect(
+          await postLocalNotification({
+            ...baseArgs,
+            identity,
+            deepLinkMetadata: { conversationId: "conv-1" },
+          }),
+        ).toBe("silent");
         expect(calls).toHaveLength(0);
-        expect(ackArgs).toEqual([expect.objectContaining({ body: { deliveryId: "delivery-1", success: true } })]);
-        expect(localStorage.getItem("vellum:browser-notification-deliveries:v1")).toBeNull();
+        expect(ackArgs).toEqual([
+          expect.objectContaining({
+            body: { deliveryId: "delivery-1", success: true },
+          }),
+        ]);
+        expect(
+          localStorage.getItem("vellum:browser-notification-deliveries:v1"),
+        ).toBeNull();
       });
     } finally {
       stop();
@@ -2165,13 +2267,22 @@ describe("browser delivery receipts", () => {
     nativePlatform = false;
     const identity = testIdentity();
     const focusedTab = new BrowserNotificationDelivery();
-    const stop = focusedTab.trackAttention(() => browserNotificationConversationKey(identity, "conv-1"));
+    const stop = focusedTab.trackAttention(() =>
+      browserNotificationConversationKey(identity, "conv-1"),
+    );
     try {
       await withBrowserNotificationMock(async (calls) => {
-        Object.defineProperty(Notification, "permission", { configurable: true, value: "denied" });
-        expect(await postLocalNotification({
-          ...baseArgs, identity, deepLinkMetadata: { conversationId: "conv-1" },
-        })).toBe("silent");
+        Object.defineProperty(Notification, "permission", {
+          configurable: true,
+          value: "denied",
+        });
+        expect(
+          await postLocalNotification({
+            ...baseArgs,
+            identity,
+            deepLinkMetadata: { conversationId: "conv-1" },
+          }),
+        ).toBe("silent");
         expect(calls).toHaveLength(0);
       });
     } finally {
@@ -2182,9 +2293,15 @@ describe("browser delivery receipts", () => {
   test("a duplicate signal neither posts, chimes, nor overwrites the owner's acknowledgement", async () => {
     nativePlatform = false;
     await withBrowserNotificationMock(async (calls) => {
-      const args = { ...baseArgs, identity: testIdentity(), correlationId: "signal-1" };
+      const args = {
+        ...baseArgs,
+        identity: testIdentity(),
+        correlationId: "signal-1",
+      };
       expect(await postLocalNotification(args)).toBe("web-sound");
-      expect(await postLocalNotification({ ...args, deliveryId: "delivery-2" })).toBe("silent");
+      expect(
+        await postLocalNotification({ ...args, deliveryId: "delivery-2" }),
+      ).toBe("silent");
       expect(calls).toHaveLength(1);
       expect(ackMock).toHaveBeenCalledTimes(1);
     });
@@ -2193,7 +2310,13 @@ describe("browser delivery receipts", () => {
   test("a cancelled session does not post or acknowledge on its replacement session", async () => {
     nativePlatform = false;
     await withBrowserNotificationMock(async (calls) => {
-      expect(await postLocalNotification({ ...baseArgs, identity: testIdentity(), canDeliver: () => false })).toBe("silent");
+      expect(
+        await postLocalNotification({
+          ...baseArgs,
+          identity: testIdentity(),
+          canDeliver: () => false,
+        }),
+      ).toBe("silent");
       expect(calls).toHaveLength(0);
       expect(ackMock).toHaveBeenCalledTimes(0);
     });

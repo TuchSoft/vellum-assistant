@@ -58,7 +58,11 @@ describe("detectRepetition", () => {
   });
 
   test("trips on a repeated paragraph through the large-block rule", () => {
-    const opts: LoopGuardOptions = { ...OPTS, maxRepeats: 10, maxBlockLength: 400 };
+    const opts: LoopGuardOptions = {
+      ...OPTS,
+      maxRepeats: 10,
+      maxBlockLength: 400,
+    };
     const paragraph =
       "Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu. " +
       "Numbers one two three four five six seven eight nine ten eleven. " +

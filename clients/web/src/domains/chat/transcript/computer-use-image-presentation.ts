@@ -39,7 +39,8 @@ export function deriveTranscriptImagePresentation(
 
   const selectedToolCall = toolCalls.findLast(
     (toolCall) =>
-      computerUseToolCallIds.has(toolCall.id) && hasToolResultImages([toolCall]),
+      computerUseToolCallIds.has(toolCall.id) &&
+      hasToolResultImages([toolCall]),
   );
   const rawImages = projectImages(
     toolCalls,

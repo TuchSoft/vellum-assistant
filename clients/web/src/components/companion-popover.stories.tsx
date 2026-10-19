@@ -156,13 +156,23 @@ export const VoicePicker: Story = {
           accent: "American",
           voices: [
             { id: "v1", label: "Warm, clear", sampleUrl: "", isDefault: true },
-            { id: "v2", label: "Bright, upbeat", sampleUrl: "", isDefault: false },
+            {
+              id: "v2",
+              label: "Bright, upbeat",
+              sampleUrl: "",
+              isDefault: false,
+            },
           ],
         },
         {
           accent: "British",
           voices: [
-            { id: "v3", label: "Calm, measured", sampleUrl: "", isDefault: false },
+            {
+              id: "v3",
+              label: "Calm, measured",
+              sampleUrl: "",
+              isDefault: false,
+            },
           ],
         },
       ],

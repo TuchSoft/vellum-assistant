@@ -351,7 +351,10 @@ export function registerNotificationsCommand(program: Command): void {
               if (signal.reason) {
                 log.info(`  Reason: ${signal.reason}`);
               }
-              if (signal.selectedChannels && signal.selectedChannels.length > 0) {
+              if (
+                signal.selectedChannels &&
+                signal.selectedChannels.length > 0
+              ) {
                 log.info(`  Channels: ${signal.selectedChannels.join(", ")}`);
               }
               if (signal.receiptClass) {

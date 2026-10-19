@@ -18,10 +18,9 @@ mock.module(
     saveDocumentContent,
   }),
 );
-mock.module(
-  "@/lib/sentry/capture-error",
-  (): Partial<typeof CaptureError> => ({ captureError }),
-);
+mock.module("@/lib/sentry/capture-error", (): Partial<typeof CaptureError> => ({
+  captureError,
+}));
 
 const { useDocumentEditorSave } = await import("./use-document-editor-save");
 const { waitForDocumentSaves } = documentSave;

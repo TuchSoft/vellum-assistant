@@ -100,12 +100,10 @@ mock.module("@/lib/sounds/sound-manager", () => ({
   getSoundManager: () => ({ play: playSoundMock }),
 }));
 
-const { useNotificationIntentSync } = await import(
-  "@/hooks/use-notification-intent-sync"
-);
-const { subscribeToWindowAttention } = await import(
-  "@/runtime/window-attention"
-);
+const { useNotificationIntentSync } =
+  await import("@/hooks/use-notification-intent-sync");
+const { subscribeToWindowAttention } =
+  await import("@/runtime/window-attention");
 
 const realVisibilityState = Object.getOwnPropertyDescriptor(
   document,
@@ -543,7 +541,9 @@ describe("useNotificationIntentSync guardian-scoped intents", () => {
       `delivers %s without the guardian-card marker when the assistant version is ${version}`,
       (sourceEventName) => {
         if (version) {
-          useAssistantIdentityStore.getState().setIdentity("Test", version, "assistant-1");
+          useAssistantIdentityStore
+            .getState()
+            .setIdentity("Test", version, "assistant-1");
         }
         mountAt(routes.assistant);
 
@@ -617,8 +617,13 @@ describe("useNotificationIntentSync already-watching skip", () => {
 
   test("shares attended conversation before an intent and clears it on logout", () => {
     const mounted = mountAt(routes.conversation(CONVERSATION_ID));
-    publishNotificationIntent({ deepLinkMetadata: { conversationId: "another-conversation" } });
-    const key = browserNotificationConversationKey(postedArgs[0]?.identity, CONVERSATION_ID);
+    publishNotificationIntent({
+      deepLinkMetadata: { conversationId: "another-conversation" },
+    });
+    const key = browserNotificationConversationKey(
+      postedArgs[0]?.identity,
+      CONVERSATION_ID,
+    );
     const otherTab = new BrowserNotificationDelivery();
     expect(otherTab.isConversationAttended(key)).toBe(true);
 
@@ -642,12 +647,19 @@ describe("useNotificationIntentSync already-watching skip", () => {
 
   test("clears shared attention when switching assistant or conversation", () => {
     const mounted = mountAt(routes.conversation(CONVERSATION_ID));
-    publishNotificationIntent({ deepLinkMetadata: { conversationId: "another-conversation" } });
-    const key = browserNotificationConversationKey(postedArgs[0]?.identity, CONVERSATION_ID);
+    publishNotificationIntent({
+      deepLinkMetadata: { conversationId: "another-conversation" },
+    });
+    const key = browserNotificationConversationKey(
+      postedArgs[0]?.identity,
+      CONVERSATION_ID,
+    );
     const otherTab = new BrowserNotificationDelivery();
     expect(otherTab.isConversationAttended(key)).toBe(true);
     act(() => {
-      useConversationStore.getState().setActiveConversationId("another-conversation");
+      useConversationStore
+        .getState()
+        .setActiveConversationId("another-conversation");
     });
     expect(otherTab.isConversationAttended(key)).toBe(false);
     act(() => {

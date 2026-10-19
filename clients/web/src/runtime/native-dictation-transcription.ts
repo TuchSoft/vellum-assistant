@@ -1,15 +1,11 @@
 import type { VellumBridge } from "@vellumai/ipc-contract";
 
 type NativeTranscriptionBridge = Required<
-  Pick<
-    VellumBridge["helper"]["dictation"],
-    "transcribe" | "onTranscribed"
-  >
+  Pick<VellumBridge["helper"]["dictation"], "transcribe" | "onTranscribed">
 >;
 
 type NativeTranscriptionResult =
-  | { ok: true; text: string | null }
-  | { ok: false; reason?: string };
+  { ok: true; text: string | null } | { ok: false; reason?: string };
 
 export async function requestNativeTranscription(
   bridge: NativeTranscriptionBridge,

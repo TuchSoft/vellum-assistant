@@ -1,7 +1,7 @@
 /**
  * Send-path wiring for per-chat plugin selection (PR 14).
  *
- * Mirrors the `inferenceProfile` stash lifecycle: an EXPLICIT plugin
+ * Mirrors the `model` stash lifecycle: an EXPLICIT plugin
  * selection stashed for a draft conversation rides along on the first
  * `POST /messages`, sorted to a stable array, gated on resolved daemon
  * support, and cleared from the stash once the send succeeds.
@@ -276,7 +276,7 @@ describe("useSendMessage autonomy send wiring", () => {
       });
       if (outcome === "ready") {
         expect(capturedBody).toMatchObject({
-          inferenceProfile: "quality-optimized",
+          model: "quality-optimized",
           riskThreshold: "none",
         });
       } else {

@@ -24,16 +24,18 @@ function identity(
   scopeId = "connection:one",
   nativeSenderId = `native:${scopeId}:${assistantId}`,
 ): NotificationIdentity {
-  const result = createNotificationIdentity(scopeId, assistantId, nativeSenderId);
+  const result = createNotificationIdentity(
+    scopeId,
+    assistantId,
+    nativeSenderId,
+  );
   if (!result) {
     throw new Error("test identity must be valid");
   }
   return result;
 }
 
-function resolve(
-  overrides: Partial<ResolveNotificationSenderInput> = {},
-) {
+function resolve(overrides: Partial<ResolveNotificationSenderInput> = {}) {
   const owner = identity("assistant-a");
   return resolveNotificationSender({
     presentation: "assistant",

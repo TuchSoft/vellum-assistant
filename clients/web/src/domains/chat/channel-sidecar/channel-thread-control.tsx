@@ -29,8 +29,7 @@ export function ChannelThreadControl({ target }: ChannelThreadControlProps) {
   const { t } = useTranslation("chat");
   const isMobile = useIsMobile();
   const mainView = useViewerStore.use.mainView();
-  const activeChannelTranscript =
-    useViewerStore.use.activeChannelTranscript();
+  const activeChannelTranscript = useViewerStore.use.activeChannelTranscript();
 
   const isOpen =
     mainView === "channel-transcript" &&

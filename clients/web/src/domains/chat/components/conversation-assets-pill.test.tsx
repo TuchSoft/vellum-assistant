@@ -72,12 +72,10 @@ const {
   ASSETS_PILL_UNSEEN_DOT_TESTID,
   ASSETS_PILL_UNSEEN_DOT_PULSE_CLASS,
 } = await import("@/domains/chat/components/conversation-assets-pill");
-const { ChatInfoPanel } = await import(
-  "@/domains/chat/components/chat-info-panel"
-);
-const { useUnseenDocumentChangesStore } = await import(
-  "@/domains/chat/unseen-document-changes-store"
-);
+const { ChatInfoPanel } =
+  await import("@/domains/chat/components/chat-info-panel");
+const { useUnseenDocumentChangesStore } =
+  await import("@/domains/chat/unseen-document-changes-store");
 const { useViewerStore } = await import("@/stores/viewer-store");
 
 const ASSISTANT_ID = "asst-1";

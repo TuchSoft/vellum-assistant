@@ -496,7 +496,9 @@ function CredentialsPageInner() {
       >
         <Modal.Content size="sm">
           <Modal.Header icon={Link2}>
-            <Modal.Title>{t("credentialsPage.oneTimeLinkModalTitle")}</Modal.Title>
+            <Modal.Title>
+              {t("credentialsPage.oneTimeLinkModalTitle")}
+            </Modal.Title>
             <Modal.Description>
               {generatedLink
                 ? t("credentialsPage.oneTimeLinkModalDescription", {

@@ -10,11 +10,10 @@ import {
 import { toast } from "@vellumai/design-library";
 
 import {
-  visibleProfilesForPicker,
+  isDispatchableProfile,
   type ProfilePickerEntry,
 } from "@/assistant/profile-pickers";
 import { useStickyProfiles } from "@/assistant/use-sticky-profiles";
-import { useProfileQuickAdd } from "@/components/profile-quick-add-provider";
 import {
   composerProfiles,
   favoriteModes,
@@ -29,18 +28,16 @@ import {
   composerSettingsGetOptions,
   composerSettingsGetQueryKey,
   configGetOptions,
-  configGetQueryKey,
   conversationsByIdGetOptions,
   conversationsByIdGetQueryKey,
 } from "@/generated/daemon/@tanstack/react-query.gen";
 import {
   composerSettingsPatch,
-  conversationsByIdInferenceprofilePut,
+  conversationsByIdModelPut,
 } from "@/generated/daemon/sdk.gen";
 import type {
   ComposerSettingsGetResponse,
   ComposerSettingsPatchData,
-  ConfigGetResponse,
 } from "@/generated/daemon/types.gen";
 import {
   assistantCapabilityOptions,
@@ -48,7 +45,6 @@ import {
 } from "@/hooks/use-assistant-capability";
 import { useIsOrgReady } from "@/hooks/use-is-org-ready";
 import { useTranslation } from "@/i18n";
-import { useSupportsCompleteProfileSnapshots } from "@/lib/backwards-compat/complete-profile-snapshots";
 import {
   getConversationOverride,
   setConversationOverride,
@@ -77,7 +73,6 @@ export function useComposerConfiguration(
   const capability = useAssistantCapabilityQuery("composerSettings");
   const capabilityKnown = capability.data !== undefined;
   const supportsPreferences = capability.data === true;
-  const requireOwnProviderAndModel = useSupportsCompleteProfileSnapshots();
   const activeId = useConversationStore.use.activeConversationId();
   const draftIds = useConversationStore.use.draftConversationIds();
   const pendingProfiles = useConversationStore.use.pendingDraftProfiles();
@@ -133,8 +128,8 @@ export function useComposerConfiguration(
   const mode =
     local?.mode ??
     (id ? pendingProfiles.get(id) : undefined) ??
-    conversation.data?.conversation.inferenceProfile ??
-    config.data?.llm?.activeProfile ??
+    conversation.data?.conversation.model ??
+    config.data?.llm?.defaultModel ??
     null;
   const rawAutonomy =
     local?.autonomy ??
@@ -149,9 +144,9 @@ export function useComposerConfiguration(
     rawAutonomy === "high"
       ? rawAutonomy
       : null;
-  const visibleProfiles = visibleProfilesForPicker(allProfiles, [mode], {
-    requireOwnProviderAndModel,
-  });
+  const visibleProfiles = allProfiles.filter((entry) =>
+    isDispatchableProfile(entry),
+  );
   const favorites = favoriteModes(
     preferences.favoriteModeIds,
     visibleProfiles,
@@ -172,8 +167,7 @@ export function useComposerConfiguration(
     async (
       selection: Promise<void>,
       patch:
-        | PreferencePatch
-        | ((current: ComposerPreferences) => PreferencePatch),
+        PreferencePatch | ((current: ComposerPreferences) => PreferencePatch),
     ) => {
       await serializeComposerWrite(`preferences:${assistantId}`, async () => {
         try {
@@ -264,9 +258,9 @@ export function useComposerConfiguration(
         throw new Error("Composer context changed");
       }
       if (kind === "mode") {
-        await conversationsByIdInferenceprofilePut({
+        await conversationsByIdModelPut({
           path: { assistant_id: assistantId, id: target },
-          body: { profile: value },
+          body: { model: value },
           throwOnError: true,
         });
         if (
@@ -365,12 +359,7 @@ export function useComposerConfiguration(
       })();
       const preferencesSaved = savePreferences(selection, (current) => {
         if (kind === "mode") {
-          const llm = queryClient.getQueryData<ConfigGetResponse>(
-            configGetQueryKey({ path: { assistant_id: assistantId } }),
-          )?.llm;
-          const catalog = llm?.profiles
-            ? composerProfiles(llm.profiles, llm.profileOrder ?? [])
-            : allProfiles;
+          const catalog = allProfiles;
           return {
             lastModeId: value,
             favoriteModeIds: favoriteModes(
@@ -482,20 +471,8 @@ export function useComposerConfiguration(
     t,
   ]);
 
-  const { openProfileQuickAdd } = useProfileQuickAdd();
   const newMode = () => {
     setOpen(false);
-    openProfileQuickAdd({
-      existingNames: Object.keys(profiles),
-      onCreated: (name) => {
-        if (
-          currentScope.current === scope &&
-          useComposerStore.getState().sessionGeneration === sessionGeneration
-        ) {
-          void select("mode", name);
-        }
-      },
-    });
   };
   return {
     open,
@@ -519,7 +496,6 @@ export function useComposerConfiguration(
     selectMode: (name: string) => select("mode", name),
     selectAutonomy: (value: Autonomy) => select("autonomy", value),
     newMode,
-    requireOwnProviderAndModel,
   };
 }
 export type ComposerConfiguration = ReturnType<typeof useComposerConfiguration>;

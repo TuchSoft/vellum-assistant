@@ -357,9 +357,7 @@ describe("PaymentMethodsCard modal wiring", () => {
   test("Add Payment Method opens the setup modal", () => {
     const { container, getByTestId } = render(wrap(DISABLED_CONFIG));
 
-    expect(
-      container.querySelector('[data-testid="pm-modal-stub"]'),
-    ).toBeNull();
+    expect(container.querySelector('[data-testid="pm-modal-stub"]')).toBeNull();
 
     fireEvent.click(getByTestId("payment-methods-add"));
 

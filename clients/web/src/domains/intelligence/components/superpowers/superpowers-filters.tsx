@@ -256,11 +256,7 @@ function FilterControl(props: FilterControlProps) {
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>{trigger}</Popover.Trigger>
-      <Popover.Content
-        align="end"
-        sideOffset={4}
-        className="w-44"
-      >
+      <Popover.Content align="end" sideOffset={4} className="w-44">
         <ul role="listbox">
           <FilterGroup
             label={t("superpowersFilters.statusLabel")}

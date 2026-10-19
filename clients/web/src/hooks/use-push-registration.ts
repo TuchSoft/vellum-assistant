@@ -54,7 +54,10 @@ export function usePushRegistration(assistantId: string | null): void {
     setForegroundPushHandler((notification) => {
       postForegroundRemotePush(notification, {
         shouldSuppressConversation: (conversationId) =>
-          isFocusedNotificationConversation(conversationId, pathnameRef.current),
+          isFocusedNotificationConversation(
+            conversationId,
+            pathnameRef.current,
+          ),
       });
     });
     void registerForRemotePush(assistantId);

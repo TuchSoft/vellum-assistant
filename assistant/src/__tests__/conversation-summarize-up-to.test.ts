@@ -109,7 +109,7 @@ mock.module("../persistence/conversation-crud.js", () => ({
   addMessage: () => ({ id: `msg-${Date.now()}` }),
   updateConversationUsage: () => {},
   updateConversationTitle: () => {},
-  resolveOverrideProfile: () => null,
+  resolveModel: () => null,
   reserveMessage: mock(async () => ({ id: "msg-reserve" })),
 }));
 

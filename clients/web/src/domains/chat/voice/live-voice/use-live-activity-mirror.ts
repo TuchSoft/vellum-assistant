@@ -408,22 +408,21 @@ export function useLiveActivityMirror(): void {
         );
         // Microphone controls must not wait for the island's avatar encode.
         startVoiceActivity({ ...content, assistantName, work });
-        void startWithAvatar(
-          () =>
-            // Read at start time, not capture time. `pushed` tracks the newest
-            // content, so a phase that landed during the avatar encode is what
-            // the island opens on; its own `update` was dropped natively for
-            // want of an activity to update.
-            generation === started && pushed !== null
-              ? {
-                  ...pushed,
-                  // An `ActivityAttributes` field, not `ContentState`: fixed for
-                  // the activity's lifetime, so it is read once here and never
-                  // pushed again. The avatar is added by `startWithAvatar` for
-                  // the same reason.
-                  assistantName,
-                }
-              : null,
+        void startWithAvatar(() =>
+          // Read at start time, not capture time. `pushed` tracks the newest
+          // content, so a phase that landed during the avatar encode is what
+          // the island opens on; its own `update` was dropped natively for
+          // want of an activity to update.
+          generation === started && pushed !== null
+            ? {
+                ...pushed,
+                // An `ActivityAttributes` field, not `ContentState`: fixed for
+                // the activity's lifetime, so it is read once here and never
+                // pushed again. The avatar is added by `startWithAvatar` for
+                // the same reason.
+                assistantName,
+              }
+            : null,
         );
         return;
       }

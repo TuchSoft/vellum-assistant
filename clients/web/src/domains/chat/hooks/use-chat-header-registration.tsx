@@ -134,16 +134,14 @@ export function useChatHeaderRegistration({
   const sidecarConversationId = channelSidecarTarget?.conversationId ?? null;
   const sidecarChannelId = channelSidecarTarget?.channelId ?? null;
   useEffect(() => {
-    useViewerStore
-      .getState()
-      .reconcileChannelTranscript(
-        sidecarConversationId && sidecarChannelId
-          ? {
-              conversationId: sidecarConversationId,
-              channelId: sidecarChannelId,
-            }
-          : null,
-      );
+    useViewerStore.getState().reconcileChannelTranscript(
+      sidecarConversationId && sidecarChannelId
+        ? {
+            conversationId: sidecarConversationId,
+            channelId: sidecarChannelId,
+          }
+        : null,
+    );
   }, [sidecarConversationId, sidecarChannelId]);
 
   // Header supplements — chat-specific data for the conversation header menu

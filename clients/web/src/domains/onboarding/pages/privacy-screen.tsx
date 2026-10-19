@@ -75,120 +75,134 @@ export function PrivacyScreen() {
 
   const showSkipToChat = canSkipOnboardingResearch();
 
-  const onAdvance = useCallback((skipResearch: boolean) => {
-    if (isPreview) {
-      // Developer "Replay Onboarding": preview mode does not advance to any
-      // side-effecting onboarding route. Hatching is excluded from the preview
-      // route allowlist in onboardingCompletedMiddleware (it has real side
-      // effects), so Start and Skip to chat are no-ops here.
-      return;
-    }
+  const onAdvance = useCallback(
+    (skipResearch: boolean) => {
+      if (isPreview) {
+        // Developer "Replay Onboarding": preview mode does not advance to any
+        // side-effecting onboarding route. Hatching is excluded from the preview
+        // route allowlist in onboardingCompletedMiddleware (it has real side
+        // effects), so Start and Skip to chat are no-ops here.
+        return;
+      }
 
-    // Analytics isn't asked here — the server keeps share_analytics null
-    // until the user opts in via settings or review-terms.
-    saveConsent({ userId, tos: tosAccepted, privacy: privacyConsent, shareAnalytics: null, shareDiagnostics: shareDiagnosticsChecked, hasPlatformSession });
-    emitOnboardingFunnelStepCompleted(ONBOARDING_FUNNEL_STEPS.privacyTos, {
-      userId,
-    });
+      // Analytics isn't asked here — the server keeps share_analytics null
+      // until the user opts in via settings or review-terms.
+      saveConsent({
+        userId,
+        tos: tosAccepted,
+        privacy: privacyConsent,
+        shareAnalytics: null,
+        shareDiagnostics: shareDiagnosticsChecked,
+        hasPlatformSession,
+      });
+      emitOnboardingFunnelStepCompleted(ONBOARDING_FUNNEL_STEPS.privacyTos, {
+        userId,
+      });
 
-    // A completed checkout with nothing provisioned is funneled to the hatching
-    // screen; an unconsented user is bounced here, and the funnel URL rides
-    // along as `returnTo`. With consent now recorded, resume it rather than the
-    // standard onboarding step: that step carries neither the managed-hatch nor
-    // the paid-return marker, so the purchased machine and storage would never
-    // be waited for. Money has already changed hands, which is why this outranks
-    // the pending-package resume below.
-    const paidHatchReturnTo = postCheckoutHatchReturnTo(
-      searchParams.get("returnTo"),
-    );
-    if (paidHatchReturnTo) {
-      void navigate(
-        skipResearch ? withSkipResearch(paidHatchReturnTo) : paidHatchReturnTo,
-        SETUP_NAVIGATE,
+      // A completed checkout with nothing provisioned is funneled to the hatching
+      // screen; an unconsented user is bounced here, and the funnel URL rides
+      // along as `returnTo`. With consent now recorded, resume it rather than the
+      // standard onboarding step: that step carries neither the managed-hatch nor
+      // the paid-return marker, so the purchased machine and storage would never
+      // be waited for. Money has already changed hands, which is why this outranks
+      // the pending-package resume below.
+      const paidHatchReturnTo = postCheckoutHatchReturnTo(
+        searchParams.get("returnTo"),
       );
-      return;
-    }
+      if (paidHatchReturnTo) {
+        void navigate(
+          skipResearch
+            ? withSkipResearch(paidHatchReturnTo)
+            : paidHatchReturnTo,
+          SETUP_NAVIGATE,
+        );
+        return;
+      }
 
-    const hostingParam = searchParams.get("hosting");
-    const params = new URLSearchParams();
-    if (hostingParam) {
-      params.set("hosting", hostingParam);
-    }
-    // Carry the marketing plugin attribution forward so the research runner can
-    // read it off the URL and pre-install that plugin (see `plugin-attribution`).
-    const pluginParam = searchParams.get(ATTRIBUTED_PLUGIN_PARAM);
-    if (pluginParam) {
-      params.set(ATTRIBUTED_PLUGIN_PARAM, pluginParam);
-    }
-    const qs = params.toString();
-    // A local-hosting onboarding (hosting=local/docker in a local-mode build)
-    // must run the foreground local hatch first, so it goes to `hatching`, which
-    // then redirects into the research flow. Vellum-Cloud goes straight to
-    // research (managed background hatch). Skip-to-chat also uses hatching:
-    // there is no research form, so the hatch screen provisions then hands off
-    // to chat.
-    const isLocalHatch =
-      isLocalClient() && hostingParam !== null && hostingParam !== "vellum-cloud";
-    const selectedAssistantOnboarded = isSelectedAssistantOnboarded(
-      useResolvedAssistantsStore.getState().assistants,
-      readSelectedAssistantId(),
-    );
-    const destination = onboardingDestinationAfterConsent({
-      isLocalHatch,
-      skipResearch,
-      selectedAssistantOnboarded,
-      newAssistant: isNewAssistantFunnel(searchParams),
-    });
-    const onboardingNext = skipResearch
-      ? withSkipResearch(`${destination}${qs ? `?${qs}` : ""}`)
-      : `${destination}${qs ? `?${qs}` : ""}`;
+      const hostingParam = searchParams.get("hosting");
+      const params = new URLSearchParams();
+      if (hostingParam) {
+        params.set("hosting", hostingParam);
+      }
+      // Carry the marketing plugin attribution forward so the research runner can
+      // read it off the URL and pre-install that plugin (see `plugin-attribution`).
+      const pluginParam = searchParams.get(ATTRIBUTED_PLUGIN_PARAM);
+      if (pluginParam) {
+        params.set(ATTRIBUTED_PLUGIN_PARAM, pluginParam);
+      }
+      const qs = params.toString();
+      // A local-hosting onboarding (hosting=local/docker in a local-mode build)
+      // must run the foreground local hatch first, so it goes to `hatching`, which
+      // then redirects into the research flow. Vellum-Cloud goes straight to
+      // research (managed background hatch). Skip-to-chat also uses hatching:
+      // there is no research form, so the hatch screen provisions then hands off
+      // to chat.
+      const isLocalHatch =
+        isLocalClient() &&
+        hostingParam !== null &&
+        hostingParam !== "vellum-cloud";
+      const selectedAssistantOnboarded = isSelectedAssistantOnboarded(
+        useResolvedAssistantsStore.getState().assistants,
+        readSelectedAssistantId(),
+      );
+      const destination = onboardingDestinationAfterConsent({
+        isLocalHatch,
+        skipResearch,
+        selectedAssistantOnboarded,
+        newAssistant: isNewAssistantFunnel(searchParams),
+      });
+      const onboardingNext = skipResearch
+        ? withSkipResearch(`${destination}${qs ? `?${qs}` : ""}`)
+        : `${destination}${qs ? `?${qs}` : ""}`;
 
-    // A pricing-CTA signup stashes its chosen plan (see navigation-resolver
-    // post-auth). With consent now recorded, resume checkout so payment happens
-    // after consent and before the assistant hatches. Resume ONLY a
-    // signup-marked intent (`resumeAfterOnboarding`): an ordinary billing-surface
-    // stash (an abandoned CheckoutPage/takeover checkout) carries no marker, so
-    // it's ignored here and left untouched for its own flow — onboarding proceeds
-    // normally. The checkout route owns the marked stash's lifecycle from here —
-    // re-stashing on a Stripe redirect, clearing it on an already-Pro no_op — so
-    // this screen just hands off. Resuming only from this explicit click
-    // (Start or Skip to chat), never a render effect, keeps consent and
-    // checkout from looping.
-    // A positively-off `marketing-pricing-takeover` drops the dead selection and
-    // continues onboarding: handing off would bounce through a gated checkout
-    // route and out of the funnel before research runs. An unresolved flag still
-    // resumes, carrying the onboarding step this click would otherwise have
-    // taken: if the flag lands off, checkout returns the user there instead of
-    // the plans takeover, so a pending→disabled race stays inside the funnel.
-    const checkoutIntent = readCheckoutIntent();
-    if (checkoutIntent?.resumeAfterOnboarding === true) {
-      if (takeover === "disabled") {
-        clearCheckoutIntent();
-      } else {
-        const checkoutParams = checkoutResumeSearch(checkoutIntent);
-        if (checkoutParams) {
-          checkoutParams.set(CHECKOUT_CONTINUE_PARAM, onboardingNext);
-          void navigate(
-            `${routes.checkout}?${checkoutParams.toString()}`,
-            SETUP_NAVIGATE,
-          );
-          return;
+      // A pricing-CTA signup stashes its chosen plan (see navigation-resolver
+      // post-auth). With consent now recorded, resume checkout so payment happens
+      // after consent and before the assistant hatches. Resume ONLY a
+      // signup-marked intent (`resumeAfterOnboarding`): an ordinary billing-surface
+      // stash (an abandoned CheckoutPage/takeover checkout) carries no marker, so
+      // it's ignored here and left untouched for its own flow — onboarding proceeds
+      // normally. The checkout route owns the marked stash's lifecycle from here —
+      // re-stashing on a Stripe redirect, clearing it on an already-Pro no_op — so
+      // this screen just hands off. Resuming only from this explicit click
+      // (Start or Skip to chat), never a render effect, keeps consent and
+      // checkout from looping.
+      // A positively-off `marketing-pricing-takeover` drops the dead selection and
+      // continues onboarding: handing off would bounce through a gated checkout
+      // route and out of the funnel before research runs. An unresolved flag still
+      // resumes, carrying the onboarding step this click would otherwise have
+      // taken: if the flag lands off, checkout returns the user there instead of
+      // the plans takeover, so a pending→disabled race stays inside the funnel.
+      const checkoutIntent = readCheckoutIntent();
+      if (checkoutIntent?.resumeAfterOnboarding === true) {
+        if (takeover === "disabled") {
+          clearCheckoutIntent();
+        } else {
+          const checkoutParams = checkoutResumeSearch(checkoutIntent);
+          if (checkoutParams) {
+            checkoutParams.set(CHECKOUT_CONTINUE_PARAM, onboardingNext);
+            void navigate(
+              `${routes.checkout}?${checkoutParams.toString()}`,
+              SETUP_NAVIGATE,
+            );
+            return;
+          }
         }
       }
-    }
 
-    void navigate(onboardingNext, SETUP_NAVIGATE);
-  }, [
-    privacyConsent,
-    hasPlatformSession,
-    isPreview,
-    navigate,
-    searchParams,
-    shareDiagnosticsChecked,
-    takeover,
-    tosAccepted,
-    userId,
-  ]);
+      void navigate(onboardingNext, SETUP_NAVIGATE);
+    },
+    [
+      privacyConsent,
+      hasPlatformSession,
+      isPreview,
+      navigate,
+      searchParams,
+      shareDiagnosticsChecked,
+      takeover,
+      tosAccepted,
+      userId,
+    ],
+  );
 
   return (
     <OnboardingLayout avatarWave="beside">

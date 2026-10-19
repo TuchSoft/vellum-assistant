@@ -42,8 +42,8 @@ import {
   supportsHostProxy,
 } from "../../channels/types.js";
 import { isAssistantFeatureFlagEnabled } from "../../config/assistant-feature-flags.js";
-import { getConversationProfilesForProvider } from "../../config/default-profile-catalog.js";
 import { isHttpAuthDisabled } from "../../config/env.js";
+import { knownAliases } from "../../config/llm-resolver.js";
 import { getConfig } from "../../config/loader.js";
 import { isModeSessionRecoveryHealthy } from "../../config/session-groups-gate.js";
 import { consolidateMessageRows } from "../../conversations/message-consolidation.js";
@@ -135,7 +135,7 @@ import {
   type MessageRow,
   parseMessageMetadata,
   recordConversationPersistedSeq,
-  setConversationInferenceProfile,
+  setConversationModel,
 } from "../../persistence/conversation-crud.js";
 import {
   getConversationByKey,
@@ -750,7 +750,8 @@ function extractNotificationDiscriminators(
   }
 
   const subagent = meta.subagentNotification as
-    Record<string, unknown> | undefined;
+    | Record<string, unknown>
+    | undefined;
   if (
     subagent &&
     typeof subagent.subagentId === "string" &&
@@ -1720,7 +1721,7 @@ export async function handleSendMessage(
     visibleAppId?: unknown;
     clientId?: string;
     clientMessageId?: string;
-    inferenceProfile?: string | null;
+    model?: string | null;
     enabledPlugins?: string[] | null;
     riskThreshold?: string;
     onboarding?: {
@@ -1758,36 +1759,19 @@ export async function handleSendMessage(
   const clientMessageId =
     typeof body.clientMessageId === "string" ? body.clientMessageId : undefined;
   const requestedInferenceProfile =
-    typeof body.inferenceProfile === "string"
-      ? body.inferenceProfile
-      : undefined;
+    typeof body.model === "string" ? body.model : undefined;
   const requestedRiskThreshold = body.riskThreshold;
-  if (
-    body.inferenceProfile != null &&
-    typeof body.inferenceProfile !== "string"
-  ) {
-    throw new BadRequestError(
-      "inferenceProfile must be a non-empty string or null",
-    );
+  if (body.model != null && typeof body.model !== "string") {
+    throw new BadRequestError("model must be a non-empty string or null");
   }
   if (requestedInferenceProfile === "") {
-    throw new BadRequestError(
-      "inferenceProfile must be a non-empty string or null",
-    );
+    throw new BadRequestError("model must be a non-empty string or null");
   }
   if (requestedInferenceProfile !== undefined) {
     const { llm } = getConfig();
-    // The conversation view: a sticky pin runs the main agent's turns, so a
-    // profile whose model returns verdicts rather than text is not offered.
-    const profiles = getConversationProfilesForProvider(
-      llm.profiles,
-      llm.defaultProvider ?? null,
-    );
-    if (
-      !Object.prototype.hasOwnProperty.call(profiles, requestedInferenceProfile)
-    ) {
+    if (!knownAliases(llm).includes(requestedInferenceProfile)) {
       throw new BadRequestError(
-        `Profile "${requestedInferenceProfile}" is not defined in llm.profiles`,
+        `Model "${requestedInferenceProfile}" is not in the gateway catalog`,
       );
     }
   }
@@ -2070,14 +2054,13 @@ export async function handleSendMessage(
   );
 
   if (requestedInferenceProfile !== undefined) {
-    await setConversationInferenceProfile(
+    await setConversationModel(
       mapping.conversationId,
       requestedInferenceProfile,
     );
-    conversation.applyInferenceProfileState({
-      profile: requestedInferenceProfile,
-      sessionId: null,
-      expiresAt: null,
+    conversation.applyModelState({
+      model: requestedInferenceProfile,
+      reasoningEffort: conversation.reasoningEffort,
     });
   }
 
@@ -3922,7 +3905,7 @@ export const ROUTES: RouteDefinition[] = [
           "Client-generated idempotency nonce. Persisted on the row and echoed back on the message_echo event and the messages snapshot so the client can correlate its optimistic row by identity. Duplicate sends for the same (conversation, clientMessageId) are deduplicated server-side.",
         )
         .optional(),
-      inferenceProfile: z.string().nullable().optional(),
+      model: z.string().nullable().optional(),
       enabledPlugins: z
         .array(z.string())
         .nullable()

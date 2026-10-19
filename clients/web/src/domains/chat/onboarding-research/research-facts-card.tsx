@@ -145,7 +145,11 @@ function ClaimRow({
               variant="ghost"
               size="compact"
               expandOnMobile={false}
-              aria-label={removed ? t("researchFactsCard.editRemovalAria") : t("researchFactsCard.removeAria")}
+              aria-label={
+                removed
+                  ? t("researchFactsCard.editRemovalAria")
+                  : t("researchFactsCard.removeAria")
+              }
               onClick={(e) => e.stopPropagation()}
               data-reveal=""
               className="ml-auto shrink-0"

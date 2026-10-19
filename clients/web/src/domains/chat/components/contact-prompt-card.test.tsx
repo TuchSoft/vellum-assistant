@@ -340,8 +340,6 @@ describe("ContactPromptCard proposed name", () => {
 
     expect(screen.getByText("Notes")).toBeTruthy();
     expect(screen.getByText("Met at the design review")).toBeTruthy();
-    expect(
-      screen.queryByDisplayValue("Met at the design review"),
-    ).toBeNull();
+    expect(screen.queryByDisplayValue("Met at the design review")).toBeNull();
   });
 });

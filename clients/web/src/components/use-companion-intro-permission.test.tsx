@@ -48,7 +48,9 @@ let setupSupported = false;
 const cancelGuide = mock(() => undefined);
 const beginGuide = mock(async (kind: SystemPermissionKind) => current[kind]);
 const foreground = mock(async () => undefined);
-const frontmost = mock(async (): Promise<string | null> => "com.example.vellum");
+const frontmost = mock(
+  async (): Promise<string | null> => "com.example.vellum",
+);
 mock.module("@/runtime/running-apps", () => ({
   frontmostApp: frontmost,
 }));

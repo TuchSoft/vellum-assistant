@@ -14,12 +14,7 @@
  * `false`, which is the safe default: the composer row always fits.
  */
 
-import {
-  createContext,
-  useContext,
-  useRef,
-  type ReactNode,
-} from "react";
+import { createContext, useContext, useRef, type ReactNode } from "react";
 
 import { useSideControlsFitGutter } from "@/domains/chat/hooks/use-side-control-placement";
 

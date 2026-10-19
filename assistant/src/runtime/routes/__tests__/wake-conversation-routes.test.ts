@@ -15,10 +15,10 @@ interface CapturedWake {
   hint: string;
   trustContext?: { sourceChannel: string; trustClass: string };
   cronRunId?: string;
-  forceOverrideProfile?: string;
   clientless?: boolean;
   persistTriggerAsEvent?: boolean;
   untrustedOutput?: { content: string; source: string };
+  model?: string;
 }
 const wakeCalls: CapturedWake[] = [];
 mock.module("../../agent-wake.js", () => ({
@@ -104,7 +104,7 @@ describe("wake_conversation schedule profile pin", () => {
       body: { conversationId, hint: "poll result", scheduleId: "sched-pinned" },
       headers: { "x-vellum-principal-type": "local" },
     });
-    expect(wakeCalls[0].forceOverrideProfile).toBe("profile-cheap");
+    expect(wakeCalls[0].model).toBe("profile-cheap");
   });
 
   test("schedule with no pinned profile leaves resolution unchanged", async () => {
@@ -118,7 +118,7 @@ describe("wake_conversation schedule profile pin", () => {
       },
       headers: { "x-vellum-principal-type": "local" },
     });
-    expect(wakeCalls[0].forceOverrideProfile).toBeUndefined();
+    expect(wakeCalls[0].model).toBeUndefined();
   });
 
   test("unknown scheduleId resolves as an ordinary wake", async () => {
@@ -129,7 +129,7 @@ describe("wake_conversation schedule profile pin", () => {
       headers: { "x-vellum-principal-type": "local" },
     });
     expect(result).toEqual({ invoked: true, producedToolCalls: false });
-    expect(wakeCalls[0].forceOverrideProfile).toBeUndefined();
+    expect(wakeCalls[0].model).toBeUndefined();
   });
 
   test("actor principal → body scheduleId is ignored", async () => {
@@ -139,7 +139,7 @@ describe("wake_conversation schedule profile pin", () => {
       body: { conversationId, hint: "poll result", scheduleId: "sched-pinned" },
       headers: { "x-vellum-principal-type": "actor" },
     });
-    expect(wakeCalls[0].forceOverrideProfile).toBeUndefined();
+    expect(wakeCalls[0].model).toBeUndefined();
   });
 });
 

@@ -206,7 +206,8 @@ describe("ChatLayoutHeader mobile affordances", () => {
       },
     });
 
-    const customTopBar = screen.getByText("Library").parentElement?.parentElement;
+    const customTopBar =
+      screen.getByText("Library").parentElement?.parentElement;
     expect(customTopBar?.className).toContain(
       "grid-cols-[max-content_minmax(0,1fr)_max-content]",
     );
@@ -216,9 +217,7 @@ describe("ChatLayoutHeader mobile affordances", () => {
     );
     const windowsMenu = screen.getByTestId("windows-menu-bar");
     expect(customTopBar?.contains(windowsMenu)).toBe(false);
-    expect(windowsMenu.parentElement?.style.width).toBe(
-      "calc(100% + 150px)",
-    );
+    expect(windowsMenu.parentElement?.style.width).toBe("calc(100% + 150px)");
   });
 });
 

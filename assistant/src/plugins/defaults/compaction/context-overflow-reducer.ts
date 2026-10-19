@@ -129,7 +129,7 @@ export interface ReducerConfig {
    */
   conversationId: string;
   /** Per-conversation inference-profile override for the summary call. */
-  overrideProfile?: string | null;
+  model?: string | null;
   /** Trust class of the actor whose turn triggered overflow recovery. */
   actorTrustClass?: TrustClass;
   /**
@@ -283,7 +283,7 @@ async function applyEmergencyCompaction(
       conversationId: config.conversationId,
       messages,
       previousEstimatedInputTokens: config.previousEstimatedInputTokens,
-      overrideProfile: config.overrideProfile ?? null,
+      model: config.model ?? null,
       signal,
     });
   } catch (err) {
@@ -336,7 +336,7 @@ async function applyForcedCompaction(
     messages,
     signal,
     ...compactionOptions,
-    overrideProfile: config.overrideProfile ?? null,
+    model: config.model ?? null,
     actorTrustClass: config.actorTrustClass,
   });
   const nextMessages = result.compacted ? result.messages : messages;
@@ -527,7 +527,7 @@ async function applyAutoCompressLatestTurn(
     messages,
     signal,
     ...compactionOptions,
-    overrideProfile: config.overrideProfile ?? null,
+    model: config.model ?? null,
     actorTrustClass: config.actorTrustClass,
   });
   const nextMessages = result.compacted ? result.messages : messages;

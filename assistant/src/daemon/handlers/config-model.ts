@@ -1,3 +1,4 @@
+import { listCatalogEntries } from "../../config/llm-catalog.js";
 import { resolveCallSiteConfig } from "../../config/llm-resolver.js";
 import {
   getConfig,
@@ -64,16 +65,17 @@ export function projectProviderForWire(
 export async function getModelInfo(): Promise<ModelInfo> {
   const config = getConfig();
   const resolved = resolveCallSiteConfig("mainAgent", config.llm);
-  const provider = resolved.provider;
+  const provider = "llm-gateway";
   const visibleCatalog = getVisibleProviderCatalog(config);
 
   return {
     model: resolved.model,
     provider,
     configuredProviders: await getConfiguredProviders(),
-    availableModels: visibleCatalog
-      .find((p) => p.id === provider)
-      ?.models?.map((m) => ({ id: m.id, displayName: m.displayName })),
+    availableModels: listCatalogEntries("chat").map((entry) => ({
+      id: entry.alias,
+      displayName: entry.label,
+    })),
     allProviders: visibleCatalog.map(projectProviderForWire),
   };
 }

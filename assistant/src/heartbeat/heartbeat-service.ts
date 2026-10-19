@@ -164,8 +164,9 @@ export class HeartbeatService {
 
   private readonly deps: HeartbeatDeps;
   private timer:
-    ReturnType<typeof setInterval> | ReturnType<typeof setTimeout> | null =
-    null;
+    | ReturnType<typeof setInterval>
+    | ReturnType<typeof setTimeout>
+    | null = null;
   private activeRun: Promise<void> | null = null;
   private _lastRunAt: number | null = null;
   private _nextRunAt: number | null = null;

@@ -59,7 +59,8 @@ class FakeSocket implements WatchStreamSocket {
     type: T,
   ): Extract<WatchStreamServerFrame, { type: T }> | undefined {
     return this.frames.find((frame) => frame.type === type) as
-      Extract<WatchStreamServerFrame, { type: T }> | undefined;
+      | Extract<WatchStreamServerFrame, { type: T }>
+      | undefined;
   }
 }
 

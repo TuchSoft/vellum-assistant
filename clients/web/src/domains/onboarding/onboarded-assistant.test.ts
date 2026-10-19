@@ -87,26 +87,35 @@ const WEEK_OLD = new Date(NOW - ONBOARDED_HATCH_AGE_MS).toISOString();
 describe("isAssistantOnboarded", () => {
   test("a lockfile-stamped assistant is onboarded however fresh its hatch", () => {
     expect(
-      isAssistantOnboarded({ id: "a", hatchedAt: FRESH, onboardedAt: FRESH }, NOW),
+      isAssistantOnboarded(
+        { id: "a", hatchedAt: FRESH, onboardedAt: FRESH },
+        NOW,
+      ),
     ).toBe(true);
   });
 
   // The device half is read live, so a completion answers immediately rather
   // than waiting for the assistant list to be rebuilt.
   test("the device record answers for an assistant the lockfile has not stamped", () => {
-    expect(isAssistantOnboarded({ id: "a", hatchedAt: FRESH }, NOW)).toBe(false);
+    expect(isAssistantOnboarded({ id: "a", hatchedAt: FRESH }, NOW)).toBe(
+      false,
+    );
 
     markAssistantOnboarded("a", FRESH);
 
     expect(isAssistantOnboarded({ id: "a", hatchedAt: FRESH }, NOW)).toBe(true);
-    expect(isAssistantOnboarded({ id: "b", hatchedAt: FRESH }, NOW)).toBe(false);
+    expect(isAssistantOnboarded({ id: "b", hatchedAt: FRESH }, NOW)).toBe(
+      false,
+    );
   });
 
   test("falls back to hatch age when unstamped", () => {
     expect(isAssistantOnboarded({ id: "a", hatchedAt: WEEK_OLD }, NOW)).toBe(
       true,
     );
-    expect(isAssistantOnboarded({ id: "a", hatchedAt: FRESH }, NOW)).toBe(false);
+    expect(isAssistantOnboarded({ id: "a", hatchedAt: FRESH }, NOW)).toBe(
+      false,
+    );
     expect(isAssistantOnboarded({ id: "a" }, NOW)).toBe(false);
   });
 });
@@ -127,6 +136,8 @@ describe("isSelectedAssistantOnboarded", () => {
 
   test("is false when nothing is selected or the id is unknown", () => {
     expect(isSelectedAssistantOnboarded(assistants, null, NOW)).toBe(false);
-    expect(isSelectedAssistantOnboarded(assistants, "missing", NOW)).toBe(false);
+    expect(isSelectedAssistantOnboarded(assistants, "missing", NOW)).toBe(
+      false,
+    );
   });
 });

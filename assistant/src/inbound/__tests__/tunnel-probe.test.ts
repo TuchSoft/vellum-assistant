@@ -67,7 +67,9 @@ function stubFetch(routes: { healthz?: Route; config?: Route }): {
     const label = isHealth ? "healthz" : "config";
     const route = isHealth
       ? (routes.healthz ?? { body: "ok" })
-      : (routes.config ?? { body: JSON.stringify({ mode: PAIRING_EDGE_MODE }) });
+      : (routes.config ?? {
+          body: JSON.stringify({ mode: PAIRING_EDGE_MODE }),
+        });
     if (route.reject !== undefined) {
       throw route.reject;
     }
@@ -338,9 +340,12 @@ describe("probeTunnel", () => {
   });
 
   test("surfaces the syscall code hidden under a generic fetch wrapper", async () => {
-    const cause = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:80"), {
-      code: "ECONNREFUSED",
-    });
+    const cause = Object.assign(
+      new Error("connect ECONNREFUSED 127.0.0.1:80"),
+      {
+        code: "ECONNREFUSED",
+      },
+    );
     const fetchImpl = asFetch(async () => {
       throw new TypeError("fetch failed", { cause });
     });

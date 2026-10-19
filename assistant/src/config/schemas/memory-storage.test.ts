@@ -10,6 +10,38 @@ describe("MemoryEmbeddingsConfigSchema", () => {
     expect(VALID_MEMORY_EMBEDDING_PROVIDERS).toContain("custom");
   });
 
+  test("includes gateway in the provider enum", () => {
+    expect(VALID_MEMORY_EMBEDDING_PROVIDERS).toContain("gateway");
+  });
+
+  test("defaults gatewayModel to the embed alias", () => {
+    const parsed = MemoryEmbeddingsConfigSchema.parse({
+      provider: "gateway",
+    });
+    expect(parsed.provider).toBe("gateway");
+    expect(parsed.gatewayModel).toBe("embed");
+    expect(parsed.gatewayDimensions).toBeUndefined();
+  });
+
+  test("accepts gatewayModel and gatewayDimensions", () => {
+    const parsed = MemoryEmbeddingsConfigSchema.parse({
+      provider: "gateway",
+      gatewayModel: "embed-small",
+      gatewayDimensions: 1024,
+    });
+    expect(parsed.gatewayModel).toBe("embed-small");
+    expect(parsed.gatewayDimensions).toBe(1024);
+  });
+
+  test("rejects a non-positive gatewayDimensions", () => {
+    expect(() =>
+      MemoryEmbeddingsConfigSchema.parse({
+        provider: "gateway",
+        gatewayDimensions: 0,
+      }),
+    ).toThrow(/must be a positive integer/);
+  });
+
   test("accepts a custom OpenAI-compatible endpoint", () => {
     const parsed = MemoryEmbeddingsConfigSchema.parse({
       provider: "custom",

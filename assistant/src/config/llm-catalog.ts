@@ -341,7 +341,7 @@ interface GatewayEndpoint {
   headers: Record<string, string>;
 }
 
-async function resolveGatewayEndpoint(): Promise<GatewayEndpoint | null> {
+export async function resolveGatewayEndpoint(): Promise<GatewayEndpoint | null> {
   const envUrl = process.env[LLM_GATEWAY_URL_ENV]?.trim();
   try {
     const { ensureConnectionSnapshot, peekConnection, listConnections } =

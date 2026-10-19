@@ -230,6 +230,33 @@ const CATALOG: ReadonlyMap<SttProviderId, SttProviderEntry> = new Map<
     },
   ],
   [
+    "gateway",
+    {
+      id: "gateway",
+      displayName: "LLM Gateway",
+      subtitle:
+        "Speech-to-text through the configured LLM gateway connection. No separate API key needed.",
+      setupMode: "connection",
+      setupHint:
+        "Configure the LLM gateway connection to enable speech-to-text.",
+      // The gateway connection is the credential; there is no dedicated STT
+      // key. Keeping this name distinct from "vellum" is what lets the
+      // resolver tell the two connection-based providers apart.
+      credentialProvider: "gateway",
+      // Batch only: the gateway proxies the provider's batch transcription
+      // endpoint. Streaming and telephony stay on their existing providers.
+      supportedBoundaries: new Set<SttBoundaryId>(["daemon-batch"]),
+      telephonyMode: "none",
+      conversationStreamingMode: "none",
+      turnDetection: "none",
+      supportsDiarization: false,
+      // No language parameter is forwarded: gateway aliases are not all
+      // language-aware, and the only configured value today is "multi",
+      // which no upstream accepts as a language code.
+      languageSelection: "auto",
+    },
+  ],
+  [
     "google-gemini",
     {
       id: "google-gemini",

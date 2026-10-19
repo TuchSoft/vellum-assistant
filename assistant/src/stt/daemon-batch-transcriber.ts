@@ -11,6 +11,8 @@
  * - Deepgram (`deepgram`)
  * - Google Gemini (`google-gemini`)
  * - xAI (`xai`)
+ * - LLM gateway (`gateway`)
+ * - Vellum managed speech (`vellum`)
  */
 
 import { batchBoundaryGapReason } from "../providers/speech-to-text/provider-catalog.js";
@@ -206,6 +208,42 @@ export function normalizeSttError(err: unknown): SttError {
 }
 
 // ---------------------------------------------------------------------------
+// Gateway adapter — implements BatchTranscriber on top of the LLM gateway
+// connection. No API key: the gateway connection is the credential.
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps the gateway batch adapter behind the `BatchTranscriber` contract.
+ *
+ * The endpoint and auth are resolved per transcribe call, so a rotated
+ * credential or a re-pointed connection applies without rebuilding the
+ * transcriber.
+ */
+class GatewayBatchTranscriber implements BatchTranscriber {
+  readonly providerId = "gateway" as const;
+  readonly boundaryId = "daemon-batch" as const;
+
+  private readonly model: string | undefined;
+
+  constructor(model: string | undefined) {
+    this.model = model;
+  }
+
+  async transcribe(
+    request: SttTranscribeRequest,
+  ): Promise<SttTranscribeResult> {
+    const { gatewayTranscribeBatch } =
+      await import("../providers/speech-to-text/gateway.js");
+    return gatewayTranscribeBatch(
+      this.model,
+      request.audio,
+      request.mimeType,
+      request.signal,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Vellum managed adapter — implements BatchTranscriber on top of the
 // platform's managed speech endpoint. No API key: the platform connection
 // is the credential.
@@ -240,6 +278,9 @@ class VellumManagedBatchTranscriber implements BatchTranscriber {
  * when `apiKey` is falsy, signalling to the caller that batch transcription
  * is unavailable.
  *
+ * `gatewayModel` names the gateway alias the `gateway` provider runs; it is
+ * ignored by every key-based provider.
+ *
  * `language` is the spoken language, forwarded to providers whose batch API
  * accepts one: Deepgram (where `"multi"` also pins nova-3), xAI (where
  * `"multi"` is dropped because it is a Deepgram-specific value, not a
@@ -250,12 +291,21 @@ class VellumManagedBatchTranscriber implements BatchTranscriber {
  * Throws an {@link SttError} for a provider with no batch endpoint at all,
  * which no key can fix and `null` would understate.
  */
+export interface DaemonBatchTranscriberOptions {
+  /** Gateway alias the `gateway` provider should run. */
+  gatewayModel?: string | undefined;
+}
+
 export function createDaemonBatchTranscriber(
   apiKey: string | null | undefined,
   providerId: SttProviderId,
   language?: string,
+  options: DaemonBatchTranscriberOptions = {},
 ): BatchTranscriber | null {
-  // vellum authenticates via the platform connection, not an API key.
+  // gateway and vellum authenticate via a connection, not an API key.
+  if (providerId === "gateway") {
+    return new GatewayBatchTranscriber(options.gatewayModel);
+  }
   if (providerId === "vellum") {
     return new VellumManagedBatchTranscriber(language);
   }

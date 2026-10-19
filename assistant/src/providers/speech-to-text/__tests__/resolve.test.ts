@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { setConfig } from "../../../__tests__/helpers/set-config.js";
 import { getConfig } from "../../../config/loader.js";
@@ -591,9 +591,12 @@ describe("telephony capability catalog alignment", () => {
    * `Finalize` onto Flux's `CloseStream`, and utterance-boundary finals are a
    * nova-3 concept. Nothing reroutes a call to another provider, so opting
    * out here means a Flux-configured assistant does not transcribe calls.
+   * `gateway` is batch-only: it proxies a file-transcription endpoint and has
+   * no media-stream transport at all.
    */
   const TELEPHONY_OPT_OUT: ReadonlySet<SttProviderId> = new Set([
     "deepgram-flux",
+    "gateway",
     "vellum-flux",
   ]);
 
@@ -1829,11 +1832,81 @@ describe("deepgram-flux batch resolution", () => {
   });
 });
 
+describe("gateway provider resolution", () => {
+  const ENV_URL = "VELLUM_LLM_GATEWAY_URL";
+  const ENV_KEY = "VELLUM_LLM_GATEWAY_API_KEY";
+  const originalEnv = {
+    url: process.env[ENV_URL],
+    key: process.env[ENV_KEY],
+  };
+
+  function restoreEnv(): void {
+    for (const [name, value] of [
+      [ENV_URL, originalEnv.url],
+      [ENV_KEY, originalEnv.key],
+    ] as const) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
+
+  beforeEach(() => {
+    mockProviderKeys = {};
+    loggerWarnings.length = 0;
+    process.env[ENV_URL] = "http://llm-gateway:4000/v1";
+    process.env[ENV_KEY] = "gw-test-key";
+  });
+
+  afterEach(() => {
+    restoreEnv();
+  });
+
+  test("resolves a batch transcriber from the gateway connection", async () => {
+    applyConfig({ provider: "gateway" });
+
+    const transcriber = await resolveBatchTranscriber();
+
+    expect(transcriber?.providerId).toBe("gateway");
+    expect(transcriber?.boundaryId).toBe("daemon-batch");
+  });
+
+  test("returns null when no gateway connection resolves", async () => {
+    delete process.env[ENV_URL];
+    delete process.env[ENV_KEY];
+    applyConfig({ provider: "gateway" });
+
+    expect(await resolveBatchTranscriber()).toBeNull();
+  });
+
+  test("a streaming role on the gateway logs the boundary gap", async () => {
+    applyConfig({
+      provider: "gateway",
+      roles: { liveVoice: { provider: "gateway" } },
+    });
+
+    const transcriber = await resolveStreamingTranscriber({
+      role: "liveVoice",
+      sampleRate: 16000,
+    });
+
+    expect(transcriber).toBeNull();
+    expect(loggerWarnings.at(-1)?.message).toContain("daemon-streaming");
+  });
+});
+
 describe("sttCredentialGapReason", () => {
   test("vellum gets connection copy; API-key providers keep key copy", () => {
     expect(sttCredentialGapReason("vellum")).toContain("platform connect");
     expect(sttCredentialGapReason("vellum")).not.toContain("API key");
     expect(sttCredentialGapReason("deepgram")).toContain("API key");
+  });
+
+  test("gateway gets connection copy too", () => {
+    expect(sttCredentialGapReason("gateway")).toContain("gateway connection");
+    expect(sttCredentialGapReason("gateway")).not.toContain("API key");
   });
 });
 

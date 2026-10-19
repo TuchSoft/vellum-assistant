@@ -41,6 +41,36 @@ describe("SttServiceSchema", () => {
     expect(VALID_STT_PROVIDERS).toContain("deepgram");
   });
 
+  test("VALID_STT_PROVIDERS includes gateway", () => {
+    expect(VALID_STT_PROVIDERS).toContain("gateway");
+  });
+
+  test("gateway round-trips with a catalog alias as its model", () => {
+    const parsed = SttServiceSchema.parse({
+      provider: "gateway",
+      providers: { gateway: { model: "stt" } },
+    });
+    expect(parsed.provider).toBe("gateway");
+    expect(parsed.providers.gateway).toEqual({ model: "stt" });
+  });
+
+  test("the batch role accepts the gateway", () => {
+    const parsed = SttServiceSchema.parse({
+      provider: "gateway",
+      roles: { batch: { provider: "gateway" } },
+    });
+    expect(parsed.roles.batch?.provider).toBe("gateway");
+  });
+
+  test("a streaming role rejects the batch-only gateway with a clear gap", () => {
+    expect(() =>
+      SttServiceSchema.parse({
+        provider: "gateway",
+        roles: { liveVoice: { provider: "gateway" } },
+      }),
+    ).toThrow(/supports no daemon-streaming transcription/);
+  });
+
   test("normalizes the openai/whisper aliases to openai-whisper", () => {
     expect(SttServiceSchema.parse({ provider: "openai" }).provider).toBe(
       "openai-whisper",

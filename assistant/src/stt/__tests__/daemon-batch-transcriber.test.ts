@@ -622,6 +622,26 @@ describe("vellum factory case", () => {
   });
 });
 
+describe("gateway factory case", () => {
+  test("constructs the gateway transcriber with no API key", () => {
+    const transcriber = createDaemonBatchTranscriber(null, "gateway");
+    expect(transcriber?.providerId).toBe("gateway");
+    expect(transcriber?.boundaryId).toBe("daemon-batch");
+  });
+
+  test("accepts the gateway alias as an option", () => {
+    const transcriber = createDaemonBatchTranscriber(
+      null,
+      "gateway",
+      undefined,
+      {
+        gatewayModel: "stt-custom",
+      },
+    );
+    expect(transcriber?.providerId).toBe("gateway");
+  });
+});
+
 describe("deepgram-flux factory case", () => {
   // The copy itself is pinned in provider-catalog.test.ts; what matters here
   // is that the factory speaks with the catalog's voice rather than its own.

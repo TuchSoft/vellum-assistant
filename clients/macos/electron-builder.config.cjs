@@ -10,15 +10,30 @@ const env = process.env.VELLUM_ENVIRONMENT || "local";
 const bucketEnv = env === "production" ? "prod" : env;
 const targetArch = process.env.ELECTRON_TARGET_ARCH || "arm64";
 
+// Two optional build-time overrides:
+//
+// - VELLUM_APP_NAME replaces the product name (and therefore the .app folder,
+//   the DMG title and CFBundleName/CFBundleDisplayName). Empty or whitespace
+//   values fall back to the environment-derived default.
+// - VELLUM_APP_ID replaces the bundle identifier, for builds that must not
+//   share identity with the default per-environment bundle (e.g. a local
+//   rename living side by side with an installed release).
+//
+// Both are build-time only: nothing about them reaches the runtime.
+const appNameOverride = process.env.VELLUM_APP_NAME?.trim() || "";
+const appIdOverride = process.env.VELLUM_APP_ID?.trim() || "";
+
 const productName =
-  env === "production"
+  appNameOverride ||
+  (env === "production"
     ? "Vellum"
-    : `Vellum ${env.charAt(0).toUpperCase() + env.slice(1)}`;
+    : `Vellum ${env.charAt(0).toUpperCase() + env.slice(1)}`);
 
 const appId =
-  env === "production"
+  appIdOverride ||
+  (env === "production"
     ? "com.vellum.vellum-assistant-electron"
-    : `com.vellum.vellum-assistant-electron-${env}`;
+    : `com.vellum.vellum-assistant-electron-${env}`);
 
 // Mirror build-mac-helper.sh's env→helper-bundle-name mapping so the packaged
 // app's `bin/` directory has the same folder name as the helper the build

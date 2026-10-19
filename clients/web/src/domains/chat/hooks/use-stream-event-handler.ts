@@ -527,7 +527,7 @@ export function useStreamEventHandler(
         case "tool_input_delta":
         case "message_steered":
         case "confirmation_state_changed":
-        case "conversation_inference_profile_updated":
+        case "conversation_model_updated":
           break;
         // Daemon status / model-catalog / compaction / schedule- and
         // heartbeat-created signals. The web chat handler is a no-op — these are

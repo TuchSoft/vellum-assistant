@@ -224,16 +224,15 @@ describe("runSkillToolScript routing", () => {
     expect(result.content).toBe("sandbox hello from host");
   });
 
-  test("explicit target=host uses in-process execution for a bundled skill", async () => {
-    // Host execution is a first-party capability — the runner only runs it
-    // in-process for bundled skills (non-bundled host execution is refused;
-    // see skill-script-runner-host.test.ts).
+  test("explicit target=host uses in-process execution when host_exec is granted", async () => {
+    // Host execution requires the host_exec capability; skills without it are refused
+    // before their executor is imported (see skill-script-runner-host.test.ts).
     const result = await runSkillToolScript(
       tempDir,
       "success.ts",
       { name: "explicit" },
       makeContext(),
-      { target: "host", bundled: true },
+      { target: "host", hostExecAllowed: true },
     );
 
     expect(result.isError).toBe(false);

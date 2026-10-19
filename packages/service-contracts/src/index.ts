@@ -31,6 +31,7 @@ export * from "./no-response.js";
 export * from "./plan-credit.js";
 export * from "./integration-categories.js";
 export * from "./mcp-oauth.js";
+export * from "./skill-capabilities.js";
 export * from "./platform-credential.js";
 export * from "./remote-web-pairing.js";
 export * from "./twilio-ingress.js";

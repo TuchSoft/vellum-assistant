@@ -1,7 +1,6 @@
-import { join, resolve } from "node:path";
+import type { SkillCapabilities } from "@vellumai/service-contracts/skill-capabilities";
 
 import type { SkillToolEntry } from "../../config/skills.js";
-import { getBundledSkillsDir } from "../../config/skills.js";
 import { RiskLevel } from "../../permissions/types.js";
 import {
   coerceArrayShapes,
@@ -28,21 +27,23 @@ const riskMap: Record<SkillToolEntry["risk"], RiskLevel> = {
  * Create a runtime Tool object from a manifest entry.
  * Maps SkillToolEntry metadata to the Tool interface and routes execution
  * through the skill script runner. Ownership (the originating skill id) is
- * recorded by the tool registry at `registerSkillTools(skillId, tools)`
- * time, not stamped on the `Tool` object — see
- * {@link ../../tools/registry.getToolOwner}.
+ * recorded by the tool registry at
+ * `registerSkillTools(skillId, tools, registration)` time, not stamped on the
+ * `Tool` object — see {@link ../../tools/registry.getToolOwner}.
+ *
+ * `capabilities` is the resolved capability set for this skill version. It
+ * gates host execution, first-party input repairs, and the dynamic
+ * computer-use target.
  */
 export function createSkillTool(
   entry: SkillToolEntry,
   skillDir: string,
   versionHash: string,
-  bundled?: boolean,
+  capabilities?: SkillCapabilities,
   pluginOwner?: string,
 ): Tool {
   const isComputerUse =
-    bundled &&
-    !pluginOwner &&
-    resolve(skillDir) === resolve(join(getBundledSkillsDir(), "computer-use"));
+    capabilities?.computer_use_target === true && !pluginOwner;
   return {
     name: entry.name,
     description: entry.description,
@@ -69,8 +70,8 @@ export function createSkillTool(
       // Tool-specific repairs first: they rewrite keys and shapes the schema
       // does not describe, and the generic coercions below then see the
       // declared parameter names. Repairs describe first-party tools, so only
-      // bundled skills consult them.
-      const repairedInput = bundled
+      // skills granted `input_repairs` consult them.
+      const repairedInput = capabilities?.input_repairs
         ? bundledToolInputRepairs(entry.name, input)
         : input;
       const withBooleans = coerceStringBooleans(repairedInput, schema);
@@ -86,10 +87,11 @@ export function createSkillTool(
         // `subagent_read`) answers with that redirect: the generic "Unknown
         // parameter" list names the accepted keys but not the tool the caller
         // is actually reaching for. Redirects describe first-party tools, so
-        // only bundled skills consult them. A managed, workspace, extra, or
-        // plugin skill that reuses a bundled tool name keeps the generic error,
-        // which is the one that matches its own manifest.
-        const misuse = bundled
+        // only skills granted `input_repairs` consult them. A managed,
+        // workspace, extra, or plugin skill that reuses a bundled tool name
+        // keeps the generic error, which is the one that matches its own
+        // manifest.
+        const misuse = capabilities?.input_repairs
           ? bundledToolInputMisuseMessage(entry.name, coercedInput)
           : undefined;
         return {
@@ -108,7 +110,7 @@ export function createSkillTool(
         {
           target: entry.execution_target,
           expectedSkillVersionHash: versionHash,
-          bundled,
+          hostExecAllowed: capabilities?.host_exec === true,
           pluginOwner,
         },
       );
@@ -119,17 +121,17 @@ export function createSkillTool(
 /**
  * Create runtime Tool objects from all entries in a manifest.
  * The caller is responsible for passing the resulting array to
- * `registerSkillTools(skillId, tools)`, which is where ownership is
- * recorded.
+ * `registerSkillTools(skillId, tools, registration)`, which is where
+ * ownership and the content version are recorded.
  */
 export function createSkillToolsFromManifest(
   entries: SkillToolEntry[],
   skillDir: string,
   versionHash: string,
-  bundled?: boolean,
+  capabilities?: SkillCapabilities,
   pluginOwner?: string,
 ): Tool[] {
   return entries.map((entry) =>
-    createSkillTool(entry, skillDir, versionHash, bundled, pluginOwner),
+    createSkillTool(entry, skillDir, versionHash, capabilities, pluginOwner),
   );
 }

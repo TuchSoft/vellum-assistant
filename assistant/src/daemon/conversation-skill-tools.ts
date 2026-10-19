@@ -22,6 +22,7 @@ import {
 import type { Message, ToolDefinition } from "../providers/types.js";
 import type { ActiveSkillEntry } from "../skills/active-skill-tools.js";
 import { deriveActiveSkills } from "../skills/active-skill-tools.js";
+import { getSkillCapabilities } from "../skills/capabilities.js";
 import { getCachedCatalogSync } from "../skills/catalog-cache.js";
 import { readInstallMeta, touchSkillLastUsed } from "../skills/install-meta.js";
 import { isSkillCompatibleWithPlatform } from "../skills/platform-compatibility.js";
@@ -461,12 +462,20 @@ export function projectSkillTools(
       currentHash = `unknown-${Date.now()}`;
     }
 
-    // Create runtime Tool objects
+    // Create runtime Tool objects. Capabilities are resolved once per
+    // registration from the skill's content hash and directory; the tool
+    // factory receives them so host execution and input repairs are gated by
+    // the same grant the registry records.
+    const capabilities = getSkillCapabilities({
+      skillId: skill.id,
+      versionHash: currentHash,
+      directoryPath: skill.directoryPath,
+    });
     const tools = createSkillToolsFromManifest(
       manifest.tools,
       skill.directoryPath,
       currentHash,
-      skill.bundled,
+      capabilities,
       skill.owner?.kind === "plugin" ? skill.owner.id : undefined,
     );
 
@@ -478,7 +487,10 @@ export function projectSkillTools(
         // is nothing to unregister in the sentinel case: no tools were ever
         // registered for it.
         try {
-          accepted = registerSkillTools(skillId, tools);
+          accepted = registerSkillTools(skillId, tools, {
+            versionHash: currentHash,
+            directoryPath: skill.directoryPath,
+          });
         } catch (err) {
           log.error({ err, skillId }, "Failed to register skill tools");
           // Not added to successfulEntries — registration (and the
@@ -499,7 +511,10 @@ export function projectSkillTools(
         unregisterSkillTools(skillId);
         alreadyUnregistered.add(skillId);
         try {
-          accepted = registerSkillTools(skillId, tools);
+          accepted = registerSkillTools(skillId, tools, {
+            versionHash: currentHash,
+            directoryPath: skill.directoryPath,
+          });
         } catch (err) {
           log.error(
             { err, skillId },

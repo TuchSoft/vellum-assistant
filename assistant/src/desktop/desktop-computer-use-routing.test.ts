@@ -2,12 +2,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 
+import {
+  NO_SKILL_CAPABILITIES,
+  type SkillCapabilities,
+} from "@vellumai/service-contracts/skill-capabilities";
+
 import { setOverridesForTesting } from "../__tests__/feature-flag-test-helpers.js";
 import { asConversation } from "../__tests__/helpers/mock-conversation.js";
-import {
-  getBundledSkillsDir,
-  type SkillToolManifest,
-} from "../config/skills.js";
+import { getBundledSkillsDir } from "../config/bundled-skills-dir.js";
+import type { SkillToolManifest } from "../config/skills.js";
 import { surfaceProxyResolver } from "../daemon/conversation-surfaces.js";
 import { HostCuProxy } from "../daemon/host-cu-proxy.js";
 import type { TrustContext } from "../daemon/trust-context-types.js";
@@ -200,6 +203,13 @@ for (const input of [
   });
 }
 
+const COMPUTER_USE_CAPS: SkillCapabilities = {
+  host_exec: true,
+  vetted: true,
+  input_repairs: true,
+  computer_use_target: true,
+};
+
 for (const platform of [true, false]) {
   for (const clientOs of ["web", "macos", "windows", "linux"] as const) {
     test(`bundled tool policy and dispatch agree for ${platform ? "platform" : "local"} ${clientOs}`, async () => {
@@ -212,7 +222,7 @@ for (const platform of [true, false]) {
         manifest.tools,
         skillDir,
         "",
-        true,
+        COMPUTER_USE_CAPS,
       );
       const click = tools.find((tool) => tool.name === "computer_use_click")!;
       const { ctx, proxy } = conversation();
@@ -270,9 +280,14 @@ for (const platform of [true, false]) {
       expect(local).toHaveBeenCalledTimes(calls);
       const entry = manifest.tools.find((tool) => tool.name === click.name)!;
       for (const tool of [
-        createSkillTool(entry, "/tmp/skills/computer-use", "", true),
-        createSkillTool(entry, skillDir, "", false),
-        createSkillTool(entry, skillDir, "", true, "plugin-123"),
+        createSkillTool(
+          entry,
+          "/tmp/skills/computer-use",
+          "",
+          NO_SKILL_CAPABILITIES,
+        ),
+        createSkillTool(entry, skillDir, "", NO_SKILL_CAPABILITIES),
+        createSkillTool(entry, skillDir, "", COMPUTER_USE_CAPS, "plugin-123"),
       ]) {
         expect(
           resolveExecutionTarget(
@@ -296,7 +311,7 @@ test("desktop revocation between policy and dispatch never falls back to the hos
     manifest.tools,
     skillDir,
     "",
-    true,
+    COMPUTER_USE_CAPS,
   ).find((tool) => tool.name === "computer_use_observe")!;
   const toolContext = {
     ...context,

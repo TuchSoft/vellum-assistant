@@ -13,6 +13,7 @@ import {
   MEMORY_RETROSPECTIVE_ORIGIN,
   SKILL_MANAGEMENT_SKILL_ID,
 } from "../plugins/defaults/memory/memory-retrospective-constants.js";
+import { getSkillCapabilities } from "../skills/capabilities.js";
 import { indexCatalogById, validateIncludes } from "../skills/include-graph.js";
 import { getSkillRoots } from "../skills/path-classifier.js";
 import { computeTransitiveSkillVersionHash } from "../skills/transitive-version-hash.js";
@@ -105,24 +106,41 @@ function resolveSkillIdAndHash(
 }
 
 /**
- * Resolve whether the skill that owns this tool is bundled (first-party).
- * Returns false when the tool has no owning skill or the skill is not in
- * the catalog. Derived from `loadSkillCatalog()` at check time so the
- * answer reflects current catalog truth (managed overrides flip the bit
- * without needing to re-register tools). Owner is looked up from the tool
- * registry (`getToolOwner(name)`) rather than read from the `Tool` object,
- * since ownership lives on the registry, not on the tool itself.
+ * Resolve whether the skill that owns this tool is vetted for its current
+ * content. The registry records the version hash and directory at
+ * registration; this check recomputes the hash from disk so a skill modified
+ * after registration loses the grant immediately. Returns false when the tool
+ * has no owning skill, the owner has no recorded version, or the directory is
+ * not the bundled skill the manifest describes.
  */
-export function isToolOwnerSkillBundled(tool: Tool | undefined): boolean {
+export function isToolOwnerSkillVetted(tool: Tool | undefined): boolean {
   if (!tool) {
     return false;
   }
   const owner = getToolOwner(tool.name);
-  if (owner?.kind !== "skill") {
+  if (
+    owner?.kind !== "skill" ||
+    !owner.skillVersionHash ||
+    !owner.skillDirectoryPath
+  ) {
     return false;
   }
-  const skill = loadSkillCatalog().find((s) => s.id === owner.id);
-  return skill?.bundled ?? false;
+
+  let currentHash: string;
+  try {
+    currentHash = computeSkillVersionHash(owner.skillDirectoryPath);
+  } catch {
+    return false;
+  }
+  if (currentHash !== owner.skillVersionHash) {
+    return false;
+  }
+
+  return getSkillCapabilities({
+    skillId: owner.id,
+    versionHash: currentHash,
+    directoryPath: owner.skillDirectoryPath,
+  }).vetted;
 }
 
 /**
@@ -724,7 +742,7 @@ export async function check(
         ? isWorkspaceScopedInvocation(toolName, input, workingDir)
         : false,
     toolOrigin: getToolOwner(toolName)?.kind,
-    isSkillBundled: isToolOwnerSkillBundled(tool),
+    isSkillVetted: isToolOwnerSkillVetted(tool),
     hasManifestOverride: !!manifestOverride,
     autoApproveUpTo: threshold,
     hasSandboxAutoApprove,

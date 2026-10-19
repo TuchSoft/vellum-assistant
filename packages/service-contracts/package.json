@@ -29,7 +29,8 @@
     "./platform-credential": "./src/platform-credential.ts",
     "./plan-credit": "./src/plan-credit.ts",
     "./integration-categories": "./src/integration-categories.ts",
-    "./mcp-oauth": "./src/mcp-oauth.ts"
+    "./mcp-oauth": "./src/mcp-oauth.ts",
+    "./skill-capabilities": "./src/skill-capabilities.ts"
   },
   "scripts": {
     "typecheck": "bunx tsc --noEmit",

@@ -32,7 +32,6 @@ import {
 import { parseToolManifestFile } from "../skills/tool-manifest.js";
 import { computeSkillVersionHash } from "../skills/version-hash.js";
 import type { OwnerInfo } from "../tools/types.js";
-import { isBunVirtualPath } from "../util/bundled-asset.js";
 import { getLogger } from "../util/logger.js";
 import {
   getWorkspaceDirDisplay,
@@ -45,6 +44,7 @@ import {
 } from "../util/plugin-manifest.js";
 import { stripCommentLines } from "../util/strip-comment-lines.js";
 import { isAssistantFeatureFlagEnabled } from "./assistant-feature-flags.js";
+import { getBundledSkillsDir } from "./bundled-skills-dir.js";
 import { getConfig } from "./loader.js";
 
 const log = getLogger("skills");
@@ -225,28 +225,7 @@ export interface SkillToolManifestMeta {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-export function getBundledSkillsDir(): string {
-  const dir = import.meta.dir;
-
-  // In compiled Bun binaries, import.meta.dir points into the virtual
-  // /$bunfs/ filesystem where non-JS assets don't exist.  Fall back to
-  // the macOS .app bundle Resources dir or next to the binary.
-  if (isBunVirtualPath(dir)) {
-    const execDir = dirname(process.execPath);
-    // macOS .app bundle: binary is in Contents/MacOS/, resources in Contents/Resources/
-    const resourcesPath = join(execDir, "..", "Resources", "bundled-skills");
-    if (existsSync(resourcesPath)) {
-      return resourcesPath;
-    }
-    // Next to the binary itself (non-app-bundle deployments)
-    const execDirPath = join(execDir, "bundled-skills");
-    if (existsSync(execDirPath)) {
-      return execDirPath;
-    }
-  }
-
-  return join(dir, "bundled-skills");
-}
+export { getBundledSkillsDir } from "./bundled-skills-dir.js";
 
 // ─── Frontmatter parsing ─────────────────────────────────────────────────────
 

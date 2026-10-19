@@ -26,8 +26,8 @@ export interface ApprovalContext {
    * matched only via `hasManifestOverride`).
    */
   toolOrigin?: OwnerKind;
-  /** Whether the tool's owning skill is a first-party bundled skill. */
-  isSkillBundled?: boolean;
+  /** Whether the tool's owning skill is vetted for its current content version. */
+  isSkillVetted?: boolean;
   /** Whether the tool has a manifest override (unregistered skill tool). */
   hasManifestOverride?: boolean;
   /** Whether the command's registry entry has sandboxAutoApprove: true. */
@@ -92,9 +92,8 @@ export interface ApprovalPolicy {
  * 2. Third-party skill tool + risk > autoApproveUpTo → prompt
  *    Third-party skill tool + risk ≤ autoApproveUpTo → allow (threshold overrides)
  * 3. Low + workspace-scoped + within threshold → allow
- * 4. Low + bundled skill + within threshold → allow
- * 5. Risk ≤ autoApproveUpTo threshold → allow
- * 6. Risk > autoApproveUpTo threshold → prompt
+ * 4. Risk ≤ autoApproveUpTo threshold → allow
+ * 5. Risk > autoApproveUpTo threshold → prompt
  *
  * Trust Rules do not appear in this flow: they are per-action risk
  * re-classifications applied inside the gateway classifiers, so their
@@ -108,7 +107,7 @@ export class DefaultApprovalPolicy implements ApprovalPolicy {
       toolName,
       isWorkspaceScoped,
       toolOrigin,
-      isSkillBundled,
+      isSkillVetted,
       hasManifestOverride,
       hasSandboxAutoApprove,
     } = context;
@@ -132,7 +131,7 @@ export class DefaultApprovalPolicy implements ApprovalPolicy {
 
     // ── 2. Third-party skill tool → prompt (unless threshold covers it)
     // Plugin- and skill-owned tools are both treated as extension-class
-    // for approval purposes: external by default, prompt unless bundled.
+    // for approval purposes: external by default, prompt unless vetted.
     // MCP-owned tools fall through to the core risk-based path.
     const isExtensionOwned = toolOrigin === "skill" || toolOrigin === "plugin";
     // A manifest override on a built-in tool (`default` owner, or an as-yet
@@ -143,7 +142,7 @@ export class DefaultApprovalPolicy implements ApprovalPolicy {
     const isBuiltinOrigin =
       toolOrigin === undefined || toolOrigin === "default";
     const isThirdPartySkill =
-      (isExtensionOwned && !isSkillBundled) ||
+      (isExtensionOwned && !isSkillVetted) ||
       (hasManifestOverride && isBuiltinOrigin);
     if (isThirdPartySkill) {
       if (isRiskWithinThreshold(riskLevel, context.autoApproveUpTo)) {
@@ -170,20 +169,7 @@ export class DefaultApprovalPolicy implements ApprovalPolicy {
       };
     }
 
-    // ── 4. Low + bundled skill + within threshold → allow ──
-    if (
-      riskLevel === RiskLevel.Low &&
-      toolOrigin === "skill" &&
-      isSkillBundled &&
-      isRiskWithinThreshold(riskLevel, context.autoApproveUpTo)
-    ) {
-      return {
-        decision: "allow",
-        reason: "Bundled skill tool: low risk, auto-allowed",
-      };
-    }
-
-    // ── 5–6. Risk-based fallback: compare risk against configured threshold ─
+    // ── 4–5. Risk-based fallback: compare risk against configured threshold ─
     if (isRiskWithinThreshold(riskLevel, context.autoApproveUpTo)) {
       return {
         decision: "allow",

@@ -20,10 +20,10 @@ export interface RunSkillToolScriptOptions {
    *  to `computeSkillVersionHash` from the version-hash module. Provided as an
    *  option to support testing and custom resolution strategies. */
   skillDirHashResolver?: (skillDir: string) => string;
-  /** Whether this is a bundled (first-party) skill. Only bundled skills may run
-   *  with `execution_target: host` (in-process); non-bundled skills are forced to
-   *  execute in the sandbox. */
-  bundled?: boolean;
+  /** Whether this skill version is granted `host_exec`. Only a granted skill may
+   *  run with `execution_target: host` (in-process); every other skill is forced
+   *  to execute in the sandbox. */
+  hostExecAllowed?: boolean;
   /**
    * Catalog owner id when this skill is plugin-resident. The sandbox runner
    * sets VELLUM_PLUGIN_NAME so the child can resolve credentials under
@@ -43,7 +43,7 @@ export async function runSkillToolScript(
   context: ToolContext,
   options?: RunSkillToolScriptOptions,
 ): Promise<ToolExecutionResult> {
-  if (options?.target === "sandbox" && !options?.bundled) {
+  if (options?.target === "sandbox") {
     return runSkillToolScriptSandbox(skillDir, executorPath, input, context, {
       timeoutMs: options.timeoutMs,
       expectedSkillVersionHash: options.expectedSkillVersionHash,
@@ -53,18 +53,13 @@ export async function runSkillToolScript(
   }
 
   // Host execution dynamically imports the executor into the daemon process —
-  // full host code execution with no sandbox boundary. This is a first-party
-  // capability reserved for bundled skills, which ship trusted, in-repo
-  // executors. A non-bundled skill (managed, workspace, plugin, extra) that
-  // declares `execution_target: host` must be refused: otherwise an
-  // attacker-planted TOOLS.json — e.g. written into a managed skill dir via
-  // scaffold_managed_skill companion files, or shipped in a third-party skill —
-  // could get arbitrary code imported into the host process and auto-approved
-  // under the low-risk threshold. Non-bundled skills must run their tools in the
-  // sandbox (handled above); host execution here is a hard, fail-closed deny.
-  if (options?.target === "host" && !options?.bundled) {
+  // full host code execution with no sandbox boundary. The capability is
+  // granted per skill content version (`host_exec`); a skill that declares
+  // `execution_target: host` without the grant is refused. The check fails
+  // closed for managed, workspace, and plugin skills that received no grant.
+  if (options?.target === "host" && !options?.hostExecAllowed) {
     return {
-      content: `Skill tool "${executorPath}" requests host execution, which is only permitted for first-party bundled skills. Non-bundled skills must declare execution_target: "sandbox".`,
+      content: `Skill tool "${executorPath}" requests host execution, but the host_exec capability is not granted for this skill version. Declare execution_target: "sandbox" or grant host_exec to this exact version.`,
       isError: true,
     };
   }

@@ -639,4 +639,15 @@ export interface OwnerInfo {
   kind: OwnerKind;
   /** ID of the owner: skill id / plugin name / MCP server id / workspace path, or `"default"` for built-ins. */
   id: string;
+  /**
+   * Content version hash of the owning skill at registration time. Capability
+   * checks compare it with the current on-disk hash before trusting a grant.
+   */
+  skillVersionHash?: string;
+  /**
+   * Directory of the owning skill at registration time. Capability defaults
+   * are scoped to the bundled skills directory, so this path is what proves
+   * the tool belongs to a bundled skill rather than a same-named override.
+   */
+  skillDirectoryPath?: string;
 }

@@ -4,7 +4,7 @@ import type { CliCommandHelp } from "../../lib/cli-command-help.js";
 
 export const dbHelp: CliCommandHelp = {
   name: "db",
-  description: "Inspect and repair the assistant SQLite database",
+  description: "Inspect the assistant Postgres database",
   options: [
     { flags: "--json", description: "Machine-readable compact JSON output" },
   ],
@@ -12,16 +12,7 @@ export const dbHelp: CliCommandHelp = {
     {
       name: "status",
       description:
-        "Show database path, size, key pragmas, largest tables, and drizzle schema misses",
-    },
-    {
-      name: "repair",
-      description: "Run the database repair sequence (integrity check, …)",
-    },
-    {
-      name: "refresh",
-      description:
-        "Signal all assistant processes to reopen their SQLite database connections",
+        "Show database name, size, server version, connection count, and the largest tables by rows and by size",
     },
   ],
 };

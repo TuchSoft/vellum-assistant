@@ -21,7 +21,7 @@
  *
  * Alongside those types, the module exposes a small set of **runtime
  * handles for plugins that need to reach the assistant's live singletons
- * (subscribe to runtime events, inspect inference profiles). These resolve to the
+ * (subscribe to runtime events, inspect model aliases). These resolve to the
  * assistant's own instances: the host parks the loaded plugin-api namespace
  * on `globalThis` at boot, and the workspace-level shim re-binds each
  * runtime export from there — so a plugin's
@@ -31,11 +31,11 @@
  * disjoint module copy.
  *
  * - {@link assistantEventHub} — the assistant's pub/sub hub for runtime events
- * - {@link getModelCatalog} — list the workspace inference profiles a plugin
- *   can route to (e.g. a model router building its category → profile map)
+ * - {@link getModelCatalog} — list the gateway model aliases a plugin
+ *   can route to (e.g. a model router building its category → alias map)
  * - {@link getConfiguredProvider}: resolve a {@link Provider} for a call site
- *   (optionally overriding the profile) and run inference through the
- *   workspace's configured profiles and credentials, with no plugin-supplied API key
+ *   (optionally pinning an alias) and run inference through the gateway, with
+ *   no plugin-supplied API key
  * - {@link getEffectiveContextWindow}: resolve that call site's provider,
  *   model, and effective maximum input size
  *
@@ -47,7 +47,7 @@
  *   the agent loop compacts a conversation mid-turn to re-apply injections
  * - {@link PreModelCallContext} — passed to `pre-model-call` hook, fired
  *   before each provider call to edit the request, route it to a different
- *   inference profile, or defer output streaming
+ *   model alias, or defer output streaming
  * - {@link PostToolUseContext} — passed to `post-tool-use` hook, fired once
  *   per tool result before it joins the provider-bound history
  * - {@link StopContext} — passed to `stop` hook, the definitive terminal hook
@@ -103,7 +103,7 @@ export type {
 } from "../providers/types.js";
 // Call-site identifier accepted by `getConfiguredProvider`. Plugins typically
 // pass `"inference"` (the general-purpose call site) and pick the model via the
-// `overrideProfile` option.
+// `model` option.
 export type { LLMCallSite } from "../config/schemas/llm.js";
 export type {
   AgentLoopExitReason,
@@ -156,20 +156,16 @@ export type { PluginEventHub } from "./event-hub-facade.js";
  * the raw hub.
  */
 export { pluginAssistantEventHub as assistantEventHub } from "./event-hub-facade.js";
-export { getModelCatalog } from "./model-profiles.js";
+export { getModelCatalog } from "./model-catalog.js";
 // Purpose-built publish wrapper: emit a runtime event to the assistant's event
 // hub without holding the general hub handle. Route/hook authors surfacing a UI
 // invalidation (e.g. `sync_changed`) import this. Delegates to the same
 // capability-restricted facade, so host-proxy control events stay rejected.
 export type { AssistantEventPublishOptions } from "../runtime/assistant-event-publish-options.js";
 export { publishEvent } from "./publish-event.js";
-// Check whether a model or profile can process image input. Accepts a concrete
-// model id, a profile key, or a `ModelInfo`; a bare string is resolved
-// as a model id first and then as a profile key. Profile resolution merges over
-// the workspace default and infers the provider for model-only profiles, then
-// looks up the model catalog's `supportsVision` flag, with a profile
-// `inputModalities.image` override winning when set (mix profiles are
-// vision-capable if any arm is). Returns false when nothing resolves.
+// Check whether an alias can process image input. Accepts a `ModelInfo` or a
+// bare alias; the lookup reads the gateway catalog (with workspace overrides).
+// Returns false when nothing resolves.
 export { doesSupportVision } from "./vision-support.js";
 // Resolve a stored credential to its plaintext value (the same value
 // `assistant credentials reveal` prints) from a UUID or a "service/field"
@@ -212,15 +208,10 @@ export { resolveWebhookUrl, type WebhookUrlOptions } from "./webhook-url.js";
 // configured and the assistant is not connected to the platform, which is the
 // case where no URL would work.
 export { resolveOauthCallbackUrl } from "../inbound/oauth-callback-url.js";
-// Resolve a provider for a call site (optionally overriding the profile) so a
-// plugin can run inference through the workspace's configured profiles and
-// credentials — managed-proxy or BYOK — without supplying its own API key.
-// Pair with `getModelCatalog` to pick a profile. Returns `null` when no
-// provider is configured. By default `overrideProfile` layers below any
-// per-call-site config the workspace has pinned (e.g. a cheap `inference`
-// profile), so it loses to that pin; pass `forceOverrideProfile: true` to
-// float the chosen profile above the call-site layers when the plugin must
-// run on a specific profile regardless of workspace tuning.
+// Resolve the gateway provider for a call site so a plugin can run inference
+// without supplying its own API key. Pair with `getModelCatalog` to pick an
+// alias. Returns `null` when no gateway connection is configured. Pass
+// `model` to pin an alias for this call.
 export { getConfiguredProvider } from "../providers/provider-send-message.js";
 export type {
   EffectiveContextWindowInfo,

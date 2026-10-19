@@ -444,7 +444,9 @@ describe("ActivityStepsPanel - computer screenshot gallery", () => {
 
   test("does not reprocess screenshot bytes when live thinking grows", () => {
     const screenshot = computerUseCall("tc-live-shot", {
-      imageDataList: ["iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" + "A".repeat(128 * 1024)],
+      imageDataList: [
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" + "A".repeat(128 * 1024),
+      ],
     });
     let messages: DisplayMessage[] = [
       {

@@ -25,8 +25,10 @@ import {
   type CustomPropertyStyle,
 } from "@vellumai/design-library";
 
-export interface SidebarIconTileProps
-  extends Omit<ComponentProps<"button">, "style" | "children" | "onClick"> {
+export interface SidebarIconTileProps extends Omit<
+  ComponentProps<"button">,
+  "style" | "children" | "onClick"
+> {
   icon: LucideIcon;
   /** The accessible name. */
   label: string;

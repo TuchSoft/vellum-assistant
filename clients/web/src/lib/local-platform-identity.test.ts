@@ -119,15 +119,12 @@ mock.module("@/stores/organization-store", () => ({
   },
 }));
 
-const { MIN_VERSION: VERIFY_ROUTE_MIN_VERSION } = await import(
-  "@/lib/backwards-compat/credential-verification"
-);
-const { VERSION_RESOLUTION_TIMEOUT_MS } = await import(
-  "@/lib/backwards-compat/utils"
-);
-const { useAssistantIdentityStore } = await import(
-  "@/stores/assistant-identity-store"
-);
+const { MIN_VERSION: VERIFY_ROUTE_MIN_VERSION } =
+  await import("@/lib/backwards-compat/credential-verification");
+const { VERSION_RESOLUTION_TIMEOUT_MS } =
+  await import("@/lib/backwards-compat/utils");
+const { useAssistantIdentityStore } =
+  await import("@/stores/assistant-identity-store");
 const {
   bootstrapLocalAssistantPlatformIdentity,
   canRecoverLocalAssistantPlatformCredential,

@@ -56,7 +56,7 @@ function schedule(
     maxRetries: 3,
     retryBackoffMs: 1000,
     timeoutMs: null,
-    inferenceProfile: null,
+    model: null,
     groupId: null,
     createdFromConversationId: null,
     createdFromConversationExists: false,

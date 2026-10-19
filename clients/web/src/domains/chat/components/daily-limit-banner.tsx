@@ -102,9 +102,7 @@ export function DailyLimitBanner({ onAdjustLimit }: DailyLimitBannerProps) {
         title={t("dailyLimitBanner.skipConfirmTitle")}
         message={confirmMessage}
         error={
-          skipMutation.isError
-            ? t("dailyLimitBanner.skipError")
-            : undefined
+          skipMutation.isError ? t("dailyLimitBanner.skipError") : undefined
         }
         confirmLabel={t("dailyLimitBanner.skipForToday")}
         isPending={skipMutation.isPending}

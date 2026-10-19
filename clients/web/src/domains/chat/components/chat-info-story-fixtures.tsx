@@ -540,8 +540,7 @@ export const inChatInfoConversation: Decorator =
       const conversation: ChatInfoStoryConversation = {
         ...DEFAULT_CONVERSATION,
         ...(parameters.chatInfo as
-          | Partial<ChatInfoStoryConversation>
-          | undefined),
+          Partial<ChatInfoStoryConversation> | undefined),
       };
       let created: QueryClient;
       const restores: Array<() => void> = [];

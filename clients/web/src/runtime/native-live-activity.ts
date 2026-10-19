@@ -29,10 +29,7 @@ import {
   callNativeVoice,
   subscribeNativeVoiceListener,
 } from "@/runtime/native-voice";
-import {
-  isNativeIOS,
-  isNativeMobile,
-} from "@/runtime/platform-detection";
+import { isNativeIOS, isNativeMobile } from "@/runtime/platform-detection";
 
 /** The mutable half of the activity — everything that can change mid-session. */
 export interface VoiceLiveActivityContent {

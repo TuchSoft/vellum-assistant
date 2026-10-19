@@ -354,8 +354,7 @@ mock.module("@/runtime/widget-snapshot", () => ({
   retryPendingWidgetSnapshotClear: async () => true,
 }));
 
-const notificationAvatarRuntime =
-  await import("@/runtime/notification-avatar");
+const notificationAvatarRuntime = await import("@/runtime/notification-avatar");
 
 function seedNotificationIdentityMemory() {
   const identity = notificationAvatarRuntime.createNotificationIdentity(
@@ -2348,10 +2347,7 @@ describe("platform probe conclusive rejection (half-dead session)", () => {
     mockOrgFetchOutcome = new Promise(() => {});
     const originalSetTimeout = globalThis.setTimeout;
     const setTimeoutSpy = spyOn(globalThis, "setTimeout");
-    setTimeoutSpy.mockImplementation(((
-      handler: () => void,
-      timeout?: number,
-    ) =>
+    setTimeoutSpy.mockImplementation(((handler: () => void, timeout?: number) =>
       originalSetTimeout(
         handler,
         timeout === 3_000 ? 0 : timeout,
@@ -2388,10 +2384,7 @@ describe("platform probe conclusive rejection (half-dead session)", () => {
     mockListAssistantsResult = { ok: false, status: 403, error: {} };
     const originalSetTimeout = globalThis.setTimeout;
     const setTimeoutSpy = spyOn(globalThis, "setTimeout");
-    setTimeoutSpy.mockImplementation(((
-      handler: () => void,
-      timeout?: number,
-    ) =>
+    setTimeoutSpy.mockImplementation(((handler: () => void, timeout?: number) =>
       originalSetTimeout(
         handler,
         timeout === 3_000 ? 0 : timeout,

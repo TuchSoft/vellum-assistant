@@ -74,9 +74,8 @@ const { useOnboardingAvatarPoolStore } =
   await import("@/domains/onboarding/onboarding-avatar-pool-store");
 const { GiveMeAFaceScreen } =
   await import("@/domains/onboarding/screens/give-me-a-face-screen");
-const { allAssistantNames } = await import(
-  "@/domains/onboarding/prechat-names"
-);
+const { allAssistantNames } =
+  await import("@/domains/onboarding/prechat-names");
 
 let played: string[] = [];
 let paused = 0;
@@ -107,10 +106,9 @@ beforeEach(() => {
   // but leaves whichever avatar the last test cycled to still selected. Voice
   // tests assert on a KNOWN avatar, so generate the pool (if needed) and pin
   // the designed first face.
-  useOnboardingAvatarPoolStore.getState().ensureGenerated(
-    { colors: [] } as never,
-    () => 0,
-  );
+  useOnboardingAvatarPoolStore
+    .getState()
+    .ensureGenerated({ colors: [] } as never, () => 0);
   useOnboardingAvatarPoolStore.setState({ selectedIndex: 0 });
 });
 

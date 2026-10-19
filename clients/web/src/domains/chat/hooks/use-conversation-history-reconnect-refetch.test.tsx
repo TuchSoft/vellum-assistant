@@ -146,9 +146,7 @@ describe("useConversationHistory — refetch on SSE reopen", () => {
       draftConversationIdResolution: false,
     });
     useComposerStore.getState().setInput("Unsent draft");
-    useComposerStore
-      .getState()
-      .addPathReferences(["/example/project-notes"]);
+    useComposerStore.getState().addPathReferences(["/example/project-notes"]);
 
     const { rerender } = renderHook(
       ({ assistantStateKind }: { assistantStateKind: "loading" | "active" }) =>

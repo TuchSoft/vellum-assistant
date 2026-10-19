@@ -307,7 +307,12 @@ describe("a pick from a picker on the popover", () => {
             accent: "American",
             voices: [
               { id: "aura-1", label: "Warm", sampleUrl: "", isDefault: true },
-              { id: "aura-2", label: "Bright", sampleUrl: "", isDefault: false },
+              {
+                id: "aura-2",
+                label: "Bright",
+                sampleUrl: "",
+                isDefault: false,
+              },
             ],
           },
         ],
@@ -316,7 +321,10 @@ describe("a pick from a picker on the popover", () => {
       },
     });
 
-    await answerCompanionPopover("voices", { kind: "pick", optionId: "aura-2" });
+    await answerCompanionPopover("voices", {
+      kind: "pick",
+      optionId: "aura-2",
+    });
     await answerCompanionPopover("voices", { kind: "pick", optionId: "nope" });
 
     expect(chosen).toEqual(["aura-2"]);

@@ -18,9 +18,8 @@ mock.module("@/domains/chat/components/shimmer-surface", () => ({
   ShimmerSurface: () => <span data-testid="shimmer-surface" />,
 }));
 
-const { SideControlButton } = await import(
-  "@/domains/chat/components/side-control-button"
-);
+const { SideControlButton } =
+  await import("@/domains/chat/components/side-control-button");
 
 afterEach(() => {
   cleanup();

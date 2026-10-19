@@ -68,5 +68,4 @@ export type InboxFolder = "inbox" | "sent";
 
 /** What a probe of a handle came back with. */
 export type HandleCheckResult =
-  | { available: true }
-  | { available: false; message: string };
+  { available: true } | { available: false; message: string };

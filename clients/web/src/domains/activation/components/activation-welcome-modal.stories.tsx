@@ -174,4 +174,3 @@ export const Light789AllDoneCollapsedMobile: Story = {
   ...phone,
   args: { variant: "all-done", progress: ALL_DONE_BARE },
 };
-

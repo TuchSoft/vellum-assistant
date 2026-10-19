@@ -249,8 +249,7 @@ export interface RememberedOriginsState {
 }
 
 export type AddOriginResult =
-  | { ok: true; origin: RememberedOrigin }
-  | { ok: false };
+  { ok: true; origin: RememberedOrigin } | { ok: false };
 
 export interface RememberedOriginsActions {
   /**
@@ -265,7 +264,10 @@ export interface RememberedOriginsActions {
    * an already-remembered url keeps its original `addedAt` and updates
    * `name` only when a new one is provided.
    */
-  addOrigin: (input: { url: string; name?: string }) => Promise<AddOriginResult>;
+  addOrigin: (input: {
+    url: string;
+    name?: string;
+  }) => Promise<AddOriginResult>;
   removeOrigin: (url: string) => Promise<void>;
 }
 

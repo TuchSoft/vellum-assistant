@@ -89,7 +89,9 @@ export function SubagentSpawnGroup({
         activity={activity}
         data-testid="subagent-spawn-group-trigger"
         onOpenRow={(_kind, id) => onSubagentClick?.(id)}
-        onStopRow={onStopSubagent ? (_kind, id) => onStopSubagent(id) : undefined}
+        onStopRow={
+          onStopSubagent ? (_kind, id) => onStopSubagent(id) : undefined
+        }
       />
     </div>
   );

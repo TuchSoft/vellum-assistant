@@ -130,7 +130,9 @@ function ContactMergeDialogInner({
                 onClick={() => onMerge(donor.id)}
                 disabled={pending}
               >
-                {pending ? t("actions.merging") : t("contactMergeDialog.confirm")}
+                {pending
+                  ? t("actions.merging")
+                  : t("contactMergeDialog.confirm")}
               </Button>
             </>
           ) : (

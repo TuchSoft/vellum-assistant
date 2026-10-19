@@ -556,9 +556,7 @@ describe("useSendMessage: a switch during the POST", () => {
 
     act(() => {
       useChatSessionStore.getState().resetForLogout();
-      useResolvedAssistantsStore
-        .getState()
-        .setActiveAssistantId("assistant-1");
+      useResolvedAssistantsStore.getState().setActiveAssistantId("assistant-1");
       useConversationStore
         .getState()
         .setActiveConversationId(SEND_CONVERSATION);
@@ -610,9 +608,7 @@ describe("useSendMessage: a switch during the POST", () => {
 
     act(() => {
       useChatSessionStore.getState().resetForLogout();
-      useResolvedAssistantsStore
-        .getState()
-        .setActiveAssistantId("assistant-1");
+      useResolvedAssistantsStore.getState().setActiveAssistantId("assistant-1");
       useConversationStore
         .getState()
         .setActiveConversationId(SEND_CONVERSATION);
@@ -644,10 +640,14 @@ describe("useSendMessage: a switch during the POST", () => {
       0,
     );
     expect(
-      useConversationStore.getState().pendingDraftProfiles.get(SEND_CONVERSATION),
+      useConversationStore
+        .getState()
+        .pendingDraftProfiles.get(SEND_CONVERSATION),
     ).toBe("new-profile");
     expect(
-      useConversationStore.getState().pendingDraftPlugins.get(SEND_CONVERSATION),
+      useConversationStore
+        .getState()
+        .pendingDraftPlugins.get(SEND_CONVERSATION),
     ).toEqual(new Set(["new-plugin"]));
     expect(currentLocation).toBe(START_LOCATION);
   });
@@ -683,9 +683,7 @@ describe("useSendMessage: a switch during the POST", () => {
 
     act(() => {
       useChatSessionStore.getState().resetForLogout();
-      useResolvedAssistantsStore
-        .getState()
-        .setActiveAssistantId("assistant-1");
+      useResolvedAssistantsStore.getState().setActiveAssistantId("assistant-1");
       useConversationStore
         .getState()
         .setActiveConversationId(SEND_CONVERSATION);
@@ -697,10 +695,7 @@ describe("useSendMessage: a switch during the POST", () => {
         .setPendingDraftProfile(SEND_CONVERSATION, "shared-profile");
       useConversationStore
         .getState()
-        .setPendingDraftPlugins(
-          SEND_CONVERSATION,
-          new Set(["shared-plugin"]),
-        );
+        .setPendingDraftPlugins(SEND_CONVERSATION, new Set(["shared-plugin"]));
       useChatSessionStore.getState().switchToConversation({
         assistantId: "assistant-1",
         activeConversationId: SEND_CONVERSATION,
@@ -719,13 +714,19 @@ describe("useSendMessage: a switch during the POST", () => {
 
     expect(useComposerStore.getState().input).toBe("new session draft");
     expect(
-      useConversationStore.getState().draftConversationIds.has(SEND_CONVERSATION),
+      useConversationStore
+        .getState()
+        .draftConversationIds.has(SEND_CONVERSATION),
     ).toBe(true);
     expect(
-      useConversationStore.getState().pendingDraftProfiles.get(SEND_CONVERSATION),
+      useConversationStore
+        .getState()
+        .pendingDraftProfiles.get(SEND_CONVERSATION),
     ).toBe("shared-profile");
     expect(
-      useConversationStore.getState().pendingDraftPlugins.get(SEND_CONVERSATION),
+      useConversationStore
+        .getState()
+        .pendingDraftPlugins.get(SEND_CONVERSATION),
     ).toEqual(new Set(["shared-plugin"]));
     expect(useConversationStore.getState().processingConversationIds.size).toBe(
       0,
@@ -814,28 +815,33 @@ describe("useSendMessage: a local command answering after a switch", () => {
  * its own conversation otherwise.
  */
 describe("useSendMessage: a send whose POST throws", () => {
-  test.todo("restores off-screen attachment payloads with their failed draft", async () => {
-    useConversationStore.getState().setActiveConversationId(SEND_CONVERSATION);
-    useComposerStore.getState().resetAttachments();
-    throwWhileAnswering({ switchFirst: true });
-    const { result } = renderSendFor(SEND_CONVERSATION);
-    const attachment = {
-      id: "attachment-1",
-      filename: "notes.txt",
-      mimeType: "text/plain",
-      sizeBytes: 12,
-      previewUrl: null,
-    };
+  test.todo(
+    "restores off-screen attachment payloads with their failed draft",
+    async () => {
+      useConversationStore
+        .getState()
+        .setActiveConversationId(SEND_CONVERSATION);
+      useComposerStore.getState().resetAttachments();
+      throwWhileAnswering({ switchFirst: true });
+      const { result } = renderSendFor(SEND_CONVERSATION);
+      const attachment = {
+        id: "attachment-1",
+        filename: "notes.txt",
+        mimeType: "text/plain",
+        sizeBytes: 12,
+        previewUrl: null,
+      };
 
-    await act(async () => {
-      await result.current.sendMessage("read these notes", [attachment]);
-    });
+      await act(async () => {
+        await result.current.sendMessage("read these notes", [attachment]);
+      });
 
-    expect(draftFor(SEND_CONVERSATION)).toBe("read these notes");
-    expect(useComposerStore.getState().attachments).toEqual([
-      expect.objectContaining(attachment),
-    ]);
-  });
+      expect(draftFor(SEND_CONVERSATION)).toBe("read these notes");
+      expect(useComposerStore.getState().attachments).toEqual([
+        expect.objectContaining(attachment),
+      ]);
+    },
+  );
 
   test("off screen it idles no turn, banners nothing, and parks the text", async () => {
     useConversationStore.getState().setActiveConversationId(SEND_CONVERSATION);

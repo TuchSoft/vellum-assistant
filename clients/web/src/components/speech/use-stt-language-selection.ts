@@ -128,8 +128,7 @@ export function useSttLanguageSelection(
   // `services.stt` falls under the ConfigGetResponse index signature
   // (`unknown`), so narrow it explicitly. Mirrors `SttProviderForm`.
   const daemonStt = daemonConfig?.services?.stt as
-    | { provider?: string; mode?: string; language?: string }
-    | undefined;
+    { provider?: string; mode?: string; language?: string } | undefined;
   // A legacy managed-mode config routes to Vellum while `provider` holds the
   // BYOK restore value; an unset provider falls back to the daemon schema
   // default (deepgram).

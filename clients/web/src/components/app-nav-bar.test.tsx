@@ -222,7 +222,12 @@ describe("AppNavBar desktop edit affordance", () => {
   test("swaps to an expand icon while the chat panel is open", () => {
     const onEdit = mock(() => {});
     render(
-      <AppNavBar appName="My App" onClose={() => {}} onEdit={onEdit} isEditing />,
+      <AppNavBar
+        appName="My App"
+        onClose={() => {}}
+        onEdit={onEdit}
+        isEditing
+      />,
     );
 
     expect(document.body.textContent).not.toContain("Close chat");

@@ -205,7 +205,7 @@ export interface ConversationListState {
    * until a row materializes:
    *
    * - A brand-new draft chat: the first message forwards the stash as the
-   *   minted conversation's `inferenceProfile` (see `use-send-message`).
+   *   minted conversation's `model` (see `use-send-message`).
    * - An existing conversation opened by URL/deep link while its row is still
    *   loading: once the row resolves, `ComposerSettingsMenu` promotes the stash
    *   to a real per-conversation override.

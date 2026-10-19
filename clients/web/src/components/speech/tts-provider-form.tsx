@@ -333,9 +333,7 @@ export function TtsProviderForm({
       return true;
     } catch (err) {
       toast.error(
-        err instanceof Error
-          ? err.message
-          : t("ttsProviderForm.saveFailed"),
+        err instanceof Error ? err.message : t("ttsProviderForm.saveFailed"),
       );
       return false;
     } finally {
@@ -555,9 +553,7 @@ export function TtsProviderForm({
       <div className="flex items-center gap-2">
         {!isManaged && (
           <Button variant="outlined" onClick={handleTest} disabled={testing}>
-            {testing
-              ? t("ttsProviderForm.testing")
-              : t("ttsProviderForm.test")}
+            {testing ? t("ttsProviderForm.testing") : t("ttsProviderForm.test")}
           </Button>
         )}
         <div className="flex items-center gap-3">

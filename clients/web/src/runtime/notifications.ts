@@ -64,10 +64,7 @@ import {
   type NotificationTapHandler,
   type NotificationTapPayload,
 } from "@/runtime/notification-taps";
-import {
-  isNativeAndroid,
-  isNativeIOS,
-} from "@/runtime/platform-detection";
+import { isNativeAndroid, isNativeIOS } from "@/runtime/platform-detection";
 import {
   extractPushConversationId,
   extractScopedPushTapPayload,
@@ -116,7 +113,9 @@ type NotificationIdentifier =
   | { status: "invalid"; value: string }
   | { status: "valid"; value: string };
 
-function notificationIdentifier(value: string | undefined): NotificationIdentifier {
+function notificationIdentifier(
+  value: string | undefined,
+): NotificationIdentifier {
   const trimmed = value?.trim();
   if (!trimmed) {
     return { status: "absent" };
@@ -415,8 +414,7 @@ async function registerTapListeners(): Promise<void> {
       "localNotificationActionPerformed",
       (action) => {
         const extra = action.notification.extra as
-          | NotificationTapPayload
-          | undefined;
+          NotificationTapPayload | undefined;
         if (extra) {
           dispatchNotificationTap(extra);
         }
@@ -586,9 +584,7 @@ export interface PostLocalNotificationArgs {
 }
 
 export type NotificationSoundDisposition =
-  | "web-sound"
-  | "native-owned"
-  | "silent";
+  "web-sound" | "native-owned" | "silent";
 
 async function acknowledgeSuppressedNotification(
   args: PostLocalNotificationArgs,
@@ -611,7 +607,10 @@ function browserNotificationDeliveryKey(args: PostLocalNotificationArgs): {
       ? key.value
       : `${args.sourceEventName}:${args.title}:${args.body}`,
   ]);
-  return { tag, receiptKey: args.identity && key.status === "valid" ? tag : null };
+  return {
+    tag,
+    receiptKey: args.identity && key.status === "valid" ? tag : null,
+  };
 }
 
 async function notificationFailureSound(
@@ -636,7 +635,10 @@ async function notificationFailureSound(
   }
   if (args.assistantId && args.deliveryId) {
     await sendNotificationIntentAck(
-      args.assistantId, args.deliveryId, false, errorMessage,
+      args.assistantId,
+      args.deliveryId,
+      false,
+      errorMessage,
     );
   }
   if (isBrowserNotificationHost() && args.canDeliver && !args.canDeliver()) {
@@ -776,7 +778,8 @@ export async function postLocalNotification(
 
   if (!isNotificationsSupported()) {
     return notificationFailureSound(
-      args, "Notifications not supported on this client",
+      args,
+      "Notifications not supported on this client",
     );
   }
 
@@ -831,7 +834,8 @@ export async function postLocalNotification(
   }
   if (permission !== "granted") {
     return notificationFailureSound(
-      args, `Notification authorization ${permission}`,
+      args,
+      `Notification authorization ${permission}`,
     );
   }
 
@@ -1072,11 +1076,14 @@ export async function postLocalNotification(
       }
     } catch (err) {
       return notificationFailureSound(
-        args, err instanceof Error ? err.message : String(err),
+        args,
+        err instanceof Error ? err.message : String(err),
       );
     }
     const sound = await browserNotificationDelivery.claimSound(
-      receiptKey, args.canDeliver, browserConversationKey,
+      receiptKey,
+      args.canDeliver,
+      browserConversationKey,
     );
     if (sound === "cancelled" || (args.canDeliver && !args.canDeliver())) {
       return "silent";
@@ -1150,10 +1157,9 @@ export function postForegroundRemotePush(
     return;
   }
   const scopedTap = extractScopedPushTapPayload(data);
-  const requiresScopedIdentity = Object.prototype.hasOwnProperty.call(
-    data,
-    "identity",
-  ) && scopedTap === null;
+  const requiresScopedIdentity =
+    Object.prototype.hasOwnProperty.call(data, "identity") &&
+    scopedTap === null;
   const deepLinkValue = data.deep_link;
   let deepLinkMetadata: Record<string, unknown> | undefined;
   if (typeof deepLinkValue === "object" && deepLinkValue !== null) {

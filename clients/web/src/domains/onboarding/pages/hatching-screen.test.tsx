@@ -1015,14 +1015,12 @@ describe("HatchingScreen — post-payment provisioning wait", () => {
 
     // The rejection surfaces as a correctable error, not a completed hatch.
     await waitFor(
-      () =>
-        expect(
-          screen.getByText("Your API key didn't work"),
-        ).toBeTruthy(),
+      () => expect(screen.getByText("Your API key didn't work")).toBeTruthy(),
       { timeout: 5000 },
     );
-    expect(screen.getByText("API key is invalid or expired.", { exact: false }))
-      .toBeTruthy();
+    expect(
+      screen.getByText("API key is invalid or expired.", { exact: false }),
+    ).toBeTruthy();
     expect(navigateMock).not.toHaveBeenCalled();
     // A blind retry would re-apply nothing (the pending key was cleared), so
     // the primary action is the path back to the API-key screen instead.
@@ -1067,10 +1065,7 @@ describe("HatchingScreen — post-payment provisioning wait", () => {
     render(<HatchingScreen />);
 
     await waitFor(
-      () =>
-        expect(
-          screen.getByText("Your API key didn't work"),
-        ).toBeTruthy(),
+      () => expect(screen.getByText("Your API key didn't work")).toBeTruthy(),
       { timeout: 5000 },
     );
     expect(hatchLocalAssistantMock).toHaveBeenCalledTimes(1);

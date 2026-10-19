@@ -77,9 +77,7 @@ afterEach(cleanup);
 
 describe("MemoryTab v3 candidate pool", () => {
   test("renders the pool collapsed behind its summary and expands to the candidate rows", () => {
-    render(
-      <MemoryTab context={contextWithPool(POOL)} />,
-    );
+    render(<MemoryTab context={contextWithPool(POOL)} />);
 
     const toggle = screen.getByRole("button", { name: /Candidate pool/ });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
@@ -101,9 +99,7 @@ describe("MemoryTab v3 candidate pool", () => {
   });
 
   test("renders the empty state for a turn logged before pools were persisted", () => {
-    render(
-      <MemoryTab context={contextWithPool(null)} />,
-    );
+    render(<MemoryTab context={contextWithPool(null)} />);
 
     expect(screen.getByText("Candidate pool")).toBeTruthy();
     expect(
@@ -159,11 +155,7 @@ describe("MemoryTab v3 candidate pool", () => {
         },
       ],
     };
-    render(
-      <MemoryTab
-        context={contextWithPool(passthrough)}
-      />,
-    );
+    render(<MemoryTab context={contextWithPool(passthrough)} />);
 
     const toggle = screen.getByRole("button", { name: /Candidate pool/ });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");

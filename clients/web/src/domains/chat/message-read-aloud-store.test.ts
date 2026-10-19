@@ -5,9 +5,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { waitFor } from "@testing-library/react";
 
-type PlaybackResult =
-  | { kind: "audio"; blob: Blob }
-  | { kind: "unavailable" };
+type PlaybackResult = { kind: "audio"; blob: Blob } | { kind: "unavailable" };
 
 let playbackResult: PlaybackResult = { kind: "unavailable" };
 
@@ -26,9 +24,8 @@ mock.module("@vellumai/design-library/components/toast", () => ({
   ToastContent: () => null,
 }));
 
-const { useMessageReadAloudStore } = await import(
-  "@/domains/chat/message-read-aloud-store"
-);
+const { useMessageReadAloudStore } =
+  await import("@/domains/chat/message-read-aloud-store");
 
 type Listener = (this: FakeAudio, ev?: Event) => void;
 
@@ -95,7 +92,9 @@ beforeEach(() => {
   cancel.mockClear();
   resume.mockClear();
   globalThis.Audio = FakeAudio as unknown as typeof Audio;
-  URL.createObjectURL = mock(() => "blob:read-aloud") as typeof URL.createObjectURL;
+  URL.createObjectURL = mock(
+    () => "blob:read-aloud",
+  ) as typeof URL.createObjectURL;
   URL.revokeObjectURL = mock(() => {}) as typeof URL.revokeObjectURL;
   installSpeechSynthesis();
   useMessageReadAloudStore.getState().stop();

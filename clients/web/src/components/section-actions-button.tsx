@@ -33,8 +33,10 @@ export const SECTION_HEADER_CONTROL_CLASSES = [
   "max-md:h-[30px] max-md:w-[30px]",
 ].join(" ");
 
-export interface SectionActionsButtonProps
-  extends Omit<ComponentProps<"button">, "children" | "aria-label"> {
+export interface SectionActionsButtonProps extends Omit<
+  ComponentProps<"button">,
+  "children" | "aria-label"
+> {
   /** Section name, which names the control for assistive tech. */
   label: string;
 }

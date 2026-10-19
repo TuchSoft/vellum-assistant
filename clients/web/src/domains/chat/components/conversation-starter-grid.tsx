@@ -42,7 +42,9 @@ export function ConversationStarterGrid({
           key={starter.id}
           label={starter.label}
           onSelect={() => onSelect(starter)}
-          aria-label={t("conversationStarterGrid.sendAria", { label: starter.label })}
+          aria-label={t("conversationStarterGrid.sendAria", {
+            label: starter.label,
+          })}
         />
       ))}
     </div>

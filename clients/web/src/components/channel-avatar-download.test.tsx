@@ -45,9 +45,8 @@ mock.module("@/runtime/native-file", () => ({
   saveFile,
 }));
 
-const { ChannelAvatarDownload } = await import(
-  "@/components/channel-avatar-download"
-);
+const { ChannelAvatarDownload } =
+  await import("@/components/channel-avatar-download");
 
 /** A fresh cache per test, so one test's raster cannot satisfy the next. */
 function renderWithClient(ui: ReactElement) {

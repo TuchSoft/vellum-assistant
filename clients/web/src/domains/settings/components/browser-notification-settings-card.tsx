@@ -9,7 +9,9 @@ import {
 import { Button } from "@vellumai/design-library/components/button";
 import { Card } from "@vellumai/design-library/components/card";
 
-type PermissionState = Awaited<ReturnType<typeof refreshNotificationPermission>>;
+type PermissionState = Awaited<
+  ReturnType<typeof refreshNotificationPermission>
+>;
 
 export function BrowserNotificationSettingsCard() {
   const { t } = useTranslation("settings");
@@ -35,15 +37,16 @@ export function BrowserNotificationSettingsCard() {
     });
   };
 
-  const description = permission === "granted"
-    ? t("browserNotificationSettingsCard.grantedDescription")
-    : permission === "denied"
-      ? t("browserNotificationSettingsCard.deniedDescription")
-      : permission === "unsupported"
-        ? t("browserNotificationSettingsCard.unsupportedDescription")
-        : permission === "prompt"
-          ? t("browserNotificationSettingsCard.promptDescription")
-          : t("browserNotificationSettingsCard.checkingDescription");
+  const description =
+    permission === "granted"
+      ? t("browserNotificationSettingsCard.grantedDescription")
+      : permission === "denied"
+        ? t("browserNotificationSettingsCard.deniedDescription")
+        : permission === "unsupported"
+          ? t("browserNotificationSettingsCard.unsupportedDescription")
+          : permission === "prompt"
+            ? t("browserNotificationSettingsCard.promptDescription")
+            : t("browserNotificationSettingsCard.checkingDescription");
 
   return (
     <Card padding="lg">

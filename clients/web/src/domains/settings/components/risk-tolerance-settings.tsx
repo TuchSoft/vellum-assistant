@@ -187,7 +187,10 @@ export function RiskToleranceSettings() {
           </div>
           {interactivePreset && (
             <p className="mt-2 text-body-small-default text-[var(--content-tertiary)]">
-              {t(interactivePreset.descriptionKey, interactivePreset.description)}
+              {t(
+                interactivePreset.descriptionKey,
+                interactivePreset.description,
+              )}
             </p>
           )}
         </div>
@@ -217,7 +220,10 @@ export function RiskToleranceSettings() {
               </div>
               {autonomousPreset && (
                 <p className="mt-2 text-body-small-default text-[var(--content-tertiary)]">
-                  {t(autonomousPreset.descriptionKey, autonomousPreset.description)}
+                  {t(
+                    autonomousPreset.descriptionKey,
+                    autonomousPreset.description,
+                  )}
                 </p>
               )}
             </div>

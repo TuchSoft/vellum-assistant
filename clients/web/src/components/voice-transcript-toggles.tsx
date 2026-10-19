@@ -93,7 +93,10 @@ export function VoiceTranscriptToggles({
     },
   };
 
-  const getToggleLabel = (prefKey: VoiceTranscriptPrefKey, fallback: string) => {
+  const getToggleLabel = (
+    prefKey: VoiceTranscriptPrefKey,
+    fallback: string,
+  ) => {
     if (prefKey === "showUserTranscript") {
       return t("voiceTranscriptToggles.userTranscriptLabel", fallback);
     }

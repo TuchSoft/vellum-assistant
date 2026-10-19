@@ -52,9 +52,7 @@ export function MemoryCard() {
         body: { memory: { enabled } },
       });
       toast.success(
-        enabled
-          ? t("memoryCard.enabledToast")
-          : t("memoryCard.disabledToast"),
+        enabled ? t("memoryCard.enabledToast") : t("memoryCard.disabledToast"),
       );
     } catch (error) {
       captureError(error, { context: "settings-memory-toggle" });

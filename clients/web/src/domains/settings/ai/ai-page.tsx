@@ -1,35 +1,20 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+
+import { useTranslation } from "@/i18n";
+import { useEffect } from "react";
 
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
-import { DetailDrawer, MobileDetailOverlay } from "@/components/detail-drawer";
 import { ImageGenerationCard } from "@/domains/settings/ai/image-generation-card";
-import {
-  LanguageModelCard,
-  type LanguageModelPanelState,
-} from "@/domains/settings/ai/language-model-card";
 import { ManagedServicesBanner } from "@/components/managed-services-banner";
-import { ProfileDetailPanel } from "@/domains/settings/ai/profile-detail-panel";
-import { OverridesDetailPanel } from "@/domains/settings/ai/overrides-detail-panel";
-import { ProviderDetailPanel } from "@/domains/settings/ai/provider-detail-panel";
 import { SpeechToTextCard } from "@/domains/settings/ai/speech-to-text-card";
 import { TextToSpeechCard } from "@/domains/settings/ai/text-to-speech-card";
 import { WebFetchCard } from "@/domains/settings/ai/web-fetch-card";
 import { WebSearchCard } from "@/domains/settings/ai/web-search-card";
-import { useIsMobile } from "@/hooks/use-is-mobile";
-
-// ---------------------------------------------------------------------------
-// AiPage — layout shell
-// ---------------------------------------------------------------------------
+import { configLlmCallsitesGetOptions } from "@/generated/daemon/@tanstack/react-query.gen";
 
 export function AiPage() {
   const assistantId = useActiveAssistantId();
-  const isMobile = useIsMobile();
 
-  // The Language Model sidepanel (profile detail / create). Page-owned so
-  // the drawer can dock beside the whole card stack, schedules-page style.
-  const [lmPanel, setLmPanel] = useState<LanguageModelPanelState | null>(null);
-
-  // Scroll to hash target on mount (e.g. deep links to #text-to-speech).
   useEffect(() => {
     const hash = window.location.hash.slice(1);
     if (!hash) {
@@ -40,77 +25,69 @@ export function AiPage() {
     });
   }, []);
 
-  const section = (
+  return (
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto">
       <ManagedServicesBanner />
-
-      <LanguageModelCard
-        panel={lmPanel}
-        onOpenPanel={setLmPanel}
-        onClosePanel={() => setLmPanel(null)}
-      />
+      <ModelsCard assistantId={assistantId} />
       <WebSearchCard />
       <WebFetchCard />
       <ImageGenerationCard />
-      {/* Speech providers are BYO provider config like every other card here.
-          They used to sit behind a "Services" tab on the Voice page, where the
-          voice picker got buried under an API-key form. */}
       <TextToSpeechCard />
       <SpeechToTextCard />
     </div>
   );
+}
 
-  // Keyed by assistant so a panel that stays open across an assistant
-  // switch remounts instead of carrying one assistant's draft edits into
-  // another's save.
-  const detailKey = `${assistantId ?? "none"}:${
-    lmPanel?.kind === "profile"
-      ? `profile:${lmPanel.name}`
-      : lmPanel?.kind === "provider"
-        ? `provider:${lmPanel.name}`
-        : (lmPanel?.kind ?? "closed")
-  }`;
-  const isProviderPanel =
-    lmPanel?.kind === "provider" || lmPanel?.kind === "add-provider";
-  const detail =
-    lmPanel != null && assistantId ? (
-      lmPanel.kind === "overrides" ? (
-        <OverridesDetailPanel
-          key={detailKey}
-          assistantId={assistantId}
-          onClose={() => setLmPanel(null)}
-        />
-      ) : isProviderPanel ? (
-        <ProviderDetailPanel
-          key={detailKey}
-          assistantId={assistantId}
-          connectionName={lmPanel.kind === "provider" ? lmPanel.name : null}
-          onClose={() => setLmPanel(null)}
-        />
-      ) : (
-        <ProfileDetailPanel
-          key={detailKey}
-          assistantId={assistantId}
-          profileName={lmPanel.kind === "profile" ? lmPanel.name : null}
-          onClose={() => setLmPanel(null)}
-        />
-      )
-    ) : null;
+const CALL_SITE_LABELS: Record<string, string> = {
+  mainAgent: "Main agent",
+  subagentSpawn: "Subagent spawn",
+  conversationTitle: "Conversation title",
+  commitMessage: "Commit message",
+  recall: "Recall",
+  vision: "Vision",
+};
 
-  // On mobile the detail takes over the whole screen; on desktop it opens as
-  // a drawer beside the card stack.
-  if (detail && isMobile) {
-    return <MobileDetailOverlay>{detail}</MobileDetailOverlay>;
-  }
+function ModelsCard({ assistantId }: { assistantId: string }) {
+  const { t } = useTranslation("settings");
+  const { data: catalog } = useQuery({
+    ...configLlmCallsitesGetOptions({ path: { assistant_id: assistantId } }),
+    enabled: Boolean(assistantId),
+    staleTime: 30_000,
+  });
+  const callSites = catalog?.callSites ?? [];
 
-  return detail ? (
-    <DetailDrawer
-      storageKey="aiSettingsDetailDrawerWidth"
-      detailKey={detailKey}
-      section={section}
-      detail={detail}
-    />
-  ) : (
-    section
+  return (
+    <section className="rounded-xl border border-border p-5">
+      <div className="mb-3">
+        <h2 className="text-sm font-semibold">{t("modelsCard.title")}</h2>
+        <p className="text-muted-foreground text-xs">
+          {t("modelsCard.description")}
+        </p>
+      </div>
+      <table className="w-full text-xs">
+        <thead className="text-muted-foreground text-left">
+          <tr>
+            <th className="py-1 font-medium">{t("modelsCard.callSite")}</th>
+            <th className="py-1 font-medium">{t("modelsCard.model")}</th>
+            <th className="py-1 font-medium">{t("modelsCard.source")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {callSites.map((site) => (
+            <tr key={site.id} className="border-border border-t">
+              <td className="py-1.5">
+                {CALL_SITE_LABELS[site.id] ?? site.displayName}
+              </td>
+              <td className="py-1.5 font-mono">
+                {site.enabled === false
+                  ? t("modelsCard.disabled")
+                  : (site.model ?? t("modelsCard.inherit"))}
+              </td>
+              <td className="py-1.5">{site.source ?? "-"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
 }

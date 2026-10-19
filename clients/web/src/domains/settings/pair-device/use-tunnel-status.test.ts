@@ -93,10 +93,7 @@ describe("toStatusView", () => {
   // would hand the row `undefined` and crash it on `.kind`.
   test("reports unavailable for a state this bundle predates", () => {
     expect(
-      toStatusView(
-        { state: "a-state-from-a-newer-daemon" } as never,
-        false,
-      ),
+      toStatusView({ state: "a-state-from-a-newer-daemon" } as never, false),
     ).toEqual({ kind: "unavailable" });
   });
 

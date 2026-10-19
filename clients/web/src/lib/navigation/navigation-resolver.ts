@@ -872,7 +872,10 @@ function resolveHatchGate(state: NavigationState): NavigationDecision {
     return { action: "redirect", to: routes.account.login };
   }
   if (!hasCompletedOnboarding(state)) {
-    return { action: "redirect", to: onboardingEntrypoint(state.isLocalClient) };
+    return {
+      action: "redirect",
+      to: onboardingEntrypoint(state.isLocalClient),
+    };
   }
   // A stale toggle must be re-reviewed before hatching, even via direct navigation.
   if (!state.isLocalClient && !consentIsCurrent(state)) {

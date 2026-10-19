@@ -28,9 +28,8 @@ const saveFile = mock(
 
 mock.module("@/runtime/native-file", () => ({ saveFile }));
 
-const { downloadWorkspaceFile } = await import(
-  "@/utils/download-workspace-file"
-);
+const { downloadWorkspaceFile } =
+  await import("@/utils/download-workspace-file");
 
 describe("downloadWorkspaceFile", () => {
   beforeEach(() => {

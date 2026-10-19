@@ -111,7 +111,9 @@ export function useActiveConversation(
     if (activeConversation) {
       return;
     }
-    if (useConversationStore.getState().draftConversationIds.has(conversationId)) {
+    if (
+      useConversationStore.getState().draftConversationIds.has(conversationId)
+    ) {
       return;
     }
     if (fetchedConversationIdRef.current === conversationId) {

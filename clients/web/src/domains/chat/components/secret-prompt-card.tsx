@@ -89,7 +89,10 @@ export function SecretPromptCard({
     .filter(Boolean)
     .join(" · ");
 
-  const inputLabel = secret.label || credentialIdentity || t("secretPromptCard.secretValueFallback");
+  const inputLabel =
+    secret.label ||
+    credentialIdentity ||
+    t("secretPromptCard.secretValueFallback");
 
   const handleSave = (e: FormEvent) => {
     e.preventDefault();
@@ -126,12 +129,16 @@ export function SecretPromptCard({
           )}
           {secret.allowedTools?.length ? (
             <ContextChip icon={Wrench}>
-              {t("secretPromptCard.tools", { list: secret.allowedTools.join(", ") })}
+              {t("secretPromptCard.tools", {
+                list: secret.allowedTools.join(", "),
+              })}
             </ContextChip>
           ) : null}
           {secret.allowedDomains?.length ? (
             <ContextChip icon={Globe}>
-              {t("secretPromptCard.domains", { list: secret.allowedDomains.join(", ") })}
+              {t("secretPromptCard.domains", {
+                list: secret.allowedDomains.join(", "),
+              })}
             </ContextChip>
           ) : null}
         </div>
@@ -151,7 +158,9 @@ export function SecretPromptCard({
               type={isRevealed ? "text" : "password"}
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder={secret.placeholder || t("secretPromptCard.placeholder")}
+              placeholder={
+                secret.placeholder || t("secretPromptCard.placeholder")
+              }
               disabled={isSubmitting || saved}
               autoCapitalize="none"
               autoCorrect="off"
@@ -204,7 +213,9 @@ export function SecretPromptCard({
                 disabled={!canSubmit}
                 loading={isSubmitting}
               >
-                {isSubmitting ? t("secretPromptCard.saving") : t("secretPromptCard.save")}
+                {isSubmitting
+                  ? t("secretPromptCard.saving")
+                  : t("secretPromptCard.save")}
               </Button>
             </div>
 
@@ -224,7 +235,9 @@ export function SecretPromptCard({
                   disabled={!canSubmit}
                   className="text-body-small-default text-[var(--content-tertiary)] underline transition-colors hover:text-[var(--content-default)] disabled:opacity-50 dark:text-[var(--content-disabled)] dark:hover:text-[var(--content-default)]"
                 >
-                  {isSubmitting ? t("secretPromptCard.sending") : t("secretPromptCard.sendOnce")}
+                  {isSubmitting
+                    ? t("secretPromptCard.sending")
+                    : t("secretPromptCard.sendOnce")}
                 </button>
               </div>
             )}

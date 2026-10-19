@@ -15,7 +15,8 @@ const SURFACE = {
       {
         skillId: "skill-1",
         name: "Retail Product Stock Check",
-        description: "Check whether a product is in stock on a retailer's site.",
+        description:
+          "Check whether a product is in stock on a retailer's site.",
         emoji: "📦",
       },
     ],

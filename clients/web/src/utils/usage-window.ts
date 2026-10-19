@@ -4,12 +4,7 @@ import {
 } from "@/components/charts/format-date-label";
 
 export type UsageRangeWindowId =
-  | "today"
-  | "yesterday"
-  | "7d"
-  | "30d"
-  | "90d"
-  | "all";
+  "today" | "yesterday" | "7d" | "30d" | "90d" | "all";
 
 const RANGE_START_DAY_OFFSETS: Record<
   Exclude<UsageRangeWindowId, "all" | "yesterday">,

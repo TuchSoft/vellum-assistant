@@ -59,7 +59,9 @@ export const WithAccessory: Story = {
   args: {
     title: "Share diagnostics",
     subtitle: "Send crash reports and session replay data.",
-    accessory: <Toggle checked onChange={() => {}} aria-label="Share diagnostics" />,
+    accessory: (
+      <Toggle checked onChange={() => {}} aria-label="Share diagnostics" />
+    ),
     children: null,
   },
 };
@@ -100,4 +102,3 @@ export const Danger: Story = {
     ),
   },
 };
-

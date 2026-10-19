@@ -34,12 +34,7 @@ import { useConversationStore } from "@/stores/conversation-store";
 import { isSending, useTurnStore } from "@/domains/chat/turn-store";
 
 export type TurnTerminalReason =
-  | "complete"
-  | "cancelled"
-  | "error"
-  | "session_error"
-  | "timeout"
-  | "rescued";
+  "complete" | "cancelled" | "error" | "session_error" | "timeout" | "rescued";
 
 export interface EndTurnArgs {
   /**

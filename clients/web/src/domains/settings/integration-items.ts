@@ -68,7 +68,9 @@ export type IntegrationItem = {
  * it: a newer assistant can file an integration under a category the client
  * has no chip for, and that integration must still list.
  */
-export function integrationCategory(value: unknown): IntegrationCategory | null {
+export function integrationCategory(
+  value: unknown,
+): IntegrationCategory | null {
   return isIntegrationCategory(value) ? value : null;
 }
 
@@ -193,12 +195,10 @@ export function buildIntegrationItems(
   /** False while the MCP server list has not arrived or failed to load. */
   mcpServersKnown = true,
 ): IntegrationItem[] {
-  const methods = definitions.map(
-    (definition): McpPluginMethod => ({
-      definition,
-      servers: mcpServersForPlugin(servers, definition.pluginName),
-    }),
-  );
+  const methods = definitions.map((definition): McpPluginMethod => ({
+    definition,
+    servers: mcpServersForPlugin(servers, definition.pluginName),
+  }));
   const groupedMethods = new Set<McpPluginMethod>();
   const matchedServers = new Set(methods.flatMap((method) => method.servers));
   const oauth: IntegrationItem[] = providers
@@ -246,32 +246,28 @@ export function buildIntegrationItems(
     ...oauth,
     ...methods
       .filter((method) => !groupedMethods.has(method))
-      .map(
-        (method): IntegrationItem => ({
-          kind: "plugin",
-          id: `plugin:${method.definition.pluginName}`,
-          name: method.definition.displayName,
-          description: method.definition.description,
-          configured: isMcpPluginMethodConfigured(method, mcpServersKnown),
-          category: method.definition.category ?? null,
-          method,
-        }),
-      ),
+      .map((method): IntegrationItem => ({
+        kind: "plugin",
+        id: `plugin:${method.definition.pluginName}`,
+        name: method.definition.displayName,
+        description: method.definition.description,
+        configured: isMcpPluginMethodConfigured(method, mcpServersKnown),
+        category: method.definition.category ?? null,
+        method,
+      })),
     ...servers
       .filter((server) => !matchedServers.has(server))
-      .map(
-        (server): IntegrationItem => ({
-          kind: "mcp",
-          id: `mcp:${server.id}`,
-          name: server.id,
-          description: [server.pluginName, integrationHostname(server)]
-            .filter(Boolean)
-            .join(" "),
-          configured: true,
-          category: null,
-          server,
-        }),
-      ),
+      .map((server): IntegrationItem => ({
+        kind: "mcp",
+        id: `mcp:${server.id}`,
+        name: server.id,
+        description: [server.pluginName, integrationHostname(server)]
+          .filter(Boolean)
+          .join(" "),
+        configured: true,
+        category: null,
+        server,
+      })),
   ];
 }
 

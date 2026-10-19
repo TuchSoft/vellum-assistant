@@ -8,18 +8,14 @@ type SdkResult = {
   response?: { ok: boolean; status: number };
 };
 
-const retrieveMock = mock(
-  async (): Promise<SdkResult> => ({
-    data: { backups: [] },
-    response: { ok: true, status: 200 },
-  }),
-);
-const createMock = mock(
-  async (): Promise<SdkResult> => ({
-    data: { snapshot_name: "snap-1", ready_to_use: false },
-    response: { ok: true, status: 201 },
-  }),
-);
+const retrieveMock = mock(async (): Promise<SdkResult> => ({
+  data: { backups: [] },
+  response: { ok: true, status: 200 },
+}));
+const createMock = mock(async (): Promise<SdkResult> => ({
+  data: { snapshot_name: "snap-1", ready_to_use: false },
+  response: { ok: true, status: 201 },
+}));
 const createLocalBackupMock = mock(async (_assistant: LockfileAssistant) => {});
 
 mock.module("@/generated/api/sdk.gen", () => ({

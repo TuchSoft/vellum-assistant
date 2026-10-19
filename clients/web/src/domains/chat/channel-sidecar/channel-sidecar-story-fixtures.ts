@@ -142,7 +142,9 @@ export const SLACK_SPARSE_ENTRIES: ChannelTranscriptEntry[] = [
   {
     id: "sparse-2",
     role: "user",
-    text: "Long context pasted into the thread, rendered in full because the drawer is the canonical home of the rows it holds. ".repeat(6).trimEnd(),
+    text: "Long context pasted into the thread, rendered in full because the drawer is the canonical home of the rows it holds. "
+      .repeat(6)
+      .trimEnd(),
     timestamp: T0 + 6 * 60_000,
     provenance: {
       channelId: "slack",

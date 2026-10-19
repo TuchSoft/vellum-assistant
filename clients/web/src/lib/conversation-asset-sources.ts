@@ -3,10 +3,7 @@ import { onlineManager } from "@tanstack/react-query";
 import { isTransientNetworkError } from "@/utils/is-transient-network-error";
 
 export type ConversationAssetSource =
-  | "apps"
-  | "documents"
-  | "attachments"
-  | "frames";
+  "apps" | "documents" | "attachments" | "frames";
 
 export interface ConversationAssetSourceState {
   supported: boolean;

@@ -48,7 +48,9 @@ export function DocumentPreviewSurface({
   const openAction = surface.actions?.[0];
   const openDocument = onOpenDocument;
   const documentSurfaceId = data.documentSurfaceId;
-  const isOpen = useIsDocumentOpen(documentSurfaceId === "" ? null : documentSurfaceId);
+  const isOpen = useIsDocumentOpen(
+    documentSurfaceId === "" ? null : documentSurfaceId,
+  );
 
   const handleOpen = openAction
     ? () => onAction(surface.surfaceId, openAction.id)
@@ -63,7 +65,9 @@ export function DocumentPreviewSurface({
       mimeType={data.mimeType}
       content={data.content}
       onOpen={handleOpen}
-      ariaLabel={t("documentPreviewSurface.openAria", { name: data.documentName })}
+      ariaLabel={t("documentPreviewSurface.openAria", {
+        name: data.documentName,
+      })}
     />
   );
 }

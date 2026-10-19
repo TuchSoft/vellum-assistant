@@ -165,10 +165,7 @@ function speakWithWebSpeech(text: string, generation: number): boolean {
   }
 }
 
-async function playBlob(
-  blob: Blob,
-  generation: number,
-): Promise<boolean> {
+async function playBlob(blob: Blob, generation: number): Promise<boolean> {
   if (typeof URL.createObjectURL !== "function") {
     return false;
   }

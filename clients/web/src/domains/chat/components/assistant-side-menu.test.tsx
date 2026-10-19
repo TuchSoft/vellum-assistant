@@ -134,19 +134,16 @@ mock.module(
    own QueryClient per render, so a test has nothing to seed. */
 let pinnedAppsFixture: AppSummary[] = [];
 
-mock.module(
-  "@/hooks/use-pinned-apps",
-  (): Partial<typeof UsePinnedApps> => ({
-    usePinnedApps: () => ({
-      pinnedApps: pinnedAppsFixture,
-      pinnedAppIds: new Set(pinnedAppsFixture.map((app) => app.id)),
-      source: "daemon" as const,
-      togglePin: () => {},
-      unpin: () => {},
-      setColor: () => {},
-    }),
+mock.module("@/hooks/use-pinned-apps", (): Partial<typeof UsePinnedApps> => ({
+  usePinnedApps: () => ({
+    pinnedApps: pinnedAppsFixture,
+    pinnedAppIds: new Set(pinnedAppsFixture.map((app) => app.id)),
+    source: "daemon" as const,
+    togglePin: () => {},
+    unpin: () => {},
+    setColor: () => {},
   }),
-);
+}));
 
 // The assistant nav item reads the avatar through React Query; stub it so
 // static SSR rendering resolves without a QueryClient.

@@ -52,7 +52,10 @@ mock.module("./mcp-api", () => ({
   addMcpServer: async () => {},
   updateMcpServer: async () => {},
   removeMcpServer: async () => {},
-  startMcpAuth: async () => ({ auth_url: "https://example.com/auth", state: "state" }),
+  startMcpAuth: async () => ({
+    auth_url: "https://example.com/auth",
+    state: "state",
+  }),
   pollMcpAuthStatus: async () => ({ status: "pending" }),
 }));
 

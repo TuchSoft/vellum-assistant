@@ -1,4 +1,3 @@
-
 import { useTranslation } from "@/i18n";
 /**
  * The download affordance laid over an attachment thumbnail, for the image

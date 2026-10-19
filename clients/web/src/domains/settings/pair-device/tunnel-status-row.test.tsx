@@ -115,8 +115,12 @@ describe("TunnelStatusRow", () => {
       provider: "tailscale",
     });
 
-    expect(screen.getByText(/Start this assistant's tunnel again/)).toBeDefined();
-    expect(screen.getByText("vellum tunnel --provider tailscale")).toBeDefined();
+    expect(
+      screen.getByText(/Start this assistant's tunnel again/),
+    ).toBeDefined();
+    expect(
+      screen.getByText("vellum tunnel --provider tailscale"),
+    ).toBeDefined();
   });
 
   test("reports an address that answers without serving the pairing app", () => {
@@ -134,8 +138,12 @@ describe("TunnelStatusRow", () => {
       ),
     ).toBeDefined();
     expect(screen.getByText("HTTP 404")).toBeDefined();
-    expect(screen.getByText(/Start this assistant's tunnel again/)).toBeDefined();
-    expect(screen.getByText("vellum tunnel --provider tailscale")).toBeDefined();
+    expect(
+      screen.getByText(/Start this assistant's tunnel again/),
+    ).toBeDefined();
+    expect(
+      screen.getByText("vellum tunnel --provider tailscale"),
+    ).toBeDefined();
     expect(screen.getByText(PUBLIC_URL)).toBeDefined();
   });
 

@@ -25,15 +25,9 @@ export function DeleteAppDialog({
     <ConfirmDialog
       open={app !== null}
       title={t("deleteAppDialog.title")}
-      message={
-        app
-          ? t("deleteAppDialog.message", { name: app.name })
-          : ""
-      }
+      message={app ? t("deleteAppDialog.message", { name: app.name }) : ""}
       confirmLabel={
-        isDeleting
-          ? t("deleteAppDialog.deleting")
-          : t("deleteAppDialog.delete")
+        isDeleting ? t("deleteAppDialog.deleting") : t("deleteAppDialog.delete")
       }
       destructive
       onConfirm={onConfirm}

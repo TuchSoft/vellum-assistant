@@ -76,7 +76,7 @@ export interface UpdateSchedulePayload {
    * pin, so sending `null` does not unpin it: the daemon re-snapshots the
    * currently resolved default. Send a profile key to move the schedule.
    */
-  inferenceProfile?: string | null;
+  model?: string | null;
 }
 
 export async function updateSchedule(

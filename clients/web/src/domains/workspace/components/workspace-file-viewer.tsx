@@ -430,7 +430,8 @@ export function WorkspaceFileViewer({
   const readOnly = selectedPath ? isHiddenPath(selectedPath) : true;
   const hasContent = selectedPath != null && data != null && !isLoading;
   const hasViewModes = hasContent && data.content != null && (markdown || json);
-  const isMedia = mimeType.startsWith("image/") || mimeType.startsWith("video/");
+  const isMedia =
+    mimeType.startsWith("image/") || mimeType.startsWith("video/");
 
   function renderContent() {
     if (!selectedPath) {
@@ -488,7 +489,9 @@ export function WorkspaceFileViewer({
       <EditFooter
         isDirty={isDirty}
         isSaving={saveMutation.isPending}
-        error={saveMutation.isError ? t("workspaceFileViewer.saveFailed") : null}
+        error={
+          saveMutation.isError ? t("workspaceFileViewer.saveFailed") : null
+        }
         onSave={handleSave}
         onDiscard={stopEditing}
       />

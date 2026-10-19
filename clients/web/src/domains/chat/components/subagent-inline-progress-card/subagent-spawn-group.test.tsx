@@ -10,8 +10,22 @@
  * asserts the rows and their handlers.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 
 // Pin the platform to a pointer device, so the control opens its POPOVER and
 // not the touch bottom sheet. Unmocked, `matchMedia` in the test DOM does not
@@ -25,13 +39,11 @@ mock.module("@/hooks/use-touch-mobile", () => ({
   TOUCH_MOBILE_MEDIA_QUERY: "(width < 48rem) and (pointer: coarse)",
 }));
 
-const { SubagentSpawnGroup } = await import(
-  "@/domains/chat/components/subagent-inline-progress-card/subagent-spawn-group"
-);
+const { SubagentSpawnGroup } =
+  await import("@/domains/chat/components/subagent-inline-progress-card/subagent-spawn-group");
 const { useSubagentStore } = await import("@/domains/chat/subagent-store");
-const { useResolvedAssistantsStore } = await import(
-  "@/stores/resolved-assistants-store"
-);
+const { useResolvedAssistantsStore } =
+  await import("@/stores/resolved-assistants-store");
 
 const NOW = 1700000000000;
 
@@ -86,9 +98,9 @@ describe("SubagentSpawnGroup", () => {
     expect(screen.getByTestId("subagent-spawn-group-trigger")).toBeTruthy();
     expect(rows()).toHaveLength(0);
     expect(screen.queryAllByTestId("subagent-avatar-badge")).toHaveLength(0);
-    expect(
-      screen.queryAllByTestId("subagent-avatar-row-details"),
-    ).toHaveLength(0);
+    expect(screen.queryAllByTestId("subagent-avatar-row-details")).toHaveLength(
+      0,
+    );
 
     openControl();
     expect(rows()).toHaveLength(3);

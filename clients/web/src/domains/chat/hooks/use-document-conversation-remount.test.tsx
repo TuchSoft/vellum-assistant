@@ -63,24 +63,17 @@ const write = mock(
     return { data: { success: true } };
   },
 );
-mock.module(
-  "@/hooks/use-is-org-ready",
-  (): Partial<typeof OrgReadiness> => ({
-    useOrgHeaderReadiness: () => "ready",
-  }),
-);
-mock.module(
-  "@/lib/sentry/capture-error",
-  (): Partial<typeof ErrorCapture> => ({ captureError: mock(() => {}) }),
-);
+mock.module("@/hooks/use-is-org-ready", (): Partial<typeof OrgReadiness> => ({
+  useOrgHeaderReadiness: () => "ready",
+}));
+mock.module("@/lib/sentry/capture-error", (): Partial<typeof ErrorCapture> => ({
+  captureError: mock(() => {}),
+}));
 const comments = await import("../api/document-comments");
-mock.module(
-  "../api/document-comments",
-  (): Partial<typeof comments> => ({
-    ...comments,
-    fetchComments: async () => [],
-  }),
-);
+mock.module("../api/document-comments", (): Partial<typeof comments> => ({
+  ...comments,
+  fetchComments: async () => [],
+}));
 mock.module(
   "../components/tiptap-document-editor",
   (): Partial<typeof Editor> => ({

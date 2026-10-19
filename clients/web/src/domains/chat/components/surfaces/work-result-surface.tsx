@@ -330,7 +330,9 @@ function DiffBlock({ diffs }: { diffs: WorkResultDiff[] }) {
                 {t("workResultSurface.before")}
               </div>
               <p className="whitespace-pre-wrap text-body-small-default text-[var(--content-secondary)]">
-                {hasText(diff.before) ? diff.before : t("workResultSurface.notSet")}
+                {hasText(diff.before)
+                  ? diff.before
+                  : t("workResultSurface.notSet")}
               </p>
             </div>
             <div className="hidden items-center bg-[var(--surface-base)] px-2 text-[var(--content-tertiary)] sm:flex">
@@ -341,7 +343,9 @@ function DiffBlock({ diffs }: { diffs: WorkResultDiff[] }) {
                 {t("workResultSurface.after")}
               </div>
               <p className="whitespace-pre-wrap text-body-small-default text-[var(--content-strong)]">
-                {hasText(diff.after) ? diff.after : t("workResultSurface.removed")}
+                {hasText(diff.after)
+                  ? diff.after
+                  : t("workResultSurface.removed")}
               </p>
             </div>
           </div>

@@ -67,8 +67,7 @@ export function useScheduleProfileRebase(
     }
     return schedules.filter(
       (schedule) =>
-        canScheduleStillRun(schedule) &&
-        schedule.inferenceProfile !== defaultProfile.key,
+        canScheduleStillRun(schedule) && schedule.model !== defaultProfile.key,
     ).length;
   }, [defaultProfile.key, schedules]);
 

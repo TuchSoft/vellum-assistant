@@ -44,8 +44,7 @@ const revokeObjectURL = mock((_url: string): void => undefined);
 globalThis.URL.createObjectURL = createObjectURL;
 globalThis.URL.revokeObjectURL = revokeObjectURL;
 
-const { usePluginIconSrc } =
-  await import("@/hooks/use-plugin-icon-src");
+const { usePluginIconSrc } = await import("@/hooks/use-plugin-icon-src");
 
 function renderIconSrc(
   hasIcon: boolean | undefined,

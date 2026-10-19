@@ -832,7 +832,9 @@ describe("StatusBanner", () => {
       expect(html).toContain('data-tone="neutral"');
       expect(html).toContain("bg-[var(--surface-active)]");
       expect(html).toContain("items-center");
-      expect(html).toContain("[&amp;_[data-slot=button]]:text-body-small-default");
+      expect(html).toContain(
+        "[&amp;_[data-slot=button]]:text-body-small-default",
+      );
       expect(html).not.toContain("[&amp;_[data-slot=button]]:uppercase");
       expect(html).not.toContain(
         "[&amp;_[data-slot=button]]:hover:bg-[color-mix(in_srgb,var(--status-banner-action-color)_12%,transparent)]",
@@ -887,9 +889,7 @@ describe("StatusBanner", () => {
 
       const { container } = render(<StatusBanner />);
 
-      expect(
-        screen.getByText("Your assistant can't be reached"),
-      ).toBeTruthy();
+      expect(screen.getByText("Your assistant can't be reached")).toBeTruthy();
       expect(
         screen.getByText(
           "The connection to the paired assistant's host is down. Check the host machine and its tunnel.",
@@ -916,9 +916,7 @@ describe("StatusBanner", () => {
 
       const { container } = render(<StatusBanner />);
 
-      expect(
-        screen.getByText("Your assistant can't be reached"),
-      ).toBeTruthy();
+      expect(screen.getByText("Your assistant can't be reached")).toBeTruthy();
       expect(container.innerHTML).toContain("lucide-cloud-off");
       expect(container.innerHTML).toContain('data-tone="neutral"');
       expect(screen.queryByText("Your assistant is asleep")).toBeNull();
@@ -941,9 +939,7 @@ describe("StatusBanner", () => {
 
       render(<StatusBanner />);
 
-      expect(
-        screen.getByText("Your assistant can't be reached"),
-      ).toBeTruthy();
+      expect(screen.getByText("Your assistant can't be reached")).toBeTruthy();
       expect(screen.queryByText("Your assistant runs locally")).toBeNull();
       expect(screen.queryByRole("button", { name: "Wake up" })).toBeNull();
     });
@@ -983,9 +979,7 @@ describe("StatusBanner", () => {
       localHealthMock = "unreachable";
       rerender(<StatusBanner />);
 
-      expect(
-        screen.getByText("Your assistant can't be reached"),
-      ).toBeTruthy();
+      expect(screen.getByText("Your assistant can't be reached")).toBeTruthy();
       expect(screen.queryByText("Your assistant is waking up")).toBeNull();
       expect(screen.queryByRole("button", { name: "Wake up" })).toBeNull();
     });

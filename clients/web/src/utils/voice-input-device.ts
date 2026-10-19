@@ -51,7 +51,10 @@ export interface VoiceInputDeviceList {
  * enumeration, or one that fails it, lists nothing and knows nothing.
  */
 export async function listVoiceInputDevices(): Promise<VoiceInputDeviceList> {
-  if (typeof navigator === "undefined" || !navigator.mediaDevices?.enumerateDevices) {
+  if (
+    typeof navigator === "undefined" ||
+    !navigator.mediaDevices?.enumerateDevices
+  ) {
     return { devices: [], needsPermission: false, known: false };
   }
   try {

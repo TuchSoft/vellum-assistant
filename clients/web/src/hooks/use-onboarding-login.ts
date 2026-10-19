@@ -45,7 +45,10 @@ export function useOnboardingLogin(
       returnToOverride !== undefined
         ? returnToOverride
         : resolveLoginReturnTo(
-            buildNavigationState({ sessionSettled: true, isAuthenticated: true }),
+            buildNavigationState({
+              sessionSettled: true,
+              isAuthenticated: true,
+            }),
             location.pathname,
           );
 

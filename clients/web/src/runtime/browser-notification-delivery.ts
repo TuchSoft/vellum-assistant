@@ -74,7 +74,9 @@ export class BrowserNotificationDelivery {
           published = false;
         }
       } catch (error) {
-        captureError(error, { context: "browser_notification.write_attention" });
+        captureError(error, {
+          context: "browser_notification.write_attention",
+        });
       }
     };
     const subscriptions = [
@@ -92,7 +94,9 @@ export class BrowserNotificationDelivery {
       try {
         localStorage.removeItem(storageKey);
       } catch (error) {
-        captureError(error, { context: "browser_notification.clear_attention" });
+        captureError(error, {
+          context: "browser_notification.clear_attention",
+        });
       }
     };
   }
@@ -115,7 +119,9 @@ export class BrowserNotificationDelivery {
         try {
           entry = JSON.parse(localStorage.getItem(storageKey) ?? "null");
         } catch (error) {
-          captureError(error, { context: "browser_notification.parse_attention" });
+          captureError(error, {
+            context: "browser_notification.parse_attention",
+          });
           localStorage.removeItem(storageKey);
           continue;
         }
@@ -154,7 +160,11 @@ export class BrowserNotificationDelivery {
     conversationKey: string | null = null,
   ): Promise<DeliveryResult> {
     const result = await this.claim(
-      "post", key, deliver, canDeliver, conversationKey,
+      "post",
+      key,
+      deliver,
+      canDeliver,
+      conversationKey,
     );
     return result === "claimed" ? "posted" : result;
   }
@@ -165,7 +175,13 @@ export class BrowserNotificationDelivery {
     canDeliver: () => boolean = () => true,
     conversationKey: string | null = null,
   ): Promise<ClaimResult> {
-    return this.claim("sound", key, () => undefined, canDeliver, conversationKey);
+    return this.claim(
+      "sound",
+      key,
+      () => undefined,
+      canDeliver,
+      conversationKey,
+    );
   }
 
   private async claim(
@@ -191,25 +207,29 @@ export class BrowserNotificationDelivery {
       const now = Date.now();
       const receiptSources: unknown[] = [storedReceipts];
       try {
-        receiptSources.push(JSON.parse(
-          localStorage.getItem(storageKey) ?? "[]",
-        ));
+        receiptSources.push(
+          JSON.parse(localStorage.getItem(storageKey) ?? "[]"),
+        );
       } catch (error) {
         captureError(error, { context: "browser_notification.read_receipts" });
       }
       for (const value of receiptSources) {
         if (Array.isArray(value)) {
           const receipts = value
-            .filter((entry): entry is Receipt =>
-              Array.isArray(entry) &&
-              entry.length === 2 &&
-              typeof entry[0] === "string" &&
-              typeof entry[1] === "number" &&
-              entry[1] > now,
+            .filter(
+              (entry): entry is Receipt =>
+                Array.isArray(entry) &&
+                entry.length === 2 &&
+                typeof entry[0] === "string" &&
+                typeof entry[1] === "number" &&
+                entry[1] > now,
             )
             .slice(-MAX_DELIVERIES);
           for (const [receiptKey, expiresAt] of receipts) {
-            recent.set(receiptKey, Math.max(expiresAt, recent.get(receiptKey) ?? 0));
+            recent.set(
+              receiptKey,
+              Math.max(expiresAt, recent.get(receiptKey) ?? 0),
+            );
           }
         }
       }
@@ -266,7 +286,11 @@ export class BrowserNotificationDelivery {
             };
             transaction.oncomplete = () => {
               if (result === undefined) {
-                reject(new Error("Notification receipt transaction completed without a claim"));
+                reject(
+                  new Error(
+                    "Notification receipt transaction completed without a claim",
+                  ),
+                );
               } else {
                 resolve(result);
               }
@@ -278,7 +302,9 @@ export class BrowserNotificationDelivery {
               } else {
                 // The side effect already ran; keep its in-page receipt and
                 // never retry it because durable storage failed to commit.
-                captureError(error, { context: "browser_notification.commit_receipt" });
+                captureError(error, {
+                  context: "browser_notification.commit_receipt",
+                });
                 resolve(result);
               }
             };

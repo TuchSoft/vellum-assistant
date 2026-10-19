@@ -136,7 +136,5 @@ export function onboardingDestinationAfterConsent({
   if (skipResearch && canSkipOnboardingResearch(env)) {
     return routes.onboarding.hatching;
   }
-  return isLocalHatch
-    ? routes.onboarding.hatching
-    : routes.onboarding.research;
+  return isLocalHatch ? routes.onboarding.hatching : routes.onboarding.research;
 }

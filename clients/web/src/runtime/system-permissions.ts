@@ -28,10 +28,7 @@ export const SYSTEM_PERMISSION_KINDS: SystemPermissionKind[] = [
 ];
 
 const SYSTEM_PERMISSION_SETTINGS_URLS: Readonly<
-  Record<
-    string,
-    { hostOS: "macos" | "windows"; kind: SystemPermissionKind }
-  >
+  Record<string, { hostOS: "macos" | "windows"; kind: SystemPermissionKind }>
 > = {
   "ms-settings:privacy-microphone": {
     hostOS: "windows",
@@ -95,9 +92,7 @@ export async function openSystemPermissionSettings(
 }
 
 export type SystemPermissionSettingsUrlOutcome =
-  | "opened"
-  | "ignored"
-  | "unrecognized";
+  "opened" | "ignored" | "unrecognized";
 
 export function dispatchSystemPermissionSettingsUrl(
   url: string,

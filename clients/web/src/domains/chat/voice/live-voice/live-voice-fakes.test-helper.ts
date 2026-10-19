@@ -58,7 +58,8 @@ export class FakeClient {
   textInputSupported = false;
   pttReleaseCount = 0;
   interruptCount = 0;
-  updateConfigCalls: Parameters<LiveVoiceSessionControls["updateConfig"]>[0][] = [];
+  updateConfigCalls: Parameters<LiveVoiceSessionControls["updateConfig"]>[0][] =
+    [];
   ended = false;
   closed = false;
 

@@ -1,4 +1,3 @@
-
 import { useTranslation } from "@/i18n";
 /**
  * Pure presentational layout for the research-onboarding results step.

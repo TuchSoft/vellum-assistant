@@ -124,7 +124,11 @@ function oauthErrorMessage(
   return messages[code];
 }
 
-function IntegrationsPanelInner({ mcpAssistantId }: { mcpAssistantId: string }) {
+function IntegrationsPanelInner({
+  mcpAssistantId,
+}: {
+  mcpAssistantId: string;
+}) {
   const { t } = useTranslation("settings");
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -298,9 +302,7 @@ function IntegrationsPanelInner({ mcpAssistantId }: { mcpAssistantId: string }) 
   }, [allItems]);
   // A chip the catalog no longer offers, after a reload, drops out of the
   // filter rather than emptying the page.
-  const activeCategory = categories.some(
-    (entry) => entry.category === category,
-  )
+  const activeCategory = categories.some((entry) => entry.category === category)
     ? category
     : null;
   const items = useMemo(
@@ -345,9 +347,7 @@ function IntegrationsPanelInner({ mcpAssistantId }: { mcpAssistantId: string }) 
   // the moment its plugin installs.
   const availableItems = items
     .filter(isAvailable)
-    .sort(
-      (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
-    );
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   const loading =
     assistantLoading ||
     providers.isLoading ||
@@ -500,9 +500,7 @@ function IntegrationsPanelInner({ mcpAssistantId }: { mcpAssistantId: string }) 
           logoUrl={item.provider.logo_url}
           connections={item.connections}
           mcpMethods={item.methods}
-          disabled={
-            oauthDisabled || !plan || connect.isBusyElsewhere(item.id)
-          }
+          disabled={oauthDisabled || !plan || connect.isBusyElsewhere(item.id)}
           onConfigure={() => connect.openModal(item.id)}
         />
       );

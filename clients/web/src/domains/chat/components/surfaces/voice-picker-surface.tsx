@@ -82,9 +82,7 @@ export function VoicePickerSurface({
       ) : (
         // Managed, but with nothing to choose from: an old daemon, or a catalog
         // that failed or is empty. The BYO note would be a lie here.
-        <p className={NOTE_CLASS}>
-          {t("voicePickerSurface.unavailable")}
-        </p>
+        <p className={NOTE_CLASS}>{t("voicePickerSurface.unavailable")}</p>
       )}
     </SurfaceContainer>
   );

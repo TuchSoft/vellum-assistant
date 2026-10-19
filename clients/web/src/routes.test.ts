@@ -63,8 +63,7 @@ function middlewareExecutionOrder(path: string): unknown[] {
 function leafRouteComponentName(path: string): string | undefined {
   const matches = matchRoutes(routeTree as never, path) ?? [];
   const leaf = matches.at(-1)?.route as
-    | { Component?: { name?: string } }
-    | undefined;
+    { Component?: { name?: string } } | undefined;
   return leaf?.Component?.name;
 }
 
@@ -202,8 +201,7 @@ describe("app viewer route", () => {
     const inspectPath = "/assistant/conversations/c1/inspect";
     const matches = matchRoutes(routeTree as never, inspectPath) ?? [];
     const leaf = matches.at(-1)?.route as
-      | { lazy?: { Component: () => Promise<unknown> } }
-      | undefined;
+      { lazy?: { Component: () => Promise<unknown> } } | undefined;
 
     expect(matches.at(-1)?.pathname).toBe(inspectPath);
     expect(await leaf?.lazy?.Component()).toBe(
@@ -269,8 +267,7 @@ describe("All chats route", () => {
     const { routes } = await import("@/utils/routes");
     const matches = matchRoutes(routeTree as never, routes.allChats) ?? [];
     const leaf = matches.at(-1)?.route as
-      | { lazy?: { Component: () => Promise<unknown> } }
-      | undefined;
+      { lazy?: { Component: () => Promise<unknown> } } | undefined;
 
     expect(await leaf?.lazy?.Component()).toBe(
       (await import("@/domains/chat/pages/all-chats-page-route"))
@@ -367,8 +364,7 @@ describe("settings route compatibility", () => {
       "/assistant/settings/debug",
     );
     const leaf = matches?.at(-1)?.route as
-      | { lazy?: unknown; Component?: { name?: string } }
-      | undefined;
+      { lazy?: unknown; Component?: { name?: string } } | undefined;
     // `lazy` is the page itself; a redirect route would carry a named
     // `Component` instead.
     expect(leaf?.lazy).toBeDefined();

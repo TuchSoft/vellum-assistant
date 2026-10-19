@@ -59,9 +59,7 @@ const legacyEchoSchema = z
   })
   .strict();
 
-function parseLegacyEcho(
-  raw: Record<string, unknown>,
-): AssistantEventEnvelope {
+function parseLegacyEcho(raw: Record<string, unknown>): AssistantEventEnvelope {
   const inner = raw.message as Record<string, unknown>;
   const parsed = legacyEchoSchema.safeParse(inner);
   return parseAssistantEvent({
@@ -151,7 +149,11 @@ function useLegacyTranscript() {
     activeConversationId: CONVERSATION_ID,
     conversationExistsOnServer: true,
     latestPageOldestTimestamp: pagination.latestPageOldestTimestamp,
-    reachability: { state: { phase: "ready" }, probe: () => {}, reset: () => {} },
+    reachability: {
+      state: { phase: "ready" },
+      probe: () => {},
+      reset: () => {},
+    },
     setAssetsRefreshKey: () => {},
   });
   return useTranscriptMessages();

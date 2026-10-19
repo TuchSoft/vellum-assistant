@@ -28,13 +28,10 @@ export type KnownSyncInvalidationTag =
   (typeof SYNC_TAGS)[keyof typeof SYNC_TAGS];
 
 export type ConversationSyncInvalidationTag =
-  | `conversation:${string}:metadata`
-  | `conversation:${string}:messages`;
+  `conversation:${string}:metadata` | `conversation:${string}:messages`;
 
 export type SyncInvalidationTag =
-  | KnownSyncInvalidationTag
-  | ConversationSyncInvalidationTag
-  | (string & {});
+  KnownSyncInvalidationTag | ConversationSyncInvalidationTag | (string & {});
 
 export interface SyncChangedEvent {
   type: "sync_changed";

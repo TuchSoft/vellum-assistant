@@ -58,10 +58,7 @@ export function assistantStateCanServeChat(
   kind: AssistantState["kind"],
   selfHostedChatEnabled: boolean,
 ): boolean {
-  return (
-    kind === "active" ||
-    (kind === "self_hosted" && selfHostedChatEnabled)
-  );
+  return kind === "active" || (kind === "self_hosted" && selfHostedChatEnabled);
 }
 
 export function resolveAssistantLifecycleState(

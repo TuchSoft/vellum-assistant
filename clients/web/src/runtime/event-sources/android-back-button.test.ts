@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { createElement, useState } from "react";
 import { BottomSheet } from "@vellumai/design-library";
@@ -103,22 +111,33 @@ beforeEach(() => {
 
 describe("subscribeAndroidBackButtonSource", () => {
   test("Back dismisses a real detail sheet once without navigating", async () => {
-    const historyBackSpy = spyOn(window.history, "back").mockImplementation(() => undefined);
+    const historyBackSpy = spyOn(window.history, "back").mockImplementation(
+      () => undefined,
+    );
     const onDismiss = mock(() => undefined);
     function DetailSheet() {
       const [open, setOpen] = useState(true);
-      return createElement(BottomSheet.Root, {
-        open,
-        onOpenChange: (next: boolean) => {
-          onDismiss();
-          setOpen(next);
+      return createElement(
+        BottomSheet.Root,
+        {
+          open,
+          onOpenChange: (next: boolean) => {
+            onDismiss();
+            setOpen(next);
+          },
         },
-      }, createElement(BottomSheet.Content, { variant: "detail", "aria-describedby": undefined },
-        createElement(BottomSheet.Title, null, "Tool details")));
+        createElement(
+          BottomSheet.Content,
+          { variant: "detail", "aria-describedby": undefined },
+          createElement(BottomSheet.Title, null, "Tool details"),
+        ),
+      );
     }
     render(createElement(DetailSheet));
     await screen.findByRole("dialog", { name: "Tool details" });
-    const unsubscribe = subscribeAndroidBackButtonSource({ closeAppRoute: closeAppRouteMock });
+    const unsubscribe = subscribeAndroidBackButtonSource({
+      closeAppRoute: closeAppRouteMock,
+    });
     await flushAsyncWork();
     await act(() => pressBack(true));
     expect(onDismiss).toHaveBeenCalledTimes(1);

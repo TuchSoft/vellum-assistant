@@ -21,12 +21,10 @@ mock.module("@/generated/daemon/sdk.gen", () =>
 );
 
 const { renderHook } = await import("@testing-library/react");
-const { useLatestTaskProgress } = await import(
-  "@/domains/chat/hooks/use-latest-task-progress"
-);
-const { useChatSessionStore } = await import(
-  "@/domains/chat/chat-session-store"
-);
+const { useLatestTaskProgress } =
+  await import("@/domains/chat/hooks/use-latest-task-progress");
+const { useChatSessionStore } =
+  await import("@/domains/chat/chat-session-store");
 
 function planSurface(surfaceId: string, title: string): Surface {
   return {
@@ -110,7 +108,10 @@ describe("useLatestTaskProgress", () => {
 
   test("a later plan in the SAME message supersedes an earlier one", () => {
     seed([
-      message("m1", [planSurface("first", "First"), planSurface("second", "Second")]),
+      message("m1", [
+        planSurface("first", "First"),
+        planSurface("second", "Second"),
+      ]),
     ]);
     const { result } = renderHook(() => useLatestTaskProgress());
     expect(result.current?.surfaceId).toBe("second");

@@ -36,12 +36,9 @@ import { workspaceFileRetrieveOptions } from "../utils/workspace-file-query";
 let hasRoomForList = false;
 const { useSideListRoom: actualUseSideListRoom } =
   await import("@/hooks/use-side-list-room");
-mock.module(
-  "@/hooks/use-side-list-room",
-  (): Partial<typeof SideListRoom> => ({
-    useSideListRoom: () => ({ ...actualUseSideListRoom(), hasRoomForList }),
-  }),
-);
+mock.module("@/hooks/use-side-list-room", (): Partial<typeof SideListRoom> => ({
+  useSideListRoom: () => ({ ...actualUseSideListRoom(), hasRoomForList }),
+}));
 const { WorkspaceBrowser } = await import("./workspace-browser");
 
 function fileQueryKey(path: string) {
@@ -440,9 +437,9 @@ describe("Workspace file switching", () => {
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.getByText("Original text")).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: `Switch file: ${path}` }),
-    ).toBe(trigger);
+    expect(screen.getByRole("button", { name: `Switch file: ${path}` })).toBe(
+      trigger,
+    );
     const dialog = await openPicker(path);
     fireEvent.keyDown(dialog, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -519,21 +516,21 @@ describe("Workspace file switching", () => {
     async ({ path, mimeType }) => {
       const blob = new Blob(["Example content"], { type: mimeType });
       const save = spyOn(nativeFile, "saveFile").mockResolvedValue(undefined);
-      const get = spyOn(daemonClient, "get").mockImplementation((async (
-        options: { url: string },
-      ) => ({
-        data: options.url.endsWith("/content")
-          ? blob
-          : {
-              path,
-              name: path,
-              mimeType,
-              size: 2048,
-              modifiedAt: "2026-01-01T00:00:00Z",
-              isBinary: true,
-              content: null,
-            },
-      })) as typeof daemonClient.get);
+      const get = spyOn(daemonClient, "get").mockImplementation(
+        (async (options: { url: string }) => ({
+          data: options.url.endsWith("/content")
+            ? blob
+            : {
+                path,
+                name: path,
+                mimeType,
+                size: 2048,
+                modifiedAt: "2026-01-01T00:00:00Z",
+                isBinary: true,
+                content: null,
+              },
+        })) as typeof daemonClient.get,
+      );
       renderBrowser(path);
       const trigger = screen.getByRole("button", {
         name: `Switch file: ${path}`,

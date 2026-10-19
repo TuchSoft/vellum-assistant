@@ -181,9 +181,7 @@ describe("parseWakeHint", () => {
   });
 
   test("keeps a multi-line result whole", () => {
-    const sections = parseWakeHint(
-      ["Result: {", '  "a": 1', "}"].join("\n"),
-    );
+    const sections = parseWakeHint(["Result: {", '  "a": 1', "}"].join("\n"));
 
     expect(sections.result).toBe('{\n  "a": 1\n}');
   });

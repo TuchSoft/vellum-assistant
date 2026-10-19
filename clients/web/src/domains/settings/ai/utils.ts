@@ -1,15 +1,12 @@
 import type { LlmCatalogModel } from "@/assistant/llm-model-catalog";
 import { WEB_FETCH_PROVIDER_KEY_STORAGE } from "@/assistant/generated/web-fetch-provider-catalog.gen";
 import { WEB_SEARCH_PROVIDER_KEY_STORAGE } from "@/assistant/generated/web-search-provider-catalog.gen";
-import type { ProfileEntry } from "@/generated/daemon/types.gen";
 
 import { TOKEN_SLIDER_MIN_TOKENS } from "@/domains/settings/ai/constants";
 
 // ---------------------------------------------------------------------------
 // Domain types
 // ---------------------------------------------------------------------------
-
-export type ProfileWithName = { name: string } & ProfileEntry;
 
 export interface InferenceTokenBudgetState {
   maxOutputTokens: number;
@@ -21,38 +18,6 @@ export interface InferenceTokenBudgetState {
 // ---------------------------------------------------------------------------
 // Profile utilities
 // ---------------------------------------------------------------------------
-
-/**
- * Merges `profileOrder` with `profiles` to produce a stable ordered list.
- *
- * Entries appear in `profileOrder` sequence first, followed by any extras
- * present in `profiles` but missing from `profileOrder` (e.g. newly seeded
- * profiles that haven't been reordered yet).
- */
-export function buildOrderedProfiles(
-  profiles: Record<string, ProfileEntry>,
-  profileOrder: string[],
-): ProfileWithName[] {
-  const ordered = profileOrder
-    .filter((name) => name in profiles)
-    .map((name) => ({ name, ...profiles[name]! }));
-  const inOrder = new Set(profileOrder);
-  const extras = Object.entries(profiles)
-    .filter(([name]) => !inOrder.has(name))
-    .map(([name, entry]) => ({ name, ...entry }));
-  return [...ordered, ...extras];
-}
-
-/**
- * Display label for a profile name: the entry's label, falling back to the
- * raw name when the entry is missing or unlabeled.
- */
-export function profileDisplayLabel(
-  profiles: ReadonlyArray<ProfileWithName>,
-  name: string,
-): string {
-  return profiles.find((p) => p.name === name)?.label ?? name;
-}
 
 export function assertProvisionSuccess(result: unknown): void {
   if (

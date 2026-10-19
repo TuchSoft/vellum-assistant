@@ -21,9 +21,10 @@ describe("toCancelRequestBody", () => {
   });
 
   test("Other with a blank comment sends no comment", () => {
-    expect(toCancelRequestBody({ feedback: "other", comment: "   " })).toEqual(
-      { feedback: "other", comment: null },
-    );
+    expect(toCancelRequestBody({ feedback: "other", comment: "   " })).toEqual({
+      feedback: "other",
+      comment: null,
+    });
   });
 
   test("a comment typed under Other is dropped once another reason is picked", () => {

@@ -2,8 +2,7 @@ import { ttsSynthesizePost } from "@/generated/daemon/sdk.gen";
 import { captureError } from "@/lib/sentry/capture-error";
 
 export type MessagePlaybackAudio =
-  | { kind: "audio"; blob: Blob }
-  | { kind: "unavailable" };
+  { kind: "audio"; blob: Blob } | { kind: "unavailable" };
 
 /**
  * Fetch spoken audio for a chat message from the assistant's TTS route.

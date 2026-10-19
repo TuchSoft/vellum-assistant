@@ -5,8 +5,10 @@ import type { TranscriptItem } from "@/domains/chat/transcript/types";
 import { TranscriptRow } from "@/domains/chat/transcript/transcript-row";
 import type { LatestTurnRowProps } from "@/domains/chat/transcript/latest-turn-row";
 
-export interface LatestTurnResponseProps
-  extends Omit<LatestTurnRowProps, "anchorMessage" | "responseItems"> {
+export interface LatestTurnResponseProps extends Omit<
+  LatestTurnRowProps,
+  "anchorMessage" | "responseItems"
+> {
   responseItems: TranscriptItem[];
   isStreaming: boolean;
   responseArtifactsByKey?: ReadonlyMap<string, ResponseArtifact[]>;

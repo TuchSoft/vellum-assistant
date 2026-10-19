@@ -8,9 +8,8 @@ mock.module("@/lib/sentry/capture-error", () => ({
   captureError: captureErrorMock,
 }));
 
-const { __resetForTesting, publish, subscribe } = await import(
-  "@/lib/event-bus"
-);
+const { __resetForTesting, publish, subscribe } =
+  await import("@/lib/event-bus");
 
 function avatarEnvelope(): AssistantEventEnvelope {
   return {

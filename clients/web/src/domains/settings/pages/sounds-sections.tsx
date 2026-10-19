@@ -50,7 +50,10 @@ const SOUND_EVENT_LABEL_KEYS = {
   | "soundsSections.soundEventRandom"
 >;
 
-function soundEventDisplayName(event: SoundEventId, t: SettingsTranslate): string {
+function soundEventDisplayName(
+  event: SoundEventId,
+  t: SettingsTranslate,
+): string {
   return t(SOUND_EVENT_LABEL_KEYS[event]);
 }
 

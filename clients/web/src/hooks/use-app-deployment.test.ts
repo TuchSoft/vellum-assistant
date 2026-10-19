@@ -70,9 +70,8 @@ mock.module("@vellumai/design-library/components/toast", () => ({
   ToastContent: () => null,
 }));
 
-const { copyDeployedAppLink, useAppDeployment } = await import(
-  "@/hooks/use-app-deployment"
-);
+const { copyDeployedAppLink, useAppDeployment } =
+  await import("@/hooks/use-app-deployment");
 const { useDeployStore } = await import("@/stores/deploy-store");
 
 function wrapper({ children }: { children: ReactNode }) {

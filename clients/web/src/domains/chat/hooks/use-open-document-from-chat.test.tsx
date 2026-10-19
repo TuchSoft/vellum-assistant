@@ -31,13 +31,10 @@ const documentData = {
 const load = mock(async () => ({ data: documentData }));
 let found = true;
 const createConversation = mock(async () => ({}));
-mock.module(
-  "@/hooks/use-is-mobile",
-  (): Partial<typeof Mobile> => ({
-    useIsMobile: () => true,
-    MOBILE_MEDIA_QUERY: "(max-width: 767px)",
-  }),
-);
+mock.module("@/hooks/use-is-mobile", (): Partial<typeof Mobile> => ({
+  useIsMobile: () => true,
+  MOBILE_MEDIA_QUERY: "(max-width: 767px)",
+}));
 const { useOpenDocumentFromChat } = await import("./use-open-app-from-chat");
 
 let originPath = "/assistant/conversations/conv-origin";

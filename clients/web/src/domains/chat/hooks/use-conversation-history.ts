@@ -576,19 +576,18 @@ export function useConversationHistory({
             pendingConfirmationBeforeFetch.requestId !==
               parsedConfirmation.requestId
           ) {
-            const previousRequestId =
-              pendingConfirmationBeforeFetch.requestId;
+            const previousRequestId = pendingConfirmationBeforeFetch.requestId;
             const sessionStore = useChatSessionStore.getState();
-            useInteractionStore.getState().releaseInlineAnchorIfMatches(
-              sessionStore.confirmationToolCallMap.get(previousRequestId) ??
-                pendingConfirmationBeforeFetch.toolUseId,
-            );
+            useInteractionStore
+              .getState()
+              .releaseInlineAnchorIfMatches(
+                sessionStore.confirmationToolCallMap.get(previousRequestId) ??
+                  pendingConfirmationBeforeFetch.toolUseId,
+              );
             clearConfirmationTranscriptMarker(previousRequestId);
             sessionStore.deleteConfirmationToolCall(previousRequestId);
           }
-          useInteractionStore
-            .getState()
-            .showConfirmation(parsedConfirmation);
+          useInteractionStore.getState().showConfirmation(parsedConfirmation);
         } else if (
           !interactions.pendingConfirmation &&
           pendingConfirmationBeforeFetch &&
@@ -600,10 +599,12 @@ export function useConversationHistory({
           useInteractionStore
             .getState()
             .dismissConfirmationIfMatches(requestId);
-          useInteractionStore.getState().releaseInlineAnchorIfMatches(
-            sessionStore.confirmationToolCallMap.get(requestId) ??
-              pendingConfirmationBeforeFetch.toolUseId,
-          );
+          useInteractionStore
+            .getState()
+            .releaseInlineAnchorIfMatches(
+              sessionStore.confirmationToolCallMap.get(requestId) ??
+                pendingConfirmationBeforeFetch.toolUseId,
+            );
           clearConfirmationTranscriptMarker(requestId);
           sessionStore.deleteConfirmationToolCall(requestId);
         }
@@ -839,7 +840,10 @@ export function useConversationHistory({
   const isResumeGraceActive = useResumeGrace();
   const historyErrorRef = useRef<ChatError | null>(null);
   useEffect(() => {
-    if (historyErrorRef.current && (pagination.isSuccess || isResumeGraceActive)) {
+    if (
+      historyErrorRef.current &&
+      (pagination.isSuccess || isResumeGraceActive)
+    ) {
       const historyError = historyErrorRef.current;
       setError((current) => (current === historyError ? null : current));
       historyErrorRef.current = null;

@@ -144,9 +144,12 @@ export function BillingPortalReturnHandler() {
         if (unmountedRef.current) {
           return;
         }
-        toast.info(t("settings:billingPortalReturnHandler.subscriptionUpdated"), {
-          id: TOAST_ID,
-        });
+        toast.info(
+          t("settings:billingPortalReturnHandler.subscriptionUpdated"),
+          {
+            id: TOAST_ID,
+          },
+        );
       } finally {
         if (!unmountedRef.current) {
           clearPortalReturnSnapshot();

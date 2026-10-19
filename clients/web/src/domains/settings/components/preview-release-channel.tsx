@@ -440,8 +440,7 @@ function OptInModal({
               <li>{t("previewReleaseChannel.optInStep1")}</li>
               <li>
                 {t("previewReleaseChannel.optInStep2", {
-                  version:
-                    previewVersion ?? t("previewReleaseChannel.latest"),
+                  version: previewVersion ?? t("previewReleaseChannel.latest"),
                 })}
               </li>
               <li>{t("previewReleaseChannel.optInStep3")}</li>

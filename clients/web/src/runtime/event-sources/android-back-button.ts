@@ -19,10 +19,7 @@ const OPEN_LAYER_SELECTOR = [
 
 const ACTIVE_CHAT_SELECTOR = '[data-slot="active-chat-view"]';
 
-function wasLayerDismissed(
-  layer: HTMLElement,
-  event: KeyboardEvent,
-): boolean {
+function wasLayerDismissed(layer: HTMLElement, event: KeyboardEvent): boolean {
   if (event.defaultPrevented || !layer.isConnected) {
     return true;
   }

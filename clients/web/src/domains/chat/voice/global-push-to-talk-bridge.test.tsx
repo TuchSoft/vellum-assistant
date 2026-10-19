@@ -1163,9 +1163,11 @@ test.each(["idle", "meet", "talk", "key", "share", "draw", "mute"] as const)(
 
 test("ignores the final offer if the voice bridge unmounts during its state read", async () => {
   let resolve!: (state: { intro: CompanionIntroBeat | null }) => void;
-  readCompanionState.mockReturnValueOnce(new Promise((done) => {
-    resolve = done;
-  }));
+  readCompanionState.mockReturnValueOnce(
+    new Promise((done) => {
+      resolve = done;
+    }),
+  );
   const view = render(
     <MemoryRouter>
       <GlobalPushToTalkBridge assistantId="assistant-1" enabled />

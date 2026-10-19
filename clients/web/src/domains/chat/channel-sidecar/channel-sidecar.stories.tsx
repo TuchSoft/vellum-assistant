@@ -56,8 +56,7 @@ function ChannelSidecarSlice({
   entries: ChannelTranscriptEntry[];
 }) {
   const mainView = useViewerStore.use.mainView();
-  const activeChannelTranscript =
-    useViewerStore.use.activeChannelTranscript();
+  const activeChannelTranscript = useViewerStore.use.activeChannelTranscript();
   const stagedReference = useChannelReferenceStore.use.reference();
   const channelLabel = getChannelLabel(target.channelId);
 
@@ -119,9 +118,7 @@ function ChannelSidecarSlice({
                     toChannelReference({ entry, target, channelLabel }),
                   )
               }
-              onClose={() =>
-                useViewerStore.getState().closeChannelTranscript()
-              }
+              onClose={() => useViewerStore.getState().closeChannelTranscript()}
             />
           }
         />
@@ -148,10 +145,7 @@ type Story = StoryObj;
  */
 export const SlackThread: Story = {
   render: () => (
-    <ChannelSidecarSlice
-      target={SLACK_TARGET}
-      entries={SLACK_THREAD_ENTRIES}
-    />
+    <ChannelSidecarSlice target={SLACK_TARGET} entries={SLACK_THREAD_ENTRIES} />
   ),
 };
 

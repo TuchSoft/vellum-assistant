@@ -60,10 +60,7 @@ describe("ResearchOnboardingScreen", () => {
 
   test("Continue is enabled when a first name is already supplied", () => {
     render(
-      <ResearchOnboardingScreen
-        initialFirstName="Alice"
-        onSubmit={() => {}}
-      />,
+      <ResearchOnboardingScreen initialFirstName="Alice" onSubmit={() => {}} />,
     );
     expect(continueButton().disabled).toBe(false);
   });

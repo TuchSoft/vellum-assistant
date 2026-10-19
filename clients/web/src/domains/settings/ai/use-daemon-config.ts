@@ -45,7 +45,9 @@ export function useProvisionProviderKey() {
           toast.error(t("settings:useDaemonConfig.assistantNotReadyToast"));
         } else {
           toast.error(
-            t("settings:useDaemonConfig.saveApiKeyFailedToast", { providerName }),
+            t("settings:useDaemonConfig.saveApiKeyFailedToast", {
+              providerName,
+            }),
           );
         }
         captureError(error, { context: "provision_provider_key" });

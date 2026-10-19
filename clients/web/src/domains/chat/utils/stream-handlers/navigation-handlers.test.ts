@@ -359,10 +359,7 @@ describe("handleOpenUrl", () => {
     });
     const { ctx, setError, setNotice } = makeOpenUrlCtx();
 
-    handleOpenUrl(
-      makeOpenUrlEvent("ms-settings:privacy-microphone"),
-      ctx,
-    );
+    handleOpenUrl(makeOpenUrlEvent("ms-settings:privacy-microphone"), ctx);
 
     expect(setError).not.toHaveBeenCalled();
     expect(setNotice).not.toHaveBeenCalled();

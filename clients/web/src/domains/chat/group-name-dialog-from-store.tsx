@@ -68,8 +68,16 @@ export function GroupNameDialogFromStore({
   return (
     <NameInputDialog
       open={request !== null}
-      title={isRename ? t("groupNameDialogFromStore.renameTitle") : t("groupNameDialogFromStore.newTitle")}
-      submitLabel={isRename ? t("groupNameDialogFromStore.save") : t("groupNameDialogFromStore.create")}
+      title={
+        isRename
+          ? t("groupNameDialogFromStore.renameTitle")
+          : t("groupNameDialogFromStore.newTitle")
+      }
+      submitLabel={
+        isRename
+          ? t("groupNameDialogFromStore.save")
+          : t("groupNameDialogFromStore.create")
+      }
       initialValue={currentName}
       iconPicker={supportsGroupIcons ? { initialIcon: currentIcon } : undefined}
       onSubmit={handleSubmit}

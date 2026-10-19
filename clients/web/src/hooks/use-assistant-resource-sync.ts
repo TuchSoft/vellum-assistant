@@ -42,7 +42,7 @@ import {
   configLlmCallsitesGetQueryKey,
   homeStateGetQueryKey,
   identityGetQueryKey,
-  inferenceProfilesGetQueryKey,
+  llmCatalogGetQueryKey,
   schedulesGetQueryKey,
   soundsAvailableGetQueryKey,
   soundsConfigGetQueryKey,
@@ -146,7 +146,7 @@ export function useAssistantResourceSync(
               // (profiles, default provider), so a config write on any
               // client can change the Language Model card's rows.
               void queryClient.invalidateQueries({
-                queryKey: inferenceProfilesGetQueryKey(pathOpts),
+                queryKey: llmCatalogGetQueryKey(pathOpts),
               });
               // The call-site catalog reports each action's winning profile,
               // resolved from config, so a config write on any client can

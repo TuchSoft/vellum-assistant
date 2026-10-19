@@ -846,7 +846,9 @@ describe("the popover the companion mirror publishes", () => {
     };
     act(() => {
       useChatSessionStore.setState({
-        snapshot: { messages: [{ id: "m-1", role: "assistant", surfaces: [surface] }] },
+        snapshot: {
+          messages: [{ id: "m-1", role: "assistant", surfaces: [surface] }],
+        },
         dismissedSurfaceIds: new Set(),
       } as never);
     });

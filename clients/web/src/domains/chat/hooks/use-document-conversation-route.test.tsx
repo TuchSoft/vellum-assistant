@@ -48,19 +48,16 @@ import { trackDocumentSave } from "../api/document-save";
 const nativeApp = await import("@capacitor/app");
 let backButtonHandler: BackButtonListener | undefined;
 const minimizeApp = mock(async () => {});
-mock.module(
-  "@capacitor/app",
-  (): Partial<typeof nativeApp> => ({
-    App: {
-      ...nativeApp.App,
-      addListener: async (_name, handler) => {
-        backButtonHandler = handler as BackButtonListener;
-        return { remove: async () => {} };
-      },
-      minimizeApp,
+mock.module("@capacitor/app", (): Partial<typeof nativeApp> => ({
+  App: {
+    ...nativeApp.App,
+    addListener: async (_name, handler) => {
+      backButtonHandler = handler as BackButtonListener;
+      return { remove: async () => {} };
     },
-  }),
-);
+    minimizeApp,
+  },
+}));
 
 const documentData: DocumentContent = {
   success: true,
@@ -127,12 +124,9 @@ mock.module(
     }),
   }),
 );
-mock.module(
-  "./use-turn-timeout",
-  (): Partial<typeof TurnTimeout> => ({
-    useTurnTimeout: () => {},
-  }),
-);
+mock.module("./use-turn-timeout", (): Partial<typeof TurnTimeout> => ({
+  useTurnTimeout: () => {},
+}));
 const { useConversationLoader } = await import("./use-conversation-loader");
 const { useDocumentConversationRoute } =
   await import("./use-document-conversation-route");

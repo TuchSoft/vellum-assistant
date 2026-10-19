@@ -74,8 +74,7 @@ import type {
  * sentence about a surface this window is not on.
  */
 type FramedRead =
-  | { kind: "teaching" }
-  | { kind: "sharing"; target: WatchCaptureTarget };
+  { kind: "teaching" } | { kind: "sharing"; target: WatchCaptureTarget };
 
 function framedRead(
   watching: boolean,

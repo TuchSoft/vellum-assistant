@@ -111,8 +111,7 @@ export function resolveAssistantAvatarOwnerScopeId(
       })
     : resolveNotificationIdentityScope({
         kind: "connection",
-        url:
-          assistant.runtimeUrl ?? assistant.ingressUrl ?? connectionFallback,
+        url: assistant.runtimeUrl ?? assistant.ingressUrl ?? connectionFallback,
       });
 }
 
@@ -192,18 +191,12 @@ function transitionAvatarOwner(
     return;
   }
   const installedRegistration = activeOwners.get(next.assistantId);
-  if (
-    installedRegistration &&
-    installedRegistration.scopeId !== next.scopeId
-  ) {
+  if (installedRegistration && installedRegistration.scopeId !== next.scopeId) {
     const installedOwner = {
       assistantId: next.assistantId,
       scopeId: installedRegistration.scopeId,
     };
-    removeAvatarOwnerQueries(
-      installedRegistration.queryClient,
-      installedOwner,
-    );
+    removeAvatarOwnerQueries(installedRegistration.queryClient, installedOwner);
     releaseAssistantAvatarUrl(next.assistantId);
   }
   activeOwners.set(next.assistantId, { scopeId: next.scopeId, queryClient });
@@ -411,8 +404,7 @@ export function useAssistantAvatar(
       : options.ownerAssistant?.id === assistantId
         ? options.ownerAssistant
         : null;
-  const platformAccountId =
-    authUser?.kind === "platform" ? authUser.id : null;
+  const platformAccountId = authUser?.kind === "platform" ? authUser.id : null;
   const connectionFallback =
     getSelfHostedIngressUrl() ??
     (typeof globalThis.location === "undefined"
@@ -449,20 +441,17 @@ export function useAssistantAvatar(
 
   useEffect(() => {
     const previousOwner = previousOwnerRef.current;
-    const nextOwner =
-      assistantId && scopeId ? { assistantId, scopeId } : null;
-    transitionAvatarOwner(
-      queryClient,
-      previousOwner,
-      nextOwner,
-      assistantId,
-    );
+    const nextOwner = assistantId && scopeId ? { assistantId, scopeId } : null;
+    transitionAvatarOwner(queryClient, previousOwner, nextOwner, assistantId);
     previousOwnerRef.current = nextOwner;
     setReadyOwner(nextOwner);
   }, [assistantId, queryClient, scopeId]);
 
   const owner = requestedOwner
-    ? { scopeId: requestedOwner.scopeId, assistantId: requestedOwner.assistantId }
+    ? {
+        scopeId: requestedOwner.scopeId,
+        assistantId: requestedOwner.assistantId,
+      }
     : undefined;
   const queryKey = [
     ...avatarQueryKey(assistantId ?? ""),
@@ -491,9 +480,7 @@ export function useAssistantAvatar(
       }
       const legacySeed =
         queryClient.getQueryData<AvatarData>(legacyQueryKey) ??
-        queryClient.getQueryData<AvatarData>(
-          avatarQueryKey(assistantId ?? ""),
-        );
+        queryClient.getQueryData<AvatarData>(avatarQueryKey(assistantId ?? ""));
       return legacySeed ? withoutAvatarOwner(legacySeed) : undefined;
     },
     queryFn: async ({ client }) => {

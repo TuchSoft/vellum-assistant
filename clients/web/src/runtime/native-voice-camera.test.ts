@@ -20,9 +20,9 @@ spyOn(Capacitor, "getPlatform").mockImplementation(() =>
 const startSpy = mock(async () => {});
 const stopSpy = mock(async () => {});
 const captureSpy = mock(async () => ({ value: "jpeg-base64" }));
-const captureSampleSpy = mock(
-  async (): Promise<Record<string, unknown>> => ({ value: "sample-base64" }),
-);
+const captureSampleSpy = mock(async (): Promise<Record<string, unknown>> => ({
+  value: "sample-base64",
+}));
 const flipSpy = mock(async () => {});
 
 mock.module("@capacitor-community/camera-preview", () => ({
@@ -60,16 +60,12 @@ beforeEach(() => {
     value: "sample-base64",
   }));
   flipSpy.mockImplementation(async () => {});
-  document.documentElement.classList.remove(
-    NATIVE_VOICE_CAMERA_ACTIVE_CLASS,
-  );
+  document.documentElement.classList.remove(NATIVE_VOICE_CAMERA_ACTIVE_CLASS);
 });
 
 afterEach(() => {
   nativeMobile = false;
-  document.documentElement.classList.remove(
-    NATIVE_VOICE_CAMERA_ACTIVE_CLASS,
-  );
+  document.documentElement.classList.remove(NATIVE_VOICE_CAMERA_ACTIVE_CLASS);
 });
 
 describe("native voice camera", () => {
@@ -154,9 +150,7 @@ describe("native voice camera", () => {
 
   test("captures, flips, and stops through the native bridge", async () => {
     nativeMobile = true;
-    document.documentElement.classList.add(
-      NATIVE_VOICE_CAMERA_ACTIVE_CLASS,
-    );
+    document.documentElement.classList.add(NATIVE_VOICE_CAMERA_ACTIVE_CLASS);
 
     expect(await captureNativeVoiceCameraFrame(85)).toBe("jpeg-base64");
     expect(captureSpy).toHaveBeenCalledWith({ quality: 85 });

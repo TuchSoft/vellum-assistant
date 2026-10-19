@@ -73,8 +73,7 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
   pluginsSearchGet: pluginsSearchGetSpy,
 }));
 
-const { usePluginsList } =
-  await import("@/hooks/use-plugins-list");
+const { usePluginsList } = await import("@/hooks/use-plugins-list");
 
 function installed(overrides: Partial<InstalledPlugin> = {}): InstalledPlugin {
   // `enabled` is omitted by default to model an older daemon that predates the

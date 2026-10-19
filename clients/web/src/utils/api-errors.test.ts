@@ -18,8 +18,12 @@ describe("badRequestMessage", () => {
   });
 
   test("ignores every other status, so internal detail can't leak", () => {
-    expect(badRequestMessage(new ApiError(500, "boom: db offline"))).toBeUndefined();
-    expect(badRequestMessage(new ApiError(404, "no such profile"))).toBeUndefined();
+    expect(
+      badRequestMessage(new ApiError(500, "boom: db offline")),
+    ).toBeUndefined();
+    expect(
+      badRequestMessage(new ApiError(404, "no such profile")),
+    ).toBeUndefined();
   });
 
   test("ignores the synthesized status fallback — it reads as noise to a user", () => {

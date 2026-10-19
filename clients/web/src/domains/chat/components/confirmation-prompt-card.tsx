@@ -142,7 +142,9 @@ export function ConfirmationPromptCard({
             <ChevronRight
               className={`h-3 w-3 transition-transform ${showDetails ? "rotate-90" : ""}`}
             />
-            {showDetails ? t("confirmationPromptCard.hideDetails") : t("confirmationPromptCard.showDetails")}
+            {showDetails
+              ? t("confirmationPromptCard.hideDetails")
+              : t("confirmationPromptCard.showDetails")}
           </button>
           {showDetails && (
             <div className="mt-2 space-y-1.5">

@@ -7962,6 +7962,21 @@ paths:
                             - scheduled
                         source:
                           type: string
+                        model:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        reasoningEffort:
+                          anyOf:
+                            - type: string
+                              enum:
+                                - none
+                                - low
+                                - medium
+                                - high
+                                - xhigh
+                                - max
+                            - type: "null"
                         scheduleJobId:
                           type: string
                         channelBinding:
@@ -8333,6 +8348,21 @@ paths:
                           - scheduled
                       source:
                         type: string
+                      model:
+                        anyOf:
+                          - type: string
+                          - type: "null"
+                      reasoningEffort:
+                        anyOf:
+                          - type: string
+                            enum:
+                              - none
+                              - low
+                              - medium
+                              - high
+                              - xhigh
+                              - max
+                          - type: "null"
                       scheduleJobId:
                         type: string
                       channelBinding:
@@ -9513,6 +9543,21 @@ paths:
                           - scheduled
                       source:
                         type: string
+                      model:
+                        anyOf:
+                          - type: string
+                          - type: "null"
+                      reasoningEffort:
+                        anyOf:
+                          - type: string
+                            enum:
+                              - none
+                              - low
+                              - medium
+                              - high
+                              - xhigh
+                              - max
+                          - type: "null"
                       scheduleJobId:
                         type: string
                       channelBinding:

@@ -68,7 +68,7 @@ export async function fetchMcpServers(
   if (!response?.ok) {
     throw new Error(`Failed to fetch MCP servers: ${response?.status}`);
   }
-  return (data as unknown) as McpListResponse;
+  return data as unknown as McpListResponse;
 }
 
 export async function fetchMcpToolsSummary(
@@ -81,7 +81,7 @@ export async function fetchMcpToolsSummary(
   if (!response?.ok) {
     throw new Error(`Failed to fetch MCP tools summary: ${response?.status}`);
   }
-  return (data as unknown) as McpToolsSummaryResponse;
+  return data as unknown as McpToolsSummaryResponse;
 }
 
 export async function updateMcpServer(
@@ -152,7 +152,7 @@ export async function startMcpAuth(
   if (!response?.ok) {
     throw new Error(`Failed to start MCP auth: ${response?.status}`);
   }
-  return (data as unknown) as {
+  return data as unknown as {
     auth_url: string;
     state: string;
     already_authenticated?: boolean;
@@ -172,7 +172,7 @@ export async function pollMcpAuthStatus(
   if (!response?.ok) {
     throw new Error(`Failed to poll MCP auth status: ${response?.status}`);
   }
-  return (data as unknown) as {
+  return data as unknown as {
     status: string;
     auth_url?: string;
     error?: string;

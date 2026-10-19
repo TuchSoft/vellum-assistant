@@ -101,9 +101,8 @@ mock.module("@/lib/backwards-compat/utils", () => ({
   whenAssistantVersionKnown: () => Promise.resolve(),
 }));
 
-const { ImageGenerationCard } = await import(
-  "@/domains/settings/ai/image-generation-card"
-);
+const { ImageGenerationCard } =
+  await import("@/domains/settings/ai/image-generation-card");
 const { LS_IMAGE_GEN_PROVIDER } = await import("@/utils/local-settings-keys");
 
 function renderCard() {
@@ -407,7 +406,9 @@ describe("ImageGenerationCard — provider-only configuration", () => {
     expect(
       screen.getByPlaceholderText("Enter your OpenRouter API key"),
     ).toBeTruthy();
-    expect(screen.queryByRole("combobox", { name: "Image generation model" })).toBeNull();
+    expect(
+      screen.queryByRole("combobox", { name: "Image generation model" }),
+    ).toBeNull();
 
     const modelInput = screen.getByLabelText("Image generation model");
     fireEvent.change(modelInput, { target: { value: "goo" } });

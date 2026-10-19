@@ -117,23 +117,18 @@ let actionPerformedHandler: ActionPerformedHandler | null = null;
 let receivedHandler: ReceivedHandler | null = null;
 let permissionState: "granted" | "denied" | "prompt" = "granted";
 
-const addListenerMock = mock(
-  async (
-    event: string,
-    handler: unknown,
-  ) => {
-    if (event === "registration") {
-      registrationHandler = handler as RegistrationHandler;
-    } else if (event === "registrationError") {
-      registrationErrorHandler = handler as ErrorHandler;
-    } else if (event === "pushNotificationActionPerformed") {
-      actionPerformedHandler = handler as ActionPerformedHandler;
-    } else if (event === "pushNotificationReceived") {
-      receivedHandler = handler as ReceivedHandler;
-    }
-    return { remove: async () => {} };
-  },
-);
+const addListenerMock = mock(async (event: string, handler: unknown) => {
+  if (event === "registration") {
+    registrationHandler = handler as RegistrationHandler;
+  } else if (event === "registrationError") {
+    registrationErrorHandler = handler as ErrorHandler;
+  } else if (event === "pushNotificationActionPerformed") {
+    actionPerformedHandler = handler as ActionPerformedHandler;
+  } else if (event === "pushNotificationReceived") {
+    receivedHandler = handler as ReceivedHandler;
+  }
+  return { remove: async () => {} };
+});
 const requestPermissionsMock = mock(async () => ({ receive: permissionState }));
 const registerMock = mock(async () => {});
 const unregisterMock = mock(async () => {});
@@ -326,7 +321,6 @@ describe("isRemotePushSupported", () => {
     isNative = false;
     expect(isRemotePushSupported()).toBe(false);
   });
-
 });
 
 describe("registerForRemotePush", () => {
@@ -475,9 +469,7 @@ describe("registerForRemotePush", () => {
     await flushMicrotasks();
 
     expect(lastUpsertArg?.path.assistant_id).toBe(PLATFORM_ASSISTANT_ID);
-    expect(
-      hasSessionConfirmedRemotePushRegistration("local-slug"),
-    ).toBe(true);
+    expect(hasSessionConfirmedRemotePushRegistration("local-slug")).toBe(true);
     expect(
       hasSessionConfirmedRemotePushRegistration(PLATFORM_ASSISTANT_ID),
     ).toBe(true);
@@ -683,9 +675,11 @@ describe("extractScopedPushTapPayload", () => {
 
 describe("hasSessionConfirmedRemotePushRegistration", () => {
   test("false when nothing has been registered", () => {
-    expect(hasSessionConfirmedRemotePushRegistration("11111111-1111-4111-8111-111111111111")).toBe(
-      false,
-    );
+    expect(
+      hasSessionConfirmedRemotePushRegistration(
+        "11111111-1111-4111-8111-111111111111",
+      ),
+    ).toBe(false);
   });
 
   test("true after a successful upsert for the same assistant", async () => {
@@ -693,7 +687,11 @@ describe("hasSessionConfirmedRemotePushRegistration", () => {
     registrationHandler?.({ value: "apns-token-abc" });
     await flushMicrotasks();
 
-    expect(hasSessionConfirmedRemotePushRegistration("11111111-1111-4111-8111-111111111111")).toBe(true);
+    expect(
+      hasSessionConfirmedRemotePushRegistration(
+        "11111111-1111-4111-8111-111111111111",
+      ),
+    ).toBe(true);
   });
 
   test("false for a different assistant than the registered one", async () => {
@@ -731,9 +729,11 @@ describe("hasSessionConfirmedRemotePushRegistration", () => {
 
     await unregisterFromRemotePush();
 
-    expect(hasSessionConfirmedRemotePushRegistration("11111111-1111-4111-8111-111111111111")).toBe(
-      false,
-    );
+    expect(
+      hasSessionConfirmedRemotePushRegistration(
+        "11111111-1111-4111-8111-111111111111",
+      ),
+    ).toBe(false);
   });
 });
 
@@ -747,7 +747,10 @@ describe("unregisterFromRemotePush", () => {
 
     expect(deleteMock).toHaveBeenCalledTimes(1);
     expect(lastDeleteArg).toEqual({
-      path: { assistant_id: "11111111-1111-4111-8111-111111111111", token: "apns-token-abc" },
+      path: {
+        assistant_id: "11111111-1111-4111-8111-111111111111",
+        token: "apns-token-abc",
+      },
       query: { bundle_id: "ai.vocify-inc.vellum-assistant-ios" },
       throwOnError: false,
     });
@@ -961,7 +964,9 @@ describe("setForegroundPushHandler", () => {
 
   test("recovers the transition queue after an ownership rejection", async () => {
     platform = "android";
-    enableAndroidOwnershipMock.mockRejectedValueOnce(new Error("bridge failed"));
+    enableAndroidOwnershipMock.mockRejectedValueOnce(
+      new Error("bridge failed"),
+    );
 
     setForegroundPushHandler(() => {});
     await flushMicrotasks(2);

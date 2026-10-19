@@ -66,9 +66,9 @@ describe("formatChannelReference", () => {
   });
 
   test("marks a snapshot that was cut", () => {
-    expect(
-      formatChannelReference({ ...FULL, isTruncated: true }),
-    ).toContain("> snippet-truncated: true");
+    expect(formatChannelReference({ ...FULL, isTruncated: true })).toContain(
+      "> snippet-truncated: true",
+    );
   });
 
   test("quotes every line of a multi-line body so the block stays one quote", () => {

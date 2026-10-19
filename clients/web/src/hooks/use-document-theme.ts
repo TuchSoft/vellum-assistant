@@ -15,7 +15,10 @@ import { useSyncExternalStore } from "react";
 const THEME_ATTRIBUTE = "data-theme";
 
 function subscribe(onChange: () => void): () => void {
-  if (typeof document === "undefined" || typeof MutationObserver === "undefined") {
+  if (
+    typeof document === "undefined" ||
+    typeof MutationObserver === "undefined"
+  ) {
     return () => {};
   }
   const observer = new MutationObserver(onChange);

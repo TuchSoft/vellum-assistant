@@ -1,6 +1,6 @@
 import { telemetryIngestPost } from "@/generated/daemon/sdk.gen";
 import { captureError } from "@/lib/sentry/capture-error";
-import type { TelemetryJsonValueWritable } from "@/generated/daemon/types.gen";
+import type { TelemetryJsonValue } from "@/generated/daemon/types.gen";
 import { readAnalyticsConsent } from "@/lib/telemetry/consent";
 import { mintRandomId } from "@/lib/telemetry/random-id";
 import {
@@ -66,7 +66,7 @@ import {
  * A detail bag: JSON-safe values only, typed by the wire contract so a
  * non-serializable value is a compile error at the emit site.
  */
-export type ClientPerfDetail = Record<string, TelemetryJsonValueWritable>;
+export type ClientPerfDetail = Record<string, TelemetryJsonValue>;
 
 export type ClientPerfCheckName =
   | "client_boot"

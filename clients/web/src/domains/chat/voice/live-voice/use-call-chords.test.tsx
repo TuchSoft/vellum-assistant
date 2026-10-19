@@ -59,9 +59,8 @@ const MUTE_CHORDS: ChordBinding = {
   modifiers: ["option"],
   keys: ["mutes"],
 };
-const callChords = mock(
-  (canBeShownTheScreen: boolean): ChordBinding =>
-    canBeShownTheScreen ? ALL_CHORDS : MUTE_CHORDS,
+const callChords = mock((canBeShownTheScreen: boolean): ChordBinding =>
+  canBeShownTheScreen ? ALL_CHORDS : MUTE_CHORDS,
 );
 mock.module("@/domains/chat/voice/live-voice/call-chords", () => ({
   handleCallChord,

@@ -24,7 +24,8 @@ import { useClientFeatureFlagStore } from "@/stores/client-feature-flag-store";
 export function useCanUseInternalThreadActions(): boolean {
   const internalThreadActionsEnabled =
     useClientFeatureFlagStore.use.internalThreadActions();
-  const legacyForkFlagEnabled =
-    useClientFeatureFlagStore.use.forkFromMessage();
-  return internalThreadActionsEnabled === true || legacyForkFlagEnabled === true;
+  const legacyForkFlagEnabled = useClientFeatureFlagStore.use.forkFromMessage();
+  return (
+    internalThreadActionsEnabled === true || legacyForkFlagEnabled === true
+  );
 }

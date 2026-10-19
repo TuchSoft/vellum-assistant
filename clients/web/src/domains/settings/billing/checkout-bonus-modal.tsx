@@ -94,9 +94,7 @@ export function CheckoutBonusModal({
     >
       <Modal.Content size="sm" data-testid="checkout-bonus-modal">
         <Modal.Header icon={Gift}>
-          <Modal.Title>
-            {t("checkoutBonusModal.title", { amount })}
-          </Modal.Title>
+          <Modal.Title>{t("checkoutBonusModal.title", { amount })}</Modal.Title>
         </Modal.Header>
         <Modal.Body>
           <Typography

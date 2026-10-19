@@ -144,7 +144,10 @@ function HeroSection({
         )}
         {todayHighStr !== null && todayLowStr !== null && (
           <span className="text-body-small-default text-[var(--content-quiet)]">
-            {t("weatherForecastDisplay.highLow", { high: todayHighStr, low: todayLowStr })}
+            {t("weatherForecastDisplay.highLow", {
+              high: todayHighStr,
+              low: todayLowStr,
+            })}
           </span>
         )}
         {windStr && (

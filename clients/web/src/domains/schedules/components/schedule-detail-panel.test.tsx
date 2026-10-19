@@ -119,7 +119,7 @@ const BASE_SCHEDULE = {
   lastRunAt: null,
   lastStatus: null,
   isOneShot: false,
-  inferenceProfile: "thrifty",
+  model: "thrifty",
 } as unknown as PanelSchedule;
 
 function Wrapper({ children }: { children: ReactNode }) {
@@ -235,7 +235,7 @@ describe("ScheduleDetailPanel model profile", () => {
     });
     expect(patchCalls[0]).toEqual({
       id: "sched-1",
-      body: { inferenceProfile: "quality" },
+      body: { model: "quality" },
     });
   });
 
@@ -271,7 +271,7 @@ describe("ScheduleDetailPanel model profile", () => {
   test("a pin naming a deleted profile asks for a choice", async () => {
     renderPanel({
       ...BASE_SCHEDULE,
-      inferenceProfile: "deleted-profile",
+      model: "deleted-profile",
     } as PanelSchedule);
     await waitFor(() => {
       expect(profileTrigger()?.textContent).toContain("Choose a model");

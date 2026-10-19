@@ -82,7 +82,9 @@ export function ScheduleUsageStats({
         <button
           type="button"
           onClick={onOpenUsage}
-          aria-label={t("scheduleSharedUi.viewUsageFor", { name: scheduleName })}
+          aria-label={t("scheduleSharedUi.viewUsageFor", {
+            name: scheduleName,
+          })}
           className={`min-w-[64px] cursor-pointer rounded px-1 py-0.5 text-right transition-colors hover:bg-[var(--surface-hover)] ${costClass}`}
         >
           {cost}

@@ -132,12 +132,16 @@ describe("block formatting round-trips through markdown", () => {
     const href = normalizeLinkHref("example.com/guide");
     expect(href).toBe("https://example.com/guide");
     ed.commands.setLink({ href: href! });
-    expect(getEditorMarkdown(ed)).toBe("[read](https://example.com/guide) this");
+    expect(getEditorMarkdown(ed)).toBe(
+      "[read](https://example.com/guide) this",
+    );
   });
 
   test("an empty document serializes to an empty string, not the placeholder", () => {
     editor = new Editor({
-      extensions: buildDocumentEditorExtensions({ placeholder: "Start writing" }),
+      extensions: buildDocumentEditorExtensions({
+        placeholder: "Start writing",
+      }),
       content: "",
     });
     expect(getEditorMarkdown(editor)).toBe("");

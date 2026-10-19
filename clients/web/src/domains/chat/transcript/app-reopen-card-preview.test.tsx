@@ -16,19 +16,16 @@ import type { AppsGetResponse } from "@/generated/daemon/types.gen";
 import type * as UsePinnedApps from "@/hooks/use-pinned-apps";
 import { clearAppHtmlCache } from "@/utils/app-html-cache";
 
-mock.module(
-  "@/hooks/use-pinned-apps",
-  (): Partial<typeof UsePinnedApps> => ({
-    usePinnedApps: () => ({
-      pinnedApps: [],
-      pinnedAppIds: new Set<string>(),
-      source: "daemon",
-      togglePin: () => {},
-      unpin: () => {},
-      setColor: () => {},
-    }),
+mock.module("@/hooks/use-pinned-apps", (): Partial<typeof UsePinnedApps> => ({
+  usePinnedApps: () => ({
+    pinnedApps: [],
+    pinnedAppIds: new Set<string>(),
+    source: "daemon",
+    togglePin: () => {},
+    unpin: () => {},
+    setColor: () => {},
   }),
-);
+}));
 
 const { AppReopenCard } = await import("./app-reopen-card");
 

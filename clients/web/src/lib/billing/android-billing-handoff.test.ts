@@ -8,9 +8,8 @@ mock.module("@/runtime/browser", () => ({
   },
 }));
 
-const { billingSiteUrl, openBillingPathInBrowser } = await import(
-  "@/lib/billing/android-billing-handoff"
-);
+const { billingSiteUrl, openBillingPathInBrowser } =
+  await import("@/lib/billing/android-billing-handoff");
 
 afterEach(() => {
   openedUrl = null;

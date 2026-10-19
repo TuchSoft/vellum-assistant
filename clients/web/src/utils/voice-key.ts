@@ -22,8 +22,7 @@ import { parseActivator } from "@/utils/ptt-activator";
  * boundary exists to stop.
  */
 export type VoiceKey =
-  | { kind: "off" }
-  | { kind: "modifierOnly"; modifiers: KeyboardModifier[] };
+  { kind: "off" } | { kind: "modifierOnly"; modifiers: KeyboardModifier[] };
 
 export const LS_VOICE_KEY = "vellum:voice:voiceKey";
 

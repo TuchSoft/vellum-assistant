@@ -321,8 +321,7 @@ export function useSandboxFetchProxy(
     // event carrying a payload crosses into the sandbox.
     const busUnsubscribe = busSubscribe("sse.event", (envelope) => {
       const message = envelope.message as
-        | { type?: string; tags?: unknown }
-        | undefined;
+        { type?: string; tags?: unknown } | undefined;
       if (
         !message ||
         message.type !== "sync_changed" ||

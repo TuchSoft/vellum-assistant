@@ -31,12 +31,10 @@ mock.module("@/stores/auth-store", () => ({
   useHasPlatformSession: () => hasPlatformSession,
 }));
 
-const { useResolvedAssistantsStore } = await import(
-  "@/stores/resolved-assistants-store"
-);
-const { useSwitchableAssistants } = await import(
-  "@/assistant/use-switchable-assistants"
-);
+const { useResolvedAssistantsStore } =
+  await import("@/stores/resolved-assistants-store");
+const { useSwitchableAssistants } =
+  await import("@/assistant/use-switchable-assistants");
 
 import type { ResolvedAssistant } from "@/stores/resolved-assistants-store";
 

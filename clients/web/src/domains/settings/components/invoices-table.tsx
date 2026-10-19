@@ -356,7 +356,9 @@ export function InvoicesTable() {
                               variant="ghost"
                               size="compact"
                               iconOnly={<Download className="h-3.5 w-3.5" />}
-                              aria-label={t("invoicesTable.downloadPdfAriaLabel")}
+                              aria-label={t(
+                                "invoicesTable.downloadPdfAriaLabel",
+                              )}
                               onClick={() => downloadPdf(invoice.invoice_pdf!)}
                             />
                           )}

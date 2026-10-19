@@ -40,10 +40,7 @@ function writeDesktopAppBannerDismissed(): void {
 }
 
 export function readDesktopAppAssistantTurnsSeen(): number {
-  return Math.max(
-    0,
-    getLocalNumber(KEY_DESKTOP_APP_ASSISTANT_TURNS_SEEN, 0),
-  );
+  return Math.max(0, getLocalNumber(KEY_DESKTOP_APP_ASSISTANT_TURNS_SEEN, 0));
 }
 
 export function incrementDesktopAppAssistantTurnsSeen(delta = 1): void {

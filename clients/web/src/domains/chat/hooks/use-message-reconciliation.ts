@@ -58,11 +58,7 @@ interface UseMessageReconciliationArgs {
  * - `"debug"`: the debug API's manual reconcile.
  */
 export type ReconcileTrigger =
-  | "seq_gap"
-  | "reopen"
-  | "sync_tag"
-  | "poll"
-  | "debug";
+  "seq_gap" | "reopen" | "sync_tag" | "poll" | "debug";
 
 /** Result of reconciling the active conversation against the server. */
 export interface ReconcileActiveConversationResult {

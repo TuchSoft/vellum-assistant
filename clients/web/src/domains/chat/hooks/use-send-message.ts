@@ -411,7 +411,7 @@ export function useSendMessage({
         return { status: "failed", error };
       };
       let autonomyForSend: Autonomy | undefined;
-      let inferenceProfileForSend: string | undefined;
+      let modelForSend: string | undefined;
       let draftPlugins: Set<string> | undefined;
       let postResult: Awaited<ReturnType<typeof postChatMessage>>;
       try {
@@ -436,11 +436,11 @@ export function useSendMessage({
         autonomyForSend = useConversationStore
           .getState()
           .pendingDraftAutonomy.get(requestConversationId);
-        inferenceProfileForSend = useConversationStore
+        modelForSend = useConversationStore
           .getState()
           .pendingDraftProfiles.get(requestConversationId);
         // A per-chat plugin set the user picked in the composer before this
-        // conversation's row existed, mirroring `inferenceProfileForSend`. Only an
+        // conversation's row existed, mirroring `modelForSend`. Only an
         // EXPLICIT selection (an entry in the map, including an empty set) is
         // forwarded; an untouched default has no entry and sends `undefined`.
         // Gated on resolved daemon support. Older daemons silently drop the
@@ -467,7 +467,7 @@ export function useSendMessage({
             attachmentIds,
             onboarding: onboardingContext ?? undefined,
             clientMessageId,
-            inferenceProfile: inferenceProfileForSend,
+            model: modelForSend,
             riskThreshold: autonomyForSend,
             enabledPlugins: enabledPluginsForSend,
             hidden: isHidden,
@@ -525,11 +525,10 @@ export function useSendMessage({
       // mid-flight must survive so the mint-time re-key below can carry it to
       // the minted conversation.
       if (
-        inferenceProfileForSend &&
+        modelForSend &&
         useConversationStore
           .getState()
-          .pendingDraftProfiles.get(requestConversationId) ===
-          inferenceProfileForSend
+          .pendingDraftProfiles.get(requestConversationId) === modelForSend
       ) {
         useConversationStore
           .getState()

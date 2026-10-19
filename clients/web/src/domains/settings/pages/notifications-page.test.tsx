@@ -10,7 +10,9 @@ mock.module("@/runtime/notifications", () => ({
 mock.module(
   "@/domains/settings/components/browser-notification-settings-card",
   () => ({
-    BrowserNotificationSettingsCard: () => <div>Browser notification controls</div>,
+    BrowserNotificationSettingsCard: () => (
+      <div>Browser notification controls</div>
+    ),
   }),
 );
 

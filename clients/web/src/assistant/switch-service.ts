@@ -87,8 +87,7 @@ export async function switchToResolvedAssistant(
 }
 
 export type RemovePairedOutcome =
-  | { ok: true; nextRoute: string | null }
-  | { ok: false; error: string };
+  { ok: true; nextRoute: string | null } | { ok: false; error: string };
 
 /**
  * Forget a paired assistant on this device, with full renderer cleanup: the

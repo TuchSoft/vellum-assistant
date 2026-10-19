@@ -116,9 +116,9 @@ describe("ChatAttachmentsStrip tiles", () => {
   test("shows an uploaded image as a tile with no caption", () => {
     const { container } = renderStrip([uploaded()], { tileImages: true });
 
-    expect(stripRow(container).hasAttribute("data-owns-horizontal-scroll")).toBe(
-      true,
-    );
+    expect(
+      stripRow(container).hasAttribute("data-owns-horizontal-scroll"),
+    ).toBe(true);
     expect(tiles()).toHaveLength(1);
     expect(
       screen.getByRole("button", { name: "Preview photo.jpg" }),

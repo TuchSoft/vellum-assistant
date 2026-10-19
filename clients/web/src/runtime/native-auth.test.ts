@@ -60,19 +60,15 @@ const {
 } = await import("./native-auth");
 const { clearCheckoutIntent, readCheckoutIntent, saveCheckoutIntent } =
   await import("@/lib/billing/checkout-intent");
-const { nativeAuthErrorDetail } = await import(
-  "@/domains/account/native-auth-error"
-);
-const { ONBOARDED_HATCH_AGE_MS } = await import(
-  "@/domains/onboarding/onboarded-assistant"
-);
-const { useResolvedAssistantsStore } = await import(
-  "@/stores/resolved-assistants-store"
-);
+const { nativeAuthErrorDetail } =
+  await import("@/domains/account/native-auth-error");
+const { ONBOARDED_HATCH_AGE_MS } =
+  await import("@/domains/onboarding/onboarded-assistant");
+const { useResolvedAssistantsStore } =
+  await import("@/stores/resolved-assistants-store");
 const { routes } = await import("@/utils/routes");
-const { NEW_ASSISTANT_PARAM } = await import(
-  "@/domains/onboarding/onboarding-destination"
-);
+const { NEW_ASSISTANT_PARAM } =
+  await import("@/domains/onboarding/onboarding-destination");
 
 describe("resolveNativePostAuthDestination", () => {
   beforeEach(() => {
@@ -155,7 +151,9 @@ describe("resolveNativePostAuthDestination", () => {
       assistants: [
         {
           id: "asst-1",
-          hatchedAt: new Date(Date.now() - ONBOARDED_HATCH_AGE_MS).toISOString(),
+          hatchedAt: new Date(
+            Date.now() - ONBOARDED_HATCH_AGE_MS,
+          ).toISOString(),
           isLocal: false,
           isPlatformHosted: true,
           isPaired: false,
@@ -177,7 +175,9 @@ describe("resolveNativePostAuthDestination", () => {
       assistants: [
         {
           id: "asst-1",
-          hatchedAt: new Date(Date.now() - ONBOARDED_HATCH_AGE_MS).toISOString(),
+          hatchedAt: new Date(
+            Date.now() - ONBOARDED_HATCH_AGE_MS,
+          ).toISOString(),
           isLocal: false,
           isPlatformHosted: true,
           isPaired: false,
@@ -198,7 +198,9 @@ describe("resolveNativePostAuthDestination", () => {
       assistants: [
         {
           id: "asst-1",
-          hatchedAt: new Date(Date.now() - ONBOARDED_HATCH_AGE_MS).toISOString(),
+          hatchedAt: new Date(
+            Date.now() - ONBOARDED_HATCH_AGE_MS,
+          ).toISOString(),
           isLocal: false,
           isPlatformHosted: true,
           isPaired: false,

@@ -206,7 +206,10 @@ function CaptionsCard() {
       <div className="flex flex-col gap-2">
         <VoiceTranscriptToggles showDescription />
         <p className={`${labelClasses} pt-1`}>
-          {t("voicePage.captionsRecommendation", VOICE_TRANSCRIPT_RECOMMENDATION)}
+          {t(
+            "voicePage.captionsRecommendation",
+            VOICE_TRANSCRIPT_RECOMMENDATION,
+          )}
         </p>
       </div>
     </DetailCard>

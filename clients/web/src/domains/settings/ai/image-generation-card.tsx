@@ -79,8 +79,7 @@ export function ImageGenerationCard() {
   const provisionProviderKey = useProvisionProviderKey();
 
   const imageGenService = daemonConfig?.services?.["image-generation"] as
-    | { provider?: string; mode?: string; model?: string }
-    | undefined;
+    { provider?: string; mode?: string; model?: string } | undefined;
 
   // Server value derived from daemon config, falling back to localStorage.
   // Updates automatically when the cache refreshes.
@@ -110,7 +109,8 @@ export function ImageGenerationCard() {
     string | null
   >(null);
   const serverOpenRouterModel =
-    serverProvider === "openrouter" && typeof imageGenService?.model === "string"
+    serverProvider === "openrouter" &&
+    typeof imageGenService?.model === "string"
       ? imageGenService.model
       : undefined;
   const openrouterModelValue =

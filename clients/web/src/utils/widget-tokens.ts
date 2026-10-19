@@ -187,7 +187,7 @@ export function readWidgetTokens(
   for (const property of WIDGET_TOKEN_PROPERTIES) {
     const source =
       colorScheme === "dark"
-        ? WIDGET_RAMP_DARK_MIRROR.get(property) ?? property
+        ? (WIDGET_RAMP_DARK_MIRROR.get(property) ?? property)
         : property;
     const value = sanitizeTokenValue(computed.getPropertyValue(source));
     if (value) {

@@ -22,7 +22,9 @@ export type RelativeTimeMinimumUnit = (typeof UNITS)[number]["unit"];
 
 const formatters = new Map<string, Intl.RelativeTimeFormat | null>();
 
-function getFormatter(locale: string | undefined): Intl.RelativeTimeFormat | null {
+function getFormatter(
+  locale: string | undefined,
+): Intl.RelativeTimeFormat | null {
   const key = locale ?? "";
   let formatter = formatters.get(key);
   if (formatter === undefined) {

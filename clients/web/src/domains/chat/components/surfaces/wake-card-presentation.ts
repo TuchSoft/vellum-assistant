@@ -87,7 +87,9 @@ export function wakeCardSource(
 }
 
 /** The i18n key naming what woke the conversation. */
-export function wakeCardTitleKey(source: string | undefined): ParseKeys<"chat"> {
+export function wakeCardTitleKey(
+  source: string | undefined,
+): ParseKeys<"chat"> {
   return (source && TITLE_KEYS[source]) || FALLBACK_TITLE_KEY;
 }
 
@@ -263,7 +265,10 @@ export type ResultGroup = ResultRow[];
 
 /** Turn `evidence_note` into `Evidence note`. Structural, not translated. */
 function humanizeKey(key: string): string {
-  const words = key.split(/[_\s-]+/).filter(Boolean).join(" ");
+  const words = key
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .join(" ");
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 

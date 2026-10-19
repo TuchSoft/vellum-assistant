@@ -10,10 +10,10 @@ export type Autonomy = (typeof AUTONOMY_LEVELS)[number];
 
 export function composerProfiles(
   profiles: ProfileMap,
-  profileOrder: readonly string[],
+  profileOrder: readonly string[] = [],
 ): ProfilePickerEntry[] {
   return [...new Set([...profileOrder, ...Object.keys(profiles)])].flatMap(
-    (name) => (profiles[name] ? [{ name, ...profiles[name] }] : []),
+    (name) => (profiles[name] ? [{ ...profiles[name], name }] : []),
   );
 }
 export const AUTONOMY_COPY = {
@@ -35,43 +35,22 @@ export const AUTONOMY_COPY = {
   },
 } as const;
 export const DEFAULT_FAVORITES = [
-  "auto",
-  "balanced",
-  "quality-optimized",
-  "latency-optimized",
-  "cost-optimized",
+  "main",
+  "main-pro",
+  "small",
+  "fast",
+  "recall",
 ];
-const BUILTIN_KEYS: Record<
-  string,
-  `chat:composerConfiguration.modes.${"auto" | "balanced" | "quality" | "fast" | "budget" | "experimental"}.hint`
-> = {
-  auto: "chat:composerConfiguration.modes.auto.hint",
-  balanced: "chat:composerConfiguration.modes.balanced.hint",
-  "quality-optimized": "chat:composerConfiguration.modes.quality.hint",
-  "latency-optimized": "chat:composerConfiguration.modes.fast.hint",
-  "cost-optimized": "chat:composerConfiguration.modes.budget.hint",
-  "os-beta": "chat:composerConfiguration.modes.experimental.hint",
-};
 
-export function isBuiltinMode(entry: ProfilePickerEntry): boolean {
-  return entry.source === "managed" && entry.name in BUILTIN_KEYS;
+export function isBuiltinMode(_entry: ProfilePickerEntry): boolean {
+  return false;
 }
 
 export function modeLabel(entry: ProfilePickerEntry): string {
-  if (
-    isBuiltinMode(entry) &&
-    entry.name === "os-beta" &&
-    (!entry.label || entry.label === "OS Beta")
-  ) {
-    return t("chat:composerConfiguration.modes.experimental.label");
-  }
   return profilePickerLabel(entry);
 }
 
 export function modeHint(entry: ProfilePickerEntry): string {
-  if (isBuiltinMode(entry)) {
-    return t(BUILTIN_KEYS[entry.name]);
-  }
   return (
     entry.description ||
     t("chat:composerConfiguration.customHint", {

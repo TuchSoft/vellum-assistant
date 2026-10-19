@@ -47,7 +47,9 @@ export const EMPTY_CANCEL_REASON: CancelReasonSurveyValue = {
 };
 
 /** A reason must be picked before the cancellation can be confirmed. */
-export function isCancelReasonComplete(value: CancelReasonSurveyValue): boolean {
+export function isCancelReasonComplete(
+  value: CancelReasonSurveyValue,
+): boolean {
   return value.feedback != null;
 }
 
@@ -97,7 +99,11 @@ export function CancelReasonSurvey({
         aria-label={t("cancelReasonSurvey.title")}
       >
         {CANCEL_REASON_OPTIONS.map((option) => (
-          <Radio key={option} value={option} label={t(OPTION_LABEL_KEYS[option])} />
+          <Radio
+            key={option}
+            value={option}
+            label={t(OPTION_LABEL_KEYS[option])}
+          />
         ))}
       </RadioGroup>
       {value.feedback === "other" ? (

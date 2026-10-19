@@ -41,11 +41,13 @@ function harness(isVisible: boolean, items = [message("user-1", "user")]) {
   let visible = isVisible;
   Object.defineProperties(element, {
     scrollTop: {
-      get: () => visible ? metrics.scrollTop : 0,
-      set: (value: number) => { metrics.scrollTop = value; },
+      get: () => (visible ? metrics.scrollTop : 0),
+      set: (value: number) => {
+        metrics.scrollTop = value;
+      },
     },
-    scrollHeight: { get: () => visible ? metrics.scrollHeight : 0 },
-    clientHeight: { get: () => visible ? metrics.clientHeight : 0 },
+    scrollHeight: { get: () => (visible ? metrics.scrollHeight : 0) },
+    clientHeight: { get: () => (visible ? metrics.clientHeight : 0) },
   });
   const scrollToLatest = mock(() => {
     element.scrollTop = element.scrollHeight - element.clientHeight;

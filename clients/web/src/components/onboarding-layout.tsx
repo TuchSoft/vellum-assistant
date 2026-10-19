@@ -129,7 +129,10 @@ export function OnboardingLayout({
         <div className="flex min-h-0 flex-1">
           {content}
           <div className="relative w-[46%] lg:w-1/2">
-            <AvatarWave className="absolute inset-0" entrance={animateAvatarWaveIn} />
+            <AvatarWave
+              className="absolute inset-0"
+              entrance={animateAvatarWaveIn}
+            />
           </div>
         </div>
       ) : (

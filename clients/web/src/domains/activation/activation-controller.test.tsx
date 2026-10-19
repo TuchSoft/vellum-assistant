@@ -226,9 +226,7 @@ describe("ActivationController", () => {
   test("shows the celebration once every starter is done", () => {
     progressMock.set(ACTIVATION_PROGRESS_ALL_DONE);
     const { getByRole, queryByRole } = renderSurfaces();
-    expect(
-      getByRole("button", { name: "See the full list" }),
-    ).not.toBeNull();
+    expect(getByRole("button", { name: "See the full list" })).not.toBeNull();
     expect(queryByRole("button", { name: "Do it Later" })).toBeNull();
   });
 });

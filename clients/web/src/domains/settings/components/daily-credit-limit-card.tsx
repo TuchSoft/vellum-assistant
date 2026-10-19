@@ -81,9 +81,7 @@ export function DailyCreditLimitCard() {
   if (limitQuery.isError || !limitQuery.data) {
     return (
       <div data-testid="daily-credit-limit-card">
-        <Notice tone="error">
-          {t("dailyCreditLimitCard.loadError")}
-        </Notice>
+        <Notice tone="error">{t("dailyCreditLimitCard.loadError")}</Notice>
       </div>
     );
   }
@@ -169,9 +167,7 @@ export function DailyCreditLimitCard() {
   ).daily_credit_limit_usd;
   const saveError =
     serverLimitError ??
-    (updateMutation.isError
-      ? t("dailyCreditLimitCard.saveError")
-      : undefined);
+    (updateMutation.isError ? t("dailyCreditLimitCard.saveError") : undefined);
   const visibleError = touched ? clientError : undefined;
 
   return (

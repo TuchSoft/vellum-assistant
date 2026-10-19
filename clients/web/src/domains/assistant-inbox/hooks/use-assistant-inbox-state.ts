@@ -69,8 +69,7 @@ export function useAssistantInboxState(
     enabled: onPlatform && orgReady,
   });
   const entitlements = subscriptionQuery.data?.entitlements as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const subscriptionFailed =
     !subscriptionQuery.data &&
     subscriptionQuery.isError &&

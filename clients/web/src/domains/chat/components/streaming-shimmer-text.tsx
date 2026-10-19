@@ -16,7 +16,10 @@ const BAND_CORE_RATIO = 0.44;
  * vars so `startSweep` can retune measured values without rebuilding the
  * gradient string. Derived from `gradient-shimmer`'s band gradient (MIT).
  */
-export function buildBandGradient(stops: GradientStop[], angle: number): string {
+export function buildBandGradient(
+  stops: GradientStop[],
+  angle: number,
+): string {
   const sorted = [...stops].sort((a, b) => a.position - b.position);
   const first = sorted[0]?.color ?? "white";
   const last = sorted[sorted.length - 1]?.color ?? "white";

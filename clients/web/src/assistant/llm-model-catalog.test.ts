@@ -16,7 +16,6 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import { INFERENCE_PROVIDERS } from "@/domains/settings/ai/constants";
-import { CONNECTION_PROVIDERS } from "@/domains/settings/ai/provider-editor-constants";
 
 import {
   CODEX_SUBSCRIPTION_MODEL_IDS,
@@ -173,7 +172,6 @@ describe("parity with meta/llm-provider-catalog.json", () => {
   test("vellum GPU models stay out of pickers and hide without hosted inference", () => {
     expect(Object.keys(MODELS_BY_PROVIDER)).toContain("vellum");
     expect(INFERENCE_PROVIDERS).not.toContain("vellum");
-    expect(CONNECTION_PROVIDERS).not.toContain("vellum");
     expect(
       getVisibleModelsForProvider(
         "vellum",
@@ -190,7 +188,9 @@ describe("parity with meta/llm-provider-catalog.json", () => {
 
   test("structured-decision models stay visible on the provider row but not in text pickers", () => {
     expect(
-      getModelsForProvider("typesafe").some((model) => model.id === "jev-latest"),
+      getModelsForProvider("typesafe").some(
+        (model) => model.id === "jev-latest",
+      ),
     ).toBe(true);
     expect(catalogModelSupportsText("typesafe", "jev-latest")).toBe(false);
     expect(providerOffersTextGeneration("typesafe")).toBe(false);
@@ -251,25 +251,6 @@ describe("parity with meta/llm-provider-catalog.json", () => {
     // fallback), not the catalog's.
     expect([...INFERENCE_PROVIDERS].sort()).toEqual(
       [...pickerProviderIds].sort(),
-    );
-  });
-
-  test("CONNECTION_PROVIDERS covers every meta catalog provider except vellum", () => {
-    // The connection-creation picker is driven by CONNECTION_PROVIDERS in
-    // provider-editor-constants.ts. Unlike INFERENCE_PROVIDERS, it
-    // intentionally includes daemon-only providers (ollama) and the
-    // free-form openai-compatible escape hatch — any daemon provider can
-    // back a connection — so it must list exactly the meta catalog's
-    // provider ids or a provider becomes un-creatable as a connection.
-    // `vellum` is excluded: those models use the assistant API key on the
-    // existing managed connection and have no BYOK create path.
-    // Order is not asserted: the list's order is the picker's display order.
-    const connectionProviderIds: string[] = [...CONNECTION_PROVIDERS];
-    expect(connectionProviderIds.sort()).toEqual(
-      metaCatalog.providers
-        .map((provider) => provider.id)
-        .filter((id) => id !== "vellum")
-        .sort(),
     );
   });
 

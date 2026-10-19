@@ -51,8 +51,7 @@ const ERROR_MESSAGE_KEYS = {
 // translated at render with the reactive `t`, so a locale switch re-renders a
 // displayed error in the new language along with the rest of the card.
 type ConnectClaudeErrorState =
-  | { key: keyof typeof ERROR_MESSAGE_KEYS }
-  | { message: string };
+  { key: keyof typeof ERROR_MESSAGE_KEYS } | { message: string };
 
 export interface UseConnectClaudeResult {
   phase: ConnectClaudePhase;

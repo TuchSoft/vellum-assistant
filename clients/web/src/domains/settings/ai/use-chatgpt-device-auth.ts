@@ -55,8 +55,7 @@ const ERROR_MESSAGE_KEYS = {
 // at render with the reactive `t`, so a locale switch re-renders a displayed
 // error in the new language along with the rest of the card.
 type ChatgptDeviceAuthErrorState =
-  | { key: keyof typeof ERROR_MESSAGE_KEYS }
-  | { message: string };
+  { key: keyof typeof ERROR_MESSAGE_KEYS } | { message: string };
 
 export interface ChatgptDeviceCode {
   userCode: string;

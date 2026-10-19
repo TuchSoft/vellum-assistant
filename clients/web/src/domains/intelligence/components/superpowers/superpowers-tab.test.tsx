@@ -255,8 +255,7 @@ function pluginDetail(name: string): PluginsByNameGetResponse {
 function catalog(overrides: Partial<CatalogMatch> = {}): CatalogMatch {
   return {
     name: "apollo-bot-brain",
-    path:
-      "github:acme/apollo-bot-brain@1111111111111111111111111111111111111111",
+    path: "github:acme/apollo-bot-brain@1111111111111111111111111111111111111111",
     category: null,
     source: {
       kind: "github",

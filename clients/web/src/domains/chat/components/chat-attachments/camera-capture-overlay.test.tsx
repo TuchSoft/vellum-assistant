@@ -19,7 +19,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { StrictMode } from "react";
 
 let cameraOpen = true;
@@ -60,9 +66,8 @@ mock.module("@/domains/chat/voice/voice-room/voice-camera", () => ({
   }),
 }));
 
-const { CameraCaptureOverlay } = await import(
-  "@/domains/chat/components/chat-attachments/camera-capture-overlay"
-);
+const { CameraCaptureOverlay } =
+  await import("@/domains/chat/components/chat-attachments/camera-capture-overlay");
 
 function renderOverlay() {
   const onCapture = mock((_files: File[]) => {});

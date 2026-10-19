@@ -31,10 +31,7 @@ function FileHeaderIcon({ mimeType }: { mimeType: string }) {
           "color-mix(in oklab, var(--content-default) 10%, transparent)",
       }}
     >
-      <Icon
-        className="h-3.5 w-3.5 text-[var(--content-default)]"
-        aria-hidden
-      />
+      <Icon className="h-3.5 w-3.5 text-[var(--content-default)]" aria-hidden />
     </span>
   );
 }

@@ -66,8 +66,7 @@ export type PanePresentation = "single" | "side" | "bottom" | "full";
 
 /** A thing a pane can show: a kind, and the id of what it shows. */
 export type PaneSurface =
-  | { kind: "conversation"; id: string }
-  | { kind: "app"; id: string };
+  { kind: "conversation"; id: string } | { kind: "app"; id: string };
 
 export interface PaneState {
   presentation: PanePresentation;

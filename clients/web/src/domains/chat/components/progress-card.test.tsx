@@ -41,15 +41,12 @@ mock.module("@/generated/daemon/sdk.gen", () =>
   Object.fromEntries(exportNames.map((n) => [n, sdkStub])),
 );
 
-const { ProgressCard } = await import(
-  "@/domains/chat/components/progress-card"
-);
-const { useChatSessionStore } = await import(
-  "@/domains/chat/chat-session-store"
-);
-const { useProgressAckStore } = await import(
-  "@/domains/chat/progress-ack-store"
-);
+const { ProgressCard } =
+  await import("@/domains/chat/components/progress-card");
+const { useChatSessionStore } =
+  await import("@/domains/chat/chat-session-store");
+const { useProgressAckStore } =
+  await import("@/domains/chat/progress-ack-store");
 
 const T0 = 1_700_000_000_000;
 

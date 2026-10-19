@@ -26,13 +26,21 @@ test("the same mounted editor honors the send preparation editing barrier", asyn
 test("an external document update does not trigger an editor autosave", async () => {
   const onContentChange = mock((_markdown: string) => {});
   const { container, rerender } = render(
-    <TiptapDocumentEditor content="Original body" onContentChange={onContentChange} />,
+    <TiptapDocumentEditor
+      content="Original body"
+      onContentChange={onContentChange}
+    />,
   );
   await waitFor(() => expect(container.textContent).toContain("Original body"));
   rerender(
-    <TiptapDocumentEditor content="Assistant edit" onContentChange={onContentChange} />,
+    <TiptapDocumentEditor
+      content="Assistant edit"
+      onContentChange={onContentChange}
+    />,
   );
-  await waitFor(() => expect(container.textContent).toContain("Assistant edit"));
+  await waitFor(() =>
+    expect(container.textContent).toContain("Assistant edit"),
+  );
   expect(onContentChange).not.toHaveBeenCalled();
 });
 

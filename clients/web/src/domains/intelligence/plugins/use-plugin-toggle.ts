@@ -102,6 +102,8 @@ export function usePluginToggle(assistantId: string): UsePluginToggleResult {
 
   return {
     toggle,
-    togglingName: mutation.isPending ? mutation.variables?.name ?? null : null,
+    togglingName: mutation.isPending
+      ? (mutation.variables?.name ?? null)
+      : null,
   };
 }

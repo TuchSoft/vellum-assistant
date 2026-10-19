@@ -48,9 +48,8 @@ function bundleGroundP3(bundle: string): string {
   const path = join(ICON_BUNDLE_DIR, bundle, "icon.json");
   const specializations: FillSpecialization[] =
     JSON.parse(readFileSync(path, "utf8"))["fill-specializations"] ?? [];
-  const solid = specializations.find(
-    (entry) => entry.appearance === undefined,
-  )?.value?.solid;
+  const solid = specializations.find((entry) => entry.appearance === undefined)
+    ?.value?.solid;
   if (typeof solid !== "string") {
     throw new Error(`${bundle} declares no default solid fill`);
   }

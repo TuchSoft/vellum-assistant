@@ -258,9 +258,7 @@ function ProcessingFallbackState() {
   const { t } = useTranslation("settings");
 
   return (
-    <Notice tone="warning">
-      {t("upgradeSuccessPage.processingFallback")}
-    </Notice>
+    <Notice tone="warning">{t("upgradeSuccessPage.processingFallback")}</Notice>
   );
 }
 

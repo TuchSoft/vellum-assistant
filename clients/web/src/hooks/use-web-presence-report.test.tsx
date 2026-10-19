@@ -843,7 +843,7 @@ describe("useWebPresenceReport: reconciliation", () => {
 
 describe("useWebPresenceReport: Electron renderer", () => {
   beforeEach(() => {
-  nativePlatform = false;
+    nativePlatform = false;
     electron = true;
     useConversationStore.getState().setActiveConversationId("conv-1");
   });

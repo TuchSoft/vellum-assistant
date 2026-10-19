@@ -69,7 +69,9 @@ function TriggerGroup({
   // meant to act on.
   return (
     <span data-testid={testId} className="inline-flex items-center gap-1">
-      <span className="flex items-center">{rows.slice(0, max).map(rowChip)}</span>
+      <span className="flex items-center">
+        {rows.slice(0, max).map(rowChip)}
+      </span>
     </span>
   );
 }

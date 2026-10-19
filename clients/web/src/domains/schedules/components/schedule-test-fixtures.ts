@@ -25,7 +25,7 @@ export function makeSchedule(overrides: Partial<Schedule> = {}): Schedule {
     maxRetries: 3,
     retryBackoffMs: 60_000,
     timeoutMs: null,
-    inferenceProfile: null,
+    model: null,
     groupId: null,
     createdFromConversationId: null,
     createdFromConversationExists: false,

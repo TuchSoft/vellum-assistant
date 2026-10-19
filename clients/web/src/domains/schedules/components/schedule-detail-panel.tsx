@@ -99,30 +99,26 @@ function ScheduleModelProfileField({
   });
 
   const profileMutation = useMutation({
-    mutationFn: (inferenceProfile: string) =>
-      updateSchedule(assistantId, schedule.id, { inferenceProfile }),
-    onMutate: async (inferenceProfile) => {
+    mutationFn: (model: string) =>
+      updateSchedule(assistantId, schedule.id, { model }),
+    onMutate: async (model) => {
       await queryClient.cancelQueries({ queryKey: schedulesQueryKey });
       const previousProfile = queryClient
         .getQueryData<Schedule[]>(schedulesQueryKey)
-        ?.find((row) => row.id === schedule.id)?.inferenceProfile;
+        ?.find((row) => row.id === schedule.id)?.model;
       queryClient.setQueryData<Schedule[]>(schedulesQueryKey, (rows) =>
-        rows?.map((row) =>
-          row.id === schedule.id ? { ...row, inferenceProfile } : row,
-        ),
+        rows?.map((row) => (row.id === schedule.id ? { ...row, model } : row)),
       );
       return { previousProfile };
     },
-    onError: (error, _inferenceProfile, context) => {
+    onError: (error, _model, context) => {
       // Restore the profile alone. A snapshot of the whole list would undo a
       // toggle or another schedule's edit that landed while this was in flight.
       const previousProfile = context?.previousProfile;
       if (previousProfile !== undefined) {
         queryClient.setQueryData<Schedule[]>(schedulesQueryKey, (rows) =>
           rows?.map((row) =>
-            row.id === schedule.id
-              ? { ...row, inferenceProfile: previousProfile }
-              : row,
+            row.id === schedule.id ? { ...row, model: previousProfile } : row,
           ),
         );
       }
@@ -152,7 +148,7 @@ function ScheduleModelProfileField({
       <div className="text-body-medium-lighter text-[var(--content-default)]">
         <ModelProfileRow
           assistantId={assistantId}
-          pinnedProfile={schedule.inferenceProfile}
+          pinnedProfile={schedule.model}
         />
       </div>
     );
@@ -164,9 +160,9 @@ function ScheduleModelProfileField({
       value={
         <ModelProfileSelect
           assistantId={assistantId}
-          value={schedule.inferenceProfile}
+          value={schedule.model}
           onChange={(profileKey) => {
-            if (profileKey && profileKey !== schedule.inferenceProfile) {
+            if (profileKey && profileKey !== schedule.model) {
               profileMutation.mutate(profileKey);
             }
           }}

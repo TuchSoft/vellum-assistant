@@ -30,8 +30,9 @@ const ANCHOR = "chatcmpl-tool-anchor";
 
 describe("decideAcpConnectPlacement", () => {
   test("no prompt up means no card anywhere", () => {
-    expect(decideAcpConnectPlacement([assistantWithTools("a", [ANCHOR])], null))
-      .toBeNull();
+    expect(
+      decideAcpConnectPlacement([assistantWithTools("a", [ANCHOR])], null),
+    ).toBeNull();
   });
 
   test("renders inline while the anchor's turn is the last one", () => {

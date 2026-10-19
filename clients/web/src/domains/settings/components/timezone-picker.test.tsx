@@ -166,9 +166,9 @@ describe("TimezonePicker catalog construction", () => {
     let constructions = 0;
     const spy = function (this: unknown, ...args: unknown[]) {
       constructions += 1;
-      return new (real as unknown as new (
-        ...a: unknown[]
-      ) => Intl.DateTimeFormat)(...args);
+      return new (
+        real as unknown as new (...a: unknown[]) => Intl.DateTimeFormat
+      )(...args);
     } as unknown as typeof Intl.DateTimeFormat;
     Intl.DateTimeFormat = spy;
     return {

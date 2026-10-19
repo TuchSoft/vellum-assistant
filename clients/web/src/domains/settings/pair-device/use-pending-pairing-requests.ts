@@ -212,7 +212,9 @@ export function usePendingPairingRequests(
           captureError(err, { context: "pair-device-pending-request-action" });
           setActionError({
             requestId,
-            message: t("settings:usePendingPairingRequests.actionErrorFallback"),
+            message: t(
+              "settings:usePendingPairingRequests.actionErrorFallback",
+            ),
           });
         }
       } finally {

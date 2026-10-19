@@ -11,11 +11,7 @@ import type { PlatformGateStateWithPending } from "@/hooks/use-platform-gate";
  * - `ready`: an address exists; the mailbox can be shown.
  */
 export type InboxStatus =
-  | "unavailable"
-  | "loading"
-  | "upgrade"
-  | "setup"
-  | "ready";
+  "unavailable" | "loading" | "upgrade" | "setup" | "ready";
 
 export interface InboxStatusInputs {
   /** The pending-aware gate: `pending` is not yet an answer. */

@@ -2,7 +2,10 @@ import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
-import { DetailShellLoading, DetailShellNotice } from "@/components/detail-shell";
+import {
+  DetailShellLoading,
+  DetailShellNotice,
+} from "@/components/detail-shell";
 import { InsetDetailCard } from "@/components/inset-detail-card";
 import { StatusDot } from "@/domains/settings/components/schedule-shared-ui";
 import type { ScheduleRun } from "@/domains/settings/types/schedules";
@@ -41,8 +44,7 @@ export function RecentRunsCard({
   const { t } = useTranslation("settings");
   const navigate = useNavigate();
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
-  const resolvedEmptyMessage =
-    emptyMessage ?? t("recentRunsCard.emptyDefault");
+  const resolvedEmptyMessage = emptyMessage ?? t("recentRunsCard.emptyDefault");
 
   // Rendered in the empty state too: a page can filter down to nothing
   // (e.g. bookkeeping-only pages from daemons that still send them) while

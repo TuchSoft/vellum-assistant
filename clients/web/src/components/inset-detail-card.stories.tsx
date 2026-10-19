@@ -33,11 +33,7 @@ export default meta;
 type Story = StoryObj<typeof InsetDetailCard>;
 
 /** A label/value stack, the shape these panels most often wrap. */
-function Rows({
-  rows,
-}: {
-  rows: [label: string, value: string][];
-}) {
+function Rows({ rows }: { rows: [label: string, value: string][] }) {
   return (
     <div className="space-y-2 text-body-medium-lighter">
       {rows.map(([label, value]) => (

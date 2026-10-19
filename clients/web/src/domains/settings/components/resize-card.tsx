@@ -129,12 +129,7 @@ export function ResizeCard({
       }
     },
     onError: (error) => {
-      setResizeError(
-        extractResizeError(
-          error,
-          t("resizeCard.resizeFailed"),
-        ),
-      );
+      setResizeError(extractResizeError(error, t("resizeCard.resizeFailed")));
     },
   });
 
@@ -145,9 +140,7 @@ export function ResizeCard({
         title={t("resizeCard.title")}
         subtitle={t("resizeCard.subtitle")}
       >
-        <Notice tone="error">
-          {t("resizeCard.subscriptionLoadError")}
-        </Notice>
+        <Notice tone="error">{t("resizeCard.subscriptionLoadError")}</Notice>
       </DetailCard>
     );
   }
@@ -442,9 +435,7 @@ export function ResizeCard({
           <Modal.Body>
             <div className="flex flex-col gap-3">
               {allowedSizes.length === 0 ? (
-                <Notice tone="warning">
-                  {t("resizeCard.noMachineTier")}
-                </Notice>
+                <Notice tone="warning">{t("resizeCard.noMachineTier")}</Notice>
               ) : (
                 <div className="flex flex-col gap-1.5">
                   <span className="text-label-medium-default text-[var(--content-secondary)]">
@@ -538,9 +529,7 @@ export function ResizeCard({
                   });
                 }}
               >
-                {resizeError
-                  ? t("resizeCard.retry")
-                  : t("resizeCard.apply")}
+                {resizeError ? t("resizeCard.retry") : t("resizeCard.apply")}
               </Button>
             </div>
           </Modal.Footer>

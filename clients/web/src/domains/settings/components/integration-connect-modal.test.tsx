@@ -370,9 +370,7 @@ describe("IntegrationConnectModal", () => {
     const { rerender } = modal({ plan: connectedPlan });
     screen.getByText("Manage how Vellum connects to Notion.");
 
-    rerender(
-      <IntegrationConnectModal {...handlers} plan={notionPlan} />,
-    );
+    rerender(<IntegrationConnectModal {...handlers} plan={notionPlan} />);
     screen.getByRole("heading", { name: "Connect Notion" });
   });
 });

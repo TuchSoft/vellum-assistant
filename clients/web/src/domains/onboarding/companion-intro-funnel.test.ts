@@ -38,8 +38,7 @@ interface IngestPayload {
 /** The one event a call put on the wire. */
 function emitted(callIndex: number): Record<string, unknown> {
   const options = ingestMock.mock.calls[callIndex]?.[0] as
-    | { body: IngestPayload }
-    | undefined;
+    { body: IngestPayload } | undefined;
   if (!options) {
     throw new Error(`No ingest call at index ${callIndex}`);
   }

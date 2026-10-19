@@ -219,7 +219,9 @@ describe("CredentialsPage", () => {
 
     // THEN the warning names every connection the delete would break, and the
     // refusal is not reported as an unexpected failure
-    const warning = await screen.findByText(/router-primary and router-fallback/);
+    const warning = await screen.findByText(
+      /router-primary and router-fallback/,
+    );
     expect(warning.textContent).toContain("agentrouter:api_key");
     expect(capturedErrors).toEqual([]);
 
@@ -228,7 +230,9 @@ describe("CredentialsPage", () => {
 
     // THEN nothing further is sent
     await waitFor(() => {
-      expect(screen.queryByText(/router-primary and router-fallback/)).toBeNull();
+      expect(
+        screen.queryByText(/router-primary and router-fallback/),
+      ).toBeNull();
     });
     expect(deleteBodies).toHaveLength(1);
 
@@ -237,7 +241,9 @@ describe("CredentialsPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Delete" }));
     await screen.findByText(/router-primary and router-fallback/);
     deleteError = null;
-    await userEvent.click(screen.getByRole("button", { name: "Delete anyway" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Delete anyway" }),
+    );
 
     // THEN only that explicit confirmation forces the delete
     expect(deleteBodies[1]).toEqual({

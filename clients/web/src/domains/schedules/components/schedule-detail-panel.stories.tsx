@@ -27,7 +27,7 @@ const SCHEDULE: ScheduleDetailPanelProps["schedule"] = {
   maxRetries: 3,
   retryBackoffMs: 1000,
   timeoutMs: null,
-  inferenceProfile: "balanced",
+  model: "balanced",
   groupId: null,
   createdFromConversationId: null,
   createdFromConversationExists: false,

@@ -11,8 +11,9 @@ interface NativeLaunchScreenPlugin {
 }
 
 const NATIVE_LAUNCH_SCREEN_PLUGIN = "NativeLaunchScreen";
-const NativeLaunchScreen =
-  registerPlugin<NativeLaunchScreenPlugin>(NATIVE_LAUNCH_SCREEN_PLUGIN);
+const NativeLaunchScreen = registerPlugin<NativeLaunchScreenPlugin>(
+  NATIVE_LAUNCH_SCREEN_PLUGIN,
+);
 
 function nativeLaunchTheme(theme: ThemePreference): NativeLaunchTheme {
   return theme === "velvet" ? "dark" : theme;

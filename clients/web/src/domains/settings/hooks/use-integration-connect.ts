@@ -523,7 +523,9 @@ export function useIntegrationConnect({
     }
     setManagedReport(null);
     setManaged((current) =>
-      current ? { ...current, restartToken: current.restartToken + 1 } : current,
+      current
+        ? { ...current, restartToken: current.restartToken + 1 }
+        : current,
     );
   }, [authAttempt, authRetry, mcpAttempt]);
 

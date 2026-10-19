@@ -297,8 +297,7 @@ export function IdentityOverview({ assistantId }: IdentityOverviewProps) {
     enabled: showsEmail,
   });
   const entitlements = subscriptionQuery.data?.entitlements as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const emailLocked = !!entitlements && entitlements.managed_email !== true;
   /* A locked card is a pitch, so it can be closed; the closing stops
      applying once the plan has email, since then the card is the way in.

@@ -110,7 +110,9 @@ export function useCompanionIntroPermission(
         cancelPermissionGuide();
         await ensureMainWindowVisible();
       } catch (error) {
-        captureError(error, { context: "companionIntro.resumeAfterPermission" });
+        captureError(error, {
+          context: "companionIntro.resumeAfterPermission",
+        });
       } finally {
         checkingReturn = false;
       }

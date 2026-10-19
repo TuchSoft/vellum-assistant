@@ -8,7 +8,11 @@ interface DesktopStatusProps {
   children?: ReactNode;
 }
 
-export function DesktopStatus({ message, loading, children }: DesktopStatusProps) {
+export function DesktopStatus({
+  message,
+  loading,
+  children,
+}: DesktopStatusProps) {
   return (
     <div
       className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center text-[var(--content-default)]"

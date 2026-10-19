@@ -82,7 +82,7 @@ mock.module("@/generated/daemon/sdk.gen", () => ({
     },
   }),
   conversationsByIdGet: async ({ path }: { path: { id: string } }) => ({
-    data: { conversation: { inferenceProfile: modes.get(path.id) ?? null } },
+    data: { conversation: { model: modes.get(path.id) ?? null } },
   }),
   composerSettingsGet: getSettings,
   composerSettingsPatch: patch,

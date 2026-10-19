@@ -482,7 +482,7 @@ export type PostChatMessageOptions = Pick<
   MessagesPostData["body"],
   | "attachmentIds"
   | "clientMessageId"
-  | "inferenceProfile"
+  | "model"
   | "riskThreshold"
   | "enabledPlugins"
   | "hidden"
@@ -524,7 +524,7 @@ export async function postChatMessage(
     attachmentIds = [],
     onboarding,
     clientMessageId,
-    inferenceProfile,
+    model,
     riskThreshold,
     enabledPlugins,
     hidden,
@@ -591,14 +591,14 @@ export async function postChatMessage(
   }
   // Per-conversation model profile for the conversation this message mints — a
   // brand-new draft chat where the user picked a model in the composer before
-  // sending. The daemon persists it as the conversation's `inferenceProfile`
+  // sending. The daemon persists it as the conversation's `model`
   // override (see `conversation-routes.ts` `requestedInferenceProfile`). Omitted
   // otherwise so the conversation inherits the global default profile.
   if (riskThreshold !== undefined) {
     body.riskThreshold = riskThreshold;
   }
-  if (inferenceProfile) {
-    body.inferenceProfile = inferenceProfile;
+  if (model) {
+    body.model = model;
   }
   // Per-chat plugin selection for the conversation this message mints — the
   // user picked an explicit plugin set in the composer before sending. The
@@ -825,9 +825,7 @@ function queuedMessageHeaders(conversationId: string) {
  * generation and promoting the message to the head of the queue.
  */
 export type SteerQueuedMessageResult =
-  | "steered"
-  | "not_steerable"
-  | "request_failed";
+  "steered" | "not_steerable" | "request_failed";
 
 export async function steerToMessage(
   assistantId: string,

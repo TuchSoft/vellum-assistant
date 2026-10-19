@@ -87,7 +87,9 @@ export function InlineProcessCard({
         <button
           type="button"
           aria-label={openAriaLabel}
-          onClick={(event) => openDetailSheetFromTrigger(event, () => onOpen?.())}
+          onClick={(event) =>
+            openDetailSheetFromTrigger(event, () => onOpen?.())
+          }
           className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 text-left"
         >
           {leadingCluster}

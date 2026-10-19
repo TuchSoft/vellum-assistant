@@ -25,10 +25,7 @@ import { pluginLogoUrl } from "./mcp/plugin-logo";
  *   credentials. Self-hosted assistants only.
  */
 export type ConnectMethodKind =
-  | "mcp-oauth"
-  | "mcp-manual"
-  | "managed-oauth"
-  | "own-oauth";
+  "mcp-oauth" | "mcp-manual" | "managed-oauth" | "own-oauth";
 
 export type ConnectAvailability = "available" | "login-required";
 
@@ -38,10 +35,7 @@ export function isMcpMethodKind(kind: ConnectMethodKind): boolean {
 }
 
 export type ConnectionStatus =
-  | "connected"
-  | "connecting"
-  | "needs-attention"
-  | "pending";
+  "connected" | "connecting" | "needs-attention" | "pending";
 
 export interface ConnectionSummary {
   id: string;

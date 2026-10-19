@@ -183,16 +183,27 @@ if (isDev) {
 // every environment. This causes `requestSingleInstanceLock()` collisions
 // when multiple environment builds (dev, staging, production) run side-by-side.
 // Append an environment suffix for non-production builds; production keeps the
-// original path for backwards compatibility.
+// original path for backwards compatibility. An explicit build-time suffix
+// (`VELLUM_USER_DATA_SUFFIX`) overrides both rules, so a build can run with
+// production origin/behaviour while staying on its own profile: sharing
+// userData with the installed app would collide on the single-instance lock and
+// on the same on-disk profile.
 declare const __VELLUM_ENVIRONMENT__: string;
+declare const __VELLUM_USER_DATA_SUFFIX__: string;
+declare const __VELLUM_DISABLE_AUTO_UPDATE__: boolean;
 if (app.isPackaged) {
   const env =
     typeof __VELLUM_ENVIRONMENT__ === "string"
       ? __VELLUM_ENVIRONMENT__
       : "production";
-  if (env !== "production") {
+  const explicitSuffix =
+    typeof __VELLUM_USER_DATA_SUFFIX__ === "string"
+      ? __VELLUM_USER_DATA_SUFFIX__.trim()
+      : "";
+  const suffix = explicitSuffix || (env === "production" ? "" : `-${env}`);
+  if (suffix !== "") {
     const base = app.getPath("userData");
-    app.setPath("userData", `${base}-${env}`);
+    app.setPath("userData", `${base}${suffix}`);
   }
 }
 
@@ -447,7 +458,12 @@ app
     // the renderer publishes during bootstrap.
     installIdentityIpc();
     installAbout();
-    installAutoUpdate();
+    // A build that opted out of self-updating (see
+    // `__VELLUM_DISABLE_AUTO_UPDATE__`) skips the updater entirely; the menu
+    // item is left alone and fails harmlessly when no updater is installed.
+    if (!__VELLUM_DISABLE_AUTO_UPDATE__) {
+      installAutoUpdate();
+    }
     installFeedbackIpc();
     installTextInsertionIpc();
     installCommandPaletteWindow();

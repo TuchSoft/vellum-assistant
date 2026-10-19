@@ -69,6 +69,15 @@ const BUILD_DEFINES = {
     process.env.VELLUM_ENABLE_CHROME_DEVTOOLS === "true" ||
       process.env.VELLUM_ENABLE_CHROME_DEVTOOLS === "1",
   ),
+  // Build-time overrides for packaged builds that must behave like production
+  // but keep their own profile (see the userData suffix and auto-update gate
+  // in src/main/index.ts).
+  __VELLUM_USER_DATA_SUFFIX__: JSON.stringify(
+    process.env.VELLUM_USER_DATA_SUFFIX || "",
+  ),
+  __VELLUM_DISABLE_AUTO_UPDATE__: JSON.stringify(
+    process.env.VELLUM_DISABLE_AUTO_UPDATE === "1",
+  ),
   __SENTRY_DSN_MACOS__: JSON.stringify(process.env.SENTRY_DSN_MACOS || ""),
   // Root hostname (leading dot) shared with the web bundle's
   // VITE_ROOT_HOSTNAME; baked into the CSP source lists (see src/main/csp.ts).

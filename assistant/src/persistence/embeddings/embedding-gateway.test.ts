@@ -201,6 +201,98 @@ describe("GatewayEmbeddingBackend", () => {
   });
 });
 
+describe("GatewayEmbeddingBackend batching", () => {
+  test("splits 40 inputs into sequential requests and preserves order", async () => {
+    const texts = Array.from({ length: 40 }, (_, i) => `t${i}`);
+    const fetchMock = mock(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { input: string[] };
+      return new Response(
+        JSON.stringify({
+          data: body.input.map((text) => ({
+            embedding: [Number(text.slice(1))],
+          })),
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const backend = new GatewayEmbeddingBackend({
+      baseUrl: "http://llm-gateway:4000/v1",
+      model: "embed",
+      headers: { Authorization: "Bearer gw-key" },
+    });
+    const vectors = await backend.embed(texts);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const batchSizes = fetchMock.mock.calls.map((call) => {
+      const init = call[1] as RequestInit;
+      const body = JSON.parse(String(init.body)) as { input: string[] };
+      expect(body.input.length).toBeLessThanOrEqual(16);
+      return body.input.length;
+    });
+    expect(batchSizes).toEqual([16, 16, 8]);
+    expect(vectors).toHaveLength(40);
+    expect(vectors.map((vector) => vector[0])).toEqual(
+      Array.from({ length: 40 }, (_, i) => i),
+    );
+  });
+
+  test("sends a single over-budget input alone without splitting its text", async () => {
+    const big = "x".repeat(9_000);
+    const texts = [big, "small"];
+    const fetchMock = mock(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { input: string[] };
+      return new Response(
+        JSON.stringify({
+          data: body.input.map((text) => ({ embedding: [text.length] })),
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const backend = new GatewayEmbeddingBackend({
+      baseUrl: "http://llm-gateway:4000/v1",
+      model: "embed",
+      headers: { Authorization: "Bearer gw-key" },
+    });
+    const vectors = await backend.embed(texts);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const batches = fetchMock.mock.calls.map((call) => {
+      const init = call[1] as RequestInit;
+      return (JSON.parse(String(init.body)) as { input: string[] }).input;
+    });
+    expect(batches[0]).toEqual([big]);
+    expect(batches[1]).toEqual(["small"]);
+    expect(vectors).toEqual([[9_000], [5]]);
+  });
+
+  test("keeps a batch within the character budget when inputs are large", async () => {
+    const texts = ["a".repeat(4_500), "b".repeat(4_500), "c".repeat(4_500)];
+    const fetchMock = mock(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { input: string[] };
+      return new Response(
+        JSON.stringify({
+          data: body.input.map(() => ({ embedding: [1] })),
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const backend = new GatewayEmbeddingBackend({
+      baseUrl: "http://llm-gateway:4000/v1",
+      model: "embed",
+      headers: { Authorization: "Bearer gw-key" },
+    });
+    await backend.embed(texts);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe("gatewayTargetCacheExtras", () => {
   test("folds base URL and dimensions into the identity", () => {
     expect(

@@ -129,6 +129,45 @@ function gatewayBaseUrlFromSnapshot(): string | null {
   return baseUrl ? trimGatewayBaseUrl(baseUrl) : null;
 }
 
+/**
+ * Maximum number of inputs per gateway request. Mistral's embedding endpoint
+ * rejects a single request that carries too many tokens, so the backend splits
+ * the caller's inputs into sequential batches.
+ */
+export const GATEWAY_EMBED_MAX_INPUTS = 16;
+
+/**
+ * Character budget per batch. Conservative and independent of the tokenizer:
+ * an input that alone exceeds the budget is sent on its own (the text is never
+ * split, which would change the embedding).
+ */
+export const GATEWAY_EMBED_MAX_CHARS = 8_000;
+
+/** Split texts into sequential batches under the input and character budgets. */
+export function batchGatewayEmbeddingInputs(texts: string[]): string[][] {
+  const batches: string[][] = [];
+  let current: string[] = [];
+  let currentChars = 0;
+
+  for (const text of texts) {
+    const exceedsCount = current.length >= GATEWAY_EMBED_MAX_INPUTS;
+    const exceedsChars =
+      current.length > 0 &&
+      currentChars + text.length > GATEWAY_EMBED_MAX_CHARS;
+    if (current.length > 0 && (exceedsCount || exceedsChars)) {
+      batches.push(current);
+      current = [];
+      currentChars = 0;
+    }
+    current.push(text);
+    currentChars += text.length;
+  }
+  if (current.length > 0) {
+    batches.push(current);
+  }
+  return batches;
+}
+
 export class GatewayEmbeddingBackend implements EmbeddingBackend {
   readonly provider = "gateway" as const;
   readonly model: string;
@@ -159,6 +198,17 @@ export class GatewayEmbeddingBackend implements EmbeddingBackend {
       return normalized.text;
     });
 
+    const vectors: number[][] = [];
+    for (const batch of batchGatewayEmbeddingInputs(texts)) {
+      vectors.push(...(await this.requestBatch(batch, options?.signal)));
+    }
+    return vectors;
+  }
+
+  private async requestBatch(
+    texts: string[],
+    signal?: AbortSignal,
+  ): Promise<number[][]> {
     const response = await fetch(`${this.baseUrl}/embeddings`, {
       method: "POST",
       headers: {
@@ -170,7 +220,7 @@ export class GatewayEmbeddingBackend implements EmbeddingBackend {
         input: texts,
         ...(this.dimensions != null ? { dimensions: this.dimensions } : {}),
       }),
-      signal: options?.signal,
+      signal,
     });
     if (!response.ok) {
       const body = await response.text();

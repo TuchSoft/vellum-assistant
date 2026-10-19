@@ -1,12 +1,11 @@
 /**
- * `assistant db` — inspect and repair the assistant SQLite database directly
- * from disk.
+ * `assistant db` — inspect the assistant Postgres database directly from the
+ * CLI.
  *
- * Subcommands declare `transport: "local"` so they work when the daemon is
+ * The subcommand declares `transport: "local"` so it works when the daemon is
  * down — which is precisely the failure mode this surface is most useful in.
- * Each subcommand opens its own bun:sqlite connection (read-only for
- * inspection, read-write for repair steps that mutate) and never goes
- * through IPC.
+ * It opens its own short-lived connection from `VELLUM_DATABASE_URL` and never
+ * goes through IPC.
  */
 
 import type { Command } from "commander";
@@ -14,8 +13,6 @@ import type { Command } from "commander";
 import { applyCommandHelp } from "../../lib/cli-command-help.js";
 import { registerCommand } from "../../lib/register-command.js";
 import { dbHelp } from "./index.help.js";
-import { registerDbRefresh } from "./refresh.js";
-import { registerDbRepair } from "./repair.js";
 import { registerDbStatus } from "./status.js";
 
 export function registerDbCommand(program: Command): void {
@@ -26,8 +23,6 @@ export function registerDbCommand(program: Command): void {
     build: (db) => {
       applyCommandHelp(db, dbHelp);
       registerDbStatus(db);
-      registerDbRepair(db);
-      registerDbRefresh(db);
     },
   });
 }

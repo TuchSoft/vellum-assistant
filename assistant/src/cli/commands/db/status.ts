@@ -1,350 +1,211 @@
 /**
- * `assistant db status` — read-only inspection of the assistant SQLite database.
+ * `assistant db status` — read-only inspection of the assistant Postgres
+ * database.
  *
- * Designed for recovery / triage: opens the DB file directly via bun:sqlite in
- * read-only mode and never goes through the assistant runtime. This is exactly
- * the moment you most want it to work — when the database is broken, the
- * daemon often won't start, so IPC isn't an option.
+ * Opens its own short-lived connection from `VELLUM_DATABASE_URL` (the same URL
+ * the runtime uses) and never goes through the daemon: this is exactly the
+ * moment you most want it to work, when the runtime is degraded and IPC is not
+ * an option. Every query is a catalog read and the connection is closed before
+ * the process exits.
  *
  * Reports:
- *   - file path, sizes (.db / .db-wal / .db-shm)
- *   - owner uid/gid + mode (catches "daemon ran as root" UID-isolation
- *     regressions on shared volumes)
- *   - SQLite version and key pragmas (journal_mode, page_size, etc.)
- *   - table count + 5 largest tables (by `dbstat` bytes when compiled in,
- *     otherwise by row count — Bun's bundled SQLite omits dbstat, so most
- *     callers will see the row-count path today)
- *   - latest applied workspace migration (proxy for schema version, read
- *     from the `memory_checkpoints` rows the migration runner writes)
- *   - drizzle-vs-SQLite schema contract (columns the current binary
- *     selects that no live database file has)
- *   - file mtime + age, for "is this DB live?" triage at a glance
+ *   - the current database, its reported size (`pg_database_size`) and the
+ *     server version
+ *   - table count (regular tables in the current schema) and the number of
+ *     connections open against this database (`pg_stat_activity`)
+ *   - the largest tables by row count and by total size (table + TOAST +
+ *     indexes, `pg_total_relation_size`)
  *
- * If the DB file is missing, exits with code 1 after a loud error. If the file
- * exists but bun:sqlite can't open it (corrupt header, etc.), exits with the
- * underlying error message — full integrity checking lands in `db repair`.
+ * Row counts come from `pg_class.reltuples`, the planner's estimate. Exact
+ * counts would scan every table, which is the wrong trade for a status command:
+ * a table written since the last `ANALYZE` can report a stale number.
  */
 
-import { existsSync, statSync } from "node:fs";
-import { Database } from "bun:sqlite";
-
 import type { Command } from "commander";
+import postgres from "postgres";
 
-import type { SchemaContractReport } from "../../../persistence/schema-contract.js";
-import { getLogsDbPath } from "../../../util/logs-db-path.js";
-import { getMemoryDbPath } from "../../../util/memory-db-path.js";
-import { getDbPath } from "../../../util/platform.js";
-import { getTelemetryDbPath } from "../../../util/telemetry-db-path.js";
 import { red } from "../../lib/cli-colors.js";
 import { subcommand } from "../../lib/cli-command-help.js";
 import { shouldOutputJson, writeOutput } from "../../output.js";
-import {
-  formatAge,
-  formatBytes,
-  formatCount,
-  formatMode,
-  formatTimestampUtc,
-} from "./format.js";
+import { formatBytes, formatCount } from "./format.js";
+
+/** How many tables each "largest" list reports. */
+const LARGEST_TABLES = 5;
+
+// ---------------------------------------------------------------------------
+// Connection seam
+// ---------------------------------------------------------------------------
+
+/**
+ * The slice of a Postgres connection this command needs. A real connection
+ * wraps `postgres.js`; tests supply an object over fixed rows.
+ */
+export interface DbStatusConnection {
+  /** Run one read-only query and return its rows. */
+  query(sql: string): Promise<Record<string, unknown>[]>;
+  /** Release the connection. Never throws into the caller. */
+  close(): Promise<void>;
+}
+
+export type DbStatusConnect = (url: string) => DbStatusConnection;
+
+function connectPostgres(url: string): DbStatusConnection {
+  const sql = postgres(url, { max: 1, onnotice: () => {} });
+  return {
+    async query(text) {
+      return (await sql.unsafe(text)) as unknown as Record<string, unknown>[];
+    },
+    async close() {
+      await sql.end({ timeout: 5 });
+    },
+  };
+}
+
+export interface DbStatusDeps {
+  /** Override the Postgres connection factory (tests). */
+  connect?: DbStatusConnect;
+}
+
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+/**
+ * `current_schema()` resolves through the connection's `search_path`: `public`
+ * in production, the isolated schema in the Postgres test bootstrap.
+ */
+const SUMMARY_SQL = `
+  SELECT current_database() AS database,
+         pg_database_size(current_database()) AS size_bytes,
+         current_setting('server_version') AS server_version,
+         version() AS server_version_full,
+         (SELECT count(*)
+            FROM pg_stat_activity
+           WHERE datname = current_database()) AS connections,
+         (SELECT count(*)
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE c.relkind = 'r'
+             AND n.nspname = current_schema()) AS table_count
+`;
+
+const LARGEST_BY_ROWS_SQL = `
+  SELECT c.relname AS name,
+         GREATEST(c.reltuples, 0) AS row_estimate
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE c.relkind = 'r'
+     AND n.nspname = current_schema()
+   ORDER BY GREATEST(c.reltuples, 0) DESC, c.relname ASC
+   LIMIT ${LARGEST_TABLES}
+`;
+
+const LARGEST_BY_SIZE_SQL = `
+  SELECT c.relname AS name,
+         pg_total_relation_size(c.oid) AS size_bytes
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE c.relkind = 'r'
+     AND n.nspname = current_schema()
+   ORDER BY pg_total_relation_size(c.oid) DESC, c.relname ASC
+   LIMIT ${LARGEST_TABLES}
+`;
 
 // ---------------------------------------------------------------------------
 // Shapes
 // ---------------------------------------------------------------------------
 
-type SizingMethod = "bytes" | "rows";
-
-interface FileFacts {
-  path: string;
-  exists: boolean;
-  size: number;
-  walSize: number;
-  shmSize: number;
-  uid: number;
-  gid: number;
-  mode: number;
-  mtimeMs: number;
+interface SummaryRow {
+  database: string;
+  size_bytes: string | number;
+  server_version: string;
+  server_version_full: string;
+  connections: string | number;
+  table_count: string | number;
 }
 
-interface DbFacts {
-  sqliteVersion: string;
-  journalMode: string;
-  synchronous: string;
-  pageSize: number;
-  pageCount: number;
-  walAutocheckpoint: number;
-  mmapSize: number;
+interface RowsTableRow {
+  name: string;
+  row_estimate: string | number;
+}
+
+interface SizeTableRow {
+  name: string;
+  size_bytes: string | number;
+}
+
+export interface DbStatusTableRows {
+  name: string;
+  /** Estimated live rows (`pg_class.reltuples`). */
+  rows: number;
+}
+
+export interface DbStatusTableSize {
+  name: string;
+  /** Table + TOAST + indexes, in bytes. */
+  sizeBytes: number;
+}
+
+export interface DbStatusReport {
+  database: string;
+  /** `server_version`, e.g. "17.6". */
+  serverVersion: string;
+  /** `version()`, e.g. "PostgreSQL 17.6 (Debian ...) on aarch64 ...". */
+  serverVersionFull: string;
+  sizeBytes: number;
   tableCount: number;
-  largest: { name: string; metric: number }[];
-  sizingMethod: SizingMethod;
-}
-
-interface StatusReport {
-  file: FileFacts;
-  db: DbFacts | null;
-  /**
-   * Cross-database migration state, read from the main DB's
-   * `memory_checkpoints` ledger. Because the secondary databases (logs,
-   * memory) are ATTACHed and managed by the same migration runner, the
-   * checkpoint ledger lives only in the main DB — this summary is the single
-   * source of truth for "what migration state is the workspace at?"
-   */
-  migration?: MigrationSummary;
-  /**
-   * The dedicated append-only database (`assistant-logs.db`). Omitted from the
-   * report when the file does not exist yet — it is created the first time the
-   * daemon opens its connection, so a fresh install that has never run the
-   * daemon won't have one.
-   */
-  logsFile?: FileFacts;
-  logsDb?: DbFacts | null;
-  /**
-   * The dedicated memory database (`assistant-memory.db`). Like `logsFile`, it
-   * is omitted from the report until the file exists on disk — it is created
-   * the first time the daemon opens its connection, so a fresh install that
-   * has never run the daemon won't have one.
-   */
-  memoryFile?: FileFacts;
-  memoryDb?: DbFacts | null;
-  /**
-   * The dedicated telemetry database (`assistant-telemetry.db`). Like
-   * `logsFile` and `memoryFile`, it is omitted from the report until the file
-   * exists on disk — it is created the first time the daemon opens its
-   * connection, so a fresh install that has never run the daemon won't have
-   * one.
-   */
-  telemetryFile?: FileFacts;
-  telemetryDb?: DbFacts | null;
-  /**
-   * Drizzle source catalog vs the union of columns in every live SQLite
-   * file (main, logs, memory, telemetry). Extra SQLite-only columns are
-   * ignored. Omitted when the main file could not be opened.
-   */
-  schemaContract?: SchemaContractReport;
-}
-
-interface MigrationSummary {
-  /** Latest registry-backed migration checkpoint key (without `migration_` prefix). */
-  latestKey: string | null;
-  /** Age of the latest checkpoint, in ms. */
-  latestUpdatedAtMs: number | null;
-  /** Count of `step:*` checkpoints with value='1'. */
-  appliedSteps: number;
-  /** Count of `migration_*` / `backfill_*` / `drop_*` checkpoints with value='1'. */
-  appliedRegistry: number;
-  /** Checkpoint keys still in 'started' or 'rolling_back' state (crash recovery). */
-  crashed: string[];
-}
-
-// ---------------------------------------------------------------------------
-// Probes (read-only)
-// ---------------------------------------------------------------------------
-
-function readFileFacts(path: string): FileFacts {
-  if (!existsSync(path)) {
-    return {
-      path,
-      exists: false,
-      size: 0,
-      walSize: 0,
-      shmSize: 0,
-      uid: 0,
-      gid: 0,
-      mode: 0,
-      mtimeMs: 0,
-    };
-  }
-  const st = statSync(path);
-  const walPath = `${path}-wal`;
-  const shmPath = `${path}-shm`;
-  return {
-    path,
-    exists: true,
-    size: st.size,
-    walSize: existsSync(walPath) ? statSync(walPath).size : 0,
-    shmSize: existsSync(shmPath) ? statSync(shmPath).size : 0,
-    uid: st.uid,
-    gid: st.gid,
-    mode: st.mode,
-    mtimeMs: st.mtimeMs,
-  };
-}
-
-/** Decode the integer value of `PRAGMA synchronous` to a name. */
-function synchronousName(level: number): string {
-  return ["off", "normal", "full", "extra"][level] ?? String(level);
-}
-
-function readDbFacts(path: string): DbFacts {
-  const db = new Database(path, { readonly: true });
-  try {
-    const sqliteVersion =
-      db.query<{ v: string }, []>("SELECT sqlite_version() AS v").get()?.v ??
-      "?";
-    const journalMode =
-      db.query<{ journal_mode: string }, []>("PRAGMA journal_mode").get()
-        ?.journal_mode ?? "?";
-    const syncRow = db
-      .query<{ synchronous: number }, []>("PRAGMA synchronous")
-      .get();
-    const pageSize =
-      db.query<{ page_size: number }, []>("PRAGMA page_size").get()
-        ?.page_size ?? 0;
-    const pageCount =
-      db.query<{ page_count: number }, []>("PRAGMA page_count").get()
-        ?.page_count ?? 0;
-    const walAutocheckpoint =
-      db
-        .query<{ wal_autocheckpoint: number }, []>("PRAGMA wal_autocheckpoint")
-        .get()?.wal_autocheckpoint ?? 0;
-    const mmapSize =
-      db.query<{ mmap_size: number }, []>("PRAGMA mmap_size").get()
-        ?.mmap_size ?? 0;
-
-    // Table count (excluding internal sqlite_* tables).
-    const tableCount =
-      db
-        .query<{ n: number }, []>(
-          `SELECT COUNT(*) AS n FROM sqlite_master
-           WHERE type='table' AND name NOT LIKE 'sqlite_%'`,
-        )
-        .get()?.n ?? 0;
-
-    // Largest tables. Prefer `dbstat` when the runtime SQLite has it
-    // compiled in (gives true byte sizes). Bun's bundled SQLite omits
-    // dbstat, so we fall back to COUNT(*). Detect at runtime, not via
-    // PRAGMA compile_options string parsing, because the latter has
-    // historically had naming drift across versions.
-    let sizingMethod: SizingMethod = "rows";
-    let largest: { name: string; metric: number }[] = [];
-
-    try {
-      const dbstatRows = db
-        .query<{ name: string; bytes: number }, []>(
-          `SELECT name, SUM(pgsize) AS bytes FROM dbstat
-           WHERE name NOT LIKE 'sqlite_%'
-           GROUP BY name ORDER BY bytes DESC LIMIT 5`,
-        )
-        .all();
-      largest = dbstatRows.map((r) => ({ name: r.name, metric: r.bytes }));
-      sizingMethod = "bytes";
-    } catch {
-      // Fall back to row count.
-      const tables = db
-        .query<{ name: string }, []>(
-          `SELECT name FROM sqlite_master
-           WHERE type='table' AND name NOT LIKE 'sqlite_%'`,
-        )
-        .all();
-      const counts: { name: string; metric: number }[] = [];
-      for (const t of tables) {
-        try {
-          const c = db
-            .query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM "${t.name}"`)
-            .get();
-          counts.push({ name: t.name, metric: c?.n ?? 0 });
-        } catch {
-          // Skip tables we can't count (virtual tables backed by something
-          // unavailable, etc.). Keep going so one bad table doesn't kill
-          // the whole report.
-        }
-      }
-      counts.sort((a, b) => b.metric - a.metric);
-      largest = counts.slice(0, 5);
-      sizingMethod = "rows";
-    }
-
-    return {
-      sqliteVersion,
-      journalMode,
-      synchronous: synchronousName(syncRow?.synchronous ?? -1),
-      pageSize,
-      pageCount,
-      walAutocheckpoint,
-      mmapSize,
-      tableCount,
-      largest,
-      sizingMethod,
-    };
-  } finally {
-    db.close();
-  }
-}
-
-/** Quote a SQLite identifier that came from sqlite_master (never user input). */
-function quoteIdent(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
+  connections: number;
+  largestByRows: DbStatusTableRows[];
+  largestBySize: DbStatusTableSize[];
 }
 
 /**
- * Read table → column names from one SQLite file. Skips `sqlite_*`
- * internals and tables whose `PRAGMA table_info` fails.
+ * Postgres returns `bigint` as a string through `postgres.js` (and `count(*)`
+ * is always `bigint`), so every numeric column is coerced here. A value that
+ * is not finite becomes 0 rather than poisoning the report.
  */
-function readSqliteColumns(path: string): Map<string, Set<string>> {
-  const db = new Database(path, { readonly: true });
-  try {
-    const tables = db
-      .query<{ name: string }, []>(
-        `SELECT name FROM sqlite_master
-         WHERE type='table' AND name NOT LIKE 'sqlite_%'`,
-      )
-      .all();
-    const out = new Map<string, Set<string>>();
-    for (const table of tables) {
-      try {
-        const columns = db
-          .query<
-            { name: string },
-            []
-          >(`PRAGMA table_info(${quoteIdent(table.name)})`)
-          .all();
-        out.set(table.name, new Set(columns.map((column) => column.name)));
-      } catch {
-        // Virtual or unreadable table. Skip so one failure does not hide
-        // the rest of the contract.
-      }
-    }
-    return out;
-  } finally {
-    db.close();
-  }
+function toNumber(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : 0;
 }
 
-/** Union column sets from several files. Same table name keeps every column. */
-function mergeSqliteColumns(
-  files: Array<Map<string, Set<string>>>,
-): Map<string, Set<string>> {
-  const merged = new Map<string, Set<string>>();
-  for (const file of files) {
-    for (const [table, columns] of file) {
-      const existing = merged.get(table);
-      if (!existing) {
-        merged.set(table, new Set(columns));
-        continue;
-      }
-      for (const column of columns) {
-        existing.add(column);
-      }
-    }
-  }
-  return merged;
-}
+// ---------------------------------------------------------------------------
+// Reading
+// ---------------------------------------------------------------------------
 
-async function readSchemaContract(
-  paths: string[],
-): Promise<SchemaContractReport> {
-  // Lazy so the drizzle catalog stays out of the CLI's static graph
-  // (cli/no-daemon-internals).
-  const { diffDrizzleSchemaContract } =
-    await import("../../../persistence/schema-contract.js");
-  const live: Array<Map<string, Set<string>>> = [];
-  for (const path of paths) {
-    try {
-      live.push(readSqliteColumns(path));
-    } catch {
-      // File vanished or is unreadable. The main-file open already
-      // succeeded; skip this sidecar rather than fail the report.
-    }
+/** Read the full status report. Throws when the database cannot be read. */
+export async function readDbStatus(
+  connection: DbStatusConnection,
+): Promise<DbStatusReport> {
+  const summaryRows = await connection.query(SUMMARY_SQL);
+  const summary = summaryRows[0] as unknown as SummaryRow | undefined;
+  if (!summary) {
+    throw new Error("the database summary query returned no rows");
   }
-  return diffDrizzleSchemaContract(mergeSqliteColumns(live));
+
+  const byRows = (await connection.query(
+    LARGEST_BY_ROWS_SQL,
+  )) as unknown as RowsTableRow[];
+  const bySize = (await connection.query(
+    LARGEST_BY_SIZE_SQL,
+  )) as unknown as SizeTableRow[];
+
+  return {
+    database: String(summary.database),
+    serverVersion: String(summary.server_version),
+    serverVersionFull: String(summary.server_version_full),
+    sizeBytes: toNumber(summary.size_bytes),
+    tableCount: toNumber(summary.table_count),
+    connections: toNumber(summary.connections),
+    largestByRows: byRows.map((t) => ({
+      name: String(t.name),
+      rows: toNumber(t.row_estimate),
+    })),
+    largestBySize: bySize.map((t) => ({
+      name: String(t.name),
+      sizeBytes: toNumber(t.size_bytes),
+    })),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -357,393 +218,105 @@ function row(label: string, value: string): string {
   return `${label.padEnd(LABEL_WIDTH)}${value}\n`;
 }
 
-function renderDbBlock(file: FileFacts, db: DbFacts | null): string {
-  let out = "";
-
-  out += row("Path", file.path);
-  out += row("Size", formatBytes(file.size));
-  out += row("WAL size", formatBytes(file.walSize));
-  out += row("SHM size", formatBytes(file.shmSize));
-  out += row(
-    "Owner",
-    `uid=${file.uid} gid=${file.gid}  (mode ${formatMode(file.mode)})`,
-  );
-  out += row(
-    "Modified",
-    `${formatTimestampUtc(file.mtimeMs)}  (${formatAge(Date.now() - file.mtimeMs)})`,
-  );
-
-  if (!db) {
-    return out;
-  }
-
-  out += "\n";
-  out += row("SQLite", db.sqliteVersion);
-  out += row("Journal", db.journalMode);
-  out += row("Sync", db.synchronous);
-  out += row("Page size", String(db.pageSize));
-  out += row("Page count", formatCount(db.pageCount));
-  out += row(
-    "WAL checkpoint",
-    `every ${formatCount(db.walAutocheckpoint)} pages`,
-  );
-  out += row("mmap_size", formatBytes(db.mmapSize));
-
-  out += "\n";
-  out += row("Tables", String(db.tableCount));
-
-  out += "\n";
-  const sizingHeader =
-    db.sizingMethod === "bytes"
-      ? "Largest tables (by bytes):"
-      : "Largest tables (by row count; dbstat not compiled in):";
-  out += `${sizingHeader}\n`;
-  const nameWidth = Math.max(16, ...db.largest.map((t) => t.name.length));
-  for (const t of db.largest) {
-    const metric =
-      db.sizingMethod === "bytes"
-        ? formatBytes(t.metric)
-        : `${formatCount(t.metric)} rows`;
-    out += `  ${t.name.padEnd(nameWidth)}  ${metric}\n`;
-  }
-
-  return out;
-}
-
-function renderHuman(report: StatusReport): string {
-  let out = renderDbBlock(report.file, report.db);
-
-  // The secondary append-only file is only reported once it exists on disk.
-  if (report.logsFile?.exists) {
-    out += "\n";
-    out += "Logs database (append-only tables)\n";
-    out += renderDbBlock(report.logsFile, report.logsDb ?? null);
-  }
-
-  // The secondary memory file is likewise only reported once it exists.
-  if (report.memoryFile?.exists) {
-    out += "\n";
-    out += "Memory database (high-churn memory tables)\n";
-    out += renderDbBlock(report.memoryFile, report.memoryDb ?? null);
-  }
-
-  // The secondary telemetry file is likewise only reported once it exists.
-  if (report.telemetryFile?.exists) {
-    out += "\n";
-    out += "Telemetry database (telemetry event tables)\n";
-    out += renderDbBlock(report.telemetryFile, report.telemetryDb ?? null);
-  }
-
-  // Cross-database migration summary — the checkpoint ledger lives only in
-  // the main DB, so this is a single block at the end covering all three.
-  out += renderSummary(report.migration);
-  out += renderSchemaContract(report.schemaContract);
-
-  return out;
-}
-
-/**
- * Read cross-database migration state from the main DB's `memory_checkpoints`.
- *
- * The checkpoint ledger lives only in the main DB — secondary databases
- * (logs, memory) are ATTACHed and managed by the same runner, so their
- * migration state is tracked here. This is the single query point for
- * "what schema version is the workspace at?"
- */
-function readMigrationSummary(mainDbPath: string): MigrationSummary | null {
-  const db = new Database(mainDbPath, { readonly: true });
-  try {
-    // Latest registry-backed migration checkpoint.
-    let latestKey: string | null = null;
-    let latestUpdatedAtMs: number | null = null;
-    try {
-      const row = db
-        .query<{ key: string; updated_at: number }, []>(
-          `SELECT key, updated_at FROM memory_checkpoints
-           WHERE (key LIKE 'migration_%' OR key LIKE 'backfill_%' OR key LIKE 'drop_%')
-             AND value = '1'
-           ORDER BY updated_at DESC LIMIT 1`,
-        )
-        .get();
-      if (row) {
-        latestKey = row.key.replace(/^migration_/, "");
-        latestUpdatedAtMs = row.updated_at;
-      }
-    } catch {
-      // memory_checkpoints doesn't exist yet (pre-migration database).
-    }
-
-    // Count of step: checkpoints (step runner system).
-    let appliedSteps = 0;
-    try {
-      appliedSteps =
-        db
-          .query<{ n: number }, []>(
-            `SELECT COUNT(*) AS n FROM memory_checkpoints
-             WHERE key LIKE 'step:%' AND value = '1'`,
-          )
-          .get()?.n ?? 0;
-    } catch {
-      // No table yet.
-    }
-
-    // Count of registry-backed checkpoints.
-    let appliedRegistry = 0;
-    try {
-      appliedRegistry =
-        db
-          .query<{ n: number }, []>(
-            `SELECT COUNT(*) AS n FROM memory_checkpoints
-             WHERE (key LIKE 'migration_%' OR key LIKE 'backfill_%' OR key LIKE 'drop_%')
-               AND value = '1'`,
-          )
-          .get()?.n ?? 0;
-    } catch {
-      // No table yet.
-    }
-
-    // Crashed (started or rolling_back) checkpoints.
-    let crashed: string[] = [];
-    try {
-      crashed = (
-        db
-          .query<{ key: string }, []>(
-            `SELECT key FROM memory_checkpoints
-             WHERE value = 'started' OR value = 'rolling_back'`,
-          )
-          .all() as { key: string }[]
-      ).map((r) => r.key);
-    } catch {
-      // No table yet.
-    }
-
-    return {
-      latestKey,
-      latestUpdatedAtMs,
-      appliedSteps,
-      appliedRegistry,
-      crashed,
-    };
-  } finally {
-    db.close();
-  }
-}
-
-function renderSummary(migration: MigrationSummary | undefined): string {
-  if (!migration) {
-    return "";
-  }
-
-  let out = "\nMigration summary (cross-database)\n";
-
-  if (migration.latestKey) {
-    const age = migration.latestUpdatedAtMs
-      ? formatAge(Date.now() - migration.latestUpdatedAtMs)
-      : "?";
-    out += row("Schema (last)", `${migration.latestKey}  (${age})`);
-  } else {
-    out += row("Schema (last)", "unknown");
-  }
-  out += row("Steps applied", String(migration.appliedSteps));
-  out += row("Registry applied", String(migration.appliedRegistry));
-
-  if (migration.crashed.length > 0) {
-    out += row(
-      "Crashed",
-      `${red(String(migration.crashed.length))}  (${migration.crashed.join(", ")})`,
-    );
-  }
-
-  return out;
-}
-
-const HUMAN_COLUMN_MISS_LIMIT = 40;
-const HUMAN_TABLE_MISS_LIMIT = 15;
-
-function schemaContractIsClean(report: SchemaContractReport): boolean {
-  return (
-    report.missingTables.length === 0 && report.missingColumns.length === 0
-  );
-}
-
-function renderMissList(labels: string[], limit: number): string {
-  let out = "";
-  const shown = labels.slice(0, limit);
-  for (const label of shown) {
-    out += `  ${label}\n`;
-  }
-  if (labels.length > limit) {
-    out += `  … and ${formatCount(labels.length - limit)} more\n`;
-  }
-  return out;
-}
-
-function renderSchemaContract(
-  contract: SchemaContractReport | undefined,
+function renderTableList(
+  header: string,
+  entries: { name: string; value: string }[],
 ): string {
-  if (!contract) {
-    return "";
+  let out = `${header}\n`;
+  if (entries.length === 0) {
+    return `${out}  (no tables)\n`;
   }
+  const nameWidth = Math.max(16, ...entries.map((e) => e.name.length));
+  for (const entry of entries) {
+    out += `  ${entry.name.padEnd(nameWidth)}  ${entry.value}\n`;
+  }
+  return out;
+}
 
-  let out = "\nSchema contract (drizzle vs SQLite)\n";
-  if (schemaContractIsClean(contract)) {
-    out += row("Status", "ok");
-    return out;
-  }
+export function renderHuman(report: DbStatusReport): string {
+  let out = "";
+  out += row("Database", report.database);
+  out += row("Server version", report.serverVersion);
+  out += row("Size", formatBytes(report.sizeBytes));
+  out += row("Tables", formatCount(report.tableCount));
+  out += row("Connections", formatCount(report.connections));
 
-  const parts: string[] = [];
-  if (contract.missingColumns.length > 0) {
-    parts.push(
-      `${formatCount(contract.missingColumns.length)} missing column${
-        contract.missingColumns.length === 1 ? "" : "s"
-      }`,
-    );
-  }
-  if (contract.missingTables.length > 0) {
-    parts.push(
-      `${formatCount(contract.missingTables.length)} missing table${
-        contract.missingTables.length === 1 ? "" : "s"
-      }`,
-    );
-  }
-  out += row("Status", red(parts.join(", ")));
+  out += "\n";
+  out += renderTableList(
+    `Largest tables (by rows, pg_class.reltuples estimate, top ${LARGEST_TABLES})`,
+    report.largestByRows.map((t) => ({
+      name: t.name,
+      value: `${formatCount(t.rows)} rows`,
+    })),
+  );
 
-  if (contract.missingColumns.length > 0) {
-    out += "Missing columns\n";
-    out += renderMissList(
-      contract.missingColumns.map((miss) => `${miss.table}.${miss.column}`),
-      HUMAN_COLUMN_MISS_LIMIT,
-    );
-  }
-  if (contract.missingTables.length > 0) {
-    out += "Missing tables\n";
-    out += renderMissList(contract.missingTables, HUMAN_TABLE_MISS_LIMIT);
-  }
+  out += "\n";
+  out += renderTableList(
+    `Largest tables (by size, table + TOAST + indexes, top ${LARGEST_TABLES})`,
+    report.largestBySize.map((t) => ({
+      name: t.name,
+      value: formatBytes(t.sizeBytes),
+    })),
+  );
 
   return out;
 }
 
-function renderMissing(path: string): string {
-  return (
-    `${red("ERROR")}  Database not found at ${path}\n\n` +
-    `The assistant SQLite database is missing. The daemon will create a fresh,\n` +
-    `empty database on next start, but any existing rows are unrecoverable from\n` +
-    `SQLite alone.\n\n` +
-    `If you have a backup, restore it:\n` +
-    `  assistant backup list\n\n` +
-    `Conversation skeletons can also be re-derived from the disk-view at\n` +
-    `\`/workspace/conversations\` once \`assistant db repair\` lands.\n`
-  );
+const MISSING_URL_ERROR =
+  "VELLUM_DATABASE_URL is not set. The assistant stores its data in Postgres, " +
+  "so this command needs the same database URL the runtime uses.";
+
+function emitError(cmd: Command, message: string): void {
+  if (shouldOutputJson(cmd)) {
+    writeOutput(cmd, { error: message });
+    return;
+  }
+  process.stderr.write(`${red("ERROR")}  ${message}\n`);
 }
 
 // ---------------------------------------------------------------------------
 // Command wiring
 // ---------------------------------------------------------------------------
 
-export function registerDbStatus(parent: Command): void {
+export function registerDbStatus(
+  parent: Command,
+  deps: DbStatusDeps = {},
+): void {
+  const connect = deps.connect ?? connectPostgres;
+
   subcommand(parent, "status").action(async function (this: Command) {
-    const file = readFileFacts(getDbPath());
-
-    if (!file.exists) {
-      if (shouldOutputJson(this)) {
-        const report: StatusReport = { file, db: null };
-        writeOutput(this, report);
-      } else {
-        process.stderr.write(renderMissing(file.path));
-      }
+    const url = process.env.VELLUM_DATABASE_URL?.trim();
+    if (!url) {
+      emitError(this, MISSING_URL_ERROR);
       process.exit(1);
     }
 
-    let db: DbFacts;
+    let connection: DbStatusConnection | null = null;
+    let report: DbStatusReport | null = null;
+    let failure: string | null = null;
     try {
-      db = readDbFacts(file.path);
+      connection = connect(url);
+      report = await readDbStatus(connection);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (shouldOutputJson(this)) {
-        const report: StatusReport = { file, db: null };
-        writeOutput(this, { ...report, openError: msg });
-      } else {
-        process.stderr.write(
-          `${red("ERROR")}  Failed to open ${file.path}: ${msg}\n` +
-            `\nThe file exists but bun:sqlite couldn't open it. Run\n` +
-            `\`assistant db repair\` (when available) for a full integrity check.\n`,
-        );
+      failure = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (connection) {
+        try {
+          await connection.close();
+        } catch {
+          // Best-effort: a close failure must not mask the report.
+        }
       }
+    }
+
+    if (!report) {
+      emitError(
+        this,
+        `Failed to read the assistant database: ${failure ?? "unknown error"}`,
+      );
       process.exit(1);
     }
 
-    // Best-effort probe of the dedicated append-only DB. It may not exist
-    // yet (fresh install that has never started the daemon), and a probe
-    // failure must never mask the main-DB report.
-    const logsFile = readFileFacts(getLogsDbPath());
-    let logsDb: DbFacts | null = null;
-    if (logsFile.exists) {
-      try {
-        logsDb = readDbFacts(logsFile.path);
-      } catch {
-        logsDb = null;
-      }
-    }
-
-    // Same best-effort probe for the dedicated memory DB.
-    const memoryFile = readFileFacts(getMemoryDbPath());
-    let memoryDb: DbFacts | null = null;
-    if (memoryFile.exists) {
-      try {
-        memoryDb = readDbFacts(memoryFile.path);
-      } catch {
-        memoryDb = null;
-      }
-    }
-
-    // Same best-effort probe for the dedicated telemetry DB.
-    const telemetryFile = readFileFacts(getTelemetryDbPath());
-    let telemetryDb: DbFacts | null = null;
-    if (telemetryFile.exists) {
-      try {
-        telemetryDb = readDbFacts(telemetryFile.path);
-      } catch {
-        telemetryDb = null;
-      }
-    }
-
-    // Cross-database migration summary from the main DB's checkpoint ledger.
-    let migration: MigrationSummary | null = null;
-    try {
-      migration = readMigrationSummary(file.path);
-    } catch {
-      migration = null;
-    }
-
-    const schemaPaths = [file.path];
-    if (logsFile.exists) {
-      schemaPaths.push(logsFile.path);
-    }
-    if (memoryFile.exists) {
-      schemaPaths.push(memoryFile.path);
-    }
-    if (telemetryFile.exists) {
-      schemaPaths.push(telemetryFile.path);
-    }
-    let schemaContract: SchemaContractReport | undefined;
-    try {
-      schemaContract = await readSchemaContract(schemaPaths);
-    } catch {
-      schemaContract = undefined;
-    }
-
-    const report: StatusReport = {
-      file,
-      db,
-      migration: migration ?? undefined,
-      schemaContract,
-      logsFile,
-      logsDb,
-      memoryFile,
-      memoryDb,
-      telemetryFile,
-      telemetryDb,
-    };
     if (shouldOutputJson(this)) {
       writeOutput(this, report);
     } else {

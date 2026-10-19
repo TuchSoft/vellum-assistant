@@ -68,7 +68,7 @@ Arguments:
 Behavior:
   Prints every stored field of the schedule: name, description, mode,
   expression/syntax, timezone, enabled state, status, next/last run times,
-  message or script body, inference profile (shown as 'none (mainAgent
+  message or script body, model alias (shown as 'none (mainAgent
   call-site default)' when no named profile resolves), routing intent, and
   retry policy. Works for
   deferred schedules that 'assistant schedules list' hides by default.
@@ -148,9 +148,9 @@ Examples:
             "IANA timezone for the expression (e.g. America/New_York)",
         },
         {
-          flags: "--profile <name>",
+          flags: "--model <name>",
           description:
-            "Inference profile (llm.profiles key) the schedule's runs use; when omitted the schedule is pinned to your current default profile",
+            "Model alias (gateway alias) the schedule's runs use; when omitted the schedule is pinned to your current default model",
         },
         {
           flags: "--no-enabled",
@@ -170,9 +170,9 @@ Options:
   --script <command>        Shell command for --mode script.
   --timeout-ms <ms>         Script timeout override in ms (--mode script).
   -t, --timezone <tz>       IANA timezone applied to the expression.
-  --profile <name>          Inference profile (llm.profiles key) the schedule's
+  --model <name>          Model alias (gateway alias) the schedule's
                             runs use. When omitted, the schedule is pinned to
-                            your current default profile so its model stays
+                            your current default model so its alias stays
                             put when that default changes.
   --no-enabled              Create the schedule disabled. Defaults to enabled.
   --json                    Output the updated schedule list as compact JSON.
@@ -279,14 +279,13 @@ Examples:
             "Clear the script timeout override and use the assistant default",
         },
         {
-          flags: "--profile <name>",
-          description:
-            "Inference profile (llm.profiles key) the schedule's runs use",
+          flags: "--model <name>",
+          description: "Model alias (gateway alias) the schedule's runs use",
         },
         {
-          flags: "--clear-profile",
+          flags: "--clear-model",
           description:
-            "Re-pin the schedule to your current default inference profile",
+            "Re-pin the schedule to your current default model alias",
         },
         {
           flags: "--json",
@@ -311,12 +310,12 @@ Options:
   --timeout-ms <ms>         Script-mode execution timeout in milliseconds.
   --clear-timeout           Remove the timeout override (mutually exclusive
                             with --timeout-ms).
-  --profile <name>          Inference profile (llm.profiles key) the schedule's
+  --model <name>          Model alias (gateway alias) the schedule's
                             runs use. Every schedule is pinned to one, so its
                             model stays put when your default changes.
-  --clear-profile           Re-pin the schedule to your current default
-                            inference profile (mutually exclusive with
-                            --profile).
+  --clear-model           Re-pin the schedule to your current default
+                            model alias (mutually exclusive with
+                            --model).
   --json                    Output the updated schedule list as compact JSON.
 
 Arguments:

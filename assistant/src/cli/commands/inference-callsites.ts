@@ -16,31 +16,23 @@ import { cliIpcCall } from "../../ipc/cli-client.js";
 import { subcommand } from "../lib/cli-command-help.js";
 import { renderTable, writeCliError, writeLine } from "../lib/cli-output.js";
 
-type Source = "override" | "active" | "call_site" | "default";
+type Source = "pinned" | "call_site" | "chat" | "default" | "disabled";
 
 interface CallSiteSummary {
   callSite: string;
-  profile: string | null;
-  label: string | null;
+  model: string | null;
   source: Source;
-  provider: string;
-  model: string;
-  effort: string;
-  maxTokens: number;
   maxInputTokens?: number;
 }
 
 interface CallSiteDetail {
   callSite: string;
-  winner: { profile: string | null; label: string | null; source: Source };
+  winner: { model: string | null; source: Source };
   resolved: {
-    provider: string;
     model: string;
-    maxTokens: number;
-    effort: string;
-    temperature: number | null;
-    maxInputTokens?: number;
-  };
+    maxInputTokens: number;
+    disableCache: boolean;
+  } | null;
   resolutionChain: { requested: string; reason: string }[];
   shippedDefault: Record<string, unknown>;
   userPin: Record<string, unknown> | null;
@@ -48,10 +40,11 @@ interface CallSiteDetail {
 }
 
 const SOURCE_LABEL: Record<Source, string> = {
-  override: "override",
-  active: "active",
-  call_site: "pin",
+  pinned: "pin",
+  call_site: "call-site",
+  chat: "chat",
   default: "default",
+  disabled: "disabled",
 };
 
 function formatCtxIn(tokens: number | undefined): string {
@@ -84,14 +77,11 @@ export function attachCallsitesSubcommand(inference: Command): void {
       return;
     }
     renderTable(
-      ["CALL SITE", "PROFILE", "SRC", "PROVIDER", "MODEL", "EFFORT", "CTX-IN"],
+      ["CALL SITE", "MODEL", "SRC", "CTX-IN"],
       rows.map((r) => [
         r.callSite,
-        r.profile ?? "(anchor)",
+        r.model ?? "(disabled)",
         SOURCE_LABEL[r.source],
-        r.provider,
-        r.model,
-        r.effort,
         formatCtxIn(r.maxInputTokens),
       ]),
     );
@@ -114,15 +104,14 @@ export function attachCallsitesSubcommand(inference: Command): void {
       }
       writeLine(`call site: ${d.callSite}`);
       writeLine(
-        `  winner: ${d.winner.profile ?? "(anchor)"} [${SOURCE_LABEL[d.winner.source]}]` +
-          (d.winner.label ? ` "${d.winner.label}"` : ""),
+        `  winner: ${d.winner.model ?? "(disabled)"} [${SOURCE_LABEL[d.winner.source]}]`,
       );
-      writeLine(
-        `  resolved: ${d.resolved.provider}/${d.resolved.model} effort=${d.resolved.effort} maxTokens=${d.resolved.maxTokens}` +
-          (d.resolved.maxInputTokens != null
-            ? ` ctxIn=${formatCtxIn(d.resolved.maxInputTokens)}`
-            : ""),
-      );
+      if (d.resolved != null) {
+        writeLine(
+          `  resolved: ${d.resolved.model} ctxIn=${formatCtxIn(d.resolved.maxInputTokens)}` +
+            (d.resolved.disableCache ? " cache=off" : ""),
+        );
+      }
       if (d.resolutionChain.length > 0) {
         writeLine("  resolution chain (skipped rungs):");
         for (const step of d.resolutionChain) {

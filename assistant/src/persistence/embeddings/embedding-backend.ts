@@ -14,6 +14,12 @@ import {
   recordBillingBlock,
   recordBillingSuccess,
 } from "./embedding-billing-breaker.js";
+import {
+  gatewayDurableCacheExtras,
+  GatewayEmbeddingBackend,
+  gatewayTargetCacheExtras,
+  resolveGatewayEmbeddingTarget,
+} from "./embedding-gateway.js";
 import { GeminiEmbeddingBackend } from "./embedding-gemini.js";
 import type { LocalEmbeddingBackend } from "./embedding-local.js";
 import { OllamaEmbeddingBackend } from "./embedding-ollama.js";
@@ -447,6 +453,9 @@ export function durableEmbeddingCacheExtras(
   if (provider === "custom") {
     return customCacheExtras(config);
   }
+  if (provider === "gateway") {
+    return gatewayDurableCacheExtras(config);
+  }
   return [];
 }
 
@@ -563,6 +572,25 @@ export async function selectEmbeddingBackend(
     return { backend: null, reason: "Embedding backends are shutting down" };
   }
   const requested = config.memory.embeddings.provider;
+  if (requested === "gateway") {
+    const resolution = await resolveGatewayEmbeddingTarget(
+      config.memory.embeddings.gatewayModel,
+      config.memory.embeddings.gatewayDimensions,
+    );
+    if (!resolution.ok) {
+      return { backend: null, reason: resolution.error };
+    }
+    const { target } = resolution;
+    return {
+      backend: getCachedOrCreate(
+        "gateway",
+        target.model,
+        () => new GatewayEmbeddingBackend(target),
+        gatewayTargetCacheExtras(target),
+      ),
+      reason: null,
+    };
+  }
   if (requested === "local") {
     return {
       backend: getCachedOrCreate(
@@ -711,6 +739,9 @@ export async function selectEmbeddingBackend(
       case "custom":
         // Custom is explicit-only and is handled before the auto chain.
         continue;
+      case "gateway":
+        // Gateway is explicit-only and is handled before the auto chain.
+        continue;
     }
   }
 
@@ -768,6 +799,13 @@ export async function getMemoryBackendStatus(config: AssistantConfig): Promise<{
 const backendDimCache = new Map<string, number>();
 
 function backendDimCacheKey(backend: EmbeddingBackend): string {
+  if (backend instanceof GatewayEmbeddingBackend) {
+    return cacheKey(
+      backend.provider,
+      backend.model,
+      gatewayTargetCacheExtras(backend),
+    );
+  }
   if (backend instanceof OpenAIEmbeddingBackend) {
     const extras: string[] = [];
     if (backend.baseURL) {
@@ -960,7 +998,10 @@ export async function embedWithBackend(
       ? geminiCacheExtras(config)
       : primaryProvider === "custom"
         ? customCacheExtras(config)
-        : undefined;
+        : primaryProvider === "gateway" &&
+            selection.backend instanceof GatewayEmbeddingBackend
+          ? gatewayTargetCacheExtras(selection.backend)
+          : undefined;
 
   // ── In-memory cache check (primary provider only) ──────────────
   const cached: (number[] | null)[] = inputs.map((input) => {

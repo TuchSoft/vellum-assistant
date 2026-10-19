@@ -341,20 +341,22 @@ interface GatewayEndpoint {
   headers: Record<string, string>;
 }
 
-async function resolveGatewayEndpoint(): Promise<GatewayEndpoint | null> {
+export async function resolveGatewayEndpoint(): Promise<GatewayEndpoint | null> {
   const envUrl = process.env[LLM_GATEWAY_URL_ENV]?.trim();
   try {
-    const { ensureConnectionSnapshot, peekConnection, listConnections } =
+    const { ensureConnectionSnapshot, peekConnection } =
       await import("../providers/inference/connections.js");
     const { resolveAuth } =
       await import("../providers/inference/resolve-auth.js");
+    // Same selection the dispatch path uses (chat model → declaring row →
+    // canonical → first openai-compatible row), so the endpoint resolved here
+    // cannot diverge from the one chat and the embedding cache identity use.
+    const { resolveGatewayConnectionName } =
+      await import("../providers/gateway.js");
     await ensureConnectionSnapshot();
-    const named = peekConnection(LLM_GATEWAY_CONNECTION_NAME);
+    const connectionName = resolveGatewayConnectionName();
     const row =
-      named ??
-      (
-        await listConnections(undefined, { provider: "openai-compatible" })
-      ).find((connection) => connection.baseUrl != null);
+      connectionName != null ? peekConnection(connectionName) : undefined;
     const baseUrl = envUrl || row?.baseUrl || DEFAULT_GATEWAY_BASE_URL;
     if (row != null) {
       const resolved = await resolveAuth(row.auth, row.provider, {

@@ -161,6 +161,7 @@ import { repairRetiredFireworksModelIdsMigration } from "./160-repair-retired-fi
 import { repairRetiredFireworksGlm5p2ModelIdMigration } from "./161-repair-retired-fireworks-glm-5p2-model-id.js";
 import { copyMemoryV2TunablesToSubstrateMigration } from "./162-copy-memory-v2-tunables-to-substrate.js";
 import { dropInferenceProfilesMigration } from "./163-drop-inference-profiles.js";
+import { gatewayEmbeddingsMigration } from "./164-gateway-embeddings.js";
 import { migrateToWorkspaceVolumeMigration } from "./migrate-to-workspace-volume.js";
 import type { WorkspaceMigration } from "./types.js";
 
@@ -337,4 +338,5 @@ export const WORKSPACE_MIGRATIONS: WorkspaceMigration[] = [
   repairRetiredFireworksGlm5p2ModelIdMigration,
   copyMemoryV2TunablesToSubstrateMigration,
   dropInferenceProfilesMigration,
+  gatewayEmbeddingsMigration,
 ];

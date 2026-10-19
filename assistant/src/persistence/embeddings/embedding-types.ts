@@ -99,7 +99,8 @@ export type EmbeddingProviderName =
   | "openai"
   | "gemini"
   | "ollama"
-  | "custom";
+  | "custom"
+  | "gateway";
 
 export interface EmbeddingRequestOptions {
   signal?: AbortSignal;

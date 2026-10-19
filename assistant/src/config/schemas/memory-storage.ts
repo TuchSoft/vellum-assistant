@@ -7,6 +7,7 @@ export const VALID_MEMORY_EMBEDDING_PROVIDERS = [
   "gemini",
   "ollama",
   "custom",
+  "gateway",
 ] as const;
 
 const VALID_QDRANT_QUANTIZATION = ["scalar", "none"] as const;
@@ -87,6 +88,22 @@ export const MemoryEmbeddingsConfigSchema = z
       .optional()
       .describe(
         "Output dimensionality requested from a custom embeddings endpoint when the model supports it",
+      ),
+    gatewayModel: z
+      .string({ error: "memory.embeddings.gatewayModel must be a string" })
+      .default("embed")
+      .describe(
+        "Gateway catalog alias used for embeddings when provider is 'gateway'",
+      ),
+    gatewayDimensions: z
+      .number({ error: "memory.embeddings.gatewayDimensions must be a number" })
+      .int("memory.embeddings.gatewayDimensions must be an integer")
+      .positive(
+        "memory.embeddings.gatewayDimensions must be a positive integer",
+      )
+      .optional()
+      .describe(
+        "Output dimensionality requested from the gateway embedding alias when it supports it",
       ),
   })
   .describe("Embedding generation configuration for semantic memory search");

@@ -45,6 +45,7 @@ let recordedLastUsedTouches: Array<{ skillDir: string; today: string }> = [];
 // ---------------------------------------------------------------------------
 
 mock.module("../config/skills.js", () => ({
+  getBundledSkillsDir: () => "/mock/bundled-skills",
   loadSkillCatalog: () => mockCatalog,
   // Faithful reimplementation of the real plugin-scope filter — the
   // per-chat plugin scope suite below depends on its drop behavior.
@@ -128,12 +129,12 @@ mock.module("../skills/tool-manifest.js", () => ({
 
 mock.module("../tools/skills/skill-tool-factory.js", () => ({
   // Mirrors the real factory: no skillId in/out — ownership is recorded by
-  // the registry at `registerSkillTools(skillId, tools)` time.
+  // the registry at `registerSkillTools(skillId, tools, registration)` time.
   createSkillToolsFromManifest: (
     entries: SkillToolManifest["tools"],
     _skillDir: string,
     _versionHash: string,
-    _bundled?: boolean,
+    _capabilities?: unknown,
   ): Tool[] => {
     return entries.map((entry) => ({
       name: entry.name,
@@ -148,10 +149,14 @@ mock.module("../tools/skills/skill-tool-factory.js", () => ({
 }));
 
 mock.module("../tools/registry.js", () => ({
-  // Matches the new signature: `registerSkillTools(skillId, tools)`. The
-  // skillId comes from the caller (conversation-skill-tools) and is the
+  // Matches the new signature: `registerSkillTools(skillId, tools, registration)`.
+  // The skillId comes from the caller (conversation-skill-tools) and is the
   // sole source of truth for ownership.
-  registerSkillTools: (skillId: string, tools: Tool[]) => {
+  registerSkillTools: (
+    skillId: string,
+    tools: Tool[],
+    _registration?: unknown,
+  ) => {
     if (mockRegisterFailures.has(skillId)) {
       throw new Error(`Mock: tool name collision for skill "${skillId}"`);
     }

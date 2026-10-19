@@ -1,7 +1,7 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
 import {
   BundledSkillCapabilityDefaultsSchema,
@@ -9,13 +9,14 @@ import {
 } from "@vellumai/service-contracts/skill-capabilities";
 
 import capabilityDefaults from "../config/bundled-skills.capabilities.json" with { type: "json" };
-import { getBundledSkillsDir } from "../config/skills.js";
 import {
   _clearSkillCapabilityCacheForTest,
+  _setBundledSkillsDirForTest,
   getSkillCapabilities,
 } from "../skills/capabilities.js";
-import { parseToolManifestFile } from "../skills/tool-manifest.js";
-import { computeSkillVersionHash } from "../skills/version-hash.js";
+import { computeSkillVersionHash } from "../skills/skill-content-hash.js";
+
+const BUNDLED_DIR = join(import.meta.dir, "../config/bundled-skills");
 
 interface ExpectedEntry {
   versionHash: string;
@@ -24,10 +25,17 @@ interface ExpectedEntry {
 
 function expectedCapabilities(directory: string): SkillCapability[] {
   const capabilities: SkillCapability[] = ["vetted", "input_repairs"];
-  const toolsPath = join(directory, "TOOLS.json");
-  if (existsSync(toolsPath)) {
-    const manifest = parseToolManifestFile(toolsPath);
-    if (manifest.tools.some((tool) => tool.execution_target === "host")) {
+  let manifestJson: string | undefined;
+  try {
+    manifestJson = readFileSync(join(directory, "TOOLS.json"), "utf8");
+  } catch {
+    manifestJson = undefined;
+  }
+  if (manifestJson !== undefined) {
+    const manifest = JSON.parse(manifestJson) as {
+      tools?: Array<{ execution_target?: string }>;
+    };
+    if (manifest.tools?.some((tool) => tool.execution_target === "host")) {
       capabilities.push("host_exec");
     }
   }
@@ -38,10 +46,9 @@ function expectedCapabilities(directory: string): SkillCapability[] {
 }
 
 function buildExpectedManifest(): Record<string, ExpectedEntry> {
-  const bundledDir = getBundledSkillsDir();
-  const directories = readdirSync(bundledDir, { withFileTypes: true })
+  const directories = readdirSync(BUNDLED_DIR, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
-    .map((entry) => join(bundledDir, entry.name))
+    .map((entry) => join(BUNDLED_DIR, entry.name))
     .filter((directory) => existsSync(join(directory, "SKILL.md")))
     .sort((a, b) => a.localeCompare(b));
 
@@ -56,6 +63,10 @@ function buildExpectedManifest(): Record<string, ExpectedEntry> {
 }
 
 describe("bundled skill capability manifest", () => {
+  beforeAll(() => {
+    _setBundledSkillsDirForTest(BUNDLED_DIR);
+  });
+
   test("matches the current bundled skill content", () => {
     const parsed =
       BundledSkillCapabilityDefaultsSchema.safeParse(capabilityDefaults);
@@ -80,10 +91,10 @@ describe("bundled skill capability manifest", () => {
 });
 
 describe("getSkillCapabilities", () => {
-  const bundledDir = getBundledSkillsDir();
   const expected = buildExpectedManifest();
 
   beforeEach(() => {
+    _setBundledSkillsDirForTest(BUNDLED_DIR);
     _clearSkillCapabilityCacheForTest();
   });
 
@@ -92,7 +103,7 @@ describe("getSkillCapabilities", () => {
     const capabilities = getSkillCapabilities({
       skillId: "long-run",
       versionHash: longRun.versionHash,
-      directoryPath: join(bundledDir, "long-run"),
+      directoryPath: join(BUNDLED_DIR, "long-run"),
     });
 
     expect(capabilities).toEqual({
@@ -108,7 +119,7 @@ describe("getSkillCapabilities", () => {
     const capabilities = getSkillCapabilities({
       skillId: "computer-use",
       versionHash: computerUse.versionHash,
-      directoryPath: join(bundledDir, "computer-use"),
+      directoryPath: join(BUNDLED_DIR, "computer-use"),
     });
 
     expect(capabilities.computer_use_target).toBe(true);
@@ -119,7 +130,7 @@ describe("getSkillCapabilities", () => {
     const capabilities = getSkillCapabilities({
       skillId: "visualize",
       versionHash: visualize.versionHash,
-      directoryPath: join(bundledDir, "visualize"),
+      directoryPath: join(BUNDLED_DIR, "visualize"),
     });
 
     expect(capabilities).toEqual({
@@ -134,7 +145,7 @@ describe("getSkillCapabilities", () => {
     const capabilities = getSkillCapabilities({
       skillId: "long-run",
       versionHash: "v1:modified-content",
-      directoryPath: join(bundledDir, "long-run"),
+      directoryPath: join(BUNDLED_DIR, "long-run"),
     });
 
     expect(capabilities.host_exec).toBe(false);
@@ -161,7 +172,7 @@ describe("getSkillCapabilities", () => {
     const capabilities = getSkillCapabilities({
       skillId: "../long-run",
       versionHash: expected["long-run"].versionHash,
-      directoryPath: join(bundledDir, "long-run"),
+      directoryPath: join(BUNDLED_DIR, "long-run"),
     });
 
     expect(capabilities.host_exec).toBe(false);

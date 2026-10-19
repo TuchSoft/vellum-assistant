@@ -17,9 +17,9 @@ import {
   type SkillCapability,
 } from "@vellumai/service-contracts/skill-capabilities";
 
-import { getBundledSkillsDir } from "../src/config/skills.js";
+import { getBundledSkillsDir } from "../src/config/bundled-skills-dir.js";
+import { computeSkillVersionHash } from "../src/skills/skill-content-hash.js";
 import { parseToolManifestFile } from "../src/skills/tool-manifest.js";
-import { computeSkillVersionHash } from "../src/skills/version-hash.js";
 
 const CAPABILITY_ORDER = new Map(
   SKILL_CAPABILITIES.map((capability, index) => [capability, index]),

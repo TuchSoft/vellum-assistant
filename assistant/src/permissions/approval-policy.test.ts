@@ -146,7 +146,7 @@ describe("no rule — third-party skill tool", () => {
       riskLevel: RiskLevel.Low,
       toolName: "custom_tool",
       toolOrigin: "skill",
-      isSkillBundled: false,
+      isSkillVetted: false,
       autoApproveUpTo: "none",
     });
     expect(result.decision).toBe("prompt");
@@ -158,7 +158,7 @@ describe("no rule — third-party skill tool", () => {
       riskLevel: RiskLevel.Medium,
       toolName: "custom_tool",
       toolOrigin: "skill",
-      isSkillBundled: false,
+      isSkillVetted: false,
     });
     expect(result.decision).toBe("prompt");
     expect(result.reason).toContain("Skill tool");
@@ -166,7 +166,7 @@ describe("no rule — third-party skill tool", () => {
 
   test("plugin origin → treated as extension-owned (prompt at strict threshold)", () => {
     // Plugins join skills in the "extension-owned" bucket — both prompt by
-    // default. `isSkillBundled` is irrelevant for plugins (always false).
+    // default. `isSkillVetted` is irrelevant for plugins (always false).
     const result = evaluate({
       riskLevel: RiskLevel.Low,
       toolName: "custom_plugin_tool",
@@ -188,14 +188,14 @@ describe("no rule — third-party skill tool", () => {
     expect(result.reason).toContain("Skill tool");
   });
 
-  test("skill origin, bundled → falls through (not third-party)", () => {
+  test("skill origin, vetted → falls through (not third-party)", () => {
     const result = evaluate({
       riskLevel: RiskLevel.Low,
       toolName: "bundled_tool",
       toolOrigin: "skill",
-      isSkillBundled: true,
+      isSkillVetted: true,
     });
-    // Bundled skill + Low risk + no rule → handled by step 9 or 11
+    // Vetted skill + Low risk + no rule → handled by the risk-based fallback
     expect(result.decision).toBe("allow");
   });
 
@@ -204,7 +204,7 @@ describe("no rule — third-party skill tool", () => {
       riskLevel: RiskLevel.Low,
       toolName: "custom_tool",
       toolOrigin: "skill",
-      isSkillBundled: false,
+      isSkillVetted: false,
       autoApproveUpTo: "medium",
     });
     expect(result.decision).toBe("allow");
@@ -216,7 +216,7 @@ describe("no rule — third-party skill tool", () => {
       riskLevel: RiskLevel.High,
       toolName: "custom_tool",
       toolOrigin: "skill",
-      isSkillBundled: false,
+      isSkillVetted: false,
       autoApproveUpTo: "medium",
     });
     expect(result.decision).toBe("prompt");
@@ -368,48 +368,48 @@ describe("no rule — workspace-scoped operations", () => {
   });
 });
 
-// ── No rule: bundled skill tool ──────────────────────────────────────────────
+// ── No rule: vetted skill tool ───────────────────────────────────────────────
 
-describe("no rule — bundled skill tool", () => {
-  test("bundled skill, Low risk → allow", () => {
+describe("no rule — vetted skill tool", () => {
+  test("vetted skill, Low risk → allow", () => {
     const result = evaluate({
       riskLevel: RiskLevel.Low,
       toolName: "bundled_tool",
       toolOrigin: "skill",
-      isSkillBundled: true,
+      isSkillVetted: true,
     });
     expect(result.decision).toBe("allow");
-    expect(result.reason).toContain("Bundled skill");
+    expect(result.reason).toContain("within auto-approve threshold");
   });
 
-  test("bundled skill, Medium risk → prompt (only Low auto-allows)", () => {
+  test("vetted skill, Medium risk → prompt (only Low auto-allows)", () => {
     const result = evaluate({
       riskLevel: RiskLevel.Medium,
       toolName: "bundled_tool",
       toolOrigin: "skill",
-      isSkillBundled: true,
+      isSkillVetted: true,
     });
     expect(result.decision).toBe("prompt");
     expect(result.reason).toContain("medium risk");
   });
 
-  test("bundled skill, High risk → prompt", () => {
+  test("vetted skill, High risk → prompt", () => {
     const result = evaluate({
       riskLevel: RiskLevel.High,
       toolName: "bundled_tool",
       toolOrigin: "skill",
-      isSkillBundled: true,
+      isSkillVetted: true,
     });
     expect(result.decision).toBe("prompt");
     expect(result.reason).toContain("high risk");
   });
 
-  test("bundled skill, Low risk, autoApproveUpTo 'none' → prompt (threshold respected)", () => {
+  test("vetted skill, Low risk, autoApproveUpTo 'none' → prompt (threshold respected)", () => {
     const result = evaluate({
       riskLevel: RiskLevel.Low,
       toolName: "bundled_tool",
       toolOrigin: "skill",
-      isSkillBundled: true,
+      isSkillVetted: true,
       autoApproveUpTo: "none",
     });
     expect(result.decision).toBe("prompt");
@@ -467,7 +467,7 @@ describe("edge cases", () => {
       riskLevel: RiskLevel.Low,
       toolName: "manifest_tool",
       toolOrigin: "skill",
-      isSkillBundled: false,
+      isSkillVetted: false,
       hasManifestOverride: true,
       autoApproveUpTo: "none",
     });

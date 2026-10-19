@@ -177,12 +177,12 @@ describe("runSkillToolScript — errors", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Host execution is a bundled-only capability
+// Host execution requires the host_exec capability
 // ---------------------------------------------------------------------------
 
-describe("runSkillToolScript — host execution requires a bundled skill", () => {
-  test("refuses host execution for a non-bundled skill", async () => {
-    // A managed/workspace/plugin skill declaring execution_target: host must be
+describe("runSkillToolScript — host execution requires host_exec", () => {
+  test("refuses host execution without host_exec", async () => {
+    // A skill declaring execution_target: host without host_exec must be
     // denied before its executor is dynamically imported into the host process.
     const result = await runSkillToolScript(
       tempDir,
@@ -193,27 +193,27 @@ describe("runSkillToolScript — host execution requires a bundled skill", () =>
     );
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("only permitted for first-party bundled");
+    expect(result.content).toContain("host_exec capability is not granted");
     expect(result.content).toContain('execution_target: "sandbox"');
     // The script must not have run — its success output never appears.
     expect(result.content).not.toContain("hello from world");
   });
 
-  test("refuses host execution even when bundled is explicitly false", async () => {
+  test("refuses host execution when host_exec is explicitly false", async () => {
     const result = await runSkillToolScript(
       tempDir,
       "echo.ts",
       { foo: "bar" },
       makeContext(),
-      { target: "host", bundled: false },
+      { target: "host", hostExecAllowed: false },
     );
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("only permitted for first-party bundled");
+    expect(result.content).toContain("host_exec capability is not granted");
   });
 
-  test("allows host execution for a bundled skill", async () => {
-    // Bundled (first-party) skills ship trusted in-repo executors and may run
+  test("allows host execution when host_exec is granted", async () => {
+    // A granted skill ships trusted content and may run
     // on the host. With no registry entry for this temp script, the runner
     // falls back to a dynamic import and the script executes.
     const result = await runSkillToolScript(
@@ -221,7 +221,7 @@ describe("runSkillToolScript — host execution requires a bundled skill", () =>
       "success.ts",
       { name: "world" },
       makeContext(),
-      { target: "host", bundled: true },
+      { target: "host", hostExecAllowed: true },
     );
 
     expect(result.isError).toBe(false);

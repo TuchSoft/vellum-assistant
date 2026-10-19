@@ -246,8 +246,21 @@ export function getToolOwner(name: string): OwnerInfo | undefined {
  * Ownership is recorded in {@link ownersByName} keyed by tool name; the
  * `Tool` object itself carries no owner metadata, so callers cannot spoof
  * ownership by writing fields on the manifest.
+ *
+ * `registration` stamps the skill content version the tools were built from.
+ * Capability checks compare it with the current on-disk hash, so a changed
+ * skill loses its grants until it is re-registered.
  */
-export function registerSkillTools(skillId: string, newTools: Tool[]): Tool[] {
+export interface SkillToolRegistration {
+  versionHash: string;
+  directoryPath: string;
+}
+
+export function registerSkillTools(
+  skillId: string,
+  newTools: Tool[],
+  registration?: SkillToolRegistration,
+): Tool[] {
   // Filter out tools that collide with core tools, and validate the rest.
   const accepted: Tool[] = [];
   for (const tool of newTools) {
@@ -294,7 +307,16 @@ export function registerSkillTools(skillId: string, newTools: Tool[]): Tool[] {
 
   for (const tool of accepted) {
     tools.set(tool.name, tool);
-    ownersByName.set(tool.name, { kind: "skill", id: skillId });
+    ownersByName.set(tool.name, {
+      kind: "skill",
+      id: skillId,
+      ...(registration
+        ? {
+            skillVersionHash: registration.versionHash,
+            skillDirectoryPath: registration.directoryPath,
+          }
+        : {}),
+    });
     log.info(
       { name: tool.name, ownerSkillId: skillId },
       "Skill tool registered",
@@ -688,7 +710,8 @@ export function replaceMcpToolsForServer(
         current !== undefined &&
         owner?.kind === "mcp" &&
         owner.id === serverId &&
-        JSON.stringify(current.input_schema) === JSON.stringify(t.input_schema) &&
+        JSON.stringify(current.input_schema) ===
+          JSON.stringify(t.input_schema) &&
         current.description === t.description
       );
     });

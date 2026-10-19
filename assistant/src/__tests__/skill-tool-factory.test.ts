@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
+import {
+  NO_SKILL_CAPABILITIES,
+  type SkillCapabilities,
+} from "@vellumai/service-contracts/skill-capabilities";
+
 import { getBundledSkillsDir, type SkillToolEntry } from "../config/skills.js";
 import { RiskLevel } from "../permissions/types.js";
 import { computeSkillVersionHash } from "../skills/version-hash.js";
@@ -38,10 +43,20 @@ function makeEntry(overrides: Partial<SkillToolEntry> = {}): SkillToolEntry {
 }
 
 // These factory tests exercise the host executor-routing path (the default
-// makeEntry uses execution_target: "host"). Host execution is a first-party
-// capability, so the runner only runs it for bundled skills — pass this as the
-// `bundled` argument so createSkillTool actually reaches the executor.
-const BUNDLED = true;
+// makeEntry uses execution_target: "host"). Host execution requires the
+// host_exec capability, so pass a resolved capability set that grants it.
+const HOST_CAPS: SkillCapabilities = {
+  host_exec: true,
+  vetted: true,
+  input_repairs: true,
+  computer_use_target: false,
+};
+
+const INPUT_REPAIR_CAPS: SkillCapabilities = {
+  ...NO_SKILL_CAPABILITIES,
+  host_exec: true,
+  input_repairs: true,
+};
 
 function makeContext(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
@@ -146,7 +161,7 @@ describe("createSkillTool", () => {
       makeEntry({ executor: "echo.ts" }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
     const ctx = makeContext({ workingDir: "/my/project" });
     const input = { query: "hello" };
@@ -165,7 +180,7 @@ describe("createSkillTool", () => {
       makeEntry({ executor: "nonexistent.ts" }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     // Provide valid input so we reach the executor (the default schema
@@ -226,7 +241,7 @@ describe("createSkillTool — unknown parameter validation", () => {
       makeEntry({ executor: "echo.ts" }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute(
@@ -247,7 +262,7 @@ describe("createSkillTool — unknown parameter validation", () => {
       makeEntry({ executor: "echo.ts" }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute(
@@ -282,7 +297,7 @@ describe("createSkillTool — unknown parameter validation", () => {
         entry,
         skillDir,
         computeSkillVersionHash(skillDir),
-        BUNDLED,
+        HOST_CAPS,
       );
       const calls: unknown[] = [];
       const context = makeContext({
@@ -315,7 +330,7 @@ describe("createSkillTool — unknown parameter validation", () => {
       makeEntry({ executor: "echo.ts" }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute({ query: "hello" }, makeContext());
@@ -335,7 +350,7 @@ describe("createSkillTool — unknown parameter validation", () => {
       }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute({}, makeContext());
@@ -352,7 +367,7 @@ describe("createSkillTool — unknown parameter validation", () => {
       }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute({ anything: "goes" }, makeContext());
@@ -372,7 +387,7 @@ describe("createSkillTool — required/type/enum validation", () => {
       makeEntry({ executor: "echo.ts" }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute({}, makeContext());
@@ -388,7 +403,7 @@ describe("createSkillTool — required/type/enum validation", () => {
       makeEntry({ executor: "echo.ts" }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute({ query: { nested: 1 } }, makeContext());
@@ -411,7 +426,7 @@ describe("createSkillTool — required/type/enum validation", () => {
       }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute(
@@ -437,7 +452,7 @@ describe("createSkillTool — required/type/enum validation", () => {
       }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute(
@@ -462,7 +477,7 @@ describe("createSkillTool — required/type/enum validation", () => {
       }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute({ mode: "c" }, makeContext());
@@ -487,7 +502,7 @@ describe("createSkillTool — required/type/enum validation", () => {
       }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute(
@@ -512,7 +527,7 @@ describe("createSkillTool — required/type/enum validation", () => {
       }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute({ auto_open: "yes" }, makeContext());
@@ -541,7 +556,7 @@ describe("createSkillTool — required/type/enum validation", () => {
       }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute(
@@ -578,7 +593,7 @@ describe("createSkillTool — required/type/enum validation", () => {
       }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute(
@@ -605,7 +620,7 @@ describe("createSkillTool — required/type/enum validation", () => {
       }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute({ mode: "a" }, makeContext());
@@ -644,7 +659,7 @@ function subagentReadTool() {
     subagentReadEntry(),
     "/skills/subagent",
     "v1:test",
-    BUNDLED,
+    HOST_CAPS,
   );
 }
 
@@ -700,7 +715,7 @@ describe("createSkillTool: parameter misuse redirects", () => {
     }
   });
 
-  test("a non-bundled skill reusing the name keeps the generic validation error", async () => {
+  test("a skill without input_repairs keeps the generic validation error", async () => {
     // Tool names are not reserved, so a workspace skill can define its own
     // `subagent_read` where `path` is a declared parameter. Its validation
     // errors must describe its own manifest, not Vellum's file-reader redirect.
@@ -715,7 +730,7 @@ describe("createSkillTool: parameter misuse redirects", () => {
       }),
       "/workspace/skills/notes",
       "v1:test",
-      false,
+      NO_SKILL_CAPABILITIES,
     );
 
     const result = await tool.execute(
@@ -748,7 +763,7 @@ describe("createSkillTool: parameter misuse redirects", () => {
       makeEntry({ executor: "echo.ts" }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
 
     const result = await tool.execute(
@@ -791,7 +806,7 @@ function subagentSpawnTool() {
     { ...subagentSpawnEntry(), executor: "echo.ts" },
     tempDir,
     computeSkillVersionHash(tempDir),
-    BUNDLED,
+    HOST_CAPS,
   );
 }
 
@@ -802,7 +817,7 @@ function subagentSpawnTool() {
  * than the resolver silently deletes the resolver's behavior, and every test
  * that calls `executeSubagentSpawn` directly still passes.
  */
-describe("createSkillTool: bundled input repairs", () => {
+describe("createSkillTool: input repairs", () => {
   const SCAFFOLD_SCHEMA = {
     type: "object",
     properties: {
@@ -824,7 +839,7 @@ describe("createSkillTool: bundled input repairs", () => {
     required: ["skill_id", "body_markdown"],
   };
 
-  function makeScaffoldTool(bundled: boolean) {
+  function makeScaffoldTool(inputRepairs: boolean) {
     return createSkillTool(
       makeEntry({
         name: "scaffold_managed_skill",
@@ -833,7 +848,7 @@ describe("createSkillTool: bundled input repairs", () => {
       }),
       tempDir,
       computeSkillVersionHash(tempDir),
-      bundled,
+      inputRepairs ? INPUT_REPAIR_CAPS : NO_SKILL_CAPABILITIES,
     );
   }
 
@@ -882,7 +897,7 @@ describe("createSkillTool: bundled input repairs", () => {
     );
   });
 
-  test("a non-bundled skill reusing the name keeps its own contract", async () => {
+  test("a skill without input_repairs keeps its own contract", async () => {
     const result = await makeScaffoldTool(false).execute(
       { skill_id: "deploy", body: "# Deploy\n" },
       makeContext(),
@@ -963,7 +978,7 @@ describe("createSkillTool — version hash plumbing to runner", () => {
       makeEntry({ executor: "echo.ts" }),
       tempDir,
       hash,
-      BUNDLED,
+      HOST_CAPS,
     );
     const ctx = makeContext({ workingDir: "/my/project" });
     const input = { query: "test" };

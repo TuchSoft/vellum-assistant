@@ -8,7 +8,7 @@ import {
 } from "@vellumai/service-contracts/skill-capabilities";
 
 import bundledCapabilityDefaults from "../config/bundled-skills.capabilities.json" with { type: "json" };
-import { getBundledSkillsDir } from "../config/skills.js";
+import { getBundledSkillsDir } from "../config/bundled-skills-dir.js";
 import { getLogger } from "../util/logger.js";
 
 const log = getLogger("skill-capabilities");
@@ -31,6 +31,16 @@ const defaults = parsedDefaults.success ? parsedDefaults.data.skills : {};
  * cache only avoids repeated path resolution and object construction.
  */
 const capabilityCache = new Map<string, SkillCapabilities>();
+
+/**
+ * Test seam: lets suite files that mock `config/skills.js` keep the resolver
+ * pointed at the real bundled directory. Production never sets this.
+ */
+let bundledSkillsDirOverride: string | null = null;
+
+function resolveBundledSkillsDir(): string {
+  return bundledSkillsDirOverride ?? getBundledSkillsDir();
+}
 
 export interface SkillCapabilityLookup {
   skillId: string;
@@ -83,7 +93,7 @@ export function getSkillCapabilities(
     return cached;
   }
 
-  const bundledDirectory = resolve(join(getBundledSkillsDir(), skillId));
+  const bundledDirectory = resolve(join(resolveBundledSkillsDir(), skillId));
   if (resolvedDirectory !== bundledDirectory) {
     capabilityCache.set(key, NO_SKILL_CAPABILITIES);
     return NO_SKILL_CAPABILITIES;
@@ -110,5 +120,11 @@ export function hasSkillCapability(
 
 /** Clear the memoized capability sets. Exported for tests. */
 export function _clearSkillCapabilityCacheForTest(): void {
+  capabilityCache.clear();
+}
+
+/** Point the resolver at a specific bundled directory. Exported for tests. */
+export function _setBundledSkillsDirForTest(directory: string | null): void {
+  bundledSkillsDirOverride = directory;
   capabilityCache.clear();
 }

@@ -82,15 +82,15 @@ mock.module("../tools/registry.js", () => ({
 // Mock the dynamic-skill predicate so isSensitiveTool's skill_load branch is
 // exercised without a real skill catalog: "dynamic-skill" is an inline-command
 // load, anything else is plain.
-/** Whether the owning skill of the tool under test reports as first-party. */
-let skillOwnerBundled = false;
+/** Whether the owning skill of the tool under test reports as vetted. */
+let skillOwnerVetted = false;
 
 mock.module("../permissions/checker.js", () => ({
   isDynamicSkillLoadInvocation: (
     _name: string,
     input: Record<string, unknown>,
   ) => input?.skill === "dynamic-skill",
-  isToolOwnerSkillBundled: () => skillOwnerBundled,
+  isToolOwnerSkillVetted: () => skillOwnerVetted,
 }));
 
 // The channel permission-matrix cell is a gateway IPC call; the shared mock
@@ -813,7 +813,7 @@ describePg(
       await clearTables();
       resetAuditCalls();
       resetThresholdReaderMock();
-      skillOwnerBundled = false;
+      skillOwnerVetted = false;
       fileWriteOwner = undefined;
     });
 
@@ -986,21 +986,21 @@ describePg(
       // Nothing reviewed an unvetted manifest, so the risk it claims about
       // itself must not be what decides whether a room may run it unattended.
       test("an unvetted skill shadowing a core side-effect tool", async () => {
-        skillOwnerBundled = false;
+        skillOwnerVetted = false;
         await expectFloored("document_create", { title: "x" });
       });
 
       // A novel name is in no side-effect list, so without the unvetted check it
       // would not be gated at all — the case the shadowing guard alone misses.
       test("an unvetted skill tool with a name of its own", async () => {
-        skillOwnerBundled = false;
+        skillOwnerVetted = false;
         await expectFloored("acme_send", { to: "someone" });
       });
 
       // Workspace-owned tools are dynamic-imported on-disk code with no
       // bundled tier — unvetted by definition, whatever the bundled flag says.
       test("a workspace-owned tool with a name of its own", async () => {
-        skillOwnerBundled = true;
+        skillOwnerVetted = true;
         await expectFloored("ws_deploy", { target: "prod" });
       });
 
@@ -1272,7 +1272,7 @@ describePg(
 
     test("a bundled skill's side-effect tool is still lifted", async () => {
       thresholdReaderMock.cell = cell("high");
-      skillOwnerBundled = true;
+      skillOwnerVetted = true;
 
       const result = await handler.checkPreExecutionGates(
         "document_create",

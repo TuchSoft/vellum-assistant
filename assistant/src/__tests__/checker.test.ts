@@ -80,6 +80,7 @@ const guardianPathSpy = spyOn(
   "resolveGuardianPersonaPath",
 ).mockImplementation(async () => mockGuardianPersonaPath);
 
+import { getBundledSkillsDir } from "../config/bundled-skills-dir.js";
 import * as envRegistry from "../config/env-registry.js";
 import {
   check,
@@ -89,6 +90,7 @@ import {
 } from "../permissions/checker.js";
 import { _clearGlobalCacheForTesting } from "../permissions/gateway-threshold-reader.js";
 import { RiskLevel } from "../permissions/types.js";
+import { computeSkillVersionHash } from "../skills/version-hash.js";
 import { registerSkillTools, registerTool } from "../tools/registry.js";
 import type { Tool } from "../tools/types.js";
 import * as platformModule from "../util/platform.js";
@@ -109,7 +111,7 @@ const STRICT_GATEWAY_THRESHOLDS = {
 
 // Register a mock skill-origin tool for testing default-ask policy.
 // Ownership is recorded by `registerSkillTools(skillId, tools)`, not by
-// stamping a field on the `Tool` object — `isToolOwnerSkillBundled()` reads
+// stamping a field on the `Tool` object — `isToolOwnerSkillVetted()` reads
 // from the registry via `getToolOwner(name)` to find the owning skill id.
 const mockSkillTool: Tool = {
   name: "skill_test_tool",
@@ -122,11 +124,10 @@ const mockSkillTool: Tool = {
 };
 registerSkillTools("test-skill", [mockSkillTool]);
 
-// Register a mock bundled skill-origin tool for testing strict mode + bundled
-// policy. `app-builder` is a real entry under `bundled-skills/`, so
-// `loadSkillCatalog()` reports it as `bundled: true` and the permission
-// checker derives `isSkillBundled = true` from the registry's ownersByName
-// map (populated by `registerSkillTools`) without any per-tool stamp.
+// Register a mock vetted skill-origin tool for testing strict mode + vetted
+// policy. `app-builder` is a real entry under `bundled-skills/`, so the
+// permission checker resolves its capability defaults from the generated
+// manifest using the registration hash and directory.
 const mockBundledSkillTool: Tool = {
   name: "skill_bundled_test_tool",
   description: "A test bundled skill tool",
@@ -136,7 +137,11 @@ const mockBundledSkillTool: Tool = {
   input_schema: { type: "object" as const, properties: {} },
   execute: async () => ({ content: "ok", isError: false }),
 };
-registerSkillTools("app-builder", [mockBundledSkillTool]);
+const appBuilderDir = join(getBundledSkillsDir(), "app-builder");
+registerSkillTools("app-builder", [mockBundledSkillTool], {
+  versionHash: computeSkillVersionHash(appBuilderDir),
+  directoryPath: appBuilderDir,
+});
 
 // Register CU tools so check() can look them up in the tool registry
 // instead of falling through to Medium (unknown tool).
@@ -1182,7 +1187,7 @@ describe("Permission Checker", () => {
         expect(result.decision).toBe("prompt");
       });
 
-      test("bundled skill-origin tool with no rule prompts in strict mode", async () => {
+      test("vetted skill-origin tool with no rule prompts in strict mode", async () => {
         mockIpcResponse("get_global_thresholds", STRICT_GATEWAY_THRESHOLDS);
         _clearGlobalCacheForTesting();
         const result = await check("skill_bundled_test_tool", {}, "/tmp");

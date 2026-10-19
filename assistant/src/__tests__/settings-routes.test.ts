@@ -12,6 +12,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 
+import type { SkillCapabilities } from "@vellumai/service-contracts/skill-capabilities";
+
 // Guardian identity resolves via the gateway delivery cache, not the local
 // contacts DB. Seed it per-test via seedGatewayGuardian; persona resolution
 // joins the local contact (userFile) by the delivery's channelType + address.
@@ -42,10 +44,8 @@ function seedGatewayGuardian(g: {
   gatewayGuardians.push({ status: "active", ...g });
 }
 
-import {
-  getBundledSkillsDir,
-  type SkillToolManifest,
-} from "../config/skills.js";
+import { getBundledSkillsDir } from "../config/bundled-skills-dir.js";
+import type { SkillToolManifest } from "../config/skills.js";
 import * as permissions from "../permissions/checker.js";
 import { RiskLevel } from "../permissions/types.js";
 import { getSqlite } from "../persistence/db-connection.js";
@@ -77,9 +77,15 @@ test("permission simulation resolves the bundled computer-use target from input"
     readFileSync(join(skillDir, "TOOLS.json"), "utf8"),
   ) as SkillToolManifest;
   const skillId = "simulation-computer-use";
+  const computerUseCaps: SkillCapabilities = {
+    host_exec: true,
+    vetted: true,
+    input_repairs: true,
+    computer_use_target: true,
+  };
   registerSkillTools(
     skillId,
-    createSkillToolsFromManifest(manifest.tools, skillDir, "", true),
+    createSkillToolsFromManifest(manifest.tools, skillDir, "", computerUseCaps),
   );
   try {
     for (const target of ["assistant-desktop", "connected-computer"]) {

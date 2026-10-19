@@ -14,7 +14,7 @@ import {
 } from "../permissions/channel-permission-query.js";
 import {
   isDynamicSkillLoadInvocation,
-  isToolOwnerSkillBundled,
+  isToolOwnerSkillVetted,
 } from "../permissions/checker.js";
 import {
   channelNoCellDefault,
@@ -371,8 +371,8 @@ export function sensitiveToolReach(
     return "host";
   }
 
-  // Extension-owned code that is not first-party bundled is unvetted: its
-  // manifest declares its own risk, and nothing reviewed it. It is sensitive
+  // Extension-owned code that is not vetted is unvetted: its manifest
+  // declares its own risk, and nothing reviewed it. It is sensitive
   // whatever it is named — a novel name is in no side-effect list, so without
   // this it would not be gated at all, and the risk its own manifest claims
   // would be the only thing standing between it and an auto-approval.
@@ -387,8 +387,8 @@ export function sensitiveToolReach(
 
 /**
  * Whether a tool comes from code nobody in-repo reviewed. Vetted is an
- * allowlist — the built-in default set and first-party bundled skills —
- * and every other owner is unvetted: third-party and workspace skills,
+ * allowlist: the built-in default set and skills granted the `vetted`
+ * capability. Every other owner is unvetted: third-party and workspace skills,
  * plugins, workspace tools (arbitrary on-disk code imported into the
  * daemon), MCP servers, and owner kinds that do not exist yet. An
  * allowlist fails closed when the owner vocabulary grows, the same reason
@@ -405,7 +405,7 @@ function isUnvettedExtensionTool(toolName: string): boolean {
     return false;
   }
   if (kind === "skill") {
-    return !isToolOwnerSkillBundled(getTool(toolName));
+    return !isToolOwnerSkillVetted(getTool(toolName));
   }
   return true;
 }

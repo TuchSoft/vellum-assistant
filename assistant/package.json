@@ -15,6 +15,7 @@
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "generate:openapi": "bun run scripts/generate-openapi.ts",
+    "generate:skill-capabilities": "bun run scripts/generate-skill-capability-defaults.ts && bunx prettier --write src/config/bundled-skills.capabilities.json",
     "sync:llm-catalog": "bun run scripts/sync-llm-catalog.ts",
     "sync:web-search-catalog": "bun run scripts/sync-web-search-catalog.ts",
     "probe:skill-retrieval": "bun run scripts/probe-skill-retrieval.ts",

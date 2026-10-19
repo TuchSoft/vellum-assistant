@@ -11,9 +11,9 @@
  * values sit well under 2^53, so the conversion is lossless.
  *
  * Schema ownership: the facade never creates tables. `baseline` is an optional
- * idempotent DDL set applied once per URL before the first statement; the test
- * bootstrap passes the generated baseline, production leaves it to the
- * migration runner.
+ * DDL set applied once per URL before the first statement, and only when the
+ * application schema does not exist yet; the test bootstrap passes the
+ * generated baseline, production leaves later changes to the migration runner.
  */
 
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -21,6 +21,10 @@ import type { Sql } from "postgres";
 import postgres from "postgres";
 
 import type { AsyncDb, AsyncDbSlot, SqlParam } from "./db-facade.js";
+import {
+  APPLICATION_SCHEMA_PROBE_SQL,
+  type ApplicationSchemaProbeRow,
+} from "./pg-migrations/apply-baseline.js";
 import * as pgSchema from "./pg-schema/index.js";
 
 type PgSql = Sql<Record<string, never>>;
@@ -58,11 +62,19 @@ function pool(url: string): PgSql {
 }
 
 /**
- * Apply the slot's baseline statements once per URL. The statements are
- * idempotent (`CREATE TABLE IF NOT EXISTS`), so a re-run is harmless; the
- * cached promise keeps concurrent opens from duplicating the work.
+ * Apply the slot's baseline statements once per URL, only when the application
+ * schema does not exist yet. The schema probe runs first: replaying the
+ * baseline on an evolved database would try to index columns a migration step
+ * has already dropped. The cached promise keeps concurrent opens from
+ * duplicating the work.
  */
 async function applyBaseline(sql: PgSql, statements: string[]): Promise<void> {
+  const rows = (await sql.unsafe(
+    APPLICATION_SCHEMA_PROBE_SQL,
+  )) as unknown as ApplicationSchemaProbeRow[];
+  if (rows[0]?.present === true) {
+    return;
+  }
   await sql.unsafe(statements.join(";\n"));
 }
 

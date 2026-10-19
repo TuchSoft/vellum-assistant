@@ -2,8 +2,9 @@
  * The ordered Postgres migration step list.
  *
  * Step `0000_baseline` materialises the schema captured from the live SQLite
- * databases (see `baseline.generated.ts`); it is idempotent, so it is safe on
- * both an empty database and one that already has the schema.
+ * databases (see `baseline.generated.ts`). It applies only when the application
+ * schema does not exist yet; on an already-migrated database the ordered steps
+ * own every change, so the retired baseline DDL is never replayed.
  *
  * Data backfills: append ONE entry per upstream migration that carries data
  * (an UPDATE/INSERT of mass rows). Keep each as its own named step so the
@@ -14,6 +15,7 @@
  * (see `assistant/drizzle.config.ts`).
  */
 
+import { applyBaselineIfNeeded } from "./apply-baseline.js";
 import { BASELINE_STATEMENTS, BASELINE_TABLES } from "./baseline.generated.js";
 import type { PgMigrationStep } from "./run-pg-migrations.js";
 
@@ -23,9 +25,9 @@ export const PG_STEPS: readonly PgMigrationStep[] = [
   {
     name: "0000_baseline",
     up: async (db) => {
-      for (const statement of BASELINE_STATEMENTS) {
-        await db.exec(statement);
-      }
+      // Only on an empty database: replaying the snapshot on an evolved schema
+      // would re-create indexes over columns later steps have dropped.
+      await applyBaselineIfNeeded(db, BASELINE_STATEMENTS);
     },
     down: async (db) => {
       const drops = [...BASELINE_TABLES].reverse().map((table) => {

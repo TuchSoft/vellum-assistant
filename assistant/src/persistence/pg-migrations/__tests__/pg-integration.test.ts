@@ -17,6 +17,7 @@ import { Database } from "bun:sqlite";
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 
 import { getPostgresAsyncDb } from "../../db-postgres-facade.js";
+import { applyBaselineIfNeeded } from "../apply-baseline.js";
 import { BASELINE_STATEMENTS, BASELINE_TABLES } from "../baseline.generated.js";
 import { buildBaselineStatements } from "../baseline.js";
 import { PG_STEPS } from "../pg-steps.js";
@@ -74,6 +75,30 @@ pgDescribe("pg baseline + runner (postgres)", () => {
     await applyBaseline();
     await applyBaseline();
     expect(await pgTableNames()).toEqual([...BASELINE_TABLES]);
+  });
+
+  test("a second boot skips the baseline after 0002 dropped the retired columns", async () => {
+    await applyBaseline();
+
+    const step = PG_STEPS.find(
+      (candidate) => candidate.name === "0002_alias_model_columns",
+    );
+    expect(step).toBeDefined();
+    await step!.up(db());
+
+    // The next process boot would replay the baseline through the gate. It
+    // must detect the existing schema and run nothing: the snapshot still
+    // carries an index over the column 0002 just dropped.
+    expect(await applyBaselineIfNeeded(db(), BASELINE_STATEMENTS)).toBe(false);
+
+    const columns = await db().all<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'conversations'`,
+    );
+    const names = columns.map((column) => column.column_name);
+    expect(names).toContain("model");
+    expect(names).toContain("reasoning_effort");
+    expect(names).not.toContain("inference_profile_expires_at");
   });
 
   test("the baseline excludes the log tables", async () => {

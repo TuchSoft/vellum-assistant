@@ -249,11 +249,36 @@ describe("STT provider catalog", () => {
   test("supportsDiarization helper returns false for unknown provider IDs", () => {
     expect(supportsDiarization("nonexistent" as never)).toBe(false);
   });
+
+  test("gateway is batch-only, non-telephony and non-streaming", () => {
+    const entry = getProviderEntry("gateway");
+    expect(entry).toBeDefined();
+    expect(entry!.supportedBoundaries).toEqual(new Set(["daemon-batch"]));
+    expect(entry!.telephonyMode).toBe("none");
+    expect(entry!.conversationStreamingMode).toBe("none");
+    expect(entry!.supportsDiarization).toBe(false);
+    expect(entry!.languageSelection).toBe("auto");
+  });
+
+  test("gateway is selectable and resolves to its own row", () => {
+    expect(listSelectableProviderIds()).toContain("gateway");
+    expect(
+      resolveSttCatalogKey({
+        provider: "gateway",
+        providers: { gateway: { model: "stt" } },
+      }),
+    ).toBe("gateway");
+  });
 });
 
 describe("connection-based providers", () => {
   test("vellum is excluded from the API-key credential provider list", () => {
     expect(listCredentialProviderNames()).not.toContain("vellum");
+  });
+
+  test("gateway is excluded from the API-key credential provider list", () => {
+    expect(listCredentialProviderNames()).not.toContain("gateway");
+    expect(getCredentialProvider("gateway")).toBe("gateway");
   });
 
   test("API-key providers remain listed", () => {

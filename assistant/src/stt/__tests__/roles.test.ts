@@ -93,9 +93,47 @@ describe("sttCatalogKeyForRole", () => {
     expect(sttCatalogKeyForRole(stt, "liveVoice")).toBe("deepgram-flux");
     expect(sttCatalogKeyForRole(stt, "batch")).toBe("deepgram");
   });
+
+  test("the migrated config routes batch to the gateway and streaming to vellum", () => {
+    const stt = {
+      provider: "gateway",
+      providers: { gateway: { model: "stt" } },
+      roles: {
+        liveVoice: { provider: "vellum" },
+        telephony: { provider: "vellum" },
+        dictation: { provider: "vellum" },
+        watch: { provider: "vellum" },
+      },
+    };
+
+    expect(sttCatalogKeyForRole(stt, "batch")).toBe("gateway");
+    expect(sttCatalogKeyForRole(stt, undefined)).toBe("gateway");
+    for (const role of [
+      "liveVoice",
+      "telephony",
+      "dictation",
+      "watch",
+    ] as const) {
+      expect(sttCatalogKeyForRole(stt, role)).toBe("vellum");
+    }
+  });
 });
 
 describe("sttRoleCapabilityGap", () => {
+  test("batch accepts the gateway", () => {
+    expect(sttRoleCapabilityGap("batch", { provider: "gateway" })).toBeNull();
+  });
+
+  test("live voice rejects the gateway, which has no streaming boundary", () => {
+    const gap = sttRoleCapabilityGap("liveVoice", { provider: "gateway" });
+    expect(gap).toContain("gateway");
+    expect(gap).toContain("daemon-streaming");
+  });
+
+  test("telephony rejects the gateway, which has no telephony mode", () => {
+    const gap = sttRoleCapabilityGap("telephony", { provider: "gateway" });
+    expect(gap).not.toBeNull();
+  });
   test("live voice accepts a streaming-only family", () => {
     expect(
       sttRoleCapabilityGap("liveVoice", {

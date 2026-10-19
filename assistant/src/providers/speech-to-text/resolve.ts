@@ -1,7 +1,11 @@
 import { getConfig } from "../../config/loader.js";
 import { getProviderKeyAsync } from "../../security/secure-keys.js";
 import { createDaemonBatchTranscriber } from "../../stt/daemon-batch-transcriber.js";
-import { sttCatalogKeyForRole, type SttRole } from "../../stt/roles.js";
+import {
+  sttCatalogKeyForRole,
+  type SttRole,
+  sttSelectionForRole,
+} from "../../stt/roles.js";
 import type {
   BatchTranscriber,
   StreamingTranscriber,
@@ -154,6 +158,26 @@ export async function resolveBatchTranscriber(
     const reason = batchBoundaryGapReason(provider as SttProviderId);
     log.warn({ providerId: provider }, reason);
     throw new SttError("provider-error", reason, { userFacing: true });
+  }
+
+  if (provider === "gateway") {
+    // The gateway connection is the credential. A missing connection is a
+    // configuration gap, not a batch-capability gap, so report it as "no
+    // backend configured" the same way a missing API key does.
+    const { resolveGatewayEndpoint } =
+      await import("../../config/llm-catalog.js");
+    if (!(await resolveGatewayEndpoint())) {
+      log.warn(
+        { providerId: provider },
+        "Gateway STT selected but no LLM gateway connection resolves",
+      );
+      return null;
+    }
+    const configuredModel = sttSelectionForRole(stt, options.role).model;
+    return createDaemonBatchTranscriber(null, "gateway", language, {
+      gatewayModel:
+        typeof configuredModel === "string" ? configuredModel : undefined,
+    });
   }
 
   if (provider === "vellum") {
@@ -479,6 +503,14 @@ export async function resolveStreamingTranscriber(
 
   // Verify the provider supports the daemon-streaming boundary.
   if (!supportsBoundary(provider, "daemon-streaming")) {
+    // Name the gap rather than returning silence: a batch-only provider (e.g.
+    // gateway) reached by a streaming role leaves that consumer with no
+    // transcriber at all, which is otherwise indistinguishable from an
+    // unconfigured install.
+    log.warn(
+      { providerId: provider },
+      "STT provider supports no daemon-streaming transcription; streaming callers resolve no transcriber",
+    );
     return null;
   }
 
@@ -656,6 +688,13 @@ async function createStreamingTranscriber(
         ...(options.diarize ? { diarize: true } : {}),
       });
     }
+    case "gateway": {
+      // Batch only: the gateway exposes the batch transcription endpoint and
+      // nothing that speaks the streaming session protocol. The resolver
+      // returns before this factory for a streaming-only consumer, so this is
+      // a defensive branch that keeps the switch exhaustive.
+      return null;
+    }
     case "vellum": {
       // Managed speech dials the GATEWAY's speech relay (velay contact is
       // gateway-only); the apiKey argument is unused. Diarization is
@@ -785,6 +824,9 @@ export function sttCredentialGapReason(credentialProviderName: string): string {
   if (credentialProviderName === "vellum") {
     return "No Vellum platform connection for managed speech — run 'assistant platform connect'";
   }
+  if (credentialProviderName === "gateway") {
+    return "No LLM gateway connection for speech-to-text — configure the gateway connection";
+  }
   return `No API key configured for credential provider "${credentialProviderName}"`;
 }
 
@@ -796,6 +838,13 @@ export async function sttProviderKeyResolves(
     const { vellumManagedSpeechAvailable } =
       await import("./vellum-managed.js");
     return vellumManagedSpeechAvailable();
+  }
+  // gateway has no stored API key either — the LLM gateway connection is the
+  // credential, resolved through the same helper chat and embeddings use.
+  if (credentialProviderName === "gateway") {
+    const { resolveGatewayEndpoint } =
+      await import("../../config/llm-catalog.js");
+    return (await resolveGatewayEndpoint()) !== null;
   }
   return (await getProviderKeyAsync(credentialProviderName)) !== undefined;
 }

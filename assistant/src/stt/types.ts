@@ -47,6 +47,12 @@ export type SttProviderId =
   | "openai-whisper"
   | "deepgram"
   /**
+   * Speech-to-text through the LLM gateway connection. Batch only: the gateway
+   * exposes the provider's batch transcription endpoint, so there is no
+   * streaming session and no separate credential.
+   */
+  | "gateway"
+  /**
    * Deepgram's Flux conversational speech model. Shares the `deepgram`
    * credential and is streaming-only: Flux has no batch endpoint.
    */

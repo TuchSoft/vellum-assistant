@@ -4,10 +4,11 @@ const WHISPER_API_URL = "https://api.openai.com/v1/audio/transcriptions";
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 /**
- * Derive a filename extension from a MIME type so the Whisper API can detect
- * the audio format. Falls back to "audio" when the MIME type is unrecognised.
+ * Derive a filename extension from a MIME type so a multipart transcription
+ * call can declare the audio format. Falls back to "audio" when the MIME type
+ * is unrecognised.
  */
-function extensionFromMime(mimeType: string): string {
+export function extensionFromMime(mimeType: string): string {
   const map: Record<string, string> = {
     "audio/wav": "wav",
     "audio/x-wav": "wav",

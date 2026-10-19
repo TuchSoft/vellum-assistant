@@ -15,6 +15,7 @@ import type { SttProviderId } from "../../stt/types.js";
  */
 export const VALID_STT_PROVIDERS = [
   "deepgram",
+  "gateway",
   "google-gemini",
   "openai-whisper",
   "xai",
@@ -169,8 +170,9 @@ export { STT_ROLE_REQUIREMENTS, STT_ROLES, type SttRole };
 /**
  * Canonical STT service configuration.
  *
- * `provider` is the only axis: `"vellum"` transcribes through the platform,
- * billed to Vellum credits; any other provider uses the user's own API key.
+ * `provider` is the only axis: `"gateway"` transcribes through the LLM
+ * gateway connection; `"vellum"` transcribes through the platform, billed to
+ * Vellum credits; any other provider uses the user's own API key.
  */
 export const SttServiceSchema = z
   .object({

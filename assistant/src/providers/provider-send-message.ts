@@ -5,30 +5,19 @@
  */
 
 import {
-  resolveCallSiteConfig,
+  resolveCallSite,
   type ResolveCallSiteOpts,
 } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import type { LLMCallSite } from "../config/schemas/llm.js";
-import { requireMainDb } from "../persistence/db-facade.js";
 import type { ProviderRouteAttribution } from "../util/errors.js";
 import { getLogger } from "../util/logger.js";
+import { tryResolveProviderForConnectionName } from "./connection-resolution.js";
 import {
-  describeSubscriptionModelIncompatibility,
-  isConnectionCompatibleWithModel,
-} from "./connection-model-compat.js";
-import {
-  connectionProviderKind,
-  dispatchProviderResolvable,
-  expectedVendorProvider,
-  resolveEntryConnectionName,
-  resolveRoutingIdentity,
-  tryResolveProviderForConnectionName,
-} from "./connection-resolution.js";
-import {
-  ensureConnectionSnapshot,
-  listConnections,
-} from "./inference/connections.js";
+  LLM_GATEWAY_PROVIDER,
+  resolveGatewayConnectionName,
+} from "./gateway.js";
+import { ensureConnectionSnapshot } from "./inference/connections.js";
 import { initializeProviders, listProviders } from "./registry.js";
 import { recordProviderRequestDiagnostics } from "./request-diagnostics.js";
 import type {
@@ -56,7 +45,7 @@ export interface ConfiguredProviderResult {
 
 export type ConfiguredProviderOptions = Pick<
   ResolveCallSiteOpts,
-  "overrideProfile" | "forceOverrideProfile" | "selectionSeed"
+  "model" | "conversationModel"
 >;
 
 /**
@@ -87,8 +76,8 @@ export class CallSiteConfiguredProvider implements Provider {
   constructor(
     private readonly inner: Provider,
     private readonly callSite: LLMCallSite,
-    private readonly overrideProfile?: string,
-    private readonly forceOverrideProfile?: boolean,
+    private readonly model?: string,
+    private readonly conversationModel?: string,
   ) {
     this.name = inner.name;
     this.tokenEstimationProvider = inner.tokenEstimationProvider;
@@ -107,21 +96,19 @@ export class CallSiteConfiguredProvider implements Provider {
   ): Promise<ProviderResponse> {
     const config = options?.config;
     // Each field falls back independently. Naming a call site per-call must
-    // not suppress the stored override — they are orthogonal, and dropping
-    // the override leaves the transport bound to the requested profile while
-    // the model resolves from the call-site default.
+    // not suppress the stored model pin — they are orthogonal, and dropping
+    // the pin would leave the transport resolving from the call-site default.
     return this.inner.sendMessage(messages, {
       ...options,
       config: {
         ...config,
         callSite: config?.callSite ?? this.callSite,
-        ...(config?.overrideProfile === undefined &&
-        this.overrideProfile !== undefined
-          ? { overrideProfile: this.overrideProfile }
+        ...(config?.model === undefined && this.model !== undefined
+          ? { model: this.model }
           : {}),
-        ...(config?.forceOverrideProfile === undefined &&
-        this.forceOverrideProfile !== undefined
-          ? { forceOverrideProfile: this.forceOverrideProfile }
+        ...(config?.conversationModel === undefined &&
+        this.conversationModel !== undefined
+          ? { conversationModel: this.conversationModel }
           : {}),
       },
     });
@@ -133,16 +120,12 @@ export class CallSiteConfiguredProvider implements Provider {
  * If providers haven't been initialized yet (e.g. non-daemon code paths),
  * performs a one-shot `initializeProviders(getConfig())`.
  *
- * The provider name is sourced from
- * `resolveCallSiteConfig(callSite, config.llm, opts).provider` — i.e. the
- * unified `llm` block drives selection. The `callSite` argument is required
- * so the resolver can layer per-call-site overrides; pass the closest
- * matching call-site identifier from `LLMCallSiteEnum` when adding a new
- * caller. Pass `opts.overrideProfile` to apply a per-call ad-hoc profile
- * override (e.g. a per-conversation pinned profile) on top of any workspace
- * `activeProfile`. Pass `opts.forceOverrideProfile` to float that override
- * above the call-site layers (named site profile + call-site override) for
- * non-main-agent call sites — see `ResolveCallSiteOpts.forceOverrideProfile`.
+ * The alias is sourced from `resolveCallSite(callSite, config.llm, opts)`.
+ * The `callSite` argument is required so the resolver can layer per-call-site
+ * configuration; pass the closest matching call-site identifier from
+ * `LLMCallSiteEnum` when adding a new caller. Pass `opts.model` to pin an
+ * alias for this request (a scheduled run, a subagent role) and
+ * `opts.conversationModel` for the interactive conversation selection.
  *
  * Returns `null` when no providers are available at all.
  */
@@ -166,119 +149,48 @@ export async function resolveConfiguredProvider(
   }
 
   await ensureConnectionSnapshot();
-  const resolved = resolveCallSiteConfig(callSite, config.llm, {
-    ...opts,
-    isResolvableProvider: dispatchProviderResolvable,
-  });
-  const inferenceProvider = resolved.provider;
-  let connectionName = resolved.provider_connection;
-
-  // Connection-aware path: every dispatch goes through `provider_connection`.
-  // The boot-time backfill ensures every profile has one in production.
-  // When unset (profile set provider without a connection, test envs that
-  // skip backfill, freshly-installed configs not yet backfilled, or users
-  // who manually cleared the field), try to auto-resolve from the provider
-  // before falling back to null.
-  if (!connectionName) {
-    // Routing identities name their own connection row; the provider-keyed
-    // scan below cannot find them ("chatgpt" rows store provider "openai").
-    connectionName = resolveRoutingIdentity(
-      inferenceProvider,
-      resolved.model,
-    )?.connectionName;
+  const resolved = resolveCallSite(callSite, config.llm, opts);
+  if (resolved.status === "disabled") {
+    log.debug({ callSite }, "Call site is disabled; no provider resolved");
+    return null;
   }
-  // An entry-name provider IS the connection name: the label points at a
-  // row, and the row's own provider drives dispatch.
-  const entryRoute = connectionName
-    ? null
-    : resolveEntryConnectionName(inferenceProvider);
-  if (entryRoute) {
-    connectionName = entryRoute;
-  }
-  if (!connectionName) {
-    if (inferenceProvider) {
-      try {
-        const candidates = await listConnections(requireMainDb(), {
-          provider: inferenceProvider,
-        });
-        const active = candidates.find((c) =>
-          isConnectionCompatibleWithModel(c, resolved.model),
-        );
-        if (active) {
-          connectionName = active.name;
-        } else {
-          const incompatMsg = describeSubscriptionModelIncompatibility(
-            candidates,
-            resolved.model,
-          );
-          if (incompatMsg) {
-            log.warn(
-              { callSite, inferenceProvider, model: resolved.model },
-              incompatMsg,
-            );
-          }
-        }
-      } catch {
-        // DB not available — fall through to the existing null-return path.
-      }
-    }
-    if (!connectionName) {
-      log.warn(
-        {
-          callSite,
-          inferenceProvider,
-          model: resolved.model,
-          reason: "no_connection",
-        },
-        "resolveCallSiteConfig yielded no provider_connection — returning null so callsite can fall back",
-      );
-      return null;
-    }
+  const connectionName = resolveGatewayConnectionName();
+  if (connectionName == null) {
+    log.warn(
+      { callSite, model: resolved.model, reason: "no_connection" },
+      "No LLM gateway connection is configured — returning null so the call site can degrade",
+    );
+    return null;
   }
 
   const connectionProvider = await tryResolveProviderForConnectionName(
     connectionName,
     config,
-    expectedVendorProvider(inferenceProvider, resolved.model),
+    LLM_GATEWAY_PROVIDER,
     resolved.model,
   );
   if (!connectionProvider) {
-    // Soft credential failure — the connection resolved to no usable
-    // adapter (credential missing, transient auth failure, etc.).
-    // Callers handle null as "no provider available" rather than crash;
-    // the structured warn keeps every silent degradation observable.
     log.warn(
       {
         callSite,
         connectionName,
-        inferenceProvider,
         model: resolved.model,
         reason: "credential_unavailable",
       },
-      "Connection resolved to no usable adapter — returning null so the call site can degrade",
+      "Gateway connection resolved to no usable adapter — returning null so the call site can degrade",
     );
     return null;
   }
-  // Which credential signs the request is only known here, and a failed
-  // request is unactionable without it ("which key was this?"). Recorded once
-  // the adapter exists, so a connection that resolved to nothing is never
-  // reported as the one that signed the request.
   recordProviderRequestDiagnostics({ connection_name: connectionName });
   return {
     provider: new CallSiteConfiguredProvider(
       connectionProvider,
       callSite,
-      opts.overrideProfile,
-      opts.forceOverrideProfile,
+      opts.model,
+      opts.conversationModel,
     ),
-    // The dispatched vendor kind, not the config label: an entry-name
-    // provider reports its row's kind so provider-keyed consumers
-    // (telemetry, pricing) never see a label that matches no catalog id.
-    configuredProviderName:
-      (entryRoute
-        ? connectionProviderKind(entryRoute, resolved.model)
-        : undefined) ?? inferenceProvider,
-    entryRouted: entryRoute !== null,
+    configuredProviderName: LLM_GATEWAY_PROVIDER,
+    entryRouted: false,
   };
 }
 

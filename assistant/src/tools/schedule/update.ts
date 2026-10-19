@@ -1,10 +1,6 @@
 import { z } from "zod";
 
 import { resolveCapabilities } from "../../runtime/capabilities.js";
-import {
-  formatScheduleInferenceProfile,
-  validateScheduleInferenceProfile,
-} from "../../schedule/inference-profile.js";
 import { validateRruleSetLines } from "../../schedule/recurrence-engine.js";
 import {
   detectScheduleSyntax,
@@ -12,6 +8,10 @@ import {
   type ScheduleSyntax,
 } from "../../schedule/recurrence-types.js";
 import { validateScriptTimeoutMs } from "../../schedule/run-script.js";
+import {
+  formatScheduleModel,
+  validateScheduleModel,
+} from "../../schedule/schedule-model.js";
 import type {
   RoutingIntent,
   ScheduleMode,
@@ -51,7 +51,7 @@ const VALID_ROUTING_INTENTS: RoutingIntent[] = [
  * - `timezone` and `script` are nullable at runtime though advertised as
  *   plain strings: `updateSchedule` persists null as "clear this field".
  * - `timeout_ms` / `group` advertise null (it reverts to the default), and
- *   `inference_profile` advertises null (it re-pins to the current default);
+ *   `model` advertises null (it re-pins to the current default);
  *   the executor's bespoke handling stays.
  * - `mode`, `routing_intent`, `workflow_name`, and `workflow_args` are
  *   deliberately UNDECLARED (loose passthrough): the first two keep bespoke
@@ -74,7 +74,7 @@ export const scheduleUpdateInputSchema = z.looseObject({
   max_retries: z.int().optional(),
   retry_backoff_ms: z.int().optional(),
   timeout_ms: z.int().nullable().optional(),
-  inference_profile: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
   group: z.string().nullable().optional(),
 });
 
@@ -213,17 +213,15 @@ export async function executeScheduleUpdate(
 
   // Inference profile (null re-pins the schedule to the currently resolved
   // default rather than leaving it to follow whatever the default becomes)
-  if (parsed.inference_profile !== undefined) {
-    if (parsed.inference_profile === null) {
-      updates.inferenceProfile = null;
+  if (parsed.model !== undefined) {
+    if (parsed.model === null) {
+      updates.model = null;
     } else {
-      const profileError = validateScheduleInferenceProfile(
-        parsed.inference_profile,
-      );
+      const profileError = validateScheduleModel(parsed.model);
       if (profileError) {
         return { content: `Error: ${profileError}`, isError: true };
       }
-      updates.inferenceProfile = parsed.inference_profile;
+      updates.model = parsed.model;
     }
   }
 
@@ -376,7 +374,7 @@ export async function executeScheduleUpdate(
             timeoutMs?: number | null;
             workflowName?: string | null;
             workflowArgs?: unknown;
-            inferenceProfile?: string | null;
+            model?: string | null;
           },
           writeOpts,
         );
@@ -399,7 +397,7 @@ export async function executeScheduleUpdate(
         `  Description: ${job.description}`,
         `  Syntax: ${job.syntax}`,
         `  Mode: ${job.mode}`,
-        `  Inference profile: ${formatScheduleInferenceProfile(job.inferenceProfile)}`,
+        `  Inference profile: ${formatScheduleModel(job.model)}`,
         `  Schedule: ${scheduleDescription}${job.timezone ? ` (${job.timezone})` : ""}`,
         `  Enabled: ${job.enabled}`,
         `  Next run: ${job.enabled ? formatLocalDate(job.nextRunAt) : "n/a (disabled)"}`,

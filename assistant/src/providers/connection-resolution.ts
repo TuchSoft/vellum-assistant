@@ -28,11 +28,7 @@
  */
 
 import { getIsPlatform } from "../config/env-registry.js";
-import {
-  resolveCallSiteConfig,
-  selectWinningProfile,
-} from "../config/llm-resolver.js";
-import { unknownLlmProviderIssue } from "../config/schemas/llm.js";
+import { resolveCallSite } from "../config/llm-resolver.js";
 import { requireMainDb } from "../persistence/db-facade.js";
 import { credentialKey } from "../security/credential-key.js";
 import { ProviderNotConfiguredError } from "../util/errors.js";
@@ -41,6 +37,13 @@ import {
   describeSubscriptionModelIncompatibility,
   isConnectionCompatibleWithModel,
 } from "./connection-model-compat.js";
+import {
+  LLM_GATEWAY_CONNECTION_NAME,
+  LLM_GATEWAY_PROVIDER,
+  LLM_GATEWAY_URL_ENV,
+  resolveGatewayConnectionName,
+  resolveGatewayModel,
+} from "./gateway.js";
 import {
   ROUTING_IDENTITY_PROVIDERS,
   VALID_CONNECTION_PROVIDERS,
@@ -54,7 +57,6 @@ import {
 } from "./inference/connections.js";
 import { resolveManagedProxyContext } from "./platform-proxy/context.js";
 import { checkCredentialPresence } from "./provider-availability.js";
-import { dispatchProviderResolvable } from "./provider-resolvability.js";
 import type { ProvidersConfig } from "./registry.js";
 import { resolveProviderFromConnection } from "./registry.js";
 import {
@@ -96,30 +98,6 @@ export function resolveEntryConnectionName(
   } catch {
     return null;
   }
-}
-
-/**
- * Write-surface membership for a PROFILE provider value: the known vendor
- * and identity set, plus existing connection entry rows. Fail-closed on DB
- * unavailability (an unverifiable entry name is rejected; the write is
- * retryable), unlike the selection-time predicate below, which is
- * fail-open so a DB blip never heals away a valid profile. Call-site
- * fragments keep vendor-only membership: overrides become model-only with
- * the entries demolition, so entries must not leak into them meanwhile.
- */
-export function writableProfileProviderIssue(provider: string): string | null {
-  const issue = unknownLlmProviderIssue(provider);
-  if (issue === null) {
-    return null;
-  }
-  try {
-    if (peekConnection(provider) != null) {
-      return null;
-    }
-  } catch {
-    // Unverifiable: fall through to the rejection.
-  }
-  return `Invalid provider "${provider}". Use a known provider or the name of an existing connection.`;
 }
 
 /**
@@ -509,86 +487,20 @@ export async function resolveDefaultProvider(
   config: ProvidersConfig,
 ): Promise<Provider | null> {
   await ensureConnectionSnapshot();
-  const resolved = resolveCallSiteConfig("mainAgent", config.llm, {
-    isResolvableProvider: dispatchProviderResolvable,
-  });
-  let connectionName = resolved.provider_connection;
-  // A routing-identity provider names its own connection row; the
-  // provider-keyed auto-resolve scan below cannot find it ("chatgpt" rows
-  // store provider "openai"), so short-circuit to the canonical name.
-  if (!connectionName) {
-    connectionName = resolveRoutingIdentity(
-      resolved.provider,
-      resolved.model,
-    )?.connectionName;
-  }
-  // An entry-name provider IS the connection name: the label points at a
-  // row, and the row's own provider drives dispatch.
-  const entryName = connectionName
-    ? null
-    : resolveEntryConnectionName(resolved.provider);
-  if (entryName) {
-    return tryResolveProviderForConnectionName(
-      entryName,
-      config,
-      undefined,
-      resolved.model,
+  const connectionName = resolveGatewayConnectionName();
+  if (connectionName == null) {
+    throw new ConnectionResolutionError(
+      "<default>",
+      "missing_connection",
+      `No LLM gateway connection is configured. Add an "openai-compatible" connection (name "${LLM_GATEWAY_CONNECTION_NAME}") or set ${LLM_GATEWAY_URL_ENV}.`,
+      { model: resolveGatewayModel(config.llm) },
     );
-  }
-  if (!connectionName) {
-    // The merged config has no provider_connection — the profile likely set
-    // provider without a connection ("Any active" selection), and the merge
-    // cleared or failed to inherit one. Try to find an active connection
-    // for the provider before giving up.
-    let autoResolveCandidates:
-      | import("./inference/auth.js").ProviderConnection[]
-      | undefined;
-    if (resolved.provider) {
-      try {
-        autoResolveCandidates = await listConnections(requireMainDb(), {
-          provider: resolved.provider,
-        });
-        const active = autoResolveCandidates.find((c) =>
-          isConnectionCompatibleWithModel(c, resolved.model),
-        );
-        if (active) {
-          log.info(
-            { provider: resolved.provider, resolvedConnection: active.name },
-            "Auto-resolved missing provider_connection for default provider",
-          );
-          connectionName = active.name;
-        }
-      } catch {
-        // DB not available — fall through to the original error.
-      }
-    }
-    if (!connectionName) {
-      const incompatMsg = autoResolveCandidates
-        ? describeSubscriptionModelIncompatibility(
-            autoResolveCandidates,
-            resolved.model,
-          )
-        : null;
-      if (incompatMsg) {
-        throw new ConnectionResolutionError(
-          "<default>",
-          "model_incompatible",
-          incompatMsg,
-          { model: resolved.model },
-        );
-      }
-      throw new ConnectionResolutionError(
-        "<default>",
-        "missing_connection",
-        `The resolved default config carries no provider_connection and no active connection exists for provider "${resolved.provider}". Connect a provider or point llm.defaultProvider at one with credentials.`,
-      );
-    }
   }
   return tryResolveProviderForConnectionName(
     connectionName,
     config,
-    expectedVendorProvider(resolved.provider, resolved.model),
-    resolved.model,
+    LLM_GATEWAY_PROVIDER,
+    resolveGatewayModel(config.llm),
   );
 }
 
@@ -613,39 +525,19 @@ export async function resolveDefaultProvider(
  */
 export async function preflightResolvedConfig(
   resolved: {
-    provider: string;
-    provider_connection?: string;
+    connectionName: string;
+    provider?: string;
     model: string;
   },
-  attribution: { profileName?: string } = {},
+  attribution: { modelName?: string } = {},
 ): Promise<void> {
   await ensureConnectionSnapshot();
-  // Routing identities preflight through their canonical row and derived
-  // upstream; an unroutable vellum model throws here — it is statically
-  // detectable, exactly what preflight exists to surface.
-  const identity = resolveRoutingIdentity(resolved.provider, resolved.model);
-  // An entry-name provider IS the connection name, and the row's kind is
-  // what the checks below judge against (same translation dispatch uses).
-  // Precedence matches dispatch exactly: an explicit provider_connection
-  // wins over the entry name, so preflight judges the row the request
-  // actually uses rather than a healthy entry the request ignores.
-  const entryName = identity
-    ? null
-    : resolveEntryConnectionName(resolved.provider);
-  const provider = identity
-    ? identity.expectedProvider
-    : entryName
-      ? (connectionProviderKind(entryName, resolved.model) ?? resolved.provider)
-      : resolved.provider;
-  const connectionName =
-    identity?.connectionName ?? resolved.provider_connection ?? entryName;
-  if (!connectionName) {
-    return;
-  }
+  const connectionName = resolved.connectionName;
+  const provider = resolved.provider ?? LLM_GATEWAY_PROVIDER;
   const errorOptions = {
     model: resolved.model,
-    ...(attribution.profileName != null
-      ? { profileName: attribution.profileName }
+    ...(attribution.modelName != null
+      ? { modelName: attribution.modelName }
       : {}),
   };
 
@@ -704,7 +596,7 @@ export async function preflightResolvedConfig(
         {
           connectionName,
           model: resolved.model,
-          profileName: attribution.profileName,
+          modelName: attribution.modelName,
         },
         "Managed platform credential is missing and must be re-provisioned",
       );
@@ -808,19 +700,23 @@ async function platformLoginPresence(): Promise<
  * reachability narrowing at the call site).
  */
 export async function mainAgentResolutionError(
-  llm: Parameters<typeof resolveCallSiteConfig>[1],
+  llm: Parameters<typeof resolveCallSite>[1],
   registeredProviders: string[],
 ): Promise<ProviderNotConfiguredError> {
-  const resolved = resolveCallSiteConfig("mainAgent", llm);
-  await preflightResolvedConfig(resolved, {
-    profileName:
-      selectWinningProfile("mainAgent", llm, {}).profileName ?? undefined,
-  });
+  const resolved = resolveCallSite("mainAgent", llm);
+  const model = resolved.status === "ok" ? resolved.model : llm.defaultModel;
+  const connectionName = resolveGatewayConnectionName();
+  if (connectionName != null) {
+    await preflightResolvedConfig(
+      { connectionName, provider: LLM_GATEWAY_PROVIDER, model },
+      { modelName: model },
+    );
+  }
   return new ProviderNotConfiguredError(
-    resolved.provider,
+    LLM_GATEWAY_CONNECTION_NAME,
     registeredProviders,
     {
-      connectionName: resolved.provider_connection,
+      connectionName: connectionName ?? undefined,
     },
   );
 }

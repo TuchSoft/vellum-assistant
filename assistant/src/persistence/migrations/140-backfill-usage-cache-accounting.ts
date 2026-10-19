@@ -1,4 +1,3 @@
-import { getConfig } from "../../config/loader.js";
 import type {
   AnthropicCacheCreationTokenDetails,
   PricingUsage,
@@ -206,7 +205,7 @@ export function migrateBackfillUsageCacheAccounting(database: DrizzleDb): void {
   const requestLogsByConversation = buildRequestLogMap(requestLogRows);
   const requestOffsets = new Map<string, number>();
   const previousUsageEventCreatedAt = new Map<string, number>();
-  const pricingOverrides = getConfig().llm.pricingOverrides;
+  const pricingOverrides: never[] = [];
 
   let scannedAnthropicRows = 0;
   let updatedRows = 0;

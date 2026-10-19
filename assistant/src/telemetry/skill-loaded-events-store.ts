@@ -1,5 +1,4 @@
 import type { UsageAttributionColumns } from "../usage/attribution.js";
-import type { UsageAttributionProfileSource } from "../usage/types.js";
 import { recordTelemetryEvent } from "./telemetry-events-outbox.js";
 
 /**
@@ -32,9 +31,8 @@ export function recordSkillLoadedEvent(
       conversation_id: record.conversationId ?? null,
       provider: record.provider ?? null,
       model: record.model ?? null,
-      inference_profile: record.inferenceProfile ?? null,
-      inference_profile_source: (record.inferenceProfileSource ??
-        null) as UsageAttributionProfileSource | null,
+      inference_profile: record.model ?? null,
+      inference_profile_source: record.modelSource ?? null,
     },
     { conversationId: record.conversationId ?? null },
   ).then(() => undefined);

@@ -145,7 +145,7 @@ export interface UserPromptSubmitInputContext {
    * them from this value rather than the workspace active profile, because a
    * conversation can be pinned to a different profile.
    */
-  readonly modelProfileKey: string;
+  readonly modelKey: string;
   /**
    * Whether the turn has no human present to answer clarification questions
    * (e.g. a scheduled, background, or headless run). Resolved once at turn
@@ -246,9 +246,9 @@ export interface PostCompactInputContext {
   readonly isNonInteractive: boolean;
   /**
    * Effective inference profile identity for the model the compacted turn will
-   * keep using. Mirrors {@link UserPromptSubmitContext.modelProfileKey}.
+   * keep using. Mirrors {@link UserPromptSubmitContext.modelKey}.
    */
-  readonly modelProfileKey: string;
+  readonly modelKey: string;
   /**
    * Volume of runtime injection to re-apply. `"full"` restores the complete
    * runtime context; `"minimal"` is the reduced volume overflow recovery's
@@ -323,19 +323,19 @@ export interface PostToolUseInputContext {
    * model family (each plugin owns its own model policy, e.g. which families
    * need firmer steering, and matches against this string directly). It is
    * not the source for capability decisions: an aggregator can report a
-   * rewritten alias, so read {@link modelProfileKey} instead.
+   * rewritten alias, so read {@link modelKey} instead.
    */
   readonly model: string;
   /**
    * Effective inference-profile key for the turn that issued this tool call,
-   * mirroring {@link UserPromptSubmitContext.modelProfileKey}. This is the
+   * mirroring {@link UserPromptSubmitContext.modelKey}. This is the
    * authoritative input for capability decisions: it resolves through
    * `llm.profiles` to the profile's authored `inputModalities` policy, which
    * a provider-reported model id cannot (an aggregator may echo a rewritten
    * `vendor/model` alias for a profile that names a bare model). Raw loop
    * runs that carry no profile fall back to the reported model id here.
    */
-  readonly modelProfileKey: string;
+  readonly modelKey: string;
   /**
    * The LLM call site driving this turn — `mainAgent` for a live user-facing
    * turn, `subagentSpawn` for a subagent, or a background site (e.g.
@@ -475,7 +475,7 @@ export interface StopContext extends StopInputContext, BaseHookContext {}
  * {@link callSite} / {@link conversationId} before acting.
  *
  * A hook may edit the outbound request by replacing {@link systemPrompt}, route
- * the call to a different inference profile via {@link modelProfile}, and opt
+ * the call to a different inference profile via {@link model}, and opt
  * this turn into deferred output streaming via {@link deferAssistantOutput}.
  * Mutate the context in place or return a new one; throwing is contained by the
  * loop (the call proceeds with the original request).
@@ -510,7 +510,7 @@ export interface PreModelCallInputContext {
    * conversation to a profile with a smaller context window relies on the loop's
    * overflow recovery (compact and retry) rather than proactive compaction.
    */
-  modelProfile: string | null;
+  model: string | null;
   /**
    * Seeded `false`. When a hook sets it `true`, the loop suppresses this turn's
    * live assistant `text_delta` stream; a `post-model-call` hook is then

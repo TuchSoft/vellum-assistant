@@ -134,7 +134,7 @@ function scriptedStartVoiceTurn(script: {
     const isEscalated = options.content === ESCALATION_CONTINUATION_CONTENT;
     if (isEscalated) {
       options.onEscalationTargetResolved?.({
-        profile: "quality-optimized",
+        model: "main-pro",
         source: "conversation",
       });
     }
@@ -221,7 +221,7 @@ describe("live-voice triage-and-escalate routing", () => {
     expect(starter).toHaveBeenCalledTimes(1);
     // The front-door model is pinned by the voiceFrontDoor call site, not a
     // per-turn profile override.
-    expect(starter.mock.calls[0]?.[0]?.overrideProfile).toBeUndefined();
+    expect(starter.mock.calls[0]?.[0]?.model).toBeUndefined();
     expect(starter.mock.calls[0]?.[0]?.routingLeg).toBe("front-door");
     expect(spokenText(frames)).toBe("Sure, it's Tuesday.");
   });
@@ -240,12 +240,12 @@ describe("live-voice triage-and-escalate routing", () => {
     expect(starter).toHaveBeenCalledTimes(2);
     const frontDoor = starter.mock.calls[0]?.[0];
     const escalated = starter.mock.calls[1]?.[0];
-    expect(frontDoor?.overrideProfile).toBeUndefined();
+    expect(frontDoor?.model).toBeUndefined();
     expect(frontDoor?.routingLeg).toBe("front-door");
     // The session passes no override either: the bridge itself pins the
     // escalated leg to the conversation's own profile (covered in
     // calls/__tests__/voice-session-bridge.test.ts).
-    expect(escalated?.overrideProfile).toBeUndefined();
+    expect(escalated?.model).toBeUndefined();
     expect(escalated?.routingLeg).toBe("escalated");
     expect(escalated?.content).toBe(ESCALATION_CONTINUATION_CONTENT);
     expect(frames).toContainEqual(
@@ -253,8 +253,8 @@ describe("live-voice triage-and-escalate routing", () => {
         type: "activity",
         kind: "escalation",
         label: "",
-        profile: "quality-optimized",
-        profileSource: "conversation",
+        model: "main-pro",
+        modelSource: "conversation",
       }),
     );
   });

@@ -15,7 +15,9 @@ function createTestDb() {
 }
 
 function columnNotNull(raw: Database, name: string): boolean {
-  const cols = raw.query(`PRAGMA table_info(assistant_ingress_invites)`).all() as Array<{
+  const cols = raw
+    .query(`PRAGMA table_info(assistant_ingress_invites)`)
+    .all() as Array<{
     name: string;
     notnull: number;
   }>;

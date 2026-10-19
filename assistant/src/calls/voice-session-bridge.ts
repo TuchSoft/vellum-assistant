@@ -22,7 +22,7 @@ import type {
   TurnChannelContext,
   TurnInterfaceContext,
 } from "../channels/types.js";
-import { selectWinningProfile } from "../config/llm-resolver.js";
+import { resolveEffectiveModel } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import {
   ABORT_WATCHDOG_MS,
@@ -47,15 +47,14 @@ import {
 } from "../live-voice/share-targets.js";
 import { resolveAttachmentsForPersist } from "../persistence/attachments-store.js";
 import {
+  type ConversationModelFields,
   deleteMessageById,
   getMessageById,
-  type OverrideProfileFields,
   recordConversationPersistedSeq,
-  resolveOverrideProfile,
+  resolveConversationModel,
   updateMessageContent,
 } from "../persistence/conversation-crud.js";
 import { VOICE_ESCALATION_CONTINUATION_MESSAGE_KIND } from "../plugin-api/constants.js";
-import { dispatchProviderResolvable } from "../providers/connection-resolution.js";
 import { pinnedListeningLanguage } from "../providers/speech-to-text/provider-catalog.js";
 import type { ContentBlock } from "../providers/types.js";
 import { broadcastMessage } from "../runtime/assistant-event-hub.js";
@@ -110,24 +109,9 @@ const log = getLogger("voice-session-bridge");
  * when any arm is: a text-only chosen arm would get raw images.
  */
 function conversationProfileForEscalation(
-  conversation: OverrideProfileFields & { conversationId: string },
+  conversation: ConversationModelFields & { conversationId: string },
 ): string | null {
-  const overrideProfile = resolveOverrideProfile(conversation);
-  const mix: { arm?: { mixProfile: string; chosenProfile: string } } = {};
-  const selection = selectWinningProfile("mainAgent", getConfig().llm, {
-    ...(overrideProfile != null ? { overrideProfile } : {}),
-    selectionSeed: conversation.conversationId,
-    isResolvableProvider: dispatchProviderResolvable,
-    onMixSelected: (selected) => {
-      mix.arm = selected;
-    },
-  });
-  if (selection.source === "default" || selection.profileName == null) {
-    return null;
-  }
-  return mix.arm?.mixProfile === selection.profileName
-    ? mix.arm.chosenProfile
-    : selection.profileName;
+  return resolveConversationModel(conversation) ?? null;
 }
 
 /**
@@ -516,13 +500,11 @@ export interface VoiceTurnOptions {
   /** Optional AbortSignal for external cancellation (e.g. barge-in). */
   signal?: AbortSignal;
   /**
-   * Ad-hoc inference-profile override applied to every LLM call this turn
-   * issues (forwarded to `runAgentLoop` with `forceOverrideProfile`). Wins
-   * over the bridge's own pins (the image pin, and the conversation's
-   * profile for an escalated leg). Undefined = those pins, else the
-   * call-site default.
+   * Alias pin applied to every LLM call this turn issues. Wins over the
+   * bridge's own pins (the image pin, and the conversation's model for an
+   * escalated leg).
    */
-  overrideProfile?: string;
+  model?: string;
   /**
    * Which leg of a triaged turn this is, so the control prompt (auto-built or
    * caller-supplied) carries the front-door triage rule or the escalated
@@ -2124,11 +2106,11 @@ export async function startVoiceTurn(
           : null;
       if (conversationProfile != null) {
         log.info(
-          { turnId, profile: conversationProfile },
-          "Escalated voice leg pinned to the conversation's own profile",
+          { turnId, model: conversationProfile },
+          "Escalated voice leg pinned to the conversation's own model",
         );
       }
-      const profilePin = opts.overrideProfile ?? conversationProfile;
+      const modelPin = opts.model ?? conversationProfile;
       // Optional cache traffic must not consume the last admitted request.
       // A configured cap reserves its whole budget for user-visible calls.
       const shouldWarmEscalation =
@@ -2261,14 +2243,12 @@ export async function startVoiceTurn(
           : {}),
         // Triage-and-escalate routing pins this turn to the fast front-door
         // profile or to the conversation's own profile for the escalated
-        // leg. `forceOverrideProfile` preserves an explicit routing pin.
+        // leg. An explicit model pin still wins.
         //
         // An explicit routing pin wins; failing that, an escalated leg is
         // pinned to the conversation's profile. A front-door leg needs
         // neither: its own call site already resolves there.
-        ...(profilePin != null
-          ? { overrideProfile: profilePin, forceOverrideProfile: true }
-          : {}),
+        ...(modelPin != null ? { model: modelPin } : {}),
         ...(opts.routingLeg === "escalated"
           ? {
               // Warming and diagnostics use the final post-hook request. The
@@ -2277,49 +2257,35 @@ export async function startVoiceTurn(
                 if (shouldWarmEscalation && !prepared.disableCache) {
                   void conversation.warmPromptCache({
                     callSite: prepared.callSite ?? "mainAgent",
-                    ...(prepared.overrideProfile !== undefined
-                      ? { overrideProfile: prepared.overrideProfile }
+                    ...(prepared.model !== undefined
+                      ? { model: prepared.model }
                       : {}),
-                    forceOverrideProfile: prepared.forceOverrideProfile,
                     signal: prepared.signal ?? opts.signal,
                     systemPrompt: prepared.systemPrompt,
                     tools: prepared.tools,
                   });
                 }
-                let selectedMixArm:
-                  | { mixProfile: string; chosenProfile: string }
-                  | undefined;
-                const escalationSelection = selectWinningProfile(
+                const escalationSelection = resolveEffectiveModel(
                   prepared.callSite ?? "mainAgent",
                   config.llm,
                   {
-                    ...(prepared.overrideProfile !== undefined
-                      ? { overrideProfile: prepared.overrideProfile }
+                    ...(prepared.model !== undefined
+                      ? { model: prepared.model }
                       : {}),
-                    forceOverrideProfile: prepared.forceOverrideProfile,
-                    selectionSeed: conversation.conversationId,
-                    isResolvableProvider: dispatchProviderResolvable,
-                    onMixSelected: (selection) => {
-                      selectedMixArm = selection;
-                    },
+                    conversationModel: conversation.model ?? undefined,
                   },
                 );
                 let source: VoiceEscalationTarget["source"] = "call_site";
-                if (escalationSelection.source === "override") {
-                  if (prepared.overrideProfile !== profilePin) {
-                    source = "pre_model_hook";
-                  } else if (opts.overrideProfile != null) {
-                    source = "turn_override";
-                  } else {
-                    source = "conversation";
-                  }
+                if (escalationSelection?.source === "pinned") {
+                  source =
+                    prepared.model !== modelPin
+                      ? "pre_model_hook"
+                      : opts.model != null
+                        ? "turn_override"
+                        : "conversation";
                 }
                 const target: VoiceEscalationTarget = {
-                  profile:
-                    (selectedMixArm?.mixProfile ===
-                    escalationSelection.profileName
-                      ? selectedMixArm.chosenProfile
-                      : escalationSelection.profileName) ?? "balanced",
+                  model: escalationSelection?.model ?? "main",
                   source,
                 };
                 try {
@@ -2329,7 +2295,7 @@ export async function startVoiceTurn(
                     {
                       err,
                       turnId,
-                      profile: target.profile,
+                      model: target.model,
                       source: target.source,
                     },
                     "Voice escalation target callback failed",

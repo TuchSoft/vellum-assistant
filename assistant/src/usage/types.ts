@@ -1,11 +1,11 @@
 import type { LLMCallSite } from "../config/schemas/llm.js";
 import type { UsageActor } from "./actors.js";
-import type { UsageAttributionProfileSource } from "./attribution.js";
+import type { UsageModelSource } from "./attribution.js";
 
 export type {
   UsageAttributionInput,
-  UsageAttributionProfileSource,
   UsageAttributionSnapshot,
+  UsageModelSource,
 } from "./attribution.js";
 
 /**
@@ -73,8 +73,7 @@ export interface UsageEventInput {
   cronRunId?: string | null;
   requestId: string | null;
   callSite?: LLMCallSite | null;
-  inferenceProfile?: string | null;
-  inferenceProfileSource?: UsageAttributionProfileSource | null;
+  modelSource?: UsageModelSource | null;
   /** Number of actual LLM API calls represented by this event (defaults to 1). */
   llmCallCount?: number | null;
 }
@@ -95,8 +94,7 @@ export interface UsageEvent extends UsageEventInput {
   id: string;
   createdAt: number;
   callSite: LLMCallSite | null;
-  inferenceProfile: string | null;
-  inferenceProfileSource: UsageAttributionProfileSource | null;
+  modelSource: UsageModelSource | null;
   estimatedCostUsd: number | null;
   pricingStatus: "priced" | "unpriced";
   /**

@@ -59,10 +59,10 @@ describe("uniqueActivePluginOwner", () => {
   }
 
   test("returns the owner when exactly one plugin skill is active", () => {
-    stub(["sms-setup", "bash"], [
-      pluginSkill("sms-setup", "sms"),
-      bundledSkill("bash"),
-    ]);
+    stub(
+      ["sms-setup", "bash"],
+      [pluginSkill("sms-setup", "sms"), bundledSkill("bash")],
+    );
     expect(uniqueActivePluginOwner("conv-1")).toBe("sms");
   });
 
@@ -74,10 +74,7 @@ describe("uniqueActivePluginOwner", () => {
   test("returns undefined when two plugin owners are active", () => {
     stub(
       ["sms-setup", "linear-inbox"],
-      [
-        pluginSkill("sms-setup", "sms"),
-        pluginSkill("linear-inbox", "linear"),
-      ],
+      [pluginSkill("sms-setup", "sms"), pluginSkill("linear-inbox", "linear")],
     );
     expect(uniqueActivePluginOwner("conv-1")).toBeUndefined();
   });

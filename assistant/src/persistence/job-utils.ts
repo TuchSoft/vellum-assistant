@@ -179,7 +179,12 @@ export function requireQdrantClient(): ReturnType<typeof getQdrantClient> {
 export async function embedAndUpsert(
   config: AssistantConfig,
   targetType:
-    "segment" | "item" | "summary" | "media" | "graph_node" | "pkb_file",
+    | "segment"
+    | "item"
+    | "summary"
+    | "media"
+    | "graph_node"
+    | "pkb_file",
   targetId: string,
   input: EmbeddingInput,
   extraPayload?: Record<string, unknown>,

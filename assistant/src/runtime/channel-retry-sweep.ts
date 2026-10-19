@@ -329,7 +329,8 @@ export async function sweepFailedEvents(
       parseInterfaceId(payload.sourceChannel) ??
       "web";
     const sourceMetadata = payload.sourceMetadata as
-      import("@vellumai/gateway-client").SourceMetadata | undefined;
+      | import("@vellumai/gateway-client").SourceMetadata
+      | undefined;
     const assistantId =
       typeof payload.assistantId === "string" ? payload.assistantId : undefined;
     const rawTrustCtx = payload.trustCtx;

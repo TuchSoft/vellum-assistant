@@ -25,9 +25,9 @@ describe("catalogSupportsModality", () => {
 
   test("audio follows supportsAudioInput and fails closed when unknown", () => {
     expect(catalogSupportsModality("audio", undefined)).toBe(false);
-    expect(
-      catalogSupportsModality("audio", { supportsAudioInput: true }),
-    ).toBe(true);
+    expect(catalogSupportsModality("audio", { supportsAudioInput: true })).toBe(
+      true,
+    );
   });
 
   test("video has no catalog flag and fails closed", () => {

@@ -202,8 +202,7 @@ describe("POST /v1/export - LLM usage events", () => {
         requestId: null,
         actor: "llm_call_site",
         callSite: "conversationTitle",
-        inferenceProfile: "balanced",
-        inferenceProfileSource: "active",
+        modelSource: "chat",
         provider: "anthropic",
         model: "claude-sonnet-4-20250514",
         inputTokens: 12,
@@ -228,8 +227,7 @@ describe("POST /v1/export - LLM usage events", () => {
       const row = rows.find((candidate) => candidate.id === eventId);
       expect(row).toMatchObject({
         callSite: "conversationTitle",
-        inferenceProfile: "balanced",
-        inferenceProfileSource: "active",
+        modelSource: "chat",
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

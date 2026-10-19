@@ -42,10 +42,12 @@ export type InputModalities = z.infer<typeof InputModalitiesSchema>;
  */
 export function catalogSupportsModality(
   modality: InputModality,
-  catalog: {
-    supportsVision?: boolean;
-    supportsAudioInput?: boolean;
-  } | undefined,
+  catalog:
+    | {
+        supportsVision?: boolean;
+        supportsAudioInput?: boolean;
+      }
+    | undefined,
 ): boolean {
   if (modality === "text") {
     return true;

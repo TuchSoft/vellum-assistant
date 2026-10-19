@@ -19,9 +19,8 @@ mock.module("../../util/platform.js", () => ({
   getWorkspacePluginsDir: () => workspacePluginsDir,
 }));
 
-const { discoverPluginChannels } = await import(
-  "../plugin-channel-declarations.js"
-);
+const { discoverPluginChannels } =
+  await import("../plugin-channel-declarations.js");
 
 interface PluginOptions {
   /** Contents of `channels/ingress.json`; omit for a plugin with no ingress. */

@@ -61,9 +61,9 @@ describe("AgentLoop: repetition guard", () => {
     expect(errors[0].error.name).toBe("LoopDetectedError");
 
     // The trip is not a provider rejection, so no provider_error is emitted.
-    expect(events.filter((event) => event.type === "provider_error")).toHaveLength(
-      0,
-    );
+    expect(
+      events.filter((event) => event.type === "provider_error"),
+    ).toHaveLength(0);
   });
 
   test("leaves a normal reply untouched", async () => {

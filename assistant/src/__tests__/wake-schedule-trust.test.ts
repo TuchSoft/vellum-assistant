@@ -43,7 +43,7 @@ const TARGET = "conv-guardian-owned";
  */
 const OWNER_WAKE_JOB = {
   message: "Check back on this",
-  inferenceProfile: null,
+  model: null,
   createdBy: OWNER_DEFER_CREATED_BY,
   createdFromConversationId: TARGET,
 };
@@ -138,7 +138,7 @@ describePg("an owner-authored defer on a guardian-owned conversation", () => {
   test("the schedule's inference profile still rides along", async () => {
     expect(
       await buildWakeScheduleOptions(
-        { ...OWNER_WAKE_JOB, inferenceProfile: "fast" },
+        { ...OWNER_WAKE_JOB, model: "fast" },
         TARGET,
       ),
     ).toHaveProperty("forceOverrideProfile", "fast");

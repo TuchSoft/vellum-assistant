@@ -90,7 +90,7 @@ async function recordUsageCostAt(
       requestId,
       actor: "main_agent",
       callSite: "mainAgent",
-      inferenceProfile: "balanced",
+      modelSource: "chat",
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
       inputTokens: 100,

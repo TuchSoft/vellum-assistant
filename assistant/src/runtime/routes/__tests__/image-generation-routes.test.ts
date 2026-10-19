@@ -23,10 +23,7 @@ mock.module("../../../media/image-service.js", () => ({
 }));
 
 mock.module("../../../media/image-credentials.js", () => ({
-  resolveImageGenRouting: (
-    svc: { provider: string },
-    _model?: unknown,
-  ) => ({
+  resolveImageGenRouting: (svc: { provider: string }, _model?: unknown) => ({
     backendProvider: svc.provider === "openrouter" ? "openrouter" : "gemini",
     managed: false,
   }),

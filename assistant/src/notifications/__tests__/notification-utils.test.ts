@@ -292,7 +292,12 @@ describe("readPayloadStringArray", () => {
   });
 
   test("returns undefined when the key is missing or not an array", () => {
-    expect(readPayloadStringArray({ channelAllowlist: "telegram" }, "channelAllowlist")).toBeUndefined();
+    expect(
+      readPayloadStringArray(
+        { channelAllowlist: "telegram" },
+        "channelAllowlist",
+      ),
+    ).toBeUndefined();
     expect(readPayloadStringArray({}, "channelAllowlist")).toBeUndefined();
     expect(readPayloadStringArray(null, "channelAllowlist")).toBeUndefined();
   });
@@ -306,6 +311,8 @@ describe("decodeLiteralLineBreaks", () => {
   });
 
   test("leaves ordinary markdown alone", () => {
-    expect(decodeLiteralLineBreaks("**3 new emails**")).toBe("**3 new emails**");
+    expect(decodeLiteralLineBreaks("**3 new emails**")).toBe(
+      "**3 new emails**",
+    );
   });
 });

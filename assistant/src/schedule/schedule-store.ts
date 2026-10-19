@@ -29,16 +29,16 @@ import {
   LEGACY_DEFER_CREATED_BY,
   OWNER_DEFER_CREATED_BY,
 } from "./defer-provenance.js";
-import {
-  resolveDefaultScheduleInferenceProfile,
-  resolveWakeScheduleInferenceProfile,
-} from "./inference-profile.js";
 import { declarationExistsOnDisk } from "./plugin-schedule-declarations.js";
 import {
   computeNextRunAt as computeNextRunAtEngine,
   isValidScheduleExpression,
 } from "./recurrence-engine.js";
 import type { ScheduleSyntax } from "./recurrence-types.js";
+import {
+  resolveDefaultScheduleModel,
+  resolveWakeScheduleModel,
+} from "./schedule-model.js";
 import {
   expressionCarriesOwnTimezone,
   resolveScheduleTimezone,
@@ -119,7 +119,7 @@ export interface ScheduleJob {
    * resolves at all, in which case runs follow the `mainAgent` call-site
    * configuration.
    */
-  inferenceProfile: string | null;
+  model: string | null;
   /**
    * Sidebar group (`conversation_groups` id) for conversations created by
    * the schedule's runs; null = the default `system:scheduled`. Resolve via
@@ -211,7 +211,7 @@ interface InsertScheduleParams {
   maxRetries?: number;
   retryBackoffMs?: number;
   timeoutMs?: number | null;
-  inferenceProfile?: string | null;
+  model?: string | null;
   groupId?: string | null;
   createdFromConversationId?: string | null;
   sourceKey?: string | null;
@@ -326,13 +326,13 @@ async function insertSchedule(
   // here rather than in `createOwnerDeferredWake` makes the rule structural —
   // it holds for every wake row however it was minted — and matches what
   // migration 363 backfills onto the rows that predate the pin.
-  const inferenceProfile =
-    params.inferenceProfile ??
+  const model =
+    params.model ??
     (mode === "wake"
-      ? resolveWakeScheduleInferenceProfile(
+      ? resolveWakeScheduleModel(
           (await getConversation(params.wakeConversationId!)) ?? null,
         )
-      : resolveDefaultScheduleInferenceProfile());
+      : resolveDefaultScheduleModel());
   const groupId = params.groupId ?? null;
   const createdFromConversationId = params.createdFromConversationId ?? null;
   const description = normalizeDescription(
@@ -374,7 +374,7 @@ async function insertSchedule(
     maxRetries,
     retryBackoffMs,
     timeoutMs,
-    inferenceProfile,
+    model,
     groupId,
     createdFromConversationId,
     createdBy: params.createdBy ?? "agent",
@@ -453,7 +453,7 @@ export async function createOwnerDeferredWake(params: {
   hint: string;
   fireAt: number;
   name?: string;
-  inferenceProfile?: string | null;
+  model?: string | null;
 }): Promise<ScheduleJob> {
   return insertSchedule({
     name: params.name ?? "Deferred wake",
@@ -464,7 +464,7 @@ export async function createOwnerDeferredWake(params: {
     createdBy: OWNER_DEFER_CREATED_BY,
     nextRunAt: params.fireAt,
     quiet: true,
-    inferenceProfile: params.inferenceProfile ?? null,
+    model: params.model ?? null,
   });
 }
 
@@ -515,7 +515,7 @@ export async function listSchedules(options?: {
   mode?: ScheduleMode;
   createdBy?: string | readonly string[];
   conversationId?: string;
-  inferenceProfile?: string;
+  model?: string;
 }): Promise<ScheduleJob[]> {
   const db = requireMainDb();
   const jobs = db.schema.scheduleJobs;
@@ -543,8 +543,8 @@ export async function listSchedules(options?: {
   if (options?.conversationId) {
     conditions.push(eq(jobs.wakeConversationId, options.conversationId));
   }
-  if (options?.inferenceProfile) {
-    conditions.push(eq(jobs.inferenceProfile, options.inferenceProfile));
+  if (options?.model) {
+    conditions.push(eq(jobs.model, options.model));
   }
   const where = conditions.length > 0 ? and(...conditions) : undefined;
   const rows = await db.orm
@@ -579,7 +579,7 @@ export async function updateSchedule(
     maxRetries?: number;
     retryBackoffMs?: number;
     timeoutMs?: number | null;
-    inferenceProfile?: string | null;
+    model?: string | null;
     groupId?: string | null;
     // `createdBy` and `createdFromConversationId` are deliberately absent: a
     // deferred wake's firing reads both to decide whether the woken turn may
@@ -744,13 +744,12 @@ export async function updateSchedule(
   if (updates.timeoutMs !== undefined) {
     set.timeoutMs = updates.timeoutMs;
   }
-  if (updates.inferenceProfile !== undefined) {
+  if (updates.model !== undefined) {
     // Null re-snapshots the currently resolved default instead of unpinning:
     // "follow whatever my global default happens to be" is not a state a
     // schedule can rest in, since it would let a later default change move the
     // schedule's model and price without the user touching the schedule.
-    set.inferenceProfile =
-      updates.inferenceProfile ?? resolveDefaultScheduleInferenceProfile();
+    set.model = updates.model ?? resolveDefaultScheduleModel();
   }
   if (updates.groupId !== undefined) {
     set.groupId = updates.groupId;
@@ -858,7 +857,7 @@ export interface DeclaredScheduleDefinition {
   maxRetries?: number;
   retryBackoffMs?: number;
   quiet?: boolean;
-  inferenceProfile?: string | null;
+  model?: string | null;
   timeoutMs?: number | null;
   enabled: boolean;
   definitionHash: string;
@@ -982,7 +981,7 @@ export async function upsertDeclaredSchedule(
     set.maxRetries = definition.maxRetries ?? 3;
     set.retryBackoffMs = definition.retryBackoffMs ?? 60000;
     set.quiet = definition.quiet ?? false;
-    set.inferenceProfile = definition.inferenceProfile ?? null;
+    set.model = definition.model ?? null;
     set.timeoutMs = definition.timeoutMs ?? null;
     set.definitionHash = definition.definitionHash;
   } else if (scriptChanged) {
@@ -2096,7 +2095,7 @@ function parseJobRow(row: ScheduleJobRow): ScheduleJob {
     maxRetries: row.maxRetries ?? 3,
     retryBackoffMs: row.retryBackoffMs ?? 60000,
     timeoutMs: row.timeoutMs ?? null,
-    inferenceProfile: row.inferenceProfile ?? null,
+    model: row.model ?? null,
     groupId: row.groupId ?? null,
     createdFromConversationId: row.createdFromConversationId ?? null,
     createdBy: row.createdBy,

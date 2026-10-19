@@ -95,8 +95,8 @@ describePg("recordUsageEvent", () => {
     const event = await recordUsageEvent(
       makeInput({
         callSite: "mainAgent",
-        inferenceProfile: "balanced",
-        inferenceProfileSource: "conversation",
+        model: "main",
+        modelSource: "chat",
       }),
       pricedResult,
     );
@@ -104,11 +104,11 @@ describePg("recordUsageEvent", () => {
     const events = await listUsageEvents();
     expect(events).toHaveLength(1);
     expect(event.callSite).toBe("mainAgent");
-    expect(event.inferenceProfile).toBe("balanced");
-    expect(event.inferenceProfileSource).toBe("conversation");
+    expect(event.model).toBe("main");
+    expect(event.modelSource).toBe("chat");
     expect(events[0].callSite).toBe("mainAgent");
-    expect(events[0].inferenceProfile).toBe("balanced");
-    expect(events[0].inferenceProfileSource).toBe("conversation");
+    expect(events[0].model).toBe("main");
+    expect(events[0].modelSource).toBe("chat");
   });
 
   test("persists an unpriced event", async () => {
@@ -140,8 +140,8 @@ describePg("recordUsageEvent", () => {
     expect(events[0].runId).toBeNull();
     expect(events[0].requestId).toBeNull();
     expect(events[0].callSite).toBeNull();
-    expect(events[0].inferenceProfile).toBeNull();
-    expect(events[0].inferenceProfileSource).toBeNull();
+    expect(events[0].modelSource).toBeNull();
+
     expect(events[0].cacheCreationInputTokens).toBeNull();
     expect(events[0].cacheReadInputTokens).toBeNull();
   });
@@ -188,8 +188,7 @@ describePg("recordUsageEvent", () => {
 
     const [event] = await listUsageEvents();
     expect(event.callSite).toBeNull();
-    expect(event.inferenceProfile).toBeNull();
-    expect(event.inferenceProfileSource).toBeNull();
+    expect(event.modelSource).toBeNull();
   });
 
   test("handles populated optional fields", async () => {
@@ -1359,30 +1358,6 @@ describePg("getUsageGroupBreakdown", () => {
     ).toBe(300);
   });
 
-  test("groups by inference profile with unset historical rows preserved", async () => {
-    await insertEventAt(
-      1000,
-      { inferenceProfile: "fast", inputTokens: 100 },
-      { estimatedCostUsd: 0.01, pricingStatus: "priced" },
-    );
-    await insertEventAt(
-      2000,
-      { inferenceProfile: null, inputTokens: 200 },
-      { estimatedCostUsd: 0.02, pricingStatus: "priced" },
-    );
-
-    const groups = await getUsageGroupBreakdown(
-      { from: 0, to: 5000 },
-      "inference_profile",
-    );
-    expect(groups.map((group) => group.group)).toEqual([
-      "Default / Unset",
-      "fast",
-    ]);
-    expect(groups.map((group) => group.groupKey)).toEqual([null, "fast"]);
-    expect(groups[0].totalInputTokens).toBe(200);
-  });
-
   test("groups by model", async () => {
     await insertEventAt(
       1000,
@@ -1620,47 +1595,13 @@ describePg("getUsageGroupedSeries", () => {
     });
   });
 
-  test("returns grouped hourly buckets by inference profile including unset rows", async () => {
-    await insertEventAt(Date.UTC(2026, 3, 10, 10, 15), {
-      inferenceProfile: "fast",
-      inputTokens: 100,
-    });
-    await insertEventAt(Date.UTC(2026, 3, 10, 10, 45), {
-      inferenceProfile: null,
-      inputTokens: 200,
-    });
-
-    const buckets = await getUsageGroupedSeries(
-      {
-        from: Date.UTC(2026, 3, 10, 10),
-        to: Date.UTC(2026, 3, 10, 11),
-      },
-      "inference_profile",
-      "hourly",
-      "UTC",
-      { fillEmpty: true },
-    );
-
-    const bucket = buckets.find((entry) => entry.date === "2026-04-10 10:00");
-    expect(bucket?.groups["value:fast"]).toMatchObject({
-      group: "fast",
-      groupKey: "fast",
-      totalInputTokens: 100,
-    });
-    expect(bucket?.groups["null:inference_profile"]).toMatchObject({
-      group: "Default / Unset",
-      groupKey: null,
-      totalInputTokens: 200,
-    });
-  });
-
   test("orders grouped hourly buckets chronologically across positive-offset fall back", async () => {
     await insertEventAt(Date.UTC(2026, 3, 4, 15, 15), {
-      inferenceProfile: "first-hour",
+      model: "first-hour",
       inputTokens: 100,
     });
     await insertEventAt(Date.UTC(2026, 3, 4, 16, 15), {
-      inferenceProfile: "second-hour",
+      model: "second-hour",
       inputTokens: 200,
     });
 
@@ -1669,7 +1610,7 @@ describePg("getUsageGroupedSeries", () => {
         from: Date.UTC(2026, 3, 4, 15),
         to: Date.UTC(2026, 3, 4, 17),
       },
-      "inference_profile",
+      "model",
       "hourly",
       "Australia/Sydney",
       { fillEmpty: true },
@@ -1739,15 +1680,15 @@ describePg("queryUnreportedUsageEvents", () => {
   test("returns attribution fields for unreported usage events", async () => {
     await insertEventAt(1000, {
       callSite: "mainAgent",
-      inferenceProfile: "balanced",
-      inferenceProfileSource: "active",
+      model: "main",
+      modelSource: "chat",
     });
 
     const events = await queryUnreportedUsageEvents(0, undefined, 100);
     expect(events).toHaveLength(1);
     expect(events[0].callSite).toBe("mainAgent");
-    expect(events[0].inferenceProfile).toBe("balanced");
-    expect(events[0].inferenceProfileSource).toBe("active");
+    expect(events[0].model).toBe("main");
+    expect(events[0].modelSource).toBe("chat");
   });
 
   test("returns empty array when no events match", async () => {

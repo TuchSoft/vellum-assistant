@@ -403,7 +403,8 @@ describe("AcpSessionManager auth-required recovery surface", () => {
       entry.sendToVellum as ReturnType<typeof mock>
     ).mock.calls.map((c) => c[0] as { type: string } & Record<string, unknown>);
     const firstPersist = persistUserMessage.mock.calls[0] as unknown as
-      [{ content: string }] | undefined;
+      | [{ content: string }]
+      | undefined;
     return {
       parentId,
       authEvent: events.find((e) => e.type === "acp_auth_required"),

@@ -430,10 +430,14 @@ describe("WorkspaceGitService", () => {
         expect(trackedFiles()).toContain(name);
       }
 
-      const messages = execFileSync("git", ["log", "--pretty=%B", "--reverse"], {
-        cwd: testDir,
-        encoding: "utf-8",
-      });
+      const messages = execFileSync(
+        "git",
+        ["log", "--pretty=%B", "--reverse"],
+        {
+          cwd: testDir,
+          encoding: "utf-8",
+        },
+      );
       expect(messages).toContain("batch: 1/3");
       expect(messages).toContain("batch: 2/3");
       expect(messages).toContain("batch: 3/3");
@@ -505,7 +509,12 @@ describe("WorkspaceGitService", () => {
       const service = new WorkspaceGitService(testDir);
       await service.ensureInitialized();
 
-      for (const name of ["keep.txt", "gone-a.txt", "gone-b.txt", "gone-c.txt"]) {
+      for (const name of [
+        "keep.txt",
+        "gone-a.txt",
+        "gone-b.txt",
+        "gone-c.txt",
+      ]) {
         writeFileSync(join(testDir, name), name);
       }
       await service.commitChanges("Seed files");

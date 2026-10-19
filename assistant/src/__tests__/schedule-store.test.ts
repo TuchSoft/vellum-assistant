@@ -25,8 +25,7 @@ import type { AssistantEventEnvelope } from "../api/index.js";
 import { SYNC_TAGS } from "../daemon/message-types/sync.js";
 import {
   createConversation,
-  setConversationInferenceProfile,
-  setConversationInferenceProfileSession,
+  setConversationModel,
 } from "../persistence/conversation-crud.js";
 import { requireMainDb } from "../persistence/db-facade.js";
 import { isPluginDirActivated } from "../plugins/mtime-cache.js";
@@ -36,7 +35,7 @@ import {
   LEGACY_DEFER_CREATED_BY,
   OWNER_DEFER_CREATED_BY,
 } from "../schedule/defer-provenance.js";
-import { resolveDefaultScheduleInferenceProfile } from "../schedule/inference-profile.js";
+import { resolveDefaultScheduleModel } from "../schedule/schedule-model.js";
 import type { DeclaredScheduleDefinition } from "../schedule/schedule-store.js";
 import {
   cancelSchedule,
@@ -1414,21 +1413,21 @@ describePg("listSchedules new filters", () => {
     expect(conv123Only[0].wakeConversationId).toBe("conv-123");
   });
 
-  test("inferenceProfile filter returns only schedules pinned to that profile", async () => {
-    const defaultProfile = resolveDefaultScheduleInferenceProfile();
+  test("model filter returns only schedules pinned to that profile", async () => {
+    const defaultProfile = resolveDefaultScheduleModel();
     expect(defaultProfile).not.toBe("cost-optimized");
 
     await createSchedule({
       name: "Cheap digest",
       message: "digest",
       cronExpression: "0 * * * *",
-      inferenceProfile: "cost-optimized",
+      model: "cost-optimized",
     });
     await createSchedule({
       name: "Second cheap digest",
       message: "digest",
       cronExpression: "30 * * * *",
-      inferenceProfile: "cost-optimized",
+      model: "cost-optimized",
     });
     await createSchedule({
       name: "Default profile schedule",
@@ -1437,15 +1436,13 @@ describePg("listSchedules new filters", () => {
     });
 
     const cheapOnly = await listSchedules({
-      inferenceProfile: "cost-optimized",
+      model: "cost-optimized",
     });
     expect(cheapOnly.map((j) => j.name).sort()).toEqual([
       "Cheap digest",
       "Second cheap digest",
     ]);
-    expect(
-      await listSchedules({ inferenceProfile: "no-such-profile" }),
-    ).toEqual([]);
+    expect(await listSchedules({ model: "no-such-profile" })).toEqual([]);
     expect((await listSchedules()).length).toBe(3);
   });
 });
@@ -1964,7 +1961,7 @@ describePg("inference-profile pinning", () => {
   });
 
   test("creation with no profile pins the resolved default", async () => {
-    const expected = resolveDefaultScheduleInferenceProfile();
+    const expected = resolveDefaultScheduleModel();
     expect(expected).not.toBeNull();
 
     const job = await createSchedule({
@@ -1973,21 +1970,21 @@ describePg("inference-profile pinning", () => {
       cronExpression: "0 9 * * *",
     });
 
-    expect(job.inferenceProfile).toBe(expected!);
-    expect((await getSchedule(job.id))!.inferenceProfile).toBe(expected!);
+    expect(job.model).toBe(expected!);
+    expect((await getSchedule(job.id))!.model).toBe(expected!);
   });
 
   test("creation with an explicit profile keeps it", async () => {
-    expect(resolveDefaultScheduleInferenceProfile()).not.toBe("cost-optimized");
+    expect(resolveDefaultScheduleModel()).not.toBe("cost-optimized");
 
     const job = await createSchedule({
       name: "Pinned",
       message: "hi",
       cronExpression: "0 9 * * *",
-      inferenceProfile: "cost-optimized",
+      model: "cost-optimized",
     });
 
-    expect(job.inferenceProfile).toBe("cost-optimized");
+    expect(job.model).toBe("cost-optimized");
   });
 
   test("updating to null re-snapshots the default instead of unpinning", async () => {
@@ -1995,20 +1992,18 @@ describePg("inference-profile pinning", () => {
       name: "Repinned",
       message: "hi",
       cronExpression: "0 9 * * *",
-      inferenceProfile: "cost-optimized",
+      model: "cost-optimized",
     });
 
-    const updated = await updateSchedule(job.id, { inferenceProfile: null });
+    const updated = await updateSchedule(job.id, { model: null });
 
-    expect(updated!.inferenceProfile).toBe(
-      resolveDefaultScheduleInferenceProfile()!,
-    );
+    expect(updated!.model).toBe(resolveDefaultScheduleModel());
   });
 
   test("a defer seeds the source conversation's pinned profile", async () => {
     const conversation = await createConversation({ id: "conv-pinned" });
-    await setConversationInferenceProfile(conversation.id, "cost-optimized");
-    expect(resolveDefaultScheduleInferenceProfile()).not.toBe("cost-optimized");
+    await setConversationModel(conversation.id, "cost-optimized");
+    expect(resolveDefaultScheduleModel()).not.toBe("cost-optimized");
 
     const job = await createOwnerDeferredWake({
       conversationId: conversation.id,
@@ -2019,30 +2014,7 @@ describePg("inference-profile pinning", () => {
     // The wake resumes this conversation and forces the row's pin as the
     // turn's override, so seeding from the global default would move a pinned
     // conversation's own follow-up onto a different model.
-    expect(job.inferenceProfile).toBe("cost-optimized");
-  });
-
-  test("a defer does not freeze the source conversation's profile session", async () => {
-    const conversation = await createConversation({ id: "conv-session" });
-    await setConversationInferenceProfileSession(
-      conversation.id,
-      "cost-optimized",
-      "session-1",
-      Date.now() + 10 * 60_000,
-    );
-
-    const job = await createOwnerDeferredWake({
-      conversationId: conversation.id,
-      hint: "check back",
-      fireAt: Date.now() + 7 * 24 * 60 * 60_000,
-    });
-
-    // A profile session is a deliberately temporary choice. Snapshotting it
-    // into the row would keep billing that model every time the wake fires,
-    // long after the ten-minute session lapsed.
-    expect(job.inferenceProfile).toBe(
-      resolveDefaultScheduleInferenceProfile()!,
-    );
+    expect(job.model).toBe("cost-optimized");
   });
 
   test("a defer from an unpinned conversation seeds the default", async () => {
@@ -2054,15 +2026,13 @@ describePg("inference-profile pinning", () => {
       fireAt: Date.now() + 60_000,
     });
 
-    expect(job.inferenceProfile).toBe(
-      resolveDefaultScheduleInferenceProfile()!,
-    );
+    expect(job.model).toBe(resolveDefaultScheduleModel());
   });
 
   test("any wake row seeds its target's pin, not just a defer", async () => {
     const conversation = await createConversation({ id: "conv-wake-target" });
-    await setConversationInferenceProfile(conversation.id, "cost-optimized");
-    expect(resolveDefaultScheduleInferenceProfile()).not.toBe("cost-optimized");
+    await setConversationModel(conversation.id, "cost-optimized");
+    expect(resolveDefaultScheduleModel()).not.toBe("cost-optimized");
 
     // Seeding is keyed on `mode: "wake"` at the insert chokepoint rather than
     // on defer provenance: every wake row forces its pin as the woken turn's
@@ -2076,6 +2046,6 @@ describePg("inference-profile pinning", () => {
       wakeConversationId: conversation.id,
     });
 
-    expect(job.inferenceProfile).toBe("cost-optimized");
+    expect(job.model).toBe("cost-optimized");
   });
 });

@@ -157,7 +157,8 @@ export async function orchestrateOAuthConnect(
   const tokenExchangeUrl = providerRow.tokenExchangeUrl;
   const userinfoUrl = providerRow.userinfoUrl ?? undefined;
   const tokenEndpointAuthMethod = providerRow.tokenEndpointAuthMethod as
-    TokenEndpointAuthMethod | undefined;
+    | TokenEndpointAuthMethod
+    | undefined;
   const callbackTransport: "loopback" | "gateway" =
     options.callbackTransport ?? "loopback";
   const loopbackPort = providerRow.loopbackPort ?? undefined;

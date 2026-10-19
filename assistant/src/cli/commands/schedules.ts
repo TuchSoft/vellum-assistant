@@ -244,8 +244,8 @@ export function registerSchedulesCommand(program: Command): void {
 
           // Lazily loaded so the schedule module stays out of the CLI's
           // static graph (cli/no-daemon-internals).
-          const { formatScheduleInferenceProfile } =
-            await import("../../schedule/inference-profile.js");
+          const { formatScheduleModel } =
+            await import("../../schedule/schedule-model.js");
 
           const fields: Array<[string, string]> = [
             ["ID", schedule.id],
@@ -266,7 +266,7 @@ export function registerSchedulesCommand(program: Command): void {
             ["Script", schedule.script ?? "—"],
             [
               "Inference profile",
-              formatScheduleInferenceProfile(schedule.inferenceProfile),
+              formatScheduleModel(schedule.inferenceProfile),
             ],
             ["Routing intent", schedule.routingIntent],
             ["Quiet", schedule.quiet ? "yes" : "no"],

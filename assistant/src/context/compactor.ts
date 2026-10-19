@@ -77,15 +77,15 @@ const COMPACTION_CALL_SITE: LLMCallSite = "mainAgent";
 const COMPACTION_LOG_CALL_SITE: LLMCallSite = "compactionAgent";
 
 function compactionUsageAttribution(
-  args: Pick<CompactionRunArgs, "overrideProfile">,
+  args: Pick<CompactionRunArgs, "model">,
 ): Pick<
   CompactionRunResult,
-  "summaryCallSite" | "summaryResolutionCallSite" | "summaryOverrideProfile"
+  "summaryCallSite" | "summaryResolutionCallSite" | "summaryModelPin"
 > {
   return {
     summaryCallSite: COMPACTION_LOG_CALL_SITE,
     summaryResolutionCallSite: COMPACTION_CALL_SITE,
-    summaryOverrideProfile: args.overrideProfile ?? null,
+    summaryModelPin: args.model ?? null,
   };
 }
 
@@ -109,16 +109,13 @@ function servedProvider(
 function servedAttribution(
   response: ProviderResponse,
   provider: Provider,
-): Pick<
-  CompactionRunResult,
-  "summaryActualProvider" | "summaryActualInferenceProfile"
-> {
+): Pick<CompactionRunResult, "summaryActualProvider" | "summaryActualModel"> {
   return {
     summaryActualProvider: servedProvider(response, provider),
-    // Only present on a reroute. Absent leaves `summaryOverrideProfile` in
+    // Only present on a reroute. Absent leaves `summaryModel` in
     // charge, which is what the caller resolved and what actually ran.
-    ...(response.actualInferenceProfile !== undefined
-      ? { summaryActualInferenceProfile: response.actualInferenceProfile }
+    ...(response.actualModel !== undefined
+      ? { summaryActualModel: response.actualModel }
       : {}),
   };
 }
@@ -314,7 +311,7 @@ export interface CompactionRunArgs {
   /** Skip the autoThreshold check — fire compaction unconditionally. */
   force?: boolean;
   signal?: AbortSignal;
-  overrideProfile?: string | null;
+  model?: string | null;
   /**
    * Trust class of the actor whose turn triggered compaction. When the
    * actor is untrusted, the image manifest is filtered to exclude
@@ -376,7 +373,7 @@ export interface CompactionRunResult {
    * selection and {@link summaryCallSite} for the usage-row call site.
    */
   summaryResolutionCallSite?: LLMCallSite;
-  summaryOverrideProfile?: string | null;
+  summaryModelPin?: string | null;
   /**
    * Provider that actually served the summary call: the response's
    * `actualProvider` when a wrapper rerouted the request, otherwise the
@@ -388,11 +385,11 @@ export interface CompactionRunResult {
   summaryActualProvider?: string;
   /**
    * Inference profile that actually governed the summary call, set only when
-   * a wrapper rerouted the request away from `summaryOverrideProfile`
+   * a wrapper rerouted the request away from `summaryModelPin`
    * (`RetryProvider`'s fallback-profile escalation). Absent on the normal
-   * path, where `summaryOverrideProfile` is already correct.
+   * path, where `summaryModelPin` is already correct.
    */
-  summaryActualInferenceProfile?: string;
+  summaryActualModel?: string;
   summaryCacheCreationInputTokens?: number;
   summaryCacheReadInputTokens?: number;
   summaryRawResponses?: unknown[];
@@ -1141,7 +1138,7 @@ export function buildSummaryMemoryText(
  * provider-error paths, which are spread over with `summaryFailed: true`.
  *
  * Deliberately carries no `summaryActualProvider` /
- * `summaryActualInferenceProfile`: no call was served, so there is nothing to
+ * `summaryActualModel`: no call was served, so there is nothing to
  * attribute to, and leaving them absent keeps the caller's own provider and
  * profile in charge. Nothing is billed either way, since the zero token
  * counts here make `recordUsage` return before it writes a row. The
@@ -1399,9 +1396,7 @@ export async function runAssistantDrivenCompaction(
         callSite: COMPACTION_CALL_SITE,
         usageTracking: "manual",
         tool_choice: { type: "none" },
-        ...(args.overrideProfile
-          ? { overrideProfile: args.overrideProfile }
-          : {}),
+        ...(args.model ? { model: args.model } : {}),
       },
     });
   } catch (err) {
@@ -1869,9 +1864,7 @@ export async function runEmergencyCompaction(
         callSite: COMPACTION_CALL_SITE,
         usageTracking: "manual",
         tool_choice: { type: "none" },
-        ...(args.overrideProfile
-          ? { overrideProfile: args.overrideProfile }
-          : {}),
+        ...(args.model ? { model: args.model } : {}),
       },
     });
   } catch (err) {

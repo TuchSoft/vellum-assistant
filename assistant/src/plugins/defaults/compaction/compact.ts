@@ -43,7 +43,7 @@ export interface CompactionContext {
   /** Skip the auto-threshold check (forced/overflow/emergency compaction). */
   force?: boolean;
   /** Per-conversation inference-profile override for the summary call. */
-  overrideProfile?: string | null;
+  model?: string | null;
   /** Pre-computed token estimate from a prior `shouldCompact()` call. */
   precomputedEstimate?: number;
   /** Legacy keep-boundary hint forwarded to the compactor. */
@@ -107,7 +107,7 @@ export async function defaultCompact(
       {
         actualTokens: overflowSignal.actualTokens,
         isInteractive: overflowSignal.isInteractive,
-        overrideProfile: options.overrideProfile,
+        model: options.model,
         actorTrustClass: options.actorTrustClass,
       },
       signal,

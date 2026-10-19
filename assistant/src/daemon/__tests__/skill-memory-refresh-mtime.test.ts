@@ -1,14 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  mock,
-  test,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 const WORKSPACE_DIR = mkdtempSync(join(tmpdir(), "skill-md-mtime-refresh-"));
 process.env.VELLUM_WORKSPACE_DIR = WORKSPACE_DIR;
@@ -51,10 +50,7 @@ function writeSkill(id: string): string {
   const dir = join(SKILLS_DIR, id);
   mkdirSync(dir, { recursive: true });
   const skillMd = join(dir, "SKILL.md");
-  writeFileSync(
-    skillMd,
-    `---\nname: ${id}\ndescription: ${id}\n---\nbody\n`,
-  );
+  writeFileSync(skillMd, `---\nname: ${id}\ndescription: ${id}\n---\nbody\n`);
   return skillMd;
 }
 

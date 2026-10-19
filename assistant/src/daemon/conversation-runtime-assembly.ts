@@ -18,8 +18,6 @@ import {
   resolveAppSource,
 } from "../apps/app-store.js";
 import { type ChannelId, parseInterfaceId } from "../channels/types.js";
-import { resolveDefaultProfileForProvider } from "../config/default-profile-catalog.js";
-import { resolveCallSiteConfig } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import { isMemoryV3Live } from "../config/memory-v3-gate.js";
 import type { LLMCallSite, LLMConfig } from "../config/schemas/llm.js";
@@ -222,7 +220,7 @@ export async function resolveTurnInboundActorContext(
 }
 
 /**
- * Render the `model_profile:` turn-context label from the turn's profile
+ * Render the `model:` turn-context label from the turn's profile
  * notice key, for the unified `<turn_context>` block.
  *
  * Returns `null` when there is no key to announce (the caller gates this to the
@@ -240,28 +238,13 @@ export async function resolveTurnInboundActorContext(
  * expansion with the same id). Without it the announced model would be a fresh
  * random arm that can disagree with the model actually serving the turn.
  */
-export function resolveTurnModelProfileLabel(
-  modelProfileNoticeKey: string | null,
-  callSite: LLMCallSite,
-  llm: LLMConfig,
-  selectionSeed?: string,
+export function resolveTurnModelLabel(
+  modelNoticeKey: string | null,
+  _callSite: LLMCallSite,
+  _llm: LLMConfig,
+  _selectionSeed?: string,
 ): string | null {
-  if (modelProfileNoticeKey == null) {
-    return null;
-  }
-  const profileEntry = resolveDefaultProfileForProvider(
-    llm.profiles,
-    modelProfileNoticeKey,
-    llm.defaultProvider ?? null,
-  );
-  const resolved = resolveCallSiteConfig(callSite, llm, {
-    overrideProfile: modelProfileNoticeKey,
-    selectionSeed,
-  });
-  const label = profileEntry?.label ?? modelProfileNoticeKey;
-  return resolved.model && resolved.model !== label
-    ? `${label} (${resolved.model})`
-    : label;
+  return modelNoticeKey;
 }
 
 /** Derive channel capabilities from source channel + interface identifiers. */
@@ -2141,7 +2124,7 @@ function applyInjectionBlock(
  * agent-loop closure state.
  *
  * The remaining unified `<turn_context>` inputs (`actorContext` and
- * `modelProfile`) are flat top-level fields here. They flow through to the
+ * `model`) are flat top-level fields here. They flow through to the
  * matching {@link TurnContext} fields, and the `unified-turn-context`
  * injector builds the block from them — combined with the freshly computed
  * `current_time` timestamp, the turn's frozen client timezone and long-absence
@@ -2168,7 +2151,7 @@ export interface RuntimeInjectionOptions {
    * Human-readable active inference profile, only set when it changed since
    * the last turn (or on the first turn).
    */
-  modelProfile?: string | null;
+  model?: string | null;
   /**
    * Stable ID for the current request (one per inbound message). Forwarded
    * verbatim onto the {@link TurnContext} handed to plugin-registered
@@ -2446,7 +2429,7 @@ export async function applyRuntimeInjections(
     clientTimezone,
     detectedTimezone,
     timeSinceLastMessage,
-    modelProfile: options.modelProfile,
+    model: options.model,
   };
   const turnCtx: TurnContext = {
     requestId: options.requestId ?? conversationId,

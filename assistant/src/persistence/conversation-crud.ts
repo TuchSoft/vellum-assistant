@@ -11,7 +11,6 @@ import {
   gte,
   ilike,
   inArray,
-  isNotNull,
   isNull,
   lt,
   lte,
@@ -711,12 +710,13 @@ export interface ConversationRow {
   lastMessageAt: number | null;
   archivedAt: number | null;
   surfacedAt: number | null;
-  inferenceProfile: string | null;
+  /** Gateway alias pinned for interactive turns; null = default model. */
+  model: string | null;
+  /** Conversation-level reasoning effort; null = alias default. */
+  reasoningEffort: string | null;
   /** Parsed plugin-id list scoping this chat; null = default (all globally-enabled). */
   enabledPlugins: string[] | null;
-  inferenceProfileSessionId: string | null;
-  inferenceProfileExpiresAt: number | null;
-  lastNotifiedInferenceProfile: string | null;
+  lastNotifiedModel: string | null;
   processingStartedAt: number | null;
 }
 
@@ -752,14 +752,13 @@ export const parseConversation = createRowMapper<
   lastMessageAt: "lastMessageAt",
   archivedAt: "archivedAt",
   surfacedAt: "surfacedAt",
-  inferenceProfile: "inferenceProfile",
+  model: "model",
+  reasoningEffort: "reasoningEffort",
   enabledPlugins: {
     from: "enabledPlugins",
     transform: parseJsonNullable<string[]>(),
   },
-  inferenceProfileSessionId: "inferenceProfileSessionId",
-  inferenceProfileExpiresAt: "inferenceProfileExpiresAt",
-  lastNotifiedInferenceProfile: "lastNotifiedInferenceProfile",
+  lastNotifiedModel: "lastNotifiedModel",
   processingStartedAt: "processingStartedAt",
 });
 
@@ -1629,7 +1628,8 @@ export async function forkConversation(params: {
         historyStrippedAt: inheritsHistoryStrippedAt
           ? sourceHistoryStrippedAt
           : null,
-        inferenceProfile: sourceConversation.inferenceProfile,
+        model: sourceConversation.model,
+        reasoningEffort: sourceConversation.reasoningEffort,
         enabledPlugins: encodeEnabledPlugins(sourceConversation.enabledPlugins),
       })
       .where(eq(tx.schema.conversations.id, fc.id));
@@ -2254,7 +2254,8 @@ export async function forkConversationForRetrospective(params: {
             historyStrippedAt: inheritsHistoryStrippedAt
               ? sourceHistoryStrippedAt
               : null,
-            inferenceProfile: sourceConversation.inferenceProfile,
+            model: sourceConversation.model,
+            reasoningEffort: sourceConversation.reasoningEffort,
             enabledPlugins: encodeEnabledPlugins(
               sourceConversation.enabledPlugins,
             ),
@@ -3817,25 +3818,36 @@ export async function setConversationSurfaced(
 }
 
 /**
- * Set or clear the inference profile override for a conversation.
- * Pass `null` to clear the override and fall back to the workspace
- * `llm.activeProfile` resolution.
- *
- * Also clears any stale session columns (`inferenceProfileSessionId`,
- * `inferenceProfileExpiresAt`) so that the reaper and lazy expiry check
- * cannot later clobber the newly-set profile.
+ * Set or clear the gateway alias pinned for a conversation's interactive
+ * turns. Pass `null` to fall back to `llm.defaultModel`.
  */
-export async function setConversationInferenceProfile(
+export async function setConversationModel(
   conversationId: string,
-  profile: string | null,
+  model: string | null,
 ): Promise<void> {
   const db = requireMainDb();
   await db.orm
     .update(db.schema.conversations)
     .set({
-      inferenceProfile: profile,
-      inferenceProfileSessionId: null,
-      inferenceProfileExpiresAt: null,
+      model,
+      updatedAt: Date.now(),
+    })
+    .where(eq(db.schema.conversations.id, conversationId));
+}
+
+/**
+ * Set or clear the conversation-level reasoning effort, independently of the
+ * model pin. `null` sends no `reasoning_effort`, so the alias default applies.
+ */
+export async function setConversationReasoningEffort(
+  conversationId: string,
+  reasoningEffort: string | null,
+): Promise<void> {
+  const db = requireMainDb();
+  await db.orm
+    .update(db.schema.conversations)
+    .set({
+      reasoningEffort,
       updatedAt: Date.now(),
     })
     .where(eq(db.schema.conversations.id, conversationId));
@@ -3887,158 +3899,25 @@ export async function setConversationEnabledPlugins(
 }
 
 /**
- * Atomically set the inference profile, session id, and expiry timestamp for
- * a conversation. Pass `null` for all three to clear the session-backed
- * override and fall back to the workspace `llm.activeProfile` resolution.
- */
-export async function setConversationInferenceProfileSession(
-  conversationId: string,
-  profile: string | null,
-  sessionId: string | null,
-  expiresAt: number | null,
-): Promise<void> {
-  const db = requireMainDb();
-  await db.orm
-    .update(db.schema.conversations)
-    .set({
-      inferenceProfile: profile,
-      inferenceProfileSessionId: sessionId,
-      inferenceProfileExpiresAt: expiresAt,
-      updatedAt: Date.now(),
-    })
-    .where(eq(db.schema.conversations.id, conversationId));
-}
-
-/**
- * Clear all conversations whose session-backed inference profile has expired.
- * Returns an array of `{ conversationId, sessionId }` for each cleared row so
- * callers can emit the appropriate update events.
- */
-export async function clearExpiredInferenceProfiles(
-  now: number,
-): Promise<Array<{ conversationId: string; sessionId: string | null }>> {
-  const db = requireMainDb();
-  // Two-step approach: SELECT to get pre-clear sessionIds, then UPDATE.
-  // The UPDATE re-applies the WHERE condition for CAS safety.
-  // RETURNING the id lets us know which rows were actually cleared.
-  const expired = await db.all<{
-    conversationId: string;
-    sessionId: string | null;
-  }>(
-    `
-    SELECT id AS "conversationId", inference_profile_session_id AS "sessionId"
-    FROM conversations
-    WHERE inference_profile_expires_at IS NOT NULL AND inference_profile_expires_at <= ?
-  `,
-    [now],
-  );
-
-  if (expired.length === 0) {
-    return [];
-  }
-
-  const ids = expired.map((r) => r.conversationId);
-  const placeholders = ids.map(() => "?").join(", ");
-
-  const actuallyCleared = await db.all<{ conversationId: string }>(
-    `
-    UPDATE conversations
-    SET inference_profile = NULL, inference_profile_session_id = NULL, inference_profile_expires_at = NULL
-    WHERE id IN (${placeholders}) AND inference_profile_expires_at IS NOT NULL AND inference_profile_expires_at <= ?
-    RETURNING id AS "conversationId"
-  `,
-    [...ids, now],
-  );
-
-  const clearedSet = new Set(actuallyCleared.map((r) => r.conversationId));
-  return expired.filter((r) => clearedSet.has(r.conversationId));
-}
-
-/**
- * List conversations with an active (non-expired) session-backed inference
- * profile. Pass a `conversationId` to narrow to a single conversation.
- */
-export async function listActiveInferenceProfileSessions(
-  conversationId?: string,
-): Promise<
-  Array<{
-    conversationId: string;
-    conversationTitle: string | null;
-    profile: string;
-    sessionId: string;
-    expiresAt: number;
-  }>
-> {
-  const db = requireMainDb();
-  const conversations = db.schema.conversations;
-  const now = Date.now();
-  const baseConditions = [
-    isNotNull(conversations.inferenceProfile),
-    isNotNull(conversations.inferenceProfileExpiresAt),
-    gt(conversations.inferenceProfileExpiresAt, now),
-    isNotNull(conversations.inferenceProfileSessionId),
-  ];
-  if (conversationId) {
-    baseConditions.push(eq(conversations.id, conversationId));
-  }
-  const rows = await db.orm
-    .select({
-      conversationId: conversations.id,
-      conversationTitle: conversations.title,
-      profile: conversations.inferenceProfile,
-      sessionId: conversations.inferenceProfileSessionId,
-      expiresAt: conversations.inferenceProfileExpiresAt,
-    })
-    .from(conversations)
-    .where(and(...baseConditions));
-
-  const active: Array<{
-    conversationId: string;
-    conversationTitle: string | null;
-    profile: string;
-    sessionId: string;
-    expiresAt: number;
-  }> = [];
-  for (const row of rows) {
-    if (
-      row.profile === null ||
-      row.sessionId === null ||
-      row.expiresAt === null
-    ) {
-      continue;
-    }
-    active.push({
-      conversationId: row.conversationId,
-      conversationTitle: row.conversationTitle,
-      profile: row.profile,
-      sessionId: row.sessionId,
-      expiresAt: row.expiresAt,
-    });
-  }
-  return active;
-}
-
-/**
- * The conversation fields needed to resolve a per-turn inference-profile
- * override. Satisfied by both the DB {@link ConversationRow} and the live
- * in-memory `Conversation`, so callers can derive the override from whichever
+ * The conversation fields needed to resolve the per-turn chat model. Satisfied
+ * by both the DB {@link ConversationRow} and the live in-memory
+ * `Conversation`, so callers can derive the model from whichever
  * representation they already hold without a redundant row fetch.
  */
-export interface OverrideProfileFields {
+export interface ConversationModelFields {
   conversationType?: string | null;
-  inferenceProfile?: string | null;
-  inferenceProfileExpiresAt?: number | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
 }
 
 /**
- * Resolve the per-turn inference-profile override from a conversation's
- * fields. Returns the `inferenceProfile` for interactive conversations,
- * `undefined` for automation threads (subagent fan-out, scheduled
- * tasks) so they run on the workspace defaults rather than
- * inheriting an interactive override.
+ * Resolve the chat model from a conversation's fields. Returns the pinned
+ * alias for interactive conversations and `undefined` for automation threads
+ * (subagent fan-out, scheduled tasks) so they run on the call-site defaults
+ * rather than inheriting an interactive choice.
  */
-export function resolveOverrideProfile(
-  fields: OverrideProfileFields | null,
+export function resolveConversationModel(
+  fields: ConversationModelFields | null,
 ): string | undefined {
   if (
     fields?.conversationType === "background" ||
@@ -4046,87 +3925,53 @@ export function resolveOverrideProfile(
   ) {
     return undefined;
   }
-  // Treat an expired session as if the override is absent. The eager reaper
-  // clears the row and emits the update event; the lazy check here ensures
-  // correctness on read paths before the reaper fires.
-  //
-  // `<=` (not `<`) for boundary consistency with the rest of the session
-  // logic: the reaper SQL uses `expires_at <= ?`, and the active-session
-  // queries use `expiresAt > now` (i.e. treat exact-expiry as inactive).
-  // Without this, a session at the exact-expiry millisecond would be served
-  // for one extra turn here while being cleared by the reaper.
-  if (
-    fields?.inferenceProfileExpiresAt != null &&
-    fields.inferenceProfileExpiresAt <= Date.now()
-  ) {
-    return undefined;
-  }
-  return fields?.inferenceProfile ?? undefined;
+  return fields?.model ?? undefined;
 }
 
 /**
- * Resolve the per-turn inference-profile override by conversation id.
- * Convenience wrapper for standalone callers (e.g. subagent spawn,
- * opportunity-wake) that don't already have the conversation in hand.
+ * Resolve the chat model by conversation id. Convenience wrapper for
+ * standalone callers (e.g. subagent spawn, opportunity-wake) that do not
+ * already have the conversation in hand.
  */
-export async function getConversationOverrideProfile(
+export async function getConversationModel(
   conversationId: string,
 ): Promise<string | undefined> {
-  return resolveOverrideProfile(await getConversation(conversationId));
+  return resolveConversationModel(await getConversation(conversationId));
 }
 
 /**
- * The conversation fields needed to tell a durable inference-profile pin from
- * a session-backed one. Extends {@link OverrideProfileFields} with the session
- * marker, so callers can decide from a {@link ConversationRow} or a live
- * in-memory `Conversation` without a redundant row fetch.
+ * A conversation's durable model pin. The alias is stored on the row, so the
+ * durable value is the row value; the type alias keeps the call sites that
+ * copy a pin into a longer-lived record (a schedule) explicit about their
+ * source.
  */
-export interface DurableProfileFields extends OverrideProfileFields {
-  inferenceProfileSessionId?: string | null;
-}
+export type DurableModelFields = ConversationModelFields;
 
-/**
- * Resolve a conversation's inference-profile pin only when the user set it to
- * stick, ignoring a TTL-limited profile session.
- *
- * {@link resolveOverrideProfile} is read at use time, so a lapsed session
- * simply reads as absent on the next turn. Anything that copies a pin into a
- * record outliving that read (a schedule row that fires days later) needs the
- * stricter question: a copied session would keep billing the model the user
- * picked for ten minutes long after the session ended.
- *
- * A session-backed pin carries a non-null `inferenceProfileSessionId`;
- * {@link setConversationInferenceProfile}, the sticky setter, clears those
- * columns. So a null session id is exactly the durable case.
- */
-export function resolveDurableProfile(
-  fields: DurableProfileFields | null,
+/** Resolve a conversation's durable model pin. */
+export function resolveDurableModel(
+  fields: DurableModelFields | null,
 ): string | undefined {
-  if (fields?.inferenceProfileSessionId != null) {
-    return undefined;
-  }
-  return resolveOverrideProfile(fields);
+  return resolveConversationModel(fields);
 }
 
 /**
- * Resolve a conversation's durable inference-profile pin by id. Convenience
- * wrapper over {@link resolveDurableProfile} for callers that don't already
- * hold the row.
+ * Resolve a conversation's durable model pin by id. Convenience wrapper over
+ * {@link resolveDurableModel} for callers that do not already hold the row.
  */
-export async function getConversationDurableProfile(
+export async function getConversationDurableModel(
   conversationId: string,
 ): Promise<string | undefined> {
-  return resolveDurableProfile(await getConversation(conversationId));
+  return resolveDurableModel(await getConversation(conversationId));
 }
 
-export async function setLastNotifiedInferenceProfile(
+export async function setLastNotifiedModel(
   conversationId: string,
-  profileKey: string | null,
+  model: string | null,
 ): Promise<void> {
   const db = requireMainDb();
   await db.run(
-    "UPDATE conversations SET last_notified_inference_profile = ? WHERE id = ?",
-    [profileKey, conversationId],
+    "UPDATE conversations SET last_notified_model = ? WHERE id = ?",
+    [model, conversationId],
   );
 }
 

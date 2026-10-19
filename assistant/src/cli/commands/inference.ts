@@ -19,9 +19,7 @@ import { log } from "../logger.js";
 import { inferenceHelp, llmHelp } from "./inference.help.js";
 import { attachCallsitesSubcommand } from "./inference-callsites.js";
 import { attachModelsSubcommand } from "./inference-models.js";
-import { attachProfilesSubcommand } from "./inference-profiles.js";
 import { attachProvidersSubcommand } from "./inference-providers.js";
-import { attachSessionSubcommand } from "./inference-session.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -249,10 +247,8 @@ export function registerInferenceCommand(program: Command): void {
       applyCommandHelp(inference, inferenceHelp);
 
       attachSendSubcommand(inference);
-      attachSessionSubcommand(inference);
       attachProvidersSubcommand(inference);
       attachModelsSubcommand(inference);
-      attachProfilesSubcommand(inference);
       attachCallsitesSubcommand(inference);
     },
   });

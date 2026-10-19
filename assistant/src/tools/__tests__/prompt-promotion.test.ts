@@ -58,8 +58,11 @@ describe("evaluatePromptPromotion", () => {
 
   test("requireFreshApproval promotes when the threshold is unknown", () => {
     expect(
-      evaluatePromptPromotion({ requireFreshApproval: true }, "allow", undefined)
-        .promote,
+      evaluatePromptPromotion(
+        { requireFreshApproval: true },
+        "allow",
+        undefined,
+      ).promote,
     ).toBe(true);
   });
 

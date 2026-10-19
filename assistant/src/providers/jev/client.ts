@@ -31,7 +31,8 @@ export interface JevProviderOptions {
 }
 
 export type ApiKeyValidationResult =
-  { valid: true } | { valid: false; reason: string };
+  | { valid: true }
+  | { valid: false; reason: string };
 
 export type JevJsonValue =
   | string
@@ -502,7 +503,8 @@ export class JevProvider implements Provider {
     const configObj = config as Record<string, unknown> | undefined;
     const modelOverride = configObj?.model as string | undefined;
     const usageAttributionHeaders = configObj?.usageAttributionHeaders as
-      Record<string, string> | undefined;
+      | Record<string, string>
+      | undefined;
     const activeModel = modelOverride?.trim() || this.defaultModel;
     const override = parseSystemOneOverride(lastUserText(messages));
     const request: JevSystemOneRequest = {

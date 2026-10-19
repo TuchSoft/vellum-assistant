@@ -155,7 +155,8 @@ mock.module("../context/token-estimator.js", () => ({
 
 // Reducer: by default returns the input untouched and marks exhausted
 let mockReducerStepFn:
-  ((msgs: Message[], cfg: unknown, state: unknown) => unknown) | null = null;
+  | ((msgs: Message[], cfg: unknown, state: unknown) => unknown)
+  | null = null;
 const makeInitialReducerState = () => ({
   appliedTiers: [] as string[],
   injectionMode: "full" as const,
@@ -307,7 +308,7 @@ interface MockConversationRow {
   contextCompactedMessageCount?: number;
   contextCompactedAt?: number | null;
   slackContextCompactionWatermarkTs?: string | null;
-  lastNotifiedInferenceProfile?: string | null;
+  lastNotifiedModel?: string | null;
   processingStartedAt?: string | null;
   [key: string]: unknown;
 }
@@ -940,8 +941,7 @@ function makeCtx(
     contextCompactedAt: mockConversationRow?.contextCompactedAt ?? null,
     slackContextCompactionWatermarkTs:
       mockConversationRow?.slackContextCompactionWatermarkTs ?? null,
-    lastNotifiedInferenceProfile:
-      mockConversationRow?.lastNotifiedInferenceProfile ?? null,
+    lastNotifiedModel: mockConversationRow?.lastNotifiedModel ?? null,
     processingStartedAt: mockConversationRow?.processingStartedAt ?? null,
 
     currentActiveSurfaceId: undefined,
@@ -1280,7 +1280,6 @@ describe("prompt cache warming", () => {
       callSite: "mainAgent",
       conversationId: "conv-cache-warm-test",
       max_tokens: 16,
-      selectionSeed: "conv-cache-warm-test",
     });
     expect(
       sendMessage.mock.calls[0]?.[1]?.config?.usageTracking,
@@ -1651,14 +1650,14 @@ describe("session-agent-loop", () => {
         },
         hooks: {
           "user-prompt-submit": async (ctx: UserPromptSubmitContext) => {
-            observedProfileKeys.push(ctx.modelProfileKey);
+            observedProfileKeys.push(ctx.modelKey);
           },
         },
       });
 
       const ctx = makeCtx({
-        inferenceProfile: "balanced",
-        lastNotifiedInferenceProfile: "balanced",
+        model: "balanced",
+        lastNotifiedModel: "balanced",
         providerResponses: [textResponse("ok")],
       });
 
@@ -1704,7 +1703,8 @@ describe("session-agent-loop", () => {
 
       expect(runSpy).toHaveBeenCalledTimes(1);
       const call = runSpy.mock.calls[0]?.[0] as
-        { messages: Message[] } | undefined;
+        | { messages: Message[] }
+        | undefined;
       expect(call?.messages[0]?.content).toEqual([
         { type: "text", text: "rewritten prompt" },
       ]);
@@ -2725,16 +2725,14 @@ describe("session-agent-loop", () => {
       await runAgentLoopImpl(ctx, "hello", "msg-1", () => {}, {
         callSite: "callAgent",
         inferenceCallSite: "mainAgent",
-        overrideProfile: "quality-optimized",
-        forceOverrideProfile: true,
+        model: "quality-optimized",
         onFirstModelCallPrepared,
       });
 
       expect(onFirstModelCallPrepared).toHaveBeenCalledTimes(1);
       expect(onFirstModelCallPrepared).toHaveBeenCalledWith({
         callSite: "mainAgent",
-        overrideProfile: "quality-optimized",
-        forceOverrideProfile: true,
+        model: "quality-optimized",
         signal: turnSignal,
         systemPrompt: "system prompt",
         tools: [tool],
@@ -2804,7 +2802,7 @@ describe("session-agent-loop", () => {
       // The turn resolved to the primary managed profile, the request hit an
       // outage-shaped failure, and `RetryProvider` escalated to a backup
       // profile on a different provider, stamping `actualProvider` and
-      // `actualInferenceProfile` on the response it returns.
+      // `actualModel` on the response it returns.
       seedLlmConfig({
         profiles: {
           ...disabledCatalogDefaultProfiles,
@@ -2820,7 +2818,7 @@ describe("session-agent-loop", () => {
             usage: { inputTokens: 12, outputTokens: 3 },
             stopReason: "end_turn",
             actualProvider: "anthropic",
-            actualInferenceProfile: "backupProfile",
+            actualModel: "backupProfile",
           },
         ],
         provider: {
@@ -2846,18 +2844,15 @@ describe("session-agent-loop", () => {
       expect(mainAgentCall?.[3]).toBe("claude-sonnet-5");
       const attribution = mainAgentCall?.[12] as UsageAttributionInput;
       expect(attribution.callSite).toBe("mainAgent");
-      expect(attribution.overrideProfile).toBe("backupProfile");
-      expect(attribution.forceOverrideProfile).toBe(true);
+      expect(attribution.model).toBe("backupProfile");
       // `inference_profile` on the persisted row is this snapshot's applied
       // profile, so resolve it the way `recordUsage` does and assert the
       // column value itself rather than only the input that feeds it.
-      expect(resolveUsageAttribution(attribution).appliedProfile).toBe(
-        "backupProfile",
-      );
+      expect(resolveUsageAttribution(attribution).model).toBe("backupProfile");
     });
 
     test("leaves a non-fallback turn attributed to the conversation's own profile", async () => {
-      // No reroute: the response carries no `actualInferenceProfile`, so the
+      // No reroute: the response carries no `actualModel`, so the
       // attribution input stays exactly what the conversation resolved and
       // carries no forced override.
       seedLlmConfig({
@@ -2898,7 +2893,7 @@ describe("session-agent-loop", () => {
       expect(mainAgentCall?.[3]).toBe("gpt-4.1-2026-03-01");
       expect(mainAgentCall?.[12]).toEqual({
         callSite: "mainAgent",
-        overrideProfile: null,
+        model: null,
       });
     });
 
@@ -3063,7 +3058,7 @@ describe("session-agent-loop", () => {
       });
       const turn = runAgentLoopImpl(ctx, "Continue report", "msg-1", () => {}, {
         cronRunId: "run-scheduled",
-        overrideProfile: "auto",
+        model: "auto",
       });
       try {
         await enteredRouter.promise;
@@ -5904,10 +5899,10 @@ describe("session-agent-loop", () => {
           summaryCallSite: "compactionAgent",
           summaryResolutionCallSite: "mainAgent",
           // What the compactor resolved before the call...
-          summaryOverrideProfile: "primaryProfile",
+          summaryModelPin: "primaryProfile",
           // ...and what the reroute actually served.
           summaryActualProvider: "anthropic",
-          summaryActualInferenceProfile: "backupProfile",
+          summaryActualModel: "backupProfile",
         },
         () => {},
         "req-1",
@@ -5923,9 +5918,8 @@ describe("session-agent-loop", () => {
       expect(compactorCall?.[3]).toBe("claude-sonnet-5");
       expect(compactorCall?.[12]).toEqual({
         callSite: "compactionAgent",
-        profileResolutionCallSite: "mainAgent",
-        overrideProfile: "backupProfile",
-        forceOverrideProfile: true,
+        modelResolutionCallSite: "mainAgent",
+        model: "backupProfile",
       });
     });
 
@@ -5951,7 +5945,7 @@ describe("session-agent-loop", () => {
           summaryText: "summary",
           summaryCallSite: "compactionAgent",
           summaryResolutionCallSite: "mainAgent",
-          summaryOverrideProfile: "primaryProfile",
+          summaryModelPin: "primaryProfile",
           summaryActualProvider: "openai",
         },
         () => {},
@@ -5967,8 +5961,8 @@ describe("session-agent-loop", () => {
       expect(compactorCall?.[3]).toBe("mock-model");
       expect(compactorCall?.[12]).toEqual({
         callSite: "compactionAgent",
-        profileResolutionCallSite: "mainAgent",
-        overrideProfile: "primaryProfile",
+        modelResolutionCallSite: "mainAgent",
+        model: "primaryProfile",
       });
     });
 
@@ -5998,7 +5992,7 @@ describe("session-agent-loop", () => {
           summaryText: "summary",
           summaryCallSite: "compactionAgent",
           summaryResolutionCallSite: "mainAgent",
-          summaryOverrideProfile: "primaryProfile",
+          summaryModelPin: "primaryProfile",
         },
         () => {},
         "req-1",
@@ -6014,8 +6008,8 @@ describe("session-agent-loop", () => {
       });
       expect(compactorCall?.[12]).toEqual({
         callSite: "compactionAgent",
-        profileResolutionCallSite: "mainAgent",
-        overrideProfile: "primaryProfile",
+        modelResolutionCallSite: "mainAgent",
+        model: "primaryProfile",
       });
     });
 

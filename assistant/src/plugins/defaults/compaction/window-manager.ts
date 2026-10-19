@@ -149,7 +149,7 @@ export interface ContextWindowCompactOptions {
    * Per-conversation inference-profile override forwarded to the compaction
    * LLM call.
    */
-  overrideProfile?: string | null;
+  model?: string | null;
   /**
    * Pre-computed token estimate from a prior {@link shouldCompact} call.
    * Avoids a redundant tokenization pass when the caller already has one.
@@ -197,7 +197,7 @@ export interface EmergencyCompactOptions {
    * Per-conversation inference-profile override forwarded to the summary
    * call.
    */
-  overrideProfile?: string | null;
+  model?: string | null;
 }
 
 /**
@@ -222,7 +222,7 @@ export interface OverflowRecoveryRungOptions {
    */
   allowAutoCompressLatestTurn: boolean;
   /** Per-conversation inference-profile override for the summary call. */
-  overrideProfile?: string | null;
+  model?: string | null;
   /** Trust class of the actor whose turn triggered overflow recovery. */
   actorTrustClass?: TrustClass;
 }
@@ -241,7 +241,7 @@ export interface OverflowRecoveryOptions {
    */
   isInteractive: boolean;
   /** Per-conversation inference-profile override for the summary call. */
-  overrideProfile?: string | null;
+  model?: string | null;
   /** Trust class of the actor whose turn triggered overflow recovery. */
   actorTrustClass?: TrustClass;
 }
@@ -552,7 +552,7 @@ export class ContextWindowManager {
       {
         actualTokens: options.actualTokens,
         allowAutoCompressLatestTurn,
-        overrideProfile: options.overrideProfile,
+        model: options.model,
         actorTrustClass: options.actorTrustClass,
       },
       signal,
@@ -624,7 +624,7 @@ export class ContextWindowManager {
       targetTokens,
       toolTokenBudget: this.resolveTurnToolTokenBudget(),
       conversationId: this.conversationId,
-      overrideProfile: options.overrideProfile ?? null,
+      model: options.model ?? null,
       actorTrustClass: options.actorTrustClass,
       previousEstimatedInputTokens: estimatedInputTokens,
       maxMiddleTierAttempts: this.config.overflowRecovery.maxAttempts,
@@ -783,7 +783,7 @@ export class ContextWindowManager {
       previousEstimatedInputTokens,
       force: options?.force,
       signal,
-      overrideProfile: options?.overrideProfile ?? null,
+      model: options?.model ?? null,
       actorTrustClass: options?.actorTrustClass,
       nonPersistedPrefixCount: this.resolveNonPersistedPrefixCount(messages),
     });
@@ -930,7 +930,7 @@ export class ContextWindowManager {
       previousEstimatedInputTokens: options.previousEstimatedInputTokens,
       force: true,
       signal,
-      overrideProfile: options.overrideProfile ?? null,
+      model: options.model ?? null,
       nonPersistedPrefixCount: this.resolveNonPersistedPrefixCount(messages),
     });
     // A productive emergency pass rebuilds the history front just like the

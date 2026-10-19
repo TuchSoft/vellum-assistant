@@ -40,9 +40,6 @@ export function displayUsageGroup(
   if (groupBy === "call_site") {
     return groupKey === null ? "Unknown Task" : getLLMCallSiteLabel(groupKey);
   }
-  if (groupBy === "inference_profile") {
-    return groupKey === null ? "Default / Unset" : groupKey;
-  }
   if (groupBy === "schedule") {
     return groupKey ?? "Other";
   }

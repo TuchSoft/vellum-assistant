@@ -53,7 +53,10 @@ import { getRetrospectiveState } from "./memory-retrospective-state.js";
 const log = getLogger("memory-retrospective-enqueue");
 
 export type MemoryRetrospectiveTrigger =
-  "interval" | "message_count" | "compaction" | "sweep";
+  | "interval"
+  | "message_count"
+  | "compaction"
+  | "sweep";
 
 const COMPACTION_DEBOUNCE_MS = 500;
 

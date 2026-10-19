@@ -156,7 +156,8 @@ function requiredFieldsUnder(
   let node: Record<string, unknown> | undefined = schema;
   for (const segment of path) {
     const properties = node?.properties as
-      Record<string, Record<string, unknown>> | undefined;
+      | Record<string, Record<string, unknown>>
+      | undefined;
     node = properties?.[segment];
     while (node?.items) {
       node = node.items as Record<string, unknown>;

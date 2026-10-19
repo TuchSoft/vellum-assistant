@@ -70,7 +70,7 @@ import type { WakeToolContextPin } from "../../../daemon/tool-setup-types.js";
 import { INTERNAL_GUARDIAN_TRUST_CONTEXT } from "../../../daemon/trust-context.js";
 import {
   forkConversationForRetrospective,
-  resolveOverrideProfile,
+  resolveConversationModel,
 } from "../../../persistence/conversation-crud.js";
 import {
   enqueueMemoryJob,
@@ -492,14 +492,14 @@ export async function runForkBasedRetrospective(
   // scoped per model, and a thinking enable/disable mismatch invalidates the
   // messages cache tier — so the fork's cached prefix is only reusable when
   // the retro resolves the SAME model/thinking/effort as the source's own
-  // turns. `resolveOverrideProfile` applies the same expiry/conversation-type
+  // turns. `resolveConversationModel` applies the same expiry/conversation-type
   // semantics live turns use, so a missing, expired, or non-interactive
   // profile yields undefined and the wake keeps today's call-site default —
-  // as does a profile name that no longer exists in `llm.profiles` (the
+  // as does a profile name that no longer exists in the gateway catalog (the
   // resolver's standard silent fall-through). The wake's `callSite` stays
   // `memoryRetrospective`, so logging/attribution buckets are unchanged.
-  const matchedProfile = config.memory.retrospective.matchConversationProfile
-    ? resolveOverrideProfile(sourceConversation)
+  const matchedModel = config.memory.retrospective.matchConversationProfile
+    ? resolveConversationModel(sourceConversation)
     : undefined;
 
   // Persona + tool-context parity pins derived from the source conversation
@@ -598,10 +598,8 @@ export async function runForkBasedRetrospective(
       // `Conversation.loadFromDb` rehydrates them byte-for-byte. The wake never
       // re-runs the injection pipeline, so it needs no interactivity hint here.
       // Profile forcing (model/thinking/effort parity) is a separate concern
-      // and stays keyed on `matchConversationProfile` via `matchedProfile`.
-      ...(matchedProfile !== undefined
-        ? { forceOverrideProfile: matchedProfile }
-        : {}),
+      // and stays keyed on `matchConversationProfile` via `matchedModel`.
+      ...(matchedModel !== undefined ? { model: matchedModel } : {}),
       personaOverride,
       hintRole: "user",
       skipHintInjection: true,

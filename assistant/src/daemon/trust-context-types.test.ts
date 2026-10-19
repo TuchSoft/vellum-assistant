@@ -1,13 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-  sameTrustIdentity,
-  type TrustContext,
-} from "./trust-context-types.js";
+import { sameTrustIdentity, type TrustContext } from "./trust-context-types.js";
 
-function contactTrust(
-  overrides: Partial<TrustContext> = {},
-): TrustContext {
+function contactTrust(overrides: Partial<TrustContext> = {}): TrustContext {
   return {
     trustClass: "trusted_contact",
     sourceChannel: "slack",

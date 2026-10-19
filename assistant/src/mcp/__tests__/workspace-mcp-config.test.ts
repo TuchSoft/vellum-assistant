@@ -104,7 +104,9 @@ describe("workspace mcp.json", () => {
 
     expect(loadWorkspaceMcpConfig()).toEqual({ servers: {} });
     expect(readWorkspaceMcpFile().fileState).toBe("invalid");
-    expect(() => saveWorkspaceMcpConfig({ servers: {} })).toThrow(/invalid JSON/);
+    expect(() => saveWorkspaceMcpConfig({ servers: {} })).toThrow(
+      /invalid JSON/,
+    );
   });
 
   test("overlay projects transport-only servers for config reads", () => {
@@ -119,7 +121,9 @@ describe("workspace mcp.json", () => {
       },
     });
 
-    const config: Record<string, unknown> = { llm: { activeProfile: "balanced" } };
+    const config: Record<string, unknown> = {
+      llm: { activeProfile: "balanced" },
+    };
     overlayWorkspaceMcpForConfigRead(config);
     expect(config.mcp).toEqual({
       servers: {

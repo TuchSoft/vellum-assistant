@@ -1103,9 +1103,7 @@ export async function selectPool(
     return { pages: [], keptAll: false, pool, turn };
   }
 
-  const provider = await getConfiguredProvider(MEMORY_V3_SELECT_CALL_SITE, {
-    selectionSeed: turn.conversationId,
-  });
+  const provider = await getConfiguredProvider(MEMORY_V3_SELECT_CALL_SITE);
   if (!provider) {
     log.warn(
       {
@@ -1124,7 +1122,6 @@ export async function selectPool(
 
   const effectiveContextWindow = getEffectiveContextWindow(
     MEMORY_V3_SELECT_CALL_SITE,
-    { selectionSeed: turn.conversationId },
   );
   const budget = budgetSelectorPool({
     pool,

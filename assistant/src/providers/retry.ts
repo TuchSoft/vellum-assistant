@@ -1,7 +1,4 @@
-import {
-  resolveCallSiteConfig,
-  selectWinningProfile,
-} from "../config/llm-resolver.js";
+import { resolveCallSite } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import {
   resolveUsageAttribution,
@@ -36,7 +33,6 @@ import {
   tryAcquireRecoveryProbe,
 } from "./fallback-breaker.js";
 import { resolveFireworksRequestHeaders } from "./fireworks/client.js";
-import { resolveLogitBiasPreset } from "./inference/logit-bias.js";
 import { MALFORMED_TOOL_CALL_MESSAGE } from "./malformed-tool-call.js";
 import {
   isAdaptiveThinkingOnlyModel,
@@ -44,7 +40,6 @@ import {
 } from "./model-catalog.js";
 import { resolveOpenCodeRequestHeaders } from "./opencode/client.js";
 import { sanitizeOutboundRequest } from "./outbound-request-sanitize.js";
-import { dispatchProviderResolvable } from "./provider-resolvability.js";
 import {
   isThinkingConfigAdaptive,
   isThinkingConfigDisabled,
@@ -65,11 +60,10 @@ const log = getLogger("retry");
 
 const USAGE_ATTRIBUTION_HEADER_NAMES = {
   callSite: "X-Vellum-LLM-Call-Site",
-  inferenceProfile: "X-Vellum-Inference-Profile",
-  inferenceProfileSource: "X-Vellum-Inference-Profile-Source",
+  model: "X-Vellum-Model",
+  modelSource: "X-Vellum-Model-Source",
   resolvedProvider: "X-Vellum-Resolved-Provider",
   resolvedModel: "X-Vellum-Resolved-Model",
-  resolvedMixArm: "X-Vellum-Resolved-Mix-Arm",
   // Delegated-work attribution. Every subagent variety shares
   // `llm_call_site = "subagentSpawn"`, so on the authoritative billing path
   // these two orthogonal dimensions are the only way to tell an advisor
@@ -624,7 +618,7 @@ function targetsAnthropicWire(providerName: string, model: string): boolean {
  * Normalize per-call options before handing them to the wrapped provider.
  *
  * When `config.callSite` is set, resolves model/maxTokens/effort/speed/
- * verbosity/temperature/thinking via `resolveCallSiteConfig` and writes them
+ * alias/disableCache via `resolveCallSite` and writes them
  * into `nextConfig` using the wire-format names that downstream provider
  * clients consume (`max_tokens` snake-case for the token cap; camelCase for
  * the rest, which matches the resolver's shape). Per-call explicit overrides
@@ -659,7 +653,7 @@ function normalizeSendMessageOptions(
   delete nextConfig.usageTracking;
   delete nextConfig.requestHeaders;
 
-  // Preserve the per-conversation prompt-cache key before `selectionSeed` is
+  // Preserve the per-conversation prompt-cache key before `conversationId` is
   // stripped below. Gated to providers whose Responses transport consumes it
   // as `prompt_cache_key` (direct OpenAI, and OpenRouter's `openai/*`
   // Responses delegate); creating it elsewhere would leak a non-wire field
@@ -670,10 +664,10 @@ function normalizeSendMessageOptions(
   if (
     PROMPT_CACHE_KEY_PROVIDERS.has(providerName) &&
     nextConfig.promptCacheKey === undefined &&
-    typeof config.selectionSeed === "string" &&
-    config.selectionSeed.length > 0
+    typeof config.conversationId === "string" &&
+    config.conversationId.length > 0
   ) {
-    nextConfig.promptCacheKey = config.selectionSeed;
+    nextConfig.promptCacheKey = config.conversationId;
   }
 
   if (providerName === "opencode") {
@@ -691,7 +685,7 @@ function normalizeSendMessageOptions(
   if (providerName === "fireworks") {
     // Covers BYOK Fireworks and the Vellum-managed Fireworks upstream, which
     // both dispatch through `FireworksProvider`. Keyless calls send no header.
-    const sessionKey = [config.selectionSeed, config.conversationId].find(
+    const sessionKey = [config.conversationId].find(
       (value): value is string =>
         typeof value === "string" && value.trim().length > 0,
     );
@@ -701,54 +695,50 @@ function normalizeSendMessageOptions(
     }
   }
 
-  // `overrideProfile`, `forceOverrideProfile`, `selectionSeed`,
-  // `conversationId`, and `nativeWebSearchSentinel` are routing/resolution-time
-  // concerns (consumed by the resolver below, `CallSiteRoutingProvider`'s
-  // provider selection, `UsageTrackingProvider`'s ledger attribution, and the
-  // fallback tool filter); none is a wire-format field. Strip unconditionally
-  // (after the `openai` promptCacheKey copy above) so they never leak into
-  // provider request bodies even when callers set them without a `callSite`.
-  delete nextConfig.overrideProfile;
-  delete nextConfig.overrideProfileOrigin;
-  delete nextConfig.forceOverrideProfile;
-  delete nextConfig.selectionSeed;
+  // `conversationModel`, `conversationId` and `nativeWebSearchSentinel` are
+  // routing/resolution-time concerns; none is a wire-format field. Strip
+  // unconditionally so they never leak into provider request bodies even when
+  // callers set them without a `callSite`.
+  delete nextConfig.conversationModel;
   delete nextConfig.conversationId;
   delete nextConfig.nativeWebSearchSentinel;
 
   if (config.callSite !== undefined) {
-    const resolved = resolveCallSiteConfig(config.callSite, getConfig().llm, {
-      overrideProfile: config.overrideProfile,
-      forceOverrideProfile: config.forceOverrideProfile,
-      selectionSeed: config.selectionSeed,
-    });
-    const attribution = resolveUsageAttribution({
-      callSite: config.callSite,
-      overrideProfile: config.overrideProfile,
-      overrideProfileOrigin: config.overrideProfileOrigin,
-      forceOverrideProfile: config.forceOverrideProfile,
-      selectionSeed: config.selectionSeed,
-    });
-
     const explicitModel =
       typeof config.model === "string" && config.model.trim().length > 0
         ? config.model.trim()
         : undefined;
+    const conversationModel =
+      typeof config.conversationModel === "string" &&
+      config.conversationModel.trim().length > 0
+        ? config.conversationModel.trim()
+        : undefined;
+    const resolved = resolveCallSite(config.callSite, getConfig().llm, {
+      ...(explicitModel !== undefined ? { model: explicitModel } : {}),
+      ...(conversationModel !== undefined ? { conversationModel } : {}),
+    });
+    if (resolved.status === "disabled") {
+      throw new Error(
+        `Call site "${config.callSite}" is disabled but a request reached the provider layer.`,
+      );
+    }
+    const attribution = resolveUsageAttribution({
+      callSite: config.callSite,
+      model: explicitModel,
+      conversationModel,
+    });
 
     // Routing key is consumed by the resolver above and must not leak
     // downstream as a wire-format field.
     delete nextConfig.callSite;
     if (normalizeOptions.forwardUsageAttributionHeaders === true) {
-      // Read from the conversation row rather than the live SubagentManager:
-      // the row is durable and the lookup is a memoized primary-key read that
-      // can never throw, so billing attribution cannot destabilize dispatch.
       const subagent = resolveSubagentAttribution(config.conversationId);
       const usageAttributionHeaders = buildUsageAttributionHeaders({
         callSite: attribution.callSite,
-        appliedProfile: attribution.appliedProfile,
-        profileSource: attribution.profileSource,
+        model: attribution.model,
+        modelSource: attribution.modelSource,
         resolvedProvider: attribution.resolvedProvider,
         resolvedModel: attribution.resolvedModel,
-        resolvedMixArm: attribution.resolvedMixArm,
         subagentRole: subagent.subagentRole,
         subagentSpawnMode: subagent.subagentSpawnMode,
       });
@@ -757,93 +747,14 @@ function normalizeSendMessageOptions(
       }
     }
 
-    // Apply resolved values, letting per-call explicit fields win where set.
+    // The alias is the only model-selection value this layer applies. Every
+    // model parameter (max tokens, temperature, reasoning effort) is a
+    // shipped default on the gateway alias; forwarding one here would
+    // override it on every request.
     nextConfig.model = explicitModel ?? resolved.model;
-    if (nextConfig.max_tokens === undefined) {
-      nextConfig.max_tokens = resolved.maxTokens;
+    if (nextConfig.disableCache === undefined) {
+      nextConfig.disableCache = resolved.config.disableCache;
     }
-    if (nextConfig.effort === undefined) {
-      nextConfig.effort = resolved.effort;
-    }
-    if (nextConfig.speed === undefined) {
-      nextConfig.speed = resolved.speed;
-    }
-    if (nextConfig.verbosity === undefined) {
-      nextConfig.verbosity = resolved.verbosity;
-    }
-    // `temperature` defaults to `null` in the LLM schema (meaning "no opinion
-    // — let the provider pick its own default"). Only forward when the
-    // resolved value is an actual number; passing `temperature: null` to
-    // provider clients would either be a wire error or silently override
-    // sensible provider defaults. Mirrors the legacy non-callSite path which
-    // never set `temperature` on `providerConfig`.
-    if (
-      nextConfig.temperature === undefined &&
-      resolved.temperature !== null &&
-      resolved.temperature !== undefined
-    ) {
-      nextConfig.temperature = resolved.temperature;
-    }
-    // `topP` (schema, camelCase) maps to the provider wire field `top_p`.
-    // Defaults to `null` ("no opinion"); only forward an actual number so we
-    // never send `top_p: null`, mirroring the `temperature` handling above.
-    if (
-      nextConfig.top_p === undefined &&
-      resolved.topP !== null &&
-      resolved.topP !== undefined
-    ) {
-      nextConfig.top_p = resolved.topP;
-    }
-    if (nextConfig.thinking === undefined && resolved.thinking !== undefined) {
-      nextConfig.thinking = resolved.thinking;
-    }
-    // Not a wire field: consumed (and stripped) by provider clients that
-    // implement prompt caching, like `cacheTtl` / `disableTurnStartCache`.
-    if (
-      nextConfig.disableCache === undefined &&
-      resolved.disableCache !== undefined
-    ) {
-      nextConfig.disableCache = resolved.disableCache;
-    }
-    // Forward OpenRouter-only routing preferences so `OpenRouterProvider` can
-    // translate `openrouter.only` into the wire-format `provider: { only: [...] }`
-    // body field on both the OpenAI-compat and Anthropic-compat endpoints.
-    if (
-      providerName === "openrouter" &&
-      nextConfig.openrouter === undefined &&
-      Array.isArray(resolved.openrouter?.only) &&
-      resolved.openrouter.only.length > 0
-    ) {
-      nextConfig.openrouter = { only: resolved.openrouter.only };
-    }
-    // Forward a profile's opted-in `logit_bias` preset only on the Fireworks
-    // (OpenAI-compatible) path. `resolved.logitBias` is set by the resolver from
-    // the single winning profile (not the deep-merge), so it can't leak from a
-    // lower-precedence profile into one that didn't opt in.
-    // `resolveLogitBiasPreset` additionally gates on the resolved model's
-    // tokenizer. Strict-schema clients (Anthropic) reject unknown body fields,
-    // hence the provider gate.
-    if (
-      providerName === "fireworks" &&
-      nextConfig.logit_bias === undefined &&
-      resolved.logitBias !== undefined &&
-      typeof nextConfig.model === "string"
-    ) {
-      const biasMap = resolveLogitBiasPreset(
-        resolved.logitBias,
-        nextConfig.model,
-      );
-      if (biasMap !== undefined) {
-        nextConfig.logit_bias = biasMap;
-      }
-    }
-    // `contextWindow` and `provider` are server-side concerns, not provider
-    // request parameters: effective context is resolved per call site/profile
-    // by the agent/conversation path, while `provider` selection is handled by
-    // `CallSiteRoutingProvider` upstream. Forwarding them as per-call config
-    // leaks unknown fields into provider request bodies — Anthropic (and other
-    // strict-schema clients) reject the request with
-    // "Extra inputs are not permitted".
   }
 
   // Convert schema-shape `{ enabled, streamThinking }` into Anthropic's
@@ -1121,11 +1032,10 @@ function normalizeSendMessageOptions(
 
 function buildUsageAttributionHeaders(input: {
   callSite: string | null;
-  appliedProfile: string | null;
-  profileSource: string;
+  model: string | null;
+  modelSource: string;
   resolvedProvider: string;
   resolvedModel: string;
-  resolvedMixArm: string | null;
   subagentRole: string | null;
   subagentSpawnMode: string | null;
 }): Record<string, string> {
@@ -1137,14 +1047,14 @@ function buildUsageAttributionHeaders(input: {
   );
   addSanitizedHeader(
     headers,
-    USAGE_ATTRIBUTION_HEADER_NAMES.inferenceProfile,
-    input.appliedProfile,
+    USAGE_ATTRIBUTION_HEADER_NAMES.model,
+    input.model,
   );
-  if (input.appliedProfile) {
+  if (input.model) {
     addSanitizedHeader(
       headers,
-      USAGE_ATTRIBUTION_HEADER_NAMES.inferenceProfileSource,
-      input.profileSource,
+      USAGE_ATTRIBUTION_HEADER_NAMES.modelSource,
+      input.modelSource,
     );
   }
   addSanitizedHeader(
@@ -1156,11 +1066,6 @@ function buildUsageAttributionHeaders(input: {
     headers,
     USAGE_ATTRIBUTION_HEADER_NAMES.resolvedModel,
     input.resolvedModel,
-  );
-  addSanitizedHeader(
-    headers,
-    USAGE_ATTRIBUTION_HEADER_NAMES.resolvedMixArm,
-    input.resolvedMixArm,
   );
   addSanitizedHeader(
     headers,
@@ -1254,7 +1159,7 @@ export class RetryProvider implements Provider {
         failedOptions: SendMessageOptions | undefined,
       ) => Promise<{
         provider: Provider;
-        overrideProfile: string;
+        model: string;
         forwardUsageAttributionHeaders: boolean;
       } | null>;
     } = {},
@@ -1865,7 +1770,7 @@ export class RetryProvider implements Provider {
   ): Promise<ProviderResponse | null> {
     let route: {
       provider: Provider;
-      overrideProfile: string;
+      model: string;
       forwardUsageAttributionHeaders: boolean;
     } | null;
     try {
@@ -1881,71 +1786,33 @@ export class RetryProvider implements Provider {
       return null;
     }
 
-    // Reject a mix backup profile outright. The fallback schema already
-    // forbids `fallbackProfile` from referencing a mix, but this wrapper must
-    // not trust that: honoring one would require the route callback, the
-    // winner-selection guard below, and the re-normalization to agree on the
-    // same seeded arm, and a request without a `selectionSeed` expands the
-    // mix independently at each of those points, so one arm's model could be
-    // sent through another arm's provider adapter. Treat it as non-applying
-    // and surface the original error.
-    if (getConfig().llm.profiles?.[route.overrideProfile]?.mix != null) {
-      log.warn(
-        {
-          provider: this.name,
-          connectionName: this.options.connectionName,
-          overrideProfile: route.overrideProfile,
-        },
-        "Backup profile is a mix, which fallback routing does not support; rethrowing the original error",
-      );
-      return null;
-    }
-
-    // Guard against a backup profile that does not actually apply: the
-    // resolver skips a disabled, incomplete, or missing override profile and
-    // falls through to the next rung (often the failed primary), while the
-    // request would still dispatch on the backup adapter, producing a
-    // provider/model mismatch. Verify the backup profile wins the winner
-    // selection the re-normalization below will perform; if it does not,
-    // surface the original error instead of sending a mismatched request.
+    // Guard against a backup alias that the workspace no longer resolves:
+    // surface the original error instead of sending a request the resolver
+    // would not produce.
     const failedConfig = options?.config;
     const callSite = failedConfig?.callSite;
-    const selectionSeed = failedConfig?.selectionSeed;
-    const selection =
-      callSite === undefined
-        ? null
-        : selectWinningProfile(callSite, getConfig().llm, {
-            overrideProfile: route.overrideProfile,
-            ...(selectionSeed !== undefined ? { selectionSeed } : {}),
-            isResolvableProvider: dispatchProviderResolvable,
-          });
-    if (
-      selection === null ||
-      selection.source !== "override" ||
-      selection.profileName !== route.overrideProfile
-    ) {
-      log.warn(
-        {
-          provider: this.name,
-          connectionName: this.options.connectionName,
-          overrideProfile: route.overrideProfile,
-          selectionSource: selection?.source,
-          selectedProfile: selection?.profileName,
-        },
-        "Backup profile did not apply on re-resolution; rethrowing the original error",
-      );
-      return null;
+    if (callSite !== undefined) {
+      const selection = resolveCallSite(callSite, getConfig().llm, {
+        model: route.model,
+      });
+      if (selection.status !== "ok" || selection.model !== route.model) {
+        log.warn(
+          {
+            provider: this.name,
+            connectionName: this.options.connectionName,
+            model: route.model,
+          },
+          "Backup alias did not apply on re-resolution; rethrowing the original error",
+        );
+        return null;
+      }
     }
 
-    // Re-resolve the ORIGINAL caller options with the backup profile forced
-    // (`resolveCallSiteConfig` floats a forced override to the top of the
-    // selection chain). Explicit per-call `max_tokens`/`effort`/`thinking`
-    // are cleared so the backup profile's resolved values win; the pin gate
-    // in `canReRouteToFallbackProfile` already excluded explicit
-    // `config.model`. Re-normalizing on a callSite-bearing config also
+    // Re-resolve the ORIGINAL caller options with the backup alias pinned.
+    // Explicit per-call `max_tokens`/`effort`/`thinking` are cleared so the
+    // alias default wins. Re-normalizing on a callSite-bearing config also
     // restamps the usage-attribution headers from the backup resolution, so
-    // platform usage events attribute degraded traffic to the backup
-    // profile. Whether those headers are forwarded at all follows the
+    // platform usage events attribute degraded traffic to the backup alias. Whether those headers are forwarded at all follows the
     // FALLBACK route's policy, not the primary's: a managed primary falling
     // back to a third-party adapter must not leak billing metadata, and a
     // non-managed primary falling back to the managed proxy must include it.
@@ -1953,8 +1820,7 @@ export class RetryProvider implements Provider {
     delete fallbackConfig.max_tokens;
     delete fallbackConfig.effort;
     delete fallbackConfig.thinking;
-    fallbackConfig.overrideProfile = route.overrideProfile;
-    fallbackConfig.forceOverrideProfile = true;
+    fallbackConfig.model = route.model;
     const { dropToolChoice, ...toolsOverride } = this.fallbackTools(
       options,
       route,
@@ -1993,7 +1859,7 @@ export class RetryProvider implements Provider {
         provider: this.name,
         connectionName: this.options.connectionName,
         fallbackProvider: route.provider.name,
-        overrideProfile: route.overrideProfile,
+        model: route.model,
         ...escalationCause,
       },
       "Falling back to backup profile",
@@ -2020,8 +1886,8 @@ export class RetryProvider implements Provider {
       // resolution, so without this the usage event would bill the fallback
       // serve under the wrong profile. Never overwrite a more specific value
       // an inner wrapper already set.
-      if (response.actualInferenceProfile === undefined) {
-        response.actualInferenceProfile = route.overrideProfile;
+      if (response.actualModel === undefined) {
+        response.actualModel = route.model;
       }
       return response;
     } catch (fallbackError) {
@@ -2033,7 +1899,7 @@ export class RetryProvider implements Provider {
           provider: this.name,
           connectionName: this.options.connectionName,
           fallbackProvider: route.provider.name,
-          overrideProfile: route.overrideProfile,
+          model: route.model,
           fallbackError,
         },
         "Backup profile failed; rethrowing the original provider error",

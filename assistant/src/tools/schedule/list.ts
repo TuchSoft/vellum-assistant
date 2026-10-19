@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-import { formatScheduleInferenceProfile } from "../../schedule/inference-profile.js";
 import { hasSetConstructs } from "../../schedule/recurrence-engine.js";
+import { formatScheduleModel } from "../../schedule/schedule-model.js";
 import {
   describeCronExpression,
   formatLocalDate,
@@ -102,7 +102,7 @@ export async function executeScheduleList(
       `  Enabled: ${job.enabled}`,
       `  Quiet: ${job.quiet}`,
       `  Reuse conversation: ${job.reuseConversation}`,
-      `  Inference profile: ${formatScheduleInferenceProfile(job.inferenceProfile)}`,
+      `  Model: ${formatScheduleModel(job.model)}`,
       `  Message: ${job.message}`,
     );
 

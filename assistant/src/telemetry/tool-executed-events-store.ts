@@ -22,8 +22,7 @@ export interface UnreportedToolExecutedEvent {
   resultBytes: number | null;
   provider: string | null;
   model: string | null;
-  inferenceProfile: string | null;
-  inferenceProfileSource: string | null;
+  modelSource: string | null;
   conversationId: string;
   createdAt: number;
 }
@@ -82,8 +81,7 @@ export async function queryUnreportedToolExecutedEvents(
       resultBytes: toolInvocations.resultBytes,
       provider: toolInvocations.provider,
       model: toolInvocations.model,
-      inferenceProfile: toolInvocations.inferenceProfile,
-      inferenceProfileSource: toolInvocations.inferenceProfileSource,
+      modelSource: toolInvocations.modelSource,
       conversationId: toolInvocations.conversationId,
       createdAt: toolInvocations.createdAt,
     })

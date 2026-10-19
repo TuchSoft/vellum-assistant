@@ -268,8 +268,7 @@ const NATIVE_WEB_SEARCH_TOOL: ToolDefinition = {
  */
 function buildNativeWebSearchProbeOptions(
   callSite: LLMCallSite | undefined,
-  overrideProfile: string | undefined,
-  forceOverrideProfile: boolean,
+  model: string | undefined,
   conversationId: string | undefined,
 ): SendMessageOptions | undefined {
   if (!callSite) {
@@ -278,11 +277,8 @@ function buildNativeWebSearchProbeOptions(
   return {
     config: {
       callSite,
-      ...(overrideProfile ? { overrideProfile } : {}),
-      ...(overrideProfile && forceOverrideProfile
-        ? { forceOverrideProfile: true }
-        : {}),
-      ...(conversationId ? { selectionSeed: conversationId } : {}),
+      ...(model ? { model } : {}),
+      ...(conversationId ? { conversationId } : {}),
     },
   };
 }
@@ -503,7 +499,7 @@ export type AgentEvent =
        * that failed. Absent on the normal (non-rerouted) path, where the
        * caller's own resolution is already correct.
        */
-      actualInferenceProfile?: string;
+      actualModel?: string;
       providerDurationMs: number;
       rawRequest?: unknown;
       rawResponse?: unknown;
@@ -687,8 +683,8 @@ type AgentLoopContextWindowResolver = () => {
 /** Final request surface after the pre-model hook has settled. */
 export interface PreparedModelCall {
   callSite?: LLMCallSite;
-  overrideProfile?: string;
-  forceOverrideProfile: boolean;
+  model?: string;
+  conversationModel?: string;
   /** Present when the finalized route opts out of prompt caching. */
   disableCache?: true;
   signal?: AbortSignal;
@@ -759,31 +755,10 @@ interface AgentLoopRunOptionsBase {
    * compactor fail-closes to excluding guardian-only attachments.
    */
   trust: TrustContext;
-  /**
-   * Ad-hoc inference-profile override applied to every LLM call the loop
-   * issues. When set, each `SendMessageOptions.config` carries
-   * `overrideProfile = <name>` so the provider's resolver layers
-   * `llm.profiles[<name>]` between the workspace `activeProfile` and any
-   * call-site named profile. Missing profile names silently fall through.
-   */
-  overrideProfile?: string;
-  /**
-   * Who chose `overrideProfile`: `"auto"` when the Auto profile's router
-   * picked it for this turn. Threaded onto each send's config so usage
-   * attribution reports the routed profile under the `auto` source.
-   */
-  overrideProfileOrigin?: "auto";
-  /**
-   * Float the override profile above the call-site layers (named site
-   * profile + call-site override) for non-main-agent call sites — the
-   * resolver's `forceOverrideProfile` escape hatch. Threaded onto each
-   * send's `SendMessageOptions.config` alongside `overrideProfile`. Used by
-   * wakes that must run a background call site under a specific
-   * conversation's inference profile (e.g. fork-based memory
-   * retrospectives).
-   */
-  forceOverrideProfile?: boolean;
-  resolveOverrideProfile?: () => string | undefined;
+  /** Interactive conversation selection, used when no pin is set. */
+  conversationModel?: string;
+  /** Mid-turn pin changes (e.g. a plugin hook rerouting a call). */
+  resolveModel?: () => string | undefined;
   /** Observe a finalized model request without delaying provider dispatch. */
   onModelCallPrepared?: (prepared: PreparedModelCall) => void;
   /**
@@ -838,7 +813,7 @@ interface AgentLoopRunOptionsWithContextWindow extends AgentLoopRunOptionsBase {
    * orchestrator supplies it so post-compaction hooks keep using the same
    * profile context after history is reassembled.
    */
-  modelProfileKey: string;
+  modelKey: string;
 }
 
 interface AgentLoopRunOptionsWithoutContextWindow extends AgentLoopRunOptionsBase {
@@ -851,7 +826,7 @@ interface AgentLoopRunOptionsWithoutContextWindow extends AgentLoopRunOptionsBas
    * Optional for raw loop runs that never compact/re-inject. Conversation
    * orchestrator runs pass this through the context-window variant above.
    */
-  modelProfileKey?: string;
+  modelKey?: string;
 }
 
 export type AgentLoopRunOptions =
@@ -1374,9 +1349,9 @@ export class AgentLoop {
     signal: AbortSignal | undefined,
     onEvent: (event: AgentEvent) => void | Promise<void>,
     injectionLedgerResets: Set<string> | undefined,
-    overrideProfile: string | null,
+    model: string | null,
     isNonInteractive: boolean,
-    modelProfileKey: string,
+    modelKey: string,
     overflowSignal?: { actualTokens: number | null; isInteractive: boolean },
   ): Promise<CompactionAttempt> {
     const compactionId = crypto.randomUUID();
@@ -1410,7 +1385,7 @@ export class AgentLoop {
       signal,
       force: true,
       actorTrustClass: trust.trustClass,
-      overrideProfile,
+      model,
       overflowSignal,
     });
     // `force: true` bypasses the auto-threshold gate, but early returns
@@ -1488,7 +1463,7 @@ export class AgentLoop {
       requestId,
       conversationId: this.conversationId,
       isNonInteractive,
-      modelProfileKey,
+      modelKey,
       injectionMode: compactResult.injectionMode,
     };
     // The hook chain writes the re-injected history back onto the context;
@@ -1516,10 +1491,9 @@ export class AgentLoop {
       suppressAssistantText = false,
       supportsDynamicUi = true,
       trust,
-      overrideProfile,
-      overrideProfileOrigin,
-      forceOverrideProfile = false,
-      resolveOverrideProfile,
+      model,
+      conversationModel,
+      resolveModel,
       onModelCallPrepared,
       compactInPlace = false,
       isNonInteractive = false,
@@ -1687,7 +1661,7 @@ export class AgentLoop {
           messages,
           additionalContext: null,
           model,
-          modelProfileKey: options.modelProfileKey ?? model,
+          modelKey: options.modelKey ?? model,
           maxInputTokens: contextWindowTokens,
           callSite: callSite ?? null,
           supportsDynamicUi,
@@ -1709,11 +1683,11 @@ export class AgentLoop {
     // the `post-tool-use` hook contract requires a model name.
     let lastResponseModel = runModel ?? "";
 
-    // Resolve the inference-profile override that applies right now. The
-    // optional resolver lets a turn observe a confirmed mid-turn profile switch
-    // before the next model call; absent a resolver the turn-start value holds.
-    const resolveEffectiveOverrideProfile = (): string | undefined =>
-      resolveOverrideProfile ? resolveOverrideProfile() : overrideProfile;
+    // Resolve the model pin that applies right now. The optional resolver lets
+    // a turn observe a confirmed mid-turn switch before the next model call;
+    // absent a resolver the turn-start value holds.
+    const resolveEffectiveModel = (): string | undefined =>
+      resolveModel ? resolveModel() : model;
 
     // Per-run substitution map for sensitive output placeholders.
     // Bindings are accumulated from tool results; placeholders are
@@ -1927,9 +1901,9 @@ export class AgentLoop {
                   signal,
                   onEvent,
                   injectionLedgerResets,
-                  resolveEffectiveOverrideProfile() ?? null,
+                  resolveEffectiveModel() ?? null,
                   isNonInteractive,
-                  options.modelProfileKey,
+                  options.modelKey,
                   overflowSignal ?? undefined,
                 );
                 if (attempt.history) {
@@ -1997,8 +1971,7 @@ export class AgentLoop {
           ? this.provider.supportsNativeWebSearchFor(
               buildNativeWebSearchProbeOptions(
                 providerCallSite,
-                resolveEffectiveOverrideProfile(),
-                forceOverrideProfile,
+                resolveEffectiveModel(),
                 this.conversationId,
               ),
             )
@@ -2097,33 +2070,19 @@ export class AgentLoop {
           // `selectionSeed` is an opaque hashing input that callers may set to
           // something other than a conversation id.
           if (this.conversationId) {
-            providerConfig.selectionSeed = this.conversationId;
             providerConfig.conversationId = this.conversationId;
           }
         }
 
-        // Per-call inference-profile override. The resolver layers
-        // `llm.profiles[overrideProfile]` between the workspace's
-        // `activeProfile` and any call-site named profile. Threading it on
-        // every send (rather than once at construction) keeps subagents that
-        // share an `AgentLoop` instance but ought to inherit a different
-        // profile correct, matching how the provider call site is plumbed.
-        const effectiveOverrideProfile = resolveEffectiveOverrideProfile();
-        if (effectiveOverrideProfile) {
-          providerConfig.overrideProfile = effectiveOverrideProfile;
-          // The origin describes the turn-start override. A profile switched
-          // in mid-turn (a confirmed profile session) is the user's pick, so
-          // the origin applies only while the effective override is still
-          // the one the turn started with.
-          if (
-            overrideProfileOrigin &&
-            effectiveOverrideProfile === overrideProfile
-          ) {
-            providerConfig.overrideProfileOrigin = overrideProfileOrigin;
-          }
-          if (forceOverrideProfile) {
-            providerConfig.forceOverrideProfile = true;
-          }
+        // Per-call alias pin. Threading it on every send (rather than once at
+        // construction) keeps subagents that share an `AgentLoop` instance but
+        // inherit a different pin correct.
+        const effectiveModel = resolveEffectiveModel();
+        if (effectiveModel) {
+          providerConfig.model = effectiveModel;
+        }
+        if (conversationModel) {
+          providerConfig.conversationModel = conversationModel;
         }
 
         // Rate-limit consecutive LLM calls to prevent spin when tools return instantly
@@ -2315,7 +2274,7 @@ export class AgentLoop {
             conversationId: this.conversationId,
             callSite: callSite ?? null,
             systemPrompt: providerOptions.systemPrompt ?? null,
-            modelProfile: effectiveOverrideProfile ?? null,
+            model: effectiveModel ?? null,
             deferAssistantOutput: false,
           };
           const finalPreModelCtx = await traceAsyncSection(
@@ -2339,25 +2298,13 @@ export class AgentLoop {
           }
           providerOptions.systemPrompt =
             finalPreModelCtx.systemPrompt ?? undefined;
-          // Route this call to the hook's chosen inference profile. The
-          // resolver layers `llm.profiles[overrideProfile]` at the top of
-          // precedence for the user-facing call, so a model router can pick
-          // the profile per message; clearing it drops any seeded override.
-          // The hook context is seeded with the effective override, so an
-          // unchanged profile is still the router's pick and keeps its
-          // origin; a profile the hook changed or cleared is the hook's.
-          const hookModelProfile = finalPreModelCtx.modelProfile?.trim();
-          if (hookModelProfile !== effectiveOverrideProfile) {
-            delete providerConfig.overrideProfileOrigin;
-          }
-          if (hookModelProfile) {
-            providerConfig.overrideProfile = hookModelProfile;
-            if (forceOverrideProfile) {
-              providerConfig.forceOverrideProfile = true;
-            }
+          // Route this call to the hook's chosen alias. Clearing it drops the
+          // seeded pin.
+          const hookModel = finalPreModelCtx.model?.trim();
+          if (hookModel) {
+            providerConfig.model = hookModel;
           } else {
-            delete providerConfig.overrideProfile;
-            delete providerConfig.forceOverrideProfile;
+            delete providerConfig.model;
           }
           // The hook owns the policy (it sees `callSite`/conversation and
           // self-gates); the loop honors whatever it decides.
@@ -2370,35 +2317,28 @@ export class AgentLoop {
         }
 
         if (onModelCallPrepared && !signal?.aborted) {
-          const preparedOverrideProfile =
-            typeof providerConfig.overrideProfile === "string" &&
-            providerConfig.overrideProfile.length > 0
-              ? providerConfig.overrideProfile
+          const preparedModel =
+            typeof providerConfig.model === "string" &&
+            providerConfig.model.length > 0
+              ? providerConfig.model
               : undefined;
           try {
-            const preparedForceOverrideProfile =
-              providerConfig.forceOverrideProfile === true;
             const disableCache =
               providerCallSite !== undefined &&
               resolveCallSiteConfig(providerCallSite, getConfig().llm, {
-                ...(preparedOverrideProfile !== undefined
-                  ? { overrideProfile: preparedOverrideProfile }
+                ...(preparedModel !== undefined
+                  ? { model: preparedModel }
                   : {}),
-                ...(preparedForceOverrideProfile
-                  ? { forceOverrideProfile: true }
-                  : {}),
-                ...(this.conversationId !== undefined
-                  ? { selectionSeed: this.conversationId }
+                ...(conversationModel !== undefined
+                  ? { conversationModel }
                   : {}),
               }).disableCache === true;
             onModelCallPrepared({
               ...(providerCallSite !== undefined
                 ? { callSite: providerCallSite }
                 : {}),
-              ...(preparedOverrideProfile !== undefined
-                ? { overrideProfile: preparedOverrideProfile }
-                : {}),
-              forceOverrideProfile: preparedForceOverrideProfile,
+              ...(preparedModel !== undefined ? { model: preparedModel } : {}),
+              ...(conversationModel !== undefined ? { conversationModel } : {}),
               ...(disableCache ? { disableCache: true as const } : {}),
               ...(signal !== undefined ? { signal } : {}),
               systemPrompt: providerOptions.systemPrompt ?? null,
@@ -2501,8 +2441,8 @@ export class AgentLoop {
           // fallback value to fill in: the loop's own profile resolution is
           // exactly what a reroute invalidates, and the daemon already reads
           // its own resolution when this is absent.
-          ...(response.actualInferenceProfile !== undefined
-            ? { actualInferenceProfile: response.actualInferenceProfile }
+          ...(response.actualModel !== undefined
+            ? { actualModel: response.actualModel }
             : {}),
           providerDurationMs,
           rawRequest: response.rawRequest,

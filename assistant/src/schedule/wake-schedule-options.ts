@@ -14,7 +14,7 @@ import type { ScheduleJob } from "./schedule-store.js";
 /** The schedule fields a wake firing reads. */
 type WakeScheduleFields = Pick<
   ScheduleJob,
-  "message" | "inferenceProfile" | "createdBy" | "createdFromConversationId"
+  "message" | "model" | "createdBy" | "createdFromConversationId"
 >;
 
 /**
@@ -87,8 +87,6 @@ export async function buildWakeScheduleOptions(
     source: "defer",
     persistTriggerAsEvent: true,
     ...(trustContext ? { trustContext } : {}),
-    ...(job.inferenceProfile
-      ? { forceOverrideProfile: job.inferenceProfile }
-      : {}),
+    ...(job.model ? { model: job.model } : {}),
   };
 }

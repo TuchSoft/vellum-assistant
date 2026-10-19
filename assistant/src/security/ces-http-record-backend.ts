@@ -19,11 +19,7 @@ const log = getLogger("ces-http-record-backend");
 
 type RecordHttpClient = Pick<
   CesHttpCredentialClient,
-  | "getRecord"
-  | "setRecord"
-  | "deleteRecord"
-  | "listRecords"
-  | "bulkSetRecords"
+  "getRecord" | "setRecord" | "deleteRecord" | "listRecords" | "bulkSetRecords"
 >;
 
 function resolveEnvHttpClient(): RecordHttpClient | undefined {
@@ -65,9 +61,7 @@ export class CesHttpRecordBackend implements CredentialRecordBackend {
     return client.setRecord(account, record);
   }
 
-  async delete(
-    account: string,
-  ): Promise<"deleted" | "not-found" | "error"> {
+  async delete(account: string): Promise<"deleted" | "not-found" | "error"> {
     const client = this.resolveClient();
     if (!client) {
       return "error";

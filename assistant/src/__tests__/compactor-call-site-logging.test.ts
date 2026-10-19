@@ -212,7 +212,7 @@ describe("compaction result reports what actually served the summary", () => {
         content: [{ type: "text", text: compactionResponse }],
         model: "claude-sonnet-5",
         actualProvider: "anthropic",
-        actualInferenceProfile: "backupProfile",
+        actualModel: "backupProfile",
         usage: { inputTokens: 100, outputTokens: 50 },
         stopReason: "end_turn",
         rawRequest: RAW_REQUEST,
@@ -222,14 +222,14 @@ describe("compaction result reports what actually served the summary", () => {
 
     const result = await runAssistantDrivenCompaction({
       ...args(provider),
-      overrideProfile: "primaryProfile",
+      model: "primaryProfile",
     });
 
     expect(result.summaryModel).toBe("claude-sonnet-5");
     expect(result.summaryActualProvider).toBe("anthropic");
-    expect(result.summaryActualInferenceProfile).toBe("backupProfile");
+    expect(result.summaryActualModel).toBe("backupProfile");
     // The primary's resolution is still reported, just outranked downstream.
-    expect(result.summaryOverrideProfile).toBe("primaryProfile");
+    expect(result.summaryModelPin).toBe("primaryProfile");
     // Request log and usage attribution share the observability call site.
     expect(result.summaryCallSite).toBe("compactionAgent");
     expect(result.summaryResolutionCallSite).toBe("mainAgent");
@@ -253,11 +253,11 @@ describe("compaction result reports what actually served the summary", () => {
 
     const result = await runAssistantDrivenCompaction({
       ...args(provider),
-      overrideProfile: "primaryProfile",
+      model: "primaryProfile",
     });
 
     expect(result.summaryActualProvider).toBe("openai");
-    expect(result.summaryActualInferenceProfile).toBeUndefined();
-    expect(result.summaryOverrideProfile).toBe("primaryProfile");
+    expect(result.summaryActualModel).toBeUndefined();
+    expect(result.summaryModelPin).toBe("primaryProfile");
   });
 });

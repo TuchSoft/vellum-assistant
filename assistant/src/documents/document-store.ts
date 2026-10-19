@@ -651,7 +651,8 @@ export async function saveDocument(params: {
 
 /** What a {@link mutateDocumentContent} callback decides for one attempt. */
 export type ContentMutation<T> =
-  { content: string; value: T } | { value: T; content?: undefined };
+  | { content: string; value: T }
+  | { value: T; content?: undefined };
 
 /** Thrown inside a write transaction to roll it back after losing a race. */
 class LostRevisionRace extends Error {}

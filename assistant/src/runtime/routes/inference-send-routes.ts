@@ -7,9 +7,7 @@
 
 import { z } from "zod";
 
-import { getUserSelectableProfilesForProvider } from "../../config/default-profile-catalog.js";
-import type { ResolutionFallbackReason } from "../../config/llm-resolver.js";
-import { selectWinningProfile } from "../../config/llm-resolver.js";
+import { resolveCallSite } from "../../config/llm-resolver.js";
 import { getConfigReadOnly } from "../../config/loader.js";
 import {
   extractAllText,
@@ -34,52 +32,14 @@ async function handleInferenceSend({ body = {} }: RouteHandlerArgs) {
 
   const systemPrompt = body.systemPrompt as string | undefined;
   const model = body.model as string | undefined;
-  const profile = body.profile as string | undefined;
   const maxTokens = body.maxTokens as number | undefined;
 
-  const selectionSeed = crypto.randomUUID();
-
-  // Validate --profile against the configured profile catalog.
-  if (profile !== undefined) {
-    const { llm } = getConfigReadOnly();
-    const profiles = getUserSelectableProfilesForProvider(
-      llm?.profiles,
-      llm?.defaultProvider ?? null,
-    );
-    if (!Object.prototype.hasOwnProperty.call(profiles, profile)) {
-      const available = Object.keys(profiles).sort();
-      const hint =
-        available.length > 0
-          ? ` Available profiles: ${available.join(", ")}.`
-          : " No profiles defined in llm.profiles.";
+  if (model !== undefined) {
+    try {
+      resolveCallSite("inference", getConfigReadOnly().llm, { model });
+    } catch (err) {
       throw new BadRequestError(
-        `Profile "${profile}" is not defined in llm.profiles.${hint}`,
-      );
-    }
-    // Existence is weaker than usability: the resolver additionally requires
-    // the entry to be enabled and to carry its own provider + model, and
-    // silently falls through to this call site's default (`cost-optimized`)
-    // when it does not. Ask the resolver itself so the check cannot drift from
-    // dispatch, and report the reason it gives rather than answering from a
-    // different — managed, billed — model than the caller named.
-    let reason: ResolutionFallbackReason | undefined;
-    const winner = selectWinningProfile("inference", getConfigReadOnly().llm, {
-      overrideProfile: profile,
-      selectionSeed,
-      onResolutionFallback: (info) => {
-        if (info.requested === profile) {
-          reason = info.reason;
-        }
-      },
-    });
-    if (winner.profileName !== profile) {
-      const target = winner.entry
-        ? `${winner.entry.provider}/${winner.entry.model}`
-        : "the code default";
-      throw new BadRequestError(
-        `Profile "${profile}" is ${reason ?? "unusable"} — the request would silently run on ` +
-          `${winner.profileName ?? "the call-site default"} (${target}) instead. ` +
-          `Fix the profile or omit it.`,
+        err instanceof Error ? err.message : String(err),
       );
     }
   }
@@ -92,12 +52,11 @@ async function handleInferenceSend({ body = {} }: RouteHandlerArgs) {
   // connection backing the request is chosen.
   const attempt = await runWithProviderRequestDiagnostics(async () => {
     const provider = await getConfiguredProvider("inference", {
-      overrideProfile: profile,
-      selectionSeed,
+      ...(model !== undefined ? { model } : {}),
     });
     if (!provider) {
       throw new BadRequestError(
-        "No LLM provider is configured. Connect a provider (assistant credentials) or set llm.defaultProvider to choose one.",
+        "No LLM gateway connection is configured. Add an openai-compatible connection for the gateway.",
       );
     }
     return provider.sendMessage([userMessage(message)], {
@@ -105,9 +64,7 @@ async function handleInferenceSend({ body = {} }: RouteHandlerArgs) {
       config: {
         callSite: "inference",
         max_tokens: maxTokens,
-        model,
-        overrideProfile: profile,
-        selectionSeed,
+        ...(model !== undefined ? { model } : {}),
       },
     });
   });
@@ -195,13 +152,12 @@ export const ROUTES: RouteDefinition[] = [
     summary: "Send a message to the configured LLM",
     description:
       "Send a user message to the configured LLM provider and return the model response. " +
-      "Optionally specify a system prompt, model override, named profile, or max tokens.",
+      "Optionally specify a system prompt, model alias, or max tokens.",
     tags: ["inference"],
     requestBody: z.object({
       message: z.string().min(1),
       systemPrompt: z.string().optional(),
       model: z.string().optional(),
-      profile: z.string().optional(),
       maxTokens: z.number().int().positive().optional(),
     }),
     responseBody: z.object({

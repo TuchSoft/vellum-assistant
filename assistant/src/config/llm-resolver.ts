@@ -1,119 +1,49 @@
-import { z } from "zod";
-
-import { ROUTING_IDENTITY_PROVIDERS } from "../providers/inference/auth.js";
-import {
-  getCatalogProviderForModel,
-  isModelInCatalog,
-} from "../providers/model-catalog.js";
-import {
-  MANAGED_ROUTABLE_PROVIDERS,
-  VELLUM_MANAGED_CONNECTION_NAME,
-} from "../providers/vellum-model-routing.js";
 import { CALL_SITE_DEFAULTS } from "./call-site-defaults.js";
 import {
-  isDefaultProfileKey,
-  resolveDefaultProfileForProvider,
-} from "./default-profile-catalog.js";
+  getCatalogEntry,
+  isKnownAlias,
+  listCatalogEntries,
+} from "./llm-catalog.js";
 import {
+  type ContextWindow,
+  ContextWindowSchema,
   type LLMCallSite,
-  LLMConfigBase,
-  type LLMSchema,
-  type ProfileEntry,
-  routingIdentityModelIssue,
+  type LLMConfig,
 } from "./schemas/llm.js";
 
 /**
- * Resolves a fully-specified `LLMConfigBase` for a given call site.
+ * Resolves the gateway alias for a call site.
  *
- * Selection is a single-winner chain (see `selectWinningProfile`): the
- * highest-precedence rung that names a usable, complete profile wins, and the
- * resolved config is composed as code-owned schema defaults + the winning
- * profile's fragment + the call site's own tuning tweak. No profile ever
- * contributes a field to another profile — `deepMerge` here only lets nested
- * tweaks (e.g. `thinking.enabled`) combine leaf-wise with the winner rather
- * than wholesale-replacing sibling fields.
+ * Selection is a single-winner chain (high to low):
+ *   1. `opts.model` — an explicit pin for this request (scheduled run,
+ *      subagent role, plugin-selected alias). A pin naming an unknown alias is
+ *      a hard error: it was written deliberately and silently downgrading it
+ *      would hide a broken configuration.
+ *   2. `llm.callSites[callSite].model`, then the shipped
+ *      `CALL_SITE_DEFAULTS[callSite].model`. An unknown alias here is reported
+ *      through `onResolutionFallback` and selection continues.
+ *   3. `opts.conversationModel` — the interactive conversation's selection.
+ *      Background callers omit it, so scheduled and job runs are unaffected by
+ *      whichever model a conversation is using.
+ *   4. `llm.defaultModel`.
  *
- * Precedence of the selection chain (high → low):
- *   1. `opts.overrideProfile` (per-turn / per-conversation pin)
- *   2. `llm.activeProfile` — `mainAgent` only, since it IS that call site's
- *      user-facing chat-model selection
- *   3. `llm.callSites[callSite].profile` (the call site's named profile)
- *   4. `CALL_SITE_DEFAULTS[callSite].profile` intent resolved through
- *      `llm.defaultProvider`
- *   5. balanced intent through `llm.defaultProvider`: the code-owned anchor
- *      for profileless call sites, or when nothing above is usable
+ * The resolved config carries no model parameters: max tokens, temperature
+ * and reasoning effort live on the gateway alias. Keeping them out of the
+ * request is what lets those defaults apply.
  *
- * A winner must carry its own `provider` AND `model`: the base layer's schema
- * default identity never stands in for a selected profile. The anchor is
- * code-owned and resolved through `llm.defaultProvider`, never through
- * user-mutable state.
- *
- * `temperature`/`top_p` come only from the winner (or an explicit call-site
- * tweak); `logitBias` only ever from the winner. These are provider-coupled, so
- * a shadowed profile can never leak its sampling onto a different provider.
- *
- * `opts.forceOverrideProfile` is a no-op here: the override profile already
- * sits at the top of the chain for every call site.
- *
- * Profile names are resolved against the effective profile catalog
- * (code-defined defaults + workspace `llm.profiles`), with default profile
- * keys resolved through `llm.defaultProvider`'s column of the intent ×
- * provider matrix (see `resolveDefaultProfileForProvider`).
- * A "mix" profile is expanded to one of its arms by a seeded weighted pick (see
- * `resolveProfileFragment` and `opts.selectionSeed`), uniformly wherever a name
- * is dereferenced. Missing references silently fall through (no throw) so the
- * resolver stays pure; schema validation catches unknown static references at
- * config-load time.
- *
- * Nested objects (`thinking`, `contextWindow`, and
- * `contextWindow.overflowRecovery`) are deep-merged so partial tweaks at any
- * nesting level merge into — rather than replace — the corresponding base
- * value.
- *
- * Pure & synchronous: no I/O, no async work. (Random selection only occurs for
- * mix profiles when no `selectionSeed` is supplied; with a seed the pick is
- * deterministic.)
+ * Pure and synchronous: the catalog is read from its in-memory snapshot.
  */
+
+export type ResolutionSource = "pinned" | "call_site" | "chat" | "default";
+
+export type ResolutionFallbackReason = "unknown_alias";
+
 export interface ResolveCallSiteOpts {
-  overrideProfile?: string;
-  /**
-   * Whether a profile's provider value can actually dispatch: a known
-   * vendor, or a connection entry row. Selection is pure and DB-blind, so
-   * dispatch-side callers supply this (see `dispatchProviderResolvable` in
-   * `connection-resolution.ts`); a profile failing it is unusable and
-   * selection falls through to the next rung, keeping model and transport
-   * coherent. When absent, every provider is assumed resolvable.
-   */
-  isResolvableProvider?: (provider: string) => boolean;
-  /**
-   * Float `overrideProfile` above the call-site layers for non-main-agent call
-   * sites. Retained for API compatibility; under single-winner selection the
-   * override already sits at the top of the chain, so this is effectively a
-   * no-op. Inert when `overrideProfile` is absent or references a missing
-   * profile.
-   */
-  forceOverrideProfile?: boolean;
-  /**
-   * Per-conversation seed for expanding `mix` profiles. The chosen constituent
-   * is a deterministic function of `selectionSeed` + the mix profile's own
-   * name, so every `resolveCallSiteConfig` call for the same conversation picks
-   * the SAME arm (stable across turns, retries, and restarts). Pass the
-   * conversation id. When absent, the resolver falls back to a fresh random
-   * pick per call — acceptable only for one-shot/background call sites that
-   * resolve config exactly once per invocation.
-   */
-  selectionSeed?: string;
-  /**
-   * Invoked once for each mix profile the resolver expands, reporting which
-   * constituent was chosen. Used by A/B-eval recording (usage attribution).
-   */
-  onMixSelected?: (info: { mixProfile: string; chosenProfile: string }) => void;
-  /**
-   * Invoked once per chain rung that named a profile the resolver could not
-   * use, before resolution continues to the next rung. Fallback is silent to
-   * the call but must be visible in logs — callers on user-facing paths should
-   * log at warn.
-   */
+  /** Explicit alias for this request; wins over the call-site default. */
+  model?: string;
+  /** Interactive conversation selection, used only when no alias wins above. */
+  conversationModel?: string;
+  /** Invoked once per rung whose alias could not be used. */
   onResolutionFallback?: (info: {
     callSite: LLMCallSite;
     requested: string;
@@ -121,591 +51,237 @@ export interface ResolveCallSiteOpts {
   }) => void;
 }
 
-export type ResolutionFallbackReason =
-  | "missing"
-  | "disabled"
-  | "incomplete"
-  | "unresolvable";
-
-export interface ResolvedCallSiteConfig {
-  config: z.infer<typeof LLMConfigBase>;
-  profileName?: string;
+export interface ResolvedCallConfig {
+  model: string;
+  disableCache: boolean;
+  contextWindow: ContextWindow;
 }
 
-export function resolveCallSiteConfigWithProfile(
+export type CallSiteResolution =
+  | {
+      status: "ok";
+      callSite: LLMCallSite;
+      model: string;
+      source: ResolutionSource;
+      config: ResolvedCallConfig;
+    }
+  | { status: "disabled"; callSite: LLMCallSite };
+
+export class ModelNotInCatalogError extends Error {
+  constructor(
+    readonly alias: string,
+    readonly callSite: LLMCallSite,
+    readonly available: string[],
+  ) {
+    super(
+      `Model "${alias}" is not in the gateway catalog (call site "${callSite}"). Available aliases: ${available.join(", ")}.`,
+    );
+    this.name = "ModelNotInCatalogError";
+  }
+}
+
+export class DisabledCallSiteError extends Error {
+  constructor(readonly callSite: LLMCallSite) {
+    super(`Call site "${callSite}" is disabled.`);
+    this.name = "DisabledCallSiteError";
+  }
+}
+
+function aliasAvailable(llm: LLMConfig, alias: string): boolean {
+  return isKnownAlias(alias) || llm.catalogOverrides?.[alias] != null;
+}
+
+function availableAliases(llm: LLMConfig): string[] {
+  const aliases = new Set<string>();
+  for (const entry of listCatalogEntries()) {
+    aliases.add(entry.alias);
+  }
+  for (const alias of Object.keys(llm.catalogOverrides ?? {})) {
+    aliases.add(alias);
+  }
+  return [...aliases].sort();
+}
+
+function isDisabled(callSite: LLMCallSite, llm: LLMConfig): boolean {
+  return (
+    llm.callSites?.[callSite]?.enabled === false ||
+    CALL_SITE_DEFAULTS[callSite]?.enabled === false
+  );
+}
+
+function mergeContextWindow(
   callSite: LLMCallSite,
-  llm: z.infer<typeof LLMSchema>,
-  opts: ResolveCallSiteOpts = {},
-): ResolvedCallSiteConfig {
-  const selection = selectWinningProfile(callSite, llm, opts);
-  return {
-    config: resolveOverrideOrDefault(callSite, llm, selection),
-    ...(selection.profileName ? { profileName: selection.profileName } : {}),
-  };
+  llm: LLMConfig,
+): ContextWindow {
+  const shipped = CALL_SITE_DEFAULTS[callSite]?.contextWindow;
+  const workspace = llm.callSites?.[callSite]?.contextWindow;
+  const merged = deepMerge(
+    ContextWindowSchema.parse({}) as unknown as Record<string, unknown>,
+    shipped as Record<string, unknown> | undefined,
+    workspace as Record<string, unknown> | undefined,
+  );
+  return ContextWindowSchema.parse(merged);
 }
 
+export function resolveCallSite(
+  callSite: LLMCallSite,
+  llm: LLMConfig,
+  opts: ResolveCallSiteOpts = {},
+): CallSiteResolution {
+  if (isDisabled(callSite, llm)) {
+    return { status: "disabled", callSite };
+  }
+
+  const report = (requested: string) =>
+    opts.onResolutionFallback?.({
+      callSite,
+      requested,
+      reason: "unknown_alias",
+    });
+
+  const build = (
+    model: string,
+    source: ResolutionSource,
+  ): CallSiteResolution => ({
+    status: "ok",
+    callSite,
+    model,
+    source,
+    config: {
+      model,
+      disableCache:
+        llm.callSites?.[callSite]?.disableCache ??
+        CALL_SITE_DEFAULTS[callSite]?.disableCache ??
+        false,
+      contextWindow: mergeContextWindow(callSite, llm),
+    },
+  });
+
+  const pinned = opts.model?.trim();
+  if (pinned != null && pinned.length > 0) {
+    if (!aliasAvailable(llm, pinned)) {
+      throw new ModelNotInCatalogError(pinned, callSite, availableAliases(llm));
+    }
+    return build(pinned, "pinned");
+  }
+
+  const siteModel =
+    llm.callSites?.[callSite]?.model ?? CALL_SITE_DEFAULTS[callSite]?.model;
+  if (siteModel != null) {
+    if (aliasAvailable(llm, siteModel)) {
+      return build(siteModel, "call_site");
+    }
+    report(siteModel);
+  }
+
+  const chatModel = opts.conversationModel?.trim();
+  if (chatModel != null && chatModel.length > 0) {
+    if (aliasAvailable(llm, chatModel)) {
+      return build(chatModel, "chat");
+    }
+    report(chatModel);
+  }
+
+  if (aliasAvailable(llm, llm.defaultModel)) {
+    return build(llm.defaultModel, "default");
+  }
+
+  throw new ModelNotInCatalogError(
+    llm.defaultModel,
+    callSite,
+    availableAliases(llm),
+  );
+}
+
+/** Resolved config for a call site; throws when the call site is disabled. */
 export function resolveCallSiteConfig(
   callSite: LLMCallSite,
-  llm: z.infer<typeof LLMSchema>,
+  llm: LLMConfig,
   opts: ResolveCallSiteOpts = {},
-): z.infer<typeof LLMConfigBase> {
-  return resolveCallSiteConfigWithProfile(callSite, llm, opts).config;
+): ResolvedCallConfig {
+  const resolution = resolveCallSite(callSite, llm, opts);
+  if (resolution.status === "disabled") {
+    throw new DisabledCallSiteError(callSite);
+  }
+  return resolution.config;
 }
 
-// ─── Single-winner profile resolution ───────────────────────────────────────
-//
-// Selection is a single-winner chain — each rung is either a complete
-// explicit choice or skipped with a reported reason — bottoming out on the
-// code-owned default intent resolved through `llm.defaultProvider`:
-//   1. `opts.overrideProfile` (conversation/schedule/per-turn pin)
-//   2. `llm.activeProfile` (mainAgent only — it IS that call site's selection)
-//   3. `llm.callSites[callSite].profile`
-//   4. `CALL_SITE_DEFAULTS[callSite].profile` intent × default provider
-//   5. balanced intent × default provider (profileless sites, or nothing
-//      above usable)
-// A winner must carry its own `provider` AND `model`: the base layer's
-// schema-default identity must never stand in for a selected profile (that
-// would be merge inheritance by the back door). A fallback anchor must be
-// code-owned, never user-mutable state.
-//
-// The request config is the base + winner + site-tweak composition:
-// code-owned schema defaults, then the single winning profile, then the call
-// site's own tuning fragment (its shipped `CALL_SITE_DEFAULTS` tuning with
-// the workspace `llm.callSites` entry layered over it, field by field).
-// Selection is pure either/or: no profile ever contributes a field to
-// another profile, and `deepMerge` only makes nested tweaks
-// (`thinking.enabled`) combine leaf-wise instead of wiping siblings.
-// `temperature`/`topP` come from the winner (or an explicit tweak);
-// `logitBias` only ever from the winner.
-// `forceOverrideProfile` is a no-op here (the override is already first).
-
-export interface ProfileWinnerSelection {
-  /** Named winner (a mix's own name, not its arm); null → the anchor rung. */
-  profileName: string | null;
-  source: "override" | "active" | "call_site" | "default";
-  /** The concrete (mix-expanded) entry that won; null only if even the code
-   * catalog was unusable, which the load-time catalog validation prevents. */
-  entry: ProfileEntry | null;
-}
-
-export function selectWinningProfile(
+/**
+ * The winning alias and its rung, or null for a disabled call site. Used by
+ * display and attribution paths that must not throw.
+ */
+export function resolveEffectiveModel(
   callSite: LLMCallSite,
-  llm: z.infer<typeof LLMSchema>,
+  llm: LLMConfig,
   opts: ResolveCallSiteOpts = {},
-): ProfileWinnerSelection {
-  const report = (requested: string, reason: ResolutionFallbackReason) =>
-    opts.onResolutionFallback?.({ callSite, requested, reason });
+): { model: string; source: ResolutionSource } | null {
+  try {
+    const resolution = resolveCallSite(callSite, llm, opts);
+    return resolution.status === "disabled"
+      ? null
+      : { model: resolution.model, source: resolution.source };
+  } catch {
+    return null;
+  }
+}
 
-  const override = usableEntry(opts.overrideProfile, llm, opts, report);
-  if (override) {
-    return {
-      profileName: override.name,
-      source: "override",
-      entry: override.entry,
-    };
+/** Whether a call site is disabled by the workspace or by its shipped default. */
+export function isCallSiteDisabled(
+  callSite: LLMCallSite,
+  llm: LLMConfig,
+): boolean {
+  return isDisabled(callSite, llm);
+}
+
+/**
+ * The code-owned default alias for a call site, or undefined when the site
+ * inherits (`mainAgent`, `workflowLeaf`).
+ */
+export function shippedCallSiteModel(
+  callSite: LLMCallSite,
+): string | undefined {
+  return CALL_SITE_DEFAULTS[callSite]?.model;
+}
+
+/** Every alias the catalog knows about, including config-local overrides. */
+export function knownAliases(llm: LLMConfig): string[] {
+  return availableAliases(llm);
+}
+
+/** Catalog entry for an alias, with config-local overrides applied. */
+export function effectiveCatalogEntry(
+  llm: LLMConfig,
+  alias: string,
+): {
+  alias: string;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  supportsVision: boolean;
+  supportsTools: boolean;
+  supportsReasoning?: boolean;
+} | null {
+  const entry = getCatalogEntry(alias);
+  const override = llm.catalogOverrides?.[alias];
+  if (entry == null && override == null) {
+    return null;
   }
-  if (callSite === "mainAgent") {
-    const active = usableEntry(llm.activeProfile, llm, opts, report);
-    if (active) {
-      return {
-        profileName: active.name,
-        source: "active",
-        entry: active.entry,
-      };
-    }
-  }
-  const sitePin = usableEntry(
-    llm.callSites?.[callSite]?.profile,
-    llm,
-    opts,
-    report,
-  );
-  if (sitePin) {
-    return {
-      profileName: sitePin.name,
-      source: "call_site",
-      entry: sitePin.entry,
-    };
-  }
-  const intent = CALL_SITE_DEFAULTS[callSite]?.profile;
-  if (intent != null) {
-    const entry = usableDefaultIntent(intent, llm, opts, report);
-    if (entry) {
-      return { profileName: intent, source: "default", entry };
-    }
-  }
-  // Anchor: profileless call sites (`vision`, `workflowLeaf`) and any
-  // resolution whose every named rung was unusable land on balanced intent
-  // through the default provider, bottoming out on the code-owned catalog,
-  // so it always resolves. `profileName` stays null on the catalog path:
-  // the anchor itself is not a selection.
+  const supportsReasoning =
+    override?.supportsReasoning ?? entry?.supportsReasoning;
   return {
-    profileName: null,
-    source: "default",
-    entry: usableDefaultIntent("balanced", llm, opts, report) ?? null,
+    alias,
+    maxInputTokens: override?.maxInputTokens ?? entry?.maxInputTokens,
+    maxOutputTokens: override?.maxOutputTokens ?? entry?.maxOutputTokens,
+    supportsVision: override?.supportsVision ?? entry?.supportsVision ?? false,
+    supportsTools: override?.supportsTools ?? entry?.supportsTools ?? false,
+    ...(supportsReasoning != null ? { supportsReasoning } : {}),
   };
-}
-
-/**
- * Dereference a profile name for the override-or-default rungs. A
- * default-profile key must yield the same body the call-site intent rung
- * would — the default provider's column, never unconditionally the vellum
- * column.
- *
- * A persisted managed stub carries no user intent (defaults cannot be
- * disabled through any write path), so the pure catalog overrides an
- * unusable one. An unusable user-owned shadow is returned as-is so the rung
- * reports it and falls through.
- */
-function providerAwareEntry(
-  llm: z.infer<typeof LLMSchema>,
-  name: string,
-): ProfileEntry | undefined {
-  const defaultProvider = llm.defaultProvider ?? null;
-  const entry = resolveDefaultProfileForProvider(
-    llm.profiles,
-    name,
-    defaultProvider,
-  );
-  if (!isDefaultProfileKey(name) || entry?.mix != null) {
-    return entry;
-  }
-  if (
-    entry != null &&
-    entry.status !== "disabled" &&
-    entry.provider != null &&
-    entry.model != null
-  ) {
-    return entry;
-  }
-  const workspace = llm.profiles?.[name];
-  if (workspace != null && workspace.source !== "managed") {
-    return entry;
-  }
-  return resolveDefaultProfileForProvider(undefined, name, defaultProvider);
-}
-
-/**
- * Dereference a named rung: the effective entry must exist, be enabled,
- * expand (for a mix) to an enabled arm, and carry its own provider+model.
- */
-function usableEntry(
-  name: string | undefined,
-  llm: z.infer<typeof LLMSchema>,
-  opts: ResolveCallSiteOpts,
-  report: (requested: string, reason: ResolutionFallbackReason) => void,
-): { name: string; entry: ProfileEntry } | undefined {
-  if (name == null) {
-    return undefined;
-  }
-  const named = providerAwareEntry(llm, name);
-  if (named == null) {
-    report(name, "missing");
-    return undefined;
-  }
-  if (named.status === "disabled") {
-    report(name, "disabled");
-    return undefined;
-  }
-  // Mixes expand via the shared seeded pick (fires `onMixSelected`).
-  const entry =
-    named.mix == null
-      ? named
-      : resolveProfileFragment(name, llm, opts, (n) =>
-          providerAwareEntry(llm, n),
-        );
-  if (entry == null) {
-    report(name, "missing");
-    return undefined;
-  }
-  if (entry.status === "disabled") {
-    report(name, "disabled");
-    return undefined;
-  }
-  if (entry.provider == null || entry.model == null) {
-    report(name, "incomplete");
-    return undefined;
-  }
-  // A provider the caller cannot resolve (not a known vendor, not an entry
-  // row) makes the profile unusable, and selection falls through to the
-  // next rung the same way an incomplete profile does: the fallback keeps
-  // model and transport coherent, where a dispatch-time fallback would pair
-  // this profile's model with the default transport. Selection is DB-blind,
-  // so the predicate is supplied by dispatch-side callers; when absent,
-  // every provider is assumed resolvable.
-  if (
-    opts.isResolvableProvider != null &&
-    !opts.isResolvableProvider(entry.provider)
-  ) {
-    report(name, "unresolvable");
-    return undefined;
-  }
-  return { name, entry };
-}
-
-/**
- * Resolve a default-profile intent through the default provider. A user
- * shadow that is unusable (disabled/incomplete/a broken mix) is reported and
- * the pure catalog body stands — the fallback anchor is code-owned and must
- * always resolve. A legacy disabled stub on a default is likewise reported
- * and overridden: defaults cannot be disabled through any write path, so a
- * persisted disabled stub is stale hatch-era state whose meaning ("no vellum
- * connection") `llm.defaultProvider` expresses properly.
- */
-function usableDefaultIntent(
-  intent: string,
-  llm: z.infer<typeof LLMSchema>,
-  opts: ResolveCallSiteOpts,
-  report: (requested: string, reason: ResolutionFallbackReason) => void,
-): ProfileEntry | undefined {
-  const defaultProvider = llm.defaultProvider ?? null;
-  let entry = resolveDefaultProfileForProvider(
-    llm.profiles,
-    intent,
-    defaultProvider,
-  );
-  if (entry?.mix != null) {
-    entry = resolveProfileFragment(intent, llm, opts, (n) =>
-      providerAwareEntry(llm, n),
-    );
-  }
-  if (
-    entry != null &&
-    entry.status !== "disabled" &&
-    entry.provider != null &&
-    entry.model != null
-  ) {
-    return entry;
-  }
-  if (entry == null) {
-    report(intent, "missing");
-  } else {
-    report(intent, entry.status === "disabled" ? "disabled" : "incomplete");
-  }
-  const catalog = resolveDefaultProfileForProvider(
-    undefined,
-    intent,
-    defaultProvider,
-  );
-  if (catalog != null && catalog.provider != null && catalog.model != null) {
-    return catalog;
-  }
-  return undefined;
-}
-
-/**
- * Schema-default base for composition. Non-identity fields a winner omits
- * fall to these code-owned defaults; the winner's identity fields are
- * guaranteed present by `selectWinningProfile`.
- */
-const CODE_DEFAULT_BASE: z.infer<typeof LLMConfigBase> = LLMConfigBase.parse(
-  {},
-);
-
-function resolveOverrideOrDefault(
-  callSite: LLMCallSite,
-  llm: z.infer<typeof LLMSchema>,
-  selection: ProfileWinnerSelection,
-): z.infer<typeof LLMConfigBase> {
-  const winnerFragment: Mergeable =
-    selection.entry == null ? {} : winnerConfigFragment(selection.entry);
-
-  const tweak = composeCallSiteTweak(
-    CALL_SITE_DEFAULTS[callSite] as Mergeable | undefined,
-    llm.callSites?.[callSite] as Mergeable | undefined,
-  );
-
-  // Direct call-site model overrides are fragments by design: when the tweak
-  // pins a model the winner's provider does not serve, stamp the catalog
-  // owner and drop the winner's connection (it belongs to the replaced
-  // provider; dispatch auto-resolves an absent connection by provider).
-  const applicableProvider =
-    (winnerFragment.provider as string | undefined) ??
-    CODE_DEFAULT_BASE.provider;
-  // A routing-identity winner serves any model its route can dispatch —
-  // identity + model is the complete shape, so no provider implication.
-  const winnerServesModel = (model: string): boolean =>
-    ROUTING_IDENTITY_PROVIDERS.has(applicableProvider)
-      ? routingIdentityModelIssue(applicableProvider, model) === null
-      : isModelInCatalog(applicableProvider, model);
-  if (
-    typeof tweak.model === "string" &&
-    tweak.provider === undefined &&
-    !winnerServesModel(tweak.model)
-  ) {
-    const implied = getCatalogProviderForModel(tweak.model);
-    if (implied !== undefined) {
-      tweak.provider = implied;
-      // A provider-specific connection must not pin a mismatch onto the
-      // implied provider — but the provider-agnostic Vellum managed
-      // connection routes any managed-routable upstream and must survive,
-      // or platform installs lose their only connection.
-      if (
-        !(
-          winnerFragment.provider_connection ===
-            VELLUM_MANAGED_CONNECTION_NAME &&
-          MANAGED_ROUTABLE_PROVIDERS.has(implied)
-        )
-      ) {
-        delete winnerFragment.provider_connection;
-      }
-    }
-  }
-
-  const merged = deepMerge(
-    CODE_DEFAULT_BASE as unknown as Mergeable,
-    winnerFragment,
-    tweak,
-  );
-  // A vellum winner's managed routing survives a concrete-provider tweak:
-  // call-site fragments carry no connection, so a tweak pinning e.g.
-  // anthropic over a managed default would otherwise resolve to a
-  // connection-less concrete provider — stranded on platform installs with
-  // no BYOK row. The tweak keeps every field it sets; the winner contributes
-  // its routing via the provider-agnostic managed connection, which serves
-  // any managed-routable upstream.
-  if (
-    winnerFragment.provider === "vellum" &&
-    typeof merged.provider === "string" &&
-    merged.provider !== "vellum" &&
-    merged.provider_connection == null &&
-    MANAGED_ROUTABLE_PROVIDERS.has(merged.provider)
-  ) {
-    merged.provider_connection = VELLUM_MANAGED_CONNECTION_NAME;
-  }
-  return finalize(merged);
-}
-
-/** The winner's config fields: metadata stripped, sampling and logitBias
- * kept — with a single winner there is no cross-profile leakage to guard. */
-function winnerConfigFragment(entry: ProfileEntry): Mergeable {
-  const {
-    source: _source,
-    label: _label,
-    description: _description,
-    status: _status,
-    mix: _mix,
-    fallbackProfile: _fallbackProfile,
-    ...config
-  } = entry;
-  return config as Mergeable;
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-type Mergeable = Record<string, unknown>;
-
-/**
- * The call site's tuning fragment: its shipped `CALL_SITE_DEFAULTS` tuning
- * with the workspace `llm.callSites` entry layered over it, field by field.
- * An entry that only names a profile therefore repoints the selection while
- * the tuning the call site ships with still applies, and a field the entry
- * sets wins for that field alone.
- *
- * `profile` is the selection discriminator and `logitBias` is winner-owned,
- * so neither survives into the fragment. A workspace entry also owns the
- * selection for its own call site: when one exists the shipped layer
- * contributes tuning only, so a shipped `provider`/`model` pin can never
- * override the profile or the custom model the user chose there. With no
- * workspace entry the shipped fragment applies whole, pin included.
- */
-export function composeCallSiteTweak(
-  shipped: Mergeable | undefined,
-  workspace: Mergeable | undefined,
-): Mergeable {
-  const {
-    provider: _shippedProvider,
-    model: _shippedModel,
-    ...shippedTuning
-  } = shipped ?? {};
-  const shippedLayer = workspace == null ? (shipped ?? {}) : shippedTuning;
-  const {
-    profile: _siteProfile,
-    logitBias: _siteBias,
-    ...tweak
-  } = deepMerge(shippedLayer, workspace ?? {});
-  return tweak;
-}
-
-/**
- * FNV-1a 32-bit string hash → unit float in [0, 1). Deterministic and stable
- * across runtimes — the mix-pick contract depends on identical output for
- * identical input forever, so the constants must never change. (Mirrors the
- * private hash in `memory/v2/page-index.ts`; intentionally re-declared here so
- * the resolver's determinism contract is self-contained and cannot be broken
- * by an unrelated edit to that module.)
- */
-function seededUnitFloat(seed: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  // `>>> 0` → unsigned 32-bit; divide by 2^32 to land in [0, 1).
-  return (h >>> 0) / 0x100000000;
-}
-
-/**
- * Pick one entry from a weighted list given a unit float in [0, 1). Weights
- * are relative and normalized by their sum. Assumes `entries` is non-empty
- * with positive weights (guaranteed by `MixSchema`: `.min(2)` + positive).
- */
-function weightedPick<T extends { weight: number }>(
-  entries: readonly T[],
-  unit: number,
-): T {
-  const total = entries.reduce((sum, e) => sum + e.weight, 0);
-  // Defensive: a degenerate total (unreachable post-schema) → first arm.
-  if (!(total > 0)) {
-    return entries[0];
-  }
-  let threshold = unit * total;
-  for (const entry of entries) {
-    threshold -= entry.weight;
-    if (threshold < 0) {
-      return entry;
-    }
-  }
-  // Floating-point fall-through (unit ≈ 1): return the last arm.
-  return entries[entries.length - 1];
-}
-
-/**
- * Dereference a profile name to its concrete `ProfileEntry`, expanding a mix
- * profile by a seeded weighted pick. Returns `undefined` when the name is
- * unknown (parity with the silent fall-through callers already rely on).
- *
- * Mix expansion is one level only — `LLMSchema.superRefine` guarantees arms
- * are standard (non-mix) profiles, so this never recurses unboundedly. A
- * chosen arm pointing at a missing profile (only reachable in hand-crafted,
- * unparsed configs) falls through to `undefined`.
- *
- * Pure & synchronous (the only impurity is `Math.random()` in the no-seed
- * fallback path).
- */
-function resolveProfileFragment(
-  name: string | undefined,
-  llm: z.infer<typeof LLMSchema>,
-  opts: ResolveCallSiteOpts,
-  lookupEntry: (name: string) => ProfileEntry | undefined,
-): ProfileEntry | undefined {
-  if (name == null) {
-    return undefined;
-  }
-  const entry = lookupEntry(name);
-  if (entry?.mix == null) {
-    return entry;
-  }
-
-  // Mix: pick one constituent. Seed by per-conversation seed + the mix's own
-  // name so two different mixes in the same conversation pick independently,
-  // but the same mix always resolves to the same arm within the conversation.
-  const unit =
-    opts.selectionSeed != null
-      ? seededUnitFloat(`${opts.selectionSeed}\u0000${name}`)
-      : Math.random();
-  const chosen = weightedPick(entry.mix, unit);
-  opts.onMixSelected?.({ mixProfile: name, chosenProfile: chosen.profile });
-
-  // The chosen arm must be a standard profile (enforced by superRefine).
-  return lookupEntry(chosen.profile);
-}
-
-/**
- * Returns the profile key `resolveCallSiteConfig` selects as the winner for a
- * call site when no per-turn `overrideProfile` is supplied — the highest-
- * precedence rung that resolves to a usable, complete profile (see
- * `selectWinningProfile`). Returns `undefined` when the winner is the
- * code-owned anchor rather than a named profile.
- */
-export function resolveDefaultProfileKey(
-  callSite: LLMCallSite,
-  llm: z.infer<typeof LLMSchema>,
-): string | undefined {
-  return selectWinningProfile(callSite, llm, {}).profileName ?? undefined;
-}
-
-/**
- * Returns the code-owned profile tier for catalog display when that tier is
- * available through the workspace's default provider. Workspace call-site
- * pins do not affect this value. A managed-only tier on a BYOK install returns
- * undefined so clients do not report a profile that cannot run there.
- */
-export function resolveShippedDefaultProfileKey(
-  callSite: LLMCallSite,
-  llm: z.infer<typeof LLMSchema>,
-): string | undefined {
-  const intent = CALL_SITE_DEFAULTS[callSite]?.profile ?? "balanced";
-  return usableDefaultIntent(intent, llm, {}, () => undefined) == null
-    ? undefined
-    : intent;
-}
-
-/**
- * Returns the profile key that `resolveCallSiteConfig` treats as the winning
- * (highest-precedence) profile for a turn — the profile whose fragment supplies
- * the resolved provider/model. Accounts for the per-turn `overrideProfile`, so
- * error attribution names the slot the resolver really used. Returns
- * `undefined` when the winner is the code-owned anchor rather than a named
- * profile.
- */
-export function resolveEffectiveProfileKey(
-  callSite: LLMCallSite,
-  llm: z.infer<typeof LLMSchema>,
-  opts: ResolveCallSiteOpts = {},
-): string | undefined {
-  return selectWinningProfile(callSite, llm, opts).profileName ?? undefined;
-}
-
-/**
- * Returns the winning profile key only when it identifies a single provider
- * route: one profile whose own provider/model fragment serves every call it
- * wins. A mix winner returns `undefined` on purpose. Its arm is picked per
- * conversation from a seed (or `Math.random()` unseeded), so a caller
- * recomputing after the fact cannot know which arm actually ran, and arms can
- * span providers, so the outer mix key would put one label on what are
- * several provider routes. Use this where attribution must not claim a
- * broader scope than the route that ran (e.g. failure-notification dedupe);
- * `undefined` means "no single route can be named", and callers fall back to
- * their narrower key.
- */
-export function resolveSingleRouteProfileKey(
-  callSite: LLMCallSite,
-  llm: z.infer<typeof LLMSchema>,
-  opts: ResolveCallSiteOpts = {},
-): string | undefined {
-  const name = selectWinningProfile(callSite, llm, opts).profileName;
-  if (name == null) {
-    return undefined;
-  }
-  return providerAwareEntry(llm, name)?.mix == null ? name : undefined;
-}
-
-/**
- * Stable non-null identity for profileless configs. Callers should prefer real
- * profile keys first; when no named profile applies, the resolved model id is
- * the only model-selection identifier available.
- */
-export function resolveProfilelessModelKey(
-  callSite: LLMCallSite,
-  llm: z.infer<typeof LLMSchema>,
-  opts: ResolveCallSiteOpts = {},
-): string {
-  try {
-    return resolveCallSiteConfig(callSite, llm, opts).model;
-  } catch {
-    return "default";
-  }
-}
-
-/**
- * Returns true for objects we should recurse into during deep merge. We
- * deliberately exclude arrays so that array-valued fields (e.g.
- * `pricingOverrides` siblings) get full replacement semantics.
- */
-function isPlainObject(value: unknown): value is Mergeable {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -714,48 +290,23 @@ function isPlainObject(value: unknown): value is Mergeable {
   );
 }
 
-/**
- * Deep-merges a sequence of fragments where each rightward source overrides
- * the previous. For nested plain objects, recurse so partial overrides merge
- * leaf-by-leaf rather than wholesale-replacing the nested object.
- *
- * `undefined` values in a source are skipped (treated as "no opinion"); this
- * matches Zod fragment semantics where unset optional fields are absent.
- *
- * Plain-object values are always cloned (via recursion) rather than aliased,
- * so the returned config is an isolated snapshot — mutating any nested object
- * on the result cannot affect named profiles or other call sites' resolutions.
- * Arrays and primitives are copied by reference; the resolver does not return
- * arrays, and primitives are immutable.
- */
-function deepMerge(...sources: Mergeable[]): Mergeable {
-  const out: Mergeable = {};
+function deepMerge(
+  ...sources: (Record<string, unknown> | undefined)[]
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
   for (const source of sources) {
+    if (source == null) {
+      continue;
+    }
     for (const [key, value] of Object.entries(source)) {
       if (value === undefined) {
         continue;
       }
       const existing = out[key];
-      if (isPlainObject(value)) {
-        // Recurse for any plain-object source. Using `existing` as the base
-        // when it's also a plain object preserves leaf-by-leaf merge
-        // semantics; otherwise we recurse against an empty object so the
-        // result is a freshly-allocated clone rather than an alias.
-        const base = isPlainObject(existing) ? existing : ({} as Mergeable);
-        out[key] = deepMerge(base, value);
-      } else {
-        out[key] = value;
-      }
+      out[key] = isPlainObject(value)
+        ? deepMerge(isPlainObject(existing) ? existing : {}, value)
+        : value;
     }
   }
   return out;
-}
-
-/**
- * Cast helper that documents the intent: after merging the code-owned base
- * (which is `LLMConfigBase`) with optional fragments, every required field is
- * still present, so the result satisfies `LLMConfigBase`.
- */
-function finalize(merged: Mergeable): z.infer<typeof LLMConfigBase> {
-  return merged as unknown as z.infer<typeof LLMConfigBase>;
 }

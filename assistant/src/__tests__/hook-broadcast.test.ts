@@ -59,7 +59,7 @@ function baseCtx(
     conversationId: "conv-1",
     userMessageId: "req-1",
     requestId: "req-1",
-    modelProfileKey: "balanced",
+    modelKey: "balanced",
     isNonInteractive: false,
     prompt: "hello",
     originalMessages: [],

@@ -160,6 +160,7 @@ import { renameCollidingJevProfileNameMigration } from "./159-rename-colliding-j
 import { repairRetiredFireworksModelIdsMigration } from "./160-repair-retired-fireworks-model-ids.js";
 import { repairRetiredFireworksGlm5p2ModelIdMigration } from "./161-repair-retired-fireworks-glm-5p2-model-id.js";
 import { copyMemoryV2TunablesToSubstrateMigration } from "./162-copy-memory-v2-tunables-to-substrate.js";
+import { dropInferenceProfilesMigration } from "./163-drop-inference-profiles.js";
 import { migrateToWorkspaceVolumeMigration } from "./migrate-to-workspace-volume.js";
 import type { WorkspaceMigration } from "./types.js";
 
@@ -335,4 +336,5 @@ export const WORKSPACE_MIGRATIONS: WorkspaceMigration[] = [
   repairRetiredFireworksModelIdsMigration,
   repairRetiredFireworksGlm5p2ModelIdMigration,
   copyMemoryV2TunablesToSubstrateMigration,
+  dropInferenceProfilesMigration,
 ];

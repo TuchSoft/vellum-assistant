@@ -50,9 +50,7 @@ describe("route constants", () => {
       "google/upload/gmail/v1/users/me/drafts?uploadType=media",
     );
 
-    expect(extractProxyRemainder(url)).toBe(
-      "upload/gmail/v1/users/me/drafts",
-    );
+    expect(extractProxyRemainder(url)).toBe("upload/gmail/v1/users/me/drafts");
     expect(url.search).toBe("?uploadType=media");
     expect(normalizeProxyPath("upload/gmail/v1/users/me/drafts")).toBe(
       "/upload/gmail/v1/users/me/drafts",

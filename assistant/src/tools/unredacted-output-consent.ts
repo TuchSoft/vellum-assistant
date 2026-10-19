@@ -31,9 +31,6 @@ export function extractUnredactedOutputConsent(
   if (input[UNREDACTED_OUTPUT_CONSENT_KEY] !== true) {
     return { input, requested: false };
   }
-  const {
-    [UNREDACTED_OUTPUT_CONSENT_KEY]: _consentKey,
-    ...rest
-  } = input;
+  const { [UNREDACTED_OUTPUT_CONSENT_KEY]: _consentKey, ...rest } = input;
   return { input: rest, requested: true };
 }

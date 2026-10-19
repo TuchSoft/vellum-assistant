@@ -727,7 +727,8 @@ export function injectLocalActorHeader(
   const args = (params ?? {}) as RouteHandlerArgs;
   const existingHeaders = args.headers;
   const forwardedPrincipal = existingHeaders?.["x-vellum-principal-type"] as
-    PrincipalType | undefined;
+    | PrincipalType
+    | undefined;
   const isGatewayProxied = existingHeaders?.["x-vellum-proxy-server"] === "ipc";
   const headers: Record<string, string> = {
     ...existingHeaders,

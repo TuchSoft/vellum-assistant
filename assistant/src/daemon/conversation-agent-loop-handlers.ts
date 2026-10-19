@@ -49,7 +49,7 @@ import {
   recordConversationPersistedSeq,
   reserveMessage,
   setConversationHistoryStrippedAt,
-  setLastNotifiedInferenceProfile,
+  setLastNotifiedModel,
   updateMessageContent,
 } from "../persistence/conversation-crud.js";
 import { syncMessageToDisk } from "../persistence/conversation-disk-view.js";
@@ -274,7 +274,7 @@ export interface EventHandlerState {
    * notice next turn instead of silently marking the profile notified without
    * the model ever having seen it.
    */
-  pendingNotifiedInferenceProfile: string | null;
+  pendingNotifiedModel: string | null;
   /**
    * The default profile the Auto profile routed this turn to, stamped on the
    * turn's assistant rows and carried on `message_complete` so clients can
@@ -293,7 +293,7 @@ export interface EventHandlerState {
    * and profile all describe the same call. `undefined` means the last call
    * was not rerouted and the conversation's own profile resolution stands.
    */
-  exchangeInferenceProfile: string | undefined;
+  exchangeModel: string | undefined;
   exchangeInputTokens: number;
   exchangeCacheCreationInputTokens: number;
   exchangeCacheReadInputTokens: number;
@@ -705,12 +705,12 @@ export interface EventHandlerDeps {
 
 export function createEventHandlerState(): EventHandlerState {
   return {
-    pendingNotifiedInferenceProfile: null,
+    pendingNotifiedModel: null,
     autoRoutedProfile: undefined,
     pendingDirectiveDisplayBuffer: "",
     firstAssistantText: "",
     exchangeProviderName: undefined,
-    exchangeInferenceProfile: undefined,
+    exchangeModel: undefined,
     exchangeInputTokens: 0,
     exchangeCacheCreationInputTokens: 0,
     exchangeCacheReadInputTokens: 0,
@@ -3165,21 +3165,25 @@ export async function handleMessageComplete(
   // any pending inference-profile-change notification. Guarded by the pending
   // slot so it fires once per turn; a turn that fails before reaching delivery
   // leaves the slot unconsumed and re-sends the notice next turn.
-  if (state.pendingNotifiedInferenceProfile != null) {
+  if (state.pendingNotifiedModel != null) {
     try {
-      setLastNotifiedInferenceProfile(
+      void setLastNotifiedModel(
         deps.ctx.conversationId,
-        state.pendingNotifiedInferenceProfile,
-      );
+        state.pendingNotifiedModel,
+      ).catch((err: unknown) => {
+        deps.rlog.warn(
+          { conversationId: deps.ctx.conversationId, err },
+          "Failed to persist last notified model (non-fatal)",
+        );
+      });
     } catch (err) {
       deps.rlog.warn(
         { conversationId: deps.ctx.conversationId, err },
-        "Failed to persist last notified inference profile (non-fatal)",
+        "Failed to persist last notified model (non-fatal)",
       );
     }
-    deps.ctx.lastNotifiedInferenceProfile =
-      state.pendingNotifiedInferenceProfile;
-    state.pendingNotifiedInferenceProfile = null;
+    deps.ctx.lastNotifiedModel = state.pendingNotifiedModel;
+    state.pendingNotifiedModel = null;
   }
 
   // Reset per-turn tool tracking for the new turn.
@@ -3478,7 +3482,7 @@ function handleUsage(
   // this back to `undefined` is correct, because provider and model are being
   // overwritten from that same call. Keeping a stale profile from an earlier
   // fallback would reintroduce the very contradiction this field prevents.
-  state.exchangeInferenceProfile = event.actualInferenceProfile;
+  state.exchangeModel = event.actualModel;
   state.exchangeLlmCallCount += 1;
   state.exchangeInputTokens += event.inputTokens;
   state.lastCallInputTokens = event.inputTokens;

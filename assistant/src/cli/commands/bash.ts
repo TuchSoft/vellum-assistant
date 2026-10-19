@@ -25,9 +25,8 @@ export function registerBashCommand(program: Command): void {
           return;
         }
 
-        const { runSanitizedBash } = await import(
-          "../../tools/terminal/sanitized-bash.js"
-        );
+        const { runSanitizedBash } =
+          await import("../../tools/terminal/sanitized-bash.js");
         const data = await runSanitizedBash(command, timeoutMs);
 
         if (data.error) {

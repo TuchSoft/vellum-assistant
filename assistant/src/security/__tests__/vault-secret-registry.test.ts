@@ -45,7 +45,9 @@ describe("vault-secret-registry", () => {
   });
 
   test("values shorter than the minimum length are not registered", async () => {
-    await refreshVaultRegistry(fakeSource({ "credential/demo/short": "short12" }));
+    await refreshVaultRegistry(
+      fakeSource({ "credential/demo/short": "short12" }),
+    );
     expect(getVaultSnapshot()?.size).toBe(0);
   });
 
@@ -84,9 +86,7 @@ describe("vault-secret-registry", () => {
       },
     };
     await refreshVaultRegistry(failing);
-    expect(
-      getVaultSnapshot()?.get("sk-test-1234567890abcdef"),
-    ).toBeDefined();
+    expect(getVaultSnapshot()?.get("sk-test-1234567890abcdef")).toBeDefined();
   });
 
   test("a fresh snapshot does not re-hit the source on read", async () => {

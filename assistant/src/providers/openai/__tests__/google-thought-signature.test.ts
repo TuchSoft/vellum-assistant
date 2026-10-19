@@ -95,7 +95,9 @@ describe("toolUseMetadataFromChatCompletionsDelta", () => {
   });
 
   test("returns undefined when extra_content is absent", () => {
-    expect(toolUseMetadataFromChatCompletionsDelta({ id: "call_1" })).toBeUndefined();
+    expect(
+      toolUseMetadataFromChatCompletionsDelta({ id: "call_1" }),
+    ).toBeUndefined();
   });
 });
 

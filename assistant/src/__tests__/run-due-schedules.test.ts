@@ -275,7 +275,7 @@ describe("fire-time source-availability gate", () => {
       message: "",
       script: `touch ${marker}`,
       mode: "script",
-      inferenceProfile: null,
+      model: null,
       timeoutMs: null,
       enabled: true,
       definitionHash: "hash-1",

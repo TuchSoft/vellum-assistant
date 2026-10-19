@@ -1,9 +1,6 @@
-import { resolveCallSiteConfig } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
-import { ROUTING_IDENTITY_PROVIDERS } from "../providers/inference/auth.js";
 import { resolveConfiguredProvider } from "../providers/provider-send-message.js";
 import type { Message } from "../providers/types.js";
-import { getProviderKeyAsync } from "../security/secure-keys.js";
 import { getLogger } from "../util/logger.js";
 import type { CommitContext } from "./commit-message-provider.js";
 import { DefaultCommitMessageProvider } from "./commit-message-provider.js";
@@ -42,13 +39,7 @@ Rules:
 - If you cannot determine a meaningful message, respond with exactly: FALLBACK`;
 
 // Providers that can be initialized without an API key (e.g., Ollama runs locally)
-const KEYLESS_PROVIDERS = new Set(["ollama"]);
-
 const deterministicProvider = new DefaultCommitMessageProvider();
-
-function getProviderCandidates(config: ReturnType<typeof getConfig>): string[] {
-  return [resolveCallSiteConfig("commitMessage", config.llm).provider];
-}
 
 function buildDeterministicResult(
   context: CommitContext,
@@ -132,57 +123,13 @@ class ProviderCommitMessageGenerator {
     // missing-key cases from true registry/init failures.
     const resolved = await resolveConfiguredProvider("commitMessage");
     if (!resolved) {
-      const candidates = getProviderCandidates(config);
-      const hasAnyKeylessCandidate = candidates.some((name) =>
-        KEYLESS_PROVIDERS.has(name),
-      );
-      const keyChecks = await Promise.all(
-        candidates.map(async (name) => {
-          const value = await getProviderKeyAsync(name);
-          return typeof value === "string" && value.length > 0;
-        }),
-      );
-      const hasAnyProviderKey = keyChecks.some(Boolean);
-      if (!hasAnyKeylessCandidate && !hasAnyProviderKey) {
-        log.debug(
-          "No API keys available for configured/fallback providers; falling back to deterministic",
-        );
-        return buildDeterministicResult(context, "missing_provider_api_key");
-      }
       log.debug(
-        {
-          provider: resolveCallSiteConfig("commitMessage", config.llm).provider,
-        },
-        "Provider not initialized; falling back to deterministic",
+        "LLM gateway provider unavailable; falling back to deterministic",
       );
       return buildDeterministicResult(context, "provider_not_initialized");
     }
 
     const provider = resolved.provider;
-    const providerName = resolved.configuredProviderName;
-
-    // Step 2b: API key preflight for the configured provider. Skipped for
-    // keyless providers, for routing identities, and for entry-routed
-    // results, since all three authenticate through their connection row
-    // (platform token / ChatGPT OAuth / the row's own credential slot), so
-    // no generic per-vendor key needs to exist, and resolution already
-    // verified the connection credential.
-    if (
-      !KEYLESS_PROVIDERS.has(providerName) &&
-      !ROUTING_IDENTITY_PROVIDERS.has(providerName) &&
-      !resolved.entryRouted
-    ) {
-      const providerApiKey = await getProviderKeyAsync(providerName);
-      if (!providerApiKey) {
-        log.debug(
-          {
-            provider: providerName,
-          },
-          "Provider API key missing; falling back to deterministic",
-        );
-        return buildDeterministicResult(context, "missing_provider_api_key");
-      }
-    }
 
     // Step 3: Circuit breaker
     if (this.isBreakerOpen()) {

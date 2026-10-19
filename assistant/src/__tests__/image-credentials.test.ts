@@ -210,13 +210,19 @@ describe("resolveImageGenRouting", () => {
     ).toEqual({ backendProvider: "openrouter", managed: false });
     expect(
       resolveImageGenRouting(
-        { provider: "openrouter", model: "google/gemini-3.1-flash-image-preview" },
+        {
+          provider: "openrouter",
+          model: "google/gemini-3.1-flash-image-preview",
+        },
         "openai/gpt-image-2",
       ),
     ).toEqual({ backendProvider: "openrouter", managed: false });
     expect(
       resolveImageGenRouting(
-        { provider: "openrouter", model: "google/gemini-3.1-flash-image-preview" },
+        {
+          provider: "openrouter",
+          model: "google/gemini-3.1-flash-image-preview",
+        },
         "gpt-image-2",
       ),
     ).toEqual({ backendProvider: "openrouter", managed: false });

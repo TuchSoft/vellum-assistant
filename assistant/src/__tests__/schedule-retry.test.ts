@@ -547,7 +547,7 @@ describe("execute-mode failure notifications", () => {
     expect(alert.sourceContextId).toBe(schedule.id);
     // Schedules snapshot a concrete inference profile at creation, and that
     // profile is the alert's provider scope.
-    const scope = schedule.inferenceProfile;
+    const scope = schedule.model;
     expect(scope).toBeTruthy();
     expect(alert.dedupeKey).toMatch(
       new RegExp(
@@ -579,7 +579,7 @@ describe("execute-mode failure notifications", () => {
       syntax: "cron",
       maxRetries: 1,
       retryBackoffMs: 1000,
-      inferenceProfile: "cost-optimized",
+      model: "cost-optimized",
     });
     const scheduleB = await createSchedule({
       name: "Profile B victim",
@@ -588,7 +588,7 @@ describe("execute-mode failure notifications", () => {
       syntax: "cron",
       maxRetries: 1,
       retryBackoffMs: 1000,
-      inferenceProfile: "balanced",
+      model: "balanced",
     });
     forceScheduleDue(scheduleA.id);
     forceScheduleDue(scheduleB.id);

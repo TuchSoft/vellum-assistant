@@ -14,7 +14,7 @@ import {
   getCachedShareDiagnostics,
   getCachedShareDiagnosticsVersion,
 } from "../platform/consent-cache.js";
-import type { UsageAttributionProfileSource } from "../usage/types.js";
+import type { UsageModelSource } from "../usage/attribution.js";
 import { getLogger } from "../util/logger.js";
 import { APP_VERSION } from "../version.js";
 import {
@@ -297,8 +297,8 @@ const usageSource = simpleSource(
     raw_usage: e.rawUsage,
     actor: e.actor,
     llm_call_site: e.callSite,
-    inference_profile: e.inferenceProfile,
-    inference_profile_source: e.inferenceProfileSource,
+    inference_profile: e.model,
+    inference_profile_source: e.modelSource,
     cost: e.estimatedCostUsd ?? null,
     recorded_at: e.createdAt,
     // Record-time version when present; otherwise the running
@@ -512,9 +512,8 @@ const toolExecutedSource = simpleSource(
     conversation_id: e.conversationId,
     provider: e.provider,
     model: e.model,
-    inference_profile: e.inferenceProfile,
-    inference_profile_source:
-      e.inferenceProfileSource as UsageAttributionProfileSource | null,
+    inference_profile: e.model,
+    inference_profile_source: e.modelSource as UsageModelSource | null,
     // `tool_invocations` has no record-time version column — stamp
     // the running binary's `APP_VERSION` so the wire value is
     // concrete rather than an explicit null that would override the

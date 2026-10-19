@@ -31,7 +31,7 @@
  * disjoint module copy.
  *
  * - {@link assistantEventHub} — the assistant's pub/sub hub for runtime events
- * - {@link getModelProfiles} — list the workspace inference profiles a plugin
+ * - {@link getModelCatalog} — list the workspace inference profiles a plugin
  *   can route to (e.g. a model router building its category → profile map)
  * - {@link getConfiguredProvider}: resolve a {@link Provider} for a call site
  *   (optionally overriding the profile) and run inference through the
@@ -113,7 +113,7 @@ export type {
   HookFunction,
   InitContext,
   MessageDeletedContext,
-  ModelProfileInfo,
+  ModelInfo,
   PluginLogger,
   PostCompactContext,
   PostModelCallContext,
@@ -156,7 +156,7 @@ export type { PluginEventHub } from "./event-hub-facade.js";
  * the raw hub.
  */
 export { pluginAssistantEventHub as assistantEventHub } from "./event-hub-facade.js";
-export { getModelProfiles } from "./model-profiles.js";
+export { getModelCatalog } from "./model-profiles.js";
 // Purpose-built publish wrapper: emit a runtime event to the assistant's event
 // hub without holding the general hub handle. Route/hook authors surfacing a UI
 // invalidation (e.g. `sync_changed`) import this. Delegates to the same
@@ -164,7 +164,7 @@ export { getModelProfiles } from "./model-profiles.js";
 export type { AssistantEventPublishOptions } from "../runtime/assistant-event-publish-options.js";
 export { publishEvent } from "./publish-event.js";
 // Check whether a model or profile can process image input. Accepts a concrete
-// model id, a profile key, or a `ModelProfileInfo`; a bare string is resolved
+// model id, a profile key, or a `ModelInfo`; a bare string is resolved
 // as a model id first and then as a profile key. Profile resolution merges over
 // the workspace default and infers the provider for model-only profiles, then
 // looks up the model catalog's `supportsVision` flag, with a profile
@@ -215,7 +215,7 @@ export { resolveOauthCallbackUrl } from "../inbound/oauth-callback-url.js";
 // Resolve a provider for a call site (optionally overriding the profile) so a
 // plugin can run inference through the workspace's configured profiles and
 // credentials — managed-proxy or BYOK — without supplying its own API key.
-// Pair with `getModelProfiles` to pick a profile. Returns `null` when no
+// Pair with `getModelCatalog` to pick a profile. Returns `null` when no
 // provider is configured. By default `overrideProfile` layers below any
 // per-call-site config the workspace has pinned (e.g. a cheap `inference`
 // profile), so it loses to that pin; pass `forceOverrideProfile: true` to

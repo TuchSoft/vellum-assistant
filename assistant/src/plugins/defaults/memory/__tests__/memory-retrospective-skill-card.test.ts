@@ -104,7 +104,7 @@ mock.module("../../../../persistence/conversation-crud.js", () => ({
     segmentIds: [],
     deletedSummaryIds: [],
   }),
-  resolveOverrideProfile: (_fields: unknown) => undefined,
+  resolveModel: (_fields: unknown) => undefined,
   reserveMessage: mock(async () => ({ id: "msg-reserve" })),
 }));
 

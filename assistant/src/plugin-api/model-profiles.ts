@@ -1,48 +1,31 @@
-import { getConversationProfilesForProvider } from "../config/default-profile-catalog.js";
+import { listCatalogEntries } from "../config/llm-catalog.js";
+import { effectiveCatalogEntry } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
-import { isDispatchableProfile } from "../config/profile-dispatchability.js";
-import { orderProfileKeys } from "../config/profile-order.js";
-import type { ModelProfileInfo } from "./types.js";
+import type { ModelInfo } from "./types.js";
 
 /**
- * List the workspace inference profiles a plugin can route to, in the order a
- * user-facing model picker presents them (`llm.profileOrder` first, then the
- * rest alphabetically). Managed backup routes and the managed Jev profile
- * are omitted with the rest of the conversation view: a plugin routes
- * conversation turns, and a decision model cannot answer them.
- * Metadata-only entries without a provider, model, or mix are not routing
- * targets, so plugins never see them. Disabled profiles are included and flagged via
- * {@link ModelProfileInfo.isDisabled}; weighted "mix" profiles are included and
- * flagged via {@link ModelProfileInfo.isMix}, since a mix is itself a valid
- * routing target (it resolves to one constituent per conversation).
+ * List the gateway aliases a plugin can route to.
  *
- * Reads the live in-memory config, so the result reflects the current profile
- * set each time it is called.
+ * Reads the live in-memory config and catalog, so the result reflects the
+ * current alias set and default each time it is called. Only chat aliases are
+ * returned: embeddings and speech modes are not conversation targets.
  */
-export function getModelProfiles(): ModelProfileInfo[] {
+export function getModelCatalog(): ModelInfo[] {
   const { llm } = getConfig();
-  const { activeProfile } = llm;
-  const profiles = getConversationProfilesForProvider(
-    llm.profiles,
-    llm.defaultProvider ?? null,
-  );
-  const result: ModelProfileInfo[] = [];
-  for (const key of orderProfileKeys(profiles, llm.profileOrder)) {
-    const entry = profiles[key];
-    if (entry == null) {
-      continue;
-    }
-    if (!isDispatchableProfile(entry)) {
-      continue;
-    }
-    result.push({
-      key,
-      label: entry.label ?? key,
-      description: entry.description ?? null,
-      isActive: key === activeProfile,
-      isDisabled: entry.status === "disabled",
-      isMix: entry.mix != null,
-    });
-  }
-  return result;
+  return listCatalogEntries("chat").map((entry) => {
+    const effective = effectiveCatalogEntry(llm, entry.alias);
+    return {
+      alias: entry.alias,
+      label: entry.label,
+      ...(effective?.maxInputTokens != null
+        ? { maxInputTokens: effective.maxInputTokens }
+        : {}),
+      ...(effective?.maxOutputTokens != null
+        ? { maxOutputTokens: effective.maxOutputTokens }
+        : {}),
+      supportsVision: effective?.supportsVision ?? false,
+      supportsTools: effective?.supportsTools ?? false,
+      isDefault: entry.alias === llm.defaultModel,
+    };
+  });
 }

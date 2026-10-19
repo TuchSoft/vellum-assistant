@@ -114,7 +114,7 @@ function makeCtx(
     messages,
     additionalContext: null,
     model,
-    modelProfileKey: model,
+    modelKey: model,
     maxInputTokens: 10_000,
     callSite,
     supportsDynamicUi: true,

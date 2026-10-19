@@ -21,7 +21,6 @@ import {
 } from "../../persistence/llm-usage-store.js";
 import { isPluginDisabled } from "../../plugins/disabled-state.js";
 import { isDeferSchedule } from "../../schedule/defer-provenance.js";
-import { validateScheduleInferenceProfile } from "../../schedule/inference-profile.js";
 import { pluginScheduleSourceAvailable } from "../../schedule/plugin-schedule-availability.js";
 import { isPluginSchedulesEnabled } from "../../schedule/plugin-schedules-gate.js";
 import {
@@ -33,6 +32,7 @@ import {
   runScript,
   validateScriptTimeoutMs,
 } from "../../schedule/run-script.js";
+import { validateScheduleModel } from "../../schedule/schedule-model.js";
 import {
   cancelSchedule,
   completeScheduleRun,
@@ -203,7 +203,7 @@ const scheduleSchema = z.object({
   maxRetries: z.number(),
   retryBackoffMs: z.number(),
   timeoutMs: z.number().nullable(),
-  inferenceProfile: z.string().nullable(),
+  model: z.string().nullable(),
   groupId: z.string().nullable(),
   createdFromConversationId: z.string().nullable(),
   createdFromConversationExists: z.boolean(),
@@ -372,7 +372,7 @@ async function serializeSchedule(
     maxRetries: j.maxRetries,
     retryBackoffMs: j.retryBackoffMs,
     timeoutMs: j.timeoutMs,
-    inferenceProfile: j.inferenceProfile,
+    model: j.model,
     groupId: j.groupId,
     createdFromConversationId: j.createdFromConversationId,
     createdFromConversationExists: sourceConversation.exists,
@@ -396,10 +396,8 @@ async function serializeSchedule(
 
 async function handleListSchedules(queryParams: Record<string, string>) {
   const includeAll = queryParams.include_all === "true";
-  const inferenceProfile = queryParams.inference_profile?.trim();
-  const jobs = await listSchedules(
-    inferenceProfile ? { inferenceProfile } : undefined,
-  );
+  const model = queryParams.model?.trim();
+  const jobs = await listSchedules(model ? { model } : undefined);
   const filtered = includeAll
     ? jobs
     : jobs.filter((j) => !isDeferSchedule(j.createdBy));
@@ -453,7 +451,7 @@ async function handleGetSchedule(id: string) {
  * state change, so the whole call requires owner authority as soon as a wake
  * row is in the selected set.
  */
-async function handleReassignScheduleInferenceProfile(
+async function handleReassignScheduleModel(
   body: Record<string, unknown>,
   headers?: Record<string, string>,
 ) {
@@ -470,15 +468,15 @@ async function handleReassignScheduleInferenceProfile(
   }
   // `to` must name a configured profile; `from` deliberately is not validated
   // so an already-deleted profile's leftover pins can still be swept up.
-  const profileError = validateScheduleInferenceProfile(to);
+  const profileError = validateScheduleModel(to);
   if (profileError) {
     throw new BadRequestError(profileError);
   }
 
   const selected = hasFrom
-    ? await listSchedules({ inferenceProfile: from })
+    ? await listSchedules({ model: from })
     : (await listSchedules()).filter(canScheduleStillRun);
-  const matches = selected.filter((job) => job.inferenceProfile !== to);
+  const matches = selected.filter((job) => job.model !== to);
   // The guard depends only on the caller, so its answer is the same for every
   // row: settle it once for the whole set. Checking per row would spend a
   // cache-bypassing gateway round trip per matching reminder, and a profile
@@ -490,7 +488,7 @@ async function handleReassignScheduleInferenceProfile(
 
   let reassigned = 0;
   for (const job of matches) {
-    const updated = await updateSchedule(job.id, { inferenceProfile: to });
+    const updated = await updateSchedule(job.id, { model: to });
     if (updated) {
       reassigned += 1;
     }
@@ -520,14 +518,13 @@ async function handleCreateSchedule(body: Record<string, unknown>) {
   const timezone = timezoneRaw === "" ? null : timezoneRaw;
   const enabled = body.enabled !== false;
   const mode = (body.mode as string | undefined) ?? "execute";
-  const inferenceProfile =
-    body.inferenceProfile == null ? null : body.inferenceProfile;
+  const model = body.model == null ? null : body.model;
 
-  if (inferenceProfile !== null) {
-    if (typeof inferenceProfile !== "string") {
-      throw new BadRequestError("inferenceProfile must be a string or null");
+  if (model !== null) {
+    if (typeof model !== "string") {
+      throw new BadRequestError("model must be a string or null");
     }
-    const profileError = validateScheduleInferenceProfile(inferenceProfile);
+    const profileError = validateScheduleModel(model);
     if (profileError) {
       throw new BadRequestError(profileError);
     }
@@ -586,7 +583,7 @@ async function handleCreateSchedule(body: Record<string, unknown>) {
         timezone,
         expression: normalized.expression,
         syntax: normalized.syntax,
-        inferenceProfile,
+        model,
       });
       log.info(
         { id: job.id, name: job.name, workflowName },
@@ -625,7 +622,7 @@ async function handleCreateSchedule(body: Record<string, unknown>) {
         expression: normalized.expression,
         syntax: normalized.syntax,
         timeoutMs,
-        inferenceProfile,
+        model,
       });
       log.info({ id: job.id, name: job.name }, "Script schedule created");
       return { schedule: await serializeSchedule(job, new Map()) };
@@ -647,7 +644,7 @@ async function handleCreateSchedule(body: Record<string, unknown>) {
       timezone,
       expression: normalized.expression,
       syntax: normalized.syntax,
-      inferenceProfile,
+      model,
     });
     log.info({ id: job.id, name: job.name }, "Schedule created");
     return { schedule: await serializeSchedule(job, new Map()) };
@@ -857,18 +854,18 @@ async function handleUpdateSchedule(
 
   // Inference profile: null re-pins to the currently resolved default; a
   // string must name a configured profile.
-  if ("inferenceProfile" in body) {
-    const inferenceProfile = body.inferenceProfile;
-    if (inferenceProfile !== null && typeof inferenceProfile !== "string") {
-      throw new BadRequestError("inferenceProfile must be a string or null");
+  if ("model" in body) {
+    const model = body.model;
+    if (model !== null && typeof model !== "string") {
+      throw new BadRequestError("model must be a string or null");
     }
-    if (typeof inferenceProfile === "string") {
-      const profileError = validateScheduleInferenceProfile(inferenceProfile);
+    if (typeof model === "string") {
+      const profileError = validateScheduleModel(model);
       if (profileError) {
         throw new BadRequestError(profileError);
       }
     }
-    updates.inferenceProfile = inferenceProfile;
+    updates.model = model;
   }
 
   try {
@@ -998,7 +995,7 @@ export const ROUTES: RouteDefinition[] = [
           "When 'true', include deferred schedules that are normally hidden.",
       },
       {
-        name: "inference_profile",
+        name: "model",
         schema: { type: "string" },
         description:
           "Return only schedules pinned to this inference profile (llm.profiles key).",
@@ -1045,7 +1042,7 @@ export const ROUTES: RouteDefinition[] = [
       handleScheduleUsageSummary(queryParams ?? {}),
   },
   {
-    operationId: "reassignScheduleInferenceProfile",
+    operationId: "reassignScheduleModel",
     endpoint: "schedules/reassign-profile",
     method: "POST",
     policy: {
@@ -1071,7 +1068,7 @@ export const ROUTES: RouteDefinition[] = [
       reassigned: z.number().describe("Number of schedules moved"),
     }),
     handler: ({ body, headers }: RouteHandlerArgs) =>
-      handleReassignScheduleInferenceProfile(body ?? {}, headers),
+      handleReassignScheduleModel(body ?? {}, headers),
   },
   // Must stay after literal `schedules/*` siblings (e.g. usage-summary,
   // reassign-profile): the router matches in declaration order and `:id`
@@ -1150,7 +1147,7 @@ export const ROUTES: RouteDefinition[] = [
         .nullable()
         .describe("Script execution timeout override in ms (script mode)")
         .optional(),
-      inferenceProfile: z
+      model: z
         .string()
         .nullable()
         .describe(
@@ -1271,7 +1268,7 @@ export const ROUTES: RouteDefinition[] = [
         .nullable()
         .describe("Script-mode execution timeout in ms; null = use default")
         .optional(),
-      inferenceProfile: z
+      model: z
         .string()
         .nullable()
         .describe(
@@ -1538,9 +1535,7 @@ async function handleRunScheduleNow(
       attachments: [],
       onEvent: () => {},
       isInteractive: false,
-      ...(schedule.inferenceProfile
-        ? { overrideProfile: schedule.inferenceProfile }
-        : {}),
+      ...(schedule.model ? { model: schedule.model } : {}),
     });
     await completeScheduleRun(runId, { status: "ok" });
   } catch (err) {

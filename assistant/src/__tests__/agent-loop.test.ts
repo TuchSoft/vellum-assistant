@@ -154,9 +154,9 @@ describe("AgentLoop", () => {
       textResponse("File contents received."),
     ]);
 
-    let overrideProfile: string | undefined;
+    let model: string | undefined;
     const toolExecutor = async () => {
-      overrideProfile = "quality-optimized";
+      model = "quality-optimized";
       return { content: "ok", isError: false };
     };
     const loop = new AgentLoop({
@@ -173,88 +173,12 @@ describe("AgentLoop", () => {
       trust: { sourceChannel: "vellum", trustClass: "unknown" },
       requestId: "req-1",
       callSite: "mainAgent",
-      resolveOverrideProfile: () => overrideProfile,
+      resolveModel: () => model,
     });
 
     expect(calls).toHaveLength(2);
-    expect(calls[0].options?.config?.overrideProfile).toBeUndefined();
-    expect(calls[1].options?.config?.overrideProfile).toBe("quality-optimized");
-  });
-
-  test("the auto origin follows the routed override and drops once a switch replaces it", async () => {
-    const toolCallId = "tool-1";
-    const { provider, calls } = createMockProvider([
-      toolUseResponse(toolCallId, "read_file", { path: "/tmp/test.txt" }),
-      textResponse("done"),
-    ]);
-    let overrideProfile = "quality-optimized";
-    const loop = new AgentLoop({
-      provider: provider,
-      systemPrompt: "system",
-      conversationId: "test-conversation",
-      tools: dummyTools,
-      toolExecutor: async () => {
-        // A confirmed profile session mid-turn: the user's pick, not Auto's.
-        overrideProfile = "cost-optimized";
-        return { content: "ok", isError: false };
-      },
-    });
-
-    await loop.run({
-      messages: [userMessage],
-      onEvent: collectEvents([]),
-      trust: { sourceChannel: "vellum", trustClass: "unknown" },
-      requestId: "req-1",
-      callSite: "mainAgent",
-      overrideProfile: "quality-optimized",
-      overrideProfileOrigin: "auto",
-      resolveOverrideProfile: () => overrideProfile,
-    });
-
-    expect(calls).toHaveLength(2);
-    expect(calls[0].options?.config?.overrideProfile).toBe("quality-optimized");
-    expect(calls[0].options?.config?.overrideProfileOrigin).toBe("auto");
-    expect(calls[1].options?.config?.overrideProfile).toBe("cost-optimized");
-    expect(calls[1].options?.config?.overrideProfileOrigin).toBeUndefined();
-  });
-
-  test("a pre-model-call hook keeps the auto origin unless it changes the profile", async () => {
-    let hookProfile: string | null | undefined;
-    registerPlugin({
-      manifest: { name: "profile-hook", version: "0.0.1" },
-      hooks: {
-        "pre-model-call": async (ctx) =>
-          hookProfile === undefined
-            ? ctx
-            : { ...ctx, modelProfile: hookProfile },
-      },
-    });
-    const run = async () => {
-      const { provider, calls } = createMockProvider([textResponse("ok")]);
-      const loop = new AgentLoop({
-        provider: provider,
-        systemPrompt: "system",
-        conversationId: "test-conversation",
-        tools: dummyTools,
-      });
-      await loop.run({
-        messages: [userMessage],
-        onEvent: collectEvents([]),
-        trust: { sourceChannel: "vellum", trustClass: "unknown" },
-        requestId: "req-1",
-        callSite: "mainAgent",
-        overrideProfile: "quality-optimized",
-        overrideProfileOrigin: "auto",
-      });
-      return calls[0].options?.config;
-    };
-
-    hookProfile = undefined;
-    expect((await run())?.overrideProfileOrigin).toBe("auto");
-    hookProfile = "cost-optimized";
-    expect((await run())?.overrideProfileOrigin).toBeUndefined();
-    hookProfile = null;
-    expect((await run())?.overrideProfileOrigin).toBeUndefined();
+    expect(calls[0].options?.config?.model).toBeUndefined();
+    expect(calls[1].options?.config?.model).toBe("quality-optimized");
   });
 
   test("re-resolves max input tokens before truncating tool results", async () => {
@@ -284,7 +208,7 @@ describe("AgentLoop", () => {
       trust: { sourceChannel: "vellum", trustClass: "unknown" },
       requestId: "req-1",
       callSite: "mainAgent",
-      modelProfileKey: "balanced",
+      modelKey: "balanced",
       resolveContextWindow: () => ({
         maxInputTokens,
         overflowRecovery: { enabled: false, safetyMarginRatio: 0 },

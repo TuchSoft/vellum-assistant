@@ -469,11 +469,11 @@ export interface ToolContext {
    * can forward it when spawning nested subagents. Without this, sub-subagent
    * spawns silently lose inheritance because their own conversation row never
    * has `inferenceProfile` set — the override only flows through the
-   * in-memory `SubagentConfig.overrideProfile` chain. See
+   * in-memory `SubagentConfig.model` chain. See
    * `executeSubagentSpawn` in tools/subagent/spawn.ts.
    * @legacy
    */
-  overrideProfile?: string;
+  model?: string;
   /**
    * The firing's `cron_runs.id` when a schedule triggered this turn, `null`
    * otherwise. Tools that spawn further LLM work (`subagent_spawn`,

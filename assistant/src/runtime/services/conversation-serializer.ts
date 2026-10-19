@@ -241,9 +241,7 @@ export async function serializeConversationSummary(params: {
     ...(conversation.surfacedAt != null
       ? { surfacedAt: conversation.surfacedAt }
       : {}),
-    ...(conversation.inferenceProfile != null
-      ? { inferenceProfile: conversation.inferenceProfile }
-      : {}),
+    ...(conversation.model != null ? { model: conversation.model } : {}),
     // Include when non-null so an explicit `[]` (user cleared all plugins) is
     // preserved; `null`/default is omitted.
     ...(conversation.enabledPlugins != null

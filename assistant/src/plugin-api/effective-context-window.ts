@@ -11,23 +11,29 @@ export interface EffectiveContextWindowInfo {
 
 export type EffectiveContextWindowOptions = Pick<
   ResolveCallSiteOpts,
-  "overrideProfile" | "forceOverrideProfile" | "selectionSeed"
+  "model" | "conversationModel"
 >;
 
 /**
- * Resolve the provider, model, and effective input limit for one configured
- * call site. The result applies both the workspace override and the selected
- * model's catalog limit, using the same profile-selection options accepted by
- * {@link getConfiguredProvider}.
+ * Resolve the alias and effective input limit for one configured call site.
+ * Throws when the call site is disabled: a disabled site has no context window
+ * to size a request against.
  */
 export function getEffectiveContextWindow(
   callSite: LLMCallSite,
   options: EffectiveContextWindowOptions = {},
 ): EffectiveContextWindowInfo {
-  const { provider, model, maxInputTokens } = resolveEffectiveContextWindow({
+  const resolved = resolveEffectiveContextWindow({
     llm: getConfig().llm,
     callSite,
     ...options,
   });
-  return { provider, model, maxInputTokens };
+  if (resolved == null) {
+    throw new Error(`Call site "${callSite}" is disabled.`);
+  }
+  return {
+    provider: resolved.provider,
+    model: resolved.model,
+    maxInputTokens: resolved.maxInputTokens,
+  };
 }

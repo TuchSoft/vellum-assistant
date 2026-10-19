@@ -114,7 +114,9 @@ async function handleStartCall({ body }: RouteHandlerArgs) {
     conversationId: body.conversationId as string,
     assistantId: DAEMON_INTERNAL_ASSISTANT_ID,
     callerIdentityMode: body.callerIdentityMode as
-      "assistant_number" | "user_number" | undefined,
+      | "assistant_number"
+      | "user_number"
+      | undefined,
   });
 
   if (!result.ok) {

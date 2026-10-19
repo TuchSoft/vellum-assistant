@@ -25,7 +25,7 @@ export interface ScheduleMessageOptions {
    * to every LLM call the run issues — a schedule's pinned profile. Omitted
    * = the call site's default resolution (main-agent model selection).
    */
-  overrideProfile?: string;
+  model?: string;
   /**
    * Firing's `cron_runs.id`, stamped onto the turn's usage rows so a scheduled
    * execute turn attributes its LLM spend to that firing. Per-turn: a reused

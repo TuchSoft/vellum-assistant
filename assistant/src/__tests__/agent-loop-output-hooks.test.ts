@@ -383,7 +383,7 @@ describe("agent loop output hooks", () => {
         if (ctx.callSite !== "mainAgent") {
           return;
         }
-        ctx.modelProfile = "fast-profile";
+        ctx.model = "fast-profile";
       },
     });
     const { provider, calls } = createMockProvider([textResponse("hi")]);
@@ -403,14 +403,14 @@ describe("agent loop output hooks", () => {
     });
 
     // THEN the provider call carries the hook's profile as the override
-    expect(calls[0].options?.config?.overrideProfile).toBe("fast-profile");
+    expect(calls[0].options?.config?.model).toBe("fast-profile");
   });
 
   test("prepared model call carries the post-hook route and wire tool surface", async () => {
     registerOutputHookPlugin({
       preModelCall: (ctx) => {
         ctx.systemPrompt = `${ctx.systemPrompt ?? ""} [EDITED]`;
-        ctx.modelProfile = "fast-profile";
+        ctx.model = "fast-profile";
       },
     });
     const tool: ToolDefinition = {
@@ -434,8 +434,7 @@ describe("agent loop output hooks", () => {
       messages: [userMessage],
       onEvent: collect([]),
       callSite: "mainAgent",
-      overrideProfile: "conversation-profile",
-      forceOverrideProfile: true,
+      model: "conversation-profile",
       onModelCallPrepared: (value) => {
         prepared = value;
       },
@@ -444,8 +443,7 @@ describe("agent loop output hooks", () => {
 
     expect(prepared).toMatchObject({
       callSite: "mainAgent",
-      overrideProfile: "fast-profile",
-      forceOverrideProfile: true,
+      model: "fast-profile",
       systemPrompt: "base prompt [EDITED]",
     });
     expect(prepared?.tools.map((item) => item.name)).toEqual([
@@ -552,13 +550,13 @@ describe("agent loop output hooks", () => {
     });
   });
 
-  test("pre-model-call seeds modelProfile from the resolved override and clearing it drops the override", async () => {
+  test("pre-model-call seeds model from the resolved override and clearing it drops the override", async () => {
     // GIVEN a hook that observes the seeded override and then clears it
     let seeded: string | null | undefined;
     registerOutputHookPlugin({
       preModelCall: (ctx) => {
-        seeded = ctx.modelProfile;
-        ctx.modelProfile = null;
+        seeded = ctx.model;
+        ctx.model = null;
       },
     });
     const { provider, calls } = createMockProvider([textResponse("hi")]);
@@ -574,14 +572,14 @@ describe("agent loop output hooks", () => {
       messages: [userMessage],
       onEvent: collect([]),
       callSite: "mainAgent",
-      overrideProfile: "seed-profile",
+      model: "seed-profile",
       trust: { sourceChannel: "vellum", trustClass: "unknown" },
     });
 
     // THEN the hook saw the loop's resolved override
     expect(seeded).toBe("seed-profile");
     // AND clearing it sends no override on the provider call
-    expect(calls[0].options?.config?.overrideProfile).toBeUndefined();
+    expect(calls[0].options?.config?.model).toBeUndefined();
   });
 
   // Context-window sizing and overflow recovery read the profile resolved

@@ -265,7 +265,7 @@ export interface ProviderResponse {
    * successful fallback serve is attributed to the backup profile rather
    * than the failed primary's. Absent on the normal (non-rerouted) path.
    */
-  actualInferenceProfile?: string;
+  actualModel?: string;
   /**
    * Base URL the provider's HTTP client actually resolved to for this request,
    * read from the live SDK client instance rather than re-derived from config.
@@ -330,39 +330,13 @@ export type ProviderEvent =
 export interface SendMessageConfig {
   model?: string;
   /**
-   * LLM call-site identifier. `RetryProvider` resolves
-   * provider/model/maxTokens/effort/speed/verbosity/temperature/thinking/
-   * contextWindow via `resolveCallSiteConfig(callSite, config.llm)`, falling
-   * back to the shipped call-site defaults when no callSite-specific entry
-   * is present.
+   * LLM call-site identifier. `RetryProvider` resolves the alias and
+   * `disableCache` via `resolveCallSite(callSite, config.llm)`, falling back
+   * to the shipped call-site defaults when no call-site entry is present.
    */
   callSite?: LLMCallSite;
-  /**
-   * Optional ad-hoc profile override applied per request. When set, the
-   * resolver layers `llm.profiles[overrideProfile]` between the workspace's
-   * `activeProfile` and the call-site's named profile (see
-   * `resolveCallSiteConfig`). Used by per-conversation pinned profiles to
-   * override the workspace default for a single send. Missing profile names
-   * silently fall through.
-   */
-  overrideProfile?: string;
-  /**
-   * Who chose `overrideProfile`: `"auto"` when the Auto profile's router
-   * picked it for the turn. Usage attribution reports it as the profile
-   * source so a routed turn is not counted as a user pin. A routing-time
-   * concern only; stripped before any provider wire request.
-   */
-  overrideProfileOrigin?: "auto";
-  /**
-   * When true, the resolver floats `overrideProfile` above the call-site
-   * layers (named site profile + call-site override) for non-main-agent call
-   * sites — see `ResolveCallSiteOpts.forceOverrideProfile`. Used by callers
-   * that must run a background call site under a specific conversation's
-   * inference profile (e.g. fork-based memory retrospectives). A
-   * resolution/routing-time concern only; stripped before any provider wire
-   * request.
-   */
-  forceOverrideProfile?: boolean;
+  /** Interactive conversation selection, used when no pin is set. */
+  conversationModel?: string;
   /**
    * True when the caller appended {@link NATIVE_WEB_SEARCH_TOOL_NAME} purely
    * to activate the route's provider-native web search, rather than passing an
@@ -375,15 +349,6 @@ export interface SendMessageConfig {
    * request.
    */
   nativeWebSearchSentinel?: boolean;
-  /**
-   * Per-conversation seed for deterministic `mix`-profile expansion. The agent
-   * loop sets this to the conversation id so every resolver call this send
-   * triggers — provider/transport selection, wire-param normalization, usage
-   * attribution — picks the same mix constituent, stable across the
-   * conversation's turns and retries. A resolution/routing-time concern only;
-   * stripped before any provider wire request.
-   */
-  selectionSeed?: string;
   /**
    * Id of the user conversation that causally triggered this call, stamped by
    * call sites so `UsageTrackingProvider` can attribute the usage-ledger event

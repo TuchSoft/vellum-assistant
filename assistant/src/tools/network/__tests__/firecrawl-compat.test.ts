@@ -68,9 +68,9 @@ describe("extractFirecrawlCompatSearchResults", () => {
 
 describe("searchResultSnippet", () => {
   test("prefers description then snippet", () => {
-    expect(
-      searchResultSnippet({ description: "desc", snippet: "snip" }),
-    ).toBe("desc");
+    expect(searchResultSnippet({ description: "desc", snippet: "snip" })).toBe(
+      "desc",
+    );
     expect(searchResultSnippet({ snippet: "snip" })).toBe("snip");
     expect(searchResultSnippet({})).toBeUndefined();
   });

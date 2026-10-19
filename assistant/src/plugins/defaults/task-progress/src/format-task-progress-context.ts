@@ -7,8 +7,7 @@ export const ACTIVE_TASK_PROGRESS_CLOSE = "</active_task_progress>";
 export const ACTIVE_TASK_PROGRESS_BLOCK =
   /<active_task_progress\b[\s\S]*?<\/active_task_progress>/gi;
 
-const STEP_INSTRUCTION =
-  "Update this card with ui_update as the steps change.";
+const STEP_INSTRUCTION = "Update this card with ui_update as the steps change.";
 
 function normalizeField(value: string): string {
   return value

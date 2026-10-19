@@ -49,7 +49,7 @@ function makeCtx(content: string): PostToolUseContext {
     messages: [],
     additionalContext: null,
     model: "claude-test-model",
-    modelProfileKey: "claude-test-model",
+    modelKey: "claude-test-model",
     maxInputTokens: MAX_INPUT_TOKENS,
     callSite: "mainAgent",
     supportsDynamicUi: true,

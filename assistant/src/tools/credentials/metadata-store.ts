@@ -225,7 +225,11 @@ export function upsertCredentialMetadata(
   },
 ): CredentialMetadata {
   touchCesCache();
-  const record = getStore().upsert(service, field, policy) as CredentialMetadata;
+  const record = getStore().upsert(
+    service,
+    field,
+    policy,
+  ) as CredentialMetadata;
   void persistCredentialMetadata(record);
   return record;
 }

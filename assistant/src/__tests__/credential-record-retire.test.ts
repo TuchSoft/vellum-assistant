@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
@@ -37,9 +43,7 @@ function leftoverContents(): string {
   return readFileSync(leftoverPath(), "utf-8");
 }
 
-function makeBackend(
-  name?: string,
-): CredentialRecordBackend & {
+function makeBackend(name?: string): CredentialRecordBackend & {
   store: Map<string, CredentialRecord>;
   bulkSetCalls: number;
   listCalls: number;
@@ -185,9 +189,7 @@ describe("CES credential record cache", () => {
 
     expect(existsSync(leftoverPath())).toBe(true);
     expect(backend.bulkSetCalls).toBe(0);
-    expect(
-      getCredentialMetadata("slack_channel", "bot_token"),
-    ).toBeUndefined();
+    expect(getCredentialMetadata("slack_channel", "bot_token")).toBeUndefined();
   });
 
   test("lazy load ignores leftover metadata.json when CES has no leftover accounts", async () => {
@@ -419,8 +421,8 @@ describe("CES credential record cache", () => {
       backend.store.get(credentialKey("slack_channel", "bot_token"))
         ?.credentialId,
     ).toBe(created.credentialId);
-    expect(getCredentialMetadata("slack_channel", "bot_token")?.allowedTools).toEqual(
-      ["bash"],
-    );
+    expect(
+      getCredentialMetadata("slack_channel", "bot_token")?.allowedTools,
+    ).toEqual(["bash"]);
   });
 });

@@ -27,7 +27,7 @@ export const cronJobs = pgTable("cron_jobs", {
     .notNull()
     .default(60000),
   timeoutMs: bigint("timeout_ms", { mode: "number" }), // script-mode execution timeout override (ms); null = use default
-  inferenceProfile: text("inference_profile"), // llm.profiles key for LLM-executed runs; null = default main-agent selection
+  model: text("model"), // gateway alias for LLM-executed runs; null = default model
   groupId: text("group_id"), // conversation_groups id for run conversations; null = system:scheduled
   createdFromConversationId: text("created_from_conversation_id"),
   createdBy: text("created_by").notNull(), // 'agent' | 'user'
@@ -250,8 +250,7 @@ export const llmUsageEvents = pgTable(
     requestId: text("request_id"),
     actor: text("actor").notNull(),
     callSite: text("call_site"),
-    inferenceProfile: text("inference_profile"),
-    inferenceProfileSource: text("inference_profile_source"),
+    modelSource: text("model_source"),
     provider: text("provider").notNull(),
     model: text("model").notNull(),
     inputTokens: bigint("input_tokens", { mode: "number" }).notNull(),

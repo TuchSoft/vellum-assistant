@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, jest, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  mock,
+  test,
+} from "bun:test";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -43,9 +51,8 @@ mock.module("../../tools/registry.js", () => ({
   replaceMcpToolsForServer: () => [],
 }));
 
-const { startMcpHealthScheduler, stopMcpHealthScheduler } = await import(
-  "../mcp-health-scheduler.js"
-);
+const { startMcpHealthScheduler, stopMcpHealthScheduler } =
+  await import("../mcp-health-scheduler.js");
 
 const ORIGINAL_ENV = process.env.VELLUM_MCP_HEALTH_INTERVAL_MS;
 

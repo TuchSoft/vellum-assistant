@@ -1,9 +1,6 @@
 import type { Command } from "commander";
 
-import {
-  cliIpcCall,
-  exitCodeFromIpcResult,
-} from "../../ipc/cli-client.js";
+import { cliIpcCall, exitCodeFromIpcResult } from "../../ipc/cli-client.js";
 import { applyCommandHelp, subcommand } from "../lib/cli-command-help.js";
 import { registerCommand } from "../lib/register-command.js";
 import { log } from "../logger.js";
@@ -86,9 +83,8 @@ export function registerAppsCommand(program: Command): void {
         async (appName: string, opts: { json?: boolean }, cmd: Command) => {
           const { resolveAppQuery, appNotFoundMessage, appAmbiguousMessage } =
             await import("../../apps/resolve-app.js");
-          const { inspectAppSource } = await import(
-            "../../apps/source-fingerprint.js"
-          );
+          const { inspectAppSource } =
+            await import("../../apps/source-fingerprint.js");
 
           const resolved = resolveAppQuery(appName);
           if (!resolved.ok) {
@@ -123,9 +119,7 @@ export function registerAppsCommand(program: Command): void {
           }
 
           const originLabel =
-            origin.kind === "plugin"
-              ? `plugin ${origin.plugin}`
-              : "workspace";
+            origin.kind === "plugin" ? `plugin ${origin.plugin}` : "workspace";
           log.info(`App: ${app.name} (${originLabel})`);
           log.info(`Id: ${app.id}`);
           log.info(`Source: ${app.sourcePath}`);

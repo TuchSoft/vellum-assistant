@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -16,7 +22,10 @@ function writeSkill(id: string, body = "body"): string {
   const dir = join(ROOT, id);
   mkdirSync(dir, { recursive: true });
   const skillMd = join(dir, "SKILL.md");
-  writeFileSync(skillMd, `---\nname: ${id}\ndescription: ${id}\n---\n${body}\n`);
+  writeFileSync(
+    skillMd,
+    `---\nname: ${id}\ndescription: ${id}\n---\n${body}\n`,
+  );
   return skillMd;
 }
 
@@ -32,7 +41,10 @@ describe("readWorkspaceSkillMdSignature", () => {
     const first = readWorkspaceSkillMdSignature(ROOT);
     expect(first).toMatch(/^alpha:\d+$/);
 
-    writeFileSync(join(ROOT, "alpha", "TOOLS.json"), '{"version":1,"tools":[]}');
+    writeFileSync(
+      join(ROOT, "alpha", "TOOLS.json"),
+      '{"version":1,"tools":[]}',
+    );
     expect(readWorkspaceSkillMdSignature(ROOT)).toBe(first);
 
     const later = new Date(Date.now() + 5_000);

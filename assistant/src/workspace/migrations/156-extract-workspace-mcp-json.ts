@@ -111,14 +111,19 @@ function extractSpecServers(mcp: unknown): Record<string, unknown> {
   return servers;
 }
 
-function toSpecServer(entry: Record<string, unknown>): Record<string, unknown> | null {
+function toSpecServer(
+  entry: Record<string, unknown>,
+): Record<string, unknown> | null {
   const transport = readObject(entry.transport);
   if (transport === null) {
     return null;
   }
   const type = transport.type;
   if (type === "stdio") {
-    if (typeof transport.command !== "string" || transport.command.length === 0) {
+    if (
+      typeof transport.command !== "string" ||
+      transport.command.length === 0
+    ) {
       return null;
     }
     const spec: Record<string, unknown> = {
@@ -170,8 +175,7 @@ function readExistingMcpServers(path: string): {
   const servers = readObject(document.mcpServers);
   return {
     present: true,
-    schema:
-      typeof document.$schema === "string" ? document.$schema : undefined,
+    schema: typeof document.$schema === "string" ? document.$schema : undefined,
     servers: servers ?? {},
   };
 }

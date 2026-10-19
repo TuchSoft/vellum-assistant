@@ -1,5 +1,5 @@
 import { refreshBackgroundWakeIntent } from "../background-wake/publisher.js";
-import { resolveSingleRouteProfileKey } from "../config/llm-resolver.js";
+import { resolveEffectiveModel } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import { findConversationOrSubagent } from "../daemon/conversation-registry.js";
 import {
@@ -15,7 +15,6 @@ import { emitScheduleResultNotification } from "../notifications/schedule-result
 import { getConversation } from "../persistence/conversation-crud.js";
 import { isLifecycleQuiesced } from "../persistence/lifecycle-quiesce.js";
 import { invalidateAssistantInferredItemsForConversation } from "../plugins/defaults/memory/task-memory-cleanup.js";
-import { dispatchProviderResolvable } from "../providers/provider-resolvability.js";
 import {
   hasPendingAgentWake,
   wakeAgentForOpportunity,
@@ -228,9 +227,7 @@ async function dispatchScheduleMessage(
               }
             : {}),
           ...(options.taskRunId ? { taskRunId: options.taskRunId } : {}),
-          ...(options.overrideProfile
-            ? { overrideProfile: options.overrideProfile }
-            : {}),
+          ...(options.model ? { model: options.model } : {}),
           ...(options.cronRunId ? { cronRunId: options.cronRunId } : {}),
         }
       : undefined,
@@ -427,14 +424,9 @@ async function handleExecutionFailure(params: {
  */
 function resolveScheduleProviderScope(job: ScheduleJob): string | undefined {
   try {
-    return resolveSingleRouteProfileKey("mainAgent", getConfig().llm, {
-      ...(job.inferenceProfile
-        ? { overrideProfile: job.inferenceProfile }
-        : {}),
-      // Dispatch's own resolvability predicate, so a stale pin dispatch
-      // rejected (force-deleted connection) is not accepted as the scope.
-      isResolvableProvider: dispatchProviderResolvable,
-    });
+    return resolveEffectiveModel("mainAgent", getConfig().llm, {
+      ...(job.model ? { model: job.model } : {}),
+    })?.model;
   } catch {
     return undefined;
   }
@@ -1161,9 +1153,7 @@ export async function runDueSchedulesOnce(
           {
             trustClass: "guardian",
             cronRunId: runId,
-            ...(job.inferenceProfile
-              ? { overrideProfile: job.inferenceProfile }
-              : {}),
+            ...(job.model ? { model: job.model } : {}),
           },
         );
         // A failed LLM call (e.g. an invalid provider) ends the turn without
@@ -1197,9 +1187,7 @@ export async function runDueSchedulesOnce(
         trustContext: { sourceChannel: "vellum", trustClass: "guardian" },
         callSite: "mainAgent",
         cronRunId: runId,
-        ...(job.inferenceProfile
-          ? { overrideProfile: job.inferenceProfile }
-          : {}),
+        ...(job.model ? { model: job.model } : {}),
         // Hard timeout for talk-mode scheduled turns: bounds a wedged turn so
         // it cannot block the next scheduler tick. Configurable via
         // timeouts.scheduleTurnTimeoutSec (default 1800s).

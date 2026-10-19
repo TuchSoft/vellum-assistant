@@ -121,6 +121,11 @@ export function peekConnection(name: string): ProviderConnection | undefined {
   return snapshot?.get(name);
 }
 
+/** Every connection in the synchronous snapshot (empty while cold). */
+export function listSnapshotConnections(): ProviderConnection[] {
+  return [...(snapshot?.values() ?? [])];
+}
+
 /** Reload the synchronous snapshot from the main database. */
 export async function refreshConnectionSnapshot(): Promise<void> {
   replaceSnapshot(await listConnections(requireMainDb()));

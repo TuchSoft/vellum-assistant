@@ -124,7 +124,8 @@ export function isWatchedMount(
     return true;
   }
   return watchedMountPoints.some(
-    (point) => entry.mountPoint === point || entry.mountPoint.startsWith(`${point}/`),
+    (point) =>
+      entry.mountPoint === point || entry.mountPoint.startsWith(`${point}/`),
   );
 }
 

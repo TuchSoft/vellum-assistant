@@ -9,14 +9,8 @@ import {
   setCesReconnect,
 } from "../security/secure-keys.js";
 import { getLogger } from "../util/logger.js";
-import {
-  openCesRpcSession,
-  reconnectCesRpcSession,
-} from "./ces-connect.js";
-import {
-  type CesClient,
-  type CesClientHandshakeOptions,
-} from "./client.js";
+import { openCesRpcSession, reconnectCesRpcSession } from "./ces-connect.js";
+import { type CesClient, type CesClientHandshakeOptions } from "./client.js";
 import {
   type CesProcessManager,
   createCesProcessManager,

@@ -33,7 +33,9 @@ export const LoopGuardConfigSchema = z
         "Smallest repeating block considered. One- and two-unit runs are formatting so often that only longer blocks are treated as candidate loops.",
       ),
     whitespaceRepeatMultiplier: z
-      .number({ error: "loopGuard.whitespaceRepeatMultiplier must be a number" })
+      .number({
+        error: "loopGuard.whitespaceRepeatMultiplier must be a number",
+      })
       .int("loopGuard.whitespaceRepeatMultiplier must be an integer")
       .min(2, "loopGuard.whitespaceRepeatMultiplier must be >= 2")
       .default(10)

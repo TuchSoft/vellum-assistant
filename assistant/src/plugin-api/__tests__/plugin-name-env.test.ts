@@ -93,7 +93,10 @@ describe("derivePluginNameFromProcess", () => {
   test("scans argv for a plugin-resident skill script", () => {
     expect(
       derivePluginNameFromProcess(
-        ["bun", join(pluginsDir, "sms/skills/sms-setup/scripts/twilio-numbers.ts")],
+        [
+          "bun",
+          join(pluginsDir, "sms/skills/sms-setup/scripts/twilio-numbers.ts"),
+        ],
         "/tmp",
         pluginsDir,
       ),
@@ -113,7 +116,11 @@ describe("derivePluginNameFromProcess", () => {
   test("skips flags", () => {
     expect(
       derivePluginNameFromProcess(
-        ["bun", "--hot", join(pluginsDir, "sms/skills/sms-setup/scripts/twilio-numbers.ts")],
+        [
+          "bun",
+          "--hot",
+          join(pluginsDir, "sms/skills/sms-setup/scripts/twilio-numbers.ts"),
+        ],
         "/tmp",
         pluginsDir,
       ),
@@ -150,7 +157,10 @@ describe("resolveCallingPluginName", () => {
     expect(
       resolveCallingPluginName(
         {},
-        ["bun", join(pluginsDir, "sms/skills/sms-setup/scripts/twilio-numbers.ts")],
+        [
+          "bun",
+          join(pluginsDir, "sms/skills/sms-setup/scripts/twilio-numbers.ts"),
+        ],
         "/tmp",
         pluginsDir,
       ),
@@ -161,16 +171,9 @@ describe("resolveCallingPluginName", () => {
 describe("resolveCallingPluginName real child", () => {
   test("recovers the plugin name from a scripts path without env", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "plugin-name-child-"));
-    const scriptDir = join(
-      workspace,
-      "plugins/sms/skills/sms-setup/scripts",
-    );
+    const scriptDir = join(workspace, "plugins/sms/skills/sms-setup/scripts");
     mkdirSync(scriptDir, { recursive: true });
-    const helper = join(
-      import.meta.dir,
-      "..",
-      "plugin-name-env.ts",
-    );
+    const helper = join(import.meta.dir, "..", "plugin-name-env.ts");
     const scriptPath = join(scriptDir, "echo-plugin-name.ts");
     writeFileSync(
       scriptPath,
@@ -180,19 +183,16 @@ console.log(JSON.stringify({ name: resolveCallingPluginName() ?? null }));
     );
 
     try {
-      const child = Bun.spawn(
-        ["bun", scriptPath],
-        {
-          cwd: scriptDir,
-          env: {
-            PATH: process.env.PATH,
-            HOME: process.env.HOME,
-            VELLUM_WORKSPACE_DIR: workspace,
-          },
-          stdout: "pipe",
-          stderr: "pipe",
+      const child = Bun.spawn(["bun", scriptPath], {
+        cwd: scriptDir,
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          VELLUM_WORKSPACE_DIR: workspace,
         },
-      );
+        stdout: "pipe",
+        stderr: "pipe",
+      });
       const [stdout, stderr, exitCode] = await Promise.all([
         new Response(child.stdout).text(),
         new Response(child.stderr).text(),
@@ -220,20 +220,17 @@ console.log(JSON.stringify({ name: resolveCallingPluginName() ?? null }));
     );
 
     try {
-      const child = Bun.spawn(
-        ["bun", scriptPath],
-        {
-          cwd: scriptDir,
-          env: {
-            PATH: process.env.PATH,
-            HOME: process.env.HOME,
-            VELLUM_WORKSPACE_DIR: workspace,
-            VELLUM_PLUGIN_NAME: "sms",
-          },
-          stdout: "pipe",
-          stderr: "pipe",
+      const child = Bun.spawn(["bun", scriptPath], {
+        cwd: scriptDir,
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          VELLUM_WORKSPACE_DIR: workspace,
+          VELLUM_PLUGIN_NAME: "sms",
         },
-      );
+        stdout: "pipe",
+        stderr: "pipe",
+      });
       const [stdout, stderr, exitCode] = await Promise.all([
         new Response(child.stdout).text(),
         new Response(child.stderr).text(),

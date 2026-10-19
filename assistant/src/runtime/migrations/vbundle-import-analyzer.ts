@@ -112,7 +112,9 @@ export class DefaultPathResolver implements PathResolver {
     private workspaceDir?: string,
     private hooksDir?: string,
     private guardianPersonaPathResolver: () =>
-      string | null | Promise<string | null> = resolveGuardianPersonaPath,
+      | string
+      | null
+      | Promise<string | null> = resolveGuardianPersonaPath,
   ) {}
 
   async resolve(archivePath: string): Promise<string | null> {

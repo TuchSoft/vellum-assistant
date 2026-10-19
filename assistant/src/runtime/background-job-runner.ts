@@ -18,7 +18,7 @@
  * `suppressFailureNotifications`.
  */
 
-import { resolveSingleRouteProfileKey } from "../config/llm-resolver.js";
+import { resolveEffectiveModel } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
 import type { LLMCallSite } from "../config/schemas/llm.js";
 import { processMessage } from "../daemon/process-message.js";
@@ -28,7 +28,6 @@ import { emitBackgroundFailureSignal } from "../notifications/background-failure
 import { bootstrapConversation } from "../persistence/conversation-bootstrap.js";
 import { addMessage } from "../persistence/conversation-crud.js";
 import type { TitleOrigin } from "../persistence/conversation-title-service.js";
-import { dispatchProviderResolvable } from "../providers/provider-resolvability.js";
 import type { TurnFailure } from "../telemetry/turn-outcome.js";
 import { getLogger } from "../util/logger.js";
 import { hasReceivedUserMessage } from "./pre-first-message-gate.js";
@@ -93,7 +92,7 @@ export interface RunBackgroundJobOptions {
    * to every LLM call the job's turn issues. Used by schedules with a pinned
    * profile; omitted = the call site's default resolution.
    */
-  overrideProfile?: string;
+  model?: string;
   /**
    * Firing's `cron_runs.id`, threaded into the turn's usage rows so a scheduled
    * execute job attributes its LLM spend to that firing. Omitted for
@@ -355,9 +354,7 @@ export async function runBackgroundJob(
     const work = processMessage(conversation.id, kickoffPrompt, {
       trustContext: opts.trustContext,
       callSite: opts.callSite,
-      ...(opts.overrideProfile
-        ? { overrideProfile: opts.overrideProfile }
-        : {}),
+      ...(opts.model ? { model: opts.model } : {}),
       ...(opts.requestOrigin ? { requestOrigin: opts.requestOrigin } : {}),
       ...(opts.cronRunId ? { cronRunId: opts.cronRunId } : {}),
       ...(opts.allowedTools ? { allowedTools: opts.allowedTools } : {}),
@@ -428,16 +425,13 @@ export async function runBackgroundJob(
       // dispatch's own attribution and takes precedence over all of this.
       let fallbackProviderScope: string | undefined;
       try {
-        fallbackProviderScope = resolveSingleRouteProfileKey(
+        fallbackProviderScope = resolveEffectiveModel(
           opts.callSite,
           getConfig().llm,
           {
-            ...(opts.overrideProfile
-              ? { overrideProfile: opts.overrideProfile }
-              : {}),
-            isResolvableProvider: dispatchProviderResolvable,
+            ...(opts.model ? { model: opts.model } : {}),
           },
-        );
+        )?.model;
       } catch {
         fallbackProviderScope = undefined;
       }

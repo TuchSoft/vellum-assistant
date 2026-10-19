@@ -150,12 +150,7 @@ function printBreakdownTable(
     return;
   }
 
-  const groupLabel =
-    groupBy === "call_site"
-      ? "TASK"
-      : groupBy === "inference_profile"
-        ? "PROFILE"
-        : groupBy.toUpperCase();
+  const groupLabel = groupBy === "call_site" ? "TASK" : groupBy.toUpperCase();
   const groupW = Math.max(
     groupLabel.length,
     ...entries.map((e) => e.group.length),
@@ -197,7 +192,6 @@ function printBreakdownTable(
 
 const VALID_GROUP_BY_DIMENSIONS = [
   "call_site",
-  "inference_profile",
   "provider",
   "model",
   "conversation",

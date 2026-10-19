@@ -1,10 +1,10 @@
 import type { Database } from "bun:sqlite";
 
 import {
-  resolveDefaultScheduleInferenceProfile,
-  resolveWakeScheduleInferenceProfile,
-} from "../../schedule/inference-profile.js";
-import type { DurableProfileFields } from "../conversation-crud.js";
+  resolveDefaultScheduleModel,
+  resolveWakeScheduleModel,
+} from "../../schedule/schedule-model.js";
+import type { DurableModelFields } from "../conversation-crud.js";
 import { type DrizzleDb, getSqliteFrom } from "../db-connection.js";
 
 /** Columns a wake row's seed needs on `cron_jobs` and `conversations`. */
@@ -42,7 +42,7 @@ function hasColumns(
  * firing resolves the target conversation's own pin live. Stamping the global
  * default over it would silently re-point a pending reminder that was created
  * inside a pinned conversation, so wake rows seed through the same
- * {@link resolveWakeScheduleInferenceProfile} the create path uses: the
+ * {@link resolveWakeScheduleModel} the create path uses: the
  * target's durable pin, else the default. Every other row takes the default.
  *
  * Rows keep a NULL pin when no named profile resolves at all (the winner is
@@ -74,7 +74,7 @@ export function migrateBackfillScheduleInferenceProfile(
     backfillWakeRows(raw);
   }
 
-  const profile = resolveDefaultScheduleInferenceProfile();
+  const profile = resolveDefaultScheduleModel();
   if (profile === null) {
     return;
   }
@@ -114,11 +114,18 @@ function backfillWakeRows(raw: Database): void {
   for (const row of rows) {
     // A target deleted since the wake was created reads as null and falls
     // through to the default, the same value the firing would resolve.
-    const target =
-      (selectTarget.get(
-        row.wakeConversationId,
-      ) as DurableProfileFields | null) ?? null;
-    const profile = resolveWakeScheduleInferenceProfile(target);
+    const rawTarget = selectTarget.get(row.wakeConversationId) as {
+      conversationType: string | null;
+      inferenceProfile: string | null;
+    } | null;
+    const target: DurableModelFields | null =
+      rawTarget == null
+        ? null
+        : {
+            conversationType: rawTarget.conversationType,
+            model: rawTarget.inferenceProfile,
+          };
+    const profile = resolveWakeScheduleModel(target);
     if (profile === null) {
       continue;
     }

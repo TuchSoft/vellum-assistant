@@ -14,10 +14,7 @@
  */
 
 import { getLogger } from "../util/logger.js";
-import {
-  getSecureKeyResultAsync,
-  listSecureKeysAsync,
-} from "./secure-keys.js";
+import { getSecureKeyResultAsync, listSecureKeysAsync } from "./secure-keys.js";
 
 const log = getLogger("vault-secret-registry");
 

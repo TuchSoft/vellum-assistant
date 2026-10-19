@@ -19,8 +19,7 @@ export interface ToolInvocationRecord {
   resultBytes?: number | null;
   provider?: string | null;
   model?: string | null;
-  inferenceProfile?: string | null;
-  inferenceProfileSource?: string | null;
+  modelSource?: string | null;
 }
 
 export async function recordToolInvocation(
@@ -42,8 +41,7 @@ export async function recordToolInvocation(
     resultBytes: record.resultBytes,
     provider: record.provider,
     model: record.model,
-    inferenceProfile: record.inferenceProfile,
-    inferenceProfileSource: record.inferenceProfileSource,
+    modelSource: record.modelSource,
   });
 }
 

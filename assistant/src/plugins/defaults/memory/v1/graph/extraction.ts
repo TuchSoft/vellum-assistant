@@ -575,7 +575,8 @@ export function parseEpochMs(value: unknown): number | null {
  * (by its index into `diff.createNodes`, resolved to a real ID after apply).
  */
 export type DeferredEdgeEndpoint =
-  { kind: "existing"; nodeId: string } | { kind: "new"; newNodeIndex: number };
+  | { kind: "existing"; nodeId: string }
+  | { kind: "new"; newNodeIndex: number };
 
 export interface DeferredEdge {
   source: DeferredEdgeEndpoint;

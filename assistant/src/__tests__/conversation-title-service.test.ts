@@ -552,7 +552,10 @@ describe("conversation-title-service", () => {
     });
 
     expect(provider.sendMessage).not.toHaveBeenCalled();
-    expect(result).toEqual({ title: MESSAGE_KEYS.CONVERSATION_TITLE_UNTITLED, updated: true });
+    expect(result).toEqual({
+      title: MESSAGE_KEYS.CONVERSATION_TITLE_UNTITLED,
+      updated: true,
+    });
     expect(mockUpdateConversationTitle).toHaveBeenCalledWith(
       "conv-1",
       MESSAGE_KEYS.CONVERSATION_TITLE_UNTITLED,
@@ -754,10 +757,7 @@ describe("turn-3 group assignment", () => {
     isSystemGroup: false,
   };
 
-  function providerReturningGroup(
-    groupId?: string,
-    confidence?: number,
-  ) {
+  function providerReturningGroup(groupId?: string, confidence?: number) {
     return makeProvider(async () =>
       toolResponse("Project kickoff", { groupId, confidence }),
     );
@@ -1009,7 +1009,6 @@ describe("first-pass group assignment", () => {
     expect(mockBatchSetConversationPlacement).not.toHaveBeenCalled();
   });
 });
-
 
 describe("titles on a tool-gated turn", () => {
   const PRIVATE = JSON.stringify({ assistantTextVisibility: "private" });

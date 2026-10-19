@@ -1,8 +1,7 @@
 import { z } from "zod";
 
-import { validateInferenceProfileKey } from "../../config/inference-profile-validation.js";
+import { effectiveCatalogEntry } from "../../config/llm-resolver.js";
 import { getConfig } from "../../config/loader.js";
-import { profileSupportsTools } from "../../config/profile-tool-support.js";
 import { findConversation } from "../../daemon/conversation-registry.js";
 import {
   countRecentSimilarSpawns,
@@ -43,7 +42,7 @@ const log = getLogger("subagent-spawn");
  * Wall-clock ceiling on one advisor consult.
  *
  * The advisor is the only spawn the agent may issue unprompted, and it is the
- * only one that runs on the premium `llm.advisorProfile`, so it is also the
+ * only one whose own role gates side effects, so it is also the
  * only one whose cost is not implicitly bounded by a user having asked for the
  * work. A consult is meant to answer one question, not to keep going: past
  * this the guidance written so far is worth more than whatever it was still
@@ -94,7 +93,7 @@ const LOOP_GUARD_IN_FLIGHT_CONVERSATION_LIMIT = 2;
 const LOOP_GUARD_IN_FLIGHT_ASSISTANT_LIMIT = 4;
 
 /**
- * The tier a `verdict` spawn runs on when it names no `inference_profile`.
+ * The tier a `verdict` spawn runs on when it names no `model`.
  *
  * Checking a criterion against evidence that already exists is mechanical:
  * find the file, read the value, say PASS or FAIL. A premium model buys
@@ -102,7 +101,7 @@ const LOOP_GUARD_IN_FLIGHT_ASSISTANT_LIMIT = 4;
  * investigation rates for them dominates delegated spend, so the contract that
  * makes a spawn a check also picks the tier the check is worth.
  */
-const VERDICT_PROFILE_KEY = "cost-optimized";
+const VERDICT_MODEL = "fast";
 
 /**
  * Model-input schema, `safeParse`d at the top of {@link executeSubagentSpawn}.
@@ -118,7 +117,7 @@ export const subagentSpawnInputSchema = z.looseObject({
   label: nullAsOmitted(z.string()),
   objective: nullAsOmitted(z.string()),
   context: nullAsOmitted(z.string()),
-  inference_profile: z.string().optional(),
+  model: z.string().optional(),
   confirm_repeat: nullAsOmitted(z.boolean()),
   output_contract: nullAsOmitted(z.enum(SUBAGENT_OUTPUT_CONTRACTS)),
 });
@@ -142,7 +141,7 @@ export async function executeSubagentSpawn(
       ? input.role
       : undefined;
   const resolvedRole = resolveSubagentRole(requestedRole);
-  const inferenceProfile = parsed.inference_profile;
+  const modelArg = parsed.model;
   const outputContract = parsed.output_contract;
 
   // The advisor answers the agent, not the user, so its guidance is always
@@ -168,19 +167,7 @@ export async function executeSubagentSpawn(
   }
   throwIfCancelled(context);
 
-  let requestedOverrideProfile: string | undefined;
-  let forceOverrideProfile = false;
-  if (inferenceProfile !== undefined) {
-    const profileError = validateInferenceProfileKey(inferenceProfile);
-    if (profileError) {
-      return {
-        content: `Error: ${profileError}`,
-        isError: true,
-      };
-    }
-    requestedOverrideProfile = inferenceProfile;
-    forceOverrideProfile = true;
-  }
+  const requestedModel = modelArg?.trim() || undefined;
 
   const manager = getSubagentManager();
   const sendToClient = context.sendToClient as
@@ -227,8 +214,7 @@ export async function executeSubagentSpawn(
       resolvedRole,
       outputContract,
       sendResultToUser,
-      requestedOverrideProfile,
-      forceOverrideProfile,
+      requestedModel,
     });
   } finally {
     // Released at every exit: on success `manager.spawn` has already persisted
@@ -255,8 +241,7 @@ async function spawnReservedSubagent(args: {
   resolvedRole: ResolvedSubagentRole;
   outputContract: SubagentOutputContract | undefined;
   sendResultToUser: boolean;
-  requestedOverrideProfile: string | undefined;
-  forceOverrideProfile: boolean;
+  requestedModel: string | undefined;
 }): Promise<ToolExecutionResult> {
   const {
     context,
@@ -270,9 +255,8 @@ async function spawnReservedSubagent(args: {
     resolvedRole,
     outputContract,
     sendResultToUser,
-    requestedOverrideProfile,
+    requestedModel,
   } = args;
-  let { forceOverrideProfile } = args;
 
   // ── Fork mode: resolve parent context ────────────────────────────
   let forkFields:
@@ -321,48 +305,41 @@ async function spawnReservedSubagent(args: {
   // subagent's spend under a pin the caller never set and break the call-site
   // breakdown this telemetry exists for.
   //
-  // An explicit `inference_profile` argument keeps `forceOverrideProfile` and
-  // wins outright, unless the catalog states it cannot call tools, in which
-  // case it falls back to the same default with a note on the result.
+  // An explicit `model` argument wins outright, unless the catalog states it
+  // cannot call tools, in which case it falls back to the same default with a
+  // note on the result.
   const config = getConfig();
   const llm = config.llm;
 
   let profileNote: string | undefined;
-  let inheritedOverrideProfile = requestedOverrideProfile;
-  if (inheritedOverrideProfile === undefined && isAdvisor) {
-    // A consult is worth having only when it brings a stronger read than the
-    // agent's own, so the advisor runs on `llm.advisorProfile` unless the
-    // caller pinned a profile itself.
-    inheritedOverrideProfile = llm.advisorProfile;
-    forceOverrideProfile = inheritedOverrideProfile !== undefined;
-  }
-  if (inheritedOverrideProfile === undefined) {
+  let inheritedModel = requestedModel;
+  if (inheritedModel === undefined) {
     if (outputContract === "verdict") {
       // A verdict is a check rather than an investigation, so it takes the
       // cheap tier. The tier is this tool's preset, not a caller's choice, and
       // an override outranks a call site's own profile under single-winner
       // resolution, so the preset is only applied when the user pinned
       // nothing: with an explicit `llm.callSites.subagentSpawn` profile the
-      // field is left unset and that pin wins. An `inference_profile` argument
+      // field is left unset and that pin wins. An `model` argument
       // beats both and never enters this branch at all.
-      inheritedOverrideProfile =
-        llm.callSites?.subagentSpawn?.profile == null
-          ? VERDICT_PROFILE_KEY
-          : undefined;
+      inheritedModel =
+        llm.callSites?.subagentSpawn?.model == null ? VERDICT_MODEL : undefined;
     }
     // Every other spawn leaves this unset, which is what lands it on the
     // subagentSpawn default rather than anything the parent turn was pinned to.
-  } else if (profileSupportsTools(inheritedOverrideProfile, config) === false) {
+  } else if (
+    inheritedModel !== undefined &&
+    effectiveCatalogEntry(llm, inheritedModel)?.supportsTools === false
+  ) {
     // Every type carries read tools, so a profile the catalog states cannot
     // call them is handed a surface it can never use. Fall back to the call
     // site's own default and say so on the result. Only a catalog `false`
     // redirects, so a model the catalog has never heard of is left alone.
-    const requested = requestedOverrideProfile !== undefined;
+    const requested = requestedModel !== undefined;
     profileNote =
-      `${requested ? "requested profile" : "profile"} "${inheritedOverrideProfile}" ` +
+      `${requested ? "requested profile" : "profile"} "${inheritedModel}" ` +
       "is not verified for tool calling; ran on the default profile instead.";
-    inheritedOverrideProfile = undefined;
-    forceOverrideProfile = false;
+    inheritedModel = undefined;
   }
 
   const roleNote = resolvedRoleNote(resolvedRole);
@@ -401,10 +378,7 @@ async function spawnReservedSubagent(args: {
         // separable from regular spawns.
         spawnMode: isAdvisor ? "advisor_consult" : fork ? "fork" : "regular",
         ...advisorFields,
-        ...(inheritedOverrideProfile
-          ? { overrideProfile: inheritedOverrideProfile }
-          : {}),
-        ...(forceOverrideProfile ? { forceOverrideProfile: true } : {}),
+        ...(inheritedModel ? { model: inheritedModel } : {}),
         // Delegated work belongs to the firing that triggered the invoking
         // turn, so the child's usage rows carry the parent's stamp.
         ...(context.cronRunId ? { cronRunId: context.cronRunId } : {}),

@@ -16,9 +16,11 @@ export function readChannelAllowlist(payload: unknown): string[] | undefined {
   if (!raw) {
     return undefined;
   }
-  const channels = raw.map((entry) => entry.trim()).filter((entry) => {
-    return entry.length > 0;
-  });
+  const channels = raw
+    .map((entry) => entry.trim())
+    .filter((entry) => {
+      return entry.length > 0;
+    });
   return channels.length > 0 ? channels : undefined;
 }
 

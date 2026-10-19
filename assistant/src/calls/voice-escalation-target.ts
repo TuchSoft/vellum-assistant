@@ -5,6 +5,6 @@ export type VoiceEscalationProfileSource =
   | "call_site";
 
 export interface VoiceEscalationTarget {
-  profile: string;
+  model: string;
   source: VoiceEscalationProfileSource;
 }

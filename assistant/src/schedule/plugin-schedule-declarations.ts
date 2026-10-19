@@ -53,7 +53,7 @@ export interface PluginScheduleConfig {
   maxRetries: number | null;
   retryBackoffMs: number | null;
   quiet: boolean | null;
-  inferenceProfile: string | null;
+  model: string | null;
   timeoutMs: number | null;
   /** Declared enabled state; defaults to true when omitted. */
   enabled: boolean;
@@ -179,7 +179,7 @@ const scheduleConfigSchema = z
     max_retries: z.number().int().min(0).optional(),
     retry_backoff_ms: z.number().int().min(0).optional(),
     quiet: z.boolean().optional(),
-    inference_profile: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
     timeout_ms: z.number().int().positive().optional(),
     enabled: z.boolean().optional(),
   })
@@ -269,7 +269,7 @@ function parseScheduleConfig(
       maxRetries: fields.max_retries ?? null,
       retryBackoffMs: fields.retry_backoff_ms ?? null,
       quiet: fields.quiet ?? null,
-      inferenceProfile: fields.inference_profile ?? null,
+      model: fields.model ?? null,
       timeoutMs: fields.timeout_ms ?? null,
       enabled: fields.enabled ?? true,
     },

@@ -54,6 +54,7 @@ import {
   isBackgroundEventMetadata,
   isEchoSuppressedUserMessage,
   setConversationEnabledPlugins,
+  setConversationModel,
   setConversationSurfaced,
   unarchiveConversation,
   updateConversationTitle,
@@ -91,7 +92,6 @@ import {
   NotFoundError,
   UnprocessableEntityError,
 } from "./errors.js";
-import { setInferenceProfileSession } from "./inference-profile-session-handler.js";
 import { parseStopMode } from "./stop-mode.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
 import { resolveVellumActorTrustContext } from "./vellum-actor-trust.js";
@@ -399,31 +399,20 @@ async function handleSwitchConversation({ body = {} }: RouteHandlerArgs) {
     conversationId: result.conversationId,
     title: result.title,
     conversationType: normalizeConversationType(result.conversationType),
-    ...(result.inferenceProfile != null
-      ? { inferenceProfile: result.inferenceProfile }
-      : {}),
+    ...(result.model != null ? { model: result.model } : {}),
   };
 }
 
-async function handleSetInferenceProfile({
+async function handleSetConversationModel({
   pathParams = {},
   body = {},
-  headers,
 }: RouteHandlerArgs) {
-  if (
-    body.profile !== null &&
-    (typeof body.profile !== "string" || (body.profile as string).length === 0)
-  ) {
-    throw new BadRequestError("profile must be a non-empty string or null");
+  const model = body.model;
+  if (model !== null && (typeof model !== "string" || model.length === 0)) {
+    throw new BadRequestError("model must be a non-empty string or null");
   }
-
-  return setInferenceProfileSession({
-    conversationId: pathParams.id!,
-    profile: body.profile as string | null,
-    ttlSeconds: body.ttlSeconds as number | null | undefined,
-    sessionId: body.sessionId as string | undefined,
-    originClientId: headers?.["x-vellum-client-id"]?.trim() || undefined,
-  });
+  await setConversationModel(pathParams.id!, model as string | null);
+  return { ok: true };
 }
 
 async function handleUpdateConversationEnabledPlugins({
@@ -1009,44 +998,28 @@ export const ROUTES: RouteDefinition[] = [
       conversationId: z.string(),
       title: z.string(),
       conversationType: z.string(),
-      inferenceProfile: z.string().optional(),
+      model: z.string().optional(),
     }),
     handler: handleSwitchConversation,
   },
   {
-    operationId: "setConversationInferenceProfile",
-    endpoint: "conversations/:id/inference-profile",
+    operationId: "setConversationModel",
+    endpoint: "conversations/:id/model",
     method: "PUT",
     policy: {
       requiredScopes: ["chat.write"],
       allowedPrincipalTypes: ACTOR_PRINCIPALS,
     },
-    summary: "Set conversation inference profile",
+    summary: "Set conversation model",
     description:
-      "Override the LLM inference profile for a single conversation. " +
-      "Optionally supply ttlSeconds to create a session-backed (expiring) override.",
+      "Pin a gateway alias for a single conversation. Null clears the pin.",
     tags: ["conversations"],
     pathParams: [{ name: "id", type: "uuid" }],
     requestBody: z.object({
-      profile: z.string().nullable(),
-      ttlSeconds: z.number().positive().nullable().optional(),
-      sessionId: z.string().uuid().optional(),
+      model: z.string().nullable(),
     }),
-    responseBody: z.object({
-      conversationId: z.string(),
-      profile: z.string().nullable(),
-      sessionId: z.string().nullable(),
-      expiresAt: z.number().nullable(),
-      ttlSeconds: z.number().nullable().optional(),
-      replaced: z
-        .object({
-          profile: z.string().nullable(),
-          sessionId: z.string().nullable(),
-          expiresAt: z.number().nullable(),
-        })
-        .nullable(),
-    }),
-    handler: handleSetInferenceProfile,
+    responseBody: z.object({ ok: z.boolean() }),
+    handler: handleSetConversationModel,
   },
   {
     operationId: "conversations_by_id_enabledplugins_put",

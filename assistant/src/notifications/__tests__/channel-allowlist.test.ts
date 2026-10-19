@@ -18,7 +18,9 @@ describe("readChannelAllowlist", () => {
   test("returns undefined for a missing or empty list", () => {
     expect(readChannelAllowlist({})).toBeUndefined();
     expect(readChannelAllowlist({ channelAllowlist: [] })).toBeUndefined();
-    expect(readChannelAllowlist({ channelAllowlist: ["", "  "] })).toBeUndefined();
+    expect(
+      readChannelAllowlist({ channelAllowlist: ["", "  "] }),
+    ).toBeUndefined();
   });
 });
 

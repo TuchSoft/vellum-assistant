@@ -1,10 +1,5 @@
-import { resolveEntryProviderKind } from "../providers/connection-resolution.js";
-import { ROUTING_IDENTITY_PROVIDERS } from "../providers/inference/auth.js";
-import {
-  getCatalogProviderForModel,
-  PROVIDER_CATALOG,
-} from "../providers/model-catalog.js";
-import { resolveCallSiteConfig } from "./llm-resolver.js";
+import { resolveCallSite } from "./llm-resolver.js";
+import { effectiveCatalogEntry } from "./llm-resolver.js";
 import {
   type ContextWindow,
   DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS,
@@ -28,71 +23,52 @@ export interface EffectiveContextWindow {
   maxOutputTokens?: number;
 }
 
+/**
+ * Resolve the input budget for a call site.
+ *
+ * The budget is the smaller of the call site's configured cap and the alias's
+ * catalog window. The call-site schema defaults the cap to 200k, so a catalog
+ * entry that overstates a provider limit (LiteLLM estimates large windows for
+ * families it does not know) cannot by itself inflate the prompt budget.
+ *
+ * Returns null for a disabled call site: nothing downstream should build a
+ * request for it.
+ */
 export function resolveEffectiveContextWindow({
   llm,
   callSite,
-  overrideProfile,
-  forceOverrideProfile,
-  selectionSeed,
+  model,
+  conversationModel,
 }: {
   llm: LLMConfig;
   callSite: LLMCallSite;
-  overrideProfile?: string;
-  /**
-   * Float `overrideProfile` above the call-site layers (see
-   * `ResolveCallSiteOpts.forceOverrideProfile`). Threaded so context-window
-   * sizing reflects the same profile the dispatch path resolves.
-   */
-  forceOverrideProfile?: boolean;
-  /**
-   * Per-conversation mix seed (the conversation id). Threaded so context-window
-   * sizing for a mix profile reflects the same arm the dispatch path picks.
-   */
-  selectionSeed?: string;
-}): EffectiveContextWindow {
-  const resolved = resolveCallSiteConfig(callSite, llm, {
-    overrideProfile,
-    forceOverrideProfile,
-    selectionSeed,
+  /** Explicit alias pin, same semantics as the resolver's `model`. */
+  model?: string;
+  /** Interactive conversation selection. */
+  conversationModel?: string;
+}): EffectiveContextWindow | null {
+  const resolution = resolveCallSite(callSite, llm, {
+    model,
+    conversationModel,
   });
-  // Routing identities dispatch built-in catalog models, so the model's
-  // catalog owner carries their limits. An entry-name provider resolves
-  // through its row's kind instead: a custom-endpoint kind has no catalog
-  // models, so its models keep the conservative default even when a model
-  // id collides with a built-in one (the custom endpoint's "gpt-5.5" is not
-  // OpenAI's). Labels with no row fall back to the model's catalog owner.
-  const catalogProviderId = ROUTING_IDENTITY_PROVIDERS.has(resolved.provider)
-    ? getCatalogProviderForModel(resolved.model)
-    : PROVIDER_CATALOG.some((p) => p.id === resolved.provider)
-      ? resolved.provider
-      : (resolveEntryProviderKind(resolved.provider, resolved.model) ??
-        getCatalogProviderForModel(resolved.model));
-  const catalogModel = PROVIDER_CATALOG.find(
-    (provider) => provider.id === catalogProviderId,
-  )?.models.find((model) => model.id === resolved.model);
-
-  // A catalog-listed model is bounded by its known native window (or the
-  // conservative default when the entry carries none). A custom (unlisted)
-  // model has no catalog entry to consult, so the configured budget itself
-  // is the model ceiling: BYO profiles honor `contextWindow.maxInputTokens`
-  // as written instead of being clamped to the 200k conservative default.
-  // The schema default still applies when the profile declares nothing, so
-  // unconfigured custom models stay at 200k.
+  if (resolution.status === "disabled") {
+    return null;
+  }
+  const resolved = resolution.config;
+  const catalogEntry = effectiveCatalogEntry(llm, resolved.model);
   const modelMaxInputTokens =
-    catalogModel != null
-      ? (catalogModel.contextWindowTokens ??
-        DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS)
-      : resolved.contextWindow.maxInputTokens;
-  const defaultInputTokens =
-    catalogModel?.defaultContextWindowTokens ??
-    DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS;
+    catalogEntry?.maxInputTokens ?? DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS;
+  const defaultInputTokens = Math.min(
+    modelMaxInputTokens,
+    DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS,
+  );
   const maxInputTokens = Math.min(
     resolved.contextWindow.maxInputTokens,
     modelMaxInputTokens,
   );
 
   return {
-    provider: resolved.provider,
+    provider: "llm-gateway",
     model: resolved.model,
     enabled: resolved.contextWindow.enabled,
     maxInputTokens,
@@ -103,7 +79,9 @@ export function resolveEffectiveContextWindow({
     targetBudgetRatio: resolved.contextWindow.targetBudgetRatio,
     overflowRecovery: resolved.contextWindow.overflowRecovery,
     isLongContextEnabled: maxInputTokens > defaultInputTokens,
-    maxOutputTokens: catalogModel?.maxOutputTokens,
+    ...(catalogEntry?.maxOutputTokens != null
+      ? { maxOutputTokens: catalogEntry.maxOutputTokens }
+      : {}),
   };
 }
 

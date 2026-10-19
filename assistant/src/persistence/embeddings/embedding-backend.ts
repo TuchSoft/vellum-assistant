@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 
 import { getOllamaBaseUrlEnv } from "../../config/env.js";
-import { resolveCallSiteConfig } from "../../config/llm-resolver.js";
 import { isMemoryEnabled } from "../../config/memory-v3-gate.js";
 import type { AssistantConfig } from "../../config/types.js";
 import { PLATFORM_PROVIDER_META } from "../../providers/platform-proxy/constants.js";
@@ -1204,9 +1203,9 @@ export async function selectedBackendSupportsMultimodal(
   return backend.provider === "gemini";
 }
 
-async function isOllamaConfigured(config: AssistantConfig): Promise<boolean> {
+async function isOllamaConfigured(_config: AssistantConfig): Promise<boolean> {
   return (
-    resolveCallSiteConfig("mainAgent", config.llm).provider === "ollama" ||
+    false ||
     Boolean(await getProviderKeyAsync("ollama")) ||
     Boolean(getOllamaBaseUrlEnv())
   );

@@ -177,7 +177,8 @@ export const ROUTES: RouteDefinition[] = [
         name: "interfaceId",
         type: "string",
         required: false,
-        description: "Restrict history to one interface (e.g. chrome-extension).",
+        description:
+          "Restrict history to one interface (e.g. chrome-extension).",
       },
       {
         name: "since",

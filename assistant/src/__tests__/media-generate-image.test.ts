@@ -336,7 +336,10 @@ describe("image-studio skill script wrapper", () => {
   test("OpenRouter qualifies a built-in alias and keeps OpenRouter ownership", async () => {
     seedImageGenService({ provider: "openrouter" });
 
-    const result = await run({ prompt: "a robot", model: "openai" }, fakeContext);
+    const result = await run(
+      { prompt: "a robot", model: "openai" },
+      fakeContext,
+    );
 
     expect(result.isError).toBe(false);
     expect(lastGenerateProvider).toBe("openrouter");

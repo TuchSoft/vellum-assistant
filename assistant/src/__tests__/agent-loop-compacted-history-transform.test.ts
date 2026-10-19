@@ -190,7 +190,7 @@ describe("AgentLoop post-compaction history transform", () => {
       requestId: "req",
       messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
       onEvent: () => {},
-      modelProfileKey: "balanced",
+      modelKey: "balanced",
       resolveContextWindow: () => ({
         maxInputTokens: 10,
         overflowRecovery: { enabled: true, safetyMarginRatio: 0 },
@@ -228,7 +228,7 @@ describe("AgentLoop post-compaction history transform", () => {
       requestId: "req",
       messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
       onEvent: () => {},
-      modelProfileKey: "balanced",
+      modelKey: "balanced",
       resolveContextWindow: () => ({
         maxInputTokens: 10,
         overflowRecovery: { enabled: true, safetyMarginRatio: 0 },
@@ -258,7 +258,7 @@ describe("AgentLoop post-compaction history transform", () => {
       requestId: "req",
       messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
       onEvent: () => {},
-      modelProfileKey: "balanced",
+      modelKey: "balanced",
       resolveContextWindow: () => ({
         maxInputTokens: 10,
         overflowRecovery: { enabled: true, safetyMarginRatio: 0 },
@@ -288,7 +288,7 @@ describe("AgentLoop post-compaction history transform", () => {
       requestId: "req",
       messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
       onEvent: () => {},
-      modelProfileKey: "balanced",
+      modelKey: "balanced",
       resolveContextWindow: () => ({
         maxInputTokens: 10,
         overflowRecovery: { enabled: true, safetyMarginRatio: 0 },

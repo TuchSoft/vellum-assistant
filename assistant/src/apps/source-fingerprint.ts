@@ -9,12 +9,7 @@
  */
 
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  readdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Digest algorithm recorded alongside the file map, for forward compatibility. */

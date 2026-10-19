@@ -122,14 +122,13 @@ export type {
 export function resolveConversationAttribution(
   ctx: Pick<
     Conversation,
-    "conversationId" | "currentCallSite" | "currentTurnOverrideProfile"
+    "conversationId" | "currentCallSite" | "currentTurnModel"
   >,
 ): UsageAttributionSnapshot | null {
   try {
     return resolveUsageAttribution({
       callSite: ctx.currentCallSite ?? "mainAgent",
-      overrideProfile: ctx.currentTurnOverrideProfile ?? null,
-      selectionSeed: ctx.conversationId,
+      model: ctx.currentTurnModel ?? null,
     });
   } catch (err) {
     log.debug(
@@ -451,7 +450,7 @@ export function createToolExecutor(
       toolUseId,
       isPlatformHosted: getIsPlatform(),
       ...resolveTurnClientOs(ctx),
-      overrideProfile: ctx.currentTurnOverrideProfile,
+      model: ctx.currentTurnModel,
       cronRunId: ctx.currentTurnCronRunId,
       invokingCallSite: ctx.currentCallSite ?? "mainAgent",
       attribution: resolveConversationAttribution(ctx),
@@ -1210,7 +1209,7 @@ export function createResolveToolsCallback(
               attribution: resolveConversationAttribution({
                 conversationId: ctx.conversationId,
                 currentCallSite: ctx.currentCallSite,
-                currentTurnOverrideProfile: ctx.currentTurnOverrideProfile,
+                currentTurnModel: ctx.currentTurnModel,
               }),
             }
           : undefined,

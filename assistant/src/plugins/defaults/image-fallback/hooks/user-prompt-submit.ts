@@ -8,7 +8,7 @@
  * `latestMessages` and before they flow into `agentLoop.run()`. It:
  *
  * 1. Checks whether the turn's model needs image→text fallback via
- *    {@link needsImageFallback}, using the turn's effective `modelProfileKey`.
+ *    {@link needsImageFallback}, using the turn's effective `modelKey`.
  *    If the model handles images, the hook is a no-op.
  * 2. Finds a vision-capable profile for captioning via `findVisionProfile`.
  *    If none exists, images are replaced with a fail-open placeholder so the
@@ -68,7 +68,7 @@ function droppedImageCardText(count: number): string {
 
 const userPromptSubmit: HookFunction<UserPromptSubmitContext> = async (ctx) => {
   // If the turn's model already supports vision, nothing to do.
-  if (!needsImageFallback(ctx.modelProfileKey)) {
+  if (!needsImageFallback(ctx.modelKey)) {
     return;
   }
 

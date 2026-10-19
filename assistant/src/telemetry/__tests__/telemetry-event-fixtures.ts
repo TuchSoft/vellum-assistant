@@ -60,7 +60,7 @@ const llmUsage: LlmUsageTelemetryEvent = {
   actor: "user",
   llm_call_site: "mainAgent",
   inference_profile: "balanced",
-  inference_profile_source: "active",
+  inference_profile_source: "chat",
   cost: 0.0123,
 };
 
@@ -191,7 +191,7 @@ const skillLoaded: SkillLoadedTelemetryEvent = {
   provider: "anthropic",
   model: "claude-fable-5",
   inference_profile: "balanced",
-  inference_profile_source: "conversation",
+  inference_profile_source: "chat",
   skill_name: "plugin-builder",
   skill_updated_at: "2026-06-01T00:00:00Z",
   conversation_id: "conv-xyz",

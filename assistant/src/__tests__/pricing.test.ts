@@ -1131,7 +1131,6 @@ describe("usesAnthropicPricingRules", () => {
   });
 });
 
-
 describe("extractReportedCostUsd", () => {
   test("reads a positive usage.cost (llmgateway/OpenRouter shape)", () => {
     expect(

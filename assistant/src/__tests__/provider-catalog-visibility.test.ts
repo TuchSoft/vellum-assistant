@@ -24,9 +24,7 @@ describe("getVisibleProviderCatalog", () => {
     const hidden = getVisibleProviderCatalog(makeConfig());
     expect(hidden.find((p) => p.id === "vellum")).toBeUndefined();
     expect(
-      hidden
-        .flatMap((p) => p.models)
-        .some((m) => m.id === "qwen/qwen3-8b"),
+      hidden.flatMap((p) => p.models).some((m) => m.id === "qwen/qwen3-8b"),
     ).toBe(false);
 
     setOverridesForTesting({ "vellum-hosted-inference": true });

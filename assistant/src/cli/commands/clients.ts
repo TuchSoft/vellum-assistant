@@ -191,7 +191,9 @@ export function registerClientsCommand(program: Command): void {
           );
           const pad = (s: string, w: number) => s.padEnd(w);
           log.info(
-            header.map((h: string, i: number) => pad(h, colWidths[i])).join("  "),
+            header
+              .map((h: string, i: number) => pad(h, colWidths[i]))
+              .join("  "),
           );
           log.info(colWidths.map((w: number) => "─".repeat(w)).join("  "));
           for (const row of rows) {

@@ -29,7 +29,6 @@ import type {
   TurnInterfaceContext,
 } from "../channels/types.js";
 import { parseChannelId, parseInterfaceId } from "../channels/types.js";
-import { isAssistantFeatureFlagEnabled } from "../config/assistant-feature-flags.js";
 import { isInterruptOnSendEnabled } from "../config/interrupt-on-send-gate.js";
 import {
   contextWindowConfigFromEffective,
@@ -37,7 +36,7 @@ import {
 } from "../config/llm-context-resolution.js";
 import { resolveCallSiteConfig } from "../config/llm-resolver.js";
 import { getConfig } from "../config/loader.js";
-import type { LLMCallSite, Speed } from "../config/schemas/llm.js";
+import type { LLMCallSite } from "../config/schemas/llm.js";
 import { resolveSendUserMessageActive } from "../config/send-user-message-gate.js";
 import { isSessionGroupsEnabled } from "../config/session-groups-gate.js";
 import {
@@ -54,7 +53,7 @@ import {
   getConversation,
   getMessages,
   type MessageRow,
-  resolveOverrideProfile,
+  resolveConversationModel,
   setConversationEnabledPlugins,
   setConversationHistoryStrippedAt,
   setConversationProcessingStartedAt,
@@ -285,10 +284,8 @@ export interface LoadFromDbResult {
 export interface CompactionSizing {
   /** Call site the upcoming run resolves its context window against. */
   callSite: LLMCallSite;
-  /** Inference profile the run resolves under, if any. */
-  overrideProfile?: string;
-  /** Float `overrideProfile` above the call-site layers (resolver escape hatch). */
-  forceOverrideProfile?: boolean;
+  /** Model alias the run resolves under, if any. */
+  model?: string;
 }
 
 export { findLastUndoableUserMessageIndex } from "./conversation-history.js";
@@ -305,7 +302,6 @@ import { turnActorPrincipalId } from "./turn-actor.js";
 
 export interface ConversationConstructorOptions {
   maxTokens?: number;
-  speedOverride?: Speed;
   cacheTtl?: "5m" | "1h";
   modelOverride?: string;
   /**
@@ -519,19 +515,15 @@ export class Conversation {
   /** @internal */ contextCompactedAt: number | null = null;
   /** @internal */ contextSummary: string | null = null;
   /** @internal */ slackContextCompactionWatermarkTs: string | null = null;
-  /** @internal */ lastNotifiedInferenceProfile: string | null = null;
+  /** @internal */ lastNotifiedModel: string | null = null;
   /**
-   * Per-conversation inference-profile override mirrored from the DB row.
-   * `inferenceProfileSessionId`/`inferenceProfileExpiresAt` are set when the
-   * override is session-backed (expiring); both are null for a sticky
-   * override or when no override is active. Hydrated on load and kept in sync
-   * by the HTTP setters and the background expiry reaper so the live instance
-   * is the single source of truth for the per-turn override derivation.
+   * Per-conversation model selection mirrored from the DB row. Hydrated on
+   * load and kept in sync by the HTTP setters so the live instance is the
+   * single source of truth for the per-turn model derivation.
    * @internal
    */
-  inferenceProfile: string | null = null;
-  /** @internal */ inferenceProfileSessionId: string | null = null;
-  /** @internal */ inferenceProfileExpiresAt: number | null = null;
+  model: string | null = null;
+  /** @internal */ reasoningEffort: string | null = null;
   /**
    * Per-conversation plugin scope mirrored from the DB row. `null` means no
    * per-chat restriction (all globally-enabled plugins apply). Hydrated on load
@@ -661,7 +653,7 @@ export class Conversation {
    * @internal
    */
   wakePersonaOverride?: SystemPromptPersonaOverride;
-  /** @internal */ currentTurnOverrideProfile?: string;
+  /** @internal */ currentTurnModel?: string;
   /**
    * The firing's `cron_runs.id` when a schedule triggered the current turn.
    * Exposed on the live conversation so the tool context can forward it to
@@ -1017,7 +1009,7 @@ export class Conversation {
     workingDir: string,
     options?: ConversationConstructorOptions,
   ) {
-    const { maxTokens, speedOverride, cacheTtl, modelOverride } = options ?? {};
+    const { maxTokens, cacheTtl, modelOverride } = options ?? {};
     const systemPromptIsOverride = options?.systemPromptIsOverride ?? true;
     const enableNativeWebSearch = options?.enableNativeWebSearch ?? false;
     this.conversationId = conversationId;
@@ -1084,8 +1076,7 @@ export class Conversation {
     );
 
     const config = getConfig();
-    const resolvedMainAgent = resolveCallSiteConfig("mainAgent", config.llm);
-    this.streamThinking = resolvedMainAgent.thinking.streamThinking ?? false;
+    this.streamThinking = config.llm.streamThinking;
 
     const resolveTools = createResolveToolsCallback(toolDefs, this);
 
@@ -1098,23 +1089,19 @@ export class Conversation {
     // as a top-level `model` param on `run()`.
     this.modelOverride = modelOverride;
 
-    const fastModeEnabled = isAssistantFeatureFlagEnabled("fast-mode", config);
-    const resolvedSpeed = speedOverride ?? resolvedMainAgent.speed;
     const initialContextWindow = resolveEffectiveContextWindow({
       llm: config.llm,
       callSite: "mainAgent",
     });
+    if (initialContextWindow == null) {
+      throw new Error('Call site "mainAgent" is disabled.');
+    }
     const initialContextWindowConfig = contextWindowConfigFromEffective(
-      resolvedMainAgent.contextWindow,
+      resolveCallSiteConfig("mainAgent", config.llm).contextWindow,
       initialContextWindow,
     );
 
     const agentLoopConfig: Partial<AgentLoopConfig> = {
-      thinking: resolvedMainAgent.thinking,
-      effort: resolvedMainAgent.effort,
-      ...(fastModeEnabled && resolvedSpeed === "fast"
-        ? { speed: resolvedSpeed }
-        : {}),
       ...(cacheTtl ? { cacheTtl } : {}),
       ...(enableNativeWebSearch ? { enableNativeWebSearch: true } : {}),
     };
@@ -1198,19 +1185,15 @@ export class Conversation {
   }
 
   /**
-   * Mirror an inference-profile override write onto the live instance so the
-   * per-turn override derivation reads current state without re-fetching the
-   * DB row. Called alongside the corresponding DB write by the HTTP setters
-   * and the background expiry reaper.
+   * Mirror a model/reasoning write onto the live instance so the per-turn
+   * derivation reads current state without re-fetching the DB row.
    */
-  applyInferenceProfileState(state: {
-    profile: string | null;
-    sessionId: string | null;
-    expiresAt: number | null;
+  applyModelState(state: {
+    model: string | null;
+    reasoningEffort: string | null;
   }): void {
-    this.inferenceProfile = state.profile;
-    this.inferenceProfileSessionId = state.sessionId;
-    this.inferenceProfileExpiresAt = state.expiresAt;
+    this.model = state.model;
+    this.reasoningEffort = state.reasoningEffort;
   }
 
   /**
@@ -1296,8 +1279,7 @@ export class Conversation {
    */
   async warmPromptCache(options?: {
     callSite?: LLMCallSite;
-    overrideProfile?: string;
-    forceOverrideProfile?: boolean;
+    model?: string;
     signal?: AbortSignal;
     systemPrompt?: string | null;
     tools?: ToolDefinition[];
@@ -1326,13 +1308,7 @@ export class Conversation {
       const tools =
         options?.tools ?? this.agentLoop.getResolvedTools(this.messages);
       const providerConfig = {
-        ...(options?.overrideProfile !== undefined
-          ? { overrideProfile: options.overrideProfile }
-          : {}),
-        ...(options?.forceOverrideProfile !== undefined
-          ? { forceOverrideProfile: options.forceOverrideProfile }
-          : {}),
-        selectionSeed: this.conversationId,
+        ...(options?.model !== undefined ? { model: options.model } : {}),
       };
       const warmMessage: Message = {
         role: "user",
@@ -1354,7 +1330,7 @@ export class Conversation {
         log.info(
           {
             callSite,
-            profile: options?.overrideProfile ?? null,
+            model: options?.model ?? null,
           },
           "Prompt cache warmed successfully",
         );
@@ -1365,7 +1341,7 @@ export class Conversation {
           {
             err,
             callSite,
-            profile: options?.overrideProfile ?? null,
+            model: options?.model ?? null,
           },
           "Prompt cache warming failed (non-fatal)",
         );
@@ -1413,11 +1389,9 @@ export class Conversation {
     this.contextSummary = conv?.contextSummary ?? null;
     this.slackContextCompactionWatermarkTs =
       conv?.slackContextCompactionWatermarkTs ?? null;
-    this.lastNotifiedInferenceProfile =
-      conv?.lastNotifiedInferenceProfile ?? null;
-    this.inferenceProfile = conv?.inferenceProfile ?? null;
-    this.inferenceProfileSessionId = conv?.inferenceProfileSessionId ?? null;
-    this.inferenceProfileExpiresAt = conv?.inferenceProfileExpiresAt ?? null;
+    this.lastNotifiedModel = conv?.lastNotifiedModel ?? null;
+    this.model = conv?.model ?? null;
+    this.reasoningEffort = conv?.reasoningEffort ?? null;
     this.enabledPlugins = conv?.enabledPlugins ?? null;
     this.contextCompactedMessageCount = Math.max(
       0,
@@ -3150,7 +3124,7 @@ export class Conversation {
       };
     },
   ): Promise<ContextWindowResult> {
-    const overrideProfile = resolveOverrideProfile(this) ?? null;
+    const conversationModel = resolveConversationModel(this) ?? null;
     const config = getConfig();
     // Threshold/window sizing. The default (`mainAgent` + the conversation's
     // own pinned profile) matches live turns; caller-supplied `sizing` makes
@@ -3158,20 +3132,21 @@ export class Conversation {
     // resolve. Sizing only — the summary call below still runs under the
     // conversation's own profile.
     const sizingCallSite = sizing?.callSite ?? "mainAgent";
-    const sizingOverrideProfile = sizing
-      ? sizing.overrideProfile
-      : (overrideProfile ?? undefined);
+    const sizingModel = sizing
+      ? sizing.model
+      : (conversationModel ?? undefined);
     const effectiveContextWindow = resolveEffectiveContextWindow({
       llm: config.llm,
       callSite: sizingCallSite,
-      overrideProfile: sizingOverrideProfile,
-      forceOverrideProfile: sizing?.forceOverrideProfile,
+      ...(sizingModel != null ? { model: sizingModel } : {}),
     });
+    if (effectiveContextWindow == null) {
+      throw new Error(`Call site "${sizingCallSite}" is disabled.`);
+    }
     this.contextWindowManager.updateConfig(
       contextWindowConfigFromEffective(
         resolveCallSiteConfig(sizingCallSite, config.llm, {
-          overrideProfile: sizingOverrideProfile,
-          forceOverrideProfile: sizing?.forceOverrideProfile,
+          ...(sizingModel != null ? { model: sizingModel } : {}),
         }).contextWindow,
         effectiveContextWindow,
       ),
@@ -3214,7 +3189,7 @@ export class Conversation {
       messages: messagesToCompact,
       signal: this.abortController?.signal ?? undefined,
       force,
-      overrideProfile,
+      model: conversationModel ?? undefined,
       actorTrustClass: this.trustContext?.trustClass,
       fixedTailStartIndex: opts?.fixedTailStartIndex,
       fixedBoundaryRowIndex: opts?.fixedBoundaryRowIndex,
@@ -3551,16 +3526,11 @@ export class Conversation {
       /** Provider configuration source when distinct from turn semantics. */
       inferenceCallSite?: LLMCallSite;
       /**
-       * Optional ad-hoc inference-profile override applied to every LLM call
-       * the loop issues for this turn. Forwarded into
-       * {@link runAgentLoopImpl} and threaded through to
-       * {@link AgentLoop.run} so each provider call carries
-       * `config.overrideProfile`. Subagents spawned during the turn inherit
-       * this value via {@link SubagentManager.spawn}.
+       * Optional alias pin applied to every LLM call the loop issues for this
+       * turn. Forwarded into {@link runAgentLoopImpl} and threaded through to
+       * {@link AgentLoop.run} so each provider call carries `config.model`.
        */
-      overrideProfile?: string;
-      /** Float `overrideProfile` above call-site layers for this run. */
-      forceOverrideProfile?: boolean;
+      model?: string;
       /** Observe the first finalized model request without delaying it. */
       onFirstModelCallPrepared?: (prepared: PreparedModelCall) => void;
       /**

@@ -291,9 +291,10 @@ function readSqliteColumns(path: string): Map<string, Set<string>> {
     for (const table of tables) {
       try {
         const columns = db
-          .query<{ name: string }, []>(
-            `PRAGMA table_info(${quoteIdent(table.name)})`,
-          )
+          .query<
+            { name: string },
+            []
+          >(`PRAGMA table_info(${quoteIdent(table.name)})`)
           .all();
         out.set(table.name, new Set(columns.map((column) => column.name)));
       } catch {

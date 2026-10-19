@@ -1,11 +1,11 @@
 import { z } from "zod";
 
 import { resolveCapabilities } from "../../runtime/capabilities.js";
-import { validateScheduleInferenceProfile } from "../../schedule/inference-profile.js";
 import { formatIntegrationSummary } from "../../schedule/integration-status.js";
 import { validateRruleSetLines } from "../../schedule/recurrence-engine.js";
 import { normalizeScheduleSyntax } from "../../schedule/recurrence-types.js";
 import { validateScriptTimeoutMs } from "../../schedule/run-script.js";
+import { validateScheduleModel } from "../../schedule/schedule-model.js";
 import type {
   RoutingIntent,
   ScheduleMode,
@@ -74,7 +74,7 @@ export const scheduleCreateInputSchema = z.looseObject({
   max_retries: nullAsOmitted(z.int()),
   retry_backoff_ms: nullAsOmitted(z.int()),
   timeout_ms: z.int().optional(),
-  inference_profile: z.string().optional(),
+  model: z.string().optional(),
   group: nullAsOmitted(z.string()),
 });
 
@@ -115,7 +115,7 @@ export async function executeScheduleCreate(
   const timeoutMs = parsed.timeout_ms;
   const workflowName = parsed.workflow_name?.trim() ?? null;
   const workflowArgs = input.workflow_args;
-  const inferenceProfile = parsed.inference_profile;
+  const model = parsed.model;
 
   // Validated workflow capability manifest, resolved only for workflow mode.
   // Left null for non-workflow modes so `createSchedule` persists no manifest.
@@ -128,8 +128,8 @@ export async function executeScheduleCreate(
     }
   }
 
-  if (inferenceProfile !== undefined) {
-    const profileError = validateScheduleInferenceProfile(inferenceProfile);
+  if (model !== undefined) {
+    const profileError = validateScheduleModel(model);
     if (profileError) {
       return { content: `Error: ${profileError}`, isError: true };
     }
@@ -277,7 +277,7 @@ export async function executeScheduleCreate(
           workflowName,
           workflowArgs,
           capabilities,
-          inferenceProfile,
+          model,
           groupId,
           createdFromConversationId: context.conversationId,
         },
@@ -297,9 +297,7 @@ export async function executeScheduleCreate(
           `  Description: ${job.description}`,
           `  Type: one-shot`,
           `  Mode: ${job.mode}`,
-          ...(job.inferenceProfile
-            ? [`  Inference profile: ${job.inferenceProfile}`]
-            : []),
+          ...(job.model ? [`  Inference profile: ${job.model}`] : []),
           ...(groupName ? [`  Conversation group: ${groupName}`] : []),
           `  Fire at: ${fireDate}`,
           `  Enabled: ${job.enabled}`,
@@ -381,7 +379,7 @@ export async function executeScheduleCreate(
         workflowName,
         workflowArgs,
         capabilities,
-        inferenceProfile,
+        model,
         groupId,
         createdFromConversationId: context.conversationId,
       },
@@ -408,9 +406,7 @@ export async function executeScheduleCreate(
         `  Description: ${job.description}`,
         `  Syntax: ${job.syntax}`,
         `  Mode: ${job.mode}`,
-        ...(job.inferenceProfile
-          ? [`  Inference profile: ${job.inferenceProfile}`]
-          : []),
+        ...(job.model ? [`  Inference profile: ${job.model}`] : []),
         ...(groupName ? [`  Conversation group: ${groupName}`] : []),
         `  Schedule: ${scheduleDescription}${
           job.timezone ? ` (${job.timezone})` : ""

@@ -804,7 +804,7 @@ describe("HeartbeatService", () => {
     expect(processMessageCalls).toHaveLength(1);
     expect(processMessageCalls[0].options?.callSite).toBe("heartbeatAgent");
     const resolved = resolveCallSiteConfig("heartbeatAgent", llm);
-    expect(resolved.speed).toBe("fast");
+    expect(resolved.model).toBe("fast");
   });
 
   describe("isShallowProfile", () => {

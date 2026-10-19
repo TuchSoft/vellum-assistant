@@ -822,14 +822,10 @@ describe("skill_loaded telemetry recording", () => {
   function makeAttribution(): UsageAttributionSnapshot {
     return {
       callSite: "mainAgent",
-      activeProfile: "balanced",
-      overrideProfile: null,
-      callSiteProfile: null,
-      appliedProfile: "balanced",
-      profileSource: "active",
+      model: "main",
+      modelSource: "chat",
       resolvedProvider: "test-provider",
       resolvedModel: "test-model",
-      resolvedMixArm: null,
     };
   }
 
@@ -873,8 +869,7 @@ describe("skill_loaded telemetry recording", () => {
       skillUpdatedAt: "2026-01-02T03:04:05Z",
       provider: "test-provider",
       model: "test-model",
-      inferenceProfile: "balanced",
-      inferenceProfileSource: "active",
+      modelSource: "chat",
     });
   });
 
@@ -1084,8 +1079,7 @@ describe("skill_loaded telemetry recording", () => {
       skillUpdatedAt: undefined,
       provider: null,
       model: null,
-      inferenceProfile: null,
-      inferenceProfileSource: null,
+      modelSource: null,
     });
   });
 
@@ -1127,8 +1121,7 @@ describe("skill_loaded telemetry recording", () => {
       skillUpdatedAt: "2026-02-03T04:05:06Z",
       provider: "test-provider",
       model: "test-model",
-      inferenceProfile: "balanced",
-      inferenceProfileSource: "active",
+      modelSource: "chat",
     });
 
     // Still active next turn — no re-record.

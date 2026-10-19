@@ -221,9 +221,7 @@ export function redactToolOutput(text: string): ToolOutputRedactionResult {
       const occurrences = working.split(value).length - 1;
       working = working
         .split(value)
-        .join(
-          buildMarker("Vault Credential", value, "Vault Credential", ref),
-        );
+        .join(buildMarker("Vault Credential", value, "Vault Credential", ref));
       redactedCount += occurrences;
       vaultCredentials.add(value);
     }

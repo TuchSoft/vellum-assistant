@@ -29,7 +29,7 @@ function userPromptCtx(latestMessages: Message[]) {
     isHiddenPrompt: false,
     originalMessages: Object.freeze([...latestMessages]),
     latestMessages,
-    modelProfileKey: "balanced",
+    modelKey: "balanced",
     isNonInteractive: false,
   };
 }

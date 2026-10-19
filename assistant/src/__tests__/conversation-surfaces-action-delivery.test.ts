@@ -566,7 +566,8 @@ describePg("surface action delivery to assistant", () => {
     expect(completeMsg).toBeDefined();
 
     const submittedData = completeMsg?.submittedData as
-      Record<string, unknown> | undefined;
+      | Record<string, unknown>
+      | undefined;
     // The files array with base64 blobs should be stripped from the
     // completion event — only the sanitized payload (without files) is sent.
     expect(submittedData?.files).toBeUndefined();

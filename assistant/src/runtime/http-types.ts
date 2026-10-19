@@ -32,7 +32,9 @@ import type { TrustContext } from "../daemon/trust-context-types.js";
 
 /** The disposition returned by the approval conversation engine. */
 export type ApprovalConversationDisposition =
-  "keep_pending" | "approve_once" | "reject";
+  | "keep_pending"
+  | "approve_once"
+  | "reject";
 
 /** Structured result from a single turn of the approval conversation. */
 export interface ApprovalConversationResult {

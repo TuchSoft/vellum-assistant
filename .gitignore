@@ -154,3 +154,6 @@ evals/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Editor state (Zed)
+.zed/

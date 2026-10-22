@@ -6008,8 +6008,9 @@ paths:
       operationId: config_llm_callsites_get
       summary: List LLM call sites
       description:
-        Returns the full catalog of LLM call sites with display names, descriptions, and domain groupings. Used by
-        clients to render the per-call-site alias settings UI.
+        Returns the full catalog of LLM call sites with display names, descriptions, domain groupings, the
+        configured alias, the effective alias and whether resolution had to degrade because the configured alias is
+        missing from the gateway catalog. Used by clients to render the per-call-site alias settings UI.
       tags:
         - config
       responses:
@@ -6054,17 +6055,150 @@ paths:
                           type: string
                         enabled:
                           type: boolean
+                        configuredModel:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        effectiveModel:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        degraded:
+                          type: boolean
+                        reason:
+                          anyOf:
+                            - type: string
+                              enum:
+                                - call_site_alias_missing
+                                - catalog_empty
+                            - type: "null"
                       required:
                         - id
                         - displayName
                         - description
                         - domain
                         - enabled
+                        - configuredModel
+                        - effectiveModel
+                        - degraded
+                        - reason
                       additionalProperties: false
+                  catalogAvailable:
+                    type: boolean
                 required:
                   - domains
                   - callSites
+                  - catalogAvailable
                 additionalProperties: false
+  /v1/config/llm/call-sites/{site}:
+    patch:
+      operationId: config_llm_callsites_by_site_patch
+      summary: Update an LLM call site
+      description:
+        Set a call site's gateway alias (`model`, or null to inherit) and whether it is enabled. The alias must be
+        present in the gateway catalog. Returns the refreshed call-site catalog.
+      tags:
+        - config
+      parameters:
+        - name: site
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  anyOf:
+                    - type: string
+                      minLength: 1
+                    - type: "null"
+                enabled:
+                  type: boolean
+              additionalProperties: false
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  domains:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        displayName:
+                          type: string
+                      required:
+                        - id
+                        - displayName
+                      additionalProperties: false
+                  callSites:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        displayName:
+                          type: string
+                        description:
+                          type: string
+                        domain:
+                          type: string
+                        model:
+                          type: string
+                        source:
+                          type: string
+                        shippedModel:
+                          type: string
+                        enabled:
+                          type: boolean
+                        configuredModel:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        effectiveModel:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        degraded:
+                          type: boolean
+                        reason:
+                          anyOf:
+                            - type: string
+                              enum:
+                                - call_site_alias_missing
+                                - catalog_empty
+                            - type: "null"
+                      required:
+                        - id
+                        - displayName
+                        - description
+                        - domain
+                        - enabled
+                        - configuredModel
+                        - effectiveModel
+                        - degraded
+                        - reason
+                      additionalProperties: false
+                  catalogAvailable:
+                    type: boolean
+                required:
+                  - domains
+                  - callSites
+                  - catalogAvailable
+                additionalProperties: false
+        "400":
+          description: Unknown call site, unknown alias, or a combination the LLM schema rejects
   /v1/config/platform:
     get:
       operationId: config_platform_get
@@ -38131,13 +38265,30 @@ components:
             - call_site
             - chat
             - default
+            - fallback
             - disabled
+        effectiveModel:
+          anyOf:
+            - type: string
+            - type: "null"
+        degraded:
+          type: boolean
+        reason:
+          anyOf:
+            - type: string
+              enum:
+                - call_site_alias_missing
+                - catalog_empty
+            - type: "null"
         maxInputTokens:
           type: number
       required:
         - callSite
         - model
         - source
+        - effectiveModel
+        - degraded
+        - reason
       additionalProperties: false
     CallSiteResolutionDetail:
       type: object
@@ -38158,6 +38309,7 @@ components:
                 - call_site
                 - chat
                 - default
+                - fallback
                 - disabled
           required:
             - model
@@ -38194,6 +38346,19 @@ components:
               - requested
               - reason
             additionalProperties: false
+        effectiveModel:
+          anyOf:
+            - type: string
+            - type: "null"
+        degraded:
+          type: boolean
+        reason:
+          anyOf:
+            - type: string
+              enum:
+                - call_site_alias_missing
+                - catalog_empty
+            - type: "null"
         shippedDefault:
           type: object
           propertyNames:
@@ -38222,6 +38387,9 @@ components:
         - winner
         - resolved
         - resolutionChain
+        - effectiveModel
+        - degraded
+        - reason
         - shippedDefault
         - userPin
       additionalProperties: false

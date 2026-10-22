@@ -27,12 +27,32 @@ function call(operationId: string, args: RouteHandlerArgs): Promise<unknown> {
 describe("GET inference/callsites", () => {
   test("returns one summary row per call site", async () => {
     const result = (await call("inference_callsites_list", {})) as {
-      callSites: { callSite: string; provider: string; model: string }[];
+      callSites: {
+        callSite: string;
+        model: string | null;
+        effectiveModel: string | null;
+        degraded: boolean;
+        reason: string | null;
+        source: string;
+      }[];
     };
     expect(result.callSites.length).toBe(LLMCallSiteEnum.options.length);
     for (const row of result.callSites) {
-      expect(typeof row.provider).toBe("string");
-      expect(typeof row.model).toBe("string");
+      expect(typeof row.callSite).toBe("string");
+      expect(typeof row.source).toBe("string");
+      expect(typeof row.degraded).toBe("boolean");
+      if (row.reason !== null) {
+        expect(typeof row.reason).toBe("string");
+      }
+      // A disabled call site has no alias; an enabled one always does.
+      if (row.source === "disabled") {
+        expect(row.model).toBeNull();
+        expect(row.effectiveModel).toBeNull();
+        expect(row.degraded).toBe(false);
+      } else {
+        expect(typeof row.model).toBe("string");
+        expect(typeof row.effectiveModel).toBe("string");
+      }
     }
   });
 });

@@ -2574,10 +2574,21 @@
   "modelsCard": {
     "title": "Models",
     "description": "Every inference call runs through the LLM gateway. Aliases and their tuning are configured on the gateway.",
+    "hint": "This table only chooses which gateway alias each call site uses.",
     "callSite": "Call site",
+    "alias": "Alias",
+    "aliasFor": "Alias for {callSite}",
+    "enabled": "Enabled",
+    "toggleFor": "Enable {callSite}",
+    "effective": "Effective",
     "model": "Model",
     "source": "Source",
     "disabled": "disabled",
-    "inherit": "inherit"
+    "inherit": "inherit",
+    "inheritOption": "Inherit (workspace default)",
+    "effectiveUsing": "Using {model}",
+    "degradedUsing": "Degraded, using {model}",
+    "unavailableAlias": "{alias} (unavailable)",
+    "saveFailed": "Could not save the call site"
   }
 }

@@ -15,6 +15,7 @@ import { CALL_SITE_DEFAULTS } from "../../config/call-site-defaults.js";
 import {
   type ResolutionFallbackReason,
   resolveCallSite,
+  resolveCallSiteOutcome,
 } from "../../config/llm-resolver.js";
 import { getConfigReadOnly } from "../../config/loader.js";
 import { type LLMCallSite, LLMCallSiteEnum } from "../../config/schemas/llm.js";
@@ -32,7 +33,13 @@ const sourceEnum = z.enum([
   "call_site",
   "chat",
   "default",
+  "fallback",
   "disabled",
+]);
+
+const degradationReasonSchema = z.enum([
+  "call_site_alias_missing",
+  "catalog_empty",
 ]);
 
 const callSiteSummarySchema = z
@@ -40,6 +47,12 @@ const callSiteSummarySchema = z
     callSite: z.string(),
     model: z.string().nullable(),
     source: sourceEnum,
+    /** The alias that will actually be sent, null when disabled. */
+    effectiveModel: z.string().nullable(),
+    /** True when the configured alias is missing and a fallback won. */
+    degraded: z.boolean(),
+    /** Why the configured alias could not be used; null when not degraded. */
+    reason: degradationReasonSchema.nullable(),
     /** Notable tuning: the resolved context-window input cap, when set. */
     maxInputTokens: z.number().optional(),
   })
@@ -66,6 +79,12 @@ const callSiteDetailSchema = z
       .nullable(),
     /** Rungs the resolver considered and skipped, oldest-first. */
     resolutionChain: z.array(resolutionChainEntrySchema),
+    /** The alias that will actually be sent, null when disabled. */
+    effectiveModel: z.string().nullable(),
+    /** True when the configured alias is missing and a fallback won. */
+    degraded: z.boolean(),
+    /** Why the configured alias could not be used; null when not degraded. */
+    reason: degradationReasonSchema.nullable(),
     /** The shipped default fragment for this call site (code-owned). */
     shippedDefault: z.record(z.string(), z.unknown()),
     /** The user's call-site override fragment, if any. */
@@ -81,15 +100,29 @@ function summarizeCallSite(
   callSite: LLMCallSite,
   llm: Parameters<typeof resolveCallSite>[1],
 ) {
-  const resolution = resolveCallSite(callSite, llm, {});
-  if (resolution.status === "disabled") {
-    return { callSite, model: null, source: "disabled" as const };
+  const outcome = resolveCallSiteOutcome(callSite, llm);
+  if (outcome.source === "disabled") {
+    return {
+      callSite,
+      model: null,
+      source: "disabled" as const,
+      effectiveModel: null,
+      degraded: false,
+      reason: null,
+    };
   }
-  const maxInputTokens = resolution.config.contextWindow.maxInputTokens;
+  const resolution = resolveCallSite(callSite, llm, {});
+  const maxInputTokens =
+    resolution.status === "ok"
+      ? resolution.config.contextWindow.maxInputTokens
+      : undefined;
   return {
     callSite,
-    model: resolution.model,
-    source: resolution.source,
+    model: outcome.effectiveModel,
+    source: outcome.source,
+    effectiveModel: outcome.effectiveModel,
+    degraded: outcome.degraded,
+    reason: outcome.reason,
     ...(typeof maxInputTokens === "number" ? { maxInputTokens } : {}),
   };
 }
@@ -112,6 +145,7 @@ async function handleGetCallSite({ pathParams = {} }: RouteHandlerArgs) {
   }
   const callSite = parsedSite.data;
   const llm = getConfigReadOnly().llm;
+  const outcome = resolveCallSiteOutcome(callSite, llm);
 
   const resolutionChain: {
     requested: string;
@@ -156,6 +190,9 @@ async function handleGetCallSite({ pathParams = {} }: RouteHandlerArgs) {
           }
         : null,
     resolutionChain,
+    effectiveModel: outcome.effectiveModel,
+    degraded: outcome.degraded,
+    reason: outcome.reason,
     shippedDefault: CALL_SITE_DEFAULTS[callSite] as Record<string, unknown>,
     userPin: (llm.callSites?.[callSite] ?? null) as Record<
       string,

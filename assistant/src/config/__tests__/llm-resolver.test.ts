@@ -5,10 +5,13 @@ import {
   type CatalogSnapshot,
 } from "../llm-catalog.js";
 import {
+  __degradationLogCountForTests,
+  __resetDegradationLogForTests,
   isCallSiteDisabled,
   ModelNotInCatalogError,
   resolveCallSite,
   resolveCallSiteConfig,
+  resolveCallSiteOutcome,
   resolveEffectiveModel,
 } from "../llm-resolver.js";
 import { LLMSchema } from "../schemas/llm.js";
@@ -58,6 +61,7 @@ const catalog: CatalogSnapshot = {
 
 beforeEach(() => {
   __setCatalogSnapshotForTests(catalog);
+  __resetDegradationLogForTests();
 });
 afterEach(() => {
   __setCatalogSnapshotForTests(undefined);
@@ -142,6 +146,104 @@ describe("resolveCallSite", () => {
 
   test("resolveEffectiveModel reports null for a disabled site", () => {
     expect(resolveEffectiveModel("replySuggestion", llm())).toBeNull();
+  });
+});
+
+describe("resolveCallSite degradation", () => {
+  test("a missing call-site alias falls back to defaultModel", () => {
+    const outcome = resolveCallSiteOutcome(
+      "conversationTitle",
+      llm({
+        defaultModel: "main-pro",
+        callSites: { conversationTitle: { model: "missing" } },
+      }),
+    );
+    expect(outcome.configuredModel).toBe("missing");
+    expect(outcome.effectiveModel).toBe("main-pro");
+    expect(outcome.source).toBe("default");
+    expect(outcome.degraded).toBe(true);
+    expect(outcome.reason).toBe("call_site_alias_missing");
+  });
+
+  test("a missing defaultModel falls back to the shipped call-site default", () => {
+    const outcome = resolveCallSiteOutcome(
+      "conversationTitle",
+      llm({
+        defaultModel: "missing-default",
+        callSites: { conversationTitle: { model: "missing" } },
+      }),
+    );
+    expect(outcome.effectiveModel).toBe("fast");
+    expect(outcome.source).toBe("call_site");
+    expect(outcome.degraded).toBe(true);
+    expect(outcome.reason).toBe("call_site_alias_missing");
+  });
+
+  test("a missing defaultModel and shipped default fall back to a deterministic chat alias", () => {
+    const outcome = resolveCallSiteOutcome(
+      "mainAgent",
+      llm({
+        defaultModel: "missing-default",
+        callSites: { mainAgent: { model: "missing" } },
+      }),
+    );
+    expect(outcome.effectiveModel).toBe("main");
+    expect(outcome.source).toBe("fallback");
+    expect(outcome.degraded).toBe(true);
+    expect(outcome.reason).toBe("call_site_alias_missing");
+  });
+
+  test("an empty catalog still resolves the workspace default", () => {
+    __setCatalogSnapshotForTests({
+      entries: [],
+      fetchedAt: 1,
+      source: "gateway",
+    });
+    const outcome = resolveCallSiteOutcome(
+      "conversationTitle",
+      llm({
+        defaultModel: "main",
+        callSites: { conversationTitle: { model: "missing" } },
+      }),
+    );
+    expect(outcome.effectiveModel).toBe("main");
+    expect(outcome.degraded).toBe(true);
+    expect(outcome.reason).toBe("catalog_empty");
+  });
+
+  test("a disabled call site is not degraded", () => {
+    const outcome = resolveCallSiteOutcome("replySuggestion", llm());
+    expect(outcome.enabled).toBe(false);
+    expect(outcome.effectiveModel).toBeNull();
+    expect(outcome.source).toBe("disabled");
+    expect(outcome.degraded).toBe(false);
+    expect(outcome.reason).toBeNull();
+  });
+
+  test("a present alias resolves without degrading", () => {
+    const outcome = resolveCallSiteOutcome(
+      "conversationTitle",
+      llm({ callSites: { conversationTitle: { model: "main" } } }),
+    );
+    expect(outcome.configuredModel).toBe("main");
+    expect(outcome.effectiveModel).toBe("main");
+    expect(outcome.degraded).toBe(false);
+    expect(outcome.reason).toBeNull();
+  });
+
+  test("the missing alias is logged once per call site and alias", () => {
+    const config = llm({
+      callSites: { conversationTitle: { model: "missing" } },
+    });
+    resolveCallSite("conversationTitle", config);
+    resolveCallSite("conversationTitle", config);
+    expect(__degradationLogCountForTests()).toBe(1);
+
+    const other = llm({
+      callSites: { conversationTitle: { model: "missing-again" } },
+    });
+    resolveCallSite("conversationTitle", other);
+    expect(__degradationLogCountForTests()).toBe(2);
   });
 });
 

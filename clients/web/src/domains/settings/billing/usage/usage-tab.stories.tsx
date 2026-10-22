@@ -42,6 +42,7 @@ const CALL_SITES: ConfigLlmCallsitesGetResponse = {
     { id: "memory", displayName: "Memory" },
     { id: "schedules", displayName: "Schedules" },
   ],
+  catalogAvailable: true,
   callSites: [
     {
       id: "chat.turn",
@@ -49,6 +50,10 @@ const CALL_SITES: ConfigLlmCallsitesGetResponse = {
       description: "The model call behind each reply in a conversation.",
       domain: "chat",
       enabled: true,
+      configuredModel: null,
+      effectiveModel: "main",
+      degraded: false,
+      reason: null,
     },
     {
       id: "chat.title",
@@ -56,6 +61,10 @@ const CALL_SITES: ConfigLlmCallsitesGetResponse = {
       description: "Names a conversation after its first exchange.",
       domain: "chat",
       enabled: true,
+      configuredModel: null,
+      effectiveModel: "main",
+      degraded: false,
+      reason: null,
     },
     {
       id: "memory.extract",
@@ -63,6 +72,10 @@ const CALL_SITES: ConfigLlmCallsitesGetResponse = {
       description: "Pulls durable facts out of a finished conversation.",
       domain: "memory",
       enabled: true,
+      configuredModel: null,
+      effectiveModel: "main",
+      degraded: false,
+      reason: null,
     },
     {
       id: "schedules.run",
@@ -70,6 +83,10 @@ const CALL_SITES: ConfigLlmCallsitesGetResponse = {
       description: "Runs a schedule's message when it fires.",
       domain: "schedules",
       enabled: true,
+      configuredModel: null,
+      effectiveModel: "main",
+      degraded: false,
+      reason: null,
     },
   ],
 };

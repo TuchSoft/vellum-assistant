@@ -43,6 +43,40 @@ const records: RecordSource = {
   list: () => [{ account: "credential/psono-test/password", record }],
 };
 
+// Refs used to prove that two concurrent KV reads share one session and one
+// index build. Read-only: the backend only resolves the payloads.
+const SINGLE_FLIGHT_REFS = [
+  "llmgateway-devpass-key",
+  "Joanna-shared/mistral-key-joanna",
+];
+
+function refRecord(name: string): CredentialRecord {
+  return {
+    credentialId: `ref-${name}`,
+    service: "ref",
+    field: name,
+    ref: name,
+    kind: "json",
+    allowedTools: [],
+    allowedDomains: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+const singleFlightRecords: RecordSource = {
+  getByAccount: (account) => {
+    const prefix = "credential/ref/";
+    const name = account.startsWith(prefix) ? account.slice(prefix.length) : "";
+    return SINGLE_FLIGHT_REFS.includes(name) ? refRecord(name) : undefined;
+  },
+  list: () =>
+    SINGLE_FLIGHT_REFS.map((name) => ({
+      account: `credential/ref/${name}`,
+      record: refRecord(name),
+    })),
+};
+
 const live = existsSync(MATERIAL_PATH) ? describe : describe.skip;
 
 live("Psono integration (read-only)", () => {
@@ -207,6 +241,32 @@ live("Psono integration (read-only)", () => {
       const body = (await response!.json()) as { value: string };
       expect(typeof body.value).toBe("string");
       expect(body.value.length).toBeGreaterThan(0);
+    },
+    30_000,
+  );
+
+  test(
+    "resolves two refs concurrently with one session and one index build",
+    async () => {
+      const freshClient = new PsonoClient({
+        material: material!,
+        serverPublicKeyHex: material!.serverPublicKeyHex,
+      });
+      const freshTree = new PsonoTree(freshClient);
+      const freshBackend = new PsonoCredentialBackend({
+        client: freshClient,
+        tree: freshTree,
+        records: singleFlightRecords,
+      });
+
+      const [first, second] = await Promise.all([
+        freshBackend.getByRef("llmgateway-devpass-key"),
+        freshBackend.getByRef("Joanna-shared/mistral-key-joanna"),
+      ]);
+
+      expect(freshClient.getStatus().sessionOpen).toBe(true);
+      expect(Object.keys(first).length).toBeGreaterThan(0);
+      expect(Object.keys(second).length).toBeGreaterThan(0);
     },
     30_000,
   );

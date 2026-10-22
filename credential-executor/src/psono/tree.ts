@@ -101,6 +101,7 @@ function isExpired(
 
 export class PsonoTree {
   private index?: EntryIndex;
+  private indexPromise?: Promise<EntryIndex>;
   private indexBuiltAt = 0;
   private acceptedSinceBuild = false;
   private readonly ttlMs: number;
@@ -180,6 +181,14 @@ export class PsonoTree {
     return normalizePayload(parsed, entry.type ?? body.data.type);
   }
 
+  /**
+   * Return the current index, collapsing concurrent callers onto one build.
+   *
+   * Two references resolved in parallel would otherwise walk the whole share
+   * tree twice. The second caller awaits the first build and reuses it; a
+   * failed build rejects every waiter and clears the in-flight promise, so a
+   * later call retries.
+   */
   private async getIndex(): Promise<EntryIndex> {
     if (
       this.index &&
@@ -187,7 +196,15 @@ export class PsonoTree {
     ) {
       return this.index;
     }
+    if (!this.indexPromise) {
+      this.indexPromise = this.buildIndex().finally(() => {
+        this.indexPromise = undefined;
+      });
+    }
+    return this.indexPromise;
+  }
 
+  private async buildIndex(): Promise<EntryIndex> {
     const entries: PsonoEntry[] = [];
     const byPath = new Map<string, PsonoEntry>();
 

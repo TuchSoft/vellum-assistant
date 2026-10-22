@@ -58,6 +58,8 @@ class FakeClient implements PsonoTreeClient {
   readonly userKeyPair = sodium.crypto_box_keypair();
   readonly senderKeyPair = sodium.crypto_box_keypair();
   readonly acceptCalls: AcceptCall[] = [];
+  shareListCalls = 0;
+  shareListGate?: Promise<void>;
   shares: ShareRightFixture[];
 
   constructor(shares: ShareRightFixture[]) {
@@ -66,6 +68,10 @@ class FakeClient implements PsonoTreeClient {
 
   async request(path: string): Promise<unknown> {
     if (path === "/share/") {
+      this.shareListCalls += 1;
+      if (this.shareListGate) {
+        await this.shareListGate;
+      }
       return { shares: this.shares };
     }
     if (path === "/datastore/") {
@@ -246,6 +252,25 @@ describe("PsonoTree share collection", () => {
       client.userSecretKey,
     );
     expect(opened).toEqual(client.acceptedKey);
+  });
+
+  test("builds the index once for concurrent lookups", async () => {
+    const client = new FakeClient([shareRight({ id: "usable" })]);
+    client.addEntry("usable", "VALID");
+    let release!: () => void;
+    client.shareListGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const tree = new PsonoTree(client);
+    const pending = Promise.all([tree.find("VALID"), tree.find("VALID")]);
+    await Promise.resolve();
+    release();
+
+    const [first, second] = await pending;
+    expect(first.secretId).toBe("secret-usable");
+    expect(second.secretId).toBe(first.secretId);
+    expect(client.shareListCalls).toBe(1);
   });
 
   test("does not repeat the accept on a second build", async () => {

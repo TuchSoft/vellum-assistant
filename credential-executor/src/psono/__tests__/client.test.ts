@@ -107,6 +107,15 @@ function createFakeServer(): FakeServer {
       });
     }
 
+    if (url.endsWith("/share/")) {
+      return Response.json(
+        seal(
+          sodium.from_string(JSON.stringify({ shares: [] })),
+          sessionSecretKey,
+        ),
+      );
+    }
+
     if (url.endsWith("/share/right/accept/")) {
       const envelope = JSON.parse(String(init?.body)) as {
         text: string;
@@ -195,6 +204,65 @@ describe("PsonoClient session material", () => {
         server.userSecretKey,
       ),
     ).toEqual(shareKey);
+  });
+
+  test("opens a single session for concurrent requests", async () => {
+    const material = testMaterial();
+    const server = createFakeServer();
+    let logins = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      if (String(input).endsWith("/api-key/login/")) {
+        logins += 1;
+        await gate;
+      }
+      return server.fetchImpl(input, init);
+    }) as typeof fetch;
+    const client = new PsonoClient({ material, fetchImpl });
+
+    const pending = Promise.all([
+      client.request("/share/"),
+      client.request("/share/"),
+    ]);
+    await Promise.resolve();
+    release();
+
+    await expect(pending).resolves.toEqual([{ shares: [] }, { shares: [] }]);
+    expect(logins).toBe(1);
+  });
+
+  test("retries the login after a failed attempt", async () => {
+    const material = testMaterial();
+    const server = createFakeServer();
+    let logins = 0;
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      if (String(input).endsWith("/api-key/login/")) {
+        logins += 1;
+        if (logins === 1) {
+          return new Response("rejected", { status: 500 });
+        }
+      }
+      return server.fetchImpl(input, init);
+    }) as typeof fetch;
+    const client = new PsonoClient({ material, fetchImpl });
+
+    await expect(client.request("/share/")).rejects.toMatchObject({
+      kind: "unavailable",
+    });
+    expect(client.getStatus().sessionOpen).toBe(false);
+
+    await expect(client.request("/share/")).resolves.toEqual({ shares: [] });
+    expect(logins).toBe(2);
+    expect(client.getStatus().sessionOpen).toBe(true);
   });
 
   test("posts an accept body and decrypts the response", async () => {

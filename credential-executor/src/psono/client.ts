@@ -75,6 +75,7 @@ export class PsonoClient {
   private readonly sessionDurationSeconds: number;
   private serverPublicKeyHex?: string;
   private session?: Session;
+  private loginPromise?: Promise<void>;
   private lastRefresh: string | null = null;
   private lastError: string | null = null;
 
@@ -328,6 +329,14 @@ export class PsonoClient {
     return decoded;
   }
 
+  /**
+   * Open the session, collapsing concurrent callers onto a single login.
+   *
+   * Two KV requests can arrive while the session is closed (Antirion resolves
+   * its providers in parallel). The second caller awaits the first login
+   * instead of starting a competing one. A failed login rejects every waiter
+   * and clears the in-flight promise, so a later request retries.
+   */
   private async ensureSession(): Promise<void> {
     if (
       this.session &&
@@ -335,8 +344,12 @@ export class PsonoClient {
     ) {
       return;
     }
-    this.session = undefined;
-    await this.login();
+    if (!this.loginPromise) {
+      this.loginPromise = this.login().finally(() => {
+        this.loginPromise = undefined;
+      });
+    }
+    await this.loginPromise;
   }
 
   private decryptUserSecretKey(payload: PsonoSessionPayload): Uint8Array {

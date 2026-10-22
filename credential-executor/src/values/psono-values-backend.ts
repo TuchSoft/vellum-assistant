@@ -1,9 +1,13 @@
 /**
  * `keys.enc`-compatible backend served from Psono.
  *
- * The RPC CRUD contract is unchanged: `get` / `set` / `delete` / `list` take a
- * `credential/<service>/<field>` account. Values live in Psono entries named by
- * the record's `ref`; the CES metadata store keeps the mapping.
+ * The RPC CRUD contract is unchanged: `get` / `set` / `delete` / `list` take an
+ * account string. `credential/<service>/<field>` accounts keep their historical
+ * mapping; every other account (`mcp:<server>:headers`,
+ * `oauth_app/<id>/client_secret`, ...) derives a stable `service`/`field`
+ * identity, so it addresses one Psono entry like any credential. Values live in
+ * Psono entries named by the record's `ref`; the CES metadata store keeps the
+ * mapping and the account it was written under.
  *
  * `set` upserts the Psono entry and the record, `delete` removes both, and
  * `list` returns records that have a ref. The encrypted key store is not
@@ -22,7 +26,7 @@ import { asPsonoError } from "../psono/errors.js";
 import { defaultStackRef } from "../psono/refs.js";
 import type { SecretPayload } from "../psono/types.js";
 import {
-  parseCredentialAccount,
+  parseAccountIdentity,
   type CesMetadataStore,
 } from "../records/metadata-store.js";
 
@@ -84,20 +88,20 @@ export class PsonoValuesBackend implements SecureKeyBackend {
   }
 
   async set(account: string, value: string): Promise<boolean> {
-    const parsed = parseCredentialAccount(account);
-    if (!parsed) {
+    const identity = parseAccountIdentity(account);
+    if (!identity) {
       return false;
     }
     const existing = this.records.getByAccount(account);
     const ref =
       existing?.ref && existing.ref.trim() !== ""
         ? existing.ref
-        : defaultStackRef(parsed.service, parsed.field);
+        : defaultStackRef(identity.service, identity.field);
 
     await this.psono.createEntry(
       ref,
       {
-        title: `${parsed.service}/${parsed.field}`,
+        title: `${identity.service}/${identity.field}`,
         [VALUE_SOURCE_FIELD]: value,
       },
       "value",
@@ -108,8 +112,8 @@ export class PsonoValuesBackend implements SecureKeyBackend {
     const record: CredentialRecord = {
       ...existing,
       credentialId: existing?.credentialId ?? randomUUID(),
-      service: parsed.service,
-      field: parsed.field,
+      service: identity.service,
+      field: identity.field,
       ref,
       kind: "value",
       sourceField: VALUE_SOURCE_FIELD,

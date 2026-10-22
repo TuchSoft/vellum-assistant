@@ -57,6 +57,56 @@ export function accountForRecord(
   return `credential/${record.service}/${record.field}`;
 }
 
+/**
+ * Derive the `service`/`field` identity of any non-empty account.
+ *
+ * `credential/<service>/<field>` keeps its historical split. Every other
+ * account still names one logical secret, so it is split on its last `/` when
+ * it has a path (`oauth_app/<id>/client_secret`), then on its last `:`
+ * (`mcp:<server>/headers`), and otherwise the whole account becomes the
+ * service with `value` as the field. The identity addresses both the record and
+ * the Psono ref, so one account always maps to one entry.
+ */
+export function parseAccountIdentity(
+  account: string,
+): { service: string; field: string } | undefined {
+  const key = account.trim();
+  if (key === "") {
+    return undefined;
+  }
+  const legacy = parseCredentialAccount(key);
+  if (legacy) {
+    return legacy;
+  }
+  const slashIdx = key.lastIndexOf("/");
+  if (slashIdx > 0 && slashIdx < key.length - 1) {
+    return {
+      service: key.slice(0, slashIdx),
+      field: key.slice(slashIdx + 1),
+    };
+  }
+  const colonIdx = key.lastIndexOf(":");
+  if (colonIdx > 0 && colonIdx < key.length - 1) {
+    return {
+      service: key.slice(0, colonIdx),
+      field: key.slice(colonIdx + 1),
+    };
+  }
+  return { service: key, field: "value" };
+}
+
+/**
+ * Account a record was written under: the explicit `account` when it does not
+ * derive from `service`/`field`, the canonical `credential/<service>/<field>`
+ * otherwise.
+ */
+export function recordAccount(
+  record: Pick<CredentialRecord, "service" | "field" | "account">,
+): string {
+  const stored = record.account?.trim();
+  return stored ? stored : accountForRecord(record);
+}
+
 function isRecord(value: unknown): value is CredentialRecord {
   if (typeof value !== "object" || value == null) {
     return false;
@@ -66,6 +116,7 @@ function isRecord(value: unknown): value is CredentialRecord {
     typeof record.credentialId === "string" &&
     typeof record.service === "string" &&
     typeof record.field === "string" &&
+    (record.account === undefined || typeof record.account === "string") &&
     (record.ref === undefined || typeof record.ref === "string") &&
     (record.kind === undefined ||
       record.kind === "value" ||
@@ -88,26 +139,36 @@ export class CesMetadataStore {
   }
 
   getByAccount(account: string): CredentialRecord | undefined {
-    const parsed = parseCredentialAccount(account);
-    if (!parsed) {
+    const identity = parseAccountIdentity(account);
+    if (!identity) {
       return undefined;
     }
     return this.load().credentials.find(
       (record) =>
-        record.service === parsed.service && record.field === parsed.field,
+        record.service === identity.service &&
+        record.field === identity.field,
     );
   }
 
   setByAccount(account: string, record: CredentialRecord): boolean {
-    const parsed = parseCredentialAccount(account);
-    if (!parsed) {
+    const key = account.trim();
+    const identity = parseAccountIdentity(key);
+    if (!identity) {
       return false;
     }
-    if (parsed.service !== record.service || parsed.field !== record.field) {
+    if (
+      identity.service !== record.service ||
+      identity.field !== record.field
+    ) {
       return false;
     }
     const data = this.load();
     const copy: CredentialRecord = { ...record };
+    if (key === accountForRecord(record)) {
+      delete copy.account;
+    } else {
+      copy.account = key;
+    }
     const idx = data.credentials.findIndex(
       (entry) =>
         entry.service === record.service && entry.field === record.field,
@@ -122,14 +183,14 @@ export class CesMetadataStore {
   }
 
   deleteByAccount(account: string): "deleted" | "not-found" | "error" {
-    const parsed = parseCredentialAccount(account);
-    if (!parsed) {
+    const identity = parseAccountIdentity(account);
+    if (!identity) {
       return "error";
     }
     const data = this.load();
     const idx = data.credentials.findIndex(
       (entry) =>
-        entry.service === parsed.service && entry.field === parsed.field,
+        entry.service === identity.service && entry.field === identity.field,
     );
     if (idx === -1) {
       return "not-found";
@@ -141,7 +202,7 @@ export class CesMetadataStore {
 
   list(): Array<{ account: string; record: CredentialRecord }> {
     return this.load().credentials.map((record) => ({
-      account: accountForRecord(record),
+      account: recordAccount(record),
       record,
     }));
   }

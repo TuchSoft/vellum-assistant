@@ -212,6 +212,11 @@ export const CredentialRecordSchema = z.object({
   credentialId: z.string(),
   service: z.string(),
   field: z.string(),
+  /**
+   * Account the record was written under, when it is not
+   * `credential/{service}/{field}` (for example `mcp:<server>:headers`).
+   */
+  account: z.string().optional(),
   /** Logical Psono reference (for example `services/llmgateway`). */
   ref: z.string().optional(),
   /** How the referenced entry is served: one value, a file, or a JSON payload. */

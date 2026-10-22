@@ -1,50 +1,25 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, test } from "bun:test";
 
 import type { CredentialRecord } from "@vellumai/service-contracts/credential-rpc";
 
 import { PsonoError } from "../../psono/errors.js";
+import { defaultStackRef } from "../../psono/refs.js";
 import type { SecretPayload } from "../../psono/types.js";
 import {
+  accountForRecord,
+  CesMetadataStore,
+  getMetadataPath,
   parseCredentialAccount,
-  type CesMetadataStore,
 } from "../../records/metadata-store.js";
 import {
   PsonoValuesBackend,
   VALUE_SOURCE_FIELD,
   type PsonoValuesSource,
 } from "../psono-values-backend.js";
-
-class InMemoryRecords {
-  private readonly rows = new Map<string, CredentialRecord>();
-
-  getByAccount(account: string): CredentialRecord | undefined {
-    return this.rows.get(account);
-  }
-
-  setByAccount(account: string, record: CredentialRecord): boolean {
-    const parsed = parseCredentialAccount(account);
-    if (!parsed) {
-      return false;
-    }
-    this.rows.set(account, { ...record });
-    return true;
-  }
-
-  deleteByAccount(account: string): "deleted" | "not-found" {
-    return this.rows.delete(account) ? "deleted" : "not-found";
-  }
-
-  list(): Array<{ account: string; record: CredentialRecord }> {
-    return [...this.rows.entries()].map(([account, record]) => ({
-      account,
-      record,
-    }));
-  }
-
-  seed(record: CredentialRecord): void {
-    this.rows.set(`credential/${record.service}/${record.field}`, record);
-  }
-}
 
 class FakePsono implements PsonoValuesSource {
   readonly entries = new Map<string, SecretPayload>();
@@ -53,7 +28,10 @@ class FakePsono implements PsonoValuesSource {
   invalidations = 0;
 
   async resolve(service: string, field: string): Promise<{ value: string }> {
-    const payload = this.entries.get(`${service}/${field}`);
+    // Records name the entry by ref; legacy tests seed the `service/field` key.
+    const payload =
+      this.entries.get(defaultStackRef(service, field)) ??
+      this.entries.get(`${service}/${field}`);
     const value = payload?.["password"];
     if (typeof value !== "string") {
       throw new PsonoError("not_found", "missing");
@@ -99,27 +77,48 @@ describe("parseCredentialAccount", () => {
 describe("PsonoValuesBackend", () => {
   function setup(): {
     psono: FakePsono;
-    records: InMemoryRecords;
+    records: CesMetadataStore;
     backend: PsonoValuesBackend;
   } {
     const psono = new FakePsono();
-    const records = new InMemoryRecords();
+    const dir = mkdtempSync(join(tmpdir(), "ces-values-"));
+    const records = new CesMetadataStore(getMetadataPath(dir));
     const backend = new PsonoValuesBackend({
       psono,
-      records: records as unknown as CesMetadataStore,
+      records,
       now: () => 1_000,
     });
     return { psono, records, backend };
   }
 
-  test("get returns undefined without a record or a ref", async () => {
+  function seed(records: CesMetadataStore, record: CredentialRecord): void {
+    const account = record.account ?? accountForRecord(record);
+    expect(records.setByAccount(account, record)).toBe(true);
+  }
+
+  test("get returns undefined without a record", async () => {
     const { backend } = setup();
     expect(await backend.get("credential/demo/missing")).toBeUndefined();
   });
 
+  test("get returns undefined when the record has no ref", async () => {
+    const { records, backend } = setup();
+    seed(records, {
+      credentialId: "c1",
+      service: "demo",
+      field: "token",
+      kind: "value",
+      allowedTools: [],
+      allowedDomains: [],
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    expect(await backend.get("credential/demo/token")).toBeUndefined();
+  });
+
   test("get returns undefined when the entry is missing", async () => {
     const { records, backend } = setup();
-    records.seed({
+    seed(records, {
       credentialId: "c1",
       service: "demo",
       field: "token",
@@ -136,7 +135,7 @@ describe("PsonoValuesBackend", () => {
   test("get resolves through the record", async () => {
     const { psono, records, backend } = setup();
     psono.entries.set("demo/token", { password: "secret-value" });
-    records.seed({
+    seed(records, {
       credentialId: "c1",
       service: "demo",
       field: "token",
@@ -163,6 +162,7 @@ describe("PsonoValuesBackend", () => {
     expect(first?.kind).toBe("value");
     expect(first?.sourceField).toBe(VALUE_SOURCE_FIELD);
     expect(first?.allowedTools).toEqual([]);
+    expect(first?.account).toBeUndefined();
     expect(psono.kinds).toEqual(["value"]);
 
     expect(await backend.set(account, "second")).toBe(true);
@@ -176,7 +176,7 @@ describe("PsonoValuesBackend", () => {
   test("set keeps an existing ref instead of relocating the entry", async () => {
     const { psono, records, backend } = setup();
     const account = "credential/demo/token";
-    records.seed({
+    seed(records, {
       credentialId: "c1",
       service: "demo",
       field: "token",
@@ -193,9 +193,78 @@ describe("PsonoValuesBackend", () => {
     );
   });
 
-  test("set rejects a malformed account", async () => {
+  test("set accepts an mcp header account and derives a stable ref", async () => {
+    const { psono, records, backend } = setup();
+    const account = "mcp:tools:headers";
+
+    expect(await backend.set(account, '{"Authorization":"Bearer x"}')).toBe(
+      true,
+    );
+    const record = records.getByAccount(account);
+    expect(record?.service).toBe("mcp:tools");
+    expect(record?.field).toBe("headers");
+    expect(record?.account).toBe(account);
+    expect(record?.ref).toBe("Joanna-shared/stack/mcp:tools-headers");
+    expect(record?.kind).toBe("value");
+    expect(record?.sourceField).toBe(VALUE_SOURCE_FIELD);
+    expect(
+      psono.entries.get("Joanna-shared/stack/mcp:tools-headers")?.[
+        VALUE_SOURCE_FIELD
+      ],
+    ).toBe('{"Authorization":"Bearer x"}');
+
+    expect(await backend.get(account)).toBe('{"Authorization":"Bearer x"}');
+    expect(await backend.list()).toEqual([account]);
+  });
+
+  test("set distinguishes mcp servers by account", async () => {
+    const { records, backend } = setup();
+    expect(await backend.set("mcp:tools:headers", "a")).toBe(true);
+    expect(await backend.set("mcp:web:headers", "b")).toBe(true);
+
+    expect(records.getByAccount("mcp:tools:headers")?.ref).toBe(
+      "Joanna-shared/stack/mcp:tools-headers",
+    );
+    expect(records.getByAccount("mcp:web:headers")?.ref).toBe(
+      "Joanna-shared/stack/mcp:web-headers",
+    );
+    expect(await backend.list()).toEqual([
+      "mcp:tools:headers",
+      "mcp:web:headers",
+    ]);
+  });
+
+  test("set accepts an OAuth client secret account", async () => {
+    const { psono, records, backend } = setup();
+    const account = "oauth_app/aaaa-bbbb/client_secret";
+
+    expect(await backend.set(account, "client-secret")).toBe(true);
+    const record = records.getByAccount(account);
+    expect(record?.service).toBe("oauth_app/aaaa-bbbb");
+    expect(record?.field).toBe("client_secret");
+    expect(record?.account).toBe(account);
+    expect(record?.ref).toBe(
+      "Joanna-shared/stack/oauth-app-aaaa-bbbb-client-secret",
+    );
+    expect(await backend.get(account)).toBe("client-secret");
+    expect(psono.deleted).toEqual([]);
+  });
+
+  test("an account and its credential-prefixed form share one record", async () => {
+    const { records, backend } = setup();
+    expect(await backend.set("mcp:tools:headers", "a")).toBe(true);
+    expect(await backend.get("credential/mcp:tools/headers")).toBe("a");
+
+    expect(await backend.set("credential/mcp:tools/headers", "b")).toBe(true);
+    expect(await backend.get("mcp:tools:headers")).toBe("b");
+    expect(records.list()).toHaveLength(1);
+    expect(await backend.list()).toEqual(["credential/mcp:tools/headers"]);
+  });
+
+  test("set rejects an empty account", async () => {
     const { backend } = setup();
-    expect(await backend.set("demo/token", "v")).toBe(false);
+    expect(await backend.set("", "v")).toBe(false);
+    expect(await backend.set("   ", "v")).toBe(false);
   });
 
   test("delete removes the entry and the record", async () => {
@@ -210,10 +279,23 @@ describe("PsonoValuesBackend", () => {
     expect(await backend.delete(account)).toBe("not-found");
   });
 
+  test("delete removes an arbitrary account", async () => {
+    const { psono, records, backend } = setup();
+    const account = "oauth_connection/bbbb/refresh_token";
+    await backend.set(account, "refresh");
+    const ref = records.getByAccount(account)!.ref!;
+
+    expect(await backend.delete(account)).toBe("deleted");
+    expect(psono.deleted).toEqual([ref]);
+    expect(psono.entries.has(ref)).toBe(false);
+    expect(records.getByAccount(account)).toBeUndefined();
+    expect(await backend.list()).toEqual([]);
+  });
+
   test("delete succeeds when the Psono entry is already gone", async () => {
     const { records, backend } = setup();
     const account = "credential/ces/write-test";
-    records.seed({
+    seed(records, {
       credentialId: "c1",
       service: "ces",
       field: "write-test",
@@ -229,7 +311,7 @@ describe("PsonoValuesBackend", () => {
 
   test("list returns only records that have a ref", async () => {
     const { records, backend } = setup();
-    records.seed({
+    seed(records, {
       credentialId: "c1",
       service: "demo",
       field: "with-ref",
@@ -240,7 +322,7 @@ describe("PsonoValuesBackend", () => {
       createdAt: 1,
       updatedAt: 1,
     });
-    records.seed({
+    seed(records, {
       credentialId: "c2",
       service: "demo",
       field: "no-ref",

@@ -11,6 +11,7 @@ import { importWorkspaceMetadataMigration } from "../migrations/003-import-works
 import {
   CesMetadataStore,
   getMetadataPath,
+  parseAccountIdentity,
   parseCredentialAccount,
 } from "../records/metadata-store.js";
 
@@ -63,10 +64,88 @@ describe("CesMetadataStore", () => {
         makeRecord("gitlab", "token"),
       ),
     ).toBe(false);
+    expect(
+      store.setByAccount("mcp:web:headers", makeRecord("mcp:tools", "headers")),
+    ).toBe(false);
+  });
+
+  test("round-trips an account that is not credential-prefixed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ces-metadata-"));
+    const path = getMetadataPath(dir);
+    const store = new CesMetadataStore(path);
+    const record = makeRecord("mcp:tools", "headers");
+
+    expect(store.setByAccount("mcp:tools:headers", record)).toBe(true);
+    expect(store.getByAccount("mcp:tools:headers")).toEqual({
+      ...record,
+      account: "mcp:tools:headers",
+    });
+    expect(store.getByAccount("credential/mcp:tools/headers")).toEqual({
+      ...record,
+      account: "mcp:tools:headers",
+    });
+    expect(store.list()).toEqual([
+      { account: "mcp:tools:headers", record: { ...record, account: "mcp:tools:headers" } },
+    ]);
+
+    const reloaded = new CesMetadataStore(path);
+    expect(reloaded.getByAccount("mcp:tools:headers")?.account).toBe(
+      "mcp:tools:headers",
+    );
+
+    expect(reloaded.deleteByAccount("mcp:tools:headers")).toBe("deleted");
+    expect(reloaded.list()).toEqual([]);
+  });
+
+  test("normalizes a credential-prefixed write and rejects an empty account", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ces-metadata-"));
+    const store = new CesMetadataStore(getMetadataPath(dir));
+    const record = makeRecord("github", "token");
+
+    expect(store.setByAccount("  credential/github/token  ", record)).toBe(
+      true,
+    );
+    expect(store.getByAccount("credential/github/token")?.account).toBeUndefined();
+    expect(store.setByAccount("", record)).toBe(false);
+    expect(store.setByAccount("   ", record)).toBe(false);
+    expect(store.deleteByAccount("")).toBe("error");
   });
 
   test("writes metadata.json under the CES data root", () => {
     expect(getMetadataPath("/tmp/ces-data")).toBe("/tmp/ces-data/metadata.json");
+  });
+});
+
+describe("parseAccountIdentity", () => {
+  test("keeps the credential split", () => {
+    expect(parseAccountIdentity("credential/integration:google/access_token"))
+      .toEqual({ service: "integration:google", field: "access_token" });
+  });
+
+  test("splits a path account on its last slash", () => {
+    expect(parseAccountIdentity("oauth_app/aaaa/client_secret")).toEqual({
+      service: "oauth_app/aaaa",
+      field: "client_secret",
+    });
+  });
+
+  test("splits a colon account on its last colon", () => {
+    expect(parseAccountIdentity("mcp:tools:headers")).toEqual({
+      service: "mcp:tools",
+      field: "headers",
+    });
+  });
+
+  test("falls back to the whole account", () => {
+    expect(parseAccountIdentity("plain-account")).toEqual({
+      service: "plain-account",
+      field: "value",
+    });
+  });
+
+  test("rejects an empty account", () => {
+    expect(parseAccountIdentity("")).toBeUndefined();
+    expect(parseAccountIdentity("   ")).toBeUndefined();
   });
 });
 

@@ -7,6 +7,7 @@ import type { SecureKeyBackend } from "@vellumai/credential-storage";
 
 import { CesMetadataStore } from "../../records/metadata-store.js";
 import {
+  discoverMigrationEntries,
   migrateCredentialsToPsono,
   PSONO_MIGRATION_ENTRIES,
   type PsonoEntryReader,
@@ -184,6 +185,137 @@ describe("migrateCredentialsToPsono", () => {
     expect(report.failures[0]?.reason).toBe("missing");
     expect(entries.writes).not.toContain("Joanna-shared/stack/ipcert-ftp");
     expect(records.getByAccount("credential/ipcert/ftp")).toBeUndefined();
+  });
+
+  test("--all migrates every key, including service credentials and OAuth material", async () => {
+    const { keys, entries, records } = setup();
+    const extra: Record<string, string> = {
+      "credential/brave/api_key": "brave-value",
+      "credential/openai-compatible-personal-2/api_key": "dormant-one",
+      "credential/openai-compatible/omniroute": "dormant-two",
+      "oauth_app/aaaa/client_secret": "oauth-client-secret",
+      "oauth_connection/bbbb/access_token": "oauth-access",
+      "oauth_connection/bbbb/refresh_token": "oauth-refresh",
+    };
+    for (const [key, value] of Object.entries(extra)) {
+      keys.values.set(key, value);
+    }
+    keys.accounts.splice(0, keys.accounts.length, ...keys.values.keys());
+
+    const report = await migrateCredentialsToPsono({
+      keys,
+      writer: entries,
+      reader: entries,
+      records,
+      all: true,
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.entries).toHaveLength(14);
+    expect(report.failures).toEqual([]);
+    expect(report.unlistedCredentialAccounts).toEqual([]);
+    expect(report.otherKeyNames).toEqual([]);
+    expect(new Set(report.entries.map((outcome) => outcome.ref)).size).toBe(14);
+
+    expect(
+      records.getByAccount("credential/openai-compatible-personal-2/api_key")
+        ?.ref,
+    ).toBe("Joanna-shared/stack/openai-compatible-personal-2-api-key");
+    expect(
+      records.getByAccount("credential/oauth_app/aaaa/client_secret")?.ref,
+    ).toBe("Joanna-shared/stack/oauth-app-aaaa-client-secret");
+    expect(
+      records.getByAccount("credential/oauth_connection/bbbb/refresh_token")
+        ?.sourceField,
+    ).toBe("password");
+  });
+
+  test("colliding slugs are disambiguated deterministically", () => {
+    const discovered = discoverMigrationEntries([
+      "credential/a_b/c",
+      "credential/a/b_c",
+      "credential/oauth_app/cccc/client_secret",
+      "credential/oauth_app/cccc/client-secret",
+    ]);
+    const slugs = discovered.map((entry) => entry.slug);
+    expect(slugs).toHaveLength(4);
+    expect(new Set(slugs).size).toBe(4);
+
+    const again = discoverMigrationEntries([
+      "credential/a_b/c",
+      "credential/a/b_c",
+      "credential/oauth_app/cccc/client_secret",
+      "credential/oauth_app/cccc/client-secret",
+    ]);
+    expect(again.map((entry) => entry.slug)).toEqual(slugs);
+  });
+
+  test("a colliding legacy entry keeps its base slug", () => {
+    const discovered = discoverMigrationEntries([
+      "credential/vellum/webhook_secret",
+      "credential/vellum/webhook-secret",
+    ]);
+    const byKey = new Map(
+      discovered.map((entry) => [entry.keyName, entry.slug]),
+    );
+    expect(byKey.get("credential/vellum/webhook_secret")).toBe(
+      "vellum-webhook-secret",
+    );
+    expect(byKey.get("credential/vellum/webhook-secret")).not.toBe(
+      "vellum-webhook-secret",
+    );
+  });
+
+  test("--all is idempotent and does not rewrite aligned entries or records", async () => {
+    const { keys, entries, records } = setup();
+    keys.values.set("oauth_app/aaaa/client_secret", "oauth-client-secret");
+    keys.accounts.splice(0, keys.accounts.length, ...keys.values.keys());
+
+    const first = await migrateCredentialsToPsono({
+      keys,
+      writer: entries,
+      reader: entries,
+      records,
+      all: true,
+      now: () => 1_000,
+    });
+    const writesAfterFirst = entries.writes.length;
+    const recordsAfterFirst = records.list();
+
+    const second = await migrateCredentialsToPsono({
+      keys,
+      writer: entries,
+      reader: entries,
+      records,
+      all: true,
+      now: () => 2_000,
+    });
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(entries.writes.length).toBe(writesAfterFirst);
+    expect(second.entries.every((outcome) => outcome.unchanged)).toBe(true);
+    expect(records.list()).toEqual(recordsAfterFirst);
+    expect(records.list()).toHaveLength(9);
+  });
+
+  test("--all fails the gate when the key store cannot be listed", async () => {
+    const { entries, records } = setup();
+    const keys = new FakeKeys();
+    keys.list = async () => {
+      throw new Error("unreadable");
+    };
+
+    const report = await migrateCredentialsToPsono({
+      keys,
+      writer: entries,
+      reader: entries,
+      records,
+      all: true,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.entries).toEqual([]);
   });
 
   test("reports unlisted key store entries by name", async () => {

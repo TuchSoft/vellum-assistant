@@ -10,11 +10,13 @@
  *   ces get <account>
  *   ces set <account> <value>
  *   ces delete <account>
- *   ces migrate-psono
+ *   ces migrate-psono [--all]
  *
- * `migrate-psono` copies the active credentials from `keys.enc` into Psono
+ * `migrate-psono` copies credentials from `keys.enc` into Psono
  * (`Joanna-shared/stack`), verifies every value by SHA-256, and points the
- * credential records at their entries. It never prints a value.
+ * credential records at their entries. `--all` migrates every key in the
+ * store, including service credentials and OAuth material. It never prints a
+ * value.
  *
  * Account format: `credential/<service>/<field>` (e.g. `credential/vellum/platform_organization_id`)
  *
@@ -137,6 +139,7 @@ async function main(): Promise<void> {
     }
 
     case "migrate-psono": {
+      const all = args.includes("--all");
       initMetadataStore(getCesDataRoot());
       const records = getMetadataStore();
       const psono = createPsonoBackendFromEnv(records);
@@ -151,15 +154,20 @@ async function main(): Promise<void> {
         writer: psono,
         reader: psono,
         records,
+        all,
       });
       for (const entry of report.entries) {
-        const status = entry.ok ? "ok" : `fail:${entry.reason ?? "error"}`;
+        const status = entry.ok
+          ? entry.unchanged
+            ? "ok (unchanged)"
+            : "ok"
+          : `fail:${entry.reason ?? "error"}`;
         console.log(
           `${entry.service}/${entry.field} ${status} hash=${entry.hashPrefix}`,
         );
       }
       console.log(
-        `migration: ${report.entries.length - report.failures.length}/${report.entries.length} ok`,
+        `migration: ${report.entries.length - report.failures.length}/${report.entries.length} ok${all ? " (all)" : ""}`,
       );
       if (report.unlistedCredentialAccounts.length > 0) {
         console.log(
@@ -196,7 +204,7 @@ Usage:
   ces get <account>            Get a credential value
   ces set <account> <value>    Set a credential value
   ces delete <account>         Delete a credential
-  ces migrate-psono            Migrate active credentials from keys.enc to Psono
+  ces migrate-psono [--all]   Migrate credentials from keys.enc to Psono
 
 Account format:
   credential/<service>/<field>

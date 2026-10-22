@@ -27,7 +27,12 @@ export function refSlug(service: string, field: string): string {
     .replace(/^-|-$/g, "");
 }
 
+/** Reference for an explicit slug inside the stack folder. */
+export function stackRefForSlug(slug: string): string {
+  return `${STACK_REF_PREFIX}/${slug}`;
+}
+
 /** Default Psono reference for a credential (`Joanna-shared/stack/<slug>`). */
 export function defaultStackRef(service: string, field: string): string {
-  return `${STACK_REF_PREFIX}/${refSlug(service, field)}`;
+  return stackRefForSlug(refSlug(service, field));
 }

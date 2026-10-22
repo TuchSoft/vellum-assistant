@@ -107,6 +107,21 @@ export const PsonoSecretDetailSchema = z
   })
   .passthrough();
 
+export const PsonoCreateSecretResponseSchema = z
+  .object({
+    secret_id: z.string(),
+  })
+  .passthrough();
+export type PsonoCreateSecretResponse = z.infer<
+  typeof PsonoCreateSecretResponseSchema
+>;
+
+/**
+ * Share and secret mutations answer with a small acknowledgement object. The
+ * exact keys are not part of the contract, so only the envelope is checked.
+ */
+export const PsonoMutationResponseSchema = z.object({}).passthrough();
+
 export const PsonoDatastoreSchema = z
   .object({
     id: z.string(),
@@ -138,6 +153,31 @@ export const PAYLOAD_METADATA_FIELDS = new Set([
   "custom_fields",
   "password_hash",
 ]);
+
+/** One entry reference inside a share folder tree. */
+export interface PsonoShareItem {
+  id?: string;
+  name?: string;
+  type?: string;
+  secret_id?: string;
+  secret_key?: string;
+  urlfilter?: string;
+  deleted?: boolean;
+  [key: string]: unknown;
+}
+
+/** A folder node inside the decrypted share content. */
+export interface PsonoShareFolder {
+  id?: string;
+  name?: string;
+  items?: PsonoShareItem[];
+  folders?: PsonoShareFolder[];
+  deleted?: boolean;
+  [key: string]: unknown;
+}
+
+/** The decrypted content of a share (its root is a folder). */
+export type PsonoShareContent = PsonoShareFolder;
 
 export type SecretPayload = Record<string, unknown>;
 

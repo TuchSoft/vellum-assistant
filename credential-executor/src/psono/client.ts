@@ -29,8 +29,10 @@ import {
 } from "./errors.js";
 import type { PsonoMaterial } from "./material.js";
 import {
+  PsonoCreateSecretResponseSchema,
   PsonoInfoResponseSchema,
   PsonoLoginResponseSchema,
+  PsonoMutationResponseSchema,
   PsonoServerInfoSchema,
   PsonoSessionPayloadSchema,
   type PsonoSessionPayload,
@@ -55,6 +57,28 @@ export interface PsonoClientOptions {
   now?: () => number;
   timeoutMs?: number;
   sessionDurationSeconds?: number;
+}
+
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+
+export interface CreateSecretInput {
+  data: string;
+  data_nonce: string;
+  link_id: string;
+  parent_share_id: string;
+  callback_url: string;
+  callback_user: string;
+  callback_pass: string;
+}
+
+export interface SecretPayloadInput {
+  data: string;
+  data_nonce: string;
+}
+
+export interface SharePayloadInput {
+  data: string;
+  data_nonce: string;
 }
 
 interface Session {
@@ -254,7 +278,7 @@ export class PsonoClient {
    * On an authentication failure the session is re-opened once.
    */
   async request(path: string, retryOnAuth = true): Promise<unknown> {
-    return this.send(path, undefined, retryOnAuth);
+    return this.send(path, undefined, retryOnAuth, "GET");
   }
 
   /**
@@ -268,13 +292,79 @@ export class PsonoClient {
     body: unknown,
     retryOnAuth = true,
   ): Promise<unknown> {
-    return this.send(path, body, retryOnAuth);
+    return this.send(path, body, retryOnAuth, "POST");
+  }
+
+  /** Create a secret and return its server id. */
+  async createSecret(input: CreateSecretInput): Promise<{ secretId: string }> {
+    const result = await this.send("/secret/", input, true, "PUT");
+    const parsed = PsonoCreateSecretResponseSchema.safeParse(result);
+    if (!parsed.success) {
+      throw unavailable(
+        "Psono secret creation response has an unexpected shape",
+      );
+    }
+    return { secretId: parsed.data.secret_id };
+  }
+
+  /** Replace the encrypted payload of an existing secret. */
+  async updateSecret(
+    secretId: string,
+    payload: SecretPayloadInput,
+  ): Promise<void> {
+    const result = await this.send(
+      `/secret/${encodeURIComponent(secretId)}/`,
+      { secret_id: secretId, ...payload },
+      true,
+      "POST",
+    );
+    if (!PsonoMutationResponseSchema.safeParse(result).success) {
+      throw unavailable("Psono secret update response has an unexpected shape");
+    }
+  }
+
+  /**
+   * Delete the link that attaches a secret to its share.
+   *
+   * Psono addresses a link by the share item's `id`, not by the secret id; the
+   * secret row is not addressed directly.
+   */
+  async deleteSecretLink(linkId: string): Promise<void> {
+    const result = await this.send(
+      "/secret/link/",
+      { link_id: linkId },
+      true,
+      "DELETE",
+    );
+    if (
+      result !== undefined &&
+      !PsonoMutationResponseSchema.safeParse(result).success
+    ) {
+      throw unavailable("Psono secret deletion response has an unexpected shape");
+    }
+  }
+
+  /** Replace the encrypted content of a share. */
+  async updateShare(
+    shareId: string,
+    payload: SharePayloadInput,
+  ): Promise<void> {
+    const result = await this.send(
+      "/share/",
+      { share_id: shareId, ...payload },
+      true,
+      "PUT",
+    );
+    if (!PsonoMutationResponseSchema.safeParse(result).success) {
+      throw unavailable("Psono share update response has an unexpected shape");
+    }
   }
 
   private async send(
     path: string,
     body: unknown,
     retryOnAuth: boolean,
+    method: HttpMethod,
   ): Promise<unknown> {
     await this.ensureSession();
 
@@ -290,7 +380,7 @@ export class PsonoClient {
       response = await this.rawFetch(
         path,
         {
-          method: body === undefined ? "GET" : "POST",
+          method,
           headers: {
             Authorization: `Token ${this.session!.token}`,
             ...(body === undefined
@@ -316,7 +406,7 @@ export class PsonoClient {
       this.invalidateSession();
       if (retryOnAuth) {
         await this.ensureSession();
-        return this.send(path, body, false);
+        return this.send(path, body, false, method);
       }
       throw this.recordError(unauthorized("Psono session rejected"));
     }
@@ -461,11 +551,17 @@ export class PsonoClient {
   }
 
   private async decodeBody(response: Response): Promise<unknown> {
+    if (response.status === 204) {
+      return undefined;
+    }
     let body: unknown;
     try {
       body = await response.json();
     } catch {
       if (!response.ok) {
+        return undefined;
+      }
+      if (response.headers.get("content-length") === "0") {
         return undefined;
       }
       throw this.recordError(unavailable("Psono returned a non-JSON body"));

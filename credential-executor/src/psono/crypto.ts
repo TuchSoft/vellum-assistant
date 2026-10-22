@@ -97,6 +97,13 @@ export function secretBoxSeal(
 }
 
 /**
+ * Generate a fresh 32-byte SecretBox key, as a Psono entry secret key.
+ */
+export function generateSecretKey(): Uint8Array {
+  return sodium.randombytes_buf(sodium.crypto_secretbox_KEYBYTES);
+}
+
+/**
  * Normalize a decrypted key: Psono returns some keys as raw 32-byte values and
  * others as their 64-character hex encoding.
  */

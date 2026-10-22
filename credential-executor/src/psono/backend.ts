@@ -10,16 +10,32 @@
  * `keys.enc` backend.
  */
 
+import { randomUUID } from "node:crypto";
+
 import type { CredentialRecord } from "@vellumai/service-contracts/credential-rpc";
 
 import type { PsonoStatus } from "./client.js";
 import { TtlCache } from "./cache.js";
-import { notFound } from "./errors.js";
+import {
+  bytesToHex,
+  generateSecretKey,
+  hexToBytes,
+  secretBoxSeal,
+  utf8ToBytes,
+} from "./crypto.js";
+import { denied, notFound } from "./errors.js";
 import { loadMaterialFromEnv } from "./material.js";
 import { PsonoClient } from "./client.js";
-import { PsonoTree, type PsonoEntry } from "./tree.js";
+import {
+  PsonoTree,
+  type PsonoEntry,
+  type ShareHandle,
+} from "./tree.js";
 import {
   selectField,
+  type PsonoShareContent,
+  type PsonoShareFolder,
+  type PsonoShareItem,
   type SecretPayload,
 } from "./types.js";
 
@@ -44,24 +60,164 @@ export interface RecordSource {
   list(): Array<{ account: string; record: CredentialRecord }>;
 }
 
-/** Narrow client surface the backend needs (status only). */
+/** Narrow client surface the backend needs (status and writes). */
 export interface PsonoStatusSource {
   getStatus(): PsonoStatus;
 }
+
+export interface PsonoWriteClient {
+  createSecret(input: {
+    data: string;
+    data_nonce: string;
+    link_id: string;
+    parent_share_id: string;
+    callback_url: string;
+    callback_user: string;
+    callback_pass: string;
+  }): Promise<{ secretId: string }>;
+  updateSecret(
+    secretId: string,
+    payload: { data: string; data_nonce: string },
+  ): Promise<void>;
+  deleteSecretLink(linkId: string): Promise<void>;
+}
+
+export interface PsonoClientSource extends PsonoStatusSource, PsonoWriteClient {}
 
 /** Narrow tree surface the backend needs. */
 export interface PsonoTreeSource {
   find(ref: string): Promise<PsonoEntry>;
   readPayload(entry: PsonoEntry): Promise<SecretPayload>;
+  readRawPayload(entry: PsonoEntry): Promise<SecretPayload>;
+  openWritableShare(): Promise<ShareHandle>;
   invalidate(): void;
 }
 
 export interface PsonoBackendOptions {
-  client: PsonoStatusSource;
+  client: PsonoClientSource;
   tree: PsonoTreeSource;
   records: RecordSource;
   now?: () => number;
   valueTtlMs?: number;
+}
+
+export interface EntryWriteResult {
+  created: boolean;
+}
+
+export interface EntryDeleteResult {
+  deleted: boolean;
+}
+
+/** Psono entry type used for each logical record kind. */
+function psonoTypeForKind(kind: RecordKind): string {
+  switch (kind) {
+    case "file":
+      return "file";
+    case "json":
+      return "note";
+    default:
+      return "website_password";
+  }
+}
+
+/**
+ * Prefix payload keys with the entry type, which is how Psono stores them and
+ * what `normalizePayload` strips again on read.
+ */
+function toPsonoPayload(
+  type: string,
+  fields: SecretPayload,
+): SecretPayload {
+  const prefix = `${type}_`;
+  const payload: SecretPayload = {};
+  for (const [key, value] of Object.entries(fields)) {
+    payload[key.startsWith(prefix) ? key : `${prefix}${key}`] = value;
+  }
+  return payload;
+}
+
+function splitRef(ref: string): { folderPath: string[]; name: string } {
+  const parts = ref
+    .split("/")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (parts.length === 0) {
+    throw denied("Psono reference is invalid");
+  }
+  return {
+    folderPath: parts.slice(0, -1),
+    name: parts[parts.length - 1]!,
+  };
+}
+
+function findFolder(
+  root: PsonoShareContent,
+  path: string[],
+): PsonoShareFolder | undefined {
+  let current: PsonoShareFolder = root;
+  for (const segment of path) {
+    const next = (current.folders ?? []).find(
+      (folder) => folder.deleted !== true && folder.name === segment,
+    );
+    if (!next) {
+      return undefined;
+    }
+    current = next;
+  }
+  return current;
+}
+
+function ensureFolder(
+  root: PsonoShareContent,
+  path: string[],
+): PsonoShareFolder {
+  let current: PsonoShareFolder = root;
+  for (const segment of path) {
+    if (!Array.isArray(current.folders)) {
+      current.folders = [];
+    }
+    let next = current.folders.find(
+      (folder) => folder.deleted !== true && folder.name === segment,
+    );
+    if (!next) {
+      next = { id: randomUUID(), name: segment };
+      current.folders.push(next);
+    }
+    current = next;
+  }
+  return current;
+}
+
+function findItem(
+  folder: PsonoShareFolder,
+  name: string,
+): PsonoShareItem | undefined {
+  const target = name.toLowerCase();
+  return (folder.items ?? []).find(
+    (item) => item.deleted !== true && item.name?.toLowerCase() === target,
+  );
+}
+
+function itemEntry(
+  item: PsonoShareItem,
+  type: string | undefined,
+): PsonoEntry | undefined {
+  if (
+    typeof item.secret_id !== "string" ||
+    typeof item.secret_key !== "string" ||
+    typeof item.name !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    path: item.name,
+    name: item.name,
+    type: item.type ?? type,
+    secretId: item.secret_id,
+    secretKey: hexToBytes(item.secret_key),
+    source: "share",
+  };
 }
 
 function normalizeRef(ref: string): string {
@@ -82,7 +238,7 @@ function toValueString(value: unknown): string | undefined {
 }
 
 export class PsonoCredentialBackend {
-  private readonly client: PsonoStatusSource;
+  private readonly client: PsonoClientSource;
   private readonly tree: PsonoTreeSource;
   private readonly records: RecordSource;
   private readonly now: () => number;
@@ -109,6 +265,144 @@ export class PsonoCredentialBackend {
 
   getStatus(): PsonoStatus {
     return this.client.getStatus();
+  }
+
+  /**
+   * Create or update an entry from its logical ref.
+   *
+   * The ref's last segment is the entry name; the preceding segments are a
+   * folder path relative to the writable share root, created on demand. An
+   * existing entry with the same name is updated, never duplicated.
+   */
+  async createEntry(
+    ref: string,
+    fields: SecretPayload,
+    kind: RecordKind = "value",
+  ): Promise<EntryWriteResult> {
+    return this.upsertEntry(ref, fields, kind);
+  }
+
+  /** Update an entry; creates it when the ref does not exist yet. */
+  async updateEntry(
+    ref: string,
+    fields: SecretPayload,
+    kind: RecordKind = "value",
+  ): Promise<EntryWriteResult> {
+    return this.upsertEntry(ref, fields, kind);
+  }
+
+  /** Delete an entry from the share, then delete the backing secret. */
+  async deleteEntry(ref: string): Promise<EntryDeleteResult> {
+    const handle = await this.tree.openWritableShare();
+    const { folderPath, name } = splitRef(ref);
+
+    let removed: PsonoShareItem | undefined;
+    const result = await handle.update((content) => {
+      const folder = findFolder(content, folderPath);
+      const item = folder ? findItem(folder, name) : undefined;
+      if (!folder || !item || !Array.isArray(folder.items)) {
+        return { deleted: false };
+      }
+      folder.items = folder.items.filter((candidate) => candidate !== item);
+      removed = item;
+      return { deleted: true };
+    });
+
+    if (removed && typeof removed.id === "string") {
+      await this.client.deleteSecretLink(removed.id);
+    }
+    this.invalidate();
+    return result;
+  }
+
+  private async upsertEntry(
+    ref: string,
+    fields: SecretPayload,
+    kind: RecordKind,
+  ): Promise<EntryWriteResult> {
+    const handle = await this.tree.openWritableShare();
+    const { folderPath, name } = splitRef(ref);
+    const createdLinkIds: string[] = [];
+
+    try {
+      const result = await handle.update(async (content) => {
+        const folder = ensureFolder(content, folderPath);
+        const existing = findItem(folder, name);
+
+        if (existing) {
+          await this.updateExistingItem(existing, fields, kind);
+          return { created: false };
+        }
+
+        if (!Array.isArray(folder.items)) {
+          folder.items = [];
+        }
+        const type = psonoTypeForKind(kind);
+        const secretKey = generateSecretKey();
+        const sealed = secretBoxSeal(
+          utf8ToBytes(JSON.stringify(toPsonoPayload(type, fields))),
+          secretKey,
+        );
+        const linkId = randomUUID();
+        const { secretId } = await this.client.createSecret({
+          data: bytesToHex(sealed.ciphertext),
+          data_nonce: bytesToHex(sealed.nonce),
+          link_id: linkId,
+          parent_share_id: handle.shareId,
+          callback_url: "",
+          callback_user: "",
+          callback_pass: "",
+        });
+        createdLinkIds.push(linkId);
+        folder.items.push({
+          id: linkId,
+          name,
+          type,
+          secret_id: secretId,
+          secret_key: bytesToHex(secretKey),
+          urlfilter: "",
+        });
+        return { created: true };
+      });
+      this.invalidate();
+      return result;
+    } catch (err) {
+      // The share write failed after the secret existed on the server: remove
+      // the orphan link so a retry does not leave a dangling entry behind.
+      for (const linkId of createdLinkIds) {
+        try {
+          await this.client.deleteSecretLink(linkId);
+        } catch {
+          // Best effort: the original error is the one worth surfacing.
+        }
+      }
+      throw err;
+    }
+  }
+
+  private async updateExistingItem(
+    item: PsonoShareItem,
+    fields: SecretPayload,
+    kind: RecordKind,
+  ): Promise<void> {
+    const type = item.type ?? psonoTypeForKind(kind);
+    const entry = itemEntry(item, type);
+    if (!entry) {
+      throw denied("Psono share item is not usable");
+    }
+    const current = await this.tree.readRawPayload(entry);
+    const merged: SecretPayload = {
+      ...current,
+      ...toPsonoPayload(type, fields),
+    };
+    const sealed = secretBoxSeal(
+      utf8ToBytes(JSON.stringify(merged)),
+      entry.secretKey,
+    );
+    await this.client.updateSecret(entry.secretId, {
+      data: bytesToHex(sealed.ciphertext),
+      data_nonce: bytesToHex(sealed.nonce),
+    });
   }
 
   invalidate(): void {

@@ -107,6 +107,22 @@ class FakeClient implements PsonoTreeClient {
     return {};
   }
 
+  async createSecret(): Promise<{ secretId: string }> {
+    throw new Error("createSecret is not part of the read fixtures");
+  }
+
+  async updateSecret(): Promise<void> {
+    throw new Error("updateSecret is not part of the read fixtures");
+  }
+
+  async deleteSecretLink(): Promise<void> {
+    throw new Error("deleteSecretLink is not part of the read fixtures");
+  }
+
+  async updateShare(): Promise<void> {
+    throw new Error("updateShare is not part of the read fixtures");
+  }
+
   openUserKeyBox(): Uint8Array {
     return this.acceptedKey;
   }

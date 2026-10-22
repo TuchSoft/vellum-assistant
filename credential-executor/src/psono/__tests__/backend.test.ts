@@ -4,12 +4,12 @@ import type { CredentialRecord } from "@vellumai/service-contracts/credential-rp
 
 import {
   PsonoCredentialBackend,
-  type PsonoStatusSource,
+  type PsonoClientSource,
   type PsonoTreeSource,
   type RecordSource,
 } from "../backend.js";
 import { denied, PsonoError } from "../errors.js";
-import type { PsonoEntry } from "../tree.js";
+import type { PsonoEntry, ShareHandle } from "../tree.js";
 import type { SecretPayload } from "../types.js";
 
 function record(
@@ -76,18 +76,29 @@ class FakeTree implements PsonoTreeSource {
     return this.payload;
   }
 
+  async readRawPayload(): Promise<SecretPayload> {
+    return this.readPayload();
+  }
+
+  async openWritableShare(): Promise<ShareHandle> {
+    throw new Error("openWritableShare is not used by the read tests");
+  }
+
   invalidate(): void {
     this.invalidations += 1;
   }
 }
 
-const status: PsonoStatusSource = {
+const status: PsonoClientSource = {
   getStatus: () => ({
     configured: true,
     sessionOpen: true,
     lastRefresh: "2026-01-01T00:00:00.000Z",
     lastError: null,
   }),
+  createSecret: async () => ({ secretId: "secret-new" }),
+  updateSecret: async () => {},
+  deleteSecretLink: async () => {},
 };
 
 function backendWith(

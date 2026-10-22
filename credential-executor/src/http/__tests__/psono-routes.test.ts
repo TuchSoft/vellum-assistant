@@ -7,12 +7,12 @@ import { handleKvRoute } from "../kv-routes.js";
 import { handleResolveRoute } from "../resolve-routes.js";
 import {
   PsonoCredentialBackend,
-  type PsonoStatusSource,
+  type PsonoClientSource,
   type PsonoTreeSource,
   type RecordSource,
 } from "../../psono/backend.js";
 import { denied } from "../../psono/errors.js";
-import type { PsonoEntry } from "../../psono/tree.js";
+import type { PsonoEntry, ShareHandle } from "../../psono/tree.js";
 import type { SecretPayload } from "../../psono/types.js";
 
 const SERVICE_TOKEN = "service-token";
@@ -44,13 +44,16 @@ const records: RecordSource = {
   list: () => [{ account: "credential/demo/password", record }],
 };
 
-const status: PsonoStatusSource = {
+const status: PsonoClientSource = {
   getStatus: () => ({
     configured: true,
     sessionOpen: true,
     lastRefresh: null,
     lastError: null,
   }),
+  createSecret: async () => ({ secretId: "secret-new" }),
+  updateSecret: async () => {},
+  deleteSecretLink: async () => {},
 };
 
 class StubTree implements PsonoTreeSource {
@@ -69,6 +72,14 @@ class StubTree implements PsonoTreeSource {
       throw this.fail;
     }
     return this.payload;
+  }
+
+  async readRawPayload(): Promise<SecretPayload> {
+    return this.readPayload();
+  }
+
+  async openWritableShare(): Promise<ShareHandle> {
+    throw new Error("openWritableShare is not used by the route tests");
   }
 
   invalidate(): void {}

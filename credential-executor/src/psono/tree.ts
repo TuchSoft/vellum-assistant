@@ -8,8 +8,14 @@
  */
 
 import { getLogger } from "../logger.js";
-import { hexToBytes, secretBoxOpen } from "./crypto.js";
-import { notFound, unavailable } from "./errors.js";
+import {
+  bytesToHex,
+  hexToBytes,
+  secretBoxOpen,
+  secretBoxSeal,
+  utf8ToBytes,
+} from "./crypto.js";
+import { denied, notFound, unavailable } from "./errors.js";
 import {
   PsonoDatastoreDetailSchema,
   PsonoDatastoreListSchema,
@@ -17,9 +23,13 @@ import {
   PsonoShareDetailSchema,
   PsonoShareListSchema,
   normalizePayload,
+  type PsonoShareContent,
+  type PsonoShareFolder,
+  type PsonoShareItem,
   type PsonoShareRight,
   type SecretPayload,
 } from "./types.js";
+import { ShareWriteQueue } from "./write-queue.js";
 
 const TREE_TTL_MS = 60_000;
 
@@ -43,6 +53,24 @@ export interface EntryIndex {
 export interface PsonoTreeClient {
   request(path: string): Promise<unknown>;
   post(path: string, body: unknown): Promise<unknown>;
+  createSecret(input: {
+    data: string;
+    data_nonce: string;
+    link_id: string;
+    parent_share_id: string;
+    callback_url: string;
+    callback_user: string;
+    callback_pass: string;
+  }): Promise<{ secretId: string }>;
+  updateSecret(
+    secretId: string,
+    payload: { data: string; data_nonce: string },
+  ): Promise<void>;
+  deleteSecretLink(linkId: string): Promise<void>;
+  updateShare(
+    shareId: string,
+    payload: { data: string; data_nonce: string },
+  ): Promise<void>;
   openUserKeyBox(ciphertextHex: string, nonceHex: string): Uint8Array;
   openAsymmetricBox(
     ciphertextHex: string,
@@ -55,22 +83,27 @@ export interface PsonoTreeClient {
   };
 }
 
+/**
+ * A writable share: its key, a snapshot of its decrypted content, and the
+ * serialized read-modify-write primitive used by the write backend.
+ */
+export interface ShareHandle {
+  readonly shareId: string;
+  readonly shareKey: Uint8Array;
+  /** Snapshot read when the handle was opened. */
+  readonly content: PsonoShareContent;
+  /** Re-read and decrypt the share content from the server. */
+  read(): Promise<PsonoShareContent>;
+  /** Read, mutate and persist the content, serialized per share. */
+  update<T>(
+    mutator: (content: PsonoShareContent) => T | Promise<T>,
+  ): Promise<T>;
+}
+
 type ShareRight = PsonoShareRight;
 
-interface FolderItem {
-  id?: string;
-  type?: string;
-  name?: string;
-  secret_id?: string;
-  secret_key?: string;
-}
-
-interface FolderNode {
-  id?: string;
-  name?: string;
-  items?: FolderItem[];
-  folders?: FolderNode[];
-}
+type FolderItem = PsonoShareItem;
+type FolderNode = PsonoShareFolder;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -105,6 +138,7 @@ export class PsonoTree {
   private indexBuiltAt = 0;
   private acceptedSinceBuild = false;
   private readonly ttlMs: number;
+  private readonly writeQueue = new ShareWriteQueue();
 
   constructor(
     private readonly client: PsonoTreeClient,
@@ -153,6 +187,12 @@ export class PsonoTree {
 
   /** Read and decrypt an entry's payload. */
   async readPayload(entry: PsonoEntry): Promise<SecretPayload> {
+    const parsed = await this.readRawPayload(entry);
+    return normalizePayload(parsed, entry.type);
+  }
+
+  /** Read and decrypt an entry's payload without stripping its type prefix. */
+  async readRawPayload(entry: PsonoEntry): Promise<SecretPayload> {
     const body = PsonoSecretDetailSchema.safeParse(
       await this.client.request(`/secret/${encodeURIComponent(entry.secretId)}/`),
     );
@@ -178,7 +218,109 @@ export class PsonoTree {
     if (!isRecord(parsed)) {
       throw unavailable("Psono secret payload is not an object");
     }
-    return normalizePayload(parsed, entry.type ?? body.data.type);
+    return parsed;
+  }
+
+  /**
+   * Open the share that the material's user can write.
+   *
+   * The first read-write, non-expired share is the shared folder `joanna`
+   * stores her entries in. A pending right is accepted first, like the read
+   * index does.
+   */
+  async openWritableShare(): Promise<ShareHandle> {
+    const listRaw = await this.client.request("/share/");
+    const list = PsonoShareListSchema.safeParse(listRaw);
+    if (!list.success) {
+      throw unavailable("Psono share list has an unexpected shape");
+    }
+    const right = list.data.shares.find(
+      (candidate) =>
+        candidate.share_right_write === true &&
+        candidate.share_right_read !== false &&
+        candidate.share_right_accepted !== false &&
+        !isExpired(
+          candidate.expiration_date ?? candidate.share_right_expiration_date,
+          this.now(),
+        ),
+    );
+    if (!right) {
+      throw denied("Psono has no writable share");
+    }
+
+    let shareKey = this.openShareKey(right);
+    if (!shareKey) {
+      throw denied("Psono share key cannot be opened");
+    }
+    if (right.share_right_accepted === null) {
+      await this.acceptShare(right, shareKey);
+      const reopened = this.openShareKey(right);
+      if (reopened) {
+        shareKey = reopened;
+      }
+    }
+
+    const shareId = right.id;
+    const content = await this.readShareContent(shareId, shareKey);
+    return {
+      shareId,
+      shareKey,
+      content,
+      read: () => this.readShareContent(shareId, shareKey),
+      update: (mutator) =>
+        this.writeQueue.run(shareId, async () => {
+          const current = await this.readShareContent(shareId, shareKey);
+          const result = await mutator(current);
+          await this.writeShareContent(shareId, shareKey, current);
+          return result;
+        }),
+    };
+  }
+
+  private async readShareContent(
+    shareId: string,
+    shareKey: Uint8Array,
+  ): Promise<PsonoShareContent> {
+    const detailRaw = await this.client.request(
+      `/share/${encodeURIComponent(shareId)}/`,
+    );
+    const detail = PsonoShareDetailSchema.safeParse(detailRaw);
+    if (!detail.success) {
+      throw unavailable("Psono share response has an unexpected shape");
+    }
+    let data: unknown;
+    try {
+      data = JSON.parse(
+        new TextDecoder().decode(
+          secretBoxOpen(
+            hexToBytes(detail.data.data),
+            hexToBytes(detail.data.data_nonce),
+            shareKey,
+          ),
+        ),
+      );
+    } catch {
+      throw unavailable("Psono share payload could not be decrypted");
+    }
+    if (!isRecord(data)) {
+      throw unavailable("Psono share payload is not an object");
+    }
+    return data as PsonoShareContent;
+  }
+
+  private async writeShareContent(
+    shareId: string,
+    shareKey: Uint8Array,
+    content: PsonoShareContent,
+  ): Promise<void> {
+    const sealed = secretBoxSeal(
+      utf8ToBytes(JSON.stringify(content)),
+      shareKey,
+    );
+    await this.client.updateShare(shareId, {
+      data: bytesToHex(sealed.ciphertext),
+      data_nonce: bytesToHex(sealed.nonce),
+    });
   }
 
   /**

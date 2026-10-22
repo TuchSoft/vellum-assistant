@@ -216,6 +216,11 @@ export const CredentialRecordSchema = z.object({
   ref: z.string().optional(),
   /** How the referenced entry is served: one value, a file, or a JSON payload. */
   kind: z.enum(["value", "file", "json"]).optional(),
+  /**
+   * Payload field read from the referenced entry for `kind: "value"`.
+   * Defaults to `field`.
+   */
+  sourceField: z.string().optional(),
   allowedTools: z.array(z.string()),
   allowedDomains: z.array(z.string()),
   usageDescription: z.string().optional(),

@@ -59,6 +59,7 @@ import {
 } from "./psono/backend.js";
 import { buildRecordHandlers } from "./records/handlers.js";
 import { getMetadataStore, initMetadataStore } from "./records/metadata-store.js";
+import { resolveValuesBackend } from "./values/select-backend.js";
 
 // ---------------------------------------------------------------------------
 // Logging (module-level for early bootstrap + structured logging post-init)
@@ -415,8 +416,16 @@ async function main(): Promise<void> {
   // The per-connection session ID lives in each CesRpcServer's SessionContext;
   // handlers read it at call time. The registry is shared across connections
   // and identical in both modes.
+  const values = resolveValuesBackend({
+    configured: process.env["CES_VALUES_BACKEND"],
+    keys: secureKeyBackend,
+    psono: psonoBackend,
+    records: getMetadataStore(),
+  });
+  log.info({ backend: values.name }, "CES values backend selected");
+
   const handlers = {
-    ...buildCrudHandlers(secureKeyBackend),
+    ...buildCrudHandlers(values.backend),
     ...buildRecordHandlers(),
   };
 
@@ -426,7 +435,7 @@ async function main(): Promise<void> {
     let credentialDeps: CredentialRouteDeps | null = null;
 
     if (serviceToken) {
-      credentialDeps = { backend: secureKeyBackend, serviceToken };
+      credentialDeps = { backend: values.backend, serviceToken };
       log.info("Credential CRUD routes enabled (CES_SERVICE_TOKEN configured)");
     } else {
       log.warn(

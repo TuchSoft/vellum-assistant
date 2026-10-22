@@ -10,6 +10,11 @@
  *   ces get <account>
  *   ces set <account> <value>
  *   ces delete <account>
+ *   ces migrate-psono
+ *
+ * `migrate-psono` copies the active credentials from `keys.enc` into Psono
+ * (`Joanna-shared/stack`), verifies every value by SHA-256, and points the
+ * credential records at their entries. It never prints a value.
  *
  * Account format: `credential/<service>/<field>` (e.g. `credential/vellum/platform_organization_id`)
  *
@@ -23,6 +28,10 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createLocalSecureKeyBackend } from "./materializers/local-secure-key-backend.js";
+import { getCesDataRoot } from "./paths.js";
+import { migrateCredentialsToPsono } from "./psono/migrate.js";
+import { createPsonoBackendFromEnv } from "./psono/backend.js";
+import { getMetadataStore, initMetadataStore } from "./records/metadata-store.js";
 
 // ---------------------------------------------------------------------------
 // Path resolution (mirrors the managed-mode path in main.ts)
@@ -127,6 +136,51 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "migrate-psono": {
+      initMetadataStore(getCesDataRoot());
+      const records = getMetadataStore();
+      const psono = createPsonoBackendFromEnv(records);
+      if (!psono) {
+        console.error(
+          "PSONO_MATERIAL_FILE is not set; cannot migrate to Psono",
+        );
+        process.exit(1);
+      }
+      const report = await migrateCredentialsToPsono({
+        keys: backend,
+        writer: psono,
+        reader: psono,
+        records,
+      });
+      for (const entry of report.entries) {
+        const status = entry.ok ? "ok" : `fail:${entry.reason ?? "error"}`;
+        console.log(
+          `${entry.service}/${entry.field} ${status} hash=${entry.hashPrefix}`,
+        );
+      }
+      console.log(
+        `migration: ${report.entries.length - report.failures.length}/${report.entries.length} ok`,
+      );
+      if (report.unlistedCredentialAccounts.length > 0) {
+        console.log(
+          `not migrated (unlisted credential accounts): ${report.unlistedCredentialAccounts.join(", ")}`,
+        );
+      }
+      if (report.otherKeyNames.length > 0) {
+        console.log(
+          `other key store entries: ${report.otherKeyNames.join(", ")}`,
+        );
+      }
+      if (!report.ok) {
+        console.error(
+          `migration gate RED: ${report.failures.length} entry(ies) failed`,
+        );
+        process.exit(1);
+      }
+      console.log("migration gate GREEN");
+      break;
+    }
+
     default:
       console.error(`Unknown command: ${command}`);
       printUsage();
@@ -142,6 +196,7 @@ Usage:
   ces get <account>            Get a credential value
   ces set <account> <value>    Set a credential value
   ces delete <account>         Delete a credential
+  ces migrate-psono            Migrate active credentials from keys.enc to Psono
 
 Account format:
   credential/<service>/<field>
@@ -149,7 +204,10 @@ Account format:
 
 Environment:
   CREDENTIAL_SECURITY_DIR    Directory containing keys.enc + store.key
-  CES_ASSISTANT_DATA_MOUNT   Fallback: <mount>/.vellum/protected/`);
+  CES_ASSISTANT_DATA_MOUNT   Fallback: <mount>/.vellum/protected/
+  CES_DATA_DIR               CES data root (metadata.json) in managed mode
+  CES_MODE                   managed | local
+  PSONO_MATERIAL_FILE        Psono API key material (required by migrate-psono)`);
 }
 
 main().catch((err) => {

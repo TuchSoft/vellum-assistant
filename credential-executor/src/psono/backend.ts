@@ -189,6 +189,24 @@ function ensureFolder(
   return current;
 }
 
+/**
+ * Drop the share root segment when a ref is fully qualified.
+ *
+ * Refs name the shared folder (`Joanna-shared/stack/...`), while the writable
+ * share payload is already rooted at that folder. Removing the leading segment
+ * keeps the write in the folder the index reports.
+ */
+function relativeFolderPath(
+  content: PsonoShareContent,
+  folderPath: string[],
+): string[] {
+  const root = normalizeRef(content.name ?? "");
+  if (root && folderPath.length > 0 && normalizeRef(folderPath[0]!) === root) {
+    return folderPath.slice(1);
+  }
+  return folderPath;
+}
+
 function findItem(
   folder: PsonoShareFolder,
   name: string,
@@ -298,7 +316,10 @@ export class PsonoCredentialBackend {
 
     let removed: PsonoShareItem | undefined;
     const result = await handle.update((content) => {
-      const folder = findFolder(content, folderPath);
+      const folder = findFolder(
+        content,
+        relativeFolderPath(content, folderPath),
+      );
       const item = folder ? findItem(folder, name) : undefined;
       if (!folder || !item || !Array.isArray(folder.items)) {
         return { deleted: false };
@@ -326,7 +347,10 @@ export class PsonoCredentialBackend {
 
     try {
       const result = await handle.update(async (content) => {
-        const folder = ensureFolder(content, folderPath);
+        const folder = ensureFolder(
+          content,
+          relativeFolderPath(content, folderPath),
+        );
         const existing = findItem(folder, name);
 
         if (existing) {
@@ -412,6 +436,18 @@ export class PsonoCredentialBackend {
     this.tree.invalidate();
   }
 
+  /**
+   * Read a whole entry by its logical ref without consulting the credential
+   * map.
+   *
+   * Used to verify a write before the corresponding record points at the ref,
+   * and by the one-time migration.
+   */
+  async readEntryPayload(ref: string): Promise<SecretPayload> {
+    const entry = await this.tree.find(ref);
+    return this.getPayload(entry);
+  }
+
   /** Read a whole entry by its logical ref, as a KV v2 field map. */
   async getByRef(ref: string): Promise<SecretPayload> {
     const knownRefs = this.getKnownRefs();
@@ -433,7 +469,11 @@ export class PsonoCredentialBackend {
     }
 
     const payload = await this.getByRef(record.ref!);
-    const value = this.select(payload, record.field, kind);
+    // Value records name the payload field explicitly: migrated entries keep
+    // the value in `password` while the credential field is the service name.
+    const sourceField =
+      kind === "value" ? (record.sourceField ?? record.field) : record.field;
+    const value = this.select(payload, sourceField, kind);
     const result: ResolvedValue = { value, kind, ref: record.ref! };
     this.values.set(cacheKey, result);
     return result;
@@ -444,7 +484,9 @@ export class PsonoCredentialBackend {
     const record = this.getRecord(service, field);
     const kind: RecordKind = record.kind ?? "value";
     const payload = await this.getByRef(record.ref!);
-    const value = this.select(payload, record.field, kind);
+    const sourceField =
+      kind === "value" ? (record.sourceField ?? record.field) : record.field;
+    const value = this.select(payload, sourceField, kind);
     return {
       bytes: new TextEncoder().encode(value),
       kind,

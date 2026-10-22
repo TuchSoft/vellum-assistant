@@ -191,6 +191,49 @@ describe("PsonoCredentialBackend", () => {
     await expect(backend.getByRef("TEST")).resolves.toEqual({ api_key: "abc" });
   });
 
+  test("resolves a value record through sourceField", async () => {
+    const tree = new FakeTree();
+    tree.payload = { password: "provider-key" };
+    const backend = backendWith(
+      [
+        {
+          ...record("openai-compatible-personal-5", "api_key", "TEST"),
+          sourceField: "password",
+        },
+      ],
+      tree,
+    );
+    await expect(
+      backend.resolve("openai-compatible-personal-5", "api_key"),
+    ).resolves.toMatchObject({ value: "provider-key" });
+  });
+
+  test("falls back to field when sourceField is absent", async () => {
+    const tree = new FakeTree();
+    tree.payload = { api_key: "plain" };
+    const backend = backendWith([record("demo", "api_key", "TEST")], tree);
+    await expect(backend.resolve("demo", "api_key")).resolves.toMatchObject({
+      value: "plain",
+    });
+  });
+
+  test("kind json keeps returning the whole payload", async () => {
+    const tree = new FakeTree();
+    tree.payload = { password: "one", extra: "two" };
+    const backend = backendWith(
+      [
+        {
+          ...record("demo", "api_key", "TEST", "json"),
+          sourceField: "password",
+        },
+      ],
+      tree,
+    );
+    await expect(backend.resolve("demo", "api_key")).resolves.toMatchObject({
+      value: JSON.stringify({ password: "one", extra: "two" }),
+    });
+  });
+
   test("invalidate clears the caches and the tree", async () => {
     const tree = new FakeTree();
     const backend = backendWith([record("demo", "password", "TEST")], tree);

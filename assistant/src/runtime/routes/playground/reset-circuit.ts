@@ -21,7 +21,7 @@
  * is invisible in production.
  */
 
-import { resolveCallSiteConfig } from "../../../config/llm-resolver.js";
+import { resolveEffectiveContextWindow } from "../../../config/llm-context-resolution.js";
 import { getConfig } from "../../../config/loader.js";
 import { estimatePromptTokens } from "../../../context/token-estimator.js";
 import type { Conversation } from "../../../daemon/conversation.js";
@@ -65,10 +65,13 @@ export const ROUTES: RouteDefinition[] = [
 
 function buildCompactionState(conversation: Conversation) {
   const config = getConfig();
-  const contextWindow = resolveCallSiteConfig(
-    "mainAgent",
-    config.llm,
-  ).contextWindow;
+  const contextWindow = resolveEffectiveContextWindow({
+    llm: config.llm,
+    callSite: "mainAgent",
+  });
+  if (contextWindow == null) {
+    throw new Error('Call site "mainAgent" is disabled.');
+  }
   const messages = conversation.getMessages();
   const estimatedInputTokens = estimatePromptTokens(messages);
   const maxInputTokens = contextWindow.maxInputTokens;

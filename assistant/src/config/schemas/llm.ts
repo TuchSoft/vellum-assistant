@@ -160,7 +160,7 @@ const ContextOverflowRecoveryFragmentSchema = z.object({
     OverflowLatestTurnCompressionSchema.optional(),
 });
 
-/** Conservative input budget used when the catalog carries no window. */
+/** Conservative input budget used when neither a call site nor the catalog sets one. */
 export const DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS = 200000;
 
 const ContextEnabledSchema = z.boolean();
@@ -171,9 +171,10 @@ const ContextSummaryBudgetRatioSchema = z.number().finite().gt(0).lte(1);
 
 export const ContextWindowSchema = z.object({
   enabled: ContextEnabledSchema.default(true),
-  maxInputTokens: ContextMaxInputTokensSchema.default(
-    DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS,
-  ),
+  // Absent means "use the alias window from the catalog". The gateway is the
+  // only source of model capabilities, so this must stay distinguishable from
+  // a call site that deliberately pins a budget.
+  maxInputTokens: ContextMaxInputTokensSchema.optional(),
   targetBudgetRatio: ContextTargetBudgetRatioSchema.default(0.3),
   compactThreshold: ContextCompactThresholdSchema.default(0.8),
   summaryBudgetRatio: ContextSummaryBudgetRatioSchema.default(0.05),

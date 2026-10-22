@@ -11,7 +11,7 @@
  * invisible in production.
  */
 
-import { resolveCallSiteConfig } from "../../../config/llm-resolver.js";
+import { resolveEffectiveContextWindow } from "../../../config/llm-context-resolution.js";
 import { getConfig } from "../../../config/loader.js";
 import { estimatePromptTokens } from "../../../context/token-estimator.js";
 import type { Conversation } from "../../../daemon/conversation.js";
@@ -32,9 +32,15 @@ import { getConversationById } from "./helpers.js";
 export function buildCompactionStateResponse(conversation: Conversation) {
   const messages = conversation.getMessages();
   const estimatedInputTokens = estimatePromptTokens(messages);
-  const cfg = resolveCallSiteConfig("mainAgent", getConfig().llm).contextWindow;
-  const maxInputTokens = cfg.maxInputTokens;
-  const compactThresholdRatio = cfg.compactThreshold;
+  const ctxConfig = resolveEffectiveContextWindow({
+    llm: getConfig().llm,
+    callSite: "mainAgent",
+  });
+  if (ctxConfig == null) {
+    throw new Error('Call site "mainAgent" is disabled.');
+  }
+  const maxInputTokens = ctxConfig.maxInputTokens;
+  const compactThresholdRatio = ctxConfig.compactThreshold;
   const thresholdTokens = Math.floor(maxInputTokens * compactThresholdRatio);
   const circuit = conversation.agentLoop.compactionCircuit;
   const compactionCircuitOpenUntil = circuit.compactionCircuitOpenUntil;
@@ -51,7 +57,7 @@ export function buildCompactionStateResponse(conversation: Conversation) {
     isCircuitOpen:
       compactionCircuitOpenUntil !== null &&
       Date.now() < compactionCircuitOpenUntil,
-    isCompactionEnabled: cfg.enabled,
+    isCompactionEnabled: ctxConfig.enabled,
   };
 }
 

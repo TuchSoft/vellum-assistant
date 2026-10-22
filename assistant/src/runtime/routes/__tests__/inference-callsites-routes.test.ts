@@ -5,8 +5,12 @@
  *   GET /v1/inference/callsites/:site  — 400 on an unknown site
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 
+import {
+  __setCatalogSnapshotForTests,
+  type CatalogSnapshot,
+} from "../../../config/llm-catalog.js";
 import { LLMCallSiteEnum } from "../../../config/schemas/llm.js";
 import { BadRequestError } from "../errors.js";
 import { ROUTES } from "../inference-callsites-routes.js";
@@ -24,7 +28,43 @@ function call(operationId: string, args: RouteHandlerArgs): Promise<unknown> {
   return Promise.resolve(handler(operationId)(args));
 }
 
+afterEach(() => {
+  __setCatalogSnapshotForTests(undefined);
+});
+
+type CallSiteRow = {
+  callSite: string;
+  maxInputTokens?: number;
+};
+
+const gatewayCatalog: CatalogSnapshot = {
+  fetchedAt: 1,
+  source: "gateway",
+  entries: [
+    {
+      alias: "main",
+      label: "Main",
+      maxInputTokens: 1_050_000,
+      maxOutputTokens: 64_000,
+      supportsVision: false,
+      supportsTools: true,
+      mode: "chat",
+    },
+  ],
+};
+
 describe("GET inference/callsites", () => {
+  test("reports the catalog input budget when the call site pins none", async () => {
+    __setCatalogSnapshotForTests(gatewayCatalog);
+    const result = (await call("inference_callsites_list", {})) as {
+      callSites: CallSiteRow[];
+    };
+    const mainAgent = result.callSites.find(
+      (row) => row.callSite === "mainAgent",
+    );
+    expect(mainAgent?.maxInputTokens).toBe(1_050_000);
+  });
+
   test("returns one summary row per call site", async () => {
     const result = (await call("inference_callsites_list", {})) as {
       callSites: {

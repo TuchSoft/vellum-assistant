@@ -26,10 +26,15 @@ export interface EffectiveContextWindow {
 /**
  * Resolve the input budget for a call site.
  *
- * The budget is the smaller of the call site's configured cap and the alias's
- * catalog window. The call-site schema defaults the cap to 200k, so a catalog
- * entry that overstates a provider limit (LiteLLM estimates large windows for
- * families it does not know) cannot by itself inflate the prompt budget.
+ * Precedence, high to low:
+ *   1. an explicit `contextWindow.maxInputTokens` on the call site,
+ *   2. the alias's `maxInputTokens` in the gateway catalog,
+ *   3. the code-owned conservative default (200k) when the catalog has no
+ *      window for the alias.
+ *
+ * The catalog is the only source of model capabilities: an alias that
+ * advertises a 1M window gets a 1M budget unless the call site deliberately
+ * caps it lower (or higher).
  *
  * Returns null for a disabled call site: nothing downstream should build a
  * request for it.
@@ -58,14 +63,11 @@ export function resolveEffectiveContextWindow({
   const catalogEntry = effectiveCatalogEntry(llm, resolved.model);
   const modelMaxInputTokens =
     catalogEntry?.maxInputTokens ?? DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS;
-  const defaultInputTokens = Math.min(
-    modelMaxInputTokens,
-    DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS,
-  );
-  const maxInputTokens = Math.min(
-    resolved.contextWindow.maxInputTokens,
-    modelMaxInputTokens,
-  );
+  // The alias window is the budget when the call site does not pin one. The
+  // conservative default only applies when the catalog knows nothing about
+  // the alias.
+  const maxInputTokens =
+    resolved.contextWindow.maxInputTokens ?? modelMaxInputTokens;
 
   return {
     provider: "llm-gateway",
@@ -73,12 +75,12 @@ export function resolveEffectiveContextWindow({
     enabled: resolved.contextWindow.enabled,
     maxInputTokens,
     modelMaxInputTokens,
-    defaultInputTokens,
+    defaultInputTokens: modelMaxInputTokens,
     compactThreshold: resolved.contextWindow.compactThreshold,
     summaryBudgetRatio: resolved.contextWindow.summaryBudgetRatio,
     targetBudgetRatio: resolved.contextWindow.targetBudgetRatio,
     overflowRecovery: resolved.contextWindow.overflowRecovery,
-    isLongContextEnabled: maxInputTokens > defaultInputTokens,
+    isLongContextEnabled: maxInputTokens > modelMaxInputTokens,
     ...(catalogEntry?.maxOutputTokens != null
       ? { maxOutputTokens: catalogEntry.maxOutputTokens }
       : {}),
@@ -86,7 +88,7 @@ export function resolveEffectiveContextWindow({
 }
 
 export function contextWindowConfigFromEffective(
-  base: ContextWindowConfig,
+  base: ContextWindow,
   effective: EffectiveContextWindow,
 ): ContextWindowConfig {
   return {

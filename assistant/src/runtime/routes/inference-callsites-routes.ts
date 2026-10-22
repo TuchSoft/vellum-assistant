@@ -12,13 +12,19 @@
 import { z } from "zod";
 
 import { CALL_SITE_DEFAULTS } from "../../config/call-site-defaults.js";
+import { resolveEffectiveContextWindow } from "../../config/llm-context-resolution.js";
 import {
   type ResolutionFallbackReason,
   resolveCallSite,
   resolveCallSiteOutcome,
 } from "../../config/llm-resolver.js";
 import { getConfigReadOnly } from "../../config/loader.js";
-import { type LLMCallSite, LLMCallSiteEnum } from "../../config/schemas/llm.js";
+import {
+  DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS,
+  type LLMCallSite,
+  LLMCallSiteEnum,
+  type LLMConfig,
+} from "../../config/schemas/llm.js";
 import {
   ConnectionResolutionError,
   preflightResolvedConfig,
@@ -53,7 +59,7 @@ const callSiteSummarySchema = z
     degraded: z.boolean(),
     /** Why the configured alias could not be used; null when not degraded. */
     reason: degradationReasonSchema.nullable(),
-    /** Notable tuning: the resolved context-window input cap, when set. */
+    /** Effective input budget for the resolved alias, in tokens. */
     maxInputTokens: z.number().optional(),
   })
   .meta({ id: "CallSiteResolutionSummary" });
@@ -96,6 +102,11 @@ const callSiteDetailSchema = z
   })
   .meta({ id: "CallSiteResolutionDetail" });
 
+function effectiveInputBudget(llm: LLMConfig, callSite: LLMCallSite): number {
+  const effective = resolveEffectiveContextWindow({ llm, callSite });
+  return effective?.maxInputTokens ?? DEFAULT_CONTEXT_WINDOW_MAX_INPUT_TOKENS;
+}
+
 function summarizeCallSite(
   callSite: LLMCallSite,
   llm: Parameters<typeof resolveCallSite>[1],
@@ -111,11 +122,6 @@ function summarizeCallSite(
       reason: null,
     };
   }
-  const resolution = resolveCallSite(callSite, llm, {});
-  const maxInputTokens =
-    resolution.status === "ok"
-      ? resolution.config.contextWindow.maxInputTokens
-      : undefined;
   return {
     callSite,
     model: outcome.effectiveModel,
@@ -123,7 +129,7 @@ function summarizeCallSite(
     effectiveModel: outcome.effectiveModel,
     degraded: outcome.degraded,
     reason: outcome.reason,
-    ...(typeof maxInputTokens === "number" ? { maxInputTokens } : {}),
+    maxInputTokens: effectiveInputBudget(llm, callSite),
   };
 }
 
@@ -185,7 +191,7 @@ async function handleGetCallSite({ pathParams = {} }: RouteHandlerArgs) {
       resolution.status === "ok"
         ? {
             model: resolution.model,
-            maxInputTokens: resolution.config.contextWindow.maxInputTokens,
+            maxInputTokens: effectiveInputBudget(llm, callSite),
             disableCache: resolution.config.disableCache,
           }
         : null,

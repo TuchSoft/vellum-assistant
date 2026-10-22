@@ -45,17 +45,20 @@ import {
   type CesMode,
 } from "./paths.js";
 import { CesRpcServer, type RpcHandlerRegistry } from "./server.js";
-import {
-  handleCredentialRoute,
-  type CredentialRouteDeps,
-} from "./http/credential-routes.js";
+import { handleCredentialRoute, type CredentialRouteDeps } from "./http/credential-routes.js";
+import { handleFileRoute } from "./http/file-routes.js";
+import { handleKvRoute } from "./http/kv-routes.js";
 import { handleLogExportRoute } from "./http/log-export-routes.js";
-import { isLoopbackAddress } from "./http/loopback-address.js";
 import { handleMetadataRoute } from "./http/metadata-routes.js";
+import { handleResolveRoute } from "./http/resolve-routes.js";
 import { CES_MIGRATIONS } from "./migrations/registry.js";
 import { runCesMigrations } from "./migrations/runner.js";
+import {
+  createPsonoBackendFromEnv,
+  type PsonoCredentialBackend,
+} from "./psono/backend.js";
 import { buildRecordHandlers } from "./records/handlers.js";
-import { initMetadataStore } from "./records/metadata-store.js";
+import { getMetadataStore, initMetadataStore } from "./records/metadata-store.js";
 
 // ---------------------------------------------------------------------------
 // Logging (module-level for early bootstrap + structured logging post-init)
@@ -245,13 +248,17 @@ function startHealthServer(
   port: number,
   signal: AbortSignal,
   credentialDeps: CredentialRouteDeps | null,
+  psonoBackend: PsonoCredentialBackend | undefined,
+  serviceToken: string,
+  kvToken: string,
 ): ReturnType<typeof Bun.serve> {
   // Listen on every interface so kubelet httpGet probes can hit the pod IP.
-  // Credential CRUD, metadata, and log export stay loopback-only: assistant
-  // and gateway in this pod call http://localhost:<CES_HEALTH_PORT>.
+  // Every non-probe route authenticates with CES_SERVICE_TOKEN or
+  // CES_KV_TOKEN; the port is never published on the host and only
+  // assistant-net can reach it.
   const server = Bun.serve({
     port,
-    async fetch(req, httpServer) {
+    async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === "/healthz") {
         return new Response(JSON.stringify({ status: "ok" }), {
@@ -270,17 +277,18 @@ function startHealthServer(
             status: "ok",
             connections: connectionCount,
             rpcConnected: connectionCount > 0,
+            psono: psonoBackend?.getStatus() ?? {
+              configured: false,
+              sessionOpen: false,
+              lastRefresh: null,
+              lastError: null,
+            },
           }),
           {
             status: 200,
             headers: { "Content-Type": "application/json" },
           },
         );
-      }
-
-      const peer = httpServer.requestIP(req)?.address;
-      if (!peer || !isLoopbackAddress(peer)) {
-        return new Response("Not Found", { status: 404 });
       }
 
       // Credential CRUD routes (only if service token is configured)
@@ -296,6 +304,30 @@ function startHealthServer(
         if (credentialResponse) {
           return credentialResponse;
         }
+      }
+
+      const resolveResponse = await handleResolveRoute(req, {
+        backend: psonoBackend,
+        serviceToken,
+      });
+      if (resolveResponse) {
+        return resolveResponse;
+      }
+
+      const fileResponse = await handleFileRoute(req, {
+        backend: psonoBackend,
+        serviceToken,
+      });
+      if (fileResponse) {
+        return fileResponse;
+      }
+
+      const kvResponse = await handleKvRoute(req, {
+        backend: psonoBackend,
+        kvToken,
+      });
+      if (kvResponse) {
+        return kvResponse;
       }
 
       // Log export route
@@ -368,6 +400,17 @@ async function main(): Promise<void> {
 
   initMetadataStore(getCesDataRoot(mode));
 
+  // Read-only Psono backend for the KV / resolve / file routes. The existing
+  // RPC CRUD path keeps using the secure key backend.
+  const psonoBackend = createPsonoBackendFromEnv(getMetadataStore());
+  if (psonoBackend) {
+    log.info("Psono read backend enabled");
+  } else {
+    log.warn(
+      "PSONO_MATERIAL_FILE not set — Psono-backed read endpoints report unavailable",
+    );
+  }
+
   // -- Build handlers --------------------------------------------------------
   // The per-connection session ID lives in each CesRpcServer's SessionContext;
   // handlers read it at call time. The registry is shared across connections
@@ -393,7 +436,14 @@ async function main(): Promise<void> {
     }
 
     const healthPort = getHealthPort();
-    startHealthServer(healthPort, controller.signal, credentialDeps);
+    startHealthServer(
+      healthPort,
+      controller.signal,
+      credentialDeps,
+      psonoBackend,
+      serviceToken,
+      process.env["CES_KV_TOKEN"]?.trim() ?? "",
+    );
     log.info(`Health server listening on port ${healthPort}`);
   }
 

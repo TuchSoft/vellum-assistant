@@ -66,6 +66,11 @@ function isRecord(value: unknown): value is CredentialRecord {
     typeof record.credentialId === "string" &&
     typeof record.service === "string" &&
     typeof record.field === "string" &&
+    (record.ref === undefined || typeof record.ref === "string") &&
+    (record.kind === undefined ||
+      record.kind === "value" ||
+      record.kind === "file" ||
+      record.kind === "json") &&
     Array.isArray(record.allowedTools) &&
     Array.isArray(record.allowedDomains) &&
     typeof record.createdAt === "number" &&

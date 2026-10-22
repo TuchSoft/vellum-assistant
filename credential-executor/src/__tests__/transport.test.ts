@@ -165,9 +165,10 @@ describe("health probes", () => {
     // Health server uses Bun.serve on a dedicated port, not the socket
     expect(src).toMatch(/startHealthServer\(\s*healthPort/);
     // Kubelet httpGet targets the pod IP, so the probe listener must not
-    // bind loopback-only. Credential routes are gated with isLoopbackAddress.
+    // bind loopback-only. Credential routes authenticate with the service
+    // token instead of a peer-address gate.
     expect(src).not.toMatch(/hostname:\s*"127\.0\.0\.1"/);
-    expect(src).toMatch(/isLoopbackAddress\(/);
+    expect(src).not.toMatch(/isLoopbackAddress\(/);
   });
 
   test("getHealthPort defaults to 8090", () => {

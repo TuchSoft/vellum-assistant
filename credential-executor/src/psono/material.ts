@@ -1,10 +1,11 @@
 /**
  * Psono API key material: loading and validation.
  *
- * The material file holds four values and lives outside the repository. The
- * loader accepts both `NAME=value` lines (the documented brief format) and the
- * value/name pair layout produced by the test material. Values stay in RAM and
- * are never logged.
+ * The material file holds the four required values plus an optional server
+ * public key and lives outside the repository. The loader accepts both
+ * `NAME=value` lines (the documented brief format) and the value/name pair
+ * layout produced by the test material. Values stay in RAM and are never
+ * logged.
  */
 
 import { readFileSync } from "node:fs";
@@ -14,6 +15,11 @@ export interface PsonoMaterial {
   apiKeyPrivateKeyHex: string;
   apiKeySecretKeyHex: string;
   serverUrl: string;
+  /**
+   * Pinned server public key (hex) from the material. The client accepts it as
+   * either the server identity key or the login verification key.
+   */
+  serverPublicKeyHex?: string;
 }
 
 const REQUIRED_FIELDS = [
@@ -83,11 +89,21 @@ export function parseMaterial(text: string): PsonoMaterial {
     throw new Error("Psono material SERVER_URL must be an http(s) URL");
   }
 
+  const serverPublicKeyHex = raw["PSONO_SERVER_PUBLIC_KEY"];
+  if (serverPublicKeyHex !== undefined && serverPublicKeyHex !== "") {
+    if (!HEX_32_BYTES.test(serverPublicKeyHex)) {
+      throw new Error(
+        "Psono material PSONO_SERVER_PUBLIC_KEY is not 32 bytes of hex",
+      );
+    }
+  }
+
   return {
     apiKeyId: raw["API_KEY_ID"]!,
     apiKeyPrivateKeyHex,
     apiKeySecretKeyHex,
     serverUrl,
+    ...(serverPublicKeyHex ? { serverPublicKeyHex } : {}),
   };
 }
 

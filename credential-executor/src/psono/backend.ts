@@ -225,7 +225,9 @@ export function createPsonoBackendFromEnv(
   }
   const client = new PsonoClient({
     material,
-    serverPublicKeyHex: process.env["PSONO_SERVER_PUBLIC_KEY"]?.trim() || undefined,
+    serverPublicKeyHex:
+      material.serverPublicKeyHex ??
+      (process.env["PSONO_SERVER_PUBLIC_KEY"]?.trim() || undefined),
   });
   const tree = new PsonoTree(client);
   return new PsonoCredentialBackend({ client, tree, records });

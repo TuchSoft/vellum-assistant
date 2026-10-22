@@ -64,8 +64,10 @@ export const PsonoShareRightSchema = z
     id: z.string(),
     share_right_key: z.string(),
     share_right_key_nonce: z.string(),
-    share_right_read: z.boolean().optional(),
-    share_right_accepted: z.boolean().optional(),
+    share_right_read: z.boolean().nullable().optional(),
+    share_right_write: z.boolean().nullable().optional(),
+    share_right_grant: z.boolean().nullable().optional(),
+    share_right_accepted: z.boolean().nullable().optional(),
   })
   .passthrough();
 

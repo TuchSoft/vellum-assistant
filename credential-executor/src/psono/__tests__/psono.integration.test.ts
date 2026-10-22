@@ -45,7 +45,10 @@ live("Psono integration (read-only)", () => {
     ? loadMaterialFile(MATERIAL_PATH)
     : undefined;
   const client = material
-    ? new PsonoClient({ material })
+    ? new PsonoClient({
+        material,
+        serverPublicKeyHex: material.serverPublicKeyHex,
+      })
     : undefined;
   const tree = client ? new PsonoTree(client) : undefined;
   const backend =

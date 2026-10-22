@@ -263,9 +263,6 @@ export class PsonoClient {
   }
 
   private async getServerPublicKey(): Promise<string> {
-    if (this.serverPublicKeyHex) {
-      return this.serverPublicKeyHex;
-    }
     const response = await this.rawFetch("/info/", { method: "GET" }, false);
     if (!response.ok) {
       throw unavailable(`Psono /info/ failed (${response.status})`);
@@ -298,11 +295,27 @@ export class PsonoClient {
       throw unauthorized("Psono /info/ signature is not valid");
     }
 
+    // The pinned key may be either the server identity key (`public_key`, as
+    // the test material carries it) or the login verification key
+    // (`verify_key`). Either way the login signature is verified with the key
+    // that signed the /info/ envelope, never with the pin itself: pinning the
+    // box key alone would not authenticate the verification key.
+    const pinned = this.serverPublicKeyHex?.trim().toLowerCase();
+    if (pinned) {
+      const matches =
+        pinned === verifyKeyHex.toLowerCase() ||
+        pinned === info.data.public_key.toLowerCase();
+      if (!matches) {
+        throw unauthorized("Psono server public key does not match the pinned key");
+      }
+      return verifyKeyHex;
+    }
+
     this.serverPublicKeyHex = verifyKeyHex;
     log.warn(
       "PSONO_SERVER_PUBLIC_KEY is not set; using the login verification key from /info/",
     );
-    return this.serverPublicKeyHex;
+    return verifyKeyHex;
   }
 
   private async rawFetch(

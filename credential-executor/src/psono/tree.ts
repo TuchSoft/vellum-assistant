@@ -7,6 +7,7 @@
  * a short TTL so a new share or a revocation is observed without a restart.
  */
 
+import { getLogger } from "../logger.js";
 import { hexToBytes, secretBoxOpen } from "./crypto.js";
 import { notFound, unavailable } from "./errors.js";
 import {
@@ -20,6 +21,8 @@ import {
 } from "./types.js";
 
 const TREE_TTL_MS = 60_000;
+
+const log = getLogger("psono");
 
 export interface PsonoEntry {
   /** Slash-separated logical path inside the visible tree. */
@@ -191,7 +194,19 @@ export class PsonoTree {
       throw unavailable("Psono share list has an unexpected shape");
     }
 
+    let skippedPending = 0;
+    let skippedNoAccess = 0;
+    let skippedKey = 0;
+    let skippedPayload = 0;
+
     for (const right of list.data.shares) {
+      // A share right that the recipient has not accepted yet has a null
+      // accepted flag and a share key that cannot be opened. It is pending,
+      // not an error, and must not hide the shares that are usable.
+      if (right.share_right_accepted === null) {
+        skippedPending += 1;
+        continue;
+      }
       if (right.share_right_accepted === false) {
         continue;
       }
@@ -206,6 +221,7 @@ export class PsonoTree {
           right.share_right_key_nonce,
         );
       } catch {
+        skippedKey += 1;
         continue;
       }
 
@@ -214,9 +230,11 @@ export class PsonoTree {
       );
       const detail = PsonoShareDetailSchema.safeParse(detailRaw);
       if (!detail.success) {
+        skippedNoAccess += 1;
         continue;
       }
       if (detail.data.rights?.read === false) {
+        skippedNoAccess += 1;
         continue;
       }
 
@@ -232,9 +250,11 @@ export class PsonoTree {
           ),
         ) as SecretPayload;
       } catch {
+        skippedPayload += 1;
         continue;
       }
       if (!isRecord(data)) {
+        skippedPayload += 1;
         continue;
       }
 
@@ -254,6 +274,15 @@ export class PsonoTree {
 
       const rootName = typeof data["name"] === "string" ? data["name"] : right.id;
       this.walkFolder(data as unknown as FolderNode, rootName, "share", add);
+    }
+
+    const skipped =
+      skippedPending + skippedNoAccess + skippedKey + skippedPayload;
+    if (skipped > 0) {
+      log.debug(
+        { skipped, skippedPending, skippedNoAccess, skippedKey, skippedPayload },
+        "Skipped Psono shares",
+      );
     }
   }
 

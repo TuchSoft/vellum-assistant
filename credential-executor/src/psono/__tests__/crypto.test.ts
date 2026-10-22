@@ -8,6 +8,7 @@ import {
   generateBoxKeyPair,
   hexToBytes,
   secretBoxOpen,
+  secretBoxSeal,
   signDetached,
   utf8ToBytes,
   verifyDetached,
@@ -92,6 +93,40 @@ describe("secretbox", () => {
     );
     ciphertext[0] = ciphertext[0]! ^ 0xff;
     expect(() => secretBoxOpen(ciphertext, nonce, key)).toThrow();
+  });
+
+  test("seals with a fresh nonce and round-trips", () => {
+    const message = utf8ToBytes("share key");
+    const first = secretBoxSeal(message, key);
+    const second = secretBoxSeal(message, key);
+
+    expect(first.nonce).toHaveLength(sodium.crypto_secretbox_NONCEBYTES);
+    expect(first.nonce).not.toEqual(second.nonce);
+    expect(secretBoxOpen(first.ciphertext, first.nonce, key)).toEqual(message);
+  });
+});
+
+describe("asymmetric box with fixed keys", () => {
+  test("opens a payload sealed to the recipient public key", () => {
+    const sender = sodium.crypto_box_seed_keypair(
+      new Uint8Array(32).fill(0x11),
+    );
+    const recipient = sodium.crypto_box_seed_keypair(
+      new Uint8Array(32).fill(0x22),
+    );
+    const nonce = hexToBytes("ab".repeat(sodium.crypto_box_NONCEBYTES));
+    const message = hexToBytes("33".repeat(32));
+
+    const ciphertext = sodium.crypto_box_easy(
+      message,
+      nonce,
+      recipient.publicKey,
+      sender.privateKey,
+    );
+
+    expect(
+      boxOpen(ciphertext, nonce, sender.publicKey, recipient.privateKey),
+    ).toEqual(message);
   });
 });
 

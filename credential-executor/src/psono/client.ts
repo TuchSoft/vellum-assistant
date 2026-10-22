@@ -15,6 +15,7 @@ import {
   generateBoxKeyPair,
   hexToBytes,
   secretBoxOpen,
+  secretBoxSeal,
   signDetached,
   utf8ToBytes,
   verifyDetached,
@@ -60,6 +61,7 @@ interface Session {
   token: string;
   secretKey: Uint8Array;
   userSecretKey: Uint8Array;
+  userBoxPrivateBytes: Uint8Array;
   expiresAt: number;
 }
 
@@ -118,6 +120,47 @@ export class PsonoClient {
       session.userSecretKey,
     );
     return decodeKeyBytes(opened);
+  }
+
+  /**
+   * Open a box encrypted to the user's public key (a pending share key) with
+   * the user's private key, and return the decoded 32-byte key.
+   */
+  openAsymmetricBox(
+    ciphertextHex: string,
+    nonceHex: string,
+    senderPublicKeyHex: string,
+  ): Uint8Array {
+    const session = this.session;
+    if (!session) {
+      throw unauthorized("Psono session is not open");
+    }
+    const opened = boxOpen(
+      hexToBytes(ciphertextHex),
+      hexToBytes(nonceHex),
+      hexToBytes(senderPublicKeyHex),
+      session.userBoxPrivateBytes,
+    );
+    return decodeKeyBytes(opened);
+  }
+
+  /**
+   * Seal a 32-byte key with the user's secret key, in the two hex fields Psono
+   * stores for a symmetric share right.
+   */
+  sealUserKeyBox(plaintext: Uint8Array): {
+    ciphertextHex: string;
+    nonceHex: string;
+  } {
+    const session = this.session;
+    if (!session) {
+      throw unauthorized("Psono session is not open");
+    }
+    const sealed = secretBoxSeal(plaintext, session.userSecretKey);
+    return {
+      ciphertextHex: bytesToHex(sealed.ciphertext),
+      nonceHex: bytesToHex(sealed.nonce),
+    };
   }
 
   /** Establish a session and return the decrypted user secret key. */
@@ -182,12 +225,14 @@ export class PsonoClient {
       const payload: PsonoSessionPayload = payloadResult.data;
 
       const userSecretKey = this.decryptUserSecretKey(payload);
+      const userBoxPrivateBytes = this.decryptUserBoxPrivateBytes(payload);
       const secretKey = decodeKeyBytes(hexToBytes(payload.session_secret_key));
 
       this.session = {
         token: payload.token,
         secretKey,
         userSecretKey,
+        userBoxPrivateBytes,
         expiresAt: this.now() + this.sessionDurationSeconds * 1000,
       };
       this.lastRefresh = new Date(this.now()).toISOString();
@@ -208,13 +253,58 @@ export class PsonoClient {
    * On an authentication failure the session is re-opened once.
    */
   async request(path: string, retryOnAuth = true): Promise<unknown> {
+    return this.send(path, undefined, retryOnAuth);
+  }
+
+  /**
+   * POST a JSON body to a session endpoint and return the decrypted response.
+   *
+   * The body is sealed with the session secret key: Psono's request parser
+   * accepts only the `{text, nonce}` envelope for session endpoints.
+   */
+  async post(
+    path: string,
+    body: unknown,
+    retryOnAuth = true,
+  ): Promise<unknown> {
+    return this.send(path, body, retryOnAuth);
+  }
+
+  private async send(
+    path: string,
+    body: unknown,
+    retryOnAuth: boolean,
+  ): Promise<unknown> {
     await this.ensureSession();
 
     let response: Response;
     try {
+      const sealedBody =
+        body === undefined
+          ? undefined
+          : secretBoxSeal(
+              utf8ToBytes(JSON.stringify(body)),
+              this.session!.secretKey,
+            );
       response = await this.rawFetch(
         path,
-        { headers: { Authorization: `Token ${this.session!.token}` } },
+        {
+          method: body === undefined ? "GET" : "POST",
+          headers: {
+            Authorization: `Token ${this.session!.token}`,
+            ...(body === undefined
+              ? {}
+              : { "content-type": "application/json" }),
+          },
+          ...(sealedBody === undefined
+            ? {}
+            : {
+                body: JSON.stringify({
+                  text: bytesToHex(sealedBody.ciphertext),
+                  nonce: bytesToHex(sealedBody.nonce),
+                }),
+              }),
+        },
         true,
       );
     } catch (err) {
@@ -225,17 +315,17 @@ export class PsonoClient {
       this.invalidateSession();
       if (retryOnAuth) {
         await this.ensureSession();
-        return this.request(path, false);
+        return this.send(path, body, false);
       }
       throw this.recordError(unauthorized("Psono session rejected"));
     }
 
-    const body = await this.decodeBody(response);
+    const decoded = await this.decodeBody(response);
     if (!response.ok) {
-      throw this.recordError(this.mapHttpError(response.status, body));
+      throw this.recordError(this.mapHttpError(response.status, decoded));
     }
     this.lastError = null;
-    return body;
+    return decoded;
   }
 
   private async ensureSession(): Promise<void> {
@@ -257,6 +347,23 @@ export class PsonoClient {
     const decrypted = secretBoxOpen(
       hexToBytes(user.secret_key),
       hexToBytes(user.secret_key_nonce),
+      hexToBytes(this.material.apiKeySecretKeyHex),
+    );
+    return decodeKeyBytes(decrypted);
+  }
+
+  /**
+   * The user's X25519 private key, sealed with the API key secret key for the
+   * same login that carries the user secret key.
+   */
+  private decryptUserBoxPrivateBytes(payload: PsonoSessionPayload): Uint8Array {
+    const user = payload.user;
+    if (!user.private_key || !user.private_key_nonce) {
+      throw unavailable("Psono session did not include the user private key");
+    }
+    const decrypted = secretBoxOpen(
+      hexToBytes(user.private_key),
+      hexToBytes(user.private_key_nonce),
       hexToBytes(this.material.apiKeySecretKeyHex),
     );
     return decodeKeyBytes(decrypted);

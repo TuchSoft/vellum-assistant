@@ -82,6 +82,21 @@ export function secretBoxOpen(
 }
 
 /**
+ * Seal a payload with a 32-byte key using a fresh random nonce.
+ *
+ * The nonce is returned alongside the ciphertext: Psono keeps the two in
+ * separate fields.
+ */
+export function secretBoxSeal(
+  plaintext: Uint8Array,
+  key: Uint8Array,
+): { ciphertext: Uint8Array; nonce: Uint8Array } {
+  const nonce = sodium.randombytes_buf(NONCE_BYTES);
+  const ciphertext = sodium.crypto_secretbox_easy(plaintext, nonce, key);
+  return { ciphertext, nonce };
+}
+
+/**
  * Normalize a decrypted key: Psono returns some keys as raw 32-byte values and
  * others as their 64-character hex encoding.
  */

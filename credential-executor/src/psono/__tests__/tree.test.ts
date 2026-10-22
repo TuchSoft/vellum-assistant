@@ -1,26 +1,27 @@
 import { describe, expect, test } from "bun:test";
 import sodium from "libsodium-wrappers";
 
+import { secretBoxOpen } from "../crypto.js";
 import { PsonoTree, type PsonoTreeClient } from "../tree.js";
-import { PsonoShareListSchema } from "../types.js";
+import {
+  PsonoShareListSchema,
+  type PsonoShareRight,
+} from "../types.js";
 
 await sodium.ready;
 
 const SECRET_KEY_HEX = "33".repeat(32);
 
-interface ShareRightFixture {
+interface ShareRightFixture extends PsonoShareRight {
   id: string;
-  share_right_key?: string;
-  share_right_key_nonce?: string;
-  share_right_read?: boolean | null;
-  share_right_write?: boolean | null;
-  share_right_grant?: boolean | null;
-  share_right_accepted?: boolean | null;
 }
 
-function shareRight(overrides: Partial<ShareRightFixture> = {}): ShareRightFixture {
+function shareRight(
+  overrides: Partial<ShareRightFixture> = {},
+): ShareRightFixture {
   return {
     id: "share-1",
+    share_right_id: "right-1",
     share_right_key: "aabb",
     share_right_key_nonce: "ccdd",
     share_right_read: true,
@@ -45,11 +46,23 @@ function sealShare(
   };
 }
 
+interface AcceptCall {
+  path: string;
+  body: Record<string, unknown>;
+}
+
 class FakeClient implements PsonoTreeClient {
   readonly details = new Map<string, unknown>();
   readonly acceptedKey = sodium.crypto_secretbox_keygen();
+  readonly userSecretKey = sodium.crypto_secretbox_keygen();
+  readonly userKeyPair = sodium.crypto_box_keypair();
+  readonly senderKeyPair = sodium.crypto_box_keypair();
+  readonly acceptCalls: AcceptCall[] = [];
+  shares: ShareRightFixture[];
 
-  constructor(readonly shares: ShareRightFixture[]) {}
+  constructor(shares: ShareRightFixture[]) {
+    this.shares = shares;
+  }
 
   async request(path: string): Promise<unknown> {
     if (path === "/share/") {
@@ -69,8 +82,53 @@ class FakeClient implements PsonoTreeClient {
     throw new Error(`unexpected request ${path}`);
   }
 
+  async post(path: string, body: unknown): Promise<unknown> {
+    this.acceptCalls.push({ path, body: body as Record<string, unknown> });
+    const shareRightId = (body as { share_right_id?: string }).share_right_id;
+    for (const share of this.shares) {
+      if (share.share_right_id === shareRightId) {
+        share.share_right_accepted = true;
+        share.share_right_key = String(
+          (body as { key?: string }).key ?? share.share_right_key,
+        );
+        share.share_right_key_nonce = String(
+          (body as { key_nonce?: string }).key_nonce ??
+            share.share_right_key_nonce,
+        );
+        share.share_right_key_type = "symmetric";
+      }
+    }
+    return {};
+  }
+
   openUserKeyBox(): Uint8Array {
     return this.acceptedKey;
+  }
+
+  openAsymmetricBox(
+    ciphertextHex: string,
+    nonceHex: string,
+    senderPublicKeyHex: string,
+  ): Uint8Array {
+    return sodium.crypto_box_open_easy(
+      sodium.from_hex(ciphertextHex),
+      sodium.from_hex(nonceHex),
+      sodium.from_hex(senderPublicKeyHex),
+      this.userKeyPair.privateKey,
+    );
+  }
+
+  sealUserKeyBox(plaintext: Uint8Array): {
+    ciphertextHex: string;
+    nonceHex: string;
+  } {
+    const nonce = sodium.randombytes_buf(sodium.crypto_secretbox_NONCEBYTES);
+    return {
+      ciphertextHex: sodium.to_hex(
+        sodium.crypto_secretbox_easy(plaintext, nonce, this.userSecretKey),
+      ),
+      nonceHex: sodium.to_hex(nonce),
+    };
   }
 
   addEntry(shareId: string, name: string): void {
@@ -81,6 +139,29 @@ class FakeClient implements PsonoTreeClient {
         this.acceptedKey,
       ),
       rights: { read: true },
+    });
+  }
+
+  /** Build a pending (asymmetric) share right for a share id. */
+  pendingShare(id: string, overrides: Partial<ShareRightFixture> = {}): ShareRightFixture {
+    const nonce = sodium.randombytes_buf(sodium.crypto_box_NONCEBYTES);
+    const sealed = sodium.crypto_box_easy(
+      this.acceptedKey,
+      nonce,
+      this.userKeyPair.publicKey,
+      this.senderKeyPair.privateKey,
+    );
+    return shareRight({
+      id,
+      share_right_id: `right-${id}`,
+      share_right_key: sodium.to_hex(sealed),
+      share_right_key_nonce: sodium.to_hex(nonce),
+      share_right_key_type: "symmetric",
+      share_right_create_user_public_key: sodium.to_hex(
+        this.senderKeyPair.publicKey,
+      ),
+      share_right_accepted: null,
+      ...overrides,
     });
   }
 }
@@ -99,22 +180,87 @@ describe("PsonoShareRightSchema", () => {
     });
     expect(parsed.success).toBe(true);
   });
+
+  test("requires the share right id", () => {
+    const { share_right_id: _omit, ...withoutId } = shareRight();
+    expect(
+      PsonoShareListSchema.safeParse({ shares: [withoutId] }).success,
+    ).toBe(false);
+  });
+
+  test("keeps the optional key type and sender public key", () => {
+    const parsed = PsonoShareListSchema.safeParse({
+      shares: [
+        shareRight({
+          share_right_key_type: "asymmetric",
+          share_right_create_user_public_key: "ab".repeat(32),
+        }),
+      ],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.shares[0]!.share_right_key_type).toBe("asymmetric");
+      expect(parsed.data.shares[0]!.share_right_create_user_public_key).toBe(
+        "ab".repeat(32),
+      );
+    }
+  });
 });
 
 describe("PsonoTree share collection", () => {
-  test("skips a pending share (accepted null) without failing the list", async () => {
+  test("skips a pending share whose key cannot be opened either way", async () => {
     const client = new FakeClient([
       shareRight({ id: "pending", share_right_accepted: null }),
     ]);
+    client.openUserKeyBox = () => {
+      throw new Error("unopenable");
+    };
     const tree = new PsonoTree(client);
     await expect(tree.find("anything")).rejects.toMatchObject({
       kind: "not_found",
     });
+    expect(client.acceptCalls).toHaveLength(0);
+  });
+
+  test("accepts a pending asymmetric share and indexes it", async () => {
+    const client = new FakeClient([]);
+    client.shares = [client.pendingShare("fresh")];
+    client.addEntry("fresh", "FRESH");
+
+    const tree = new PsonoTree(client);
+    const entry = await tree.find("FRESH");
+
+    expect(entry.secretId).toBe("secret-fresh");
+    expect(client.acceptCalls).toHaveLength(1);
+    const call = client.acceptCalls[0]!;
+    expect(call.path).toBe("/share/right/accept/");
+    expect(call.body["share_right_id"]).toBe("right-fresh");
+    expect(call.body["key_type"]).toBe("symmetric");
+    expect(typeof call.body["key"]).toBe("string");
+    expect(typeof call.body["key_nonce"]).toBe("string");
+
+    // The accepted key is re-sealed for the user secret key.
+    const opened = secretBoxOpen(
+      sodium.from_hex(call.body["key"] as string),
+      sodium.from_hex(call.body["key_nonce"] as string),
+      client.userSecretKey,
+    );
+    expect(opened).toEqual(client.acceptedKey);
+  });
+
+  test("does not repeat the accept on a second build", async () => {
+    const client = new FakeClient([]);
+    client.shares = [client.pendingShare("fresh")];
+    client.addEntry("fresh", "FRESH");
+
+    const tree = new PsonoTree(client, Date.now, 0);
+    await tree.find("FRESH");
+    await tree.find("FRESH");
+    expect(client.acceptCalls).toHaveLength(1);
   });
 
   test("returns only the usable shares from a mixed list", async () => {
     const client = new FakeClient([
-      shareRight({ id: "pending", share_right_accepted: null }),
       shareRight({ id: "usable", share_right_accepted: true }),
     ]);
     client.addEntry("usable", "VALID");
@@ -123,6 +269,7 @@ describe("PsonoTree share collection", () => {
     const entry = await tree.find("VALID");
     expect(entry.secretId).toBe("secret-usable");
     expect(entry.source).toBe("share");
+    expect(client.acceptCalls).toHaveLength(0);
   });
 
   test("skips a share whose key cannot be opened", async () => {
@@ -150,6 +297,25 @@ describe("PsonoTree share collection", () => {
     await expect(tree.find("anything")).rejects.toMatchObject({
       kind: "not_found",
     });
+    expect(client.acceptCalls).toHaveLength(0);
+  });
+
+  test("does not accept an expired pending share", async () => {
+    const client = new FakeClient([]);
+    client.shares = [
+      client.pendingShare("old", {
+        share_right_expiration_date: new Date(
+          Date.now() - 60_000,
+        ).toISOString(),
+      }),
+    ];
+    client.addEntry("old", "OLD");
+
+    const tree = new PsonoTree(client);
+    await expect(tree.find("OLD")).rejects.toMatchObject({
+      kind: "not_found",
+    });
+    expect(client.acceptCalls).toHaveLength(0);
   });
 
   test("treats an absent accepted flag as accepted", async () => {
@@ -161,5 +327,6 @@ describe("PsonoTree share collection", () => {
     await expect(tree.find("LEGACY")).resolves.toMatchObject({
       secretId: "secret-legacy",
     });
+    expect(client.acceptCalls).toHaveLength(0);
   });
 });

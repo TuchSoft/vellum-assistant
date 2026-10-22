@@ -17,6 +17,7 @@ import {
   PsonoShareDetailSchema,
   PsonoShareListSchema,
   normalizePayload,
+  type PsonoShareRight,
   type SecretPayload,
 } from "./types.js";
 
@@ -41,8 +42,20 @@ export interface EntryIndex {
 
 export interface PsonoTreeClient {
   request(path: string): Promise<unknown>;
+  post(path: string, body: unknown): Promise<unknown>;
   openUserKeyBox(ciphertextHex: string, nonceHex: string): Uint8Array;
+  openAsymmetricBox(
+    ciphertextHex: string,
+    nonceHex: string,
+    senderPublicKeyHex: string,
+  ): Uint8Array;
+  sealUserKeyBox(plaintext: Uint8Array): {
+    ciphertextHex: string;
+    nonceHex: string;
+  };
 }
+
+type ShareRight = PsonoShareRight;
 
 interface FolderItem {
   id?: string;
@@ -75,9 +88,21 @@ function indexKey(path: string): string {
   return path.replace(/^\/+|\/+$/g, "").toLowerCase();
 }
 
+function isExpired(
+  expirationDate: string | null | undefined,
+  now: number,
+): boolean {
+  if (!expirationDate) {
+    return false;
+  }
+  const at = Date.parse(expirationDate);
+  return Number.isFinite(at) && at < now;
+}
+
 export class PsonoTree {
   private index?: EntryIndex;
   private indexBuiltAt = 0;
+  private acceptedSinceBuild = false;
   private readonly ttlMs: number;
 
   constructor(
@@ -182,6 +207,12 @@ export class PsonoTree {
 
     this.index = { entries, byPath };
     this.indexBuiltAt = this.now();
+    if (this.acceptedSinceBuild) {
+      // A share was accepted while collecting: the server list changed, so the
+      // next build must read it again rather than reuse this snapshot.
+      this.acceptedSinceBuild = false;
+      this.indexBuiltAt = 0;
+    }
     return this.index;
   }
 
@@ -195,32 +226,53 @@ export class PsonoTree {
     }
 
     let skippedPending = 0;
+    let skippedExpired = 0;
     let skippedNoAccess = 0;
     let skippedKey = 0;
     let skippedPayload = 0;
+    let accepted = 0;
 
     for (const right of list.data.shares) {
       // A share right that the recipient has not accepted yet has a null
-      // accepted flag and a share key that cannot be opened. It is pending,
-      // not an error, and must not hide the shares that are usable.
-      if (right.share_right_accepted === null) {
-        skippedPending += 1;
-        continue;
-      }
+      // accepted flag and a share key that cannot be opened with the user
+      // secret key. It is pending, not an error, and must not hide the shares
+      // that are usable.
       if (right.share_right_accepted === false) {
         continue;
       }
       if (right.share_right_read === false) {
         continue;
       }
+      if (
+        isExpired(
+          right.expiration_date ?? right.share_right_expiration_date,
+          this.now(),
+        )
+      ) {
+        skippedExpired += 1;
+        continue;
+      }
 
-      let shareKey: Uint8Array;
-      try {
-        shareKey = this.client.openUserKeyBox(
-          right.share_right_key,
-          right.share_right_key_nonce,
-        );
-      } catch {
+      let shareKey: Uint8Array | undefined;
+      if (right.share_right_accepted === null) {
+        const pendingKey = this.openShareKey(right);
+        if (!pendingKey) {
+          skippedPending += 1;
+          continue;
+        }
+        try {
+          await this.acceptShare(right, pendingKey);
+        } catch {
+          skippedPending += 1;
+          continue;
+        }
+        accepted += 1;
+        shareKey = pendingKey;
+      } else {
+        shareKey = this.openShareKey(right);
+      }
+
+      if (!shareKey) {
         skippedKey += 1;
         continue;
       }
@@ -277,13 +329,84 @@ export class PsonoTree {
     }
 
     const skipped =
-      skippedPending + skippedNoAccess + skippedKey + skippedPayload;
-    if (skipped > 0) {
+      skippedPending +
+      skippedExpired +
+      skippedNoAccess +
+      skippedKey +
+      skippedPayload;
+    if (accepted > 0) {
+      this.acceptedSinceBuild = true;
+    }
+    if (skipped > 0 || accepted > 0) {
       log.debug(
-        { skipped, skippedPending, skippedNoAccess, skippedKey, skippedPayload },
-        "Skipped Psono shares",
+        {
+          accepted,
+          skipped,
+          skippedPending,
+          skippedExpired,
+          skippedNoAccess,
+          skippedKey,
+          skippedPayload,
+        },
+        "Processed Psono shares",
       );
     }
+  }
+
+  /**
+   * Open a share key with whichever scheme the right is in.
+   *
+   * `share_right_key_type` is advisory: a server can label an
+   * asymmetrically sealed key as `symmetric`. Try the declared scheme first,
+   * then the other one when a sender public key makes it possible.
+   */
+  private openShareKey(right: ShareRight): Uint8Array | undefined {
+    const senderPublicKey = right.share_right_create_user_public_key;
+    const symmetric = (): Uint8Array =>
+      this.client.openUserKeyBox(
+        right.share_right_key,
+        right.share_right_key_nonce,
+      );
+    const asymmetric = (): Uint8Array => {
+      if (!senderPublicKey) {
+        throw unavailable("Psono share right has no sender public key");
+      }
+      return this.client.openAsymmetricBox(
+        right.share_right_key,
+        right.share_right_key_nonce,
+        senderPublicKey,
+      );
+    };
+
+    const attempts =
+      right.share_right_key_type === "symmetric"
+        ? [symmetric, asymmetric]
+        : [asymmetric, symmetric];
+    for (const attempt of attempts) {
+      try {
+        return attempt();
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Accept a pending share right: re-seal its key with the user's secret key
+   * and tell the server, so the right becomes a normal symmetric one.
+   */
+  private async acceptShare(
+    right: ShareRight,
+    shareKey: Uint8Array,
+  ): Promise<void> {
+    const sealed = this.client.sealUserKeyBox(shareKey);
+    await this.client.post("/share/right/accept/", {
+      share_right_id: right.share_right_id,
+      key: sealed.ciphertextHex,
+      key_nonce: sealed.nonceHex,
+      key_type: "symmetric",
+    });
   }
 
   private async collectDatastores(

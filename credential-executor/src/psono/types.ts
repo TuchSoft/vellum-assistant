@@ -62,12 +62,17 @@ export type PsonoSessionPayload = z.infer<typeof PsonoSessionPayloadSchema>;
 export const PsonoShareRightSchema = z
   .object({
     id: z.string(),
+    share_right_id: z.string(),
     share_right_key: z.string(),
     share_right_key_nonce: z.string(),
+    share_right_key_type: z.string().nullable().optional(),
+    share_right_create_user_public_key: z.string().optional(),
     share_right_read: z.boolean().nullable().optional(),
     share_right_write: z.boolean().nullable().optional(),
     share_right_grant: z.boolean().nullable().optional(),
     share_right_accepted: z.boolean().nullable().optional(),
+    expiration_date: z.string().nullable().optional(),
+    share_right_expiration_date: z.string().nullable().optional(),
   })
   .passthrough();
 
@@ -76,6 +81,7 @@ export const PsonoShareListSchema = z
     shares: z.array(PsonoShareRightSchema),
   })
   .passthrough();
+export type PsonoShareRight = z.infer<typeof PsonoShareRightSchema>;
 
 export const PsonoShareDetailSchema = z
   .object({

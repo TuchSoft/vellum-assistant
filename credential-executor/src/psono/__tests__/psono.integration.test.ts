@@ -10,8 +10,13 @@ import {
   type RecordSource,
 } from "../backend.js";
 import { PsonoClient } from "../client.js";
+import { hexToBytes, secretBoxOpen } from "../crypto.js";
 import { loadMaterialFile } from "../material.js";
 import { PsonoTree } from "../tree.js";
+import {
+  PsonoShareDetailSchema,
+  PsonoShareListSchema,
+} from "../types.js";
 
 const MATERIAL_PATH =
   process.env["PSONO_MATERIAL_FILE"] ??
@@ -89,6 +94,83 @@ live("Psono integration (read-only)", () => {
       // Never print the value: only its shape is asserted.
       expect(typeof payload["password"]).toBe("string");
       expect((payload["password"] as string).length).toBeGreaterThan(0);
+    },
+    30_000,
+  );
+
+  test(
+    "accepts a pending share lazily and exposes its entry",
+    async () => {
+      const before = PsonoShareListSchema.parse(
+        await client!.request("/share/"),
+      ).shares;
+      const pending = before.find(
+        (share) =>
+          share.share_right_accepted === null &&
+          share.share_right_read !== false,
+      );
+      // A previous run already accepted it: nothing pending is a valid state.
+      if (!pending) {
+        expect(before.every((share) => share.share_right_accepted !== null)).toBe(
+          true,
+        );
+        return;
+      }
+
+      tree!.invalidate();
+      await tree!.find("TEST");
+
+      const after = PsonoShareListSchema.parse(
+        await client!.request("/share/"),
+      ).shares;
+      const accepted = after.find(
+        (share) => share.share_right_id === pending.share_right_id,
+      );
+      expect(accepted?.share_right_accepted).toBe(true);
+      expect(accepted?.share_right_key_type).toBe("symmetric");
+
+      // The re-sealed key opens with the user secret key, like any accepted
+      // share, and the entry it protects is now in the index.
+      const shareKey = client!.openUserKeyBox(
+        accepted!.share_right_key,
+        accepted!.share_right_key_nonce,
+      );
+      const detail = PsonoShareDetailSchema.parse(
+        await client!.request(`/share/${encodeURIComponent(pending.id)}/`),
+      );
+      const payload = JSON.parse(
+        new TextDecoder().decode(
+          secretBoxOpen(
+            hexToBytes(detail.data),
+            hexToBytes(detail.data_nonce),
+            shareKey,
+          ),
+        ),
+      ) as { name?: string };
+      expect(typeof payload.name).toBe("string");
+      const entry = await tree!.find(payload.name!);
+      expect(entry.secretId.length).toBeGreaterThan(0);
+      expect(entry.source).toBe("share");
+    },
+    30_000,
+  );
+
+  test(
+    "does not repeat the accept on a second build",
+    async () => {
+      const original = client!.post.bind(client!);
+      let acceptCalls = 0;
+      client!.post = async (...args: Parameters<PsonoClient["post"]>) => {
+        acceptCalls += 1;
+        return original(...args);
+      };
+      try {
+        tree!.invalidate();
+        await tree!.find("TEST");
+      } finally {
+        client!.post = original;
+      }
+      expect(acceptCalls).toBe(0);
     },
     30_000,
   );

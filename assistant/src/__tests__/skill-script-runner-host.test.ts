@@ -193,7 +193,8 @@ describe("runSkillToolScript — host execution requires host_exec", () => {
     );
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("host_exec capability is not granted");
+    expect(result.content).toContain("has no host_exec grant");
+    expect(result.content).toContain("PUT /v1/permissions/skill-grants/");
     expect(result.content).toContain('execution_target: "sandbox"');
     // The script must not have run — its success output never appears.
     expect(result.content).not.toContain("hello from world");
@@ -209,7 +210,7 @@ describe("runSkillToolScript — host execution requires host_exec", () => {
     );
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("host_exec capability is not granted");
+    expect(result.content).toContain("has no host_exec grant");
   });
 
   test("allows host execution when host_exec is granted", async () => {

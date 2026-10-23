@@ -90,6 +90,7 @@ import {
 } from "../permissions/checker.js";
 import { _clearGlobalCacheForTesting } from "../permissions/gateway-threshold-reader.js";
 import { RiskLevel } from "../permissions/types.js";
+import { _clearSkillCapabilityCacheForTest } from "../skills/capabilities.js";
 import { computeSkillVersionHash } from "../skills/version-hash.js";
 import { registerSkillTools, registerTool } from "../tools/registry.js";
 import type { Tool } from "../tools/types.js";
@@ -126,8 +127,8 @@ registerSkillTools("test-skill", [mockSkillTool]);
 
 // Register a mock vetted skill-origin tool for testing strict mode + vetted
 // policy. `app-builder` is a real entry under `bundled-skills/`, so the
-// permission checker resolves its capability defaults from the generated
-// manifest using the registration hash and directory.
+// permission checker recomputes its content hash and reads the `vetted`
+// capability the gateway granted to that exact version.
 const mockBundledSkillTool: Tool = {
   name: "skill_bundled_test_tool",
   description: "A test bundled skill tool",
@@ -138,8 +139,9 @@ const mockBundledSkillTool: Tool = {
   execute: async () => ({ content: "ok", isError: false }),
 };
 const appBuilderDir = join(getBundledSkillsDir(), "app-builder");
+const appBuilderVersionHash = computeSkillVersionHash(appBuilderDir);
 registerSkillTools("app-builder", [mockBundledSkillTool], {
-  versionHash: computeSkillVersionHash(appBuilderDir),
+  versionHash: appBuilderVersionHash,
   directoryPath: appBuilderDir,
 });
 
@@ -1188,6 +1190,19 @@ describe("Permission Checker", () => {
       });
 
       test("vetted skill-origin tool with no rule prompts in strict mode", async () => {
+        mockIpcResponse("get_skill_grants", {
+          grants: [
+            {
+              skillId: "app-builder",
+              versionHash: appBuilderVersionHash,
+              capabilities: ["vetted"],
+              grantedBy: null,
+              createdAt: 0,
+              updatedAt: 0,
+            },
+          ],
+        });
+        _clearSkillCapabilityCacheForTest();
         mockIpcResponse("get_global_thresholds", STRICT_GATEWAY_THRESHOLDS);
         _clearGlobalCacheForTesting();
         const result = await check("skill_bundled_test_tool", {}, "/tmp");

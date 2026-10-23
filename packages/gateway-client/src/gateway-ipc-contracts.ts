@@ -3,6 +3,7 @@
  */
 
 import { CHANNEL_IDS } from "@vellumai/service-contracts/channels";
+import { SkillCapabilitySchema } from "@vellumai/service-contracts/skill-capabilities";
 import { z } from "zod";
 
 import { RiskThresholdSchema } from "./channel-permission-contract.js";
@@ -747,4 +748,38 @@ export const DiscordAdmissionIpcResponseSchema = z.object({
 
 export type DiscordAdmissionIpcResponse = z.infer<
   typeof DiscordAdmissionIpcResponseSchema
+>;
+
+/**
+ * One capability grant, as the gateway stores it.
+ *
+ * The pair `(skillId, versionHash)` identifies the exact skill content the
+ * capabilities were reviewed against: editing a skill produces a new version,
+ * and the grant for the previous version no longer applies.
+ */
+export const SkillGrantIpcSchema = z.object({
+  skillId: z.string(),
+  versionHash: z.string(),
+  capabilities: z.array(SkillCapabilitySchema),
+  /** Principal that granted them; null records a grant made out of band. */
+  grantedBy: z.string().nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+});
+
+export type SkillGrantIpc = z.infer<typeof SkillGrantIpcSchema>;
+
+/**
+ * Answer to the read-only `get_skill_grants` IPC method.
+ *
+ * The gateway answers with the empty list when its store is unreadable, so a
+ * consumer can never mistake a broken store for a grant. A consumer that gets
+ * no answer at all must read that the same way: no grants.
+ */
+export const GetSkillGrantsIpcResponseSchema = z.object({
+  grants: z.array(SkillGrantIpcSchema),
+});
+
+export type GetSkillGrantsIpcResponse = z.infer<
+  typeof GetSkillGrantsIpcResponseSchema
 >;

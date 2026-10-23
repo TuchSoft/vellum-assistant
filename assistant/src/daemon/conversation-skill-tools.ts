@@ -22,7 +22,6 @@ import {
 import type { Message, ToolDefinition } from "../providers/types.js";
 import type { ActiveSkillEntry } from "../skills/active-skill-tools.js";
 import { deriveActiveSkills } from "../skills/active-skill-tools.js";
-import { getSkillCapabilities } from "../skills/capabilities.js";
 import { getCachedCatalogSync } from "../skills/catalog-cache.js";
 import { readInstallMeta, touchSkillLastUsed } from "../skills/install-meta.js";
 import { isSkillCompatibleWithPlatform } from "../skills/platform-compatibility.js";
@@ -462,20 +461,15 @@ export function projectSkillTools(
       currentHash = `unknown-${Date.now()}`;
     }
 
-    // Create runtime Tool objects. Capabilities are resolved once per
-    // registration from the skill's content hash and directory; the tool
-    // factory receives them so host execution and input repairs are gated by
-    // the same grant the registry records.
-    const capabilities = getSkillCapabilities({
-      skillId: skill.id,
-      versionHash: currentHash,
-      directoryPath: skill.directoryPath,
-    });
+    // Create runtime Tool objects. Capabilities are not resolved here: the
+    // tool factory reads the grant for `(skillId, versionHash)` when the tool
+    // actually runs, so a grant is checked against the content it belongs to
+    // and never against what the manifest declares.
     const tools = createSkillToolsFromManifest(
       manifest.tools,
       skill.directoryPath,
       currentHash,
-      capabilities,
+      undefined,
       skill.owner?.kind === "plugin" ? skill.owner.id : undefined,
     );
 

@@ -1,4 +1,4 @@
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 import { computeSkillVersionHash } from "../../skills/version-hash.js";
 import { isAbortLikeError } from "../shared/abort.js";
@@ -53,13 +53,16 @@ export async function runSkillToolScript(
   }
 
   // Host execution dynamically imports the executor into the daemon process —
-  // full host code execution with no sandbox boundary. The capability is
-  // granted per skill content version (`host_exec`); a skill that declares
-  // `execution_target: host` without the grant is refused. The check fails
-  // closed for managed, workspace, and plugin skills that received no grant.
+  // full host code execution with no sandbox boundary. The capability is a
+  // grant the gateway holds for this exact skill content version
+  // (`host_exec`): declaring `execution_target: host` in the manifest is a
+  // request, not a permission, and `bundled` is provenance rather than trust.
+  // Every skill without the grant is refused, whatever its origin.
   if (options?.target === "host" && !options?.hostExecAllowed) {
+    const skillId = basename(resolve(skillDir));
+    const version = options?.expectedSkillVersionHash ?? "this version";
     return {
-      content: `Skill tool "${executorPath}" requests host execution, but the host_exec capability is not granted for this skill version. Declare execution_target: "sandbox" or grant host_exec to this exact version.`,
+      content: `Skill tool "${executorPath}" requests host execution, but this skill version has no host_exec grant. Capabilities are granted per skill version in the gateway: grant host_exec to "${skillId}" at version ${version} (PUT /v1/permissions/skill-grants/${skillId}), or declare execution_target: "sandbox".`,
       isError: true,
     };
   }

@@ -109,11 +109,14 @@ function resolveSkillIdAndHash(
  * Resolve whether the skill that owns this tool is vetted for its current
  * content. The registry records the version hash and directory at
  * registration; this check recomputes the hash from disk so a skill modified
- * after registration loses the grant immediately. Returns false when the tool
- * has no owning skill, the owner has no recorded version, or the directory is
- * not the bundled skill the manifest describes.
+ * after registration loses the grant immediately, then reads the `vetted`
+ * capability the gateway granted to that exact version. Returns false when the
+ * tool has no owning skill, the owner has no recorded version, the content
+ * changed, or the gateway has no grant for it.
  */
-export function isToolOwnerSkillVetted(tool: Tool | undefined): boolean {
+export async function isToolOwnerSkillVetted(
+  tool: Tool | undefined,
+): Promise<boolean> {
   if (!tool) {
     return false;
   }
@@ -136,11 +139,12 @@ export function isToolOwnerSkillVetted(tool: Tool | undefined): boolean {
     return false;
   }
 
-  return getSkillCapabilities({
-    skillId: owner.id,
-    versionHash: currentHash,
-    directoryPath: owner.skillDirectoryPath,
-  }).vetted;
+  return (
+    await getSkillCapabilities({
+      skillId: owner.id,
+      versionHash: currentHash,
+    })
+  ).vetted;
 }
 
 /**
@@ -742,7 +746,7 @@ export async function check(
         ? isWorkspaceScopedInvocation(toolName, input, workingDir)
         : false,
     toolOrigin: getToolOwner(toolName)?.kind,
-    isSkillVetted: isToolOwnerSkillVetted(tool),
+    isSkillVetted: await isToolOwnerSkillVetted(tool),
     hasManifestOverride: !!manifestOverride,
     autoApproveUpTo: threshold,
     hasSandboxAutoApprove,

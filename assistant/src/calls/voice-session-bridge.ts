@@ -1693,7 +1693,7 @@ export async function startVoiceTurn(
       // `file_read { path: "/etc/hosts" }` classifies as `none` and would fall
       // through to the auto-allow this branch exists to prevent.
       const workspaceRoot = conversation.workingDir;
-      const reach = sensitiveToolReach(
+      const reach = await sensitiveToolReach(
         msg.toolName,
         // Absent on requests that do not come from the tool pipeline (proxy
         // and network prompters). Unknown reads as the more consequential of

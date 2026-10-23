@@ -38,34 +38,3 @@ export const NO_SKILL_CAPABILITIES: SkillCapabilities = Object.freeze({
   input_repairs: false,
   computer_use_target: false,
 });
-
-/**
- * One bundled skill's default capabilities, bound to the content hash the
- * manifest was generated from.
- */
-export const BundledSkillCapabilityDefaultSchema = z.object({
-  versionHash: z.string().min(1),
-  capabilities: z.array(SkillCapabilitySchema),
-});
-
-export type BundledSkillCapabilityDefault = z.infer<
-  typeof BundledSkillCapabilityDefaultSchema
->;
-
-/**
- * Build-time manifest of the capabilities bundled skills ship with.
- *
- * The manifest is generated from the bundled skill directories (see
- * `assistant/scripts/generate-skill-capability-defaults.ts`) and is the
- * only source of defaults until a persistent capability store exists. It is
- * scoped to bundled skills: a managed or workspace skill does not inherit
- * an entry, even when it reuses a bundled id.
- */
-export const BundledSkillCapabilityDefaultsSchema = z.object({
-  version: z.literal(1),
-  skills: z.record(z.string(), BundledSkillCapabilityDefaultSchema),
-});
-
-export type BundledSkillCapabilityDefaults = z.infer<
-  typeof BundledSkillCapabilityDefaultsSchema
->;

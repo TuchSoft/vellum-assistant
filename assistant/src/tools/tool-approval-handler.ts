@@ -321,12 +321,12 @@ export type SensitiveToolReach = "none" | "sandbox" | "host";
  *   this: a room-level posture is about what the assistant may do in that
  *   room, never a grant of the owner's own machine.
  */
-export function sensitiveToolReach(
+export async function sensitiveToolReach(
   toolName: string,
   executionTarget: ExecutionTarget,
   input?: Record<string, unknown>,
   workingDir?: string,
-): SensitiveToolReach {
+): Promise<SensitiveToolReach> {
   // UI surface tools are passive, user-visible operations (cards, forms,
   // tables). User input is voluntary and user-controlled — they are not
   // sensitive, so they work during fresh onboarding before trust is
@@ -376,7 +376,7 @@ export function sensitiveToolReach(
   // whatever it is named — a novel name is in no side-effect list, so without
   // this it would not be gated at all, and the risk its own manifest claims
   // would be the only thing standing between it and an auto-approval.
-  if (isUnvettedExtensionTool(toolName)) {
+  if (await isUnvettedExtensionTool(toolName)) {
     return "sandbox";
   }
 
@@ -399,13 +399,13 @@ export function sensitiveToolReach(
  * An absent owner record is the built-in registration path, so it reads
  * as `default`; a tool that is not registered at all cannot execute.
  */
-function isUnvettedExtensionTool(toolName: string): boolean {
+async function isUnvettedExtensionTool(toolName: string): Promise<boolean> {
   const kind = getToolOwner(toolName)?.kind;
   if (kind === undefined || kind === "default") {
     return false;
   }
   if (kind === "skill") {
-    return !isToolOwnerSkillVetted(getTool(toolName));
+    return !(await isToolOwnerSkillVetted(getTool(toolName)));
   }
   return true;
 }
@@ -533,12 +533,12 @@ function reachesPrivateNetwork(
  * host reach, control-plane writes, unvetted tools, or private-network
  * fetches; those stay on the floor regardless of the contact's threshold.
  */
-function isChannelLiftable(
+async function isChannelLiftable(
   reach: SensitiveToolReach,
   toolName: string,
   input: Record<string, unknown>,
   workingDir: string | undefined,
-): boolean {
+): Promise<boolean> {
   if (reach !== "sandbox") {
     return false;
   }
@@ -555,7 +555,7 @@ function isChannelLiftable(
   ) {
     return false;
   }
-  if (isUnvettedExtensionTool(toolName)) {
+  if (await isUnvettedExtensionTool(toolName)) {
     return false;
   }
   if (reachesPrivateNetwork(toolName, input)) {
@@ -572,12 +572,12 @@ function isChannelLiftable(
  * authorizes code execution in the workspace. Host reach, control-plane
  * writes, unvetted tools, and private-network fetches stay unliftable.
  */
-function isContactCeilingLiftable(
+async function isContactCeilingLiftable(
   reach: SensitiveToolReach,
   toolName: string,
   input: Record<string, unknown>,
   workingDir: string | undefined,
-): boolean {
+): Promise<boolean> {
   if (reach !== "sandbox") {
     return false;
   }
@@ -587,7 +587,7 @@ function isContactCeilingLiftable(
   ) {
     return false;
   }
-  if (isUnvettedExtensionTool(toolName)) {
+  if (await isUnvettedExtensionTool(toolName)) {
     return false;
   }
   if (reachesPrivateNetwork(toolName, input)) {
@@ -637,12 +637,12 @@ async function resolveApprovalCellThreshold(
   );
   if (
     contactCeiling !== null &&
-    isContactCeilingLiftable(reach, toolName, input, context.workingDir)
+    (await isContactCeilingLiftable(reach, toolName, input, context.workingDir))
   ) {
     return contactCeiling;
   }
 
-  if (!isChannelLiftable(reach, toolName, input, context.workingDir)) {
+  if (!(await isChannelLiftable(reach, toolName, input, context.workingDir))) {
     return undefined;
   }
   const query = buildChannelPermissionCellQuery(
@@ -861,7 +861,7 @@ export class ToolApprovalHandler {
       | Parameters<typeof consumeGrantForInvocation>[0]
       | null = null;
 
-    const reach = sensitiveToolReach(
+    const reach = await sensitiveToolReach(
       name,
       executionTarget,
       input,

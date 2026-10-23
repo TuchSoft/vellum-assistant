@@ -258,11 +258,13 @@ for (const platform of [true, false]) {
         const boundary = resolveExecutionTarget(click, input, toolContext);
         expect(boundary).toBe(virtual ? "sandbox" : "host");
         if (virtual) {
-          expect(sensitiveToolReach(click.name, boundary, input)).not.toBe(
+          expect(
+            await sensitiveToolReach(click.name, boundary, input),
+          ).not.toBe("host");
+        } else {
+          expect(await sensitiveToolReach(click.name, boundary, input)).toBe(
             "host",
           );
-        } else {
-          expect(sensitiveToolReach(click.name, boundary, input)).toBe("host");
         }
         const calls = local.mock.calls.length;
         const result = await click.execute(input, toolContext);

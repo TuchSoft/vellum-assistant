@@ -151,9 +151,13 @@ export class DefaultApprovalPolicy implements ApprovalPolicy {
           reason: `${riskLevel} risk: within auto-approve threshold (skill tool)`,
         };
       }
+      // The gate is the missing `vetted` grant, not the skill's origin: a
+      // bundled skill with no grant is as unvetted as a third-party one.
       return {
         decision: "prompt",
-        reason: "Skill tool: requires approval by default",
+        reason: isExtensionOwned
+          ? "Skill tool: requires approval by default (this skill version has no vetted grant)"
+          : "Skill tool: requires approval by default",
       };
     }
 

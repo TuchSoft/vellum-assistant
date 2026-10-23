@@ -1,52 +1,57 @@
-import { join, resolve } from "node:path";
-
 import {
-  BundledSkillCapabilityDefaultsSchema,
+  GetSkillGrantsIpcResponseSchema,
+  type SkillGrantIpc,
+} from "@vellumai/gateway-client/gateway-ipc-contracts";
+import {
   NO_SKILL_CAPABILITIES,
   type SkillCapabilities,
   type SkillCapability,
 } from "@vellumai/service-contracts/skill-capabilities";
 
-import bundledCapabilityDefaults from "../config/bundled-skills.capabilities.json" with { type: "json" };
-import { getBundledSkillsDir } from "../config/bundled-skills-dir.js";
+import { ipcCall } from "../ipc/gateway-client.js";
 import { getLogger } from "../util/logger.js";
 
 const log = getLogger("skill-capabilities");
 
-const parsedDefaults = BundledSkillCapabilityDefaultsSchema.safeParse(
-  bundledCapabilityDefaults,
-);
-if (!parsedDefaults.success) {
-  log.error(
-    { issues: parsedDefaults.error.issues },
-    "Bundled skill capability manifest is invalid; no defaults are available",
-  );
-}
-
-const defaults = parsedDefaults.success ? parsedDefaults.data.skills : {};
+/**
+ * How long a resolved grant set is reused before the gateway is asked again.
+ * Short on purpose: revoking a capability has to take effect promptly, and the
+ * lookup only runs when a skill is about to act.
+ */
+const GRANT_CACHE_TTL_MS = 15_000;
 
 /**
- * Resolved capabilities are pure functions of (skill id, version hash,
- * directory). The manifest is static for the life of the process, so the
- * cache only avoids repeated path resolution and object construction.
+ * Per-attempt cap on the grant read. The grant is a small, indexed lookup; a
+ * gateway that cannot answer within this budget is treated as unavailable, so
+ * a wedged gateway never stalls tool execution.
  */
-const capabilityCache = new Map<string, SkillCapabilities>();
+const GRANT_IPC_TIMEOUT_MS = 2_000;
 
 /**
- * Test seam: lets suite files that mock `config/skills.js` keep the resolver
- * pointed at the real bundled directory. Production never sets this.
+ * A capability lookup addresses one skill version. The version hash is what
+ * binds a grant to skill content: the gateway stores grants per
+ * `(skillId, versionHash)`, so a modified skill never inherits the grant for
+ * the content that was reviewed.
  */
-let bundledSkillsDirOverride: string | null = null;
-
-function resolveBundledSkillsDir(): string {
-  return bundledSkillsDirOverride ?? getBundledSkillsDir();
-}
-
 export interface SkillCapabilityLookup {
   skillId: string;
   versionHash?: string;
-  directoryPath?: string;
 }
+
+interface CachedCapabilities {
+  capabilities: SkillCapabilities;
+  expiresAt: number;
+}
+
+/**
+ * Last resolved set per `(skillId, versionHash)`. Both hits and misses are
+ * cached: a version with no grant is the common case and must not cost an IPC
+ * round trip on every tool call.
+ */
+const capabilityCache = new Map<string, CachedCapabilities>();
+
+/** In-flight reads, so concurrent callers share one gateway round trip. */
+const inFlightReads = new Map<string, Promise<SkillCapabilities>>();
 
 function capabilitiesFromList(
   capabilities: readonly SkillCapability[],
@@ -60,71 +65,159 @@ function capabilitiesFromList(
   };
 }
 
-function cacheKey(input: SkillCapabilityLookup, directoryPath: string): string {
-  return `${input.skillId}\0${input.versionHash}\0${directoryPath}`;
+/**
+ * The cache key, or null when the lookup cannot address a grant. Skill ids are
+ * directory basenames; separators are rejected so an id can never address
+ * another skill's entry.
+ */
+function lookupKey(input: SkillCapabilityLookup): string | null {
+  const { skillId, versionHash } = input;
+  if (!skillId || !versionHash) {
+    return null;
+  }
+  if (skillId.includes("/") || skillId.includes("\\")) {
+    return null;
+  }
+  return `${skillId}\0${versionHash}`;
+}
+
+function matchingGrant(
+  grants: readonly SkillGrantIpc[],
+  skillId: string,
+  versionHash: string,
+): SkillGrantIpc | undefined {
+  return grants.find(
+    (grant) => grant.skillId === skillId && grant.versionHash === versionHash,
+  );
 }
 
 /**
- * Resolve the capability set for one skill version.
+ * Read the grant for one skill version from the gateway.
  *
- * Defaults are scoped to bundled skills: the skill must live at
- * `<bundledSkillsDir>/<skillId>` and its version hash must match the manifest
- * entry. A managed or workspace skill that reuses a bundled id, or a bundled
- * skill whose content changed since the manifest was generated, gets the
- * fail-closed empty set.
+ * Fail-closed in every direction: an unreachable gateway, a failed call, an
+ * answer that does not match the contract, and a version with no row all
+ * resolve to the empty set. The gateway answers an unreadable store with an
+ * empty list for the same reason.
  */
-export function getSkillCapabilities(
+async function readGrantCapabilities(
+  skillId: string,
+  versionHash: string,
+): Promise<SkillCapabilities> {
+  let response: unknown;
+  try {
+    response = await ipcCall(
+      "get_skill_grants",
+      { skillId, versionHash },
+      GRANT_IPC_TIMEOUT_MS,
+    );
+  } catch (err) {
+    log.warn(
+      { err, skillId, versionHash },
+      "Skill grant read failed; denying every capability",
+    );
+    return NO_SKILL_CAPABILITIES;
+  }
+
+  const parsed = GetSkillGrantsIpcResponseSchema.safeParse(response);
+  if (!parsed.success) {
+    log.warn(
+      { skillId, versionHash, issues: parsed.error.issues },
+      "Skill grant response does not match the contract; denying every capability",
+    );
+    return NO_SKILL_CAPABILITIES;
+  }
+
+  const grant = matchingGrant(parsed.data.grants, skillId, versionHash);
+  if (!grant) {
+    return NO_SKILL_CAPABILITIES;
+  }
+
+  return capabilitiesFromList(grant.capabilities);
+}
+
+/**
+ * Resolve the capability set granted to one skill version.
+ *
+ * A capability is never inferred from the skill's own manifest nor from its
+ * origin (`bundled` is provenance, not permission): it is granted in the
+ * gateway for this exact content version, and anything unreadable or absent is
+ * denied.
+ */
+export async function getSkillCapabilities(
+  input: SkillCapabilityLookup,
+): Promise<SkillCapabilities> {
+  const key = lookupKey(input);
+  if (key === null) {
+    return NO_SKILL_CAPABILITIES;
+  }
+
+  const cached = capabilityCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.capabilities;
+  }
+
+  const pending = inFlightReads.get(key);
+  if (pending) {
+    return pending;
+  }
+
+  const read = readGrantCapabilities(input.skillId, input.versionHash!)
+    .then((capabilities) => {
+      capabilityCache.set(key, {
+        capabilities,
+        expiresAt: Date.now() + GRANT_CACHE_TTL_MS,
+      });
+      return capabilities;
+    })
+    .finally(() => {
+      inFlightReads.delete(key);
+    });
+
+  inFlightReads.set(key, read);
+  return read;
+}
+
+/**
+ * The last resolved set for one skill version, without waiting on the gateway.
+ *
+ * Fail-closed on a miss: an unresolved version has no capabilities. A miss
+ * also starts a background read so the next caller sees the resolved set; the
+ * only synchronous consumer is the computer-use routing hint, where the
+ * fail-closed answer (the manifest's own target) is also the safe one.
+ */
+export function getCachedSkillCapabilities(
   input: SkillCapabilityLookup,
 ): SkillCapabilities {
-  const { skillId, versionHash, directoryPath } = input;
-  if (!skillId || !versionHash || !directoryPath) {
-    return NO_SKILL_CAPABILITIES;
-  }
-  // Skill ids are directory basenames. Reject separators so an id can never
-  // point the manifest lookup at another directory.
-  if (skillId.includes("/") || skillId.includes("\\")) {
+  const key = lookupKey(input);
+  if (key === null) {
     return NO_SKILL_CAPABILITIES;
   }
 
-  const resolvedDirectory = resolve(directoryPath);
-  const key = cacheKey(input, resolvedDirectory);
   const cached = capabilityCache.get(key);
-  if (cached) {
-    return cached;
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.capabilities;
   }
 
-  const bundledDirectory = resolve(join(resolveBundledSkillsDir(), skillId));
-  if (resolvedDirectory !== bundledDirectory) {
-    capabilityCache.set(key, NO_SKILL_CAPABILITIES);
-    return NO_SKILL_CAPABILITIES;
-  }
+  void getSkillCapabilities(input).catch((err) => {
+    log.warn(
+      { err, ...input },
+      "Background skill grant refresh failed; capabilities stay denied",
+    );
+  });
 
-  const entry = defaults[skillId];
-  if (!entry || entry.versionHash !== versionHash) {
-    capabilityCache.set(key, NO_SKILL_CAPABILITIES);
-    return NO_SKILL_CAPABILITIES;
-  }
-
-  const capabilities = capabilitiesFromList(entry.capabilities);
-  capabilityCache.set(key, capabilities);
-  return capabilities;
+  return NO_SKILL_CAPABILITIES;
 }
 
 /** Whether one capability is granted for the given skill version. */
-export function hasSkillCapability(
+export async function hasSkillCapability(
   input: SkillCapabilityLookup,
   capability: SkillCapability,
-): boolean {
-  return getSkillCapabilities(input)[capability];
+): Promise<boolean> {
+  return (await getSkillCapabilities(input))[capability];
 }
 
 /** Clear the memoized capability sets. Exported for tests. */
 export function _clearSkillCapabilityCacheForTest(): void {
   capabilityCache.clear();
-}
-
-/** Point the resolver at a specific bundled directory. Exported for tests. */
-export function _setBundledSkillsDirForTest(directory: string | null): void {
-  bundledSkillsDirOverride = directory;
-  capabilityCache.clear();
+  inFlightReads.clear();
 }

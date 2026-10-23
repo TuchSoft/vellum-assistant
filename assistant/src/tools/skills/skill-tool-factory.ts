@@ -1,7 +1,13 @@
+import { basename } from "node:path";
+
 import type { SkillCapabilities } from "@vellumai/service-contracts/skill-capabilities";
 
 import type { SkillToolEntry } from "../../config/skills.js";
 import { RiskLevel } from "../../permissions/types.js";
+import {
+  getCachedSkillCapabilities,
+  getSkillCapabilities,
+} from "../../skills/capabilities.js";
 import {
   coerceArrayShapes,
   coerceStringBooleans,
@@ -31,9 +37,15 @@ const riskMap: Record<SkillToolEntry["risk"], RiskLevel> = {
  * `registerSkillTools(skillId, tools, registration)` time, not stamped on the
  * `Tool` object — see {@link ../../tools/registry.getToolOwner}.
  *
- * `capabilities` is the resolved capability set for this skill version. It
- * gates host execution, first-party input repairs, and the dynamic
- * computer-use target.
+ * Capabilities are never read off the manifest: the skill's own declaration
+ * says what it wants, while the gateway grants what it may do for this exact
+ * content version. Every gate below (host execution, first-party input
+ * repairs, the computer-use target) reads that grant, and an unreadable or
+ * absent grant denies.
+ *
+ * `capabilities` is an already-resolved set supplied by a caller that owns the
+ * resolution (tests, and the settings surface that renders a registered tool).
+ * Production registration passes nothing, so the grant is read here.
  */
 export function createSkillTool(
   entry: SkillToolEntry,
@@ -42,16 +54,38 @@ export function createSkillTool(
   capabilities?: SkillCapabilities,
   pluginOwner?: string,
 ): Tool {
-  const isComputerUse =
-    capabilities?.computer_use_target === true && !pluginOwner;
+  const skillId = basename(skillDir);
+  const lookup = { skillId, versionHash };
+
+  // The dynamic computer-use target decides whether a virtual-desktop call is
+  // sandbox (a channel cell may lift it) or host (it never is). It needs an
+  // answer before execution, so it reads the resolved grant synchronously and
+  // keeps the manifest target when the grant is not known yet: that target is
+  // the fail-closed side of the routing decision. The same name convention
+  // `resolveExecutionTarget` uses for its host fallback identifies the tools.
+  const isComputerUseCandidate =
+    !pluginOwner && entry.name.startsWith("computer_use_");
+
+  function resolveComputerUseTarget(
+    input: Record<string, unknown>,
+    context?: ToolContext,
+  ): ExecutionTarget {
+    const granted =
+      capabilities?.computer_use_target === true ||
+      getCachedSkillCapabilities(lookup).computer_use_target;
+    return granted
+      ? computerUseExecutionTarget(input, context)
+      : (entry.execution_target as ExecutionTarget);
+  }
+
   return {
     name: entry.name,
     description: entry.description,
     category: entry.category,
     defaultRiskLevel: riskMap[entry.risk],
     executionTarget: entry.execution_target as ExecutionTarget,
-    ...(isComputerUse
-      ? { getExecutionTarget: computerUseExecutionTarget }
+    ...(isComputerUseCandidate
+      ? { getExecutionTarget: resolveComputerUseTarget }
       : {}),
     supportedClientOs: entry.supported_client_os,
 
@@ -61,6 +95,8 @@ export function createSkillTool(
       input: Record<string, unknown>,
       context: ToolContext,
     ): Promise<ToolExecutionResult> {
+      const granted = capabilities ?? (await getSkillCapabilities(lookup));
+
       // Validate against the schema the model was actually shown: tool
       // definitions carry an injected `activity` field the manifest does not
       // declare, and a call that fills it must not be rejected as unknown.
@@ -71,7 +107,7 @@ export function createSkillTool(
       // does not describe, and the generic coercions below then see the
       // declared parameter names. Repairs describe first-party tools, so only
       // skills granted `input_repairs` consult them.
-      const repairedInput = capabilities?.input_repairs
+      const repairedInput = granted.input_repairs
         ? bundledToolInputRepairs(entry.name, input)
         : input;
       const withBooleans = coerceStringBooleans(repairedInput, schema);
@@ -91,13 +127,16 @@ export function createSkillTool(
         // workspace, extra, or plugin skill that reuses a bundled tool name
         // keeps the generic error, which is the one that matches its own
         // manifest.
-        const misuse = capabilities?.input_repairs
+        const misuse = granted.input_repairs
           ? bundledToolInputMisuseMessage(entry.name, coercedInput)
           : undefined;
+        const repairsNote = granted.input_repairs
+          ? ""
+          : ` Input repairs are not applied: this skill version (${versionHash}) has no input_repairs grant.`;
         return {
           content:
             misuse ??
-            `Invalid input for tool "${entry.name}": ${validation.errors.join("; ")}. If skill_load is available, load the owning skill for its current instructions. Retry with arguments matching this schema.\n\n${formatSkillInputSchema(entry.input_schema)}`,
+            `Invalid input for tool "${entry.name}": ${validation.errors.join("; ")}. If skill_load is available, load the owning skill for its current instructions. Retry with arguments matching this schema.${repairsNote}\n\n${formatSkillInputSchema(entry.input_schema)}`,
           isError: true,
         };
       }
@@ -110,7 +149,7 @@ export function createSkillTool(
         {
           target: entry.execution_target,
           expectedSkillVersionHash: versionHash,
-          hostExecAllowed: capabilities?.host_exec === true,
+          hostExecAllowed: granted.host_exec === true,
           pluginOwner,
         },
       );

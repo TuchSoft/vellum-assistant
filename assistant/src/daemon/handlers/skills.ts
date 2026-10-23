@@ -81,6 +81,7 @@ import {
   resolveSkillSource,
   searchSkillsRegistry,
 } from "../../skills/skillssh-registry.js";
+import { computeSkillVersionHash } from "../../skills/version-hash.js";
 import { getWorkspaceSkillsDir } from "../../util/platform.js";
 import { safeStringSlice } from "../../util/unicode.js";
 import { getConfigWatcher } from "../config-watcher.js";
@@ -814,6 +815,11 @@ export function getSkillLocalDetail(skillId: string):
       source: string;
       state: string;
       directoryPath: string;
+      /**
+       * Content version hash the capability grants are keyed by. Null when the
+       * directory cannot be hashed, in which case no grant can be addressed.
+       */
+      versionHash: string | null;
       featureFlag: string | null;
       includes: string[] | null;
       activationHints: string[] | null;
@@ -845,6 +851,13 @@ export function getSkillLocalDetail(skillId: string):
     }
     const { summary, state, configEntry } = match;
     const installMeta = readInstallMeta(summary.directoryPath);
+    let versionHash: string | null = null;
+    try {
+      versionHash = computeSkillVersionHash(summary.directoryPath);
+    } catch {
+      // An unhashable directory keeps the detail readable; the missing hash
+      // only means no grant can be addressed for it.
+    }
     return {
       ok: true,
       id: summary.id,
@@ -854,6 +867,7 @@ export function getSkillLocalDetail(skillId: string):
       source: summary.source,
       state,
       directoryPath: summary.directoryPath,
+      versionHash,
       featureFlag: summary.featureFlag ?? null,
       includes: summary.includes ?? null,
       activationHints: summary.activationHints ?? null,

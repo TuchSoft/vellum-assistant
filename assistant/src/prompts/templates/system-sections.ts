@@ -32,6 +32,7 @@ import { listConnections } from "../../oauth/oauth-store.js";
 import type { OnboardingContext } from "../../types/onboarding-context.js";
 import { stripCommentLines } from "../../util/strip-comment-lines.js";
 import { normalizeOnboardingContext } from "../normalize-onboarding.js";
+import { resolveProjectBriefingBlock } from "../project-briefing.js";
 import { isTemplateContent } from "../template-detection.js";
 
 /**
@@ -493,6 +494,24 @@ If you're asked for any of this, don't share it. Offer to pass along a message, 
 You can still be genuinely helpful — answer general questions, do research, and help with the person's own request — as long as doing so doesn't reveal your guardian's private information. When something is borderline, don't disclose; check with your guardian first.
 `,
     enabled: "!isGuardian",
+  },
+  {
+    // The briefing of the conversation's inherited project set, read from
+    // `<workspace>/data/projects/<id>/refs.yaml`. It renders inside the cached
+    // prefix (before the `11-channel-persona` breakpoint) because membership
+    // and briefings change rarely; `syncLoopSystemPrompt` only pushes a rebuild
+    // when the bytes differ, so a stable set costs nothing. Empty body: the
+    // content is resolved from the database and the workspace files by the
+    // transform, and the section gates off when there is nothing to inject.
+    id: "10b-project-briefing",
+    body: "",
+    transform: async (_content, ctx) => {
+      const conversationId =
+        typeof ctx["conversationId"] === "string"
+          ? ctx["conversationId"]
+          : undefined;
+      return resolveProjectBriefingBlock(conversationId);
+    },
   },
   {
     // The current channel's persona file.  `channelSlug` lives on the

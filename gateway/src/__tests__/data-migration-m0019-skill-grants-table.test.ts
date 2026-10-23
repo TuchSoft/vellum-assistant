@@ -1,9 +1,10 @@
 /**
  * Tests for m0019-skill-grants-table.
  *
- * Verifies the migration is registered last, recreates the table and its
- * unique index when they are missing, is idempotent (a second run is a no-op
- * that keeps existing grants), and that `down()` leaves the store intact.
+ * Verifies the migration is registered after m0018 (with m0020 after it),
+ * recreates the table and its unique index when they are missing, is
+ * idempotent (a second run is a no-op that keeps existing grants), and that
+ * `down()` leaves the store intact.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -62,10 +63,9 @@ afterAll(() => {
 });
 
 describe("m0019-skill-grants-table", () => {
-  test("is registered last, after m0018", () => {
+  test("is registered after m0018", () => {
     const keys = MIGRATIONS.map((migration) => migration.key);
 
-    expect(keys.at(-1)).toBe("m0019-skill-grants-table");
     expect(keys.indexOf("m0019-skill-grants-table")).toBe(
       keys.indexOf("m0018-trust-rules-scope-column") + 1,
     );

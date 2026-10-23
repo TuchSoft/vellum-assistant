@@ -24,7 +24,7 @@ import { z } from "zod";
 
 import { getLogger } from "../logger.js";
 import { getGatewayDb } from "./connection.js";
-import { skillGrants } from "./schema.js";
+import { skillGrants, skillGrantTombstones } from "./schema.js";
 
 const log = getLogger("skill-grant-store");
 
@@ -50,6 +50,12 @@ export interface UpsertSkillGrantInput {
   capabilities: readonly SkillCapability[];
   /** Principal granting them. Absent records "granted out of band" (null). */
   grantedBy?: string | null;
+}
+
+export interface SkillGrantTombstone {
+  skillId: string;
+  versionHash: string;
+  revokedAt: number;
 }
 
 /** Drop duplicates and order the capabilities as the contract declares them. */
@@ -173,6 +179,10 @@ export function getSkillGrant(
 /**
  * Grant `capabilities` to one skill version, replacing whatever that version
  * was granted before.
+ *
+ * A write also clears any tombstone for the version: an explicit grant is the
+ * human decision the tombstone was waiting for, so a later revocation has to be
+ * a new DELETE rather than the ghost of the previous one.
  */
 export function upsertSkillGrant(input: UpsertSkillGrantInput): SkillGrant {
   const now = Date.now();
@@ -180,21 +190,33 @@ export function upsertSkillGrant(input: UpsertSkillGrantInput): SkillGrant {
   const capabilitiesJson = JSON.stringify(capabilities);
   const grantedBy = input.grantedBy ?? null;
 
-  getGatewayDb()
-    .insert(skillGrants)
-    .values({
-      skillId: input.skillId,
-      versionHash: input.versionHash,
-      capabilitiesJson,
-      grantedBy,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: [skillGrants.skillId, skillGrants.versionHash],
-      set: { capabilitiesJson, grantedBy, updatedAt: now },
-    })
-    .run();
+  getGatewayDb().transaction(() => {
+    getGatewayDb()
+      .insert(skillGrants)
+      .values({
+        skillId: input.skillId,
+        versionHash: input.versionHash,
+        capabilitiesJson,
+        grantedBy,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [skillGrants.skillId, skillGrants.versionHash],
+        set: { capabilitiesJson, grantedBy, updatedAt: now },
+      })
+      .run();
+
+    getGatewayDb()
+      .delete(skillGrantTombstones)
+      .where(
+        and(
+          eq(skillGrantTombstones.skillId, input.skillId),
+          eq(skillGrantTombstones.versionHash, input.versionHash),
+        ),
+      )
+      .run();
+  });
 
   const stored = getSkillGrant(input.skillId, input.versionHash);
   if (!stored) {
@@ -205,21 +227,92 @@ export function upsertSkillGrant(input: UpsertSkillGrantInput): SkillGrant {
   return stored;
 }
 
-/** Drop one skill version's grant. Returns true when a row was removed. */
+/**
+ * Drop one skill version's grant and record that it was revoked.
+ *
+ * The tombstone is written whether or not a grant existed: deleting a version
+ * that only had a default is how a user refuses that default, and the record is
+ * what keeps the seed from handing it back. Returns true when a grant row was
+ * removed.
+ */
 export function deleteSkillGrant(
   skillId: string,
   versionHash: string,
 ): boolean {
-  const removed = getGatewayDb()
-    .delete(skillGrants)
+  const now = Date.now();
+
+  return getGatewayDb().transaction((): boolean => {
+    const removed = getGatewayDb()
+      .delete(skillGrants)
+      .where(
+        and(
+          eq(skillGrants.skillId, skillId),
+          eq(skillGrants.versionHash, versionHash),
+        ),
+      )
+      .returning({ skillId: skillGrants.skillId })
+      .all();
+
+    getGatewayDb()
+      .insert(skillGrantTombstones)
+      .values({ skillId, versionHash, revokedAt: now })
+      .onConflictDoUpdate({
+        target: [
+          skillGrantTombstones.skillId,
+          skillGrantTombstones.versionHash,
+        ],
+        set: { revokedAt: now },
+      })
+      .run();
+
+    return removed.length > 0;
+  });
+}
+
+/** Every tombstone, ordered by skill id then version. */
+export function listSkillGrantTombstones(
+  filters: SkillGrantFilters = {},
+): SkillGrantTombstone[] {
+  const conditions = [];
+  if (filters.skillId !== undefined) {
+    conditions.push(eq(skillGrantTombstones.skillId, filters.skillId));
+  }
+  if (filters.versionHash !== undefined) {
+    conditions.push(eq(skillGrantTombstones.versionHash, filters.versionHash));
+  }
+
+  const query = getGatewayDb().select().from(skillGrantTombstones);
+  const rows =
+    conditions.length > 0 ? query.where(and(...conditions)).all() : query.all();
+
+  return rows
+    .map((row) => ({
+      skillId: row.skillId,
+      versionHash: row.versionHash,
+      revokedAt: row.revokedAt,
+    }))
+    .sort((a, b) =>
+      a.skillId === b.skillId
+        ? a.versionHash.localeCompare(b.versionHash)
+        : a.skillId.localeCompare(b.skillId),
+    );
+}
+
+/** Whether one skill version's grant was revoked. */
+export function isSkillGrantRevoked(
+  skillId: string,
+  versionHash: string,
+): boolean {
+  const row = getGatewayDb()
+    .select({ skillId: skillGrantTombstones.skillId })
+    .from(skillGrantTombstones)
     .where(
       and(
-        eq(skillGrants.skillId, skillId),
-        eq(skillGrants.versionHash, versionHash),
+        eq(skillGrantTombstones.skillId, skillId),
+        eq(skillGrantTombstones.versionHash, versionHash),
       ),
     )
-    .returning({ skillId: skillGrants.skillId })
-    .all();
+    .get();
 
-  return removed.length > 0;
+  return row !== undefined;
 }

@@ -8,6 +8,7 @@ import {
   maybeSeedCapabilitySkills,
   maybeSeedCliCommandCards,
 } from "../plugins/defaults/memory/substrate/boot-maintenance.js";
+import { notifySkillCatalogChanged } from "../skills/grant-declaration.js";
 import { readWorkspaceSkillMdSignature } from "../skills/workspace-skill-md-signature.js";
 import { getLogger } from "../util/logger.js";
 
@@ -26,6 +27,12 @@ export function refreshSkillCapabilityMemories(
   maybeSeedCapabilitySkills(config);
   maybeSeedCliCommandCards(config);
   lastSignature = readWorkspaceSkillMdSignature();
+
+  // The catalog changed, so the set of installed skill versions changed with
+  // it. Re-declaring here keeps the gateway's grants in step with the disk
+  // without a second detection mechanism; the declaration coalesces and drops
+  // an unchanged set.
+  notifySkillCatalogChanged("skill-catalog-refresh");
   void seedUninstalledCatalogSkillMemories()
     .then(() => {
       // Re-run after the async catalog fetch populates the cache so stale

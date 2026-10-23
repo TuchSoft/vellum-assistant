@@ -845,3 +845,30 @@ export const skillGrants = sqliteTable(
     ),
   ],
 );
+
+/**
+ * Skill versions whose grant was revoked.
+ *
+ * Deleting a grant records the version here so the startup seed never hands it
+ * back. Without the tombstone, the default that created the grant would reapply
+ * it on the next boot, which would make revocation a no-op until the skill
+ * content changed. An explicit write clears the tombstone, so granting again is
+ * always possible.
+ *
+ * The row is keyed by `(skill_id, version_hash)` like the grant it replaces:
+ * revoking one version says nothing about the next one.
+ */
+export const skillGrantTombstones = sqliteTable(
+  "skill_grant_tombstones",
+  {
+    skillId: text("skill_id").notNull(),
+    versionHash: text("version_hash").notNull(),
+    revokedAt: integer("revoked_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_skill_grant_tombstones_skill_version").on(
+      table.skillId,
+      table.versionHash,
+    ),
+  ],
+);

@@ -48,6 +48,7 @@ import { markCurrentProcessAsMainDaemon } from "../runtime/process-role.js";
 import { reconcilePluginSchedules } from "../schedule/plugin-schedule-reconciler.js";
 import { recoverStaleSchedules } from "../schedule/schedule-recovery.js";
 import { startScheduler } from "../schedule/scheduler.js";
+import { startSkillVersionDeclaration } from "../skills/grant-declaration.js";
 import { getSubagentManager } from "../subagent/index.js";
 import { startUsageTelemetryReporter } from "../telemetry/usage-telemetry-reporter.js";
 import { getLogger, initLogger } from "../util/logger.js";
@@ -746,6 +747,11 @@ export async function runDaemon(): Promise<void> {
   // Best-effort and self-contained: every step swallows its own errors, so a
   // failure never affects startup.
   installAssistantCommand();
+
+  // Declare which skill versions are installed so the gateway can seed the
+  // default grants. Fire-and-forget: the gateway decides what a declared
+  // version may do, and a failure only leaves the grants as they were.
+  startSkillVersionDeclaration();
 
   void startEmbeddingRuntimeManager();
 

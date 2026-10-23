@@ -783,3 +783,61 @@ export const GetSkillGrantsIpcResponseSchema = z.object({
 export type GetSkillGrantsIpcResponse = z.infer<
   typeof GetSkillGrantsIpcResponseSchema
 >;
+
+/**
+ * Params of `declare_skill_versions`: the skill versions installed right now.
+ *
+ * A declaration carries facts only. The assistant knows which skills it has and
+ * their content hashes; it never names a capability, so this method cannot
+ * widen access. The gateway applies its own defaults document to the pairs it
+ * has no decision for and leaves everything else alone.
+ */
+export const DeclareSkillVersionsIpcParamsSchema = z.object({
+  skills: z
+    .array(
+      z.object({
+        skillId: z.string(),
+        versionHash: z.string(),
+      }),
+    )
+    .max(500),
+});
+
+export type DeclareSkillVersionsIpcParams = z.infer<
+  typeof DeclareSkillVersionsIpcParamsSchema
+>;
+
+/** Why the seed left a declared skill version alone. */
+export const SKILL_GRANT_SEED_SKIP_REASONS = [
+  "existing",
+  "revoked",
+  "no_default",
+] as const;
+
+/**
+ * Answer to `declare_skill_versions`: what the seed created and what it skipped.
+ *
+ * Nothing here is a grant the assistant may rely on: the capabilities it can
+ * actually use are the ones `get_skill_grants` returns for the version it is
+ * about to run.
+ */
+export const DeclareSkillVersionsIpcResponseSchema = z.object({
+  seeded: z.array(
+    z.object({
+      skillId: z.string(),
+      versionHash: z.string(),
+      capabilities: z.array(SkillCapabilitySchema),
+    }),
+  ),
+  skipped: z.array(
+    z.object({
+      skillId: z.string(),
+      versionHash: z.string(),
+      reason: z.enum(SKILL_GRANT_SEED_SKIP_REASONS),
+    }),
+  ),
+});
+
+export type DeclareSkillVersionsIpcResponse = z.infer<
+  typeof DeclareSkillVersionsIpcResponseSchema
+>;

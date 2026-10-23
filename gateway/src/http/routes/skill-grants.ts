@@ -9,11 +9,18 @@
  * A grant is identified by `(skillId, versionHash)`. The version hash is
  * required on write and on delete; reading by skill id returns every version
  * of that skill, which is what an editor needs to show the current state.
+ *
+ * A delete also records a tombstone for the version, so the startup seed never
+ * hands the grant back; a later write clears the tombstone.
  */
 
 import { SkillCapabilitySchema } from "@vellumai/service-contracts/skill-capabilities";
 import { z } from "zod";
 
+import {
+  skillIdSchema,
+  versionHashSchema,
+} from "../../db/skill-grant-defaults.js";
 import {
   deleteSkillGrant,
   listSkillGrants,
@@ -26,20 +33,9 @@ const log = getLogger("skill-grants");
 
 const MAX_BODY_BYTES = 64 * 1024;
 
-/**
- * Skill ids are directory basenames. Reject separators so an id can never
- * address a path outside the skills directory.
- */
-const SkillIdSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(200)
-  .refine((value) => !value.includes("/") && !value.includes("\\"), {
-    message: "skillId must not contain a path separator",
-  });
+const SkillIdSchema = skillIdSchema;
 
-const VersionHashSchema = z.string().trim().min(1).max(200);
+const VersionHashSchema = versionHashSchema;
 
 const PutSkillGrantSchema = z.object({
   versionHash: VersionHashSchema,
@@ -176,6 +172,8 @@ export function createSkillGrantDeleteHandler() {
     }
 
     try {
+      // Records a tombstone for the version, so the seed never reinstates a
+      // default the user just removed.
       deleteSkillGrant(parsedSkillId.data, parsedVersionHash.data);
       // 204 No Content — idempotent, succeeds even if no grant existed.
       return new Response(null, { status: 204 });

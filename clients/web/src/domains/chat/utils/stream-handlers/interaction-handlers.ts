@@ -29,8 +29,6 @@ export function handleSecretRequest(
     description: event.description,
     placeholder: event.placeholder,
     allowOneTimeSend: event.allowOneTimeSend,
-    allowedTools: event.allowedTools,
-    allowedDomains: event.allowedDomains,
     purpose: event.purpose,
   });
 }

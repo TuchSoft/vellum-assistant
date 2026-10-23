@@ -64,7 +64,7 @@ General shape: `assistant oauth request --provider notion -X <METHOD> -H "Notion
 
 > **Note:** The standard Notion setup flow (`vellum-oauth-integrations`) does not currently produce credentials with the metadata required by this path. Most users should use **Path A** instead. Path B is documented for credentials that have been manually configured with the required metadata.
 
-For internal integration secrets registered with `allowedTools: ["bash"]` and an `injection_templates` entry for `api.notion.com`. The proxy adds `Authorization: Bearer <token>` automatically. Do not include an Authorization header in the curl command.
+For internal integration secrets registered with an `injection_templates` entry for `api.notion.com`. The proxy adds `Authorization: Bearer <token>` automatically. Do not include an Authorization header in the curl command.
 
 ```
 bash:
@@ -79,12 +79,9 @@ bash:
 
 Where `<credential_id_from_step_1>` is the `id` field from the matching entry in `assistant credentials list` output.
 
-The credential MUST have:
+The credential MUST have an `injection_templates` entry with host pattern `api.notion.com` and header injection type for `Authorization`.
 
-- `allowedTools` including `"bash"` (otherwise the proxy blocks the call).
-- `injection_templates` with host pattern `api.notion.com` and header injection type for `Authorization`.
-
-If these are missing, you will get a `credential tool policy denied` error. Switch to **Path A** instead.
+If it is missing, the proxy cannot inject the Authorization header. Switch to **Path A** instead.
 
 ---
 
@@ -301,7 +298,7 @@ When a response includes `"has_more": true`, pass `"start_cursor": response.next
 - **404 Not Found**: The page or database ID doesn't exist or the integration can't see it. Verify the ID and check sharing settings.
 - **400 Bad Request**: Check the request body structure. The Notion API error response includes a `message` field with details.
 - **429 Too Many Requests**: Wait a few seconds and retry.
-- **`credential tool policy denied`**: The credential is missing `bash` in `allowedTools` or an `injection_templates` entry for `api.notion.com`, so the proxy cannot inject the Authorization header. Switch to **Path A** (managed OAuth), which bypasses credential metadata requirements entirely.
+- **Missing injection template**: The credential has no `injection_templates` entry for `api.notion.com`, so the proxy cannot inject the Authorization header. Switch to **Path A** (managed OAuth), which bypasses credential metadata requirements entirely.
 
 ## Tips
 

@@ -311,8 +311,6 @@ async function handleListPendingInteractions({
           description: secret.secretDetails?.description,
           placeholder: secret.secretDetails?.placeholder,
           purpose: secret.secretDetails?.purpose,
-          allowedTools: secret.secretDetails?.allowedTools,
-          allowedDomains: secret.secretDetails?.allowedDomains,
           allowOneTimeSend: secret.secretDetails?.allowOneTimeSend,
         }
       : null,
@@ -417,8 +415,6 @@ export const ROUTES: RouteDefinition[] = [
           description: z.string().optional(),
           placeholder: z.string().optional(),
           purpose: z.string().optional(),
-          allowedTools: z.array(z.string()).optional(),
-          allowedDomains: z.array(z.string()).optional(),
           allowOneTimeSend: z.boolean().optional(),
         })
         .passthrough()

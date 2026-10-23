@@ -80,17 +80,8 @@ export function formatSlackChannelStatus(
 
 /**
  * Usage policy carried alongside a prompted credential.
- *
- * `allowedTools` / `allowedDomains` are forwarded to the metadata store as-is:
- * `undefined` leaves an existing credential's list untouched and defaults to
- * deny-all (empty) when creating a new credential, while an explicit empty
- * array sets a deny-all policy. This matches the store's partial-update
- * contract, so re-prompting a credential without policy flags preserves the
- * policy it was originally stored with.
  */
 interface PromptedCredentialPolicy {
-  allowedTools?: string[];
-  allowedDomains?: string[];
   usageDescription?: string;
   injectionTemplates?: CredentialInjectionTemplate[];
 }
@@ -163,8 +154,6 @@ export async function persistPromptedCredential(args: {
     if (!getCredentialMetadata(service, field)) {
       try {
         upsertCredentialMetadata(service, field, {
-          allowedTools: policy.allowedTools,
-          allowedDomains: policy.allowedDomains,
           usageDescription: policy.usageDescription,
           injectionTemplates: policy.injectionTemplates,
         });
@@ -226,8 +215,6 @@ export async function persistPromptedCredential(args: {
 
   try {
     upsertCredentialMetadata(service, field, {
-      allowedTools: policy.allowedTools,
-      allowedDomains: policy.allowedDomains,
       usageDescription: policy.usageDescription,
       injectionTemplates: policy.injectionTemplates,
     });

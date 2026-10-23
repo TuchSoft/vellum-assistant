@@ -69,8 +69,6 @@ export interface StoreCredentialValueInput {
   alias?: string;
   /** What the credential is for, surfaced to the agent. */
   usageDescription?: string;
-  allowedTools?: string[];
-  allowedDomains?: string[];
   injectionTemplates?: CredentialInjectionTemplate[];
   /**
    * Skip the retroactive transcript scrub. Set it only when the plaintext
@@ -158,8 +156,6 @@ export async function storeCredentialValue(
   const metadata = upsertCredentialMetadata(service, field, {
     alias: input.alias,
     usageDescription: input.usageDescription,
-    allowedTools: input.allowedTools,
-    allowedDomains: input.allowedDomains,
     injectionTemplates: input.injectionTemplates,
   });
   const { syncManualTokenConnection } =

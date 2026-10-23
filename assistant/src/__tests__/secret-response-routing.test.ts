@@ -115,8 +115,6 @@ describe("secret response routing", () => {
       "placeholder",
       "session-1",
       "Push commits",
-      ["git_push"],
-      ["github.com"],
     );
     const msg = broadcastedMessages[0] as SecretRequestEvent;
     const entry = _piStore.get(msg.requestId) as {
@@ -131,8 +129,6 @@ describe("secret response routing", () => {
       description: "desc",
       placeholder: "placeholder",
       purpose: "Push commits",
-      allowedTools: ["git_push"],
-      allowedDomains: ["github.com"],
     });
     // SECURITY: the secret value is never part of the registered metadata.
     expect(JSON.stringify(entry.secretDetails)).not.toContain("test-value");

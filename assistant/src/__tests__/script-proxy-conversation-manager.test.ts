@@ -65,8 +65,6 @@ function makeResolved(
       credentialId,
       service: "test-service",
       field: "api-key",
-      allowedTools: [],
-      allowedDomains: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
       injectionTemplates: templates,

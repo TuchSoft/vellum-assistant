@@ -17,8 +17,7 @@
  *   intentionally hands the value to the tool (a file write, an MCP
  *   argument) while every log and record stays on the tag form.
  *
- * v1 policy: the tag is allowed from any tool. The per-credential
- * allowedTools gate remains enforced on the legacy proxied-bash path only.
+ * v1 policy: the tag is allowed from any tool.
  *
  * Resolution failures are collected into one error; a tool call either
  * runs with every tag substituted or not at all.

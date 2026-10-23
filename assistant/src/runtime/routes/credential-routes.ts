@@ -112,8 +112,6 @@ function buildCredentialOutput(
     hasSecret: secret != null && secret.length > 0,
     alias: metadata.alias ?? null,
     usageDescription: metadata.usageDescription ?? null,
-    allowedTools: metadata.allowedTools,
-    allowedDomains: metadata.allowedDomains,
     createdAt: new Date(metadata.createdAt).toISOString(),
     updatedAt: new Date(metadata.updatedAt).toISOString(),
     injectionTemplateCount: metadata.injectionTemplates?.length ?? 0,
@@ -337,8 +335,6 @@ async function handleCredentialsInspect({ body }: RouteHandlerArgs) {
       hasSecret: secret != null && secret.length > 0,
       alias: null,
       usageDescription: null,
-      allowedTools: [],
-      allowedDomains: [],
       createdAt: null,
       updatedAt: null,
       injectionTemplateCount: 0,
@@ -470,25 +466,15 @@ async function handleCredentialsSet({ body }: RouteHandlerArgs) {
     throw new BadRequestError("Request body is required");
   }
 
-  const {
-    service,
-    field,
-    value,
-    label,
-    description,
-    allowedTools,
-    allowedDomains,
-    injectionTemplates,
-  } = body as {
-    service?: string;
-    field?: string;
-    value?: string;
-    label?: string;
-    description?: string;
-    allowedTools?: string[];
-    allowedDomains?: string[];
-    injectionTemplates?: CredentialInjectionTemplate[];
-  };
+  const { service, field, value, label, description, injectionTemplates } =
+    body as {
+      service?: string;
+      field?: string;
+      value?: string;
+      label?: string;
+      description?: string;
+      injectionTemplates?: CredentialInjectionTemplate[];
+    };
 
   if (!service || typeof service !== "string") {
     throw new BadRequestError("service is required");
@@ -509,8 +495,6 @@ async function handleCredentialsSet({ body }: RouteHandlerArgs) {
       value,
       alias: label,
       usageDescription: description,
-      allowedTools,
-      allowedDomains,
       injectionTemplates,
     });
   } catch (err) {
@@ -717,7 +701,7 @@ export const ROUTES: RouteDefinition[] = [
     },
     summary: "Store a credential with metadata",
     description:
-      "Store a secret value and create or update its metadata (label, description, allowed tools).",
+      "Store a secret value and create or update its metadata (label, description).",
     tags: ["credentials"],
     requestBody: z.object({
       service: z.string().describe("Service namespace (e.g. google)"),
@@ -728,14 +712,6 @@ export const ROUTES: RouteDefinition[] = [
         .string()
         .optional()
         .describe("What this credential is used for"),
-      allowedTools: z
-        .array(z.string())
-        .optional()
-        .describe("Tool names that may use this credential"),
-      allowedDomains: z
-        .array(z.string())
-        .optional()
-        .describe("Domains the credential may be sent to"),
       injectionTemplates: z
         .array(InjectionTemplateSchema)
         .optional()

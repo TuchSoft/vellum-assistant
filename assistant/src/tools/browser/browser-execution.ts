@@ -17,7 +17,7 @@ import {
   shouldOfferLoggedInBrowser,
 } from "../capability-offer.js";
 import { credentialBroker } from "../credentials/broker.js";
-import { BROWSER_FILL_CAPABILITY } from "../credentials/tool-policy.js";
+import { BROWSER_FILL_CAPABILITY } from "../credentials/browser-fill-capability.js";
 import {
   isPrivateOrLocalHost,
   parseUrl,
@@ -2471,22 +2471,7 @@ export async function executeBrowserFillCredential(
         reason.includes("no stored value")
       ) {
         return {
-          content: `No credential stored for ${service}/${field}. Collect it via \`assistant credentials prompt --service ${service} --field ${field} --label <label> --allowed-tools ${BROWSER_FILL_CAPABILITY}\` first (\`--allowed-tools\` sets the credential's full allowed-tools list).`,
-          isError: true,
-        };
-      }
-      if (reason.includes("not allowed to use credential")) {
-        return {
-          content: `Policy denied: ${reason} If this tool should have access, run \`assistant credentials prompt --service ${service} --field ${field} --label <label> --allowed-tools <tools>\` (re-collects the value securely). Note: \`--allowed-tools\` REPLACES the credential's stored list, so pass every tool that should keep access — all currently allowed tools plus ${BROWSER_FILL_CAPABILITY}. See the current list with \`assistant credentials list --search ${service}\`.`,
-          isError: true,
-        };
-      }
-      if (
-        reason.includes("not allowed for credential") ||
-        reason.includes("no page domain was provided")
-      ) {
-        return {
-          content: `Domain policy denied: ${reason} Navigate to an allowed domain before filling this credential.`,
+          content: `No credential stored for ${service}/${field}. Collect it via \`assistant credentials prompt --service ${service} --field ${field} --label <label>\` first.`,
           isError: true,
         };
       }

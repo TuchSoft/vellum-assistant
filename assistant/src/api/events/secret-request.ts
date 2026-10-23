@@ -11,11 +11,10 @@
  * back via the credential-store route or cancels.
  *
  * `service`, `field`, and `label` are required because the prompter
- * always supplies them — they identify which credential the daemon is
- * asking for and how to label the input. Optional fields are scope
- * hints (`allowedTools`, `allowedDomains`), display affordances
- * (`description`, `placeholder`), and the `allowOneTimeSend` override
- * used by clients that support a "send without saving" path.
+ * always supplies them - they identify which credential the daemon is
+ * asking for and how to label the input. Optional fields are display
+ * affordances (`description`, `placeholder`), and the `allowOneTimeSend`
+ * override used by clients that support a "send without saving" path.
  *
  * Canonical wire-contract source. Daemon code imports the type
  * directly from this file; external consumers import via
@@ -34,8 +33,6 @@ export const SecretRequestEventSchema = z.object({
   placeholder: z.string().optional(),
   conversationId: z.string().optional(),
   purpose: z.string().optional(),
-  allowedTools: z.array(z.string()).optional(),
-  allowedDomains: z.array(z.string()).optional(),
   allowOneTimeSend: z.boolean().optional(),
 });
 

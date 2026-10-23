@@ -386,8 +386,6 @@ interface SseEvent {
   placeholder?: string;
   purpose?: string;
   allowOneTimeSend?: boolean;
-  allowedTools?: string[];
-  allowedDomains?: string[];
   // message_complete fields
   source?: "main" | "aux";
   // sync_changed fields

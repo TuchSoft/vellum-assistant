@@ -69,44 +69,11 @@ describe("Vercel config handler", () => {
       );
     });
 
-    test("metadata does not include bash in allowedTools", async () => {
-      await setVercelConfig("vl_test_token_123");
-
-      expect(lastUpsertCall).not.toBeNull();
-      const tools = lastUpsertCall!.policy?.allowedTools as string[];
-      expect(tools).not.toContain("bash");
-    });
-
-    test("metadata does not include deploy in allowedTools", async () => {
-      await setVercelConfig("vl_test_token_123");
-
-      expect(lastUpsertCall).not.toBeNull();
-      const tools = lastUpsertCall!.policy?.allowedTools as string[];
-      expect(tools).not.toContain("deploy");
-    });
-
     test("metadata explicitly clears injection templates", async () => {
       await setVercelConfig("vl_test_token_123");
 
       expect(lastUpsertCall).not.toBeNull();
       expect(lastUpsertCall!.policy?.injectionTemplates).toBeNull();
-    });
-
-    test("publish_page and unpublish_page remain in allowedTools", async () => {
-      await setVercelConfig("vl_test_token_123");
-
-      expect(lastUpsertCall).not.toBeNull();
-      const tools = lastUpsertCall!.policy?.allowedTools as string[];
-      expect(tools).toContain("publish_page");
-      expect(tools).toContain("unpublish_page");
-    });
-
-    test("allowedTools contains only publish_page and unpublish_page", async () => {
-      await setVercelConfig("vl_test_token_123");
-
-      expect(lastUpsertCall).not.toBeNull();
-      const tools = lastUpsertCall!.policy?.allowedTools as string[];
-      expect(tools).toEqual(["publish_page", "unpublish_page"]);
     });
 
     test("returns error when apiToken is not provided", async () => {

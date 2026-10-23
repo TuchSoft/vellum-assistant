@@ -1,8 +1,8 @@
 /**
  * CES-owned credential metadata store.
  *
- * Persists non-secret identity and policy (`allowedTools`, `allowedDomains`,
- * `injectionTemplates`, plus catalog fields) at
+ * Persists non-secret identity and policy (`injectionTemplates`, plus catalog
+ * fields) at
  * `<cesDataRoot>/metadata.json`. Secret values stay in `keys.enc`.
  */
 
@@ -124,8 +124,6 @@ function isRecord(value: unknown): value is CredentialRecord {
       record.kind === "json") &&
     (record.sourceField === undefined ||
       typeof record.sourceField === "string") &&
-    Array.isArray(record.allowedTools) &&
-    Array.isArray(record.allowedDomains) &&
     typeof record.createdAt === "number" &&
     typeof record.updatedAt === "number"
   );

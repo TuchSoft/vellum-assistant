@@ -302,8 +302,6 @@ export interface ToolContext {
     description?: string;
     placeholder?: string;
     purpose?: string;
-    allowedTools?: string[];
-    allowedDomains?: string[];
   }) => Promise<SecretPromptResult>;
   /**
    * Optional callback to send a message to the connected client (e.g. open_url).

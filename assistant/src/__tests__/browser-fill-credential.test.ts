@@ -186,8 +186,6 @@ function defaultMetadata(service: string, field: string) {
     credentialId: `${service}:${field}`,
     service,
     field,
-    allowedTools: ["browser_fill_credential"],
-    allowedDomains: [] as string[],
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -438,69 +436,19 @@ describe("executeBrowserFillCredential", () => {
       );
     });
 
-    test("returns tool policy denial with actionable message", async () => {
-      mockGetCredentialMetadata = mock((service: string, field: string) => ({
-        ...defaultMetadata(service, field),
-        allowedTools: ["some_other_tool"],
-      }));
-      snapshotBackendNodeMaps.set("test-conversation", new Map([["e1", 555]]));
-      const result = await executeBrowserFillCredential(
-        { service: "gmail", field: "password", element_id: "e1" },
-        ctx,
-      );
-      expect(result.isError).toBe(true);
-      expect(result.content).toContain("Policy denied");
-      expect(result.content).toContain("not allowed to use credential");
-      expect(result.content).toContain("assistant credentials prompt");
-      // The broker short-circuits before Input.insertText fires.
-      const methods = sendCalls.map((c) => c.method);
-      expect(methods).not.toContain("Input.insertText");
-    });
-
-    test("returns domain policy denial with actionable message", async () => {
-      mockGetCredentialMetadata = mock((service: string, field: string) => ({
-        ...defaultMetadata(service, field),
-        allowedDomains: ["other-site.com"],
-      }));
-      snapshotBackendNodeMaps.set("test-conversation", new Map([["e1", 555]]));
-      const result = await executeBrowserFillCredential(
-        { service: "gmail", field: "password", element_id: "e1" },
-        ctx,
-      );
-      expect(result.isError).toBe(true);
-      expect(result.content).toContain("Domain policy denied");
-      expect(result.content).toContain("Navigate to an allowed domain");
-      const methods = sendCalls.map((c) => c.method);
-      expect(methods).not.toContain("Input.insertText");
-    });
-
     test("passes current page domain to broker", async () => {
-      mockGetCredentialMetadata = mock((service: string, field: string) => ({
-        ...defaultMetadata(service, field),
-        allowedDomains: ["example.com"],
-      }));
+      mockGetCredentialMetadata = mock((service: string, field: string) =>
+        defaultMetadata(service, field),
+      );
       snapshotBackendNodeMaps.set("test-conversation", new Map([["e1", 555]]));
       const result = await executeBrowserFillCredential(
         { service: "gmail", field: "password", element_id: "e1" },
         ctx,
       );
-      // Default handler returns https://example.com/ → matches allowedDomains
+      // The default handler returns https://example.com/, which the broker
+      // receives as the page domain.
       expect(result.isError).toBe(false);
       expect(result.content).toContain("Filled password for gmail");
-    });
-
-    test("policy denial errors never contain credential values", async () => {
-      mockGetCredentialMetadata = mock((service: string, field: string) => ({
-        ...defaultMetadata(service, field),
-        allowedTools: ["other_tool"],
-      }));
-      snapshotBackendNodeMaps.set("test-conversation", new Map([["e1", 555]]));
-      const result = await executeBrowserFillCredential(
-        { service: "gmail", field: "password", element_id: "e1" },
-        ctx,
-      );
-      expect(result.isError).toBe(true);
-      expect(result.content).not.toContain("super-secret-password");
     });
   });
 });

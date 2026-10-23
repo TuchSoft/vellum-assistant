@@ -24,22 +24,6 @@ function printCredentialHuman(output: Record<string, unknown>): void {
   if (output.usageDescription) {
     log.info(`    Description: ${output.usageDescription}`);
   }
-  if (
-    Array.isArray(output.allowedTools) &&
-    (output.allowedTools as string[]).length > 0
-  ) {
-    log.info(
-      `    Tools:       ${(output.allowedTools as string[]).join(", ")}`,
-    );
-  }
-  if (
-    Array.isArray(output.allowedDomains) &&
-    (output.allowedDomains as string[]).length > 0
-  ) {
-    log.info(
-      `    Domains:     ${(output.allowedDomains as string[]).join(", ")}`,
-    );
-  }
   log.info(`    Created:     ${output.createdAt}`);
   log.info(`    Updated:     ${output.updatedAt}`);
   if ((output.injectionTemplateCount as number) > 0) {
@@ -207,7 +191,6 @@ export function registerCredentialsCommand(program: Command): void {
             field: string;
             label?: string;
             description?: string;
-            allowedTools?: string;
             generated?: boolean;
           },
           cmd: Command,
@@ -221,10 +204,6 @@ export function registerCredentialsCommand(program: Command): void {
             return;
           }
 
-          const allowedTools = opts.allowedTools
-            ? opts.allowedTools.split(",").map((t) => t.trim())
-            : undefined;
-
           const r = await cliIpcCall<{
             credentialId: string;
             service: string;
@@ -236,7 +215,6 @@ export function registerCredentialsCommand(program: Command): void {
               value,
               label: opts.label,
               description: opts.description,
-              allowedTools,
             },
           });
 
@@ -410,19 +388,10 @@ export function registerCredentialsCommand(program: Command): void {
             description?: string;
             placeholder?: string;
             usageDescription?: string;
-            allowedDomains?: string;
-            allowedTools?: string;
             injectionTemplates?: string;
           },
           cmd: Command,
         ) => {
-          const allowedDomains = opts.allowedDomains
-            ? opts.allowedDomains.split(",").map((d) => d.trim())
-            : undefined;
-          const allowedTools = opts.allowedTools
-            ? opts.allowedTools.split(",").map((t) => t.trim())
-            : undefined;
-
           let injectionTemplates: unknown[] | undefined;
           if (opts.injectionTemplates) {
             try {
@@ -450,8 +419,6 @@ export function registerCredentialsCommand(program: Command): void {
                 description: opts.description,
                 placeholder: opts.placeholder,
                 usageDescription: opts.usageDescription,
-                allowedDomains,
-                allowedTools,
                 injectionTemplates,
                 conversationId: tryResolveConversationId(),
               },

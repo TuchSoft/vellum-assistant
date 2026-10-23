@@ -32,8 +32,6 @@ const record: CredentialRecord = {
   field: "password",
   ref: "TEST",
   kind: "value",
-  allowedTools: [],
-  allowedDomains: [],
   createdAt: 1,
   updatedAt: 1,
 };

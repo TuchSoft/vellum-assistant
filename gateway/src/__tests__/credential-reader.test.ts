@@ -324,8 +324,6 @@ describe("readServiceCredentials", () => {
               credentialId: "cred-1",
               service: "telegram",
               field: "ignored",
-              allowedTools: [],
-              allowedDomains: [],
               createdAt: 1,
               updatedAt: 1,
             },

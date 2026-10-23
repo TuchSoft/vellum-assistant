@@ -40,9 +40,7 @@ afterAll(() => {
 describe("credential resolver", () => {
   describe("resolveByServiceField", () => {
     test("resolves existing credential", () => {
-      const created = upsertCredentialMetadata("github", "token", {
-        allowedTools: ["browser_fill_credential"],
-      });
+      const created = upsertCredentialMetadata("github", "token");
 
       const result = resolveByServiceField("github", "token");
       expect(result).toBeDefined();
@@ -50,9 +48,6 @@ describe("credential resolver", () => {
       expect(result!.service).toBe("github");
       expect(result!.field).toBe("token");
       expect(result!.storageKey).toBe(credentialKey("github", "token"));
-      expect(result!.metadata.allowedTools).toEqual([
-        "browser_fill_credential",
-      ]);
     });
 
     test("returns undefined for non-existent credential", () => {

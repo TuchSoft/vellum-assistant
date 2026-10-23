@@ -39,8 +39,6 @@ import {
   persistRefreshedAcpClaudeTokens,
   readAcpClaudeRefreshToken,
 } from "./acp-claude-oauth.js";
-import { ACP_OAUTH_TOKEN_FIELD } from "./acp-credentials.js";
-import { acpSpawnCredentialDenialReason } from "./prepare-agent-env.js";
 
 const log = getLogger("acp:claude-token-refresh");
 
@@ -59,13 +57,6 @@ const REFRESH_KEY = "acp:claude";
  * callers re-read through it as usual.
  */
 export async function ensureFreshAcpClaudeToken(): Promise<void> {
-  // An explicit `allowedTools` that omits `acp_spawn` means the broker will
-  // deny the read this renewal exists to feed, so there is nothing to gain by
-  // spending a refresh token here. Checking first also keeps a passive spawn
-  // from touching a credential the workspace has fenced off.
-  if (acpSpawnCredentialDenialReason(ACP_OAUTH_TOKEN_FIELD) !== undefined) {
-    return;
-  }
   // Companions can outlive a deleted access token. Renewal exists to replace
   // that field, not to mint a new credential after the user removed it.
   if (!(await hasStoredAcpClaudeAccessToken())) {

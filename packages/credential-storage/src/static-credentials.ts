@@ -82,12 +82,6 @@ function migrateRecordToV5(
     credentialId: record.credentialId as string,
     service: record.service as string,
     field: record.field as string,
-    allowedTools: Array.isArray(record.allowedTools)
-      ? (record.allowedTools as string[])
-      : [],
-    allowedDomains: Array.isArray(record.allowedDomains)
-      ? (record.allowedDomains as string[])
-      : [],
     usageDescription:
       typeof record.usageDescription === "string"
         ? record.usageDescription
@@ -194,8 +188,6 @@ function saveFile(data: MetadataFile, path: string): void {
 
 /** Policy fields that can be set or updated when upserting a credential. */
 export interface StaticCredentialPolicyInput {
-  allowedTools?: string[];
-  allowedDomains?: string[];
   usageDescription?: string;
   /** Pass `null` to explicitly clear a previously-set alias. */
   alias?: string | null;
@@ -296,12 +288,6 @@ export class StaticCredentialMetadataStore {
     );
 
     if (existing) {
-      if (policy?.allowedTools !== undefined) {
-        existing.allowedTools = policy.allowedTools;
-      }
-      if (policy?.allowedDomains !== undefined) {
-        existing.allowedDomains = policy.allowedDomains;
-      }
       if (policy?.usageDescription !== undefined) {
         existing.usageDescription = policy.usageDescription;
       }
@@ -328,8 +314,6 @@ export class StaticCredentialMetadataStore {
       credentialId: randomUUID(),
       service,
       field,
-      allowedTools: policy?.allowedTools ?? [],
-      allowedDomains: policy?.allowedDomains ?? [],
       usageDescription: policy?.usageDescription,
       alias: policy?.alias ?? undefined,
       injectionTemplates: policy?.injectionTemplates ?? undefined,

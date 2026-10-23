@@ -427,33 +427,6 @@ describe("credentials/prompt route", () => {
     expect(slackConfigArgs).toEqual([]);
   });
 
-  test("omitting allowed-tools/-domains forwards undefined so an existing policy is preserved", async () => {
-    /**
-     * Rotating an existing credential without policy flags must not wipe its
-     * allowed tools/domains. The route forwards `undefined` (not `[]`) for
-     * omitted flags so the metadata store's partial-update path leaves the
-     * existing policy untouched.
-     */
-    // GIVEN a credential already exists with an allowed-tools policy
-    existingMetadata = {
-      service: "github",
-      field: "pat",
-      allowedTools: ["bash"],
-      allowedDomains: ["github.com"],
-    };
-
-    // WHEN it is re-prompted without allowed-tools or allowed-domains
-    const result = (await promptRoute!.handler({
-      body: { service: "github", field: "pat", label: "GitHub PAT" },
-    })) as PromptResponse;
-
-    // THEN the metadata upsert receives undefined for both lists
-    expect(result.ok).toBe(true);
-    expect(capturedMetadata).toBeDefined();
-    expect(capturedMetadata!.allowedTools).toBeUndefined();
-    expect(capturedMetadata!.allowedDomains).toBeUndefined();
-  });
-
   test("flags an explicit user cancel distinctly from a failure", async () => {
     /**
      * A user dismissing the secure prompt is a valid flow, not an error. The
@@ -579,7 +552,6 @@ describe("credentials/prompt route", () => {
         field: "api_key",
         label: "Stripe API Key",
         usageDescription: "Needed for billing lookups",
-        allowedTools: ["make_authenticated_request"],
         injectionTemplates: [
           { hostPattern: "api.stripe.com", injectionType: "header" },
         ],
@@ -629,33 +601,6 @@ describe("credentials/prompt route", () => {
     expect(result.error).toBe(
       "The credential prompt was superseded by a new message",
     );
-  });
-
-  test("forwards provided allowed-tools/-domains to credential metadata", async () => {
-    /**
-     * When the caller does supply policy flags they must reach the metadata
-     * store verbatim, including an explicit empty array used to set a deny-all
-     * policy.
-     */
-    // GIVEN a prompt request that supplies an allowed-tools list and a
-    // deny-all (empty) allowed-domains list
-    // WHEN the route handles it
-    const result = (await promptRoute!.handler({
-      body: {
-        service: "stripe",
-        field: "api_key",
-        label: "Stripe API Key",
-        allowedTools: ["make_authenticated_request"],
-        allowedDomains: [],
-      },
-    })) as PromptResponse;
-
-    // THEN the metadata upsert receives the supplied lists verbatim
-    expect(result.ok).toBe(true);
-    expect(capturedMetadata!.allowedTools).toEqual([
-      "make_authenticated_request",
-    ]);
-    expect(capturedMetadata!.allowedDomains).toEqual([]);
   });
 
   test("redirects the ACP Claude OAuth token to the inline Connect card when the conversation can render it", async () => {

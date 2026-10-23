@@ -25,8 +25,6 @@ function record(
     field,
     ...(ref === undefined ? {} : { ref }),
     ...(kind === undefined ? {} : { kind }),
-    allowedTools: [],
-    allowedDomains: [],
     createdAt: now,
     updatedAt: now,
   };

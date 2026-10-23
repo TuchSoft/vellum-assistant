@@ -54,8 +54,6 @@ export class SecretPrompter {
     placeholder?: string,
     conversationId?: string,
     purpose?: string,
-    allowedTools?: string[],
-    allowedDomains?: string[],
   ): Promise<SecretPromptResult> {
     // Channels without dynamic UI (e.g. slack, telegram) have no surface that
     // renders the secure prompt dialog — fail fast with unsupported_channel
@@ -97,8 +95,6 @@ export class SecretPrompter {
           description,
           placeholder,
           purpose,
-          allowedTools,
-          allowedDomains,
           allowOneTimeSend: config.secretDetection.allowOneTimeSend,
         },
         rpcResolve: resolve as (value: unknown) => void,
@@ -117,8 +113,6 @@ export class SecretPrompter {
         placeholder,
         conversationId: effectiveConversationId,
         purpose,
-        allowedTools,
-        allowedDomains,
         allowOneTimeSend: config.secretDetection.allowOneTimeSend,
       };
 

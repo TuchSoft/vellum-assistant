@@ -30,10 +30,6 @@ export interface StaticCredentialRecord {
   service: string;
   /** Field name within the service (e.g. "api_key", "password"). */
   field: string;
-  /** Tools permitted to consume this credential. */
-  allowedTools: string[];
-  /** Domains where this credential may be used. */
-  allowedDomains: string[];
   /** Human-readable description of intended usage. */
   usageDescription?: string;
   /** Human-friendly alias (e.g. "fal-primary"). */

@@ -512,8 +512,6 @@ export function createToolExecutor(
           params.placeholder,
           ctx.conversationId,
           params.purpose,
-          params.allowedTools,
-          params.allowedDomains,
         );
       },
     };

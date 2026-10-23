@@ -59,8 +59,6 @@ export interface PendingSecretState {
   description?: string;
   placeholder?: string;
   allowOneTimeSend?: boolean;
-  allowedTools?: string[];
-  allowedDomains?: string[];
   purpose?: string;
 }
 

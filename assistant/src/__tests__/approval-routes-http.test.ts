@@ -822,8 +822,6 @@ describe("standalone approval endpoints — HTTP layer", () => {
           description: "Personal access token",
           placeholder: "ghp_...",
           purpose: "Push commits",
-          allowedTools: ["git_push"],
-          allowedDomains: ["github.com"],
           allowOneTimeSend: true,
         },
       });
@@ -848,8 +846,6 @@ describe("standalone approval endpoints — HTTP layer", () => {
         description: "Personal access token",
         placeholder: "ghp_...",
         purpose: "Push commits",
-        allowedTools: ["git_push"],
-        allowedDomains: ["github.com"],
         allowOneTimeSend: true,
       });
 

@@ -58,13 +58,13 @@ describe("CES credential record write-through", () => {
     setCredentialRecordBackend(backend);
 
     const created = upsertCredentialMetadata("slack_channel", "bot_token", {
-      allowedTools: ["bash"],
+      usageDescription: "Slack bot token",
     });
 
     const stored = backend.store.get(
       credentialKey("slack_channel", "bot_token"),
     );
-    expect(stored?.allowedTools).toEqual(["bash"]);
+    expect(stored?.usageDescription).toBe("Slack bot token");
     expect(stored?.credentialId).toBe(created.credentialId);
   });
 
@@ -73,9 +73,7 @@ describe("CES credential record write-through", () => {
     setCredentialRecordBackend(backend);
     _setMetadataPath("/tmp/does-not-write-through-metadata.json");
 
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["bash"],
-    });
+    upsertCredentialMetadata("github", "token");
 
     expect(backend.store.size).toBe(0);
   });

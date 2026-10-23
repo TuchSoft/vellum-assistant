@@ -49,41 +49,27 @@ describe("credential metadata store", () => {
   describe("upsertCredentialMetadata", () => {
     test("creates new record with generated ID", () => {
       const record = upsertCredentialMetadata("github", "token", {
-        allowedTools: ["browser_fill_credential"],
-        allowedDomains: ["github.com"],
         usageDescription: "GitHub login",
       });
 
       expect(record.credentialId).toBeTruthy();
       expect(record.service).toBe("github");
       expect(record.field).toBe("token");
-      expect(record.allowedTools).toEqual(["browser_fill_credential"]);
-      expect(record.allowedDomains).toEqual(["github.com"]);
       expect(record.usageDescription).toBe("GitHub login");
       expect(record.createdAt).toBeGreaterThan(0);
       expect(record.updatedAt).toBe(record.createdAt);
     });
 
-    test("defaults policy arrays to empty", () => {
-      const record = upsertCredentialMetadata("gmail", "password");
-      expect(record.allowedTools).toEqual([]);
-      expect(record.allowedDomains).toEqual([]);
-      expect(record.usageDescription).toBeUndefined();
-    });
-
     test("updates existing record by service+field", () => {
       const created = upsertCredentialMetadata("github", "token", {
-        allowedTools: ["browser_fill_credential"],
+        usageDescription: "First purpose",
       });
 
       const updated = upsertCredentialMetadata("github", "token", {
-        allowedDomains: ["github.com"],
         usageDescription: "Updated purpose",
       });
 
       expect(updated.credentialId).toBe(created.credentialId);
-      expect(updated.allowedTools).toEqual(["browser_fill_credential"]);
-      expect(updated.allowedDomains).toEqual(["github.com"]);
       expect(updated.usageDescription).toBe("Updated purpose");
       expect(updated.updatedAt).toBeGreaterThanOrEqual(created.createdAt);
     });
@@ -151,13 +137,13 @@ describe("credential metadata store", () => {
   describe("persistence", () => {
     test("metadata survives across calls (file-backed)", () => {
       upsertCredentialMetadata("github", "token", {
-        allowedTools: ["browser_fill_credential"],
+        usageDescription: "GitHub login",
       });
 
       // Read again (simulates new process reading same file)
       const result = getCredentialMetadata("github", "token");
       expect(result).toBeDefined();
-      expect(result!.allowedTools).toEqual(["browser_fill_credential"]);
+      expect(result!.usageDescription).toBe("GitHub login");
     });
   });
 
@@ -165,9 +151,7 @@ describe("credential metadata store", () => {
 
   describe("security", () => {
     test("metadata records never contain secret values", () => {
-      const record = upsertCredentialMetadata("github", "token", {
-        allowedTools: ["browser_fill_credential"],
-      });
+      const record = upsertCredentialMetadata("github", "token");
 
       const keys = Object.keys(record);
       expect(keys).not.toContain("value");
@@ -195,7 +179,6 @@ describe("credential metadata store", () => {
     test("creates record with alias", () => {
       const record = upsertCredentialMetadata("fal-ai", "api_key", {
         alias: "fal-primary",
-        allowedTools: ["api_request"],
       });
       expect(record.alias).toBe("fal-primary");
     });
@@ -219,12 +202,10 @@ describe("credential metadata store", () => {
     test("creates record with alias and injectionTemplates together", () => {
       const record = upsertCredentialMetadata("fal-ai", "api_key", {
         alias: "fal-primary",
-        allowedDomains: ["fal.ai"],
         injectionTemplates: [falInjection],
       });
       expect(record.alias).toBe("fal-primary");
       expect(record.injectionTemplates).toEqual([falInjection]);
-      expect(record.allowedDomains).toEqual(["fal.ai"]);
     });
 
     test("defaults alias and injectionTemplates to undefined when not provided", () => {
@@ -272,8 +253,6 @@ describe("credential metadata store", () => {
     test("round-trip: alias and templates survive serialization", () => {
       upsertCredentialMetadata("fal-ai", "api_key", {
         alias: "fal-primary",
-        allowedTools: ["api_request"],
-        allowedDomains: ["fal.ai"],
         injectionTemplates: [falInjection],
       });
 
@@ -282,7 +261,6 @@ describe("credential metadata store", () => {
       expect(loaded).toBeDefined();
       expect(loaded!.alias).toBe("fal-primary");
       expect(loaded!.injectionTemplates).toEqual([falInjection]);
-      expect(loaded!.allowedTools).toEqual(["api_request"]);
     });
   });
 
@@ -290,9 +268,7 @@ describe("credential metadata store", () => {
 
   describe("v5 schema — OAuth fields removed from CredentialMetadata", () => {
     test("CredentialMetadata does not include hasRefreshToken", () => {
-      const record = upsertCredentialMetadata("github", "access_token", {
-        allowedTools: ["api_request"],
-      });
+      const record = upsertCredentialMetadata("github", "access_token");
       // hasRefreshToken was removed in v5 — field should not exist
       expect("hasRefreshToken" in record).toBe(false);
     });
@@ -346,8 +322,9 @@ describe("credential metadata store", () => {
       expect(records[0].service).toBe("github");
       expect(records[0].alias).toBeUndefined();
       expect(records[0].injectionTemplates).toBeUndefined();
-      // Original fields preserved
-      expect(records[0].allowedTools).toEqual(["browser_fill_credential"]);
+      // Retired policy fields are not part of the record
+      expect("allowedTools" in records[0]).toBe(false);
+      expect("allowedDomains" in records[0]).toBe(false);
       expect(records[0].usageDescription).toBe("Legacy GitHub token");
     });
 
@@ -907,9 +884,7 @@ describe("credential metadata store", () => {
 
     test("saved file is always valid JSON", () => {
       upsertCredentialMetadata("github", "token", { alias: "gh" });
-      upsertCredentialMetadata("slack", "webhook", {
-        allowedDomains: ["slack.com"],
-      });
+      upsertCredentialMetadata("slack", "webhook");
       deleteCredentialMetadata("github", "token");
 
       const raw = readFileSync(META_PATH, "utf-8");
@@ -977,7 +952,7 @@ describe("credential metadata store", () => {
   // ── v1 migration with realistic data ──────────────────────────────
 
   describe("v1 migration — realistic legacy data", () => {
-    test("v1 record with allowedTools as non-array gets defaults", () => {
+    test("v1 record drops retired policy fields", () => {
       const v1Data = {
         version: 1,
         credentials: [
@@ -996,9 +971,9 @@ describe("credential metadata store", () => {
 
       const records = listCredentialMetadata();
       expect(records).toHaveLength(1);
-      // Non-array allowedTools should be replaced with empty array
-      expect(records[0].allowedTools).toEqual([]);
-      expect(records[0].allowedDomains).toEqual(["github.com"]);
+      // The retired policy fields do not survive migration
+      expect("allowedTools" in records[0]).toBe(false);
+      expect("allowedDomains" in records[0]).toBe(false);
     });
 
     test("v1 record with extra unknown fields preserves known fields", () => {

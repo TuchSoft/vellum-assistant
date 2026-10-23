@@ -47,7 +47,6 @@ import {
   _setMetadataPath,
   upsertCredentialMetadata,
 } from "../tools/credentials/metadata-store.js";
-import { BROWSER_FILL_CAPABILITY } from "../tools/credentials/tool-policy.js";
 
 afterAll(() => {
   mock.restore();
@@ -82,9 +81,7 @@ describe("CredentialBroker.browserFill", () => {
   });
 
   test("fills successfully when credential exists", async () => {
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["browser_fill_credential"],
-    });
+    upsertCredentialMetadata("github", "token");
     await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret123");
 
     let filledValue: string | undefined;
@@ -104,9 +101,7 @@ describe("CredentialBroker.browserFill", () => {
   });
 
   test("returns metadata-only result (no plaintext in return value)", async () => {
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["browser_fill_credential"],
-    });
+    upsertCredentialMetadata("github", "token");
     await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret123");
 
     const result = await broker.browserFill({
@@ -138,9 +133,7 @@ describe("CredentialBroker.browserFill", () => {
   });
 
   test("fails when metadata exists but no stored secret value", async () => {
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["browser_fill_credential"],
-    });
+    upsertCredentialMetadata("github", "token");
     // No setSecureKeyAsync call — metadata exists but value doesn't
 
     const result = await broker.browserFill({
@@ -157,9 +150,7 @@ describe("CredentialBroker.browserFill", () => {
   });
 
   test("returns failure when fill callback throws", async () => {
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["browser_fill_credential"],
-    });
+    upsertCredentialMetadata("github", "token");
     await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret123");
 
     const result = await broker.browserFill({
@@ -180,12 +171,8 @@ describe("CredentialBroker.browserFill", () => {
   });
 
   test("handles multiple fills with different credentials", async () => {
-    upsertCredentialMetadata("github", "username", {
-      allowedTools: ["browser_fill_credential"],
-    });
-    upsertCredentialMetadata("github", "password", {
-      allowedTools: ["browser_fill_credential"],
-    });
+    upsertCredentialMetadata("github", "username");
+    upsertCredentialMetadata("github", "password");
     await setSecureKeyAsync(credentialKey("github", "username"), "octocat");
     await setSecureKeyAsync(credentialKey("github", "password"), "hunter2");
 
@@ -215,146 +202,8 @@ describe("CredentialBroker.browserFill", () => {
     expect(filled.password).toBe("hunter2");
   });
 
-  test("allows fill when domain matches allowedDomains", async () => {
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["browser_fill_credential"],
-      allowedDomains: ["github.com"],
-    });
-    await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret123");
-
-    const result = await broker.browserFill({
-      service: "github",
-      field: "token",
-      toolName: "browser_fill_credential",
-      domain: "github.com",
-      fill: async () => {},
-    });
-
-    expect(result.success).toBe(true);
-  });
-
-  test("allows fill on subdomain when registrable domain matches", async () => {
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["browser_fill_credential"],
-      allowedDomains: ["github.com"],
-    });
-    await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret123");
-
-    const result = await broker.browserFill({
-      service: "github",
-      field: "token",
-      toolName: "browser_fill_credential",
-      domain: "login.github.com",
-      fill: async () => {},
-    });
-
-    expect(result.success).toBe(true);
-  });
-
-  test("denies fill when domain does not match allowedDomains", async () => {
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["browser_fill_credential"],
-      allowedDomains: ["github.com"],
-    });
-    await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret123");
-
-    const result = await broker.browserFill({
-      service: "github",
-      field: "token",
-      toolName: "browser_fill_credential",
-      domain: "evil.com",
-      fill: async () => {
-        throw new Error("should not be called");
-      },
-    });
-
-    expect(result.success).toBe(false);
-    expect(result.reason).toContain("not allowed");
-    expect(result.reason).toContain("evil.com");
-    expect(result.reason).toContain("github.com");
-  });
-
-  test("denies fill when domain policy exists but no domain provided", async () => {
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["browser_fill_credential"],
-      allowedDomains: ["github.com"],
-    });
-    await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret123");
-
-    const result = await broker.browserFill({
-      service: "github",
-      field: "token",
-      toolName: "browser_fill_credential",
-      fill: async () => {
-        throw new Error("should not be called");
-      },
-    });
-
-    expect(result.success).toBe(false);
-    expect(result.reason).toContain("no page domain was provided");
-  });
-
-  test("skips domain check when allowedDomains is empty", async () => {
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["browser_fill_credential"],
-    });
-    await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret123");
-
-    // No domain provided and no allowedDomains policy — should succeed
-    const result = await broker.browserFill({
-      service: "github",
-      field: "token",
-      toolName: "browser_fill_credential",
-      fill: async () => {},
-    });
-
-    expect(result.success).toBe(true);
-  });
-
-  test("denies fill when tool is not in allowedTools", async () => {
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["other_tool"],
-    });
-    await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret123");
-
-    let fillCalled = false;
-    const result = await broker.browserFill({
-      service: "github",
-      field: "token",
-      toolName: "browser_fill_credential",
-      fill: async () => {
-        fillCalled = true;
-      },
-    });
-
-    expect(result.success).toBe(false);
-    expect(result.reason).toContain("not allowed");
-    expect(result.reason).toContain("browser_fill_credential");
-    // Fill callback must not be invoked when policy denies
-    expect(fillCalled).toBe(false);
-  });
-
-  test("denies fill when allowedTools is empty (fail-closed)", async () => {
-    upsertCredentialMetadata("github", "token", { allowedTools: [] });
-    await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret123");
-
-    const result = await broker.browserFill({
-      service: "github",
-      field: "token",
-      toolName: "browser_fill_credential",
-      fill: async () => {
-        throw new Error("should not be called");
-      },
-    });
-
-    expect(result.success).toBe(false);
-    expect(result.reason).toContain("No tools are currently allowed");
-  });
-
   test("fill callback error does not leak plaintext in result", async () => {
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["browser_fill_credential"],
-    });
+    upsertCredentialMetadata("github", "token");
     await setSecureKeyAsync(
       credentialKey("github", "token"),
       "ghp_supersecret",
@@ -378,323 +227,69 @@ describe("CredentialBroker.browserFill", () => {
   // Baseline: tool/domain policy mismatch deny behavior
   // ---------------------------------------------------------------------------
 
-  describe("baseline — tool/domain policy mismatch deny", () => {
-    test("denies tool not in multi-tool allowlist and enumerates allowed tools", async () => {
-      upsertCredentialMetadata("aws", "access_key", {
-        allowedTools: ["s3_upload", "cloudfront_invalidate"],
-        allowedDomains: [],
-      });
-      await setSecureKeyAsync(credentialKey("aws", "access_key"), "AKIA_test");
-
-      let fillCalled = false;
-      const result = await broker.browserFill({
-        service: "aws",
-        field: "access_key",
-        toolName: "browser_fill_credential",
-        fill: async () => {
-          fillCalled = true;
-        },
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.reason).toContain("browser_fill_credential");
-      expect(result.reason).toContain("not allowed");
-      expect(result.reason).toContain("s3_upload");
-      expect(result.reason).toContain("cloudfront_invalidate");
-      expect(fillCalled).toBe(false);
-    });
-
-    test("denies when tool matches but domain does not", async () => {
-      upsertCredentialMetadata("github", "pat", {
-        allowedTools: ["browser_fill_credential"],
-        allowedDomains: ["github.com"],
-      });
-      await setSecureKeyAsync(credentialKey("github", "pat"), "ghp_fill_test");
-
-      let fillCalled = false;
-      const result = await broker.browserFill({
-        service: "github",
-        field: "pat",
-        toolName: "browser_fill_credential",
-        domain: "phishing-github.com",
-        fill: async () => {
-          fillCalled = true;
-        },
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.reason).toContain("phishing-github.com");
-      expect(result.reason).toContain("not allowed");
-      expect(fillCalled).toBe(false);
-    });
-
-    test("denies when both tool and domain mismatch — tool check runs first", async () => {
-      upsertCredentialMetadata("slack", "bot_token", {
-        allowedTools: ["slack_post"],
-        allowedDomains: ["slack.com"],
-      });
-      await setSecureKeyAsync(credentialKey("slack", "bot_token"), "xoxb-test");
-
-      const result = await broker.browserFill({
-        service: "slack",
-        field: "bot_token",
-        toolName: "browser_fill_credential",
-        domain: "evil.com",
-        fill: async () => {
-          throw new Error("should not be called");
-        },
-      });
-
-      expect(result.success).toBe(false);
-      // Tool policy is evaluated before domain policy, so the denial
-      // mentions the tool name, not the domain
-      expect(result.reason).toContain("browser_fill_credential");
-      expect(result.reason).toContain("not allowed");
-    });
-
-    test("denies with empty allowedTools and suggests assistant credentials prompt", async () => {
-      upsertCredentialMetadata("custom", "key", {
-        allowedTools: [],
-      });
-      await setSecureKeyAsync(credentialKey("custom", "key"), "secret");
-
-      const result = await broker.browserFill({
-        service: "custom",
-        field: "key",
-        toolName: "browser_fill_credential",
-        fill: async () => {
-          throw new Error("should not be called");
-        },
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.reason).toContain("No tools are currently allowed");
-      expect(result.reason).toContain("assistant credentials prompt");
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Baseline: service/field uniqueness assumptions
-  // ---------------------------------------------------------------------------
-
-  describe("baseline — service/field uniqueness", () => {
-    test("upsert overwrites metadata for same service+field pair", async () => {
-      upsertCredentialMetadata("github", "token", {
-        allowedTools: ["other_tool"],
-      });
-      // Second upsert updates the same record
-      upsertCredentialMetadata("github", "token", {
-        allowedTools: ["browser_fill_credential"],
-      });
-      await setSecureKeyAsync(credentialKey("github", "token"), "ghp_updated");
-
-      let filledValue: string | undefined;
-      const result = await broker.browserFill({
-        service: "github",
-        field: "token",
-        toolName: "browser_fill_credential",
-        fill: async (v) => {
-          filledValue = v;
-        },
-      });
-
-      // The second upsert's policy should be in effect
-      expect(result.success).toBe(true);
-      expect(filledValue).toBe("ghp_updated");
-    });
-
+  describe("service/field uniqueness", () => {
     test("same service with different fields are independent credentials", async () => {
-      upsertCredentialMetadata("github", "username", {
-        allowedTools: ["browser_fill_credential"],
-      });
-      upsertCredentialMetadata("github", "password", {
-        allowedTools: ["other_tool"],
-      });
+      upsertCredentialMetadata("github", "username");
+      upsertCredentialMetadata("github", "password");
       await setSecureKeyAsync(credentialKey("github", "username"), "octocat");
       await setSecureKeyAsync(credentialKey("github", "password"), "hunter2");
 
-      // username allows browser_fill_credential
+      let u = "";
       const r1 = await broker.browserFill({
         service: "github",
         field: "username",
         toolName: "browser_fill_credential",
-        fill: async () => {},
+        fill: async (v) => {
+          u = v;
+        },
       });
       expect(r1.success).toBe(true);
+      expect(u).toBe("octocat");
 
-      // password does NOT allow browser_fill_credential
+      let p = "";
       const r2 = await broker.browserFill({
         service: "github",
         field: "password",
         toolName: "browser_fill_credential",
-        fill: async () => {
-          throw new Error("should not be called");
+        fill: async (v) => {
+          p = v;
         },
       });
-      expect(r2.success).toBe(false);
-      expect(r2.reason).toContain("not allowed");
+      expect(r2.success).toBe(true);
+      expect(p).toBe("hunter2");
     });
 
     test("different services with same field name are independent", async () => {
-      upsertCredentialMetadata("github", "token", {
-        allowedTools: ["browser_fill_credential"],
-        allowedDomains: ["github.com"],
-      });
-      upsertCredentialMetadata("gitlab", "token", {
-        allowedTools: ["browser_fill_credential"],
-        allowedDomains: ["gitlab.com"],
-      });
+      upsertCredentialMetadata("github", "token");
+      upsertCredentialMetadata("gitlab", "token");
       await setSecureKeyAsync(credentialKey("github", "token"), "gh_tok");
       await setSecureKeyAsync(credentialKey("gitlab", "token"), "gl_tok");
 
-      // github credential on github.com succeeds
-      let filled1 = "";
+      let gh = "";
       const r1 = await broker.browserFill({
         service: "github",
         field: "token",
         toolName: "browser_fill_credential",
         domain: "github.com",
         fill: async (v) => {
-          filled1 = v;
+          gh = v;
         },
       });
       expect(r1.success).toBe(true);
-      expect(filled1).toBe("gh_tok");
+      expect(gh).toBe("gh_tok");
 
-      // github credential on gitlab.com fails (domain mismatch)
+      let gl = "";
       const r2 = await broker.browserFill({
-        service: "github",
-        field: "token",
-        toolName: "browser_fill_credential",
-        domain: "gitlab.com",
-        fill: async () => {
-          throw new Error("should not be called");
-        },
-      });
-      expect(r2.success).toBe(false);
-
-      // gitlab credential on gitlab.com succeeds with its own value
-      let filled3 = "";
-      const r3 = await broker.browserFill({
         service: "gitlab",
         field: "token",
         toolName: "browser_fill_credential",
         domain: "gitlab.com",
         fill: async (v) => {
-          filled3 = v;
+          gl = v;
         },
       });
-      expect(r3.success).toBe(true);
-      expect(filled3).toBe("gl_tok");
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Canonical capability key and legacy alias regression
-  // ---------------------------------------------------------------------------
-
-  describe("canonical capability key and legacy alias", () => {
-    test("credential restricted to canonical key authorizes browser fill", async () => {
-      upsertCredentialMetadata("github", "token", {
-        allowedTools: [BROWSER_FILL_CAPABILITY],
-      });
-      await setSecureKeyAsync(
-        credentialKey("github", "token"),
-        "ghp_canonical",
-      );
-
-      let filledValue: string | undefined;
-      const result = await broker.browserFill({
-        service: "github",
-        field: "token",
-        toolName: BROWSER_FILL_CAPABILITY,
-        fill: async (v) => {
-          filledValue = v;
-        },
-      });
-
-      expect(result.success).toBe(true);
-      expect(filledValue).toBe("ghp_canonical");
-    });
-
-    test("legacy browser_fill_credential metadata authorizes canonical capability key", async () => {
-      // Stored with legacy tool name — simulates existing metadata on disk
-      upsertCredentialMetadata("github", "pat", {
-        allowedTools: ["browser_fill_credential"],
-      });
-      await setSecureKeyAsync(credentialKey("github", "pat"), "ghp_legacy");
-
-      let filledValue: string | undefined;
-      const result = await broker.browserFill({
-        service: "github",
-        field: "pat",
-        toolName: BROWSER_FILL_CAPABILITY,
-        fill: async (v) => {
-          filledValue = v;
-        },
-      });
-
-      expect(result.success).toBe(true);
-      expect(filledValue).toBe("ghp_legacy");
-    });
-
-    test("canonical key in metadata authorizes legacy browser_fill_credential requests", async () => {
-      upsertCredentialMetadata("gitlab", "token", {
-        allowedTools: [BROWSER_FILL_CAPABILITY],
-      });
-      await setSecureKeyAsync(credentialKey("gitlab", "token"), "gl_mixed");
-
-      let filledValue: string | undefined;
-      const result = await broker.browserFill({
-        service: "gitlab",
-        field: "token",
-        toolName: "browser_fill_credential",
-        fill: async (v) => {
-          filledValue = v;
-        },
-      });
-
-      expect(result.success).toBe(true);
-      expect(filledValue).toBe("gl_mixed");
-    });
-
-    test("empty allowedTools still fails closed with canonical key", async () => {
-      upsertCredentialMetadata("github", "token", { allowedTools: [] });
-      await setSecureKeyAsync(credentialKey("github", "token"), "ghp_no_tools");
-
-      const result = await broker.browserFill({
-        service: "github",
-        field: "token",
-        toolName: BROWSER_FILL_CAPABILITY,
-        fill: async () => {
-          throw new Error("should not be called");
-        },
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.reason).toContain("No tools are currently allowed");
-    });
-
-    test("incorrect allowlist denies canonical key (fail closed)", async () => {
-      upsertCredentialMetadata("github", "token", {
-        allowedTools: ["some_other_tool"],
-      });
-      await setSecureKeyAsync(
-        credentialKey("github", "token"),
-        "ghp_wrong_tool",
-      );
-
-      const result = await broker.browserFill({
-        service: "github",
-        field: "token",
-        toolName: BROWSER_FILL_CAPABILITY,
-        fill: async () => {
-          throw new Error("should not be called");
-        },
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.reason).toContain("not allowed");
+      expect(r2.success).toBe(true);
+      expect(gl).toBe("gl_tok");
     });
   });
 });

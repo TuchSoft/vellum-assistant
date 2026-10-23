@@ -36,8 +36,6 @@ export interface CredentialMetadata {
   credentialId: string;
   service: string;
   field: string;
-  allowedTools: string[];
-  allowedDomains: string[];
   usageDescription?: string;
   /** Human-friendly name for this credential (e.g. "fal-primary"). */
   alias?: string;
@@ -82,8 +80,6 @@ function toRecord(metadata: CredentialMetadata): CredentialRecord {
     credentialId: metadata.credentialId,
     service: metadata.service,
     field: metadata.field,
-    allowedTools: metadata.allowedTools,
-    allowedDomains: metadata.allowedDomains,
     usageDescription: metadata.usageDescription,
     alias: metadata.alias,
     injectionTemplates: metadata.injectionTemplates,
@@ -215,8 +211,6 @@ export function upsertCredentialMetadata(
   service: string,
   field: string,
   policy?: {
-    allowedTools?: string[];
-    allowedDomains?: string[];
     usageDescription?: string;
     /** Pass `null` to explicitly clear a previously-set alias. */
     alias?: string | null;

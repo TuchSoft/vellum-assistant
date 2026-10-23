@@ -315,8 +315,6 @@ describe("parsePendingSecretState", () => {
       description: "Enter your key",
       placeholder: "sk-...",
       allowOneTimeSend: true,
-      allowedTools: ["tool-a"],
-      allowedDomains: ["example.com"],
       purpose: "auth",
     };
     const result = parsePendingSecretState(raw);
@@ -344,8 +342,6 @@ describe("parsePendingSecretState", () => {
     expect(result.description).toBeUndefined();
     expect(result.placeholder).toBeUndefined();
     expect(result.allowOneTimeSend).toBeUndefined();
-    expect(result.allowedTools).toBeUndefined();
-    expect(result.allowedDomains).toBeUndefined();
     expect(result.purpose).toBeUndefined();
     expect(result.service).toBeUndefined();
     expect(result.field).toBeUndefined();

@@ -2694,8 +2694,6 @@ describe("parseAssistantEvent", () => {
       placeholder: "ghp_...",
       conversationId: "conv-1",
       purpose: "push",
-      allowedTools: ["bash"],
-      allowedDomains: ["github.com"],
       allowOneTimeSend: true,
     });
     expect(event).toEqual({
@@ -2708,8 +2706,6 @@ describe("parseAssistantEvent", () => {
       placeholder: "ghp_...",
       conversationId: "conv-1",
       purpose: "push",
-      allowedTools: ["bash"],
-      allowedDomains: ["github.com"],
       allowOneTimeSend: true,
     });
   });

@@ -34,7 +34,6 @@ import {
 import { credentialBroker } from "../../tools/credentials/broker.js";
 import {
   _setMetadataPath,
-  deleteCredentialMetadata,
   getCredentialMetadata,
   upsertCredentialMetadata,
 } from "../../tools/credentials/metadata-store.js";
@@ -65,13 +64,8 @@ mock.module("../../util/logger.js", () =>
   }),
 );
 
-const {
-  ACP_CLAUDE_OAUTH_MISSING_CODE,
-  acpSpawnCredentialDenialReason,
-  ensureAcpCredentialPolicy,
-  prepareAgentEnv,
-  repairAcpSpawnPolicy,
-} = await import("../prepare-agent-env.js");
+const { ACP_CLAUDE_OAUTH_MISSING_CODE, prepareAgentEnv, repairAcpSpawnPolicy } =
+  await import("../prepare-agent-env.js");
 
 const ACP_SPAWN_TOOL = "acp_spawn";
 
@@ -188,36 +182,12 @@ describe("prepareAgentEnv — claude-agent-acp gating", () => {
     );
   });
 
-  test("auto-registers metadata with acp_spawn in allowedTools when none exists", async () => {
+  test("auto-registers metadata when none exists", async () => {
     await seedVaultToken("vault-auto-meta");
 
     await prepareAgentEnv({ command: "claude-agent-acp", args: [] });
 
-    expect(oauthMetadata()?.allowedTools).toContain(ACP_SPAWN_TOOL);
-  });
-
-  test("adds acp_spawn to metadata with empty allowedTools (default provisioning path)", async () => {
-    upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-      allowedTools: [],
-    });
-    await seedVaultToken("vault-augment");
-
-    await prepareAgentEnv({ command: "claude-agent-acp", args: [] });
-
-    expect(oauthMetadata()?.allowedTools).toContain(ACP_SPAWN_TOOL);
-  });
-
-  test("respects explicit tool policy that excludes acp_spawn", async () => {
-    upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-      allowedTools: ["other_tool"],
-    });
-    await seedVaultToken("vault-restricted");
-
-    await expect(
-      prepareAgentEnv({ command: "claude-agent-acp", args: [] }),
-    ).rejects.toThrow("CLAUDE_CODE_OAUTH_TOKEN");
-
-    expect(oauthMetadata()?.allowedTools).toEqual(["other_tool"]);
+    expect(oauthMetadata()?.usageDescription).toBeDefined();
   });
 
   test("accepts CLAUDE_CODE_OAUTH_TOKEN from agent.env (config.json override) with no vault entry", async () => {
@@ -305,57 +275,7 @@ describe("prepareAgentEnv — claude-agent-acp gating", () => {
     // The operator-facing half: the broker's own reason, classified.
     const fields = soleInjectionMissWarnFields();
     expect(fields.missReason).toContain("no stored value");
-    expect(fields.policyBlocked).toBe(false);
     expect(fields.apiKeyShaped).toBe(false);
-  });
-
-  test("a policy-denied read logs the broker reason and reports the policy block", async () => {
-    // Invariant: a policy-denied read must be reported as a policy block, not
-    // as an absent value. The two states have different repair stories, and
-    // the message must never assert that a value is stored (policy is checked
-    // before the value, so metadata alone can trigger this branch).
-    upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-      allowedTools: ["bash"],
-    });
-    await seedVaultToken("sk-ant-oat01-policy-blocked");
-
-    let caught: unknown;
-    try {
-      await prepareAgentEnv({ command: "claude-agent-acp", args: [] });
-    } catch (err) {
-      caught = err;
-    }
-
-    expect(caught).toBeInstanceOf(FailedDependencyError);
-    // Same wire contract: old clients keep rendering the same Connect card.
-    expect((caught as FailedDependencyError).details).toEqual({
-      code: ACP_CLAUDE_OAUTH_MISSING_CODE,
-    });
-    const message = (caught as Error).message;
-    expect(message).toContain("cannot read the Claude OAuth token");
-    expect(message).toContain("blocks the acp_spawn read");
-    expect(message).toContain("CLAUDE_CODE_OAUTH_TOKEN");
-    expect(message).toContain("signs in again and repairs that policy");
-    // Policy is checked before the value, so the message must never assert
-    // that a value is actually stored.
-    expect(message).not.toContain("has a stored");
-    expect(message).not.toContain("which is not set");
-    // The guidance steering the model away from CLI/token-paste workarounds is
-    // shared with the missing-value variant, so it must survive here too.
-    expect(message).toContain("ONE short sentence");
-    expect(message).toContain("Do NOT");
-    expect(message).toContain("claude setup-token");
-    expect(message).toContain("do NOT retry the spawn yourself");
-    expect(message).toContain("assistant credentials prompt");
-
-    const fields = soleInjectionMissWarnFields();
-    expect(fields.missReason).toContain(
-      'Tool "acp_spawn" is not allowed to use credential acp/claude_oauth_token',
-    );
-    expect(fields.policyBlocked).toBe(true);
-    expect(fields.apiKeyShaped).toBe(false);
-    // The denial reason is a policy verdict, never the credential itself.
-    expect(JSON.stringify(fields)).not.toContain("sk-ant-oat01-policy-blocked");
   });
 
   test("does NOT attach the marker when a token is present (happy path unchanged)", async () => {
@@ -396,7 +316,6 @@ describe("prepareAgentEnv — claude-agent-acp gating", () => {
     // The log is where the api-key shape is recorded; the value never is.
     const fields = soleInjectionMissWarnFields();
     expect(fields.apiKeyShaped).toBe(true);
-    expect(fields.policyBlocked).toBe(false);
     expect(fields.missReason).toBeUndefined();
     expect(JSON.stringify(fields)).not.toContain(
       "sk-ant-api03-legacy-bad-value",
@@ -585,192 +504,22 @@ describe("prepareAgentEnv — non-claude commands", () => {
   });
 });
 
-/**
- * The Connect flow's repair, which `storeAcpClaudeToken` performs after writing
- * the token. Every metadata shape the broker can deny on is covered here, so
- * `acp-claude-oauth.test.ts` only has to pin the end-to-end wiring.
- */
-describe("repairAcpSpawnPolicy - the Connect repair", () => {
-  test("creates a record with acp_spawn, the usage description, and no domain restriction when none exists", () => {
+describe("repairAcpSpawnPolicy - metadata registration", () => {
+  test("creates a metadata record when none exists", () => {
     repairAcpSpawnPolicy(ACP_OAUTH_TOKEN_FIELD, "desc");
 
-    expect(oauthMetadata()?.allowedTools).toEqual([ACP_SPAWN_TOOL]);
-    expect(oauthMetadata()?.allowedDomains).toEqual([]);
     expect(oauthMetadata()?.usageDescription).toBe("desc");
   });
 
-  test("adds acp_spawn to an empty allowedTools (default provisioning path)", () => {
+  test("leaves an existing record untouched", async () => {
     upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-      allowedTools: [],
-    });
-
-    repairAcpSpawnPolicy(ACP_OAUTH_TOKEN_FIELD, "desc");
-
-    expect(oauthMetadata()?.allowedTools).toEqual([ACP_SPAWN_TOOL]);
-  });
-
-  test("unions acp_spawn into an explicit policy that omitted it", () => {
-    upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-      allowedTools: ["other_tool"],
-    });
-
-    repairAcpSpawnPolicy(ACP_OAUTH_TOKEN_FIELD, "desc");
-
-    // Unlike ensureAcpCredentialPolicy (which preserves), the repair widens.
-    expect(oauthMetadata()?.allowedTools).toEqual([
-      "other_tool",
-      ACP_SPAWN_TOOL,
-    ]);
-  });
-
-  test("clears a domain restriction the broker refuses server-side, keeping the tools", () => {
-    upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-      allowedTools: [ACP_SPAWN_TOOL],
-      allowedDomains: ["api.anthropic.com"],
-    });
-
-    repairAcpSpawnPolicy(ACP_OAUTH_TOKEN_FIELD, "desc");
-
-    expect(oauthMetadata()?.allowedDomains).toEqual([]);
-    expect(oauthMetadata()?.allowedTools).toEqual([ACP_SPAWN_TOOL]);
-  });
-
-  test("repairs both halves of a denied policy in one pass", () => {
-    upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-      allowedTools: ["other_tool"],
-      allowedDomains: ["api.anthropic.com"],
-    });
-
-    repairAcpSpawnPolicy(ACP_OAUTH_TOKEN_FIELD, "desc");
-
-    expect(oauthMetadata()?.allowedTools).toEqual([
-      "other_tool",
-      ACP_SPAWN_TOOL,
-    ]);
-    expect(oauthMetadata()?.allowedDomains).toEqual([]);
-  });
-
-  test("writes nothing when the stored policy already satisfies both halves", async () => {
-    upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-      allowedTools: [ACP_SPAWN_TOOL, "other_tool"],
+      usageDescription: "existing",
     });
     const before = oauthMetadata();
-    // Every upsert stamps `updatedAt` with the current millisecond, so waiting
-    // here makes an unconditional write show up as a changed record.
     await Bun.sleep(5);
 
     repairAcpSpawnPolicy(ACP_OAUTH_TOKEN_FIELD, "desc");
 
     expect(oauthMetadata()).toEqual(before);
   });
-});
-
-/**
- * Drift guard for the Connect Claude status predicate.
- *
- * `acpSpawnCredentialDenialReason` answers "would the spawn's broker read of
- * this credential succeed?" without performing it, because the status route is
- * a side-effect-free GET. Every state below is run twice: once through the
- * predicate, and once through the real spawn sequence
- * (`ensureAcpCredentialPolicy` then `credentialBroker.serverUse`). The two must
- * agree down to the denial string; this suite fails whenever they diverge.
- *
- * The predicate reads only the persisted value via `getSecureKeyAsync` and
- * never calls `serverUse`, so it can never consume a one-time transient
- * credential the way a real broker read would.
- */
-describe("acpSpawnCredentialDenialReason parity with the real spawn read", () => {
-  const STATES: { name: string; seed: () => void }[] = [
-    { name: "no metadata at all", seed: () => {} },
-    {
-      name: "empty allowedTools",
-      seed: () => {
-        upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-          allowedTools: [],
-        });
-      },
-    },
-    {
-      name: "allowedTools listing acp_spawn",
-      seed: () => {
-        upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-          allowedTools: [ACP_SPAWN_TOOL],
-        });
-      },
-    },
-    {
-      name: "allowedTools listing another tool",
-      seed: () => {
-        upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-          allowedTools: ["bash"],
-        });
-      },
-    },
-    {
-      // The alias map in tool-policy.ts has no entry canonicalizing to
-      // acp_spawn, so this covers alias resolution generically: a legacy alias
-      // that canonicalizes to some OTHER capability must still deny.
-      name: "allowedTools listing a legacy alias for another capability",
-      seed: () => {
-        upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-          allowedTools: ["browser_fill_credential"],
-        });
-      },
-    },
-    {
-      name: "acp_spawn allowed but domain-restricted",
-      seed: () => {
-        upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-          allowedTools: [ACP_SPAWN_TOOL],
-          allowedDomains: ["api.anthropic.com"],
-        });
-      },
-    },
-    {
-      // The ensure-repair grants acp_spawn but must not drop the domain policy,
-      // so the projection has to preserve the rest of the record.
-      name: "empty allowedTools and domain-restricted",
-      seed: () => {
-        upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-          allowedTools: [],
-          allowedDomains: ["api.anthropic.com"],
-        });
-      },
-    },
-    {
-      name: "acp_spawn allowed with an explicitly empty allowedDomains",
-      seed: () => {
-        upsertCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD, {
-          allowedTools: [ACP_SPAWN_TOOL],
-          allowedDomains: [],
-        });
-      },
-    },
-  ];
-
-  for (const state of STATES) {
-    test(`predicts the spawn read for: ${state.name}`, async () => {
-      await seedVaultToken("sk-ant-oat01-parity");
-
-      state.seed();
-      const beforePrediction = oauthMetadata();
-      const predicted = acpSpawnCredentialDenialReason(ACP_OAUTH_TOKEN_FIELD);
-      // The status route is a GET: predicting must not touch the store.
-      expect(oauthMetadata()).toEqual(beforePrediction);
-
-      // ensureAcpCredentialPolicy mutates the store, so the actual run starts
-      // from a fresh copy of the same state rather than the predicted one.
-      deleteCredentialMetadata(ACP_SERVICE, ACP_OAUTH_TOKEN_FIELD);
-      state.seed();
-      ensureAcpCredentialPolicy(ACP_OAUTH_TOKEN_FIELD, "desc");
-      const result = await credentialBroker.serverUse<void>({
-        service: ACP_SERVICE,
-        field: ACP_OAUTH_TOKEN_FIELD,
-        toolName: ACP_SPAWN_TOOL,
-        execute: async () => {},
-      });
-
-      expect(predicted).toBe(result.success ? undefined : result.reason);
-    });
-  }
 });

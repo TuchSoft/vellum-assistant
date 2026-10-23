@@ -98,7 +98,6 @@ export function DeveloperGuideSecurityContent() {
           <ul className="mb-4 list-disc space-y-2 pl-6 text-zinc-600">
             <li><strong>Secret prompt</strong> — a floating <code className="text-sm">SecureField</code> panel collects credentials; the LLM never sees the value.</li>
             <li><strong>Ingress blocking</strong> — inbound messages are scanned for secrets (regex + entropy) and rejected if detected.</li>
-            <li><strong>Usage policy</strong> — each credential specifies <code className="text-sm">allowedTools</code> and <code className="text-sm">allowedDomains</code>, enforced by the <code className="text-sm">CredentialBroker</code>.</li>
             <li><strong>No plaintext read API</strong> — secrets are only consumed by the broker for scoped tool execution.</li>
             <li><strong>One-time send</strong> — when enabled, a &ldquo;Send Once&rdquo; button lets users provide a value for immediate use without persisting it.</li>
           </ul>

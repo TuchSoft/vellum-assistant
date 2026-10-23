@@ -59,8 +59,6 @@ export async function setVercelConfig(
   }
 
   upsertCredentialMetadata("vercel", "api_token", {
-    allowedTools: ["publish_page", "unpublish_page"],
-    allowedDomains: [],
     injectionTemplates: null,
   });
 

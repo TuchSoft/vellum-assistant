@@ -918,8 +918,6 @@ interface StandaloneSecretParams {
   description?: string;
   placeholder?: string;
   purpose?: string;
-  allowedTools?: string[];
-  allowedDomains?: string[];
   injectionTemplates?: CredentialInjectionTemplate[];
   conversationId?: string;
 }
@@ -938,8 +936,6 @@ async function mintCollectionLinkFallback(
 ): Promise<SecretPromptResult> {
   const policy = {
     usageDescription: params.purpose,
-    allowedTools: params.allowedTools,
-    allowedDomains: params.allowedDomains,
     injectionTemplates: params.injectionTemplates,
   };
   const hasPolicy = Object.values(policy).some((v) => v !== undefined);
@@ -1021,8 +1017,6 @@ export function requestSecretStandalone(
       placeholder: params.placeholder,
       conversationId: params.conversationId,
       purpose: params.purpose,
-      allowedTools: params.allowedTools,
-      allowedDomains: params.allowedDomains,
       allowOneTimeSend: config.secretDetection.allowOneTimeSend,
     });
   });

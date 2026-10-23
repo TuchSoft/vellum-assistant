@@ -110,11 +110,6 @@ Examples:
           description: "What this credential is used for",
         },
         {
-          flags: "--allowed-tools <tools>",
-          description:
-            "Comma-separated tool names that may use this credential",
-        },
-        {
           flags: "--generated",
           description:
             "Assert the value was machine-generated (e.g. $(uuidgen), an API exchange result) and never entered via chat; bypasses the agent-shell inline-secret guard",
@@ -137,7 +132,6 @@ the user.
 Examples:
   $ assistant credentials set --service twilio --field account_sid AC1234567890
   $ assistant credentials set --service fal --field api_key key_live_abc --label "fal-prod" --description "Image generation"
-  $ assistant credentials set --service github --field token ghp_abc --allowed-tools "bash,host_bash"
   $ assistant credentials set --service telegram --field webhook_secret "$(uuidgen)" --generated`,
     },
     {
@@ -184,8 +178,8 @@ Arguments:
 Shows everything known about a credential without revealing the secret value.
 The secret is masked to show only the first 4 characters (e.g. cfat****).
 
-Displayed fields include: label, creation/update timestamps, allowed tools,
-allowed domains, OAuth2 scopes, account info, and injection template count.
+Displayed fields include: label, creation/update timestamps, OAuth2 scopes,
+account info, and injection template count.
 
 Use --service and --field to look up by service/field, or pass a UUID as a
 positional argument. One of the two forms is required.
@@ -274,16 +268,6 @@ Examples:
             "Human-readable description of intended usage, stored in credential metadata and shown as the prompt's purpose",
         },
         {
-          flags: "--allowed-domains <domains>",
-          description:
-            "Comma-separated domains where this credential may be used",
-        },
-        {
-          flags: "--allowed-tools <tools>",
-          description:
-            "Comma-separated tool names that may use this credential",
-        },
-        {
           flags: "--injection-templates <json>",
           description: "JSON array of injection template objects",
         },
@@ -312,7 +296,6 @@ Examples:
   $ assistant credentials prompt --service sentry --field auth_token \\
       --label "Sentry Auth Token" --placeholder "sntrys_..." \\
       --usage-description "Read Sentry issues and events" \\
-      --allowed-domains "sentry.io" \\
       --injection-templates '[{"hostPattern":"sentry.io","injectionType":"header","headerName":"Authorization","valuePrefix":"Bearer "}]'`,
     },
   ],

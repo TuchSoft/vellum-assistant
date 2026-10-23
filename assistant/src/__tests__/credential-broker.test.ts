@@ -11,7 +11,6 @@ import {
   _setMetadataPath,
   upsertCredentialMetadata,
 } from "../tools/credentials/metadata-store.js";
-import { BROWSER_FILL_CAPABILITY } from "../tools/credentials/tool-policy.js";
 import { setStorePathForTesting } from "./encrypted-store-test-helpers.js";
 
 const TEST_DIR = join(
@@ -43,9 +42,7 @@ describe("CredentialBroker (encrypted store backend)", () => {
 
   describe("transient credentials", () => {
     test("browserFill uses transient value when available", async () => {
-      upsertCredentialMetadata("github", "token", {
-        allowedTools: ["browser_fill_credential"],
-      });
+      upsertCredentialMetadata("github", "token", {});
       broker.injectTransient("github", "token", "transient-ghp-123");
 
       let filledValue: string | undefined;
@@ -63,9 +60,7 @@ describe("CredentialBroker (encrypted store backend)", () => {
     });
 
     test("browserFill consumes transient value — second fill falls back to stored", async () => {
-      upsertCredentialMetadata("github", "token", {
-        allowedTools: ["browser_fill_credential"],
-      });
+      upsertCredentialMetadata("github", "token", {});
       await setSecureKeyAsync(credentialKey("github", "token"), "stored-value");
       broker.injectTransient("github", "token", "transient-value");
 
@@ -93,9 +88,7 @@ describe("CredentialBroker (encrypted store backend)", () => {
     });
 
     test("browserFill preserves transient value on fill failure", async () => {
-      upsertCredentialMetadata("github", "token", {
-        allowedTools: ["browser_fill_credential"],
-      });
+      upsertCredentialMetadata("github", "token", {});
       broker.injectTransient("github", "token", "transient-preserved");
 
       const result1 = await broker.browserFill({
@@ -122,9 +115,7 @@ describe("CredentialBroker (encrypted store backend)", () => {
     });
 
     test("serverUse uses transient value when available", async () => {
-      upsertCredentialMetadata("vercel", "api_token", {
-        allowedTools: ["deploy"],
-      });
+      upsertCredentialMetadata("vercel", "api_token", {});
       broker.injectTransient("vercel", "api_token", "transient-vercel-tok");
 
       const result = await broker.serverUse({
@@ -142,9 +133,7 @@ describe("CredentialBroker (encrypted store backend)", () => {
     });
 
     test("serverUse consumes transient — subsequent call has no value without stored key", async () => {
-      upsertCredentialMetadata("vercel", "api_token", {
-        allowedTools: ["deploy"],
-      });
+      upsertCredentialMetadata("vercel", "api_token", {});
       broker.injectTransient("vercel", "api_token", "transient-only");
 
       await broker.serverUse({
@@ -167,7 +156,7 @@ describe("CredentialBroker (encrypted store backend)", () => {
     });
 
     test("injectTransient replaces previous transient for same key", async () => {
-      upsertCredentialMetadata("svc", "key", { allowedTools: ["t"] });
+      upsertCredentialMetadata("svc", "key");
       broker.injectTransient("svc", "key", "first");
       broker.injectTransient("svc", "key", "second");
 
@@ -183,8 +172,8 @@ describe("CredentialBroker (encrypted store backend)", () => {
     });
 
     test("transient value for one credential does not affect another", async () => {
-      upsertCredentialMetadata("svcA", "key", { allowedTools: ["t"] });
-      upsertCredentialMetadata("svcB", "key", { allowedTools: ["t"] });
+      upsertCredentialMetadata("svcA", "key");
+      upsertCredentialMetadata("svcB", "key");
       await setSecureKeyAsync(credentialKey("svcB", "key"), "stored-b");
       broker.injectTransient("svcA", "key", "val-a");
 
@@ -205,111 +194,6 @@ describe("CredentialBroker (encrypted store backend)", () => {
       expect(resultB.result).toBe("stored-b");
       expect(resultA.success).toBe(true);
       expect(resultA.result).toBe("val-a");
-    });
-  });
-
-  describe("canonical capability key", () => {
-    test("browserFill succeeds with canonical key when metadata has canonical key", async () => {
-      upsertCredentialMetadata("github", "token", {
-        allowedTools: [BROWSER_FILL_CAPABILITY],
-      });
-      await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret");
-
-      const result = await broker.browserFill({
-        service: "github",
-        field: "token",
-        toolName: BROWSER_FILL_CAPABILITY,
-        fill: async () => {},
-      });
-
-      expect(result.success).toBe(true);
-    });
-
-    test("browserFill succeeds with canonical key when metadata has legacy alias", async () => {
-      upsertCredentialMetadata("github", "token", {
-        allowedTools: ["browser_fill_credential"],
-      });
-      await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret");
-
-      const result = await broker.browserFill({
-        service: "github",
-        field: "token",
-        toolName: BROWSER_FILL_CAPABILITY,
-        fill: async () => {},
-      });
-
-      expect(result.success).toBe(true);
-    });
-
-    test("browserFill succeeds with legacy alias when metadata has canonical key", async () => {
-      upsertCredentialMetadata("github", "token", {
-        allowedTools: [BROWSER_FILL_CAPABILITY],
-      });
-      await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret");
-
-      const result = await broker.browserFill({
-        service: "github",
-        field: "token",
-        toolName: "browser_fill_credential",
-        fill: async () => {},
-      });
-
-      expect(result.success).toBe(true);
-    });
-
-    test("serverUse with canonical key works when metadata has legacy alias", async () => {
-      upsertCredentialMetadata("vercel", "api_token", {
-        allowedTools: ["browser_fill_credential"],
-      });
-      await setSecureKeyAsync(
-        credentialKey("vercel", "api_token"),
-        "vercel-tok",
-      );
-
-      const result = await broker.serverUse({
-        service: "vercel",
-        field: "api_token",
-        toolName: BROWSER_FILL_CAPABILITY,
-        execute: async (v) => v,
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.result).toBe("vercel-tok");
-    });
-
-    test("non-aliased tool names are unaffected by alias resolution", async () => {
-      upsertCredentialMetadata("svc", "key", {
-        allowedTools: ["custom_tool"],
-      });
-      await setSecureKeyAsync(credentialKey("svc", "key"), "secret");
-
-      const result = await broker.serverUse({
-        service: "svc",
-        field: "key",
-        toolName: "custom_tool",
-        execute: async (v) => v,
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.result).toBe("secret");
-    });
-
-    test("non-aliased tool denied when only canonical key is allowed", async () => {
-      upsertCredentialMetadata("svc", "key", {
-        allowedTools: [BROWSER_FILL_CAPABILITY],
-      });
-      await setSecureKeyAsync(credentialKey("svc", "key"), "secret");
-
-      const result = await broker.serverUse({
-        service: "svc",
-        field: "key",
-        toolName: "unrelated_tool",
-        execute: async () => {
-          throw new Error("should not be called");
-        },
-      });
-
-      expect(result.success).toBe(false);
     });
   });
 });

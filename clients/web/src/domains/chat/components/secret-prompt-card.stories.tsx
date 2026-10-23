@@ -37,7 +37,6 @@ const hubspotSecret = {
     "Instructions on where to find the token/key shall be written here so the user can easily find it.",
   placeholder: "xapp-",
   purpose: "Access HubSpot CRM contacts and deals",
-  allowedDomains: ["api.hubspot.com"],
 };
 
 export const Default: Story = {
@@ -55,12 +54,11 @@ export const Minimal: Story = {
   },
 };
 
-export const WithToolsAndSendOnce: Story = {
+export const WithSendOnce: Story = {
   args: {
     secret: {
       ...hubspotSecret,
       requestId: "req-3",
-      allowedTools: ["crm_search", "crm_update"],
       allowOneTimeSend: true,
     },
   },

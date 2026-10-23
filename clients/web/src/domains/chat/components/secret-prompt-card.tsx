@@ -3,10 +3,8 @@ import {
   CheckCircle,
   Eye,
   EyeOff,
-  Globe,
   Info,
   Lock,
-  Wrench,
   type LucideIcon,
 } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
@@ -39,8 +37,6 @@ export interface SecretPromptCardProps {
     description?: string;
     placeholder?: string;
     allowOneTimeSend?: boolean;
-    allowedTools?: string[];
-    allowedDomains?: string[];
     purpose?: string;
   };
   isSubmitting: boolean;
@@ -118,29 +114,9 @@ export function SecretPromptCard({
       <div className="h-px w-full bg-[var(--border-base)]" />
 
       {/* Usage context */}
-      {!!(
-        secret.purpose ||
-        secret.allowedTools?.length ||
-        secret.allowedDomains?.length
-      ) && (
+      {!!secret.purpose && (
         <div className="flex flex-col items-start gap-1">
-          {secret.purpose && (
-            <ContextChip icon={Info}>{secret.purpose}</ContextChip>
-          )}
-          {secret.allowedTools?.length ? (
-            <ContextChip icon={Wrench}>
-              {t("secretPromptCard.tools", {
-                list: secret.allowedTools.join(", "),
-              })}
-            </ContextChip>
-          ) : null}
-          {secret.allowedDomains?.length ? (
-            <ContextChip icon={Globe}>
-              {t("secretPromptCard.domains", {
-                list: secret.allowedDomains.join(", "),
-              })}
-            </ContextChip>
-          ) : null}
+          <ContextChip icon={Info}>{secret.purpose}</ContextChip>
         </div>
       )}
 

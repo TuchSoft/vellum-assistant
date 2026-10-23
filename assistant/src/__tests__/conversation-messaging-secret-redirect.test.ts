@@ -17,7 +17,6 @@ const metadataByKey = new Map<
     credentialId: string;
     service: string;
     field: string;
-    allowedTools: string[];
     allowedDomains: string[];
     createdAt: number;
     updatedAt: number;
@@ -42,7 +41,6 @@ mock.module("../tools/credentials/metadata-store.js", () => ({
       credentialId: `cred-${service}-${field}`,
       service,
       field,
-      allowedTools: [],
       allowedDomains: [],
       createdAt: now,
       updatedAt: now,

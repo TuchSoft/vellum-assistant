@@ -6,7 +6,6 @@
  * to ask the user due to ambiguity.
  */
 
-import { isDomainAllowed } from "./domain-policy.js";
 import { matchHostPattern } from "./host-pattern-match.js";
 import type { CredentialMetadata } from "./metadata-store.js";
 import type { CredentialInjectionTemplate } from "./policy-types.js";
@@ -81,9 +80,6 @@ interface ScoredCandidate extends CredentialCandidate {
  * 1. Template host specificity: exact > wildcard > no match
  * 2. Alias hints: credentials with an alias rank higher
  * 3. Recency: more recently updated credentials rank higher (tiebreaker only)
- *
- * Only credentials whose `allowedDomains` include the target host (or are
- * empty, which is treated as "no domain restriction") are considered.
  */
 export function rankCredentialsForEndpoint(
   credentials: CredentialMetadata[],
@@ -97,13 +93,6 @@ export function rankCredentialsForEndpoint(
   const scored: ScoredCandidate[] = [];
 
   for (const cred of credentials) {
-    // Domain policy check using the same matcher as credential enforcement
-    if (cred.allowedDomains.length > 0) {
-      if (!isDomainAllowed(targetHost, cred.allowedDomains)) {
-        continue;
-      }
-    }
-
     let tierScore = 0;
     const reasons: string[] = [];
 

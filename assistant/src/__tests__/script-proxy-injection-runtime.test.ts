@@ -88,8 +88,6 @@ function makeResolved(
       credentialId,
       service,
       field,
-      allowedTools: [],
-      allowedDomains: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
       injectionTemplates: templates,

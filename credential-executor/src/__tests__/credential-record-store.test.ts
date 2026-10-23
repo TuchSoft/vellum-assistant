@@ -24,8 +24,6 @@ function makeRecord(
     credentialId: `id-${service}-${field}`,
     service,
     field,
-    allowedTools: ["bash"],
-    allowedDomains: [],
     createdAt: 1,
     updatedAt: 2,
     ...extras,
@@ -182,7 +180,7 @@ describe("003-import-workspace-metadata", () => {
       JSON.stringify({
         version: 5,
         credentials: [
-          makeRecord("vercel", "api_token", { allowedTools: ["publish_page"] }),
+          makeRecord("vercel", "api_token"),
         ],
       }),
     );
@@ -205,7 +203,6 @@ describe("003-import-workspace-metadata", () => {
       await importWorkspaceMetadataMigration.run(unusedBackend);
       const store = new CesMetadataStore(getMetadataPath(cesData));
       const imported = store.getByAccount("credential/vercel/api_token");
-      expect(imported?.allowedTools).toEqual(["publish_page"]);
       expect(imported?.credentialId).toBe("id-vercel-api_token");
       expect(existsSync(leftoverPath)).toBe(true);
     } finally {
@@ -237,7 +234,7 @@ describe("003-import-workspace-metadata", () => {
       JSON.stringify({
         version: 5,
         credentials: [
-          makeRecord("vercel", "api_token", { allowedTools: ["bash"] }),
+          makeRecord("vercel", "api_token"),
         ],
       }),
     );
@@ -246,7 +243,6 @@ describe("003-import-workspace-metadata", () => {
       "credential/vercel/api_token",
       makeRecord("vercel", "api_token", {
         credentialId: "id-ces-newer",
-        allowedTools: ["publish_page"],
       }),
     );
 
@@ -268,7 +264,6 @@ describe("003-import-workspace-metadata", () => {
       await importWorkspaceMetadataMigration.run(unusedBackend);
       const kept = store.getByAccount("credential/vercel/api_token");
       expect(kept?.credentialId).toBe("id-ces-newer");
-      expect(kept?.allowedTools).toEqual(["publish_page"]);
       expect(existsSync(leftoverPath)).toBe(true);
     } finally {
       if (prevWorkspace === undefined) {

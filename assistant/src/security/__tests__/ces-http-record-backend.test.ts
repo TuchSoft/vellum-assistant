@@ -96,8 +96,6 @@ describe("CES HTTP credential record backend", () => {
       credentialId: "cred-http",
       service: "github",
       field: "token",
-      allowedTools: ["bash"],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 2,
     };

@@ -70,9 +70,6 @@ mock.module("../../security/secure-keys.js", () => ({
 const { _setMetadataPath, getCredentialMetadata, upsertCredentialMetadata } =
   await import("../../tools/credentials/metadata-store.js");
 
-const { acpSpawnCredentialDenialReason } =
-  await import("../prepare-agent-env.js");
-
 const { hasAcpConnectCardRaised, markAcpConnectCardRaised } =
   await import("../acp-connect-card-state.js");
 const { installAcpConfigStub } = await import("./helpers/acp-config-stub.js");
@@ -103,7 +100,6 @@ const {
 
 const ACP_SERVICE = "acp";
 const OAUTH_FIELD = "claude_oauth_token";
-const ACP_SPAWN_TOOL = "acp_spawn";
 
 const TEST_DIR = join(
   tmpdir(),
@@ -269,23 +265,12 @@ describe("storeAcpClaudeToken", () => {
     expect(vault.has(DIGEST_KEY)).toBe(false);
   });
 
-  test("takes a domain-restricted credential from not-connected to connected", async () => {
-    // Invariant: when the vault holds a usable token whose domain policy
-    // makes the spawn read fail, the status check keeps the Connect card
-    // offered, and completing Connect repairs the policy so the retry after
-    // a successful sign-in succeeds. The per-shape repair details are covered
-    // by the repairAcpSpawnPolicy suite in prepare-agent-env.test.ts.
-    upsertCredentialMetadata(ACP_SERVICE, OAUTH_FIELD, {
-      allowedTools: [ACP_SPAWN_TOOL],
-      allowedDomains: ["api.anthropic.com"],
-    });
+  test("creates credential metadata when Connect stores a token", async () => {
     getReturn = "sk-ant-oat-token";
-    expect(await hasAcpClaudeToken()).toBe(false);
 
     await storeAcpClaudeToken("sk-ant-oat-token");
 
-    expect(await hasAcpClaudeToken()).toBe(true);
-    expect(acpSpawnCredentialDenialReason(OAUTH_FIELD)).toBeUndefined();
+    expect(oauthMetadata()?.usageDescription).toBeDefined();
   });
 
   test("throws when the secure store rejects the write", async () => {
@@ -327,31 +312,10 @@ describe("hasAcpClaudeToken", () => {
     expect(await hasAcpClaudeToken()).toBe(false);
   });
 
-  test("reports true for metadata with an empty allowedTools (the spawn would grant acp_spawn)", async () => {
-    // One allow-state case: the full policy matrix is guarded by the parity
-    // suite in prepare-agent-env.test.ts and the tool-policy unit tests.
-    upsertCredentialMetadata(ACP_SERVICE, OAUTH_FIELD, { allowedTools: [] });
-    getReturn = "sk-ant-oat-token";
-
-    expect(await hasAcpClaudeToken()).toBe(true);
-  });
-
-  test("reports false for a domain-restricted credential the broker refuses server-side", async () => {
-    // acp_spawn is allowed, but a non-empty allowedDomains scopes the credential
-    // to browser fills, so every spawn read is denied. The status check has to
-    // see that too, otherwise the Connect card self-dismisses while acp_spawn
-    // keeps failing with the missing-token marker.
-    upsertCredentialMetadata(ACP_SERVICE, OAUTH_FIELD, {
-      allowedTools: [ACP_SPAWN_TOOL],
-      allowedDomains: ["api.anthropic.com"],
-    });
-    getReturn = "sk-ant-oat-token";
-
-    expect(await hasAcpClaudeToken()).toBe(false);
-  });
-
   test("writes nothing to the metadata store (the status route is a GET)", async () => {
-    upsertCredentialMetadata(ACP_SERVICE, OAUTH_FIELD, { allowedTools: [] });
+    upsertCredentialMetadata(ACP_SERVICE, OAUTH_FIELD, {
+      usageDescription: "existing",
+    });
     getReturn = "sk-ant-oat-token";
     const before = oauthMetadata();
 
@@ -408,10 +372,7 @@ describe("hasAcpClaudeToken", () => {
 });
 
 describe("persistRefreshedAcpClaudeTokens", () => {
-  test("writes a rotated refresh token and new expiry without touching policy", async () => {
-    upsertCredentialMetadata(ACP_SERVICE, OAUTH_FIELD, {
-      allowedTools: ["some_other_tool"],
-    });
+  test("writes a rotated refresh token and new expiry", async () => {
     vault.set(ACCESS_KEY, "sk-ant-oat-current");
     vault.set(REFRESH_KEY, "refresh-expected");
     vault.set(DIGEST_KEY, claudeTokenDigest("sk-ant-oat-current"));
@@ -433,7 +394,6 @@ describe("persistRefreshedAcpClaudeTokens", () => {
     );
     const expiresAt = Number(vault.get(EXPIRES_KEY));
     expect(expiresAt).toBeGreaterThanOrEqual(before + 3600 * 1000);
-    expect(oauthMetadata()?.allowedTools).toEqual(["some_other_tool"]);
   });
 
   test("keeps the stored refresh token when the response omits a new one", async () => {
@@ -554,22 +514,13 @@ describe("forgetAcpClaudeRenewalStateIfUnbound", () => {
 });
 
 describe("storeAcpClaudeToken: retiring the card registry", () => {
-  test("clears the registry after the policy repair, not before it", async () => {
-    // The write happens first and the policy repair second, so at the moment
-    // the credential seam asks, a token whose `acp_spawn` read is denied is
-    // not usable and nothing is retired. The repair on the next line is what
-    // makes it usable, so the notification has to run again after it.
-    upsertCredentialMetadata(ACP_SERVICE, OAUTH_FIELD, {
-      allowedTools: ["some_other_tool"],
-      allowedDomains: [],
-    });
-    expect(acpSpawnCredentialDenialReason(OAUTH_FIELD)).toBeDefined();
+  test("clears the registry after storing a usable token", async () => {
     markAcpConnectCardRaised("conv-with-card");
     getReturn = "sk-ant-oat-token";
 
     await storeAcpClaudeToken("sk-ant-oat-token");
     await notifyAcpConnectRetired();
-    expect(acpSpawnCredentialDenialReason(OAUTH_FIELD)).toBeUndefined();
+
     expect(hasAcpConnectCardRaised("conv-with-card")).toBe(false);
   });
 

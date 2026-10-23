@@ -387,7 +387,6 @@ describe("Slack channel config handler", () => {
     // Metadata has injection templates for the user token.
     const meta = getCredentialMetadata("slack_channel", "user_token");
     expect(meta).toBeDefined();
-    expect(meta?.allowedDomains).toEqual(["slack.com"]);
     expect(meta?.injectionTemplates).toBeDefined();
     expect(meta?.injectionTemplates?.length ?? 0).toBeGreaterThan(0);
     expect(meta?.injectionTemplates?.[0].hostPattern).toBe("slack.com");

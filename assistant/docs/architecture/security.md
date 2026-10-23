@@ -209,9 +209,7 @@ sequenceDiagram
 ```mermaid
 graph TB
     TOOL["Tool (e.g. browser_fill_credential)"] --> BROKER["CredentialBroker.browserFill / serverUse"]
-    BROKER --> POLICY{"Check policy:<br/>allowedTools + allowedDomains"}
-    POLICY -->|denied| REJECT["PolicyDenied error"]
-    POLICY -->|allowed| FETCH["getSecureKeyAsync(credential/svc/field)"]
+    BROKER --> FETCH["getSecureKeyAsync(credential/svc/field)"]
     FETCH --> INJECT["Inject value into tool execution<br/>(never returned to model)"]
 ```
 
@@ -234,7 +232,7 @@ User messages are scanned at ingress (`secret-ingress.ts`) against known credent
 | Component          | Location                                     | What it stores                                                                                                                                                   |
 | ------------------ | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Secret values      | CES credential store or encrypted file store | Encrypted credential values keyed as `credential/{service}/{field}`. Stored via CES RPC (primary), CES HTTP (containerized), or encrypted file store (fallback). |
-| Credential records | CES `<cesDataRoot>/metadata.json`            | Service, field, alias, policy (`allowedTools`, `allowedDomains`, `injectionTemplates`), timestamps. Served over CES RPC/HTTP.                                    |
+| Credential records | CES `<cesDataRoot>/metadata.json`            | Service, field, alias, `injectionTemplates`, timestamps. Served over CES RPC/HTTP.                                                                               |
 | Config             | `$VELLUM_WORKSPACE_DIR/config.*`             | `secretDetection` settings: enabled, blockIngress, allowOneTimeSend, blockTokenShapedMessages (default `true` — whole-message token-shape heuristic)             |
 
 ### Key Files
@@ -245,8 +243,7 @@ User messages are scanned at ingress (`secret-ingress.ts`) against known credent
 | `assistant/src/credential-execution/prompted-credential.ts`      | Persists credentials collected through the secure `credentials prompt` flow        |
 | `assistant/src/security/secure-keys.ts`                          | Async secure key CRUD via CES and encrypted file store                             |
 | `assistant/src/tools/credentials/metadata-store.ts`              | JSON file metadata CRUD for credential records                                     |
-| `assistant/src/tools/credentials/broker.ts`                      | Brokered credential access with policy enforcement and transient send              |
-| `assistant/src/tools/credentials/policy-validate.ts`             | Policy input validation (allowedTools, allowedDomains)                             |
+| `assistant/src/tools/credentials/broker.ts`                      | Brokered credential access with transient send                                     |
 | `assistant/src/permissions/secret-prompter.ts`                   | HTTP secret_request/secret_response flow                                           |
 | `assistant/src/security/secret-scanner.ts`                       | Prefix + shape-based secret regex detection (used by display-time `redactSecrets`) |
 | `assistant/src/security/secret-ingress.ts`                       | Ingress check on user messages: prefix + plugin patterns + token-shape heuristic   |

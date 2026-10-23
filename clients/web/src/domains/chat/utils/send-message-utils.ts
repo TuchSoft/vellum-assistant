@@ -217,10 +217,6 @@ function optionalBoolean(v: unknown): boolean | undefined {
   return typeof v === "boolean" ? v : undefined;
 }
 
-function optionalStringArray(v: unknown): string[] | undefined {
-  return Array.isArray(v) ? (v as string[]) : undefined;
-}
-
 function optionalRecord(v: unknown): Record<string, unknown> | undefined {
   return typeof v === "object" && v !== null && !Array.isArray(v)
     ? (v as Record<string, unknown>)
@@ -242,8 +238,6 @@ export function parsePendingSecretState(
     description: optionalString(raw.description),
     placeholder: optionalString(raw.placeholder),
     allowOneTimeSend: optionalBoolean(raw.allowOneTimeSend),
-    allowedTools: optionalStringArray(raw.allowedTools),
-    allowedDomains: optionalStringArray(raw.allowedDomains),
     purpose: optionalString(raw.purpose),
   };
 }

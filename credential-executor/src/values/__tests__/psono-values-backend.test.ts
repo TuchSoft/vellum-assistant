@@ -108,8 +108,6 @@ describe("PsonoValuesBackend", () => {
       service: "demo",
       field: "token",
       kind: "value",
-      allowedTools: [],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 1,
     });
@@ -124,8 +122,6 @@ describe("PsonoValuesBackend", () => {
       field: "token",
       ref: "Joanna-shared/stack/demo-token",
       kind: "value",
-      allowedTools: [],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 1,
     });
@@ -142,8 +138,6 @@ describe("PsonoValuesBackend", () => {
       ref: "Joanna-shared/stack/demo-token",
       kind: "value",
       sourceField: "password",
-      allowedTools: [],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 1,
     });
@@ -161,7 +155,6 @@ describe("PsonoValuesBackend", () => {
     );
     expect(first?.kind).toBe("value");
     expect(first?.sourceField).toBe(VALUE_SOURCE_FIELD);
-    expect(first?.allowedTools).toEqual([]);
     expect(first?.account).toBeUndefined();
     expect(psono.kinds).toEqual(["value"]);
 
@@ -182,8 +175,6 @@ describe("PsonoValuesBackend", () => {
       field: "token",
       ref: "Joanna-shared/custom/entry",
       kind: "value",
-      allowedTools: [],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 1,
     });
@@ -301,8 +292,6 @@ describe("PsonoValuesBackend", () => {
       field: "write-test",
       ref: "Joanna-shared/stack/ces-write-test",
       kind: "value",
-      allowedTools: [],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 1,
     });
@@ -317,8 +306,6 @@ describe("PsonoValuesBackend", () => {
       field: "with-ref",
       ref: "Joanna-shared/stack/demo-with-ref",
       kind: "value",
-      allowedTools: [],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 1,
     });
@@ -327,8 +314,6 @@ describe("PsonoValuesBackend", () => {
       service: "demo",
       field: "no-ref",
       kind: "value",
-      allowedTools: [],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 1,
     });

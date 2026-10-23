@@ -46,16 +46,13 @@ afterAll(() => {
 describe("static credential storage compatibility", () => {
   describe("service alias resolution", () => {
     test("resolves credential by service and field", () => {
-      const created = store.upsert("github", "token", {
-        allowedTools: ["browser_fill_credential"],
-      });
+      const created = store.upsert("github", "token");
 
       const result = store.getByServiceField("github", "token");
       expect(result).toBeDefined();
       expect(result!.credentialId).toBe(created.credentialId);
       expect(result!.service).toBe("github");
       expect(result!.field).toBe("token");
-      expect(result!.allowedTools).toEqual(["browser_fill_credential"]);
     });
 
     test("returns undefined for non-existent service/field", () => {
@@ -190,8 +187,6 @@ describe("static credential storage compatibility", () => {
   describe("CRUD lifecycle", () => {
     test("upsert creates new credential", () => {
       const created = store.upsert("github", "token", {
-        allowedTools: ["tool1"],
-        allowedDomains: ["github.com"],
         usageDescription: "GitHub API access",
         alias: "gh-primary",
       });
@@ -199,8 +194,6 @@ describe("static credential storage compatibility", () => {
       expect(created.credentialId).toBeDefined();
       expect(created.service).toBe("github");
       expect(created.field).toBe("token");
-      expect(created.allowedTools).toEqual(["tool1"]);
-      expect(created.allowedDomains).toEqual(["github.com"]);
       expect(created.usageDescription).toBe("GitHub API access");
       expect(created.alias).toBe("gh-primary");
       expect(created.createdAt).toBeGreaterThan(0);
@@ -209,16 +202,14 @@ describe("static credential storage compatibility", () => {
 
     test("upsert updates existing credential", () => {
       const created = store.upsert("github", "token", {
-        allowedTools: ["tool1"],
+        usageDescription: "First description",
       });
 
       const updated = store.upsert("github", "token", {
-        allowedTools: ["tool1", "tool2"],
         usageDescription: "Updated description",
       });
 
       expect(updated.credentialId).toBe(created.credentialId);
-      expect(updated.allowedTools).toEqual(["tool1", "tool2"]);
       expect(updated.usageDescription).toBe("Updated description");
       expect(updated.updatedAt).toBeGreaterThanOrEqual(created.updatedAt);
     });
@@ -368,34 +359,6 @@ describe("static credential storage compatibility", () => {
       // Don't create the file
       const all = store.list();
       expect(all).toEqual([]);
-    });
-  });
-
-  describe("canonical capability key storage", () => {
-    test("stores credential with canonical assistant_browser_fill_credential key", () => {
-      const created = store.upsert("github", "token", {
-        allowedTools: ["assistant_browser_fill_credential"],
-      });
-
-      const result = store.getByServiceField("github", "token");
-      expect(result).toBeDefined();
-      expect(result!.credentialId).toBe(created.credentialId);
-      expect(result!.allowedTools).toEqual([
-        "assistant_browser_fill_credential",
-      ]);
-    });
-
-    test("legacy browser_fill_credential metadata is preserved on read", () => {
-      const created = store.upsert("github", "pat", {
-        allowedTools: ["browser_fill_credential"],
-      });
-
-      const result = store.getByServiceField("github", "pat");
-      expect(result).toBeDefined();
-      expect(result!.credentialId).toBe(created.credentialId);
-      // The raw stored value is returned unchanged — alias resolution
-      // happens at policy-check time, not at storage time.
-      expect(result!.allowedTools).toEqual(["browser_fill_credential"]);
     });
   });
 

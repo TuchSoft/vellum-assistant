@@ -116,8 +116,6 @@ describe("CES credential record cache", () => {
       credentialId: "cred-1",
       service: "github",
       field: "token",
-      allowedTools: ["bash"],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 2,
     };
@@ -132,9 +130,6 @@ describe("CES credential record cache", () => {
     expect(getCredentialMetadata("github", "token")?.credentialId).toBe(
       "cred-1",
     );
-    expect(getCredentialMetadata("github", "token")?.allowedTools).toEqual([
-      "bash",
-    ]);
     getCredentialMetadata("github", "token");
     await _ensureCesRecordsLoaded();
     expect(backend.listCalls).toBe(1);
@@ -145,8 +140,6 @@ describe("CES credential record cache", () => {
       credentialId: "cred-leftover",
       service: "github",
       field: "token",
-      allowedTools: ["bash"],
-      allowedDomains: ["github.com"],
       createdAt: 1,
       updatedAt: 2,
     };
@@ -163,9 +156,6 @@ describe("CES credential record cache", () => {
     expect(existsSync(leftoverPath())).toBe(true);
     expect(leftoverContents()).toBe(before);
     expect(backend.bulkSetCalls).toBe(0);
-    expect(getCredentialMetadata("github", "token")?.allowedTools).toEqual([
-      "bash",
-    ]);
   });
 
   test("lazy load ignores leftover metadata.json when CES list fails", async () => {
@@ -173,8 +163,6 @@ describe("CES credential record cache", () => {
       credentialId: "cred-keep",
       service: "slack_channel",
       field: "bot_token",
-      allowedTools: ["bash"],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 2,
     };
@@ -197,8 +185,6 @@ describe("CES credential record cache", () => {
       credentialId: "cred-missing",
       service: "github",
       field: "token",
-      allowedTools: ["bash"],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 2,
     };
@@ -233,8 +219,6 @@ describe("CES credential record cache", () => {
       credentialId: "cred-live",
       service: "github",
       field: "token",
-      allowedTools: ["bash"],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 2,
     };
@@ -274,8 +258,6 @@ describe("CES credential record cache", () => {
       credentialId: "cred-http",
       service: "github",
       field: "token",
-      allowedTools: ["bash"],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 2,
     };
@@ -299,8 +281,6 @@ describe("CES credential record cache", () => {
       credentialId: "cred-http-down-rpc",
       service: "github",
       field: "token",
-      allowedTools: ["bash"],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 2,
     };
@@ -318,8 +298,6 @@ describe("CES credential record cache", () => {
       credentialId: "cred-http-only",
       service: "github",
       field: "token",
-      allowedTools: ["bash"],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 2,
     };
@@ -340,8 +318,6 @@ describe("CES credential record cache", () => {
       credentialId: "cred-http-ignored",
       service: "github",
       field: "token",
-      allowedTools: ["bash"],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 2,
     });
@@ -363,8 +339,6 @@ describe("CES credential record cache", () => {
       credentialId: "cred-http-ignored",
       service: "github",
       field: "token",
-      allowedTools: ["bash"],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 2,
     });
@@ -395,8 +369,6 @@ describe("CES credential record cache", () => {
       credentialId: "cred-leftover",
       service: "github",
       field: "token",
-      allowedTools: ["bash"],
-      allowedDomains: [],
       createdAt: 1,
       updatedAt: 2,
     };
@@ -410,9 +382,7 @@ describe("CES credential record cache", () => {
     await _ensureCesRecordsLoaded();
     expect(existsSync(leftoverPath())).toBe(true);
 
-    const created = upsertCredentialMetadata("slack_channel", "bot_token", {
-      allowedTools: ["bash"],
-    });
+    const created = upsertCredentialMetadata("slack_channel", "bot_token", {});
     await Promise.resolve();
 
     expect(existsSync(leftoverPath())).toBe(true);
@@ -422,7 +392,7 @@ describe("CES credential record cache", () => {
         ?.credentialId,
     ).toBe(created.credentialId);
     expect(
-      getCredentialMetadata("slack_channel", "bot_token")?.allowedTools,
-    ).toEqual(["bash"]);
+      getCredentialMetadata("slack_channel", "bot_token")?.credentialId,
+    ).toBe(created.credentialId);
   });
 });

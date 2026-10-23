@@ -63,8 +63,6 @@ const SLACK_INJECTION_TEMPLATES = [
 /** Ensure the bot token credential has injection templates for the proxy. */
 function ensureBotTokenInjectionTemplates(): void {
   upsertCredentialMetadata("slack_channel", "bot_token", {
-    allowedTools: ["bash"],
-    allowedDomains: ["slack.com"],
     injectionTemplates: SLACK_INJECTION_TEMPLATES,
   });
 }
@@ -72,8 +70,6 @@ function ensureBotTokenInjectionTemplates(): void {
 /** Ensure the user token credential has injection templates for the proxy. */
 function ensureUserTokenInjectionTemplates(): void {
   upsertCredentialMetadata("slack_channel", "user_token", {
-    allowedTools: ["bash"],
-    allowedDomains: ["slack.com"],
     injectionTemplates: SLACK_INJECTION_TEMPLATES,
   });
 }

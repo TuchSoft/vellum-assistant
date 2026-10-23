@@ -40,10 +40,7 @@ afterAll(() => {
 // beforeEach; the default seeds a vault token so existing tests (which assume
 // claude spawns succeed) keep passing.
 const vaultStore = new Map<string, string>();
-const metadataStore = new Map<
-  string,
-  { allowedTools: string[]; usageDescription?: string }
->();
+const metadataStore = new Map<string, { usageDescription?: string }>();
 
 mock.module("../credentials/metadata-store.js", () => ({
   getCredentialMetadata: (service: string, field: string) => {
@@ -56,8 +53,6 @@ mock.module("../credentials/metadata-store.js", () => ({
       credentialId: `cred-${key}`,
       service,
       field,
-      allowedTools: entry.allowedTools,
-      allowedDomains: [],
       usageDescription: entry.usageDescription,
       createdAt: 0,
       updatedAt: 0,
@@ -66,20 +61,17 @@ mock.module("../credentials/metadata-store.js", () => ({
   upsertCredentialMetadata: (
     service: string,
     field: string,
-    policy?: { allowedTools?: string[]; usageDescription?: string },
+    policy?: { usageDescription?: string },
   ) => {
     const key = `${service}/${field}`;
     const existing = metadataStore.get(key);
     metadataStore.set(key, {
-      allowedTools: policy?.allowedTools ?? existing?.allowedTools ?? [],
       usageDescription: policy?.usageDescription ?? existing?.usageDescription,
     });
     return {
       credentialId: `cred-${key}`,
       service,
       field,
-      allowedTools: metadataStore.get(key)!.allowedTools,
-      allowedDomains: [],
       createdAt: 0,
       updatedAt: 0,
     };
@@ -98,12 +90,6 @@ mock.module("../credentials/broker.js", () => ({
       const meta = metadataStore.get(key);
       if (!meta) {
         return { success: false, reason: `No credential found for ${key}` };
-      }
-      if (!meta.allowedTools.includes(request.toolName)) {
-        return {
-          success: false,
-          reason: `Tool "${request.toolName}" not allowed`,
-        };
       }
       const value = vaultStore.get(key);
       if (!value) {

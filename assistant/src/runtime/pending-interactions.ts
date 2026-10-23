@@ -77,8 +77,6 @@ export interface SecretDetails {
   description?: string;
   placeholder?: string;
   purpose?: string;
-  allowedTools?: string[];
-  allowedDomains?: string[];
   allowOneTimeSend?: boolean;
 }
 

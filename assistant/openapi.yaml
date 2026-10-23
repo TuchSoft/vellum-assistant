@@ -11245,14 +11245,6 @@ paths:
                   type: string
                 usageDescription:
                   type: string
-                allowedDomains:
-                  type: array
-                  items:
-                    type: string
-                allowedTools:
-                  type: array
-                  items:
-                    type: string
                 injectionTemplates:
                   type: array
                   items:
@@ -11366,7 +11358,7 @@ paths:
     post:
       operationId: credentials_set_post
       summary: Store a credential with metadata
-      description: Store a secret value and create or update its metadata (label, description, allowed tools).
+      description: Store a secret value and create or update its metadata (label, description).
       tags:
         - credentials
       requestBody:
@@ -11391,16 +11383,6 @@ paths:
                 description:
                   description: What this credential is used for
                   type: string
-                allowedTools:
-                  description: Tool names that may use this credential
-                  type: array
-                  items:
-                    type: string
-                allowedDomains:
-                  description: Domains the credential may be sent to
-                  type: array
-                  items:
-                    type: string
                 injectionTemplates:
                   description: How the credential is injected into requests
                   type: array
@@ -25824,14 +25806,6 @@ paths:
                             type: string
                           purpose:
                             type: string
-                          allowedTools:
-                            type: array
-                            items:
-                              type: string
-                          allowedDomains:
-                            type: array
-                            items:
-                              type: string
                           allowOneTimeSend:
                             type: boolean
                         required:

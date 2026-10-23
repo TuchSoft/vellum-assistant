@@ -7,25 +7,16 @@ import type {
   ServerUseRequest,
   ServerUseResult,
 } from "./broker-types.js";
-import { isDomainAllowed } from "./domain-policy.js";
 import { getCredentialMetadata } from "./metadata-store.js";
-import {
-  isToolAllowed,
-  serverUseDenialReason,
-  toolNotAllowedReason,
-} from "./tool-policy.js";
 
 const log = getLogger("credential-broker");
 
 /**
- * Credential broker that mediates policy-checked credential access.
+ * Credential broker that mediates credential access.
  *
  * The broker never exposes plaintext secret values to callers. It:
  * 1. Checks that a credential exists and has metadata
- * 2. Enforces tool and domain policy
- * 3. Reads the secret internally and passes it to an opaque callback
- *
- * Tool policy is enforced at fill/use time; domain policy is enforced at fill time.
+ * 2. Reads the secret internally and passes it to an opaque callback
  */
 export class CredentialBroker {
   /** Transient values for one-time send: consumed on first read, never persisted.
@@ -60,40 +51,6 @@ export class CredentialBroker {
         success: false,
         reason: `No credential found for ${request.service}/${request.field}`,
       };
-    }
-
-    // Tool policy enforcement - deny if tool is not in the credential's allowed list
-    if (!isToolAllowed(request.toolName, metadata.allowedTools)) {
-      return {
-        success: false,
-        reason: toolNotAllowedReason(
-          request.toolName,
-          request.service,
-          request.field,
-          metadata.allowedTools,
-        ),
-      };
-    }
-
-    // Domain policy enforcement - deny if the page domain is not in the credential's allowed list
-    const browserDomains = metadata.allowedDomains ?? [];
-    if (browserDomains.length > 0) {
-      if (!request.domain) {
-        return {
-          success: false,
-          reason:
-            `Credential ${request.service}/${request.field} has a domain policy but no page domain was provided. ` +
-            `Allowed domains: ${browserDomains.join(", ")}.`,
-        };
-      }
-      if (!isDomainAllowed(request.domain, browserDomains)) {
-        return {
-          success: false,
-          reason:
-            `Domain "${request.domain}" is not allowed for credential ${request.service}/${request.field}. ` +
-            `Allowed domains: ${browserDomains.join(", ")}.`,
-        };
-      }
     }
 
     const storageKey = credentialKey(request.service, request.field);
@@ -152,14 +109,11 @@ export class CredentialBroker {
     request: ServerUseRequest<T>,
   ): Promise<ServerUseResult<T>> {
     const metadata = getCredentialMetadata(request.service, request.field);
-    const denialReason = serverUseDenialReason(
-      metadata,
-      request.toolName,
-      request.service,
-      request.field,
-    );
-    if (denialReason) {
-      return { success: false, reason: denialReason };
+    if (!metadata) {
+      return {
+        success: false,
+        reason: `No credential found for ${request.service}/${request.field}`,
+      };
     }
 
     const storageKey = credentialKey(request.service, request.field);

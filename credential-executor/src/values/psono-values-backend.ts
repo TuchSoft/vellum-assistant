@@ -117,8 +117,6 @@ export class PsonoValuesBackend implements SecureKeyBackend {
       ref,
       kind: "value",
       sourceField: VALUE_SOURCE_FIELD,
-      allowedTools: existing?.allowedTools ?? [],
-      allowedDomains: existing?.allowedDomains ?? [],
       createdAt: existing?.createdAt ?? updatedAt,
       updatedAt,
     };

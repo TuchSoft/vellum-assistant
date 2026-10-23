@@ -18,8 +18,6 @@ function makeRecord(): CredentialRecord {
     credentialId: "id-1",
     service: "github",
     field: "token",
-    allowedTools: ["assistant_browser_fill_credential"],
-    allowedDomains: ["github.com"],
     createdAt: 10,
     updatedAt: 20,
   };

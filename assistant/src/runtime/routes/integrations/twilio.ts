@@ -179,7 +179,6 @@ export async function handleSetTwilioCredentials({
   saveRawConfig({ ...raw, twilio });
 
   upsertCredentialMetadata("twilio", "account_sid", {
-    allowedTools: ["bash"],
     injectionTemplates: [
       {
         hostPattern: "api.twilio.com",

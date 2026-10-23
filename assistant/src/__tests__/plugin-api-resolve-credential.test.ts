@@ -175,8 +175,6 @@ describe("resolveCredential", () => {
         credentialId: `${service}-${field}`,
         service,
         field,
-        allowedTools: [],
-        allowedDomains: [],
         createdAt: 1,
         updatedAt: 1,
       };

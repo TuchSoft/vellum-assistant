@@ -363,8 +363,6 @@ export async function migrateCredentialsToPsono(
         ref,
         kind: "value",
         sourceField: SOURCE_FIELD,
-        allowedTools: existing?.allowedTools ?? [],
-        allowedDomains: existing?.allowedDomains ?? [],
         createdAt: existing?.createdAt ?? updatedAt,
         updatedAt,
       };

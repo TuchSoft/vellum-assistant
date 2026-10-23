@@ -3,9 +3,8 @@
  * executor wiring. Run per-file only; the mock.module registrations below
  * poison any other test file run in the same process.
  *
- * Policy note: v1 is permissive — the tag path does NOT enforce the
- * per-credential allowedTools gate (that gate remains on the legacy
- * proxied-bash path only). There is intentionally no denied-by-policy test.
+ * Policy note: v1 is permissive — the tag path does NOT enforce a
+ * per-credential tool gate. There is intentionally no denied-by-policy test.
  */
 
 import { randomBytes } from "node:crypto";
@@ -131,10 +130,8 @@ beforeEach(() => {
   }
   mkdirSync(TEST_DIR, { recursive: true });
   _setMetadataPath(META_PATH);
-  upsertCredentialMetadata("openproject", "api_key", {
-    allowedTools: ["bash"],
-  });
-  upsertCredentialMetadata("github", "token", { allowedTools: ["bash"] });
+  upsertCredentialMetadata("openproject", "api_key");
+  upsertCredentialMetadata("github", "token");
   recordedInputs.length = 0;
   toolSeenInput = undefined;
   tools.clear();
@@ -267,7 +264,7 @@ describe("credential tag substitution (unit)", () => {
       "credential/evil/chain",
       'prefix <vellum-credential service="github" field="token" />',
     );
-    upsertCredentialMetadata("evil", "chain", { allowedTools: [] });
+    upsertCredentialMetadata("evil", "chain");
     const result = await substituteCredentialTags(
       "demo",
       { text: '<vellum-credential service="evil" field="chain" />' },

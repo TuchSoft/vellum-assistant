@@ -49,8 +49,6 @@ function jsonError(code: string, message: string, status: number): Response {
 
 const PolicyJsonSchema = z.object({
   usageDescription: z.string().optional(),
-  allowedTools: z.array(z.string()).optional(),
-  allowedDomains: z.array(z.string()).optional(),
   // Opaque passthrough — the daemon's credentials_set validates the shape.
   injectionTemplates: z.array(z.unknown()).optional(),
 });
@@ -69,12 +67,6 @@ function parsePolicy(policyJson: string | null): Record<string, unknown> {
     return {
       ...(parsed.usageDescription !== undefined
         ? { description: parsed.usageDescription }
-        : {}),
-      ...(parsed.allowedTools !== undefined
-        ? { allowedTools: parsed.allowedTools }
-        : {}),
-      ...(parsed.allowedDomains !== undefined
-        ? { allowedDomains: parsed.allowedDomains }
         : {}),
       ...(parsed.injectionTemplates !== undefined
         ? { injectionTemplates: parsed.injectionTemplates }

@@ -81,7 +81,6 @@ mock.module("../tools/credentials/metadata-store.js", () => ({
       service: string,
       field: string,
       policy?: {
-        allowedTools?: string[];
         usageDescription?: string;
         alias?: string | null;
       },
@@ -93,8 +92,6 @@ mock.module("../tools/credentials/metadata-store.js", () => ({
         credentialId: existing?.credentialId ?? `cred-${++credentialIdCounter}`,
         service,
         field,
-        allowedTools: policy?.allowedTools ?? existing?.allowedTools ?? [],
-        allowedDomains: existing?.allowedDomains ?? [],
         usageDescription:
           policy?.usageDescription ?? existing?.usageDescription,
         alias: policy?.alias ?? existing?.alias ?? undefined,
@@ -454,7 +451,7 @@ describe("credentials routes", () => {
       // GIVEN the credentials_set route is registered
       expect(setRoute).toBeDefined();
 
-      // WHEN a credential is stored with a label, description, and allowed tools
+      // WHEN a credential is stored with a label and description
       const result = (await setRoute!.handler({
         body: {
           service: "vercel",
@@ -462,7 +459,6 @@ describe("credentials routes", () => {
           value: SECRET_VALUE,
           label: "Vercel API Token",
           description: "Used to deploy pages",
-          allowedTools: ["publish_page"],
         },
       })) as SetResponse;
 
@@ -875,8 +871,6 @@ describe("credentials routes", () => {
         credentialId: `cred-${++credentialIdCounter}`,
         service: "vellum",
         field,
-        allowedTools: [],
-        allowedDomains: [],
         createdAt: now,
         updatedAt: now,
       });
@@ -1048,8 +1042,6 @@ describe("credentials routes", () => {
         credentialId: `cred-${++credentialIdCounter}`,
         service: "vellum",
         field,
-        allowedTools: [],
-        allowedDomains: [],
         createdAt: now,
         updatedAt: now,
       });

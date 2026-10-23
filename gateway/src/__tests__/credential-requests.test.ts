@@ -293,9 +293,9 @@ describe("credential-request submit", () => {
     expect(ipcCalls).toHaveLength(1);
   });
 
-  test("applies the mint-time policy together with the value", async () => {
+  test("applies the mint-time metadata together with the value", async () => {
     /**
-     * The credential policy captured at mint time travels on the row
+     * The credential metadata captured at mint time travels on the row
      * (policyJson) and is forwarded to credentials_set at redemption — never
      * before — so an unredeemed link cannot mutate an existing credential's
      * metadata.
@@ -310,8 +310,6 @@ describe("credential-request submit", () => {
       label: "Stripe API Key",
       policyJson: JSON.stringify({
         usageDescription: "Billing lookups",
-        allowedTools: ["make_authenticated_request"],
-        allowedDomains: ["api.stripe.com"],
         injectionTemplates: [
           { hostPattern: "api.stripe.com", injectionType: "header" },
         ],
@@ -331,8 +329,6 @@ describe("credential-request submit", () => {
         value: "sekret",
         label: "Stripe API Key",
         description: "Billing lookups",
-        allowedTools: ["make_authenticated_request"],
-        allowedDomains: ["api.stripe.com"],
         injectionTemplates: [
           { hostPattern: "api.stripe.com", injectionType: "header" },
         ],

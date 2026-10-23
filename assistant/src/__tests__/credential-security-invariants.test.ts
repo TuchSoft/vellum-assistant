@@ -19,7 +19,6 @@ import {
   contextInjectionCases,
   directReadCases,
   logLeakageCases,
-  policyMisuseCases,
 } from "./fixtures/credential-security-fixtures.js";
 
 // ---------------------------------------------------------------------------
@@ -405,7 +404,7 @@ describe("Invariant 3: secrets never logged in plaintext", () => {
 // Invariant 4 — Usage-Constrained Credentials (Tool + Domain Policy)
 // ---------------------------------------------------------------------------
 
-describe("Invariant 4: credentials only used for allowed purpose", () => {
+describe("Invariant 4: credential use is not gated by tool or domain lists", () => {
   let broker: CredentialBroker;
 
   beforeEach(() => {
@@ -423,70 +422,19 @@ describe("Invariant 4: credentials only used for allowed purpose", () => {
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
-  for (const tc of policyMisuseCases) {
-    // PRs 19-20 — tool + domain policy enforcement in broker
-    test(`${tc.label}`, async () => {
-      // Set up credential with the specified policy
-      upsertCredentialMetadata(tc.credentialId, "token", {
-        allowedTools: tc.allowedTools,
-        allowedDomains: tc.allowedDomains,
-      });
-      await setSecureKeyAsync(
-        credentialKey(tc.credentialId, "token"),
-        "test-secret-value",
-      );
-
-      const result = await broker.browserFill({
-        service: tc.credentialId,
-        field: "token",
-        toolName: tc.requestingTool,
-        domain: tc.requestDomain,
-        fill: async () => {},
-      });
-
-      if (tc.expectedDenied) {
-        expect(result.success).toBe(false);
-        expect(result.reason).toBeDefined();
-      } else {
-        expect(result.success).toBe(true);
-      }
-    });
-  }
-
-  // PR 20 — domain policy uses registrable-domain matching
-  test("domain policy allows subdomains of registrable domain", async () => {
-    upsertCredentialMetadata("github", "token", {
-      allowedTools: ["browser_fill_credential"],
-      allowedDomains: ["github.com"],
-    });
+  test("browser fill succeeds regardless of requesting tool and page domain", async () => {
+    upsertCredentialMetadata("github", "token", {});
     await setSecureKeyAsync(credentialKey("github", "token"), "ghp_secret123");
 
     const result = await broker.browserFill({
       service: "github",
       field: "token",
-      toolName: "browser_fill_credential",
+      toolName: "some_other_tool",
       domain: "login.github.com",
       fill: async () => {},
     });
 
     expect(result.success).toBe(true);
-  });
-
-  // PR 18 — vault policy fields with strict defaults
-  test("credential without explicit policy gets strict defaults (deny all)", async () => {
-    // A credential stored without allowed_tools defaults to empty array,
-    // which the broker's isToolAllowed check fails closed on.
-    upsertCredentialMetadata("test-svc", "pass", {});
-
-    const result = await broker.browserFill({
-      service: "test-svc",
-      field: "pass",
-      toolName: "browser_fill_credential",
-      fill: async () => {},
-    });
-
-    expect(result.success).toBe(false);
-    expect(result.reason).toContain("No tools are currently allowed");
   });
 });
 
@@ -510,9 +458,7 @@ describe("Invariant 6: oauth2ClientSecret not in metadata, only in secure store"
   });
 
   test("upsertCredentialMetadata does not accept oauth2ClientSecret or other OAuth fields", () => {
-    const record = upsertCredentialMetadata("google", "access_token", {
-      allowedTools: ["api_request"],
-    });
+    const record = upsertCredentialMetadata("google", "access_token");
     expect("oauth2ClientSecret" in record).toBe(false);
     expect("oauth2TokenUrl" in record).toBe(false);
     expect("oauth2ClientId" in record).toBe(false);
@@ -523,9 +469,7 @@ describe("Invariant 6: oauth2ClientSecret not in metadata, only in secure store"
       credentialKey("google", "client_secret"),
       "my-secret",
     );
-    upsertCredentialMetadata("google", "access_token", {
-      allowedTools: ["api_request"],
-    });
+    upsertCredentialMetadata("google", "access_token");
 
     const meta = getCredentialMetadata("google", "access_token");
     expect(meta).toBeDefined();

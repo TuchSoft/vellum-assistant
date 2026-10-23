@@ -155,8 +155,6 @@ describe("requestSecretStandalone channel gate", () => {
       field: "api_key",
       label: "Stripe API Key",
       purpose: "Billing lookups",
-      allowedTools: ["make_authenticated_request"],
-      allowedDomains: ["api.stripe.com"],
       injectionTemplates: [
         { hostPattern: "api.stripe.com", injectionType: "header" },
       ],
@@ -168,8 +166,6 @@ describe("requestSecretStandalone channel gate", () => {
     const params = gatewayMintCalls[0]!.params as { policyJson?: string };
     expect(JSON.parse(params.policyJson ?? "{}")).toEqual({
       usageDescription: "Billing lookups",
-      allowedTools: ["make_authenticated_request"],
-      allowedDomains: ["api.stripe.com"],
       injectionTemplates: [
         { hostPattern: "api.stripe.com", injectionType: "header" },
       ],

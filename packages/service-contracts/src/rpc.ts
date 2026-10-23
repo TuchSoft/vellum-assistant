@@ -226,8 +226,6 @@ export const CredentialRecordSchema = z.object({
    * Defaults to `field`.
    */
   sourceField: z.string().optional(),
-  allowedTools: z.array(z.string()),
-  allowedDomains: z.array(z.string()),
   usageDescription: z.string().optional(),
   alias: z.string().optional(),
   injectionTemplates: z.array(CredentialInjectionTemplateSchema).optional(),

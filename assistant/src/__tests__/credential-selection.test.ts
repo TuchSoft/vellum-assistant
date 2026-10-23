@@ -15,8 +15,6 @@ function makeCred(
   return {
     service: "test",
     field: "api_key",
-    allowedTools: [],
-    allowedDomains: [],
     createdAt: ONE_DAY_AGO,
     updatedAt: ONE_DAY_AGO,
     ...overrides,
@@ -121,43 +119,6 @@ describe("rankCredentialsForEndpoint", () => {
 
     const result = rankCredentialsForEndpoint(creds, "api.example.com");
     expect(result.topChoice?.credentialId).toBe("newer");
-  });
-
-  test("filters out credentials with non-matching allowedDomains", () => {
-    const creds = [
-      makeCred({
-        credentialId: "restricted",
-        allowedDomains: ["other.com"],
-      }),
-      makeCred({
-        credentialId: "unrestricted",
-        // empty allowedDomains = no restriction
-      }),
-    ];
-
-    const result = rankCredentialsForEndpoint(creds, "api.example.com");
-    expect(result.candidates).toHaveLength(1);
-    expect(result.topChoice?.credentialId).toBe("unrestricted");
-  });
-
-  test("allowedDomains with registrable-domain match allows subdomains", () => {
-    const creds = [
-      makeCred({
-        credentialId: "domain-match",
-        allowedDomains: ["fal.ai"],
-        injectionTemplates: [
-          {
-            hostPattern: "*.fal.ai",
-            injectionType: "header",
-            headerName: "Authorization",
-          },
-        ],
-      }),
-    ];
-
-    const result = rankCredentialsForEndpoint(creds, "queue.fal.ai");
-    expect(result.candidates).toHaveLength(1);
-    expect(result.topChoice?.credentialId).toBe("domain-match");
   });
 
   test("ambiguous is true when top two candidates are in the same scoring tier", () => {

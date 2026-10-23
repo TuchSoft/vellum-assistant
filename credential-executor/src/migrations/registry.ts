@@ -2,6 +2,7 @@ import { noOpMigration } from "./001-no-op.js";
 import { apiKeyToCredentialsMigration } from "./002-api-keys-to-credentials.js";
 import { importWorkspaceMetadataMigration } from "./003-import-workspace-metadata.js";
 import { recordRefKindMigration } from "./004-credential-record-ref-kind.js";
+import { stripCredentialPolicyFieldsMigration } from "./005-strip-credential-policy-fields.js";
 import type { CesMigration } from "./types.js";
 
 /**
@@ -16,4 +17,5 @@ export const CES_MIGRATIONS: CesMigration[] = [
   apiKeyToCredentialsMigration,
   importWorkspaceMetadataMigration,
   recordRefKindMigration,
+  stripCredentialPolicyFieldsMigration,
 ];

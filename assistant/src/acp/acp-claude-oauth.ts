@@ -37,7 +37,6 @@ import {
 } from "./acp-credentials.js";
 import {
   ACP_CLAUDE_OAUTH_USAGE_DESCRIPTION,
-  acpSpawnCredentialDenialReason,
   repairAcpSpawnPolicy,
 } from "./prepare-agent-env.js";
 
@@ -343,15 +342,6 @@ export async function notifyAcpConnectRetired(): Promise<void> {
  * spawn, so keeping Connect offered (rather than self-dismissing) lets the user
  * repair the bad entry by connecting a real OAuth token.
  *
- * Likewise, a token the spawn's broker read would be denied (an explicit
- * `allowedTools` that omits `acp_spawn`, or a domain-restricted policy) is NOT
- * connected: the vault holds a value but every spawn fails, so self-dismissing
- * the card would hide the only repair CTA. That half of the answer is delegated
- * to `acpSpawnCredentialDenialReason`, which evaluates the exact policy the
- * spawn-time broker read applies, so "connected" means precisely "the spawn
- * would get this token". The token-shape guard stays here instead: the broker
- * knows nothing about Anthropic token formats.
- *
  * An expired token with no refresh token is the same shape of problem, and is
  * likewise NOT connected: the card has to stay up so the user can reconnect.
  * An expired token that still has a refresh token IS connected, because
@@ -377,14 +367,6 @@ async function usableStoredClaudeToken(): Promise<string | undefined> {
     return undefined;
   }
   if (classifyAnthropicToken(token) === "api_key") {
-    return undefined;
-  }
-  const denialReason = acpSpawnCredentialDenialReason(ACP_OAUTH_TOKEN_FIELD);
-  if (denialReason !== undefined) {
-    log.debug(
-      { field: ACP_OAUTH_TOKEN_FIELD, reason: denialReason },
-      "Connect Claude status: token present but spawn read would be denied",
-    );
     return undefined;
   }
   if (await isAcpClaudeTokenExpiring()) {
@@ -450,13 +432,10 @@ export async function acpConnectCardStillWarranted(
 }
 
 /**
- * Persist a token set obtained by renewing an existing credential, leaving
- * the read policy exactly as it was.
+ * Persist a token set obtained by renewing an existing credential.
  *
- * A renewal happens on a passive spawn with no user in the loop, so it must
- * not widen what the credential is allowed to do. Granting `acp_spawn` here
- * would let a background refresh restore a permission a user or admin had
- * removed from `allowedTools`.
+ * A renewal happens on a passive spawn with no user in the loop, so it only
+ * replaces the stored token material and never rewrites metadata.
  *
  * A rotated refresh token is written when the provider returns one. When the
  * response omits a refresh token, the stored refresh token is kept so a

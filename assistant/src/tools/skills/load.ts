@@ -9,8 +9,10 @@ import {
   listReferenceFiles,
   loadSkillBySelector,
   loadSkillCatalog,
+  selectSkillFromCatalog,
 } from "../../config/skills.js";
 import { RiskLevel } from "../../permissions/types.js";
+import { resolveInheritedProjectIds } from "../../persistence/project-store.js";
 import {
   autoInstallFromCatalog,
   resolveCatalog,
@@ -25,6 +27,11 @@ import {
   isSkillCompatibleWithPlatform,
   skillPlatformUnavailableMessage,
 } from "../../skills/platform-compatibility.js";
+import {
+  isSkillInProjectScope,
+  loadProjectScopedSkillCatalog,
+  skillProjectScopeErrorMessage,
+} from "../../skills/project-scope.js";
 import { parseToolManifestFile } from "../../skills/tool-manifest.js";
 import { computeSkillVersionHash } from "../../skills/version-hash.js";
 import { getLogger } from "../../util/logger.js";
@@ -56,6 +63,43 @@ const INLINE_COMMAND_CLEANUP_STUB =
   "[inline command skipped: storage cleanup mode]";
 
 const log = getLogger("skill-load");
+
+/**
+ * The conversation's inherited project set (F0a), used to scope the skill
+ * catalog. A resolution failure fails closed: project-restricted skills stay
+ * denied while unrestricted skills keep working.
+ */
+async function resolveConversationProjectIds(
+  conversationId: string,
+): Promise<string[]> {
+  try {
+    return await resolveInheritedProjectIds(conversationId);
+  } catch (err) {
+    log.warn(
+      { err, conversationId },
+      "Project scope resolution failed; project-restricted skills stay denied",
+    );
+    return [];
+  }
+}
+
+/**
+ * The skill a selector would resolve to in the full catalog when it is outside
+ * the conversation's project scope. Undefined when the selector does not resolve
+ * or the target is available here. Used only on the failure path, so the extra
+ * full catalog scan costs nothing on a successful load.
+ */
+function findProjectScopeConflict(
+  selector: string,
+  projectIds: readonly string[],
+): SkillSummary | undefined {
+  const resolved = selectSkillFromCatalog(selector, loadSkillCatalog());
+  const skill = resolved.skill;
+  if (!skill || isSkillInProjectScope(skill, projectIds)) {
+    return undefined;
+  }
+  return skill;
+}
 
 /**
  * Attempt to load and parse TOOLS.json from a skill directory.
@@ -177,7 +221,29 @@ export const skillLoadTool = {
       ? INLINE_COMMAND_CLEANUP_STUB
       : "[inline command not executed]";
 
-    let loaded = loadSkillBySelector(selector);
+    // Project scope: a skill may declare `projects` in its frontmatter. Resolve
+    // the conversation's inherited project set once, then resolve the selector
+    // against the scoped catalog so an out-of-scope skill is never selected.
+    // Loading one is a hard error that names the skill and its projects.
+    const projectIds = await resolveConversationProjectIds(
+      context.conversationId,
+    );
+
+    let loaded = loadSkillBySelector(
+      selector,
+      undefined,
+      loadProjectScopedSkillCatalog(projectIds),
+    );
+
+    if (!loaded.skill) {
+      const conflict = findProjectScopeConflict(selector, projectIds);
+      if (conflict) {
+        return {
+          content: `Error: ${skillProjectScopeErrorMessage(conflict, projectIds)}`,
+          isError: true,
+        };
+      }
+    }
 
     // Auto-install from catalog if the skill isn't found locally
     if (
@@ -189,7 +255,23 @@ export const skillLoadTool = {
         const installed = await autoInstallFromCatalog(selector);
         if (installed) {
           log.info({ skillId: selector }, "Auto-installed skill from catalog");
-          loaded = loadSkillBySelector(selector);
+          loaded = loadSkillBySelector(
+            selector,
+            undefined,
+            loadProjectScopedSkillCatalog(projectIds),
+          );
+          if (!loaded.skill) {
+            const conflict = findProjectScopeConflict(selector, projectIds);
+            if (conflict) {
+              return {
+                content: `Error: ${skillProjectScopeErrorMessage(
+                  conflict,
+                  projectIds,
+                )}`,
+                isError: true,
+              };
+            }
+          }
         }
       } catch (err) {
         const installError = err instanceof Error ? err.message : String(err);
@@ -263,7 +345,7 @@ export const skillLoadTool = {
     let catalogIndex: Map<string, SkillSummary> | undefined;
     let missingIncludedSkillIds: string[] = [];
     if (skill.includes && skill.includes.length > 0) {
-      let catalog = loadSkillCatalog();
+      let catalog = loadProjectScopedSkillCatalog(projectIds);
       catalogIndex = indexCatalogById(catalog);
 
       // Auto-install missing includes before validation (max 5 rounds for transitive deps)
@@ -323,7 +405,7 @@ export const skillLoadTool = {
         } // Nothing could be installed, stop trying
 
         // Reload catalog to pick up newly installed skills
-        catalog = loadSkillCatalog();
+        catalog = loadProjectScopedSkillCatalog(projectIds);
         catalogIndex = indexCatalogById(catalog);
       }
 
@@ -440,7 +522,11 @@ export const skillLoadTool = {
         );
 
         // Load the included skill's body content
-        const childLoaded = loadSkillBySelector(childId);
+        const childLoaded = loadSkillBySelector(
+          childId,
+          undefined,
+          loadProjectScopedSkillCatalog(projectIds),
+        );
         if (childLoaded.skill && childLoaded.skill.body.length > 0) {
           let childBody = childLoaded.skill.body;
 

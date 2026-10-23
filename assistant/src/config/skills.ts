@@ -142,6 +142,13 @@ export interface SkillSummary {
   alwaysCandidate?: boolean;
   /** Host operating systems on which this skill may be offered and loaded. */
   platforms?: SkillPlatform[];
+  /**
+   * Project ids this skill belongs to. Unset (or empty) means the skill is
+   * available everywhere. A non-empty list restricts the skill to conversations
+   * whose inherited project set intersects it; loading it anywhere else is a
+   * hard error.
+   */
+  projects?: string[];
   /** Parsed inline command expansion descriptors (`!\`command\``) found in the skill body. */
   inlineCommandExpansions?: InlineCommandExpansion[];
 }
@@ -243,6 +250,7 @@ export interface ParsedFrontmatter {
   category?: string;
   alwaysCandidate?: boolean;
   platforms?: SkillPlatform[];
+  projects?: string[];
   inlineCommandExpansions?: InlineCommandExpansion[];
 }
 
@@ -367,6 +375,34 @@ export function parseFrontmatter(
 
   const platforms = normalizeSkillPlatforms(vellum?.platforms);
 
+  // `projects` restricts a skill to the conversations of a project set. It is
+  // the one hard boundary in the project model (skills are executable code),
+  // so a malformed value fails the skill closed: the skill is dropped from the
+  // catalog with a warning instead of being treated as globally available.
+  const projectsField = fields.projects;
+  let projects: string[] | undefined;
+  if (projectsField !== undefined && projectsField !== null) {
+    if (!Array.isArray(projectsField)) {
+      log.warn(
+        { skillFilePath },
+        'Skipping skill: frontmatter "projects" must be a list of project ids',
+      );
+      return null;
+    }
+    const normalized = projectsField
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    if (normalized.length !== projectsField.length) {
+      log.warn(
+        { skillFilePath },
+        'Skipping skill: frontmatter "projects" entries must be non-empty strings',
+      );
+      return null;
+    }
+    projects = normalized.length > 0 ? [...new Set(normalized)] : undefined;
+  }
+
   const strippedBody = stripCommentLines(body);
 
   // Parse inline command expansions from the body (after frontmatter/comment stripping)
@@ -393,6 +429,7 @@ export function parseFrontmatter(
     category,
     alwaysCandidate,
     platforms,
+    projects,
     inlineCommandExpansions,
   };
 }
@@ -554,6 +591,7 @@ function readSkillFromDirectory(
       category: parsed.category,
       alwaysCandidate: parsed.alwaysCandidate,
       platforms: parsed.platforms,
+      projects: parsed.projects,
       inlineCommandExpansions: parsed.inlineCommandExpansions,
     };
   } catch (err) {
@@ -611,6 +649,7 @@ function readBundledSkillFromDirectory(
       category: parsed.category,
       alwaysCandidate: parsed.alwaysCandidate,
       platforms: parsed.platforms,
+      projects: parsed.projects,
       inlineCommandExpansions: parsed.inlineCommandExpansions,
     };
   } catch (err) {
@@ -680,6 +719,7 @@ function loadBundledSkills(): SkillSummary[] {
       category: skill.category,
       alwaysCandidate: skill.alwaysCandidate,
       platforms: skill.platforms,
+      projects: skill.projects,
       inlineCommandExpansions: skill.inlineCommandExpansions,
     });
   }
@@ -959,6 +999,7 @@ function skillSummaryFromDefinition(
     category: skill.category,
     alwaysCandidate: skill.alwaysCandidate,
     platforms: skill.platforms,
+    projects: skill.projects,
     inlineCommandExpansions: skill.inlineCommandExpansions,
   };
 }
@@ -1023,6 +1064,7 @@ export function loadSkillCatalog(
             category: parsed.category,
             alwaysCandidate: parsed.alwaysCandidate,
             platforms: parsed.platforms,
+            projects: parsed.projects,
             inlineCommandExpansions: parsed.inlineCommandExpansions,
           });
         } catch (err) {
@@ -1171,6 +1213,7 @@ export function loadSkillCatalog(
           category: parsed.category,
           alwaysCandidate: parsed.alwaysCandidate,
           platforms: parsed.platforms,
+          projects: parsed.projects,
           inlineCommandExpansions: parsed.inlineCommandExpansions,
         };
 
@@ -1367,6 +1410,21 @@ function loadSkillDefinition(skill: SkillSummary): SkillLookupResult {
 export function resolveSkillSelector(
   selector: string,
   workspaceSkillsDir?: string,
+  catalogOverride?: readonly SkillSummary[],
+): SkillSelectorResult {
+  const catalog = catalogOverride ?? loadSkillCatalog(workspaceSkillsDir);
+  return selectSkillFromCatalog(selector, catalog);
+}
+
+/**
+ * Resolve a selector against an already-loaded catalog. Separated from
+ * {@link resolveSkillSelector} so callers that hold a scoped catalog (e.g. the
+ * project-scoped view used by `skill_load`) do not rescan the filesystem, and
+ * so a selector can never reach a skill the caller's catalog excluded.
+ */
+export function selectSkillFromCatalog(
+  selector: string,
+  catalog: readonly SkillSummary[],
 ): SkillSelectorResult {
   const needle = selector.trim();
   if (!needle) {
@@ -1376,7 +1434,6 @@ export function resolveSkillSelector(
     };
   }
 
-  const catalog = loadSkillCatalog(workspaceSkillsDir);
   if (catalog.length === 0) {
     return {
       error: `No skills are available. Add skill directories under ${getWorkspaceDirDisplay()}/skills/.`,
@@ -1429,8 +1486,13 @@ export function resolveSkillSelector(
 export function loadSkillBySelector(
   selector: string,
   workspaceSkillsDir?: string,
+  catalogOverride?: readonly SkillSummary[],
 ): SkillLookupResult {
-  const resolved = resolveSkillSelector(selector, workspaceSkillsDir);
+  const resolved = resolveSkillSelector(
+    selector,
+    workspaceSkillsDir,
+    catalogOverride,
+  );
   if (!resolved.skill) {
     return {
       error: resolved.error ?? "Failed to resolve skill selector.",

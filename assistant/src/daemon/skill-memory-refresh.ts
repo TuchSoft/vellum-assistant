@@ -9,6 +9,7 @@ import {
   maybeSeedCliCommandCards,
 } from "../plugins/defaults/memory/substrate/boot-maintenance.js";
 import { notifySkillCatalogChanged } from "../skills/grant-declaration.js";
+import { invalidateSkillProjectScopeCache } from "../skills/project-scope.js";
 import { readWorkspaceSkillMdSignature } from "../skills/workspace-skill-md-signature.js";
 import { getLogger } from "../util/logger.js";
 
@@ -27,6 +28,11 @@ export function refreshSkillCapabilityMemories(
   maybeSeedCapabilitySkills(config);
   maybeSeedCliCommandCards(config);
   lastSignature = readWorkspaceSkillMdSignature();
+
+  // Install, delete, enable and disable all land here, so the project-scoped
+  // skill catalog (cached per project set) is dropped with the rest of the
+  // catalog-derived caches.
+  invalidateSkillProjectScopeCache();
 
   // The catalog changed, so the set of installed skill versions changed with
   // it. Re-declaring here keeps the gateway's grants in step with the disk

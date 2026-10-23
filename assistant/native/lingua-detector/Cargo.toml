@@ -1,0 +1,34 @@
+[package]
+name = "lingua-detector"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Thin napi binding for the lingua language detector (WS-27 Fase A)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2.16", default-features = false, features = ["napi8"] }
+napi-derive = "2.16"
+lingua = { version = "1.8.0", default-features = false, features = [
+  "italian",
+  "english",
+  "french",
+  "german",
+  "spanish",
+  "portuguese",
+  "dutch",
+  "polish",
+  "romanian",
+  "swedish",
+  "danish",
+  "estonian",
+] }
+
+[build-dependencies]
+napi-build = "2.1"
+
+[profile.release]
+lto = true
+strip = "symbols"

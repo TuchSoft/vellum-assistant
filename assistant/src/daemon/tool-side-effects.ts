@@ -7,7 +7,7 @@
  * registry entry instead of another if/else branch.
  */
 
-import { isAbsolute, resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import { DOCUMENT_MUTATION_TOOL_NAMES } from "../api/constants/document-tools.js";
 import type { AssistantEvent } from "../api/index.js";
@@ -16,7 +16,17 @@ import { getConfig } from "../config/loader.js";
 import { generateAppIcon } from "../media/app-icon-generator.js";
 import { invalidateEdgeIndex } from "../plugins/defaults/memory/substrate/edge-index.js";
 import { invalidatePageIndex } from "../plugins/defaults/memory/substrate/page-index.js";
-import { getConceptsDir } from "../plugins/defaults/memory/substrate/page-store.js";
+import {
+  applyProjectScopeToFrontmatter,
+  getConceptsDir,
+  parsePageContent,
+  writePage,
+} from "../plugins/defaults/memory/substrate/page-store.js";
+import {
+  declaredScopeFromFrontmatter,
+  mergeProjectScope,
+  resolveProjectScope,
+} from "../plugins/defaults/memory/substrate/project-scope.js";
 import { broadcastMessage } from "../runtime/assistant-event-hub.js";
 import { publishDocumentsChanged } from "../runtime/sync/resource-sync-events.js";
 import type { ToolExecutionResult } from "../tools/types.js";
@@ -231,12 +241,17 @@ registerHook("voice_config_update", (_name, input) => {
 // or edits a file under `memory/concepts/`. The page-store invalidates on
 // programmatic writes; this hook covers consolidation, where the LLM edits
 // page frontmatter through the file tools rather than through `writePage`.
-function invalidateEdgeIndexIfConceptPage(
+//
+// The same hook enforces the project-scope anti-loss guard: a consolidation
+// rewrite that omits `projects`/`exclusive` keeps the values the page already
+// had. The previous content is the tool result's `diff.oldContent`, so the
+// guard needs no pre-write snapshot.
+function conceptPageWriteTarget(
   input: Record<string, unknown>,
-): void {
+): { workspaceDir: string; absPath: string; slug: string } | null {
   const rawPath = input.path;
   if (typeof rawPath !== "string" || rawPath.length === 0) {
-    return;
+    return null;
   }
   const workspaceDir = getWorkspaceDir();
   const conceptsRoot = getConceptsDir(workspaceDir);
@@ -246,17 +261,82 @@ function invalidateEdgeIndexIfConceptPage(
   const rootWithSep = conceptsRoot.endsWith(sep)
     ? conceptsRoot
     : conceptsRoot + sep;
-  if (absPath.startsWith(rootWithSep)) {
-    invalidateEdgeIndex(workspaceDir);
-    invalidatePageIndex(workspaceDir);
+  if (!absPath.startsWith(rootWithSep) || !absPath.endsWith(".md")) {
+    return null;
   }
+  const slug = relative(conceptsRoot, absPath)
+    .replace(/\.md$/, "")
+    .split(sep)
+    .join("/");
+  return { workspaceDir, absPath, slug };
 }
-registerHook("file_write", (_name, input) =>
-  invalidateEdgeIndexIfConceptPage(input),
-);
-registerHook("file_edit", (_name, input) =>
-  invalidateEdgeIndexIfConceptPage(input),
-);
+
+async function preserveProjectScopeOnConceptPageWrite(
+  input: Record<string, unknown>,
+  result: ToolExecutionResult,
+): Promise<void> {
+  const target = conceptPageWriteTarget(input);
+  const diff = result.diff;
+  if (!target || !diff) {
+    return;
+  }
+
+  let incoming: ReturnType<typeof parsePageContent>;
+  let previous: ReturnType<typeof parsePageContent>;
+  try {
+    incoming = parsePageContent(target.slug, diff.newContent);
+    previous = parsePageContent(target.slug, diff.oldContent);
+  } catch {
+    // A malformed page is already surfaced by the frontmatter sweep; the
+    // guard must not turn a successful write into a failed tool call.
+    return;
+  }
+
+  const incomingDeclared = declaredScopeFromFrontmatter(incoming.frontmatter);
+  const previousDeclared = declaredScopeFromFrontmatter(previous.frontmatter);
+  const merged = mergeProjectScope(incomingDeclared, previousDeclared);
+  const incomingResolved = resolveProjectScope(incomingDeclared);
+  const lostProjects =
+    merged.projects.join("\u0000") !== incomingResolved.projects.join("\u0000");
+  if (!lostProjects && merged.exclusive === incomingResolved.exclusive) {
+    return;
+  }
+
+  await writePage(target.workspaceDir, {
+    ...incoming,
+    frontmatter: applyProjectScopeToFrontmatter(incoming.frontmatter, merged),
+  });
+  log.info(
+    {
+      slug: target.slug,
+      projects: merged.projects,
+      exclusive: merged.exclusive,
+    },
+    "concept page rewrite kept its project scope",
+  );
+}
+
+async function handleConceptPageWrite(
+  name: string,
+  input: Record<string, unknown>,
+  result: ToolExecutionResult,
+): Promise<void> {
+  if (!conceptPageWriteTarget(input)) {
+    return;
+  }
+  try {
+    await preserveProjectScopeOnConceptPageWrite(input, result);
+  } catch (err) {
+    log.warn(
+      { err, toolName: name },
+      "concept page project-scope guard failed; the page keeps the written content",
+    );
+  }
+  invalidateEdgeIndex(getWorkspaceDir());
+  invalidatePageIndex(getWorkspaceDir());
+}
+registerHook("file_write", handleConceptPageWrite);
+registerHook("file_edit", handleConceptPageWrite);
 
 // ── Runner ───────────────────────────────────────────────────────────
 

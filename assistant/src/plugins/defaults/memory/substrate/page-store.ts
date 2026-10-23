@@ -37,6 +37,13 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { FRONTMATTER_REGEX } from "../frontmatter.js";
 import { invalidateEdgeIndex } from "./edge-index.js";
 import { invalidatePageIndex } from "./page-index.js";
+import {
+  type DeclaredProjectScope,
+  GLOBAL_PROJECT_SCOPE,
+  mergeProjectScope,
+  type PageProjectScope,
+  projectScopeFromFrontmatter,
+} from "./project-scope.js";
 import { type ConceptPage, ConceptPageFrontmatterSchema } from "./types.js";
 
 /** Filename suffix for concept pages. */
@@ -311,12 +318,59 @@ export async function getPageMtimeMs(
 }
 
 /**
+ * Read a page's project scope. Returns the global scope for a missing page, so
+ * callers can treat "unknown" and "global" the same way. Malformed
+ * frontmatter is not fatal here: the scope is a retrieval hint, so a page that
+ * cannot be parsed is reported as global and the normal read path surfaces the
+ * failure elsewhere.
+ */
+export async function readPageProjectScope(
+  workspaceDir: string,
+  slug: string,
+): Promise<PageProjectScope> {
+  try {
+    const page = await readPage(workspaceDir, slug);
+    return page
+      ? projectScopeFromFrontmatter(page.frontmatter)
+      : GLOBAL_PROJECT_SCOPE;
+  } catch {
+    return GLOBAL_PROJECT_SCOPE;
+  }
+}
+
+/** Write a page's scope into a copy of its frontmatter, omitting the fields at
+ *  their default values so a global, non-exclusive page keeps a clean
+ *  frontmatter. */
+export function applyProjectScopeToFrontmatter(
+  frontmatter: ConceptPage["frontmatter"],
+  scope: PageProjectScope,
+): ConceptPage["frontmatter"] {
+  const next = { ...frontmatter };
+  if (scope.projects.length > 0) {
+    next.projects = [...scope.projects];
+  } else {
+    delete next.projects;
+  }
+  if (scope.exclusive) {
+    next.exclusive = true;
+  } else {
+    delete next.exclusive;
+  }
+  return next;
+}
+
+/**
  * Write a concept page atomically (temp file + rename). A crash between the
  * temp write and the rename leaves the prior file intact; a crash after the
  * rename leaves the new file. Readers therefore never observe a partial page.
  *
  * Parent directories are created on demand (`mkdir -p`) so nested-folder
  * slugs like `people/alice` work without callers pre-creating the folder.
+ *
+ * The anti-loss project-scope guard runs here, before the write: a
+ * programmatic rewrite that omits `projects`/`exclusive` keeps the values the
+ * page already had (see `mergeProjectScope`). A missing or unreadable previous
+ * page yields the global scope, so creating a page is unaffected.
  */
 export async function writePage(
   workspaceDir: string,
@@ -325,7 +379,40 @@ export async function writePage(
   validateSlug(page.slug);
   const path = getPagePath(workspaceDir, page.slug);
   const tmpPath = `${path}.tmp.${process.pid}.${randomUUID()}`;
-  const content = renderPageContent(page);
+
+  let previous: DeclaredProjectScope | undefined;
+  try {
+    const existing = await readPage(workspaceDir, page.slug);
+    if (existing) {
+      previous = {
+        ...(existing.frontmatter.projects !== undefined
+          ? { projects: existing.frontmatter.projects }
+          : {}),
+        ...(existing.frontmatter.exclusive !== undefined
+          ? { exclusive: existing.frontmatter.exclusive }
+          : {}),
+      };
+    }
+  } catch {
+    // A malformed previous page must not block a rewrite that repairs it.
+    previous = undefined;
+  }
+  const scope = mergeProjectScope(
+    {
+      ...(page.frontmatter.projects !== undefined
+        ? { projects: page.frontmatter.projects }
+        : {}),
+      ...(page.frontmatter.exclusive !== undefined
+        ? { exclusive: page.frontmatter.exclusive }
+        : {}),
+    },
+    previous,
+  );
+  const guarded: ConceptPage = {
+    ...page,
+    frontmatter: applyProjectScopeToFrontmatter(page.frontmatter, scope),
+  };
+  const content = renderPageContent(guarded);
   try {
     await mkdir(dirname(path), { recursive: true });
     await writeFile(tmpPath, content, "utf-8");

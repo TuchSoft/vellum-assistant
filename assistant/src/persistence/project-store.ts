@@ -390,3 +390,75 @@ export async function resolveInheritedProjectIds(
 
   return [];
 }
+
+/**
+ * Every project id that is an ancestor of, or equal to, one of `roots`.
+ *
+ * Inheritance in the project tree flows DOWN: a conversation in a project sees
+ * that project's memory and its descendants' memory, never an ancestor's
+ * exclusive memory that the ancestor did not share. Bounded by
+ * {@link PROJECT_INHERITANCE_MAX_DEPTH} like the conversation walk, and
+ * tolerant of a corrupted pointer chain (a cycle stops expanding).
+ */
+export async function resolveDescendantProjectIds(
+  roots: readonly string[],
+): Promise<string[]> {
+  if (roots.length === 0) {
+    return [];
+  }
+  const db = requireMainDb();
+  const projects = db.schema.projects;
+  const rows = await db.orm
+    .select({ id: projects.id, parentId: projects.parentId })
+    .from(projects);
+  const children = new Map<string, string[]>();
+  for (const row of rows) {
+    if (row.parentId === null) {
+      continue;
+    }
+    const list = children.get(row.parentId) ?? [];
+    list.push(row.id);
+    children.set(row.parentId, list);
+  }
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  let frontier = [...new Set(roots)];
+  for (
+    let depth = 0;
+    frontier.length > 0 && depth < PROJECT_INHERITANCE_MAX_DEPTH;
+    depth += 1
+  ) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      if (seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      out.push(id);
+      next.push(...(children.get(id) ?? []));
+    }
+    frontier = next;
+  }
+  return out;
+}
+
+/**
+ * The project visibility set for one conversation turn.
+ *
+ * `own` is the conversation's project set (its own membership, else the nearest
+ * ancestor that has one — fork, subagent). `visible` is `own` plus every
+ * descendant project: a page owned only by a child project stays retrievable
+ * from the parent's conversation, and a page exclusive to a sibling project
+ * does not.
+ */
+export async function resolveVisibleProjectIds(
+  conversationId: string,
+): Promise<{ own: string[]; visible: string[] }> {
+  const own = await resolveInheritedProjectIds(conversationId);
+  if (own.length === 0) {
+    return { own, visible: [] };
+  }
+  const visible = await resolveDescendantProjectIds(own);
+  return { own, visible };
+}

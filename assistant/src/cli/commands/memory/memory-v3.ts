@@ -13,6 +13,9 @@
  *     synthetic skill/CLI rows) into the dense store, then advance the maintain
  *     checkpoint. For the transition before A/B/cutover, since the collection
  *     starts empty and the incremental maintain pass only re-embeds deltas.
+ *   - `reindex-projects` — one-time: rewrite the `projects`/`exclusive` payload
+ *     on every existing section point from the page frontmatter (no
+ *     re-embedding), for a corpus indexed before project scope existed.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -28,6 +31,7 @@ import type {
   GateStatsResponse,
   MemoryV3BackfillSectionsResult,
   MemoryV3RebuildIndexResult,
+  MemoryV3ReindexProjectsResult,
 } from "../../../plugins/defaults/memory/src/memory-v3-routes.js";
 import { subcommand } from "../../lib/cli-command-help.js";
 import { log } from "../../logger.js";
@@ -169,6 +173,35 @@ export function registerMemoryV3Command(memory: Command): void {
       }
       log.info(
         `Embedded ${payload.sections} sections across ${payload.articles} pages` +
+          (payload.failures > 0
+            ? ` (${payload.failures} page(s) failed — see assistant logs).`
+            : "."),
+      );
+    },
+  );
+
+  // ── reindex-projects ──────────────────────────────────────────────────
+
+  subcommand(v3, "reindex-projects").action(
+    async (opts: { json?: boolean }) => {
+      const result = await cliIpcCall<MemoryV3ReindexProjectsResult>(
+        "memory_v3_reindex_projects",
+        { body: {} },
+        { timeoutMs: BACKFILL_IPC_TIMEOUT_MS },
+      );
+      if (!result.ok) {
+        log.error(result.error ?? "Failed to reindex section project scopes");
+        process.exitCode = 1;
+        return;
+      }
+      const payload = result.result!;
+      if (opts.json === true) {
+        log.info(JSON.stringify(payload, null, 2));
+        return;
+      }
+      log.info(
+        `Updated the project-scope payload on ${payload.points} section point(s) ` +
+          `across ${payload.articles} page(s)` +
           (payload.failures > 0
             ? ` (${payload.failures} page(s) failed — see assistant logs).`
             : "."),

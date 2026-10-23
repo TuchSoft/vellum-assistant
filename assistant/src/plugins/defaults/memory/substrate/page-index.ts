@@ -33,6 +33,7 @@ import {
   listPages,
   readPage,
 } from "./page-store.js";
+import { projectScopeFromFrontmatter } from "./project-scope.js";
 import type { ConceptPage } from "./types.js";
 
 // Dynamic import for `./skill-store.js` happens inside `getPageIndex` so that
@@ -99,6 +100,17 @@ export interface PageIndexEntry {
    * consolidation-facing tier ranking reflects actual edit recency.
    */
   freshAt: number | null;
+  /**
+   * Projects that own the page, from `projects:` in the frontmatter. Empty for
+   * a global page and for synthetic entries (skills, CLI commands). Consumed by
+   * the per-turn visibility predicate; never a database column. Optional on the
+   * type only so hand-built fixtures predating project scope stay valid — the
+   * real builder always populates it.
+   */
+  projects?: string[];
+  /** `exclusive: true` in the frontmatter: the page is retrievable only from
+   *  its owning projects (direct access is never filtered). */
+  exclusive?: boolean;
 }
 
 /**
@@ -179,6 +191,8 @@ export async function getPageIndex(workspaceDir: string): Promise<PageIndex> {
     leaves: string[];
     modifiedAt: number;
     freshAt: number | null;
+    projects: string[];
+    exclusive: boolean;
   }
 
   const [{ listSkillEntries }, { listCliCommandEntries }] = await Promise.all([
@@ -242,6 +256,7 @@ export async function getPageIndex(workspaceDir: string): Promise<PageIndex> {
       continue;
     }
     const summarySource = page.frontmatter.summary?.trim() || page.body.trim();
+    const pageScope = projectScopeFromFrontmatter(page.frontmatter);
     drafts.push({
       slug,
       summary: normalizeSummary(summarySource),
@@ -249,6 +264,8 @@ export async function getPageIndex(workspaceDir: string): Promise<PageIndex> {
       leaves: page.frontmatter.leaves ?? [],
       modifiedAt: mtimeMs,
       freshAt: resolveFreshAt(page.frontmatter.origin_date, mtimeMs),
+      projects: pageScope.projects,
+      exclusive: pageScope.exclusive,
     });
     linkSources.push(page);
   }
@@ -261,6 +278,8 @@ export async function getPageIndex(workspaceDir: string): Promise<PageIndex> {
       leaves: [],
       modifiedAt: 0,
       freshAt: null,
+      projects: [],
+      exclusive: false,
     });
   }
 
@@ -272,6 +291,8 @@ export async function getPageIndex(workspaceDir: string): Promise<PageIndex> {
       leaves: [],
       modifiedAt: 0,
       freshAt: null,
+      projects: [],
+      exclusive: false,
     });
   }
 
@@ -289,6 +310,8 @@ export async function getPageIndex(workspaceDir: string): Promise<PageIndex> {
       leaves: draft.leaves,
       modifiedAt: draft.modifiedAt,
       freshAt: draft.freshAt,
+      projects: draft.projects,
+      exclusive: draft.exclusive,
     };
     bySlug.set(entry.slug, entry);
     byId.set(entry.id, entry);
@@ -532,6 +555,8 @@ function buildLocalPageIndex(
       leaves: src.leaves,
       modifiedAt: src.modifiedAt,
       freshAt: src.freshAt,
+      projects: src.projects,
+      exclusive: src.exclusive,
     };
     localBySlug.set(local.slug, local);
     localById.set(local.id, local);

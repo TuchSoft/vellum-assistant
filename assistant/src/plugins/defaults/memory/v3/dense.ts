@@ -19,6 +19,7 @@ import type { AssistantConfig } from "../../../../config/types.js";
 import { isEmbeddingDimensionAvailable } from "../../../../persistence/embeddings/embedding-backend.js";
 import { embedWithBackend } from "../embeddings.js";
 import { getLogger } from "../logging.js";
+import { projectScopeFilter } from "../substrate/project-scope.js";
 import {
   getSectionDenseClient,
   SECTION_COLLECTION,
@@ -73,6 +74,7 @@ export async function denseLaneScored(
   config: AssistantConfig,
   query: string,
   k: number,
+  visibleProjects?: ReadonlySet<string>,
 ): Promise<DenseHitScored[]> {
   if (k <= 0) {
     return [];
@@ -102,6 +104,12 @@ export async function denseLaneScored(
       query: vector,
       limit: k * OVERSAMPLE,
       with_payload: true,
+      // Project scope is applied INSIDE the query: an exclusive page outside
+      // the turn's visible projects never competes for the top-k, so it can
+      // not crowd out visible candidates before the post-filter runs.
+      ...(visibleProjects
+        ? { filter: projectScopeFilter(visibleProjects) }
+        : {}),
     });
     points = result.points;
   } catch (err) {

@@ -26,8 +26,11 @@ import {
 } from "../../../../runtime/auth/route-policy.js";
 import type { RouteDefinition } from "../../../../runtime/routes/types.js";
 import { getLogger } from "../logging.js";
+import { getWorkspaceDir } from "../paths.js";
+import { readPageProjectScope } from "../substrate/page-store.js";
 import { backfillAllSections } from "../v3/maintain-job.js";
 import { MEMORY_V3_INJECTION_GATE_CHECK_NAME } from "../v3/orchestrate.js";
+import { reindexSectionProjectScopes } from "../v3/section-dense-store.js";
 import { invalidateLanes } from "../v3/shadow-plugin.js";
 
 const log = getLogger("memory-v3-routes");
@@ -86,6 +89,43 @@ export async function handleMemoryV3BackfillSections(
 ): Promise<MemoryV3BackfillSectionsResult> {
   const outcome = await backfillAllSections(config);
   log.info(outcome, "memory-v3 section backfill complete (route)");
+  return outcome;
+}
+
+// ---------------------------------------------------------------------------
+// reindex-projects
+// ---------------------------------------------------------------------------
+
+const MemoryV3ReindexProjectsResultSchema = z.object({
+  /** Distinct articles visited in the section collection. */
+  articles: z.number(),
+  /** Section points whose payload was rewritten. */
+  points: z.number(),
+  /** Articles whose payload write failed (logged, non-fatal). */
+  failures: z.number(),
+});
+export type MemoryV3ReindexProjectsResult = z.infer<
+  typeof MemoryV3ReindexProjectsResultSchema
+>;
+
+/**
+ * One-time, idempotent backfill of the `projects` / `exclusive` payload on
+ * every existing section point, read from each page's frontmatter. Needed once
+ * when upgrading a corpus indexed before project scope existed; it rewrites
+ * payloads only (no embeddings, no deletes), so re-running it is safe and
+ * cheap.
+ *
+ * `config` and `workspaceDir` are injectable for tests; production resolves
+ * the live values.
+ */
+export async function handleMemoryV3ReindexProjects(
+  config: AssistantConfig = getConfig(),
+  workspaceDir: string = getWorkspaceDir(),
+): Promise<MemoryV3ReindexProjectsResult> {
+  const outcome = await reindexSectionProjectScopes(config, (article) =>
+    readPageProjectScope(workspaceDir, article),
+  );
+  log.info(outcome, "memory-v3 project-scope reindex complete (route)");
   return outcome;
 }
 
@@ -329,5 +369,16 @@ export const ROUTES: RouteDefinition[] = [
       "One-time: embed every page's sections (incl synthetic skill/CLI rows) into the dense store",
     tags: ["memory"],
     responseBody: MemoryV3BackfillSectionsResultSchema,
+  },
+  {
+    operationId: "memory_v3_reindex_projects",
+    method: "POST",
+    policy: WRITE_POLICY,
+    endpoint: "memory/v3/reindex-projects",
+    handler: () => handleMemoryV3ReindexProjects(),
+    summary:
+      "One-time: rewrite the projects/exclusive payload on every section point from the page frontmatter",
+    tags: ["memory"],
+    responseBody: MemoryV3ReindexProjectsResultSchema,
   },
 ];

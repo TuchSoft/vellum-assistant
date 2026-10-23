@@ -33,6 +33,12 @@ import type { SparseEmbedding } from "../../../../persistence/embeddings/embeddi
 import { resolveQdrantUrl } from "../embeddings.js";
 import { getLogger } from "../logging.js";
 import { getDataDir } from "../paths.js";
+import {
+  GLOBAL_PROJECT_SCOPE,
+  type PageProjectScope,
+  projectScopeFilter,
+  projectScopePayload,
+} from "./project-scope.js";
 
 const log = getLogger("memory-v2-qdrant");
 
@@ -347,6 +353,11 @@ async function ensurePayloadIndexes(): Promise<void> {
   const indexes = [
     { field_name: "slug", field_schema: "keyword" as const },
     { field_name: "kind", field_schema: "keyword" as const },
+    // Project scope (WS-26 F2): `recall`'s activation arm filters this
+    // collection on the same predicate as the v3 section lane, so both fields
+    // must be indexed for strict-mode Qdrant.
+    { field_name: "projects", field_schema: "keyword" as const },
+    { field_name: "exclusive", field_schema: "bool" as const },
   ];
   // Parallel so one "already exists" race on a single index doesn't stall
   // the other create round-trip. v1's `qdrant-client.ts` uses the same
@@ -536,10 +547,17 @@ export async function upsertConceptPageEmbedding(params: {
    * Omitted for plain concept pages.
    */
   kind?: string;
+  /**
+   * The page's project scope. Written into the payload so `recall` can filter
+   * the activation arm with the same predicate as the v3 section lane.
+   * Omitted writes the global, non-exclusive scope (skill and CLI-command
+   * rows are global).
+   */
+  scope?: PageProjectScope;
 }): Promise<void> {
   await ensureConceptPageCollection();
 
-  const { slug, dense, sparse, summary, updatedAt, kind } = params;
+  const { slug, dense, sparse, summary, updatedAt, kind, scope } = params;
   const client = getClient();
   const pointId = pointIdForSlug(slug);
 
@@ -553,7 +571,11 @@ export async function upsertConceptPageEmbedding(params: {
     vector.summary_sparse = summary.sparse;
   }
 
-  const payload: Record<string, unknown> = { slug, updated_at: updatedAt };
+  const payload: Record<string, unknown> = {
+    slug,
+    updated_at: updatedAt,
+    ...projectScopePayload(scope ?? GLOBAL_PROJECT_SCOPE),
+  };
   if (kind !== undefined) {
     payload.kind = kind;
   }
@@ -913,7 +935,7 @@ export async function hybridQueryConceptPages(
   sparse: SparseEmbedding,
   limit: number,
   restrictToSlugs?: readonly string[],
-  options?: { skipSparse?: boolean },
+  options?: { skipSparse?: boolean; visibleProjects?: ReadonlySet<string> },
 ): Promise<ConceptPageQueryResult[]> {
   if (restrictToSlugs && restrictToSlugs.length === 0) {
     // An empty restriction means "no candidates"; skip the round-trip.
@@ -923,9 +945,16 @@ export async function hybridQueryConceptPages(
   await ensureConceptPageCollection();
 
   const client = getClient();
-  const filter = restrictToSlugs
-    ? { must: [{ key: "slug", match: { any: [...restrictToSlugs] } }] }
-    : undefined;
+  const must = restrictToSlugs
+    ? [{ key: "slug", match: { any: [...restrictToSlugs] } }]
+    : [];
+  const scopeFilter = options?.visibleProjects
+    ? projectScopeFilter(options.visibleProjects)
+    : {};
+  const filter =
+    must.length > 0 || Object.keys(scopeFilter).length > 0
+      ? { ...(must.length > 0 ? { must } : {}), ...scopeFilter }
+      : undefined;
 
   // When the caller weighted sparse to zero, skip the round-trip entirely.
   // The downstream fuser (`fuseHit` in `sim.ts`) already treats a missing

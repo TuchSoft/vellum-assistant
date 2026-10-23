@@ -80,6 +80,19 @@ export const ConceptPageFrontmatterSchema = z
     // `date`/`as_of`: `origin_date` is the declared field; the leaked keys
     // stay inert.
     origin_date: z.string().optional(),
+    // Project scope. Declared (not left to the `.passthrough()` catchall) so a
+    // programmatic rewrite round-trips them: the catchall tolerates the keys,
+    // but only a declared field survives `renderPageContent`.
+    //
+    // `projects` lists the projects that own the page; absent or empty means
+    // global. `exclusive` hides the page from retrieval outside its owning
+    // projects (direct access by path or slug is never filtered).
+    //
+    // Both stay OPTIONAL (no `.default()`): the consolidation rewrite guard
+    // must be able to tell "the rewrite omitted the field" (keep the previous
+    // value) apart from "the rewrite set it to empty/false" (clear it).
+    projects: z.array(z.string()).optional(),
+    exclusive: z.boolean().optional(),
   })
   // `.passthrough()`, NOT `.strict()`: tolerate unknown frontmatter keys instead
   // of throwing. Migrated/converted corpora carry leaked source-page fields the

@@ -80,6 +80,11 @@ import {
 import { fireAndForgetTelemetry } from "../../../../telemetry/fire-and-forget.js";
 import { recordWatchdogEvent } from "../../../../telemetry/watchdog-events-store.js";
 import { getLogger } from "../logging.js";
+import {
+  isArticleScopeVisible,
+  type PageProjectScope,
+  projectScopeBoost,
+} from "../substrate/project-scope.js";
 import { injectionUnits } from "./capabilities.js";
 import { denseLaneScored } from "./dense.js";
 import type { EdgeGraph } from "./edge.js";
@@ -292,6 +297,19 @@ export interface OrchestrateDeps {
    *  omitting it just drops the field. The injector reads the same store, so
    *  the two agree for a turn that has not yet committed. */
   isResident?: (slug: Slug, key: string) => boolean;
+  /**
+   * The project visibility set for this turn: the conversation's own projects
+   * plus every descendant. When omitted, scope filtering is OFF (tests and
+   * callers that predate projects keep their behaviour). An EMPTY set means
+   * "global content only": exclusive pages are excluded. */
+  visibleProjectIds?: ReadonlySet<string>;
+  /** The conversation's own project set (not its descendants). Drives the full
+   *  project boost; only meaningful together with `visibleProjectIds`. */
+  ownProjectIds?: ReadonlySet<string>;
+  /** The page's resolved scope, from the frontmatter-derived page index. Used
+   *  for the in-memory lanes, the dense post-filter, and the boost. Omitted
+   *  means every page is global. */
+  articleScope?: (slug: Slug) => PageProjectScope | undefined;
 }
 
 /** A finder-lane candidate, one pool line: the slug, the matched section
@@ -387,18 +405,42 @@ export async function orchestrate(
   const denseK = deps.denseK ?? DEFAULT_DENSE_K;
   const { sections } = deps.sectionIndex;
 
+  // Project scope (WS-26 F2). `visibleProjects === undefined` keeps the
+  // pre-projects behaviour (no filtering). An EMPTY set means "global only".
+  // Every lane below funnels through `isArticleVisible`, which wraps the one
+  // predicate in `substrate/project-scope.ts`; the dense lane applies the same
+  // rule server-side via `projectScopeFilter`.
+  const visibleProjects = deps.visibleProjectIds;
+  const ownProjects = deps.ownProjectIds ?? new Set<string>();
+  const isArticleVisible = (slug: Slug): boolean =>
+    visibleProjects === undefined ||
+    isArticleScopeVisible(deps.articleScope?.(slug), visibleProjects);
+  const projectBoostOf = (slug: Slug): number =>
+    visibleProjects === undefined
+      ? 0
+      : projectScopeBoost(
+          deps.articleScope?.(slug),
+          ownProjects,
+          visibleProjects,
+        );
+
   // The stable prefix: core (file order), hot (score order), fresh (recency
   // order), then always-candidate skills. Hot is computed with core excluded at
   // lane init, fresh with both excluded, always-candidate with all three
   // excluded; the filters here are a cheap defensive dedup so a misbehaving lane
-  // can never double-list a slug.
-  const core = deps.coreSlugs;
-  const hot = deps.hotSlugs.filter((slug) => !core.includes(slug));
+  // can never double-list a slug. Every lane is also project-scope filtered, so
+  // an exclusive page never rides the global prefix into an unrelated turn.
+  const core = deps.coreSlugs.filter(isArticleVisible);
+  const hot = deps.hotSlugs.filter(
+    (slug) => isArticleVisible(slug) && !core.includes(slug),
+  );
   const coreHot = new Set<Slug>([...core, ...hot]);
-  const fresh = deps.freshSlugs.filter((slug) => !coreHot.has(slug));
+  const fresh = deps.freshSlugs.filter(
+    (slug) => isArticleVisible(slug) && !coreHot.has(slug),
+  );
   const coreHotFresh = new Set<Slug>([...coreHot, ...fresh]);
   const always = (deps.alwaysCandidateSlugs ?? []).filter(
-    (slug) => !coreHotFresh.has(slug),
+    (slug) => isArticleVisible(slug) && !coreHotFresh.has(slug),
   );
   const stablePrefix = new Set<Slug>([...coreHotFresh, ...always]);
 
@@ -525,7 +567,12 @@ export async function orchestrate(
       Promise.all([
         Promise.resolve(deps.needle.queryScored(turn.currentMessage, needleK)),
         denseEnabled
-          ? denseLaneScored(deps.denseConfig, turn.currentMessage, denseK)
+          ? denseLaneScored(
+              deps.denseConfig,
+              turn.currentMessage,
+              denseK,
+              visibleProjects,
+            )
           : Promise.resolve([]),
         Promise.resolve(
           replyQuery.length > 0
@@ -533,15 +580,33 @@ export async function orchestrate(
             : [],
         ),
         replyQuery.length > 0 && denseEnabled
-          ? denseLaneScored(deps.denseConfig, replyQuery, replyK)
+          ? denseLaneScored(
+              deps.denseConfig,
+              replyQuery,
+              replyK,
+              visibleProjects,
+            )
           : Promise.resolve([]),
         Promise.all(
           spanQueries.map((chunk) =>
-            denseLaneScored(deps.denseConfig, chunk, spanK),
+            denseLaneScored(deps.denseConfig, chunk, spanK, visibleProjects),
           ),
         ),
       ]),
     );
+  // In-memory project-scope pass over the lexical (needle) and dense results.
+  // The dense query already filters server-side; this pass is the defence
+  // against a stale payload (a page whose frontmatter changed after its points
+  // were indexed) and it applies the SAME predicate to the lexical lanes.
+  const needledLive = needled.filter((hit) => isArticleVisible(hit.article));
+  const densedLive = densed.filter((hit) => isArticleVisible(hit.article));
+  const replyNeedledLive = replyNeedled.filter((hit) =>
+    isArticleVisible(hit.article),
+  );
+  const replyDensedLive = replyDensed.filter((hit) =>
+    isArticleVisible(hit.article),
+  );
+
   // Everything from here to the step-3 selection (finder assembly, the
   // entity and rare-term lanes, the injection gate, edge + learned-edge
   // expansion, pool assembly) is synchronous in-memory work, measured as one
@@ -555,7 +620,7 @@ export async function orchestrate(
   // (see the dense finder loop), so the gate must score the same live set —
   // stale low-scored hits for deleted pages must neither fake dense availability
   // nor drag the gate closed while the live lanes have candidates.
-  const liveDensed = densed.filter((hit) =>
+  const liveDensed = densedLive.filter((hit) =>
     deps.sectionIndex.byArticle.has(hit.article),
   );
 
@@ -617,6 +682,9 @@ export async function orchestrate(
     lane: FinderLane,
     query: string,
   ): void => {
+    if (!isArticleVisible(slug)) {
+      return;
+    }
     const section = doc === undefined ? undefined : sections[doc];
     poolLine(
       doc !== undefined && section
@@ -634,6 +702,9 @@ export async function orchestrate(
   // A rare-term hit is keyed on one query word, which is the line's only
   // snippet term and, through the lane, its tag.
   const addRareHit = (hit: RareTermHit): void => {
+    if (!isArticleVisible(hit.article)) {
+      return;
+    }
     const section = sections[hit.section]!;
     poolLine({
       slug: hit.article,
@@ -651,18 +722,21 @@ export async function orchestrate(
     descriptor: string | undefined,
     lane: FinderLane,
   ): void => {
+    if (!isArticleVisible(slug)) {
+      return;
+    }
     poolLine({ slug, descriptor: descriptor ?? "", lane });
   };
 
   // Step 1a: needle hits, `section` is an index into `sections`.
-  for (const hit of needled) {
+  for (const hit of needledLive) {
     addSectionHit(hit.article, hit.section, "needle", turn.currentMessage);
   }
 
   // Step 1b: dense hits, `section` is the matched ORDINAL; resolve it to the
   // section's index via the section index. An ordinal the in-memory index
   // does not hold yields a section-less candidate (blank descriptor).
-  for (const hit of densed) {
+  for (const hit of densedLive) {
     // A deleted page's points can linger in Qdrant; keep only live-index
     // articles. The section index is rebuilt from `getPageIndex` at `initLanes`,
     // so `byArticle` holds exactly the live pages (synthetic capability slugs
@@ -682,10 +756,10 @@ export async function orchestrate(
   // pooled is a no-op (`poolLine`'s pair dedup), so only a genuinely
   // reply-surfaced section tags `"reply"`; its snippet terms come from the
   // reply text it was scored against.
-  for (const hit of replyNeedled) {
+  for (const hit of replyNeedledLive) {
     addSectionHit(hit.article, hit.section, "reply", replyQuery);
   }
-  for (const hit of replyDensed) {
+  for (const hit of replyDensedLive) {
     if (!deps.sectionIndex.byArticle.has(hit.article)) {
       continue;
     }
@@ -707,7 +781,10 @@ export async function orchestrate(
   // Several chunks can hit one article on different sections; they are
   // pooled strongest cosine first, so chunk order never decides which
   // sections fill the page's cap.
-  const spanHits = spanDensed.flat().sort((a, c) => c.score - a.score);
+  const spanHits = spanDensed
+    .flat()
+    .filter((hit) => isArticleVisible(hit.article))
+    .sort((a, c) => c.score - a.score);
   for (const hit of spanHits) {
     if (!deps.sectionIndex.byArticle.has(hit.article)) {
       continue;
@@ -891,7 +968,7 @@ export async function orchestrate(
       let gate: V3GateResult | null = null;
       try {
         gate = checkV3Gate({
-          needleHits: needled,
+          needleHits: needledLive,
           denseHits: liveDensed,
           config: deps.gateConfig,
         });
@@ -1006,8 +1083,8 @@ export async function orchestrate(
   // `bestSection`'s text is kept only as the select-pool DESCRIPTOR fallback
   // for when the traversed edge carried no curated `links` description.
   const seeds = unique<Slug>([
-    ...needled.map((h) => h.article),
-    ...densed.map((h) => h.article),
+    ...needledLive.map((h) => h.article),
+    ...densedLive.map((h) => h.article),
   ]);
   const surfaced = edgeExpand(deps.edgeGraph, seeds, {
     seedCount: deps.edgeSeeds,
@@ -1050,6 +1127,17 @@ export async function orchestrate(
         "learned",
       );
     }
+  }
+
+  // Project boost (WS-26 F2): a deterministic reordering of the merged finder
+  // tail, applied AFTER every lane has contributed and BEFORE the selector
+  // reads the pool. Never inside Qdrant: cosine similarity has no per-document
+  // weight. Full bonus for the conversation's own projects, attenuated for a
+  // descendant project, zero otherwise; `Array.prototype.sort` is stable, so
+  // equal-boost lines keep their surfacing order and the ordering is
+  // deterministic per turn.
+  if (visibleProjects !== undefined) {
+    finder.sort((a, b) => projectBoostOf(b.slug) - projectBoostOf(a.slug));
   }
 
   // Step 2: assemble the selector pool in cache order — the stable prefix

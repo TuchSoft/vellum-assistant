@@ -19,7 +19,7 @@ import {
   hasActiveJobOfType,
   type MemoryJob,
 } from "../jobs-store.js";
-import { projectPersistedRowText } from "../user-facing-content.js";
+import { indexableTextOfRow } from "../user-facing-content.js";
 import { resolveLexicalIndex } from "./message-lexical.js";
 
 const log = getLogger("lexical-backfill");
@@ -162,7 +162,7 @@ export async function backfillLexicalIndexJob(
       // `send_user_message` turn marked private contributes its delivered
       // message, not the model's working notes.
       sparse: generateSparseEmbedding(
-        projectPersistedRowText(message.content, message.metadata),
+        indexableTextOfRow(message.content, message.metadata),
       ),
       conversationId: message.conversationId,
       createdAt: message.createdAt,

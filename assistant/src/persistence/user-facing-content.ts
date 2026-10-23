@@ -315,3 +315,115 @@ export function projectPersistedRowText(
   const projected = projectPersistedAssistantContent(stored, metadata);
   return typeof projected === "string" ? projected : JSON.stringify(projected);
 }
+
+/**
+ * The text a stored row contributes to the lexical (message-content) search
+ * index and to the excerpts built from a content match.
+ *
+ * The index answers what a reader can read, so it holds the blocks' text and
+ * the readable part of a tool result, never the stored JSON envelope: block
+ * `type` keys, `tool_use_id`, tool inputs and image payloads are structure, not
+ * content. Encoded payloads (an inline `data:` URI or a long base64 run) are
+ * stripped, and a row with no readable block reduces to the empty string
+ * rather than to JSON.
+ *
+ * A row the `send_user_message` gate marked private projects first, so the
+ * index carries the delivered message instead of the model's working notes.
+ */
+export function indexableTextOfRow(
+  stored: string | ContentBlock[],
+  metadata: unknown,
+): string {
+  const projected = projectPersistedAssistantContent(stored, metadata);
+  if (typeof projected === "string") {
+    return indexableTextOfStoredString(projected);
+  }
+  return indexableTextOfBlocks(projected);
+}
+
+/** Shortest uninterrupted base64 run treated as an encoded payload. */
+const ENCODED_RUN_MIN_CHARS = 256;
+
+const NUL_CHARS = /\u0000/g;
+const DATA_URI_BASE64_PREFIX = /data:[^,\s]*;base64,/gi;
+const ENCODED_RUN = new RegExp(
+  `[A-Za-z0-9+/]{${ENCODED_RUN_MIN_CHARS},}={0,2}`,
+  "g",
+);
+
+/**
+ * Remove what must never reach the index: a NUL (only reachable through a JSON
+ * escape, and not representable in Postgres text), a `data:` URI's base64
+ * payload, and any long uninterrupted base64 run.
+ */
+function withoutEncodedPayloads(text: string): string {
+  return text
+    .replace(NUL_CHARS, "")
+    .replace(DATA_URI_BASE64_PREFIX, " ")
+    .replace(ENCODED_RUN, " ");
+}
+
+function indexableTextOfStoredString(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return indexableTextOfBlocks(parsed as ContentBlock[]);
+      }
+      if (typeof parsed === "string") {
+        return withoutEncodedPayloads(parsed).trim();
+      }
+    } catch {
+      // Not JSON: a legacy plain-text row, used as-is below.
+    }
+  }
+  return withoutEncodedPayloads(trimmed).trim();
+}
+
+function indexableTextOfBlocks(blocks: ContentBlock[]): string {
+  const parts: string[] = [];
+  for (const block of blocks) {
+    if (typeof block !== "object" || block === null) {
+      continue;
+    }
+    const record = block as unknown as Record<string, unknown>;
+    switch (record["type"]) {
+      case "text":
+        if (typeof record["text"] === "string") {
+          parts.push(record["text"]);
+        }
+        break;
+      case "tool_result": {
+        const content = record["content"];
+        if (typeof content === "string") {
+          parts.push(content);
+        } else if (Array.isArray(content)) {
+          for (const inner of content) {
+            if (typeof inner !== "object" || inner === null) {
+              continue;
+            }
+            const innerRecord = inner as Record<string, unknown>;
+            if (
+              innerRecord["type"] === "text" &&
+              typeof innerRecord["text"] === "string"
+            ) {
+              parts.push(innerRecord["text"]);
+            }
+          }
+        }
+        break;
+      }
+      case "file":
+        if (typeof record["extracted_text"] === "string") {
+          parts.push(record["extracted_text"]);
+        }
+        break;
+      default:
+        // tool_use inputs, thinking, images and surfaces are not readable
+        // message content: they are structure or private reasoning.
+        break;
+    }
+  }
+  return withoutEncodedPayloads(parts.join("\n")).trim();
+}

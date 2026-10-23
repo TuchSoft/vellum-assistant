@@ -14,7 +14,7 @@ import { withQdrantBreaker } from "../embeddings/qdrant-circuit-breaker.js";
 import { resolveQdrantUrl } from "../embeddings/qdrant-client.js";
 import { asString } from "../job-utils.js";
 import { enqueueMemoryJob, type MemoryJob } from "../jobs-store.js";
-import { projectPersistedRowText } from "../user-facing-content.js";
+import { indexableTextOfRow } from "../user-facing-content.js";
 
 const log = getLogger("messages-lexical-enqueue");
 
@@ -106,7 +106,7 @@ export async function indexMessageLexicalJob(
   // message rather than the model's working notes. Model-facing recall is
   // unaffected, since the memory segment index is written from the raw row.
   await indexMessageToLexical(
-    { ...row, content: projectPersistedRowText(row.content, row.metadata) },
+    { ...row, content: indexableTextOfRow(row.content, row.metadata) },
     config,
   );
 }

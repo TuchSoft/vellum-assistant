@@ -43,7 +43,7 @@ import {
   countMessagesByRoleForConversations,
   latestUserMessageRawContent,
 } from "./message-reads.js";
-import { projectPersistedRowText } from "./user-facing-content.js";
+import { indexableTextOfRow } from "./user-facing-content.js";
 
 type ConversationsTable = SchemaTables["conversations"];
 type AttentionStateTable = SchemaTables["conversationAssistantAttentionState"];
@@ -87,18 +87,17 @@ const CONVERSATION_SEARCH_DISTINCT_LIMIT = 1000;
 const QDRANT_SEARCH_CANDIDATE_LIMIT = 5000;
 
 /**
- * Whether `text` yields at least one usable lexical token (≥2 chars of
- * `[a-z0-9_]`). Queries with none — non-ASCII, single-char, or
- * punctuation-only input like "你", "é", "C++" — cannot be served by content
- * matching: the sparse encoder would still emit noisy 1-char tokens for them,
+ * Whether `text` yields at least one usable lexical token (≥2 characters after
+ * the same Unicode-aware tokenization the sparse encoder applies). Queries
+ * with none — a single character, or punctuation-only input — cannot be served
+ * by content matching: the encoder would emit a noisy 1-char token for them,
  * so the read sites skip the lexical index entirely and fall back to their
- * no-token behavior (title matches only / no evidence).
+ * no-token behavior (title matches only / no evidence). A query in any script
+ * that yields a multi-character token (Cyrillic, CJK, accented Latin) is
+ * searchable.
  */
 export function hasLexicalTokens(text: string): boolean {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9_]+/g)
-    .some((token) => token.trim().length >= 2);
+  return tokenize(text).some((token) => token.length >= 2);
 }
 
 /**
@@ -1270,10 +1269,7 @@ export async function searchConversations(
         // The excerpt is shown to the user, so it quotes what the row's own
         // marker says the user saw: a `send_user_message` turn's plain text is
         // private working notes and never surfaces here.
-        excerpt: buildExcerpt(
-          projectPersistedRowText(m.content, m.metadata),
-          query,
-        ),
+        excerpt: buildExcerpt(indexableTextOfRow(m.content, m.metadata), query),
         createdAt: m.created_at,
       })),
     });

@@ -317,6 +317,7 @@ function startHealthServer(
 
       const fileResponse = await handleFileRoute(req, {
         backend: psonoBackend,
+        records: getMetadataStore(),
         serviceToken,
       });
       if (fileResponse) {

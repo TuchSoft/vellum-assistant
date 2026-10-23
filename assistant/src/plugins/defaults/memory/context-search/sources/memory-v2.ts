@@ -29,14 +29,20 @@ import { extname, join } from "node:path";
 import { safeStringSlice } from "@vellumai/plugin-api";
 
 import { embedWithRetry } from "../../../../../persistence/embeddings/embed.js";
+import { resolveVisibleProjectIds } from "../../../../../persistence/project-store.js";
 import { getLogger } from "../../logging.js";
 import { isPathInsideRoot } from "../../path-containment.js";
 import { getEdgeIndex } from "../../substrate/edge-index.js";
 import {
   getConceptsDir,
+  parsePageContent,
   readPage,
   slugFromConceptPath,
 } from "../../substrate/page-store.js";
+import {
+  isProjectScopeVisible,
+  projectScopeFromFrontmatter,
+} from "../../substrate/project-scope.js";
 import { hybridQueryConceptPages } from "../../substrate/qdrant.js";
 import { fuseHalf } from "../../substrate/sim.js";
 import { generateBm25QueryEmbedding } from "../../substrate/sparse-bm25.js";
@@ -131,9 +137,16 @@ export async function searchMemoryV2Source(
     return { evidence: [] };
   }
 
+  // Project scope (WS-26 F2): `recall` obeys the same predicate as automatic
+  // retrieval. A DB failure degrades to the empty set (global memory only),
+  // which never widens visibility.
+  const visibleProjects = await resolveRecallProjectScope(
+    context.conversationId,
+  );
+
   const [activationEvidence, lexicalEvidence] = await Promise.all([
-    activationEvidenceSafe(query, context, normalizedLimit),
-    lexicalEvidenceSafe(query, context, normalizedLimit * 2),
+    activationEvidenceSafe(query, context, normalizedLimit, visibleProjects),
+    lexicalEvidenceSafe(query, context, normalizedLimit * 2, visibleProjects),
   ]);
 
   return {
@@ -145,6 +158,30 @@ export async function searchMemoryV2Source(
 }
 
 // ---------------------------------------------------------------------------
+// Project scope
+// ---------------------------------------------------------------------------
+
+/**
+ * The project visibility set for a recall turn: the conversation's own
+ * projects plus every descendant. A database failure yields the EMPTY set, so
+ * recall degrades to global memory rather than widening visibility.
+ */
+async function resolveRecallProjectScope(
+  conversationId: string,
+): Promise<ReadonlySet<string>> {
+  try {
+    const { visible } = await resolveVisibleProjectIds(conversationId);
+    return new Set(visible);
+  } catch (err) {
+    log.warn(
+      { err, conversationId },
+      "recall: project scope resolution failed; searching global memory only",
+    );
+    return new Set();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Activation path
 // ---------------------------------------------------------------------------
 
@@ -152,9 +189,10 @@ async function activationEvidenceSafe(
   query: string,
   context: RecallSearchContext,
   limit: number,
+  visibleProjects: ReadonlySet<string>,
 ): Promise<RecallEvidence[]> {
   try {
-    return await activationEvidence(query, context, limit);
+    return await activationEvidence(query, context, limit, visibleProjects);
   } catch (err) {
     log.warn(
       { err },
@@ -168,6 +206,7 @@ async function activationEvidence(
   query: string,
   context: RecallSearchContext,
   limit: number,
+  visibleProjects: ReadonlySet<string>,
 ): Promise<RecallEvidence[]> {
   const trimmedQuery = query.trim();
   if (trimmedQuery.length === 0) {
@@ -189,6 +228,8 @@ async function activationEvidence(
     denseVector,
     sparseVector,
     annLimit,
+    undefined,
+    { visibleProjects },
   );
   if (hits.length === 0) {
     return [];
@@ -259,6 +300,16 @@ async function activationEvidence(
         if (!page) {
           return null;
         }
+        // Defence against a stale payload: re-check the page's own
+        // frontmatter, not just the Qdrant filter above.
+        if (
+          !isProjectScopeVisible(
+            projectScopeFromFrontmatter(page.frontmatter),
+            visibleProjects,
+          )
+        ) {
+          return null;
+        }
         return { slug, score, body: page.body.trim() };
       } catch (err) {
         log.warn({ err, slug }, "Failed to read concept page during recall");
@@ -306,9 +357,10 @@ async function lexicalEvidenceSafe(
   query: string,
   context: RecallSearchContext,
   limit: number,
+  visibleProjects: ReadonlySet<string>,
 ): Promise<RecallEvidence[]> {
   try {
-    return await lexicalEvidence(query, context, limit);
+    return await lexicalEvidence(query, context, limit, visibleProjects);
   } catch (err) {
     log.warn({ err }, "Memory v2 lexical recall fallback failed");
     return [];
@@ -319,6 +371,7 @@ async function lexicalEvidence(
   query: string,
   context: RecallSearchContext,
   limit: number,
+  visibleProjects: ReadonlySet<string>,
 ): Promise<RecallEvidence[]> {
   const queryTerms = tokenizeSalientRecallTerms(query);
   if (queryTerms.size === 0 || limit <= 0) {
@@ -339,6 +392,7 @@ async function lexicalEvidence(
     matches,
     visitedDirectories,
     context.signal,
+    visibleProjects,
   );
 
   return matches
@@ -370,6 +424,7 @@ async function walkConceptsDirectory(
   matches: MemoryV2LexicalMatch[],
   visitedDirectories: Set<string>,
   signal: AbortSignal | undefined,
+  visibleProjects: ReadonlySet<string>,
 ): Promise<void> {
   throwIfAborted(signal);
 
@@ -416,6 +471,7 @@ async function walkConceptsDirectory(
         matches,
         visitedDirectories,
         signal,
+        visibleProjects,
       );
       continue;
     }
@@ -432,6 +488,7 @@ async function walkConceptsDirectory(
       entryRealPath,
       conceptsRoot,
       queryTerms,
+      visibleProjects,
     );
     if (match) {
       matches.push(match);
@@ -443,6 +500,7 @@ async function searchConceptFile(
   filePath: string,
   conceptsRoot: string,
   queryTerms: ReadonlySet<string>,
+  visibleProjects: ReadonlySet<string>,
 ): Promise<MemoryV2LexicalMatch | null> {
   let contents;
   try {
@@ -458,6 +516,22 @@ async function searchConceptFile(
   }
 
   const slug = slugFromConceptPath(conceptsRoot, filePath);
+  // Project scope: the same predicate as the activation arm and the automatic
+  // retrieval lanes. Malformed frontmatter is treated as global (visible),
+  // matching the page index's own tolerance.
+  try {
+    const page = parsePageContent(slug, contents);
+    if (
+      !isProjectScopeVisible(
+        projectScopeFromFrontmatter(page.frontmatter),
+        visibleProjects,
+      )
+    ) {
+      return null;
+    }
+  } catch {
+    // Unparseable page: keep the lexical match rather than hide the file.
+  }
   const slugTerms = termOverlap(tokenizeSalientRecallTerms(slug), queryTerms);
   const score =
     bestLine.matchedTerms.size / queryTerms.size + slugTerms.size * 0.35;

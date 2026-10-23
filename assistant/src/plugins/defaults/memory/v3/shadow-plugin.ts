@@ -48,12 +48,14 @@ import {
 } from "../../../../daemon/turn-latency-sub-spans.js";
 import type { AsyncDb } from "../../../../persistence/db-facade.js";
 import { enqueueMemoryJob } from "../../../../persistence/jobs-store.js";
+import { resolveVisibleProjectIds } from "../../../../persistence/project-store.js";
 import { stripCommentLines } from "../host-utils.js";
 import { getLogger } from "../logging.js";
 import { memoryDbOrNull } from "../memory-db.js";
 import { getWorkspaceDir, getWorkspacePromptPath } from "../paths.js";
 import { getPageIndex, invalidatePageIndex } from "../substrate/page-index.js";
 import { readPage, renderPageContent } from "../substrate/page-store.js";
+import type { PageProjectScope } from "../substrate/project-scope.js";
 import {
   capabilityOrDiskBody,
   renderCapabilityContent,
@@ -829,6 +831,57 @@ export async function backfillMemoryV3SelectionMessageId(
 }
 
 /**
+ * Resolve the per-turn project scope: the conversation's own project set, the
+ * full visibility set (own plus every descendant), and a page-scope lookup
+ * backed by the frontmatter-derived page index.
+ *
+ * A database failure degrades to EMPTY sets: the turn then sees global memory
+ * only, which is conservative (project-exclusive pages are hidden for one turn)
+ * and never widens visibility. A page-index failure degrades to "every page is
+ * global", logged; the lanes still work and only the scope hint is lost.
+ */
+async function resolveTurnProjectScope(conversationId: string): Promise<{
+  own: ReadonlySet<string>;
+  visible: ReadonlySet<string>;
+  articleScope: (slug: Slug) => PageProjectScope | undefined;
+}> {
+  let own: string[] = [];
+  let visible: string[] = [];
+  try {
+    const resolved = await resolveVisibleProjectIds(conversationId);
+    own = resolved.own;
+    visible = resolved.visible;
+  } catch (err) {
+    log.warn(
+      { err, conversationId },
+      "memory-v3: project scope resolution failed; this turn sees global memory only",
+    );
+  }
+
+  const articleScope = new Map<string, PageProjectScope>();
+  try {
+    const index = await getPageIndex(getWorkspaceDir());
+    for (const entry of index.entries) {
+      articleScope.set(entry.slug, {
+        projects: entry.projects ?? [],
+        exclusive: entry.exclusive ?? false,
+      });
+    }
+  } catch (err) {
+    log.warn(
+      { err },
+      "memory-v3: page index unavailable for project scope; treating pages as global",
+    );
+  }
+
+  return {
+    own: new Set(own),
+    visible: new Set(visible),
+    articleScope: (slug) => articleScope.get(slug),
+  };
+}
+
+/**
  * Run v3 orchestration for one turn and log the selection set, returning the
  * orchestrate result so a live caller can render it. Never throws — all
  * failures are logged and swallowed (returning `null`) so the live turn is
@@ -872,6 +925,12 @@ export async function observeTurn(
       v3.selectorPromptPath,
       getWorkspaceDir(),
     );
+    // Project scope for this turn: the conversation's own projects plus every
+    // descendant, and the per-page scope from the frontmatter-derived page
+    // index. Both resolved per turn (the page index is cached and invalidated
+    // on concept-page writes) so a page whose `projects`/`exclusive` changed
+    // takes effect on the next turn without a lane rebuild.
+    const projectScope = await resolveTurnProjectScope(conversationId);
     const result = await orchestrate(turn, {
       sectionIndex: lanes.sectionIndex,
       needle: lanes.needle,
@@ -909,6 +968,9 @@ export async function observeTurn(
       // kill-switch included. Read-only downstream, so the config object is
       // passed as-is.
       gateConfig: v3.gate,
+      visibleProjectIds: projectScope.visible,
+      ownProjectIds: projectScope.own,
+      articleScope: projectScope.articleScope,
     });
 
     // A zero-selection turn over a non-trivial pool is unusual enough to be

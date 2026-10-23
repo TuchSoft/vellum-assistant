@@ -2604,3 +2604,75 @@ describe("selector infrastructure failure", () => {
     ).rejects.toThrow("no pre-rendered card");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Project scope (WS-26 F2)
+// ---------------------------------------------------------------------------
+
+describe("orchestrate — project scope", () => {
+  test("an exclusive page outside the visible projects never enters a lane", async () => {
+    const lanes = await customLanes({
+      "proj/alpha": "apple alpha lead",
+      "proj/beta": "apple beta lead",
+    });
+    providerStub = selectProvider([]);
+
+    const result = await orchestrate(
+      makeTurn(1, "apple"),
+      depsOf(lanes, {
+        coreSlugs: ["proj/beta"],
+        visibleProjectIds: new Set(["p1"]),
+        ownProjectIds: new Set(["p1"]),
+        articleScope: (slug) =>
+          slug === "proj/beta"
+            ? { projects: ["p2"], exclusive: true }
+            : { projects: [], exclusive: false },
+      }),
+    );
+
+    expect(result.lanes.finder.map((c) => c.slug)).toContain("proj/alpha");
+    expect(result.lanes.finder.map((c) => c.slug)).not.toContain("proj/beta");
+    // The global stable-prefix lane is filtered too.
+    expect(result.lanes.core).toEqual([]);
+  });
+
+  test("the project boost reorders the merged finder tail deterministically", async () => {
+    const lanes = await customLanes({
+      "proj/alpha": "apple apple apple only zzzz",
+      "proj/beta": "apple something else entirely",
+    });
+    providerStub = selectProvider([]);
+
+    const scope = (slug: Slug) =>
+      slug === "proj/beta"
+        ? { projects: ["p1"], exclusive: false }
+        : { projects: [], exclusive: false };
+
+    const unboosted = await orchestrate(
+      makeTurn(1, "apple"),
+      depsOf(lanes, {
+        visibleProjectIds: new Set<string>(),
+        ownProjectIds: new Set<string>(),
+        articleScope: scope,
+      }),
+    );
+    const boosted = await orchestrate(
+      makeTurn(1, "apple"),
+      depsOf(lanes, {
+        visibleProjectIds: new Set(["p1"]),
+        ownProjectIds: new Set(["p1"]),
+        articleScope: scope,
+      }),
+    );
+
+    const alphaIdx = (result: typeof unboosted) =>
+      result.lanes.finder.findIndex((c) => c.slug === "proj/alpha");
+    const betaIdx = (result: typeof unboosted) =>
+      result.lanes.finder.findIndex((c) => c.slug === "proj/beta");
+
+    // Without the project, BM25 order wins (alpha carries more matches).
+    expect(alphaIdx(unboosted)).toBeLessThan(betaIdx(unboosted));
+    // With the project, the boosted page leads the tail.
+    expect(betaIdx(boosted)).toBeLessThan(alphaIdx(boosted));
+  });
+});

@@ -36,7 +36,12 @@ type MockPoint = {
     summary_dense?: number[];
     summary_sparse?: { indices: number[]; values: number[] };
   };
-  payload: { slug: string; updated_at: number };
+  payload: {
+    slug: string;
+    updated_at: number;
+    projects?: string[];
+    exclusive?: boolean;
+  };
 };
 
 type MockCollectionInfo = {
@@ -299,10 +304,12 @@ describe("memory v2 qdrant — collection lifecycle", () => {
     });
     expect(params.on_disk_payload).toBe(true);
 
-    // Slug + kind payload indexes are created up front.
+    // Slug + kind + project-scope payload indexes are created up front.
     expect(state.createIndexCalls).toEqual([
       { field_name: "slug", field_schema: "keyword" },
       { field_name: "kind", field_schema: "keyword" },
+      { field_name: "projects", field_schema: "keyword" },
+      { field_name: "exclusive", field_schema: "bool" },
     ]);
   });
 
@@ -324,6 +331,8 @@ describe("memory v2 qdrant — collection lifecycle", () => {
     expect(state.createIndexCalls).toEqual([
       { field_name: "slug", field_schema: "keyword" },
       { field_name: "kind", field_schema: "keyword" },
+      { field_name: "projects", field_schema: "keyword" },
+      { field_name: "exclusive", field_schema: "bool" },
     ]);
     expect(state.collectionExistsCalls).toBe(1);
     // The sparse indexes already sit on disk — no placement update issued.
@@ -436,6 +445,8 @@ describe("memory v2 qdrant — collection lifecycle", () => {
     expect(state.createIndexCalls).toEqual([
       { field_name: "slug", field_schema: "keyword" },
       { field_name: "kind", field_schema: "keyword" },
+      { field_name: "projects", field_schema: "keyword" },
+      { field_name: "exclusive", field_schema: "bool" },
     ]);
   });
 
@@ -631,10 +642,12 @@ describe("memory v2 qdrant — collection lifecycle", () => {
     }
     expect((caught as Error | null)?.message).toMatch(/strict mode/i);
 
-    // Both attempts ran; the strict-mode failure was not swallowed.
+    // Every attempt ran; the strict-mode failure was not swallowed.
     expect(state.createIndexCalls).toEqual([
       { field_name: "slug", field_schema: "keyword" },
       { field_name: "kind", field_schema: "keyword" },
+      { field_name: "projects", field_schema: "keyword" },
+      { field_name: "exclusive", field_schema: "bool" },
     ]);
 
     // Readiness must NOT be latched after a non-benign failure — otherwise
@@ -646,8 +659,12 @@ describe("memory v2 qdrant — collection lifecycle", () => {
     expect(state.createIndexCalls).toEqual([
       { field_name: "slug", field_schema: "keyword" },
       { field_name: "kind", field_schema: "keyword" },
+      { field_name: "projects", field_schema: "keyword" },
+      { field_name: "exclusive", field_schema: "bool" },
       { field_name: "slug", field_schema: "keyword" },
       { field_name: "kind", field_schema: "keyword" },
+      { field_name: "projects", field_schema: "keyword" },
+      { field_name: "exclusive", field_schema: "bool" },
     ]);
   });
 
@@ -728,6 +745,8 @@ describe("memory v2 qdrant — upsert", () => {
     expect(point.payload).toEqual({
       slug: "alice-prefers-vs-code",
       updated_at: 1714000000000,
+      projects: [],
+      exclusive: false,
     });
     expect(point.vector.dense).toEqual([0.1, 0.2, 0.3]);
     expect(point.vector.sparse).toEqual({

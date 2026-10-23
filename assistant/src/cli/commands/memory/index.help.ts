@@ -454,6 +454,7 @@ safely.
 Examples:
   $ assistant memory v3 rebuild-index
   $ assistant memory v3 backfill-sections
+  $ assistant memory v3 reindex-projects
   $ assistant memory v3 gate-stats
   $ assistant memory v3 gate-stats --lookback-days 7 --json`,
       subcommands: [
@@ -493,6 +494,29 @@ configuration and advances the checkpoint the assistant reads.
 Examples:
   $ assistant memory v3 backfill-sections
   $ assistant memory v3 backfill-sections --json | jq '.sections'`,
+        },
+        {
+          name: "reindex-projects",
+          description:
+            "One-time: rewrite the projects/exclusive payload on existing section points",
+          options: [
+            {
+              flags: "--json",
+              description: "Emit raw JSON instead of a formatted summary",
+            },
+          ],
+          helpText: `
+Rewrites the \`projects\` and \`exclusive\` payload fields of every section
+point in the dense store from the page frontmatter. Needed once on a corpus
+indexed before project scope existed; points indexed afterwards carry the
+fields from their page automatically.
+
+Payload only: no embeddings are recomputed and no points are deleted, so it
+is idempotent and safe to re-run after a bulk frontmatter edit.
+
+Examples:
+  $ assistant memory v3 reindex-projects
+  $ assistant memory v3 reindex-projects --json | jq '.points'`,
         },
         {
           name: "eval",

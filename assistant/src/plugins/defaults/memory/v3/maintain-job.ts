@@ -96,6 +96,8 @@ import { getWorkspaceDir } from "../paths.js";
 import { skillSlugFor } from "../substrate/capability-slugs.js";
 import { getPageIndex } from "../substrate/page-index.js";
 import { readPage } from "../substrate/page-store.js";
+import { readPageProjectScope } from "../substrate/page-store.js";
+import type { PageProjectScope } from "../substrate/project-scope.js";
 import { capabilityOrDiskBody, isCapabilitySlug } from "./capabilities.js";
 import { loadCoreSet as realLoadCoreSet } from "./core-set.js";
 import {
@@ -151,6 +153,10 @@ export interface MaintainJobDeps {
   buildSectionIndex: typeof realBuildSectionIndex;
   /** Read a page's frontmatter-stripped body for `buildSectionIndex`. */
   readPageBody: (slug: Slug) => Promise<string>;
+  /** Read a page's project scope (`projects`/`exclusive`) for the section
+   *  payload. Optional: absent writes the global scope, which is the correct
+   *  default for a caller that does not track scope. */
+  readPageScope?: (slug: Slug) => Promise<PageProjectScope>;
   /**
    * Capability-aware body reader for the reconcile stage: synthetic skill/CLI
    * slugs resolve their rendered capability content; real pages read from disk.
@@ -246,6 +252,9 @@ export interface BackfillJobDeps {
   buildSectionIndex: typeof realBuildSectionIndex;
   /** Read a page's body; capability slugs resolve their rendered content. */
   readPageBody: (slug: Slug) => Promise<string>;
+  /** Read a page's project scope for the section payload. Optional, same
+   *  contract as {@link MaintainJobDeps.readPageScope}. */
+  readPageScope?: (slug: Slug) => Promise<PageProjectScope>;
   /** Clear an article's stale section points before re-upserting. */
   deleteSectionsForArticle: typeof realDeleteSectionsForArticle;
   /** Embed + upsert an article's current sections into the dense store. */
@@ -444,6 +453,7 @@ function defaultDeps(config: AssistantConfig): MaintainJobDeps {
     selectChangedPages: () => selectChangedPagesFromWorkspace(workspaceDir),
     buildSectionIndex: realBuildSectionIndex,
     readPageBody: (slug) => readPageBodyFromWorkspace(workspaceDir, slug),
+    readPageScope: (slug) => readPageProjectScope(workspaceDir, slug),
     readCapabilityBody: (slug) =>
       backfillPageBodyFromWorkspace(workspaceDir, slug),
     deleteSectionsForArticle: realDeleteSectionsForArticle,
@@ -482,6 +492,7 @@ function defaultBackfillDeps(config: AssistantConfig): BackfillJobDeps {
     ensureSectionCollection: realEnsureSectionCollection,
     buildSectionIndex: realBuildSectionIndex,
     readPageBody: (slug) => backfillPageBodyFromWorkspace(workspaceDir, slug),
+    readPageScope: (slug) => readPageProjectScope(workspaceDir, slug),
     deleteSectionsForArticle: realDeleteSectionsForArticle,
     upsertSections: realUpsertSections,
     warmSectionEmbeddings: realWarmSectionEmbeddings,
@@ -511,8 +522,13 @@ async function reembedChangedPages(
   for (const slug of slugs) {
     try {
       const index = await deps.buildSectionIndex([slug], deps.readPageBody);
+      const scope = await deps.readPageScope?.(slug);
       await deps.deleteSectionsForArticle(deps.config, slug);
-      await deps.upsertSections(deps.config, index.sections);
+      await deps.upsertSections(
+        deps.config,
+        index.sections,
+        scope ? new Map([[slug, scope]]) : undefined,
+      );
       reembedded += 1;
     } catch (err) {
       reembedFailures += 1;
@@ -868,8 +884,13 @@ export async function backfillAllSections(
         }
       }
       const index = await deps.buildSectionIndex([slug], deps.readPageBody);
+      const scope = await deps.readPageScope?.(slug);
       await deps.deleteSectionsForArticle(deps.config, slug);
-      await deps.upsertSections(deps.config, index.sections);
+      await deps.upsertSections(
+        deps.config,
+        index.sections,
+        scope ? new Map([[slug, scope]]) : undefined,
+      );
       articles += 1;
       sections += index.sections.length;
       return "embedded";

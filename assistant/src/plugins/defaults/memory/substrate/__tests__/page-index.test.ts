@@ -81,6 +81,8 @@ function makePage(
     body?: string;
     leaves?: string[];
     originDate?: string;
+    projects?: string[];
+    exclusive?: boolean;
   } = {},
 ): ConceptPage {
   return {
@@ -94,6 +96,8 @@ function makePage(
       ...(opts.originDate !== undefined
         ? { origin_date: opts.originDate }
         : {}),
+      ...(opts.projects !== undefined ? { projects: opts.projects } : {}),
+      ...(opts.exclusive !== undefined ? { exclusive: opts.exclusive } : {}),
     },
     body: opts.body ?? "",
   };
@@ -331,6 +335,28 @@ describe("getPageIndex", () => {
 
     const idx = await getPageIndex(workspaceDir);
     expect(idx.bySlug.get("alice")?.leaves).toEqual([]);
+  });
+
+  test("exposes the project scope on the index entry", async () => {
+    await writePage(
+      workspaceDir,
+      makePage("cliente-x/contratto", {
+        summary: "Contratto",
+        projects: ["cliente-x", "cliente-x/fiscale"],
+        exclusive: true,
+      }),
+    );
+    await writePage(workspaceDir, makePage("globale", { summary: "Globale" }));
+
+    const idx = await getPageIndex(workspaceDir);
+    expect(idx.bySlug.get("cliente-x/contratto")?.projects).toEqual([
+      "cliente-x",
+      "cliente-x/fiscale",
+    ]);
+    expect(idx.bySlug.get("cliente-x/contratto")?.exclusive).toBe(true);
+    // Absent scope resolves to the global, non-exclusive default.
+    expect(idx.bySlug.get("globale")?.projects).toEqual([]);
+    expect(idx.bySlug.get("globale")?.exclusive).toBe(false);
   });
 
   test("seeded skill entries carry an empty leaves list", async () => {

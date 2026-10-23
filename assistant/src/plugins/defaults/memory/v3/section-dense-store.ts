@@ -44,6 +44,11 @@ import {
 import { embedWithBackend, resolveQdrantUrl } from "../embeddings.js";
 import { getLogger } from "../logging.js";
 import { memoryDbOrNull } from "../memory-db.js";
+import {
+  GLOBAL_PROJECT_SCOPE,
+  type PageProjectScope,
+  projectScopePayload,
+} from "../substrate/project-scope.js";
 import type { Section } from "./types.js";
 
 const log = getLogger("memory-v3-section-dense-store");
@@ -481,6 +486,18 @@ export async function ensureSectionCollection(
     field_schema: "keyword",
   });
 
+  // Project-scope indexes. The dense lane filters every query on `exclusive`
+  // and `projects`, so both must be indexed or a strict-mode Qdrant rejects the
+  // filter (same rule as `article`). Idempotent server-side.
+  await client.createPayloadIndex(SECTION_COLLECTION, {
+    field_name: "projects",
+    field_schema: "keyword",
+  });
+  await client.createPayloadIndex(SECTION_COLLECTION, {
+    field_name: "exclusive",
+    field_schema: "bool",
+  });
+
   _collectionReady = true;
 }
 
@@ -631,7 +648,13 @@ function sectionCacheId(article: string, ordinal: number): string {
  * deterministic `(article, ordinal)`-derived ID. Stable IDs mean re-upserting
  * the same sections overwrites in place rather than accumulating duplicates,
  * so the operation is idempotent. Payload carries `{ article, ordinal, title }`
- * for downstream filtering and rendering.
+ * plus the page's project scope (`projects`, `exclusive`) for downstream
+ * filtering and rendering.
+ *
+ * `scopeByArticle` supplies the per-page scope read from the page frontmatter.
+ * A page absent from the map is global and non-exclusive, which is also the
+ * correct default for synthetic capability rows and for a caller that does not
+ * track scope at all.
  *
  * Unchanged sections are served from the `memory_embeddings` cache rather than
  * re-embedded — see {@link embedSectionsCached} — so a maintain pass that
@@ -642,6 +665,7 @@ function sectionCacheId(article: string, ordinal: number): string {
 export async function upsertSections(
   config: AssistantConfig,
   sections: Section[],
+  scopeByArticle?: ReadonlyMap<string, PageProjectScope>,
 ): Promise<void> {
   if (sections.length === 0) {
     return;
@@ -656,6 +680,7 @@ export async function upsertSections(
     if (!vector) {
       return [];
     }
+    const scope = scopeByArticle?.get(section.article) ?? GLOBAL_PROJECT_SCOPE;
     return [
       {
         id: pointIdForSection(section.article, section.ordinal),
@@ -664,6 +689,7 @@ export async function upsertSections(
           article: section.article,
           ordinal: section.ordinal,
           title: section.title,
+          ...projectScopePayload(scope),
         },
       },
     ];
@@ -883,6 +909,83 @@ export async function listSectionArticles(
   }
 
   return [...articles];
+}
+
+/** Result of {@link reindexSectionProjectScopes}. */
+export interface SectionProjectScopeReindexResult {
+  /** Distinct articles visited. */
+  articles: number;
+  /** Section points whose payload was rewritten. */
+  points: number;
+  /** Articles whose payload write failed (logged, not fatal). */
+  failures: number;
+}
+
+/**
+ * Rewrite the project-scope payload (`projects`, `exclusive`) of every existing
+ * section point for one article, without touching vectors or re-embedding.
+ * Idempotent: setting the same payload twice is a no-op server-side.
+ */
+export async function setSectionProjectScope(
+  config: AssistantConfig,
+  article: string,
+  scope: PageProjectScope,
+): Promise<void> {
+  await ensureSectionCollection(config);
+  await getSectionDenseClient().setPayload(SECTION_COLLECTION, {
+    payload: projectScopePayload(scope),
+    filter: { must: [{ key: "article", match: { value: article } }] },
+    wait: true,
+  });
+}
+
+/**
+ * One-time, idempotent backfill of the project-scope payload across the whole
+ * section collection.
+ *
+ * Needed because points indexed before the scope existed carry no `projects` /
+ * `exclusive`. The dense lane's filter treats a missing `exclusive` as
+ * non-exclusive, so those points stay visible; this pass makes the payload
+ * explicit and, crucially, applies `exclusive` to pages that declare it. It
+ * only rewrites payloads (no embeddings, no deletes), so it is safe to re-run
+ * and cheap enough to run again after a bulk frontmatter edit.
+ *
+ * `resolveScope` is injected so the caller owns the workspace read (the CLI
+ * passes `readPageProjectScope`); an article the resolver cannot place is
+ * written as global. Per-article failures are counted and logged, never
+ * thrown: one unreadable page must not abort the pass.
+ */
+export async function reindexSectionProjectScopes(
+  config: AssistantConfig,
+  resolveScope: (article: string) => Promise<PageProjectScope>,
+): Promise<SectionProjectScopeReindexResult> {
+  await ensureSectionCollection(config);
+  const articles = await listSectionArticles(config);
+  let points = 0;
+  let failures = 0;
+  for (const article of articles) {
+    try {
+      const scope = await resolveScope(article);
+      await setSectionProjectScope(config, article, scope);
+      points += await countSectionsForArticle(article);
+    } catch (err) {
+      failures += 1;
+      log.warn(
+        { article, err: err instanceof Error ? err.message : String(err) },
+        "memory-v3 reindex: project-scope payload update failed (non-fatal)",
+      );
+    }
+  }
+  return { articles: articles.length, points, failures };
+}
+
+/** Count the section points belonging to one article. */
+async function countSectionsForArticle(article: string): Promise<number> {
+  const result = await getSectionDenseClient().count(SECTION_COLLECTION, {
+    exact: true,
+    filter: { must: [{ key: "article", match: { value: article } }] },
+  });
+  return result.count;
 }
 
 /** @internal Test-only: reset module-level singletons. */

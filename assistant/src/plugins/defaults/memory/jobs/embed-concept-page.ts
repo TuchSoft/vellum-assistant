@@ -45,6 +45,7 @@ import { getLogger } from "../logging.js";
 import { memoryDbOrNull } from "../memory-db.js";
 import { getWorkspaceDir } from "../paths.js";
 import { readPage } from "../substrate/page-store.js";
+import { projectScopeFromFrontmatter } from "../substrate/project-scope.js";
 import {
   deleteConceptPageEmbedding,
   upsertConceptPageEmbedding,
@@ -324,6 +325,7 @@ export async function embedConceptPageJob(
           ? { dense: correctedSummaryDense, sparse: summarySparse }
           : undefined,
       updatedAt: now,
+      scope: projectScopeFromFrontmatter(page.frontmatter),
     }),
   );
 }

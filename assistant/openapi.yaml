@@ -8376,6 +8376,81 @@ paths:
                   - conversationType
                   - created
                 additionalProperties: false
+  /v1/conversations/{conversationId}/projects:
+    get:
+      operationId: conversations_by_conversationId_projects_get
+      summary: Get conversation projects
+      description: Return the project set of a conversation.
+      tags:
+        - conversations
+        - projects
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projectIds:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - projectIds
+                additionalProperties: false
+    put:
+      operationId: conversations_by_conversationId_projects_put
+      summary: Replace conversation projects
+      description: Replace the project set of a conversation. There is no primary project.
+      tags:
+        - conversations
+        - projects
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                projectIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+              required:
+                - projectIds
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projectIds:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - projectIds
+                additionalProperties: false
+        "400":
+          description: A project in the set is archived
+        "404":
+          description: Conversation or project not found
   /v1/conversations/{conversationId}/slack-channel/resolve:
     post:
       operationId: conversations_by_conversationId_slackchannel_resolve_post
@@ -28007,6 +28082,273 @@ paths:
       responses:
         "200":
           description: Successful response
+  /v1/projects:
+    get:
+      operationId: projects_get
+      summary: List projects
+      description:
+        Return the project tree, Inbox included. System bucket projects and archived projects are excluded unless
+        requested.
+      tags:
+        - projects
+      parameters:
+        - name: includeArchived
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Include archived projects.
+        - name: includeSystem
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Include the system bucket projects.
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProjectTreeNode"
+                required:
+                  - projects
+                additionalProperties: false
+    post:
+      operationId: projects_post
+      summary: Create project
+      description: Create a user project. The server assigns the id and the sort position.
+      tags:
+        - projects
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                description:
+                  anyOf:
+                    - type: string
+                      maxLength: 4000
+                    - type: "null"
+                parentId:
+                  anyOf:
+                    - type: string
+                      minLength: 1
+                    - type: "null"
+              required:
+                - name
+      responses:
+        "201":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  description:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  parentId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  kind:
+                    type: string
+                    enum:
+                      - user
+                      - system
+                      - inbox
+                  sortPosition:
+                    type: number
+                  isArchived:
+                    type: boolean
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                  archivedAt:
+                    anyOf:
+                      - type: number
+                      - type: "null"
+                required:
+                  - id
+                  - name
+                  - description
+                  - parentId
+                  - kind
+                  - sortPosition
+                  - isArchived
+                  - createdAt
+                  - updatedAt
+                  - archivedAt
+                additionalProperties: false
+        "400":
+          description: Invalid name or description
+        "404":
+          description: Parent project not found
+  /v1/projects/{projectId}:
+    patch:
+      operationId: projects_by_projectId_patch
+      summary: Rename project
+      description: Rename a project. The project id is stable.
+      tags:
+        - projects
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+              required:
+                - name
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  description:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  parentId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  kind:
+                    type: string
+                    enum:
+                      - user
+                      - system
+                      - inbox
+                  sortPosition:
+                    type: number
+                  isArchived:
+                    type: boolean
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                  archivedAt:
+                    anyOf:
+                      - type: number
+                      - type: "null"
+                required:
+                  - id
+                  - name
+                  - description
+                  - parentId
+                  - kind
+                  - sortPosition
+                  - isArchived
+                  - createdAt
+                  - updatedAt
+                  - archivedAt
+                additionalProperties: false
+        "400":
+          description: Invalid name
+        "404":
+          description: Project not found
+  /v1/projects/{projectId}/archive:
+    post:
+      operationId: projects_by_projectId_archive_post
+      summary: Archive project
+      description: Archive a user project. Inbox and system projects are not archivable.
+      tags:
+        - projects
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  description:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  parentId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  kind:
+                    type: string
+                    enum:
+                      - user
+                      - system
+                      - inbox
+                  sortPosition:
+                    type: number
+                  isArchived:
+                    type: boolean
+                  createdAt:
+                    type: number
+                  updatedAt:
+                    type: number
+                  archivedAt:
+                    anyOf:
+                      - type: number
+                      - type: "null"
+                required:
+                  - id
+                  - name
+                  - description
+                  - parentId
+                  - kind
+                  - sortPosition
+                  - isArchived
+                  - createdAt
+                  - updatedAt
+                  - archivedAt
+                additionalProperties: false
+        "403":
+          description: Project is not archivable
+        "404":
+          description: Project not found
   /v1/ps:
     get:
       operationId: ps_get
@@ -38511,6 +38853,56 @@ components:
       required:
         - ok
         - resolved_url
+      additionalProperties: false
+    ProjectTreeNode:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          anyOf:
+            - type: string
+            - type: "null"
+        parentId:
+          anyOf:
+            - type: string
+            - type: "null"
+        kind:
+          type: string
+          enum:
+            - user
+            - system
+            - inbox
+        sortPosition:
+          type: number
+        isArchived:
+          type: boolean
+        createdAt:
+          type: number
+        updatedAt:
+          type: number
+        archivedAt:
+          anyOf:
+            - type: number
+            - type: "null"
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectTreeNode"
+      required:
+        - id
+        - name
+        - description
+        - parentId
+        - kind
+        - sortPosition
+        - isArchived
+        - createdAt
+        - updatedAt
+        - archivedAt
+        - children
       additionalProperties: false
     ProcessEntry:
       type: object

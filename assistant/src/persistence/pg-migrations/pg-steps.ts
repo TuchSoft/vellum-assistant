@@ -222,4 +222,131 @@ export const PG_STEPS: readonly PgMigrationStep[] = [
       );
     },
   },
+  {
+    name: "0003_projects",
+    up: async (db) => {
+      const now = Date.now();
+
+      // Additive first: every statement below is safe to re-run, so an
+      // interrupted apply resumes instead of failing on a half-built schema.
+      await db.exec(
+        `CREATE TABLE IF NOT EXISTS "projects" (
+          "id" text PRIMARY KEY,
+          "name" text NOT NULL,
+          "description" text,
+          "parent_id" text REFERENCES "projects"("id") ON DELETE SET NULL,
+          "kind" text NOT NULL DEFAULT 'user',
+          "sort_position" double precision NOT NULL DEFAULT 0,
+          "is_archived" boolean NOT NULL DEFAULT false,
+          "created_at" bigint NOT NULL,
+          "updated_at" bigint NOT NULL,
+          "archived_at" bigint,
+          CONSTRAINT "projects_kind_check" CHECK ("kind" IN ('user', 'system', 'inbox')),
+          CONSTRAINT "projects_inbox_not_archived_check" CHECK ("kind" <> 'inbox' OR "archived_at" IS NULL)
+        )`,
+      );
+      await db.exec(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "projects_inbox_singleton" ON "projects" ("kind") WHERE "kind" = 'inbox'`,
+      );
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "idx_projects_parent" ON "projects" ("parent_id")`,
+      );
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "idx_projects_kind_archived" ON "projects" ("kind", "is_archived")`,
+      );
+      await db.exec(
+        `CREATE TABLE IF NOT EXISTS "conversation_projects" (
+          "conversation_id" text NOT NULL REFERENCES "conversations"("id") ON DELETE CASCADE,
+          "project_id" text NOT NULL REFERENCES "projects"("id") ON DELETE CASCADE,
+          PRIMARY KEY ("conversation_id", "project_id")
+        )`,
+      );
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "idx_conversation_projects_project" ON "conversation_projects" ("project_id")`,
+      );
+
+      // The Inbox singleton. `ON CONFLICT DO NOTHING` keeps a re-run inert and
+      // never overwrites a name the user has since changed.
+      await db.run(
+        `INSERT INTO "projects" ("id", "name", "kind", "sort_position", "is_archived", "created_at", "updated_at")
+         VALUES ('inbox', 'Inbox', 'inbox', -1, FALSE, ?, ?)
+         ON CONFLICT ("id") DO NOTHING`,
+        [now, now],
+      );
+
+      // `conversation_groups` and `conversations.group_id` are created by the
+      // runtime group migration, not by the baseline, so a database that has
+      // not run it yet has nothing to backfill. On an upgrade they exist and
+      // carry the groups this step converts.
+      const groupSchema: { groups: boolean; group_id: boolean } | null =
+        await db.get<{ groups: boolean; group_id: boolean }>(
+          `SELECT
+             to_regclass('conversation_groups') IS NOT NULL AS groups,
+             EXISTS (
+               SELECT 1 FROM information_schema.columns
+               WHERE table_schema = current_schema()
+                 AND table_name = 'conversations'
+                 AND column_name = 'group_id'
+             ) AS group_id`,
+        );
+
+      if (groupSchema?.groups === true && groupSchema?.group_id === true) {
+        // User groups become user projects, keeping the group id as the project
+        // id so the mapping is stable and the membership backfill below is a
+        // straight join. `_`-prefixed ids are migration markers, not groups.
+        await db.exec(
+          `INSERT INTO "projects" ("id", "name", "kind", "sort_position", "created_at", "updated_at")
+           SELECT g."id", g."name", 'user', g."sort_position", g."created_at", g."updated_at"
+           FROM "conversation_groups" g
+           WHERE g."is_system_group" = FALSE AND substr(g."id", 1, 1) <> '_'
+           ON CONFLICT ("id") DO NOTHING`,
+        );
+
+        // The background and scheduled buckets keep their own system project
+        // rather than collapsing into the Inbox.
+        await db.exec(
+          `INSERT INTO "projects" ("id", "name", "kind", "sort_position", "created_at", "updated_at")
+           SELECT g."id", g."name", 'system', g."sort_position", g."created_at", g."updated_at"
+           FROM "conversation_groups" g
+           WHERE g."id" IN ('system:background', 'system:scheduled')
+           ON CONFLICT ("id") DO NOTHING`,
+        );
+
+        // Membership for conversations that belonged to a migrated project.
+        // `system:all` and `system:pinned` have no project row, so they fall
+        // through to the Inbox insert below.
+        await db.exec(
+          `INSERT INTO "conversation_projects" ("conversation_id", "project_id")
+           SELECT c."id", c."group_id"
+           FROM "conversations" c
+           JOIN "projects" p ON p."id" = c."group_id"
+           WHERE c."group_id" IS NOT NULL
+           ON CONFLICT ("conversation_id", "project_id") DO NOTHING`,
+        );
+        await db.exec(
+          `INSERT INTO "conversation_projects" ("conversation_id", "project_id")
+           SELECT c."id", 'inbox'
+           FROM "conversations" c
+           WHERE c."group_id" IS NULL OR c."group_id" IN ('system:all', 'system:pinned')
+           ON CONFLICT ("conversation_id", "project_id") DO NOTHING`,
+        );
+      }
+
+      // The two system projects exist even when the group rows are absent, so
+      // the rest of the model has a stable place for background and scheduled
+      // runs.
+      await db.run(
+        `INSERT INTO "projects" ("id", "name", "kind", "sort_position", "created_at", "updated_at")
+         VALUES
+           ('system:background', 'Background', 'system', 1, ?, ?),
+           ('system:scheduled', 'Scheduled', 'system', 2, ?, ?)
+         ON CONFLICT ("id") DO NOTHING`,
+        [now, now, now, now],
+      );
+    },
+    down: async (db) => {
+      await db.exec(`DROP TABLE IF EXISTS "conversation_projects"`);
+      await db.exec(`DROP TABLE IF EXISTS "projects"`);
+    },
+  },
 ];

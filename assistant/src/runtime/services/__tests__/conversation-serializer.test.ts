@@ -63,6 +63,7 @@ async function serialize(
     displayMeta: { displayOrder: null, isPinned, groupId },
     parentCache: new Map(),
     isProcessing: false,
+    projectIds: [],
   });
 }
 
@@ -163,6 +164,24 @@ describe("serializeConversationSummary · enabledPlugins", () => {
   });
 });
 
+describe("serializeConversationSummary · projectIds", () => {
+  test("serializes the resolved project set", async () => {
+    const summary = await serializeConversationSummary({
+      conversation: makeConversationRow(),
+      displayMeta: { displayOrder: null, isPinned: false, groupId: null },
+      parentCache: new Map(),
+      isProcessing: false,
+      projectIds: ["project-a", "project-b"],
+    });
+    expect(summary.projectIds).toEqual(["project-a", "project-b"]);
+  });
+
+  test("serializes an empty set for a conversation with no projects", async () => {
+    const summary = await serialize(makeConversationRow());
+    expect(summary.projectIds).toEqual([]);
+  });
+});
+
 describe("serializeConversationSummary · title keys", () => {
   test("resolves a stored title key for the locale", async () => {
     const summary = await serializeConversationSummary({
@@ -173,6 +192,7 @@ describe("serializeConversationSummary · title keys", () => {
       parentCache: new Map(),
       isProcessing: false,
       locale: "es",
+      projectIds: [],
     });
     expect(summary.title).toBe("Generando título...");
     expect("titleState" in summary).toBe(false);

@@ -8272,6 +8272,10 @@ paths:
                               items:
                                 type: string
                             - type: "null"
+                        projectIds:
+                          type: array
+                          items:
+                            type: string
                         isProcessing:
                           type: boolean
                       required:
@@ -8283,6 +8287,7 @@ paths:
                         - conversationType
                         - source
                         - groupId
+                        - projectIds
                         - isProcessing
                       additionalProperties: false
                   nextOffset:
@@ -8733,6 +8738,10 @@ paths:
                             items:
                               type: string
                           - type: "null"
+                      projectIds:
+                        type: array
+                        items:
+                          type: string
                       isProcessing:
                         type: boolean
                     required:
@@ -8744,6 +8753,7 @@ paths:
                       - conversationType
                       - source
                       - groupId
+                      - projectIds
                       - isProcessing
                     additionalProperties: false
                 required:
@@ -9928,6 +9938,10 @@ paths:
                             items:
                               type: string
                           - type: "null"
+                      projectIds:
+                        type: array
+                        items:
+                          type: string
                       isProcessing:
                         type: boolean
                     required:
@@ -9939,6 +9953,7 @@ paths:
                       - conversationType
                       - source
                       - groupId
+                      - projectIds
                       - isProcessing
                     additionalProperties: false
                 required:

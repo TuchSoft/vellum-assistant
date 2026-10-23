@@ -29,6 +29,7 @@ import {
 import { isReferentialFork } from "../../persistence/conversation-lineage.js";
 import type { ExternalConversationBinding } from "../../persistence/external-conversation-store.js";
 import { getBindingsForConversations } from "../../persistence/external-conversation-store.js";
+import { getConversationProjectIds } from "../../persistence/project-store.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -188,6 +189,12 @@ export async function serializeConversationSummary(params: {
    * inside {@link resolveConversationTitle}.
    */
   locale?: SupportedLocale;
+  /**
+   * Projects the conversation belongs to, resolved by the caller. A list
+   * resolves a whole page with one batched read, so this is plumbed in rather
+   * than read here. An empty array means the conversation has no projects.
+   */
+  projectIds: readonly string[];
 }) {
   const {
     conversation,
@@ -197,6 +204,7 @@ export async function serializeConversationSummary(params: {
     parentCache,
     isProcessing,
     locale,
+    projectIds,
   } = params;
   const originChannel = parseChannelId(conversation.originChannel);
   const assistantAttention = buildAssistantAttention(attentionState);
@@ -247,6 +255,7 @@ export async function serializeConversationSummary(params: {
     ...(conversation.enabledPlugins != null
       ? { enabledPlugins: conversation.enabledPlugins }
       : {}),
+    projectIds: [...projectIds],
     isProcessing,
   };
 }
@@ -289,6 +298,7 @@ export async function buildConversationDetailResponse(
       // persisted `processing_started_at` column for cold conversations.
       isProcessing: await isConversationProcessing(conversation.id),
       locale,
+      projectIds: await getConversationProjectIds(conversation.id),
     }),
   };
 }

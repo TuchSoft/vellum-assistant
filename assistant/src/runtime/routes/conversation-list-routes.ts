@@ -41,6 +41,7 @@ import {
 import { ASSISTANT_INITIATED_GROUP_ID } from "../../persistence/conversation-types.js";
 import { getBindingsForConversations } from "../../persistence/external-conversation-store.js";
 import { listGroups } from "../../persistence/group-crud.js";
+import { getConversationProjectIdsForConversations } from "../../persistence/project-store.js";
 import { UserError } from "../../util/errors.js";
 import { getLogger } from "../../util/logger.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
@@ -137,6 +138,12 @@ export const conversationSummarySchema = z.object({
    * plugins); an explicit `[]` means the user cleared all optional plugins.
    */
   enabledPlugins: z.array(z.string()).nullable().optional(),
+  /**
+   * Projects the conversation belongs to. Always present so a client can read
+   * membership off a list row instead of asking per conversation; an empty
+   * array means no project.
+   */
+  projectIds: z.array(z.string()),
   /**
    * True when the agent loop is currently mid-turn for this conversation.
    * Mirrors the in-memory `Conversation.isProcessing()` flag on the daemon
@@ -372,6 +379,9 @@ async function handleListConversations({
   const bindings = await getBindingsForConversations(conversationIds);
   const attentionStates =
     await getAttentionStateByConversationIds(conversationIds);
+  // One read for the page, not one per row.
+  const projectIdsByConversation =
+    await getConversationProjectIdsForConversations(conversationIds);
   const parentCache = new Map<string, ConversationRow | null>();
   const nextOffset = offset + limit;
 
@@ -388,6 +398,7 @@ async function handleListConversations({
           // persisted `processing_started_at` column for cold conversations.
           isProcessing: await isConversationProcessing(conversation.id),
           locale: localeFromAcceptLanguage(headers?.["accept-language"]),
+          projectIds: projectIdsByConversation.get(conversation.id) ?? [],
         }),
       ),
     ),

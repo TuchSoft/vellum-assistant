@@ -286,6 +286,41 @@ export async function getConversationProjectIds(
 }
 
 /**
+ * The project sets of many conversations, keyed by conversation id. A list
+ * reading a page of rows resolves every row's projects with one query instead
+ * of one per row. Conversations without projects are absent from the map.
+ */
+export async function getConversationProjectIdsForConversations(
+  conversationIds: readonly string[],
+): Promise<Map<string, string[]>> {
+  const sets = new Map<string, string[]>();
+  if (conversationIds.length === 0) {
+    return sets;
+  }
+
+  const db = requireMainDb();
+  const membership = db.schema.conversationProjects;
+  const rows = await db.orm
+    .select({
+      conversationId: membership.conversationId,
+      projectId: membership.projectId,
+    })
+    .from(membership)
+    .where(inArray(membership.conversationId, [...conversationIds]))
+    .orderBy(asc(membership.conversationId), asc(membership.projectId));
+
+  for (const row of rows) {
+    const existing = sets.get(row.conversationId);
+    if (existing) {
+      existing.push(row.projectId);
+    } else {
+      sets.set(row.conversationId, [row.projectId]);
+    }
+  }
+  return sets;
+}
+
+/**
  * Replace a conversation's project set. Duplicates collapse; an empty array is
  * a valid set. Unknown and archived projects are rejected.
  */

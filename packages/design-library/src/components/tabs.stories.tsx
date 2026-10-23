@@ -105,3 +105,37 @@ export const BottomPlacement: Story = {
     </div>
   ),
 };
+
+/**
+ * The borderless chip row for dense tab strips inside cards: no rule, rounded
+ * triggers, and the active chip on `--surface-active`. Both the list and its
+ * triggers take `variant="pills"`.
+ */
+export const Pills: Story = {
+  render: (args) => (
+    <div style={{ width: 440 }}>
+      <Tabs.Root {...args}>
+        <Tabs.List variant="pills">
+          <Tabs.Trigger value="overview" variant="pills">
+            Overview
+          </Tabs.Trigger>
+          <Tabs.Trigger value="activity" variant="pills">
+            Activity
+          </Tabs.Trigger>
+          <Tabs.Trigger value="settings" variant="pills">
+            Settings
+          </Tabs.Trigger>
+        </Tabs.List>
+        <Tabs.Panel value="overview" className={PANEL_CLASS}>
+          A summary of the workspace and its recent activity.
+        </Tabs.Panel>
+        <Tabs.Panel value="activity" className={PANEL_CLASS}>
+          A chronological feed of everything that happened here.
+        </Tabs.Panel>
+        <Tabs.Panel value="settings" className={PANEL_CLASS}>
+          Configuration for this workspace.
+        </Tabs.Panel>
+      </Tabs.Root>
+    </div>
+  ),
+};

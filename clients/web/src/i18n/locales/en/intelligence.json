@@ -78,6 +78,57 @@
     "saveError": "Couldn't save that memory.",
     "title": "New memory"
   },
+  "dashboard": {
+    "apps": {
+      "empty": "No apps yet."
+    },
+    "columns": {
+      "conversations": "Conversations",
+      "projects": "Projects",
+      "system": "System",
+      "work": "Work"
+    },
+    "conversations": {
+      "emptyActive": "No conversations are working right now.",
+      "emptyRecent": "No conversations yet.",
+      "emptyUnread": "Nothing unread."
+    },
+    "info": {
+      "cpu": "CPU",
+      "disk": "Disk",
+      "health": "Stack health",
+      "name": "Name",
+      "network": "Network",
+      "unknown": "n/d",
+      "version": "Version"
+    },
+    "loading": "Loading...",
+    "projects": {
+      "empty": "Projects will live here."
+    },
+    "run": {
+      "body": "Not wired yet: the long-run supervisor has no API to read from.",
+      "title": "Long runs"
+    },
+    "schedules": {
+      "empty": "No schedules yet."
+    },
+    "status": {
+      "needsInput": "Needs input",
+      "working": "Working"
+    },
+    "tabs": {
+      "active": "Active",
+      "apps": "Apps",
+      "info": "Info",
+      "recent": "Recent",
+      "run": "Run",
+      "schedules": "Schedules",
+      "system": "System",
+      "unread": "Unread"
+    },
+    "untitled": "Untitled conversation"
+  },
   "getMemoryGraph": {
     "failureMessage": "Failed to load the memory graph."
   },
@@ -132,6 +183,10 @@
     "library": {
       "description": "My apps & docs",
       "label": "Library"
+    },
+    "memory": {
+      "description": "What I remember about you",
+      "label": "Memory"
     },
     "personality": {
       "description": "Tune how I talk",

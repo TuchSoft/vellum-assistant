@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from "bun:test";
 
-import { buildIdentitySections } from "./identity-sections";
+import { buildIdentitySections } from "@/utils/identity-sections";
 
 const keys = () => buildIdentitySections().map((s) => s.key);
 
@@ -21,15 +21,14 @@ describe("buildIdentitySections", () => {
       "workspace",
       "contacts",
       "channels",
+      "memory",
     ]);
   });
 
   test("draws Email after Channels only when asked, carrying the lock", () => {
     const withEmail = buildIdentitySections({ email: { locked: true } });
     const emailIndex = withEmail.findIndex((s) => s.key === "email");
-    expect(emailIndex).toBe(
-      withEmail.findIndex((s) => s.key === "channels") + 1,
-    );
+    expect(withEmail[withEmail.length - 1]?.key).toBe("email");
     expect(withEmail[emailIndex]?.locked).toBe(true);
     expect(withEmail[emailIndex]?.to).toBe("/assistant/inbox");
     expect(

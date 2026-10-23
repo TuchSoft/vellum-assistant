@@ -31,7 +31,7 @@ mock.module("@/hooks/use-assistant-avatar", () => ({
   }),
 }));
 
-mock.module("@/domains/intelligence/use-assistant-identity-details", () => ({
+mock.module("@/hooks/use-assistant-identity-details", () => ({
   useAssistantIdentityDetails: () => ({
     data: { identity: { name: "Ada" } },
   }),

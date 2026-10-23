@@ -1,16 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { Tabs, type TabsPlacement } from "./tabs";
+import { Tabs, type TabsPlacement, type TabsVariant } from "./tabs";
 
-function markup(placement?: TabsPlacement) {
+function markup(placement?: TabsPlacement, variant?: TabsVariant) {
   return renderToStaticMarkup(
     <Tabs.Root defaultValue="overview">
       <Tabs.Panel value="overview">Overview panel</Tabs.Panel>
       <Tabs.Panel value="activity">Activity panel</Tabs.Panel>
-      <Tabs.List placement={placement}>
-        <Tabs.Trigger value="overview">Overview</Tabs.Trigger>
-        <Tabs.Trigger value="activity">Activity</Tabs.Trigger>
+      <Tabs.List placement={placement} variant={variant}>
+        <Tabs.Trigger value="overview" variant={variant}>
+          Overview
+        </Tabs.Trigger>
+        <Tabs.Trigger value="activity" variant={variant}>
+          Activity
+        </Tabs.Trigger>
       </Tabs.List>
     </Tabs.Root>,
   );
@@ -46,5 +50,25 @@ describe("Tabs.List placement", () => {
     expect(classes).toContain(
       "group-data-[placement=bottom]/tabs-list:border-t-2",
     );
+  });
+});
+
+describe("Tabs.List variant", () => {
+  test("a list defaults to the underline variant", () => {
+    expect(markup()).toContain('data-variant="underline"');
+  });
+
+  test("a pills list drops the rule and spaces its chips", () => {
+    const html = markup(undefined, "pills");
+    expect(html).toContain('data-variant="pills"');
+    const classes = classesOf(html, "tabs-list");
+    expect(classes).toContain("gap-1");
+    expect(classes).not.toContain("border-b");
+  });
+
+  test("a pills trigger carries the rounded chip treatment", () => {
+    const classes = classesOf(markup(undefined, "pills"), "tabs-trigger");
+    expect(classes).toContain("rounded-full");
+    expect(classes).not.toContain("border-b-2");
   });
 });

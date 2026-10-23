@@ -1,16 +1,10 @@
-import {
-  acceleratorToAriaKeyShortcuts,
-  formatAcceleratorHint,
-} from "@vellumai/design-library";
-import { Search, X } from "lucide-react";
+import { X } from "lucide-react";
 import {
   useCallback,
   useState,
   type CSSProperties,
   type ReactNode,
 } from "react";
-
-import { useCommandPaletteStore } from "@/stores/command-palette-store";
 
 import { CollapsibleNavSection } from "@/components/collapsible-nav-section";
 import { SIDEBAR_STACK_GAP } from "@/components/sidebar-nav-geometry";
@@ -31,6 +25,7 @@ import {
 } from "@/domains/chat/components/assistant-section-toggle";
 import { SidebarSectionItem } from "@/domains/chat/components/sidebar-section-item";
 import { SideMenuBuiltInNav } from "@/domains/chat/components/side-menu-built-in-nav";
+import { SidebarSearchButton } from "@/domains/chat/components/sidebar-search-button";
 import { SideMenuOverlayBottomColumn } from "@/domains/chat/components/side-menu-overlay-bottom-column";
 import { SidebarBackToTop } from "@/domains/chat/components/sidebar-back-to-top";
 import { SidebarConversationError } from "@/domains/chat/components/sidebar-conversation-error";
@@ -44,10 +39,8 @@ import {
 } from "@/domains/chat/use-sidebar-state";
 import { copyIdToClipboard } from "@/domains/chat/utils/copy-id-to-clipboard";
 import { ASSISTANT_SECTION_KEY } from "@/domains/chat/utils/sidebar-section-order";
-import { useCommandShortcut } from "@/hooks/use-command-shortcut";
 import { useTranslation } from "@/i18n";
 import { captureError } from "@/lib/sentry/capture-error";
-import { NATIVE_MOBILE_BARE_ICON_BUTTON } from "@/domains/chat/utils/native-mobile-button-constants";
 import type { Conversation } from "@/types/conversation-types";
 import { Button, cn, SideMenu, toast } from "@vellumai/design-library";
 
@@ -80,8 +73,6 @@ export interface AssistantSideMenuProps extends UseSidebarStateParams {
   onSelectConversation: (key: string) => void;
   isIntelligenceActive?: boolean;
   onOpenIntelligence?: () => void;
-  onOpenApp?: (appId: string) => void;
-  activeAppId?: string;
   onStartNewConversation?: () => void;
   footerAction?: ReactNode;
   /** First control in the overlay's action cluster, before search. */
@@ -102,12 +93,6 @@ export interface AssistantSideMenuProps extends UseSidebarStateParams {
   onDeleteConversation?: (conversation: Conversation) => void;
   onMarkConversationUnread?: (conversation: Conversation) => void;
   onMarkConversationRead?: (conversation: Conversation) => void;
-  /**
-   * Create a new, empty custom group - the sidebar's own "New group…", as
-   * opposed to {@link AssistantSideMenuProps.onCreateGroupInto}, which creates
-   * a group around an existing conversation. Omit to drop the affordance.
-   */
-  onCreateGroup?: () => void;
   onRenameGroup?: (groupId: string) => void;
   onDeleteGroup?: (groupId: string) => void;
   onMarkAllReadInGroup?: (conversations: Conversation[]) => void;
@@ -124,8 +109,6 @@ export interface AssistantSideMenuProps extends UseSidebarStateParams {
   showInternalActions?: boolean;
   /** Move a conversation into an existing custom group. */
   onMoveToGroup?: (conversation: Conversation, groupId: string) => void;
-  /** Create a new custom group ("New group…") and move the conversation into it. */
-  onCreateGroupInto?: (conversation: Conversation) => void;
   /** Remove a conversation from its current custom group (back to Recents). */
   onRemoveFromGroup?: (conversation: Conversation) => void;
 }
@@ -162,40 +145,6 @@ const NATIVE_MOBILE_LIST_TOP_FADE =
  */
 const OVERLAY_LIST_ROUNDED_CLIP =
   "[clip-path:inset(0_var(--side-menu-inset)_0_var(--side-menu-inset)_round_0_0_var(--radius-xl)_var(--radius-xl))]";
-
-function SearchButton() {
-  const { t } = useTranslation("chat");
-  const toggle = useCommandPaletteStore.use.toggle();
-  // Leaves the drawer open: the palette (fixed z-50) covers it, so dismissing
-  // search returns to the menu rather than the chat behind it.
-  const handleClick = useCallback(() => {
-    toggle();
-  }, [toggle]);
-  const accelerator = useCommandShortcut("commandPalette");
-  // The glyphs belong in the tooltip a sighted user reads, not in the
-  // accessible name, where they are announced as their character names. A
-  // screen reader gets the plain label and the binding through
-  // `aria-keyshortcuts`.
-  const label = t("assistantSideMenu.search");
-  const tooltip = accelerator
-    ? t("assistantSideMenu.searchShortcut", {
-        shortcut: formatAcceleratorHint(accelerator),
-      })
-    : label;
-  return (
-    <Button
-      variant="ghost"
-      iconOnly={<Search />}
-      aria-label={label}
-      aria-keyshortcuts={
-        accelerator ? acceleratorToAriaKeyShortcuts(accelerator) : undefined
-      }
-      title={tooltip}
-      className={`pointer-events-auto ${NATIVE_MOBILE_BARE_ICON_BUTTON}`}
-      onClick={handleClick}
-    />
-  );
-}
 
 /**
  * Assistant sidebar content.
@@ -248,8 +197,6 @@ export function AssistantSideMenu({
   onSelectConversation,
   isIntelligenceActive = false,
   onOpenIntelligence,
-  onOpenApp,
-  activeAppId,
   onStartNewConversation,
   footerAction,
   notificationsAction,
@@ -262,7 +209,6 @@ export function AssistantSideMenu({
   onMarkConversationUnread,
   onMarkConversationRead,
   conversationGroups,
-  onCreateGroup,
   onRenameGroup,
   onDeleteGroup,
   onMarkAllReadInGroup,
@@ -276,7 +222,6 @@ export function AssistantSideMenu({
   onInspect,
   showInternalActions,
   onMoveToGroup,
-  onCreateGroupInto,
   onRemoveFromGroup,
 }: AssistantSideMenuProps) {
   const { t } = useTranslation("chat");
@@ -441,7 +386,6 @@ export function AssistantSideMenu({
     showInternalActions,
     conversationGroups,
     onMoveToGroup,
-    onCreateGroupInto,
     onRemoveFromGroup,
   };
 
@@ -596,8 +540,6 @@ export function AssistantSideMenu({
       isIntelligenceActive={isIntelligenceActive}
       onOpenIntelligence={onOpenIntelligence}
       onStartNewConversation={onStartNewConversation}
-      activeAppId={activeAppId}
-      onOpenApp={onOpenApp}
       onClose={onClose}
       assistantAside={assistantSectionToggle}
       assistantBeneath={assistantSectionCard}
@@ -657,7 +599,7 @@ export function AssistantSideMenu({
                     {leadingAction}
                   </div>
                 ) : null}
-                <SearchButton />
+                <SidebarSearchButton />
                 {notificationsAction ? (
                   <div className="pointer-events-auto">
                     {notificationsAction}
@@ -741,7 +683,7 @@ export function AssistantSideMenu({
                last section) creates a group, so the affordance covers the
                whole scrollport rather than any one section. */
             <>
-              <SidebarListContextMenu onCreateGroup={onCreateGroup}>
+              <SidebarListContextMenu>
                 {/* Every section - Pinned, Chats, channels, custom groups -
                   shares one accordion root, so its gap is the only thing
                   between any two of them and the spacing is uniform by

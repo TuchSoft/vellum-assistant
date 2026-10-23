@@ -188,11 +188,9 @@ function LiveSidebar({
       activeConversationId="r4"
       onSelectConversation={() => {}}
       onOpenIntelligence={() => {}}
-      onOpenApp={() => {}}
       onStartNewConversation={() => {}}
       onRenameGroup={() => {}}
       onDeleteGroup={() => {}}
-      onCreateGroup={() => {}}
       onMarkAllReadInGroup={() => {}}
       onArchiveAllInGroup={() => {}}
       onMarkConversationRead={() => {}}

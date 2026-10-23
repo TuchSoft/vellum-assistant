@@ -11,7 +11,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { ReactNode } from "react";
 
 import type { IdentitySectionStat } from "../use-identity-section-stats";
-import { buildIdentitySections } from "./identity-sections";
+import { buildIdentitySections } from "@/utils/identity-sections";
 import { SectionCard } from "./identity-overview";
 
 const SCHEDULES_SECTION = buildIdentitySections().find(

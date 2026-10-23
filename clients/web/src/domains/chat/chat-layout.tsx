@@ -39,7 +39,6 @@ import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-s
 import { useElectronDockSync } from "@/domains/chat/hooks/use-electron-dock-sync";
 import { useNativeRecentChatsSync } from "@/domains/chat/hooks/use-native-recent-chats-sync";
 import { useNativeWidgetSnapshotSync } from "@/domains/chat/hooks/use-native-widget-snapshot-sync";
-import { useOpenAppFromChat } from "@/domains/chat/hooks/use-open-app-from-chat";
 import { DRAWER_SURFACE_BACKGROUND } from "@/domains/chat/utils/drawer-surface";
 import {
   EDGE_SWIPE_EASING,
@@ -90,6 +89,7 @@ import { StatusBanner } from "@/components/status-banner";
 import { AssistantSleepStage } from "@/domains/chat/components/assistant-sleep-stage";
 import { useAssistantSleepStageStore } from "@/stores/assistant-sleep-stage-store";
 import { AssistantSideMenu } from "@/domains/chat/components/assistant-side-menu";
+import { PanicButton } from "@/domains/chat/components/panic-button";
 import { PreferencesMenu } from "@/domains/chat/components/preferences-menu";
 import { useCommandPaletteOrchestrator } from "@/domains/chat/hooks/use-command-palette-orchestrator";
 import { useAssistantIdentityStore } from "@/stores/assistant-identity-store";
@@ -757,15 +757,6 @@ export function ChatLayout({
   // conversation's "New group…" (creates the group, then files that
   // conversation into it) and the sidebar's own right-click "New group…"
   // (creates an empty one).
-  const handleRequestCreateGroup = useCallback(
-    (conversation: Conversation) =>
-      useGroupNameRequestStore.getState().requestCreateGroup(conversation),
-    [],
-  );
-  const handleRequestCreateEmptyGroup = useCallback(
-    () => useGroupNameRequestStore.getState().requestCreateGroup(),
-    [],
-  );
   const handleRequestRenameGroup = useCallback(
     (groupId: string) => {
       const group = conversationGroups.find((g) => g.id === groupId);
@@ -971,9 +962,6 @@ export function ChatLayout({
     ? (activeConversationId ?? undefined)
     : undefined;
 
-  const openAppFromChat = useOpenAppFromChat();
-  const activeAppId = useViewerStore.use.activeAppId();
-
   // Inspector affordance for the sidebar context menu. The topbar variant
   // (in `chat-page.tsx`) uses `useConversationSecondaryActions` so it can
   // enrich the URL with the latest assistant `messageId` from the active
@@ -1018,8 +1006,6 @@ export function ChatLayout({
       onStartNewConversation={startNewConversation}
       isIntelligenceActive={isIdentityActive}
       onOpenIntelligence={handleOpenIdentity}
-      activeAppId={activeAppId ?? undefined}
-      onOpenApp={openAppFromChat}
       onPinConversation={handleTogglePinConversation}
       onRenameConversation={handleRenameConversation}
       onArchiveConversation={handleArchiveConversation}
@@ -1027,7 +1013,6 @@ export function ChatLayout({
       onDeleteConversation={requestDelete}
       onMarkConversationUnread={handleMarkConversationUnread}
       onMarkConversationRead={handleMarkConversationRead}
-      onCreateGroup={handleRequestCreateEmptyGroup}
       onRenameGroup={handleRequestRenameGroup}
       onDeleteGroup={handleDeleteGroup}
       onMarkAllReadInGroup={handleMarkAllReadInGroup}
@@ -1036,7 +1021,6 @@ export function ChatLayout({
       onInspect={showInternalActions ? handleInspectConversation : undefined}
       showInternalActions={showInternalActions}
       onMoveToGroup={handleMoveToGroup}
-      onCreateGroupInto={handleRequestCreateGroup}
       onRemoveFromGroup={handleRemoveFromGroup}
       leadingAction={
         args.variant === "overlay" ? (
@@ -1050,12 +1034,17 @@ export function ChatLayout({
         args.variant === "overlay" ? topBarAccessory : undefined
       }
       footerAction={
-        <PreferencesMenu
-          assistantId={assistantId}
-          assistantVersion={assistantVersion}
-          activeConversationId={activeConversationId}
-          triggerVariant={args.variant === "overlay" ? "pill" : "item"}
-        />
+        <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <PreferencesMenu
+              assistantId={assistantId}
+              assistantVersion={assistantVersion}
+              activeConversationId={activeConversationId}
+              triggerVariant={args.variant === "overlay" ? "pill" : "item"}
+            />
+          </div>
+          <PanicButton />
+        </div>
       }
       onClose={args.onClose}
     />

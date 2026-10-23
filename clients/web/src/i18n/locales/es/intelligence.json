@@ -133,6 +133,10 @@
       "description": "Mis apps y documentos",
       "label": "Biblioteca"
     },
+    "memory": {
+      "description": "Lo que recuerdo de ti",
+      "label": "Memoria"
+    },
     "personality": {
       "description": "Ajusta cómo hablo",
       "label": "Personalidad"

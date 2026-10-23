@@ -28,7 +28,8 @@ type IdentitySectionKey =
   | "workspace"
   | "contacts"
   | "email"
-  | "channels";
+  | "channels"
+  | "memory";
 
 /** Greppable label/description keys, one entry per overview section. */
 const SECTION_COPY_KEY: Record<
@@ -69,6 +70,10 @@ const SECTION_COPY_KEY: Record<
   channels: {
     label: "identitySections.channels.label",
     description: "identitySections.channels.description",
+  },
+  memory: {
+    label: "identitySections.memory.label",
+    description: "identitySections.memory.description",
   },
 };
 
@@ -138,6 +143,7 @@ export function buildIdentitySections({
     section("workspace"),
     section("contacts"),
     section("channels"),
+    section("memory"),
     ...emailSection,
   ];
 }

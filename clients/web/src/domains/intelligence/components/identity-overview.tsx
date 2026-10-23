@@ -63,7 +63,7 @@ import {} from "../memory-graph/get-memory-stats";
 import {
   assistantIdentityDetailsQueryKey,
   useAssistantIdentityDetails,
-} from "../use-assistant-identity-details";
+} from "@/hooks/use-assistant-identity-details";
 import {
   useIdentitySectionStats,
   type IdentitySectionStat,
@@ -78,7 +78,7 @@ import { AssistantNameEditor } from "./assistant-name-editor";
 import {
   buildIdentitySections,
   type IdentitySection,
-} from "./identity-sections";
+} from "@/utils/identity-sections";
 import { PersonalitySignature } from "./personality-signature";
 
 const SECTION_ICONS: Record<string, LucideIcon> = {

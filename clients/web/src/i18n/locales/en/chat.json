@@ -223,6 +223,23 @@
     "bulkActionMembersFailed": "Couldn't load every conversation in this section. Try again.",
     "closeNavAria": "Close navigation",
     "navAria": "Assistant navigation",
+    "newMenu": {
+      "app": "App",
+      "chat": "Chat",
+      "close": "Close",
+      "file": "Upload file",
+      "label": "New",
+      "project": "Project",
+      "skill": "Skill",
+      "soon": "Soon"
+    },
+    "panic": {
+      "cancel": "Cancel",
+      "label": "Emergency stop",
+      "message": "This would stop every container in the stack and bring up a read-only emergency assistant. Nothing is wired yet, so this dialog cannot complete the action.",
+      "title": "Stop everything?",
+      "unavailable": "Not available yet"
+    },
     "search": "Search",
     "searchShortcut": "Search ({shortcut})"
   },

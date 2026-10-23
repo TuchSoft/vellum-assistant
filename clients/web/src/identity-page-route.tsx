@@ -1,8 +1,8 @@
 import { useActiveAssistantId } from "@/assistant/use-active-assistant-id";
-import { IdentityPage } from "@/domains/intelligence/identity-page";
+import { DashboardPage } from "@/domains/dashboard/dashboard-page";
 
 export function IdentityPageRoute() {
   const assistantId = useActiveAssistantId();
 
-  return <IdentityPage key={assistantId} />;
+  return <DashboardPage key={assistantId} assistantId={assistantId} />;
 }

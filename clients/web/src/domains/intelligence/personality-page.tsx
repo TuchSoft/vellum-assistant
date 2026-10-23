@@ -43,7 +43,7 @@ import {
 import {
   assistantIdentityDetailsQueryKey,
   useAssistantIdentityDetails,
-} from "./use-assistant-identity-details";
+} from "@/hooks/use-assistant-identity-details";
 
 export function PersonalityPage() {
   const { t } = useTranslation("intelligence");

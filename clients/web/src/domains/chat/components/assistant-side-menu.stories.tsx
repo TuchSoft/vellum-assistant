@@ -297,13 +297,11 @@ const SHARED_ARGS = {
      pinned apps render inert, which reads as a styling bug in the pill and
      is not one. */
   onOpenIntelligence: () => {},
-  onOpenApp: () => {},
   onStartNewConversation: () => {},
   onRenameGroup: () => {},
   onDeleteGroup: () => {},
   // Wires the list's right-click "New group…". Omitting it drops the
   // affordance entirely, so the story has to pass it to show the menu.
-  onCreateGroup: () => {},
   // Wiring the bulk handlers is what puts the header menu on every
   // section: Pinned and Chats included.
   onMarkAllReadInGroup: () => {},

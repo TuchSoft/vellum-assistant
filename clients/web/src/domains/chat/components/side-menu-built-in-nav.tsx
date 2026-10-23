@@ -5,9 +5,9 @@ import { useNavigate } from "react-router";
 
 import { AssistantSwitcher } from "@/domains/chat/components/assistant-switcher";
 import { EmailNavItem } from "@/domains/chat/components/email-nav-item";
-import { PinnedAppNavItem } from "@/domains/chat/components/pinned-app-nav-item";
+import { NewItemMenu } from "@/domains/chat/components/new-item-menu";
+import { SidebarSearchButton } from "@/domains/chat/components/sidebar-search-button";
 import { useEmailPinned } from "@/hooks/use-email-pinned";
-import { usePinnedApps } from "@/hooks/use-pinned-apps";
 import { cn } from "@vellumai/design-library";
 import { useTranslation } from "@/i18n";
 import { routes } from "@/utils/routes";
@@ -21,8 +21,6 @@ export interface SideMenuBuiltInNavProps {
   isIntelligenceActive?: boolean;
   onOpenIntelligence?: () => void;
   onStartNewConversation?: () => void;
-  activeAppId?: string;
-  onOpenApp?: (appId: string) => void;
   onClose?: () => void;
   /** The assistant section's toggle, beside the assistant pill. */
   assistantAside?: ReactNode;
@@ -32,14 +30,12 @@ export interface SideMenuBuiltInNavProps {
 
 /**
  * The sidebar's built-in navigation block: the assistant cluster with the
- * New Chat button on its row, then the pinned-apps list. On the rail this lives
- * in the non-scrolling header; on the overlay it renders at the top of the
- * body so the whole menu scrolls as one surface (Figma 6764:6745).
+ * generic "+" menu and search on its row, then the pinned Email entry. Apps
+ * are not listed here: their one door is the dashboard's Apps tab.
  *
- * The block carries neither a heading over the pinned apps nor a rule under
- * them, in either state. Every entry here is a pill (a circle on the rail) on
- * the page background, and a shape like that is already delimited - a label
- * and a rule on top of it divide a group that reads as grouped without them.
+ * The block carries neither a heading over the pinned entries nor a rule
+ * under them, in either state. Every entry here is a pill (a circle on the
+ * rail) on the page background, and a shape like that is already delimited.
  */
 export function SideMenuBuiltInNav({
   assistantId,
@@ -49,37 +45,36 @@ export function SideMenuBuiltInNav({
   isIntelligenceActive = false,
   onOpenIntelligence,
   onStartNewConversation,
-  activeAppId,
-  onOpenApp,
   onClose,
   assistantAside,
   assistantBeneath,
 }: SideMenuBuiltInNavProps) {
   const { t } = useTranslation("chat");
   const navigate = useNavigate();
-  const { pinnedApps, unpin, setColor } = usePinnedApps(assistantId);
   /* The Email pin, set from the profile's Email card. */
   const emailPin = useEmailPinned(assistantId);
   const showsEmailPin = emailPin.pinned;
 
-  /* One column at a single gap, rather than each cluster spacing itself.
-     `SideMenu.Header` puts its own gap between its children, so a margin
-     here would add to that and the block would space its two clusters at
-     16px while spacing the pinned apps inside one of them at 4px. Wrapping
-     makes the whole block one header child, so this gap is the only one
-     between any two entries. */
+  /* The row's trailing cluster: the assistant-section toggle, search, and the
+     generic "+" menu. On the collapsed rail the cluster is a column of tiles,
+     matching the rail's own column, so the three never overflow its width. */
+  const rowActions = (
+    <div
+      className={cn(
+        collapsed ? "flex flex-col" : "flex items-center",
+        SIDEBAR_STACK_GAP,
+      )}
+    >
+      {assistantAside}
+      {/* The overlay's glyph row already carries search, so the drawer does
+          not draw a second one a row below it. */}
+      {variant === "rail" ? <SidebarSearchButton /> : null}
+      <NewItemMenu onNewChat={onStartNewConversation} />
+    </div>
+  );
+
   return (
     <div className={cn("flex flex-col", SIDEBAR_STACK_GAP)}>
-      {/* The assistant cluster: the avatar-colored assistant row with the
-          New Chat button (avatar-tinted, a round plus) after the section
-          toggle on that row, so the identity leads and the action hangs
-          off it; on the collapsed rail the button is an icon-only tile
-          beneath the assistant's. No divider when expanded: the wrapper's
-          gap is the only thing between this cluster and the pinned apps.
-          On the rail this cluster is a column of circles like the sections
-          below it, spaced by the same gap. The overlay drawer skips the New
-          Chat button: its floating New Chat pill already owns that action
-          in the thumb zone. */}
       <div>
         <AssistantSwitcher
           assistantId={assistantId}
@@ -94,50 +89,22 @@ export function SideMenuBuiltInNav({
                 }
               : undefined
           }
-          onNewConversation={
-            variant === "rail" && onStartNewConversation
-              ? () => {
-                  onStartNewConversation();
-                  onClose?.();
-                }
-              : undefined
-          }
           onSwitched={onClose}
-          aside={assistantAside}
+          aside={rowActions}
           beneath={assistantBeneath}
         />
       </div>
-      {pinnedApps.length > 0 || showsEmailPin ? (
+      {showsEmailPin ? (
         <div className={cn("flex flex-col", SIDEBAR_STACK_GAP)}>
-          {showsEmailPin ? (
-            <EmailNavItem
-              assistantId={assistantId}
-              collapsed={collapsed}
-              onSelect={() => {
-                navigate(routes.assistantInbox);
-                onClose?.();
-              }}
-              onUnpin={emailPin.unpin}
-            />
-          ) : null}
-          {pinnedApps.map((app) => (
-            <PinnedAppNavItem
-              key={app.id}
-              app={app}
-              collapsed={collapsed}
-              active={activeAppId === app.id}
-              onUnpin={unpin}
-              onSetColor={setColor}
-              onOpen={
-                onOpenApp
-                  ? (appId) => {
-                      onOpenApp(appId);
-                      onClose?.();
-                    }
-                  : undefined
-              }
-            />
-          ))}
+          <EmailNavItem
+            assistantId={assistantId}
+            collapsed={collapsed}
+            onSelect={() => {
+              navigate(routes.assistantInbox);
+              onClose?.();
+            }}
+            onUnpin={emailPin.unpin}
+          />
         </div>
       ) : null}
     </div>

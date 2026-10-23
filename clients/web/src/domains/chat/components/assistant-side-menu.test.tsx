@@ -783,7 +783,7 @@ describe("AssistantSideMenu · new conversation affordance", () => {
     onSelectConversation: () => {},
   };
 
-  test("renders the New Chat button (on the assistant row) when onStartNewConversation is supplied", () => {
+  test("renders the new-item menu and search on the assistant row", () => {
     const html = renderToStaticMarkup(
       createElement(SideMenuUnderTest, {
         ...baseProps,
@@ -791,25 +791,23 @@ describe("AssistantSideMenu · new conversation affordance", () => {
       }),
     );
 
-    expect(html).toContain('aria-label="New Chat"');
-    // It is an icon button, not a labelled row and not a navigation link.
-    expect(html).not.toContain(">New Chat<");
-    expect(html).not.toContain('<a aria-label="New Chat"');
-    // The identity leads and the action hangs off it.
+    expect(html).toContain('aria-label="New"');
+    expect(html).toContain('aria-label="Search"');
+    // The identity leads and the actions hang off it.
     expect(html.indexOf("Your Assistant")).toBeLessThan(
-      html.indexOf('aria-label="New Chat"'),
+      html.indexOf('aria-label="New"'),
     );
   });
 
-  test("omits the New Chat button when onStartNewConversation is absent", () => {
+  test("keeps the new-item menu when onStartNewConversation is absent", () => {
     const html = renderToStaticMarkup(
       createElement(SideMenuUnderTest, { ...baseProps }),
     );
 
-    expect(html).not.toContain('aria-label="New Chat"');
+    expect(html).toContain('aria-label="New"');
   });
 
-  test("the overlay drawer omits the New Chat row — its floating pill owns the action", () => {
+  test("the overlay drawer keeps the new-item menu and one search glyph", () => {
     const html = renderToStaticMarkup(
       createElement(SideMenuUnderTest, {
         ...baseProps,
@@ -818,9 +816,9 @@ describe("AssistantSideMenu · new conversation affordance", () => {
       }),
     );
 
-    // Exactly one "New Chat" — the floating pill (the overlay's only
-    // new-chat affordance); a nav-row duplicate would add label + title.
-    expect(html.match(/New Chat/g) ?? []).toHaveLength(1);
+    expect(html).toContain('aria-label="New"');
+    // The glyph row's search is the drawer's only one.
+    expect(html.match(/aria-label="Search"/g) ?? []).toHaveLength(1);
   });
 });
 

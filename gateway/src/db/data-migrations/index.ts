@@ -37,6 +37,7 @@ import * as m0015 from "./m0015-guardian-requests-backfill.js";
 import * as m0016 from "./m0016-drop-assistant-guardian-tables.js";
 import * as m0017 from "./m0017-coerce-escalate-policy.js";
 import * as m0018 from "./m0018-trust-rules-scope-column.js";
+import * as m0019 from "./m0019-skill-grants-table.js";
 
 const log = getLogger("data-migrations");
 
@@ -70,6 +71,7 @@ export const MIGRATIONS: { key: string; mod: MigrationModule }[] = [
   { key: "m0016-drop-assistant-guardian-tables", mod: m0016 },
   { key: "m0017-coerce-escalate-policy", mod: m0017 },
   { key: "m0018-trust-rules-scope-column", mod: m0018 },
+  { key: "m0019-skill-grants-table", mod: m0019 },
 ];
 
 /**

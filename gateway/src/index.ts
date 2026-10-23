@@ -90,6 +90,12 @@ import {
   createConversationThresholdPutHandler,
   createConversationThresholdDeleteHandler,
 } from "./http/routes/auto-approve-thresholds.js";
+import {
+  createSkillGrantListHandler,
+  createSkillGrantGetHandler,
+  createSkillGrantPutHandler,
+  createSkillGrantDeleteHandler,
+} from "./http/routes/skill-grants.js";
 import { createChannelVerificationSessionProxyHandler } from "./http/routes/channel-verification-session-proxy.js";
 import { createTelegramControlPlaneProxyHandler } from "./http/routes/telegram-control-plane-proxy.js";
 import { createTwilioControlPlaneProxyHandler } from "./http/routes/twilio-control-plane-proxy.js";
@@ -261,6 +267,7 @@ import { createChannelSocketHealthRoutes } from "./ipc/channel-socket-health-han
 import { createCredentialRequestIpcRoutes } from "./ipc/credential-request-handlers.js";
 import { slackThreadRoutes } from "./ipc/slack-thread-handlers.js";
 import { thresholdRoutes } from "./ipc/threshold-handlers.js";
+import { skillGrantRoutes } from "./ipc/skill-grant-handlers.js";
 import { trustRulesRoutes } from "./ipc/trust-rules-handlers.js";
 
 import { riskClassificationRoutes } from "./ipc/risk-classification-handlers.js";
@@ -704,6 +711,10 @@ async function main() {
     createConversationThresholdPutHandler();
   const handleConversationThresholdDelete =
     createConversationThresholdDeleteHandler();
+  const handleSkillGrantList = createSkillGrantListHandler();
+  const handleSkillGrantGet = createSkillGrantGetHandler();
+  const handleSkillGrantPut = createSkillGrantPutHandler();
+  const handleSkillGrantDelete = createSkillGrantDeleteHandler();
   const handleTrustRulesList = createTrustRulesListHandler();
   const handleTrustRulesCreate = createTrustRulesCreateHandler();
   const handleTrustRulesUpdate = createTrustRulesUpdateHandler();
@@ -1646,6 +1657,67 @@ async function main() {
       scope: "settings.write",
       handler: (req, params) =>
         handleConversationThresholdDelete(req, params.slice(1)),
+    },
+
+    // ── Skill capability grants (scope-protected) ──
+    //
+    // Reads are settings.read; every write is settings.write. The assistant
+    // has no IPC write method, so this table is the only grant path.
+    {
+      path: "/v1/permissions/skill-grants",
+      method: "GET",
+      auth: "edge-scoped",
+      scope: "settings.read",
+      handler: (req) => handleSkillGrantList(req),
+    },
+    {
+      path: /^\/v1\/assistants\/([^/]+)\/permissions\/skill-grants\/?$/,
+      method: "GET",
+      auth: "edge-scoped",
+      scope: "settings.read",
+      handler: (req) => handleSkillGrantList(req),
+    },
+    {
+      path: /^\/v1\/permissions\/skill-grants\/([^/]+)\/?$/,
+      method: "GET",
+      auth: "edge-scoped",
+      scope: "settings.read",
+      handler: (req, params) => handleSkillGrantGet(req, params),
+    },
+    {
+      path: /^\/v1\/assistants\/([^/]+)\/permissions\/skill-grants\/([^/]+)\/?$/,
+      method: "GET",
+      auth: "edge-scoped",
+      scope: "settings.read",
+      handler: (req, params) => handleSkillGrantGet(req, params.slice(1)),
+    },
+    {
+      path: /^\/v1\/permissions\/skill-grants\/([^/]+)\/?$/,
+      method: "PUT",
+      auth: "edge-scoped",
+      scope: "settings.write",
+      handler: (req, params) => handleSkillGrantPut(req, params),
+    },
+    {
+      path: /^\/v1\/assistants\/([^/]+)\/permissions\/skill-grants\/([^/]+)\/?$/,
+      method: "PUT",
+      auth: "edge-scoped",
+      scope: "settings.write",
+      handler: (req, params) => handleSkillGrantPut(req, params.slice(1)),
+    },
+    {
+      path: /^\/v1\/permissions\/skill-grants\/([^/]+)\/?$/,
+      method: "DELETE",
+      auth: "edge-scoped",
+      scope: "settings.write",
+      handler: (req, params) => handleSkillGrantDelete(req, params),
+    },
+    {
+      path: /^\/v1\/assistants\/([^/]+)\/permissions\/skill-grants\/([^/]+)\/?$/,
+      method: "DELETE",
+      auth: "edge-scoped",
+      scope: "settings.write",
+      handler: (req, params) => handleSkillGrantDelete(req, params.slice(1)),
     },
 
     // ── Log export ──
@@ -3086,6 +3158,7 @@ async function main() {
     ...guardianRequestRoutes,
     ...slackThreadRoutes,
     ...thresholdRoutes,
+    ...skillGrantRoutes,
     ...admissionPolicyRoutes,
     ...channelPermissionRoutes,
     ...trustVerdictRoutes,

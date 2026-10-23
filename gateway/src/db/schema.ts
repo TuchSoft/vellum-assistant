@@ -809,3 +809,39 @@ export const inboundSeenEvents = sqliteTable(
     index("idx_inbound_seen_events_expires_at").on(table.expiresAt),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Skill capability grants
+// ---------------------------------------------------------------------------
+
+/**
+ * Capabilities granted to one skill version.
+ *
+ * A grant is bound to the skill content hash: editing a skill produces a new
+ * version, so the new content starts from the fail-closed empty set until
+ * someone grants again. `capabilities_json` holds the canonical capability
+ * names from `@vellumai/service-contracts/skill-capabilities`; a payload that
+ * does not parse is read as no capabilities.
+ *
+ * Writes happen only through the gateway's scoped HTTP routes. The assistant
+ * reaches the row through the read-only `get_skill_grants` IPC method.
+ */
+export const skillGrants = sqliteTable(
+  "skill_grants",
+  {
+    skillId: text("skill_id").notNull(),
+    versionHash: text("version_hash").notNull(),
+    capabilitiesJson: text("capabilities_json").notNull().default("[]"),
+    // Principal that granted them; null for grants made out of band (CLI,
+    // ops) rather than through a guardian decision.
+    grantedBy: text("granted_by"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_skill_grants_skill_version").on(
+      table.skillId,
+      table.versionHash,
+    ),
+  ],
+);

@@ -18,6 +18,7 @@ import {
 } from "../../psono/types.js";
 
 const SERVICE_TOKEN = "service-token";
+const TOKENS = { read: "", write: "", service: SERVICE_TOKEN };
 
 /** One share root with the `stack` folder the write path targets. */
 function emptyContent(): PsonoShareContent {
@@ -186,7 +187,7 @@ function deps(ctx: ReturnType<typeof setup>) {
   return {
     backend: ctx.backend,
     records: ctx.records,
-    serviceToken: SERVICE_TOKEN,
+    tokens: TOKENS,
   };
 }
 

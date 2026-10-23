@@ -16,6 +16,7 @@ import type { PsonoEntry, ShareHandle } from "../../psono/tree.js";
 import type { SecretPayload } from "../../psono/types.js";
 
 const SERVICE_TOKEN = "service-token";
+const TOKENS = { read: "", write: "", service: SERVICE_TOKEN };
 const KV_TOKEN = "kv-token";
 
 const entry: PsonoEntry = {
@@ -138,7 +139,7 @@ describe("resolve route", () => {
   test("returns the resolved value", async () => {
     const response = await handleResolveRoute(
       request("/v1/resolve/demo/password", { authorization: `Bearer ${SERVICE_TOKEN}` }),
-      { backend: backend(), serviceToken: SERVICE_TOKEN },
+      { backend: backend(), tokens: TOKENS },
     );
     expect(response!.status).toBe(200);
     expect(await response!.json()).toEqual({ value: "value-1" });
@@ -147,7 +148,7 @@ describe("resolve route", () => {
   test("returns 401 without a bearer", async () => {
     const response = await handleResolveRoute(
       request("/v1/resolve/demo/password"),
-      { backend: backend(), serviceToken: SERVICE_TOKEN },
+      { backend: backend(), tokens: TOKENS },
     );
     expect(response!.status).toBe(401);
     expect(await response!.json()).toEqual({ error: "unauthorized" });
@@ -156,7 +157,7 @@ describe("resolve route", () => {
   test("returns 404 for an unmapped reference", async () => {
     const response = await handleResolveRoute(
       request("/v1/resolve/demo/other", { authorization: `Bearer ${SERVICE_TOKEN}` }),
-      { backend: backend(), serviceToken: SERVICE_TOKEN },
+      { backend: backend(), tokens: TOKENS },
     );
     expect(response!.status).toBe(404);
     expect(await response!.json()).toEqual({ error: "not_found" });
@@ -167,7 +168,7 @@ describe("resolve route", () => {
     tree.fail = denied();
     const response = await handleResolveRoute(
       request("/v1/resolve/demo/password", { authorization: `Bearer ${SERVICE_TOKEN}` }),
-      { backend: backend(tree), serviceToken: SERVICE_TOKEN },
+      { backend: backend(tree), tokens: TOKENS },
     );
     expect(response!.status).toBe(403);
     expect(await response!.json()).toEqual({ error: "denied" });
@@ -178,7 +179,7 @@ describe("file route", () => {
   test("returns octet-stream bytes by default", async () => {
     const response = await handleFileRoute(
       request("/v1/files/demo/password", { authorization: `Bearer ${SERVICE_TOKEN}` }),
-      { backend: backend(), serviceToken: SERVICE_TOKEN },
+      { backend: backend(), tokens: TOKENS },
     );
     expect(response!.status).toBe(200);
     expect(response!.headers.get("content-type")).toBe("application/octet-stream");
@@ -190,7 +191,7 @@ describe("file route", () => {
       request("/v1/files/demo/password?format=json", {
         authorization: `Bearer ${SERVICE_TOKEN}`,
       }),
-      { backend: backend(), serviceToken: SERVICE_TOKEN },
+      { backend: backend(), tokens: TOKENS },
     );
     expect(response!.status).toBe(200);
     expect(await response!.json()).toEqual({

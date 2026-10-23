@@ -18,6 +18,7 @@ import type { SecureKeyBackend } from "@vellumai/credential-storage";
 // ---------------------------------------------------------------------------
 
 const SERVICE_TOKEN = "test-ces-service-token-12345";
+const TOKENS = { read: "", write: "", service: SERVICE_TOKEN };
 
 function makeDeps(
   overrides: Partial<SecureKeyBackend> = {},
@@ -37,7 +38,7 @@ function makeDeps(
     list: async () => [...store.keys()],
     ...overrides,
   };
-  return { backend, serviceToken: SERVICE_TOKEN };
+  return { backend, tokens: TOKENS };
 }
 
 function makeRequest(

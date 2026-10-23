@@ -18,6 +18,7 @@ import type { SecureKeyBackend } from "@vellumai/credential-storage";
 // ---------------------------------------------------------------------------
 
 const SERVICE_TOKEN = "test-token-normalization";
+const TOKENS = { read: "", write: "", service: SERVICE_TOKEN };
 
 function makeDeps(): { deps: CredentialRouteDeps; store: Map<string, string> } {
   const store = new Map<string, string>();
@@ -34,7 +35,7 @@ function makeDeps(): { deps: CredentialRouteDeps; store: Map<string, string> } {
     },
     list: async () => [...store.keys()],
   };
-  return { deps: { backend, serviceToken: SERVICE_TOKEN }, store };
+  return { deps: { backend, tokens: TOKENS }, store };
 }
 
 function makeRequest(

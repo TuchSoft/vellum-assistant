@@ -7,62 +7,16 @@
  * - `PUT    /v1/metadata/:account`     : set one record
  * - `DELETE /v1/metadata/:account`     : delete one record
  *
- * Auth: same `CES_SERVICE_TOKEN` bearer as secret CRUD.
+ * Auth: `CES_SERVICE_TOKEN` only. `CES_READ_TOKEN` and `CES_WRITE_TOKEN`
+ * answer `403` (`read_only_token` / `write_scope_required`).
  */
-
-import { timingSafeEqual } from "node:crypto";
 
 import { CredentialRecordSchema } from "@vellumai/service-contracts/credential-rpc";
 
 import { getMetadataStore } from "../records/metadata-store.js";
+import { authorizeService, readTokensFromEnv } from "./capability-auth.js";
 
 const METADATA_PATH_PREFIX = "/v1/metadata";
-
-function serviceToken(): string {
-  return process.env["CES_SERVICE_TOKEN"] ?? "";
-}
-
-function checkAuth(req: Request): Response | null {
-  const expectedToken = serviceToken();
-  if (!expectedToken) {
-    return new Response(JSON.stringify({ error: "Missing service token" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader) {
-    return new Response(
-      JSON.stringify({ error: "Missing Authorization header" }),
-      { status: 401, headers: { "Content-Type": "application/json" } },
-    );
-  }
-
-  const parts = authHeader.split(" ");
-  if (parts.length !== 2 || parts[0]!.toLowerCase() !== "bearer") {
-    return new Response(
-      JSON.stringify({
-        error: "Invalid Authorization header format. Expected: Bearer <token>",
-      }),
-      { status: 401, headers: { "Content-Type": "application/json" } },
-    );
-  }
-
-  const provided = Buffer.from(parts[1]!);
-  const expected = Buffer.from(expectedToken);
-  if (
-    provided.length !== expected.length ||
-    !timingSafeEqual(provided, expected)
-  ) {
-    return new Response(JSON.stringify({ error: "Invalid service token" }), {
-      status: 403,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  return null;
-}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -81,7 +35,7 @@ export async function handleMetadataRoute(
     return null;
   }
 
-  const authError = checkAuth(req);
+  const authError = authorizeService(req, readTokensFromEnv());
   if (authError) {
     return authError;
   }

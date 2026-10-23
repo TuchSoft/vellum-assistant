@@ -1,21 +1,18 @@
 /**
- * Resolve endpoint for per-request consumers (rest-gateway).
+ * Resolve endpoint for per-request consumers (rest-gateway, Antirion).
  *
  * `GET /v1/resolve/<service>/<field>` → `{ "value": "..." }`
- * Auth: `Authorization: Bearer <CES_SERVICE_TOKEN>`.
+ * Auth: `CES_READ_TOKEN`, `CES_WRITE_TOKEN` or `CES_SERVICE_TOKEN`.
  */
 
 import type { PsonoCredentialBackend } from "../psono/backend.js";
-import {
-  equalsConstantTime,
-  jsonResponse,
-  readBearerToken,
-} from "./service-auth.js";
+import { authorize, type CesTokens } from "./capability-auth.js";
+import { jsonResponse } from "./service-auth.js";
 import { psonoErrorResponse } from "./psono-route-utils.js";
 
 export interface ResolveRouteDeps {
   backend: PsonoCredentialBackend | undefined;
-  serviceToken: string;
+  tokens: CesTokens;
 }
 
 const PREFIX = "/v1/resolve/";
@@ -48,11 +45,9 @@ export async function handleResolveRoute(
     return null;
   }
 
-  if (
-    !deps.serviceToken ||
-    !equalsConstantTime(readBearerToken(req), deps.serviceToken)
-  ) {
-    return jsonResponse({ error: "unauthorized" }, 401);
+  const denial = authorize(req, deps.tokens, "read");
+  if (denial) {
+    return denial;
   }
 
   if (!deps.backend) {

@@ -23,6 +23,7 @@ const MATERIAL_PATH =
   "/Users/mattiabonzi/Progetti/assistant/docs/psono/CRED.txt";
 
 const SERVICE_TOKEN = "integration-service-token";
+const TOKENS = { read: "", write: "", service: SERVICE_TOKEN };
 const KV_TOKEN = "integration-kv-token";
 
 const record: CredentialRecord = {
@@ -231,7 +232,7 @@ live("Psono integration (read-only)", () => {
         new Request("http://ces/v1/resolve/psono-test/password", {
           headers: { authorization: `Bearer ${SERVICE_TOKEN}` },
         }),
-        { backend: backend!, serviceToken: SERVICE_TOKEN },
+        { backend: backend!, tokens: TOKENS },
       );
       expect(response!.status).toBe(200);
       const body = (await response!.json()) as { value: string };
@@ -274,7 +275,7 @@ live("Psono integration (read-only)", () => {
         new Request("http://ces/v1/resolve/psono-test/missing", {
           headers: { authorization: `Bearer ${SERVICE_TOKEN}` },
         }),
-        { backend: backend!, serviceToken: SERVICE_TOKEN },
+        { backend: backend!, tokens: TOKENS },
       );
       expect(response!.status).toBe(404);
       expect(await response!.json()).toEqual({ error: "not_found" });
@@ -287,7 +288,7 @@ live("Psono integration (read-only)", () => {
     async () => {
       const response = await handleResolveRoute(
         new Request("http://ces/v1/resolve/psono-test/password"),
-        { backend: backend!, serviceToken: SERVICE_TOKEN },
+        { backend: backend!, tokens: TOKENS },
       );
       expect(response!.status).toBe(401);
     },

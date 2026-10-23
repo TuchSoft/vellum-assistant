@@ -19,6 +19,9 @@
  * `kind` is never converted implicitly. A record that is `value` or `json`
  * answers `409 kind_mismatch`; to change its shape, delete the record and PUT
  * the file-shaped one.
+ *
+ * Auth: reads accept `CES_READ_TOKEN`, `CES_WRITE_TOKEN` or
+ * `CES_SERVICE_TOKEN`; writes need `CES_WRITE_TOKEN` or `CES_SERVICE_TOKEN`.
  */
 
 import { randomUUID } from "node:crypto";
@@ -27,11 +30,8 @@ import type { CredentialRecord } from "@vellumai/service-contracts/credential-rp
 
 import type { PsonoCredentialBackend } from "../psono/backend.js";
 import { defaultStackRef } from "../psono/refs.js";
-import {
-  equalsConstantTime,
-  jsonResponse,
-  readBearerToken,
-} from "./service-auth.js";
+import { authorize, type CesTokens } from "./capability-auth.js";
+import { jsonResponse } from "./service-auth.js";
 import { psonoErrorResponse } from "./psono-route-utils.js";
 
 /** Narrow metadata surface the write path needs. */
@@ -44,7 +44,7 @@ export interface FileRouteDeps {
   backend: PsonoCredentialBackend | undefined;
   /** Metadata store; absent means writes are unavailable (reads still work). */
   records?: FileRecordStore;
-  serviceToken: string;
+  tokens: CesTokens;
 }
 
 const PREFIX = "/v1/files/";
@@ -72,11 +72,9 @@ async function handleRead(
   target: { service: string; field: string },
   deps: FileRouteDeps,
 ): Promise<Response> {
-  if (
-    !deps.serviceToken ||
-    !equalsConstantTime(readBearerToken(req), deps.serviceToken)
-  ) {
-    return jsonResponse({ error: "unauthorized" }, 401);
+  const denial = authorize(req, deps.tokens, "read");
+  if (denial) {
+    return denial;
   }
 
   if (!deps.backend) {
@@ -105,11 +103,9 @@ async function handleWrite(
   target: { service: string; field: string },
   deps: FileRouteDeps,
 ): Promise<Response> {
-  if (
-    !deps.serviceToken ||
-    !equalsConstantTime(readBearerToken(req), deps.serviceToken)
-  ) {
-    return jsonResponse({ error: "unauthorized" }, 401);
+  const denial = authorize(req, deps.tokens, "write");
+  if (denial) {
+    return denial;
   }
 
   if (!deps.backend || !deps.records) {

@@ -12,14 +12,14 @@
  * - `POST /v1/credentials/:account`  — set a credential value
  * - `DELETE /v1/credentials/:account` — delete a credential
  *
- * Auth: All endpoints require a `CES_SERVICE_TOKEN` bearer token in the
- * `Authorization` header. Both the CES and its callers share this token
- * via the environment.
+ * Auth: All endpoints require the `CES_SERVICE_TOKEN` bearer token in the
+ * `Authorization` header. `CES_READ_TOKEN` and `CES_WRITE_TOKEN` answer `403`
+ * (`read_only_token` / `write_scope_required`).
  */
 
-import { timingSafeEqual } from "node:crypto";
-
 import type { SecureKeyBackend } from "@vellumai/credential-storage";
+
+import { authorizeService, type CesTokens } from "./capability-auth.js";
 
 // ---------------------------------------------------------------------------
 // Account key normalization
@@ -65,51 +65,14 @@ function normalizeAccountKey(account: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Auth
-// ---------------------------------------------------------------------------
-
-/**
- * Validate the Authorization header against the configured service token.
- * Returns an error Response if auth fails, or null if auth succeeds.
- */
-function checkAuth(req: Request, serviceToken: string): Response | null {
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader) {
-    return new Response(
-      JSON.stringify({ error: "Missing Authorization header" }),
-      { status: 401, headers: { "Content-Type": "application/json" } },
-    );
-  }
-
-  const parts = authHeader.split(" ");
-  if (parts.length !== 2 || parts[0]!.toLowerCase() !== "bearer") {
-    return new Response(
-      JSON.stringify({ error: "Invalid Authorization header format. Expected: Bearer <token>" }),
-      { status: 401, headers: { "Content-Type": "application/json" } },
-    );
-  }
-
-  const provided = Buffer.from(parts[1]!);
-  const expected = Buffer.from(serviceToken);
-  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
-    return new Response(
-      JSON.stringify({ error: "Invalid service token" }),
-      { status: 403, headers: { "Content-Type": "application/json" } },
-    );
-  }
-
-  return null;
-}
-
-// ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
 
 export interface CredentialRouteDeps {
   /** The secure key backend to wrap. */
   backend: SecureKeyBackend;
-  /** Service token for authenticating requests. */
-  serviceToken: string;
+  /** Bearer tokens: only the service token grants this surface. */
+  tokens: CesTokens;
 }
 
 const CREDENTIAL_PATH_PREFIX = "/v1/credentials";
@@ -132,7 +95,7 @@ export async function handleCredentialRoute(
   }
 
   // Auth check
-  const authError = checkAuth(req, deps.serviceToken);
+  const authError = authorizeService(req, deps.tokens);
   if (authError) return authError;
 
   const { backend } = deps;

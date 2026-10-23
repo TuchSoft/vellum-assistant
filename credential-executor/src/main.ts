@@ -51,6 +51,7 @@ import { handleKvRoute } from "./http/kv-routes.js";
 import { handleLogExportRoute } from "./http/log-export-routes.js";
 import { handleMetadataRoute } from "./http/metadata-routes.js";
 import { handleResolveRoute } from "./http/resolve-routes.js";
+import { readTokensFromEnv, type CesTokens } from "./http/capability-auth.js";
 import { CES_MIGRATIONS } from "./migrations/registry.js";
 import { runCesMigrations } from "./migrations/runner.js";
 import {
@@ -250,12 +251,13 @@ function startHealthServer(
   signal: AbortSignal,
   credentialDeps: CredentialRouteDeps | null,
   psonoBackend: PsonoCredentialBackend | undefined,
-  serviceToken: string,
+  tokens: CesTokens,
   kvToken: string,
 ): ReturnType<typeof Bun.serve> {
   // Listen on every interface so kubelet httpGet probes can hit the pod IP.
-  // Every non-probe route authenticates with CES_SERVICE_TOKEN or
-  // CES_KV_TOKEN; the port is never published on the host and only
+  // Every non-probe route authenticates with one of the CES bearer tokens
+  // (`CES_SERVICE_TOKEN`, `CES_WRITE_TOKEN`, `CES_READ_TOKEN`) or
+  // `CES_KV_TOKEN`; the port is never published on the host and only
   // assistant-net can reach it.
   const server = Bun.serve({
     port,
@@ -292,7 +294,7 @@ function startHealthServer(
         );
       }
 
-      // Credential CRUD routes (only if service token is configured)
+      // Credential CRUD routes
       if (credentialDeps) {
         const metadataResponse = await handleMetadataRoute(req);
         if (metadataResponse) {
@@ -309,7 +311,7 @@ function startHealthServer(
 
       const resolveResponse = await handleResolveRoute(req, {
         backend: psonoBackend,
-        serviceToken,
+        tokens,
       });
       if (resolveResponse) {
         return resolveResponse;
@@ -318,7 +320,7 @@ function startHealthServer(
       const fileResponse = await handleFileRoute(req, {
         backend: psonoBackend,
         records: getMetadataStore(),
-        serviceToken,
+        tokens,
       });
       if (fileResponse) {
         return fileResponse;
@@ -432,16 +434,31 @@ async function main(): Promise<void> {
 
   // -- Health server (managed only) -----------------------------------------
   if (mode === "managed") {
-    const serviceToken = process.env["CES_SERVICE_TOKEN"] ?? "";
-    let credentialDeps: CredentialRouteDeps | null = null;
+    const tokens = readTokensFromEnv();
+    const credentialDeps: CredentialRouteDeps = {
+      backend: values.backend,
+      tokens,
+    };
 
-    if (serviceToken) {
-      credentialDeps = { backend: values.backend, serviceToken };
-      log.info("Credential CRUD routes enabled (CES_SERVICE_TOKEN configured)");
+    if (tokens.service) {
+      log.info("Admin routes enabled (CES_SERVICE_TOKEN configured)");
     } else {
       log.warn(
-        "CES_SERVICE_TOKEN not set — credential CRUD HTTP routes are disabled. " +
-          "Set CES_SERVICE_TOKEN to enable credential management over HTTP.",
+        "CES_SERVICE_TOKEN not set — /v1/metadata and /v1/credentials are closed",
+      );
+    }
+    if (!tokens.read && !tokens.write && !tokens.service) {
+      log.warn(
+        "No CES bearer token configured — every authenticated route answers 503",
+      );
+    } else {
+      log.info(
+        {
+          read: Boolean(tokens.read),
+          write: Boolean(tokens.write),
+          service: Boolean(tokens.service),
+        },
+        "CES capability tokens",
       );
     }
 
@@ -451,7 +468,7 @@ async function main(): Promise<void> {
       controller.signal,
       credentialDeps,
       psonoBackend,
-      serviceToken,
+      tokens,
       process.env["CES_KV_TOKEN"]?.trim() ?? "",
     );
     log.info(`Health server listening on port ${healthPort}`);

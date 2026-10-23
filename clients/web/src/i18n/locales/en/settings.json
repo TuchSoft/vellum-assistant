@@ -1898,6 +1898,49 @@
     "removeBindingAriaLabel": "Remove {label} binding",
     "resetShortcutAriaLabel": "Reset {label} to default"
   },
+  "skillPermissions": {
+    "capabilityToggleLabel": "{capability} for {skill}",
+    "capabilities": {
+      "computer_use_target": {
+        "description": "Lets the skill drive the desktop through computer-use tools.",
+        "label": "Computer use"
+      },
+      "host_exec": {
+        "description": "Runs the skill's scripts on the machine the assistant lives on.",
+        "label": "Host execution"
+      },
+      "input_repairs": {
+        "description": "Applies the skill's input repair rules to the tool calls it makes.",
+        "label": "Input repairs"
+      },
+      "vetted": {
+        "description": "Treats the skill as reviewed when the sandbox decides how far it can reach.",
+        "label": "Vetted"
+      }
+    },
+    "description": "Capabilities a skill may use. Each grant is bound to the exact skill content, so editing a skill starts from no grant until you grant the new version.",
+    "disabledSkill": "Disabled",
+    "empty": "No skills are installed.",
+    "grantRevoked": "Skill permissions revoked.",
+    "grantSaved": "Skill permissions updated.",
+    "grantedByDefault": "Default",
+    "grantedByManual": "Granted here",
+    "loadError": "Could not load skill permissions.",
+    "loading": "Loading skill permissions…",
+    "noCapabilities": "No capabilities",
+    "retry": "Retry",
+    "revoke": "Revoke",
+    "revokeError": "Could not revoke skill permissions.",
+    "saveError": "Could not save skill permissions.",
+    "statusDenied": "No grant",
+    "statusGranted": "Granted",
+    "statusUnavailable": "Version unavailable",
+    "statusVersionChanged": "Version changed",
+    "title": "Skill permissions",
+    "unavailableHint": "The installed version of this skill could not be read, so permissions cannot be changed from here.",
+    "versionChangedHint": "The skill content changed after this grant was written, so it no longer applies. Grant the current version below, or revoke the old one.",
+    "versionLabel": "Version {version}"
+  },
   "soundsSections": {
     "addSound": "Add sound",
     "allSoundsAdded": "All sounds added",

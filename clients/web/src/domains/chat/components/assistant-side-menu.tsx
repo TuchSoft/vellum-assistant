@@ -84,6 +84,14 @@ export interface AssistantSideMenuProps extends UseSidebarStateParams {
    * dependency (and of the router context it needs).
    */
   notificationsAction?: ReactNode;
+  /**
+   * Block drawn above the conversation sections, under the assistant cluster.
+   * A slot rather than a direct render, for the same reason as
+   * `notificationsAction`: the block belongs to another surface (the projects
+   * list) and composes here without this menu owning its data or its cache.
+   * Hidden while the rail is collapsed, where the menu is an icon column.
+   */
+  projectsSlot?: ReactNode;
   onClose?: () => void;
 
   onPinConversation?: (conversation: Conversation) => void;
@@ -200,6 +208,7 @@ export function AssistantSideMenu({
   onStartNewConversation,
   footerAction,
   notificationsAction,
+  projectsSlot,
   leadingAction,
   onPinConversation,
   onRenameConversation,
@@ -667,6 +676,12 @@ export function AssistantSideMenu({
               {builtInNav}
             </div>
           ) : null}
+          {/* Projects sit above the conversation sections and below the
+              assistant cluster. Additive: the section list below is untouched
+              and keeps owning Pinned, Chats, channels and custom groups. The
+              collapsed rail keeps its icon-only column, so the caller's slot
+              is drawn only while the sidebar is expanded. */}
+          {!isCollapsedRail && projectsSlot ? projectsSlot : null}
           {isCollapsedRail ? (
             <CollapsedRailSections
               sections={listSections}

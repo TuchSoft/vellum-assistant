@@ -89,6 +89,7 @@ import { StatusBanner } from "@/components/status-banner";
 import { AssistantSleepStage } from "@/domains/chat/components/assistant-sleep-stage";
 import { useAssistantSleepStageStore } from "@/stores/assistant-sleep-stage-store";
 import { AssistantSideMenu } from "@/domains/chat/components/assistant-side-menu";
+import { ProjectsNav } from "@/domains/chat/components/projects/projects-nav";
 import { PanicButton } from "@/domains/chat/components/panic-button";
 import { PreferencesMenu } from "@/domains/chat/components/preferences-menu";
 import { useCommandPaletteOrchestrator } from "@/domains/chat/hooks/use-command-palette-orchestrator";
@@ -1022,6 +1023,12 @@ export function ChatLayout({
       showInternalActions={showInternalActions}
       onMoveToGroup={handleMoveToGroup}
       onRemoveFromGroup={handleRemoveFromGroup}
+      projectsSlot={
+        <ProjectsNav
+          assistantId={assistantId ?? null}
+          conversations={conversations}
+        />
+      }
       leadingAction={
         args.variant === "overlay" ? (
           <AssistantDesktopAffordance onToggle={args.onClose} />

@@ -1,31 +1,39 @@
 /**
  * Conformance suite for the project store on Postgres: the entity CRUD, the
- * Inbox singleton, multi-project membership, cascade deletes, and the
- * inherited set of a fork or subagent.
+ * Inbox singleton, multi-project membership, schedule membership, cascade
+ * deletes, the inherited set of a fork or subagent, and the per-project folder.
  *
  * Runs against the process's Postgres test schema, bootstrapped by
  * `src/__tests__/pg-test-db.ts` and migrated through the ordered steps here.
  * Gated on `VELLUM_PG_TEST_URL`; with it unset the suite skips.
  */
 
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, expect, test } from "bun:test";
 
 import { describePg } from "../../__tests__/pg-test-db.js";
+import { getWorkspaceDir } from "../../util/platform.js";
 import { requireMainDb } from "../db-facade.js";
 import { initializePostgresDb } from "../pg-migrations/pg-db-init.js";
 import {
+  applyScheduleProjectScope,
   archiveProject,
   buildProjectTree,
   createProject,
+  ensureProjectDirectoriesForExistingProjects,
   getConversationProjectIds,
   getProject,
+  getScheduleProjectIds,
   INBOX_PROJECT_ID,
   listProjects,
   type ProjectErrorReason,
   ProjectStoreError,
   renameProject,
   resolveInheritedProjectIds,
+  scheduleExists,
   setConversationProjects,
+  setScheduleProjects,
 } from "../project-store.js";
 
 await initializePostgresDb();
@@ -34,6 +42,8 @@ const NOW = 1_760_000_000_000;
 
 async function resetProjects(): Promise<void> {
   const db = requireMainDb();
+  await db.exec("DELETE FROM cron_job_projects");
+  await db.exec("DELETE FROM cron_jobs");
   await db.exec("DELETE FROM conversation_projects");
   await db.exec("DELETE FROM conversations");
   await db.exec("DELETE FROM projects WHERE kind <> 'inbox'");
@@ -65,6 +75,19 @@ async function seedConversation(
       parents.parentConversationId ?? null,
     ],
   );
+}
+
+async function seedSchedule(id: string): Promise<void> {
+  await requireMainDb().run(
+    `INSERT INTO cron_jobs (id, name, message, next_run_at, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'user', ?, ?)`,
+    [id, `Schedule ${id}`, "do the thing", NOW, NOW, NOW],
+  );
+}
+
+/** The folder the store hands a project, as a test asserts it on disk. */
+function projectFolder(projectId: string): string {
+  return join(getWorkspaceDir(), "data", "projects", projectId);
 }
 
 function expectStoreError(error: unknown, reason: ProjectErrorReason): void {
@@ -256,5 +279,157 @@ describePg("project-store (postgres)", () => {
     await seedConversation("root");
     expect(await resolveInheritedProjectIds("root")).toEqual([]);
     expect(await resolveInheritedProjectIds("missing")).toEqual([]);
+  });
+
+  test("stores a schedule's multi-project set", async () => {
+    await seedSchedule("sched-1");
+    const alpha = await createProject({ name: "Alpha" });
+    const beta = await createProject({ name: "Beta" });
+
+    expect(await scheduleExists("sched-1")).toBe(true);
+    expect(await scheduleExists("missing")).toBe(false);
+    expect(await setScheduleProjects("sched-1", [beta.id, alpha.id])).toEqual(
+      [alpha.id, beta.id].sort(),
+    );
+    expect(await getScheduleProjectIds("sched-1")).toEqual(
+      [alpha.id, beta.id].sort(),
+    );
+
+    expect(await setScheduleProjects("sched-1", [beta.id])).toEqual([beta.id]);
+    expect(await setScheduleProjects("sched-1", [])).toEqual([]);
+    expect(await getScheduleProjectIds("sched-1")).toEqual([]);
+  });
+
+  test("rejects an unknown schedule, an unknown project and an archived project", async () => {
+    await seedSchedule("sched-1");
+    const archived = await createProject({ name: "Old" });
+    await archiveProject(archived.id);
+
+    try {
+      await setScheduleProjects("missing", []);
+      throw new Error("expected an unknown schedule to reject");
+    } catch (error) {
+      expectStoreError(error, "not_found");
+    }
+
+    try {
+      await setScheduleProjects("sched-1", ["missing"]);
+      throw new Error("expected an unknown project to reject");
+    } catch (error) {
+      expectStoreError(error, "not_found");
+    }
+
+    try {
+      await setScheduleProjects("sched-1", [archived.id]);
+      throw new Error("expected an archived project to reject");
+    } catch (error) {
+      expectStoreError(error, "invalid");
+    }
+  });
+
+  test("cascades schedule membership on schedule delete", async () => {
+    await seedSchedule("sched-1");
+    const project = await createProject({ name: "Alpha" });
+    await setScheduleProjects("sched-1", [project.id]);
+
+    await requireMainDb().run("DELETE FROM cron_jobs WHERE id = ?", [
+      "sched-1",
+    ]);
+    const rows = await requireMainDb().all(
+      "SELECT * FROM cron_job_projects WHERE project_id = ?",
+      [project.id],
+    );
+    expect(rows).toEqual([]);
+  });
+
+  test("cascades schedule membership on project delete", async () => {
+    await seedSchedule("sched-1");
+    const project = await createProject({ name: "Alpha" });
+    await setScheduleProjects("sched-1", [project.id]);
+
+    await requireMainDb().run("DELETE FROM projects WHERE id = ?", [
+      project.id,
+    ]);
+    const rows = await requireMainDb().all(
+      "SELECT * FROM cron_job_projects WHERE cron_job_id = ?",
+      ["sched-1"],
+    );
+    expect(rows).toEqual([]);
+  });
+
+  test("a run inherits its schedule's project set", async () => {
+    await seedSchedule("sched-1");
+    await seedConversation("run-1");
+    const project = await createProject({ name: "Alpha" });
+    await setScheduleProjects("sched-1", [project.id]);
+
+    expect(await applyScheduleProjectScope("run-1", "sched-1")).toEqual([
+      project.id,
+    ]);
+    expect(await getConversationProjectIds("run-1")).toEqual([project.id]);
+  });
+
+  test("an empty schedule set leaves the run's own set intact", async () => {
+    await seedSchedule("sched-1");
+    await seedConversation("run-1");
+    const own = await createProject({ name: "Alpha" });
+    await setConversationProjects("run-1", [own.id]);
+
+    expect(await applyScheduleProjectScope("run-1", "sched-1")).toEqual([]);
+    expect(await getConversationProjectIds("run-1")).toEqual([own.id]);
+  });
+
+  test("a project archived after it was attached does not break the run", async () => {
+    await seedSchedule("sched-1");
+    await seedConversation("run-1");
+    const kept = await createProject({ name: "Alpha" });
+    const dropped = await createProject({ name: "Beta" });
+    await setScheduleProjects("sched-1", [kept.id, dropped.id]);
+    await archiveProject(dropped.id);
+
+    expect(await applyScheduleProjectScope("run-1", "sched-1")).toEqual([
+      kept.id,
+    ]);
+    expect(await getConversationProjectIds("run-1")).toEqual([kept.id]);
+  });
+
+  test("creating a project creates its folder", async () => {
+    const project = await createProject({ name: "Alpha" });
+    expect(existsSync(projectFolder(project.id))).toBe(true);
+  });
+
+  test("the startup sweep creates the missing folders and keeps their content", async () => {
+    const project = await createProject({ name: "Alpha" });
+    const other = await createProject({ name: "Beta" });
+    const archived = await createProject({ name: "Old" });
+    await archiveProject(archived.id);
+    // A project created by an older build has no folder; a system project can
+    // only exist through the migration, so it is inserted directly.
+    rmSync(projectFolder(other.id), { recursive: true, force: true });
+    rmSync(projectFolder(archived.id), { recursive: true, force: true });
+    await requireMainDb().run(
+      `INSERT INTO projects (id, name, kind, sort_position, is_archived, created_at, updated_at)
+       VALUES ('system:background', 'Background', 'system', 1, FALSE, ?, ?)
+       ON CONFLICT (id) DO NOTHING`,
+      [NOW, NOW],
+    );
+    mkdirSync(projectFolder(project.id), { recursive: true });
+    writeFileSync(join(projectFolder(project.id), "instructions.md"), "keep");
+
+    await ensureProjectDirectoriesForExistingProjects();
+
+    expect(existsSync(projectFolder(other.id))).toBe(true);
+    expect(existsSync(projectFolder(archived.id))).toBe(true);
+    expect(existsSync(join(projectFolder(project.id), "instructions.md"))).toBe(
+      true,
+    );
+    // A `system:` id is not a path segment, so it gets no folder.
+    expect(existsSync(projectFolder("system:background"))).toBe(false);
+
+    // A second pass is a no-op on an existing folder.
+    await ensureProjectDirectoriesForExistingProjects();
+    expect(existsSync(join(projectFolder(project.id), "instructions.md"))).toBe(
+      true,
+    );
   });
 });

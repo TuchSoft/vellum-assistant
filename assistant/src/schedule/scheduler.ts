@@ -14,6 +14,7 @@ import { emitNotificationSignal } from "../notifications/emit-signal.js";
 import { emitScheduleResultNotification } from "../notifications/schedule-result-producer.js";
 import { getConversation } from "../persistence/conversation-crud.js";
 import { isLifecycleQuiesced } from "../persistence/lifecycle-quiesce.js";
+import { applyScheduleProjectScope } from "../persistence/project-store.js";
 import { invalidateAssistantInferredItemsForConversation } from "../plugins/defaults/memory/task-memory-cleanup.js";
 import {
   hasPendingAgentWake,
@@ -1141,6 +1142,17 @@ export async function runDueSchedulesOnce(
       // new conversation and is therefore not a drop-in replacement for the
       // reuse semantics.
       conversationId = reusedConversationId;
+      // The run inherits the schedule's project set, so memory and skill scope
+      // follow the project the schedule is filed under. A schedule with no
+      // projects leaves the conversation's own set intact.
+      try {
+        await applyScheduleProjectScope(conversationId, job.id);
+      } catch (err) {
+        log.warn(
+          { err, jobId: job.id, conversationId },
+          "Failed to apply the schedule project scope; continuing the run",
+        );
+      }
       broadcastScheduleConversationCreated({
         conversationId,
         scheduleJobId: job.id,
@@ -1205,6 +1217,17 @@ export async function runDueSchedulesOnce(
         onConversationCreated: async (newConversationId) => {
           runConversationId = newConversationId;
           await setScheduleRunConversationId(runId, newConversationId);
+          // Before the turn starts: the run reads its project scope on the
+          // first turn, and `onConversationCreated` is awaited ahead of
+          // `processMessage`.
+          try {
+            await applyScheduleProjectScope(newConversationId, job.id);
+          } catch (err) {
+            log.warn(
+              { err, jobId: job.id, conversationId: newConversationId },
+              "Failed to apply the schedule project scope; continuing the run",
+            );
+          }
           broadcastScheduleConversationCreated({
             conversationId: newConversationId,
             scheduleJobId: job.id,

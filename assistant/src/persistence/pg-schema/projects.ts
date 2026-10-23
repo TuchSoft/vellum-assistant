@@ -13,6 +13,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 import { conversations } from "./conversations.js";
+import { cronJobs } from "./infrastructure.js";
 
 /**
  * A project is a name with a briefing: it says that a certain body of work
@@ -83,5 +84,29 @@ export const conversationProjects = pgTable(
   (table) => [
     primaryKey({ columns: [table.conversationId, table.projectId] }),
     index("idx_conversation_projects_project").on(table.projectId),
+  ],
+);
+
+/**
+ * Project membership of a schedule: an unordered set, with no primary project.
+ * A scheduled run inherits it, so the memory and skill scope of the run follows
+ * the project the schedule was filed under.
+ *
+ * Both keys cascade so a deleted schedule or project leaves no orphaned
+ * membership behind.
+ */
+export const cronJobProjects = pgTable(
+  "cron_job_projects",
+  {
+    cronJobId: text("cron_job_id")
+      .notNull()
+      .references(() => cronJobs.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.cronJobId, table.projectId] }),
+    index("idx_cron_job_projects_project").on(table.projectId),
   ],
 );

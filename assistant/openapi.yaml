@@ -20520,6 +20520,31 @@ paths:
                 required:
                   - ok
                 additionalProperties: false
+  /v1/memory/v3/reindex-projects:
+    post:
+      operationId: memory_v3_reindexprojects_post
+      summary: "One-time: rewrite the projects/exclusive payload on every section point from the page frontmatter"
+      tags:
+        - memory
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  articles:
+                    type: number
+                  points:
+                    type: number
+                  failures:
+                    type: number
+                required:
+                  - articles
+                  - points
+                  - failures
+                additionalProperties: false
   /v1/memory/worker/start:
     post:
       operationId: memory_worker_start_post
@@ -30828,6 +30853,85 @@ paths:
                 required:
                   - schedules
                 additionalProperties: false
+  /v1/schedules/{id}/projects:
+    get:
+      operationId: schedules_by_id_projects_get
+      summary: Get schedule projects
+      description: Return the project set of a schedule. A run of the schedule inherits it.
+      tags:
+        - schedules
+        - projects
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projectIds:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - projectIds
+                additionalProperties: false
+        "404":
+          description: Schedule not found
+    put:
+      operationId: schedules_by_id_projects_put
+      summary: Replace schedule projects
+      description:
+        Replace the project set of a schedule. There is no primary project; an empty set means the schedule belongs
+        to no project and its runs keep no project scope.
+      tags:
+        - schedules
+        - projects
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                projectIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+              required:
+                - projectIds
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projectIds:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - projectIds
+                additionalProperties: false
+        "400":
+          description: A project in the set is archived
+        "404":
+          description: Schedule or project not found
   /v1/schedules/{id}/run:
     post:
       operationId: schedules_by_id_run_post

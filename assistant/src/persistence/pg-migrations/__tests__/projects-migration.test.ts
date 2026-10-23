@@ -19,12 +19,16 @@ import { PG_STEPS } from "../pg-steps.js";
 import { runPgMigrations } from "../run-pg-migrations.js";
 
 const PROJECT_STEP = PG_STEPS.find((step) => step.name === "0003_projects");
+const CRON_PROJECTS_STEP = PG_STEPS.find(
+  (step) => step.name === "0004_cron_job_projects",
+);
 
 const USER_GROUP_ID = "9f6b1c4e-1f0e-4a5f-9d21-2b7f0e3a6c11";
 const NOW = 1_760_000_000_000;
 
 async function seedGroupsAndConversations(): Promise<void> {
   const db = requireMainDb();
+  await db.exec("DROP TABLE IF EXISTS cron_job_projects");
   await db.exec("DROP TABLE IF EXISTS conversation_projects");
   await db.exec("DROP TABLE IF EXISTS projects");
   await db.exec("DROP TABLE IF EXISTS pg_schema_migrations");
@@ -154,11 +158,88 @@ describePg("0003_projects migration", () => {
 
   test("down drops both tables", async () => {
     const db = requireMainDb();
+    // Steps roll back newest first: `0004` holds the foreign key to `projects`.
+    await CRON_PROJECTS_STEP!.down?.(db);
     await PROJECT_STEP!.down?.(db);
     const rows = await db.all<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema()
          AND table_name IN ('projects', 'conversation_projects')`,
+    );
+    expect(rows).toEqual([]);
+  });
+});
+
+describePg("0004_cron_job_projects migration", () => {
+  beforeAll(async () => {
+    // The `0003` block ends with both tables dropped, so this block rebuilds the
+    // schema it depends on instead of relying on the other block's order.
+    const db = requireMainDb();
+    await PROJECT_STEP!.up(db);
+    await CRON_PROJECTS_STEP!.up(db);
+  });
+
+  test("creates the cron_job_projects table with its index", async () => {
+    expect(CRON_PROJECTS_STEP).toBeDefined();
+    const table = await requireMainDb().get<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = current_schema()
+         AND table_name = 'cron_job_projects'`,
+    );
+    expect(table?.table_name).toBe("cron_job_projects");
+
+    const index = await requireMainDb().get<{ indexname: string }>(
+      "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'idx_cron_job_projects_project'",
+    );
+    expect(index?.indexname).toBe("idx_cron_job_projects_project");
+  });
+
+  test("cascades membership when the schedule is deleted", async () => {
+    const db = requireMainDb();
+    const now = Date.now();
+    await db.run(
+      `INSERT INTO cron_jobs (id, name, message, next_run_at, created_by, created_at, updated_at)
+       VALUES ('sched-1', 'S', 'm', ?, 'user', ?, ?)
+       ON CONFLICT (id) DO NOTHING`,
+      [now, now, now],
+    );
+    await db.run(
+      `INSERT INTO cron_job_projects (cron_job_id, project_id)
+       VALUES ('sched-1', 'inbox')
+       ON CONFLICT DO NOTHING`,
+    );
+    expect(
+      await db.all(
+        "SELECT * FROM cron_job_projects WHERE cron_job_id = 'sched-1'",
+      ),
+    ).toHaveLength(1);
+
+    await db.run("DELETE FROM cron_jobs WHERE id = 'sched-1'");
+    expect(
+      await db.all(
+        "SELECT * FROM cron_job_projects WHERE cron_job_id = 'sched-1'",
+      ),
+    ).toEqual([]);
+  });
+
+  test("is idempotent: a second apply leaves the table in place", async () => {
+    const db = requireMainDb();
+    await CRON_PROJECTS_STEP!.up(db);
+    const table = await db.get<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = current_schema()
+         AND table_name = 'cron_job_projects'`,
+    );
+    expect(table?.table_name).toBe("cron_job_projects");
+  });
+
+  test("down drops the table", async () => {
+    const db = requireMainDb();
+    await CRON_PROJECTS_STEP!.down?.(db);
+    const rows = await db.all<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = current_schema()
+         AND table_name = 'cron_job_projects'`,
     );
     expect(rows).toEqual([]);
   });

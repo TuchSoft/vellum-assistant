@@ -34,10 +34,14 @@ const create = handler("projects_create");
 const rename = handler("projects_rename");
 const archive = handler("projects_archive");
 const getConversationProjects = handler("conversation_projects_list");
-const setConversationProjects = handler("conversation_projects_replace");
+const replaceConversationProjects = handler("conversation_projects_replace");
+const getScheduleProjects = handler("schedule_projects_list");
+const replaceScheduleProjects = handler("schedule_projects_replace");
 
 async function resetProjects(): Promise<void> {
   const db = requireMainDb();
+  await db.exec("DELETE FROM cron_job_projects");
+  await db.exec("DELETE FROM cron_jobs");
   await db.exec("DELETE FROM conversation_projects");
   await db.exec("DELETE FROM conversations");
   await db.exec("DELETE FROM projects WHERE kind <> 'inbox'");
@@ -53,6 +57,14 @@ async function seedConversation(id: string): Promise<void> {
   await requireMainDb().run(
     "INSERT INTO conversations (id, created_at, updated_at) VALUES (?, ?, ?)",
     [id, NOW, NOW],
+  );
+}
+
+async function seedSchedule(id: string): Promise<void> {
+  await requireMainDb().run(
+    `INSERT INTO cron_jobs (id, name, message, next_run_at, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'user', ?, ?)`,
+    [id, `Schedule ${id}`, "do the thing", NOW, NOW, NOW],
   );
 }
 
@@ -168,7 +180,7 @@ describePg("project routes (postgres)", () => {
       body: { name: "Beta" },
     } as RouteHandlerArgs)) as ProjectResponse;
 
-    const replaced = (await setConversationProjects({
+    const replaced = (await replaceConversationProjects({
       pathParams: { conversationId: "conv-1" },
       body: { projectIds: [beta.id, alpha.id] },
     } as RouteHandlerArgs)) as { projectIds: string[] };
@@ -182,7 +194,7 @@ describePg("project routes (postgres)", () => {
 
   test("returns 404 for an unknown conversation", async () => {
     try {
-      await setConversationProjects({
+      await replaceConversationProjects({
         pathParams: { conversationId: "missing" },
         body: { projectIds: [] },
       } as RouteHandlerArgs);
@@ -206,13 +218,80 @@ describePg("project routes (postgres)", () => {
   test("returns 404 for an unknown project in the set", async () => {
     await seedConversation("conv-1");
     try {
-      await setConversationProjects({
+      await replaceConversationProjects({
         pathParams: { conversationId: "conv-1" },
         body: { projectIds: ["missing"] },
       } as RouteHandlerArgs);
       throw new Error("expected the set write to reject");
     } catch (error) {
       expectHttpError(error, NotFoundError);
+    }
+  });
+
+  test("reads and replaces the schedule project set", async () => {
+    await seedSchedule("sched-1");
+    const alpha = (await create({
+      body: { name: "Alpha" },
+    } as RouteHandlerArgs)) as ProjectResponse;
+    const beta = (await create({
+      body: { name: "Beta" },
+    } as RouteHandlerArgs)) as ProjectResponse;
+
+    const empty = (await getScheduleProjects({
+      pathParams: { id: "sched-1" },
+    } as RouteHandlerArgs)) as { projectIds: string[] };
+    expect(empty.projectIds).toEqual([]);
+
+    const replaced = (await replaceScheduleProjects({
+      pathParams: { id: "sched-1" },
+      body: { projectIds: [beta.id, alpha.id] },
+    } as RouteHandlerArgs)) as { projectIds: string[] };
+    expect(replaced.projectIds).toEqual([alpha.id, beta.id].sort());
+
+    const read = (await getScheduleProjects({
+      pathParams: { id: "sched-1" },
+    } as RouteHandlerArgs)) as { projectIds: string[] };
+    expect(read.projectIds).toEqual([alpha.id, beta.id].sort());
+  });
+
+  test("returns 404 for an unknown schedule in the set routes", async () => {
+    try {
+      await replaceScheduleProjects({
+        pathParams: { id: "missing" },
+        body: { projectIds: [] },
+      } as RouteHandlerArgs);
+      throw new Error("expected the set write to reject");
+    } catch (error) {
+      expectHttpError(error, NotFoundError);
+    }
+
+    try {
+      await getScheduleProjects({
+        pathParams: { id: "missing" },
+      } as RouteHandlerArgs);
+      throw new Error("expected the set read to reject");
+    } catch (error) {
+      expectHttpError(error, NotFoundError);
+    }
+  });
+
+  test("returns 400 for an archived project on a schedule", async () => {
+    await seedSchedule("sched-1");
+    const project = (await create({
+      body: { name: "Old" },
+    } as RouteHandlerArgs)) as ProjectResponse;
+    await archive({
+      pathParams: { projectId: project.id },
+    } as RouteHandlerArgs);
+
+    try {
+      await replaceScheduleProjects({
+        pathParams: { id: "sched-1" },
+        body: { projectIds: [project.id] },
+      } as RouteHandlerArgs);
+      throw new Error("expected the set write to reject");
+    } catch (error) {
+      expectHttpError(error, BadRequestError);
     }
   });
 });

@@ -349,4 +349,24 @@ export const PG_STEPS: readonly PgMigrationStep[] = [
       await db.exec(`DROP TABLE IF EXISTS "projects"`);
     },
   },
+  {
+    name: "0004_cron_job_projects",
+    up: async (db) => {
+      // Additive and idempotent: an interrupted apply leaves a table that the
+      // re-run completes, and neither statement depends on data.
+      await db.exec(
+        `CREATE TABLE IF NOT EXISTS "cron_job_projects" (
+          "cron_job_id" text NOT NULL REFERENCES "cron_jobs"("id") ON DELETE CASCADE,
+          "project_id" text NOT NULL REFERENCES "projects"("id") ON DELETE CASCADE,
+          PRIMARY KEY ("cron_job_id", "project_id")
+        )`,
+      );
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "idx_cron_job_projects_project" ON "cron_job_projects" ("project_id")`,
+      );
+    },
+    down: async (db) => {
+      await db.exec(`DROP TABLE IF EXISTS "cron_job_projects"`);
+    },
+  },
 ];

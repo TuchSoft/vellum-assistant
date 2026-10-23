@@ -7,6 +7,8 @@
  * POST   /v1/projects/:projectId/archive                - archive a project
  * GET    /v1/conversations/:conversationId/projects     - project set
  * PUT    /v1/conversations/:conversationId/projects     - replace the set
+ * GET    /v1/schedules/:id/projects                     - project set
+ * PUT    /v1/schedules/:id/projects                     - replace the set
  *
  * Projects own no data: the briefing (`refs.yaml`) and the human instructions
  * (`instructions.md`) are files, not endpoints.
@@ -20,12 +22,15 @@ import {
   conversationExists,
   createProject,
   getConversationProjectIds,
+  getScheduleProjectIds,
   listProjects,
   type ProjectRow,
   ProjectStoreError,
   type ProjectTreeNode,
   renameProject,
+  scheduleExists,
   setConversationProjects,
+  setScheduleProjects,
 } from "../../persistence/project-store.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "./errors.js";
@@ -62,7 +67,7 @@ const renameProjectBodySchema = z.object({
   name: z.string().min(1).max(200),
 });
 
-const conversationProjectsBodySchema = z.object({
+const projectIdSetBodySchema = z.object({
   projectIds: z.array(z.string().min(1)),
 });
 
@@ -181,13 +186,38 @@ async function handleSetConversationProjects({
   pathParams = {},
   body,
 }: RouteHandlerArgs) {
-  const { projectIds } = parseBody(conversationProjectsBodySchema, body);
+  const { projectIds } = parseBody(projectIdSetBodySchema, body);
   try {
     return {
       projectIds: await setConversationProjects(
         pathParams.conversationId,
         projectIds,
       ),
+    };
+  } catch (err) {
+    mapStoreError(err);
+  }
+}
+
+async function handleGetScheduleProjects({
+  pathParams = {},
+}: RouteHandlerArgs) {
+  const scheduleId = pathParams.id;
+  if (!(await scheduleExists(scheduleId))) {
+    throw new NotFoundError("Schedule not found");
+  }
+  const projectIds = await getScheduleProjectIds(scheduleId);
+  return { projectIds };
+}
+
+async function handleSetScheduleProjects({
+  pathParams = {},
+  body,
+}: RouteHandlerArgs) {
+  const { projectIds } = parseBody(projectIdSetBodySchema, body);
+  try {
+    return {
+      projectIds: await setScheduleProjects(pathParams.id, projectIds),
     };
   } catch (err) {
     mapStoreError(err);
@@ -340,11 +370,63 @@ export const ROUTES: RouteDefinition[] = [
         description: "Conversation whose project set is replaced.",
       },
     ],
-    requestBody: conversationProjectsBodySchema,
+    requestBody: projectIdSetBodySchema,
     responseBody: z.object({ projectIds: z.array(z.string()) }),
     additionalResponses: {
       "400": { description: "A project in the set is archived" },
       "404": { description: "Conversation or project not found" },
+    },
+  },
+  {
+    operationId: "schedule_projects_list",
+    endpoint: "schedules/:id/projects",
+    method: "GET",
+    policy: {
+      requiredScopes: ["settings.read"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
+    handler: handleGetScheduleProjects,
+    summary: "Get schedule projects",
+    description:
+      "Return the project set of a schedule. A run of the schedule inherits it.",
+    tags: ["schedules", "projects"],
+    pathParams: [
+      {
+        name: "id",
+        type: "string",
+        description: "Schedule whose project set is read.",
+      },
+    ],
+    responseBody: z.object({ projectIds: z.array(z.string()) }),
+    additionalResponses: {
+      "404": { description: "Schedule not found" },
+    },
+  },
+  {
+    operationId: "schedule_projects_replace",
+    endpoint: "schedules/:id/projects",
+    method: "PUT",
+    policy: {
+      requiredScopes: ["settings.write"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
+    handler: handleSetScheduleProjects,
+    summary: "Replace schedule projects",
+    description:
+      "Replace the project set of a schedule. There is no primary project; an empty set means the schedule belongs to no project and its runs keep no project scope.",
+    tags: ["schedules", "projects"],
+    pathParams: [
+      {
+        name: "id",
+        type: "string",
+        description: "Schedule whose project set is replaced.",
+      },
+    ],
+    requestBody: projectIdSetBodySchema,
+    responseBody: z.object({ projectIds: z.array(z.string()) }),
+    additionalResponses: {
+      "400": { description: "A project in the set is archived" },
+      "404": { description: "Schedule or project not found" },
     },
   },
 ];

@@ -1,20 +1,27 @@
 /**
- * Project store: the `projects` entity, conversation membership, and the
- * inherited project set of a fork, subagent or scheduled run.
+ * Project store: the `projects` entity, conversation and schedule membership,
+ * the inherited project set of a fork, subagent or scheduled run, and the
+ * per-project folder under the workspace.
  *
  * A project owns no data. It carries a name and a briefing (kept in files by
- * the agent) and membership is a set per conversation, with no primary
- * project. Membership lives in `conversation_projects` rather than on the
- * conversation row because pinning rewrites `conversations.group_id`.
+ * the agent) and membership is a set per conversation and per schedule, with no
+ * primary project. Membership lives in `conversation_projects` and
+ * `cron_job_projects` rather than on the conversation row because pinning
+ * rewrites `conversations.group_id`.
  *
  * Every function reads and writes the main Postgres database through the async
- * facade; the tables are created by the `0003_projects` migration step.
+ * facade; the tables are created by the `0003_projects` and
+ * `0004_cron_job_projects` migration steps.
  */
 
 import { and, asc, eq, inArray, ne } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 
 import { UserError } from "../util/errors.js";
+import {
+  ensureProjectDirectories,
+  ensureProjectDirectory,
+} from "../workspace/project-directory.js";
 import { requireMainDb } from "./db-facade.js";
 
 /** The single catch-all project. Its id is stable across installs. */
@@ -169,8 +176,9 @@ export async function getProject(id: string): Promise<ProjectRow | null> {
 }
 
 /**
- * Create a user project. The id is server-assigned; the sort position follows
- * the last user project so new projects land at the end of their level.
+ * Create a user project and its folder. The id is server-assigned; the sort
+ * position follows the last user project so new projects land at the end of
+ * their level.
  */
 export async function createProject(
   input: CreateProjectInput,
@@ -210,7 +218,24 @@ export async function createProject(
       archivedAt: null,
     })
     .returning();
-  return toProjectRow(row);
+  const project = toProjectRow(row);
+  // The folder is part of the project, not of whichever caller created it. A
+  // failure here is non-fatal: the startup sweep retries it, and a project
+  // without a folder is a project without a briefing.
+  await ensureProjectDirectory(project.id);
+  return project;
+}
+
+/**
+ * Create the missing folders of every project that exists, archived projects
+ * included. Ids that cannot name a folder (the `system:` buckets, which the
+ * briefing reader refuses too) are skipped. Runs on every startup and is
+ * idempotent: an existing folder is left untouched, files inside are never
+ * written. Returns how many folders were ensured.
+ */
+export async function ensureProjectDirectoriesForExistingProjects(): Promise<number> {
+  const rows = await listProjects({ includeArchived: true });
+  return ensureProjectDirectories(rows.map((row) => row.id));
 }
 
 /** Rename a project. Returns null when the project does not exist. */
@@ -321,6 +346,62 @@ export async function getConversationProjectIdsForConversations(
 }
 
 /**
+ * Reject projects that cannot be part of a set: unknown ids and archived
+ * projects. Returns the de-duplicated set.
+ */
+async function validateWritableProjectIds(
+  projectIds: readonly string[],
+): Promise<string[]> {
+  const unique = [...new Set(projectIds)];
+  if (unique.length === 0) {
+    return unique;
+  }
+  const db = requireMainDb();
+  const projects = db.schema.projects;
+  const rows = await db.orm
+    .select({ id: projects.id, isArchived: projects.isArchived })
+    .from(projects)
+    .where(inArray(projects.id, unique));
+  const found = new Map(rows.map((row) => [row.id, row]));
+  const missing = unique.filter((id) => !found.has(id));
+  if (missing.length > 0) {
+    throw new ProjectStoreError(
+      `Unknown project: ${missing.join(", ")}`,
+      "not_found",
+    );
+  }
+  const archived = unique.filter((id) => found.get(id)?.isArchived === true);
+  if (archived.length > 0) {
+    throw new ProjectStoreError(
+      `Project is archived: ${archived.join(", ")}`,
+      "invalid",
+    );
+  }
+  return unique;
+}
+
+/**
+ * The subset of `projectIds` that still exists and is not archived. A project
+ * archived after it was attached must not break the schedule that carries it,
+ * so this filters instead of throwing.
+ */
+async function filterWritableProjectIds(
+  projectIds: readonly string[],
+): Promise<string[]> {
+  const unique = [...new Set(projectIds)];
+  if (unique.length === 0) {
+    return unique;
+  }
+  const db = requireMainDb();
+  const projects = db.schema.projects;
+  const rows = await db.orm
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(inArray(projects.id, unique), eq(projects.isArchived, false)));
+  return unique.filter((id) => rows.some((row) => row.id === id));
+}
+
+/**
  * Replace a conversation's project set. Duplicates collapse; an empty array is
  * a valid set. Unknown and archived projects are rejected.
  */
@@ -328,7 +409,6 @@ export async function setConversationProjects(
   conversationId: string,
   projectIds: readonly string[],
 ): Promise<string[]> {
-  const db = requireMainDb();
   if (!(await conversationExists(conversationId))) {
     throw new ProjectStoreError(
       `Conversation not found: ${conversationId}`,
@@ -336,30 +416,9 @@ export async function setConversationProjects(
     );
   }
 
-  const unique = [...new Set(projectIds)];
-  if (unique.length > 0) {
-    const projects = db.schema.projects;
-    const rows = await db.orm
-      .select({ id: projects.id, isArchived: projects.isArchived })
-      .from(projects)
-      .where(inArray(projects.id, unique));
-    const found = new Map(rows.map((row) => [row.id, row]));
-    const missing = unique.filter((id) => !found.has(id));
-    if (missing.length > 0) {
-      throw new ProjectStoreError(
-        `Unknown project: ${missing.join(", ")}`,
-        "not_found",
-      );
-    }
-    const archived = unique.filter((id) => found.get(id)?.isArchived === true);
-    if (archived.length > 0) {
-      throw new ProjectStoreError(
-        `Project is archived: ${archived.join(", ")}`,
-        "invalid",
-      );
-    }
-  }
+  const unique = await validateWritableProjectIds(projectIds);
 
+  const db = requireMainDb();
   const membership = db.schema.conversationProjects;
   await db.transaction(async (tx) => {
     await tx.orm
@@ -375,14 +434,101 @@ export async function setConversationProjects(
   return [...unique].sort();
 }
 
+// ---------------------------------------------------------------------------
+// Schedule membership
+// ---------------------------------------------------------------------------
+
+/** Whether a schedule row exists. */
+export async function scheduleExists(scheduleId: string): Promise<boolean> {
+  const db = requireMainDb();
+  const row = await db.get<{ id: string }>(
+    "SELECT id FROM cron_jobs WHERE id = ?",
+    [scheduleId],
+  );
+  return row !== null;
+}
+
+/** The project set of a schedule, ordered by project id. */
+export async function getScheduleProjectIds(
+  scheduleId: string,
+): Promise<string[]> {
+  const db = requireMainDb();
+  const membership = db.schema.cronJobProjects;
+  const rows = await db.orm
+    .select({ projectId: membership.projectId })
+    .from(membership)
+    .where(eq(membership.cronJobId, scheduleId))
+    .orderBy(asc(membership.projectId));
+  return rows.map((row) => row.projectId);
+}
+
+/**
+ * Replace a schedule's project set. Duplicates collapse; an empty array is a
+ * valid set. Unknown and archived projects are rejected.
+ */
+export async function setScheduleProjects(
+  scheduleId: string,
+  projectIds: readonly string[],
+): Promise<string[]> {
+  if (!(await scheduleExists(scheduleId))) {
+    throw new ProjectStoreError(
+      `Schedule not found: ${scheduleId}`,
+      "not_found",
+    );
+  }
+
+  const unique = await validateWritableProjectIds(projectIds);
+
+  const db = requireMainDb();
+  const membership = db.schema.cronJobProjects;
+  await db.transaction(async (tx) => {
+    await tx.orm.delete(membership).where(eq(membership.cronJobId, scheduleId));
+    if (unique.length > 0) {
+      await tx.orm
+        .insert(membership)
+        .values(
+          unique.map((projectId) => ({ cronJobId: scheduleId, projectId })),
+        );
+    }
+  });
+
+  return [...unique].sort();
+}
+
+/**
+ * Give a scheduled run's conversation the project set of its schedule, so the
+ * memory and skill scope of the run follows the project the schedule is filed
+ * under.
+ *
+ * The run keeps whatever set it already has when the schedule belongs to no
+ * project: an empty schedule set is not an instruction to clear the
+ * conversation. A project archived after being attached is skipped rather than
+ * failing the run.
+ */
+export async function applyScheduleProjectScope(
+  conversationId: string,
+  scheduleId: string,
+): Promise<string[]> {
+  const projectIds = await getScheduleProjectIds(scheduleId);
+  if (projectIds.length === 0) {
+    return [];
+  }
+  const writable = await filterWritableProjectIds(projectIds);
+  if (writable.length === 0) {
+    return [];
+  }
+  return setConversationProjects(conversationId, writable);
+}
+
 /**
  * The project set a conversation inherits from the conversation that spawned
  * it: a fork reads through `fork_parent_conversation_id`, a subagent through
  * `parent_conversation_id`. The nearest ancestor that owns a non-empty set
  * wins; a conversation with its own set keeps it.
  *
- * Scheduled runs inherit through `cron_job_projects`, which is out of scope
- * here.
+ * A scheduled run does not need this walk: the scheduler copies the schedule's
+ * set onto the run's conversation at creation (see `applyScheduleProjectScope`),
+ * so the run owns the set from its first turn.
  */
 export async function resolveInheritedProjectIds(
   conversationId: string,

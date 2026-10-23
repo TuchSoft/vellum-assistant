@@ -24,6 +24,7 @@ import { startEmbeddingRuntimeManager } from "../persistence/embeddings/embeddin
 import { maybeEnqueueLexicalBackfillOnUpgrade } from "../persistence/job-handlers/message-lexical-backfill.js";
 import { clearLifecycleQuiesce } from "../persistence/lifecycle-quiesce.js";
 import { initializePostgresDb } from "../persistence/pg-migrations/pg-db-init.js";
+import { ensureProjectDirectoriesForExistingProjects } from "../persistence/project-store.js";
 import { isPlatformClientConfigured } from "../platform/client.js";
 import { startConsentRefresh } from "../platform/consent-cache.js";
 import { syncAvatarToPlatform } from "../platform/sync-avatar.js";
@@ -333,6 +334,20 @@ export async function runDaemon(): Promise<void> {
       WORKSPACE_MIGRATIONS,
     );
     log.info(migrationSummary, "Daemon startup: workspace migrations complete");
+
+    // Give every project that existed before this boot its folder, so a project
+    // created by an older build, or one whose folder was removed, is usable by
+    // the briefing reader. Idempotent and one pass: an existing folder is left
+    // alone and nothing is written inside it.
+    try {
+      const ensured = await ensureProjectDirectoriesForExistingProjects();
+      log.info(
+        { projects: ensured },
+        "Daemon startup: project directories ensured",
+      );
+    } catch (err) {
+      log.warn({ err }, "Project directory sweep failed, continuing startup");
+    }
 
     // Seed canonical inference provider_connections and backfill any legacy
     // profiles that pre-date the connection field. Runs after workspace

@@ -187,12 +187,8 @@ export function registerMemoryV3Command(memory: Command): void {
 
   // ── backfill-sections-pg ──────────────────────────────────────────────
 
-  subcommand(v3, "backfill-sections-pg")
-    .option(
-      "--restart",
-      "Ignore the resume checkpoint and start from the first article",
-    )
-    .action(async (opts: { restart?: boolean; json?: boolean }) => {
+  subcommand(v3, "backfill-sections-pg").action(
+    async (opts: { restart?: boolean; json?: boolean }) => {
       const result = await cliIpcCall<MemoryV3BackfillSectionsPgResult>(
         "memory_v3_backfill_sections_pg",
         { body: { ...(opts.restart === true ? { restart: true } : {}) } },
@@ -217,7 +213,8 @@ export function registerMemoryV3Command(memory: Command): void {
             ? ` (${payload.failures} page(s) failed — see assistant logs).`
             : "."),
       );
-    });
+    },
+  );
 
   // ── reindex-projects ──────────────────────────────────────────────────
 

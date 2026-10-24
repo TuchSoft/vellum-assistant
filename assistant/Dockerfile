@@ -1,4 +1,18 @@
 # syntax=docker/dockerfile:1.20@sha256:26147acbda4f14c5add9946e2fd2ed543fc402884fd75146bd342a7f6271dc1d
+# Language detector addon (message-search language lane): a thin N-API binding
+# around `lingua`, built for the target platform. Only the compiled `.node`
+# reaches the runtime image, so the runtime carries no Rust toolchain.
+FROM rust:1.97-slim-bookworm@sha256:2775a09d208ff0d7c1f50490c45b62db929e87ba1dcbc3f2132ac71a704bcdd3 AS lingua-detector
+
+WORKDIR /build
+COPY assistant/native/lingua-detector/Cargo.toml assistant/native/lingua-detector/Cargo.lock assistant/native/lingua-detector/build.rs ./
+COPY assistant/native/lingua-detector/src ./src
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=lingua-cargo-registry \
+    --mount=type=cache,target=/build/target,id=lingua-target \
+    cargo build --release --locked \
+    && cp target/release/liblingua_detector.so /tmp/lingua_detector.node
+
 # Use debian as base image
 FROM debian:trixie-slim@sha256:4ffb3a1511099754cddc70eb1b12e50ffdb67619aa0ab6c13fcd800a78ef7c7a AS builder
 
@@ -192,6 +206,11 @@ COPY packages/slack-text /app/packages/slack-text
 COPY packages/twilio-client /app/packages/twilio-client
 
 COPY assistant /app/assistant
+
+# The language detector addon, loaded lazily by the daemon on the first
+# detection (`assistant/src/search/language-detector.ts`). Copied after the
+# source tree so it is the file that ships.
+COPY --from=lingua-detector /tmp/lingua_detector.node /app/assistant/native/lingua-detector/lingua_detector.node
 
 # Resolve production workspace dependencies from the filesystem layout shipped
 # in the image.

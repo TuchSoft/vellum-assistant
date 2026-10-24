@@ -67,6 +67,9 @@ clients/macos/src
 assistant/dist/
 assistant/out/
 assistant/build/
+# The language detector's Rust build output is compiled inside the image; a
+# local `cargo build` in the crate must never reach the build context.
+assistant/native/lingua-detector/target/
 assistant/.env
 assistant/.env.*
 # Authoring-reference example plugins are not shipped with the production image.

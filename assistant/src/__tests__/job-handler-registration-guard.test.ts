@@ -52,6 +52,7 @@ const NON_PLUGIN_JOB_TYPES = [
   "purge_conversation_lexical",
   "delete_message_lexical",
   "backfill_lexical_index",
+  "backfill_lexical_languages",
   "build_conversation_summary",
   "media_processing",
   "generate_conversation_starters",

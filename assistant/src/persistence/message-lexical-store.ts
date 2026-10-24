@@ -21,6 +21,13 @@ export interface LexicalIndexRow {
   conversationId: string;
   createdAt: number;
   body: string;
+  /**
+   * Detected ISO 639-1 language, or `null` for agnostic-only. Only a language
+   * with a BM25 stemmer gets a value: it is what the partial language index
+   * filters on, so a wrong value would route a row to a lane it does not
+   * belong to.
+   */
+  language: string | null;
 }
 
 /**
@@ -51,17 +58,24 @@ export async function upsertMessagesLexicalBatch(
   const db = requireMainDb();
   for (let start = 0; start < nonEmpty.length; start += UPSERT_BATCH_SIZE) {
     const chunk = nonEmpty.slice(start, start + UPSERT_BATCH_SIZE);
-    const placeholders = chunk.map(() => "(?, ?, ?, ?)").join(", ");
-    const params: Array<string | number> = [];
+    const placeholders = chunk.map(() => "(?, ?, ?, ?, ?)").join(", ");
+    const params: Array<string | number | null> = [];
     for (const row of chunk) {
-      params.push(row.messageId, row.conversationId, row.createdAt, row.body);
+      params.push(
+        row.messageId,
+        row.conversationId,
+        row.createdAt,
+        row.language,
+        row.body,
+      );
     }
     await db.run(
-      `INSERT INTO "messages_lexical" ("message_id", "conversation_id", "created_at", "body")
+      `INSERT INTO "messages_lexical" ("message_id", "conversation_id", "created_at", "language", "body")
        VALUES ${placeholders}
        ON CONFLICT ("message_id") DO UPDATE SET
          "conversation_id" = EXCLUDED."conversation_id",
          "created_at" = EXCLUDED."created_at",
+         "language" = EXCLUDED."language",
          "body" = EXCLUDED."body"`,
       params,
     );

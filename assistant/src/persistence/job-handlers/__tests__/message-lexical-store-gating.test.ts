@@ -56,6 +56,22 @@ mock.module("../../message-lexical-store.js", () => ({
   },
 }));
 
+mock.module("../../../search/language-index.js", () => ({
+  languageForIndexing: () => null,
+  upsertLanguageRows: async () => {
+    pgCalls.push("upsertLanguageRows");
+  },
+  deleteLanguageRow: async () => {
+    pgCalls.push("deleteLanguageRow");
+  },
+  purgeLanguageRows: async () => {
+    pgCalls.push("purgeLanguageRows");
+  },
+  clearLanguageRows: async () => {
+    pgCalls.push("clearLanguageRows");
+  },
+}));
+
 import { DEFAULT_CONFIG } from "../../../config/defaults.js";
 import type { AssistantConfig } from "../../../config/types.js";
 import type { MemoryJob } from "../../jobs-store.js";
@@ -100,13 +116,13 @@ describe("indexMessageToLexical · store gating", () => {
   test("dual writes both stores", async () => {
     await indexMessageToLexical(message, configWithStore("dual"));
     expect(qdrantCalls).toEqual(["upsertMessage"]);
-    expect(pgCalls).toEqual(["upsertMessageLexical"]);
+    expect(pgCalls).toEqual(["upsertMessageLexical", "upsertLanguageRows"]);
   });
 
   test("postgres writes Postgres only", async () => {
     await indexMessageToLexical(message, configWithStore("postgres"));
     expect(qdrantCalls).toEqual([]);
-    expect(pgCalls).toEqual(["upsertMessageLexical"]);
+    expect(pgCalls).toEqual(["upsertMessageLexical", "upsertLanguageRows"]);
   });
 });
 
@@ -136,7 +152,9 @@ describe("delete jobs · store gating", () => {
     expect(qdrantCalls).toEqual(["deleteByMessageId", "deleteByConversation"]);
     expect(pgCalls).toEqual([
       "deleteMessageLexicalRow",
+      "deleteLanguageRow",
       "purgeConversationLexicalRows",
+      "purgeLanguageRows",
     ]);
   });
 
@@ -152,7 +170,9 @@ describe("delete jobs · store gating", () => {
     expect(qdrantCalls).toEqual([]);
     expect(pgCalls).toEqual([
       "deleteMessageLexicalRow",
+      "deleteLanguageRow",
       "purgeConversationLexicalRows",
+      "purgeLanguageRows",
     ]);
   });
 });

@@ -83,9 +83,10 @@ async function insertLexical(
   conversationId: string,
   body: string,
   createdAt = 1000,
+  language: string | null = null,
 ): Promise<void> {
   await upsertMessagesLexicalBatch([
-    { messageId, conversationId, createdAt, body },
+    { messageId, conversationId, createdAt, body, language },
   ]);
 }
 

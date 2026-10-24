@@ -1,6 +1,13 @@
 import { and, eq } from "drizzle-orm";
 
 import type { AssistantConfig } from "../../config/types.js";
+import {
+  clearLanguageRows,
+  deleteLanguageRow,
+  languageForIndexing,
+  purgeLanguageRows,
+  upsertLanguageRows,
+} from "../../search/language-index.js";
 import { getLogger } from "../../util/logger.js";
 import { requireMainDb } from "../db-facade.js";
 import { generateSparseEmbedding } from "../embeddings/embedding-backend.js";
@@ -81,6 +88,12 @@ export function writesPostgres(
  * one Qdrant upsert, no Postgres write. `dual` writes both, `postgres` writes
  * only the Postgres table.
  *
+ * On the Postgres write the row also carries the detected language, so the
+ * language store can find it; the detection reads the extracted text and
+ * never changes it. A language store is created on first sight of its
+ * language by `upsertLanguageRows`, which is idempotent and safe across the
+ * daemon and the job worker.
+ *
  * The Qdrant upsert is wrapped in the Qdrant circuit breaker so a transient
  * Qdrant outage trips the breaker and surfaces as a deferrable error rather
  * than an unhandled throw; the job worker's retry/defer logic then drains the
@@ -107,12 +120,18 @@ export async function indexMessageToLexical(
     );
   }
   if (writesPostgres(store)) {
-    await upsertMessageLexical({
+    const row = {
       messageId: message.id,
       conversationId: message.conversationId,
       createdAt: message.createdAt,
       body: message.content,
-    });
+      language: languageForIndexing(message.content, config),
+    };
+    await upsertMessageLexical(row);
+    // The language copy is written after the agnostic row and is idempotent, so
+    // a failure here fails the job and the retry converges. A store that cannot
+    // be created degrades that language to agnostic-only instead.
+    await upsertLanguageRows([row]);
   }
 }
 
@@ -175,6 +194,9 @@ async function purgeConversationLexical(
   }
   if (writesPostgres(store)) {
     await purgeConversationLexicalRows(conversationId);
+    await bestEffort("purge language stores", () =>
+      purgeLanguageRows(conversationId),
+    );
   }
 }
 
@@ -193,6 +215,9 @@ async function deleteMessageLexical(
   }
   if (writesPostgres(store)) {
     await deleteMessageLexicalRow(messageId);
+    await bestEffort("delete language copies", () =>
+      deleteLanguageRow(messageId),
+    );
   }
 }
 
@@ -318,8 +343,25 @@ export async function clearMessagesLexicalIndex(
     }
     if (writesPostgres(store)) {
       await clearMessagesLexicalRows();
+      await bestEffort("clear language stores", () => clearLanguageRows());
     }
   } catch (err) {
     log.warn({ err }, "Failed to clear messages lexical index (non-fatal)");
+  }
+}
+
+/**
+ * Run a secondary lexical-store cleanup whose failure must not fail the job.
+ * The language copies are derived from the agnostic rows, and the read joins
+ * `messages`, so a stale copy cannot surface a deleted message on its own.
+ */
+async function bestEffort(
+  label: string,
+  fn: () => Promise<void>,
+): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    log.warn({ err }, `Failed to ${label} (non-fatal)`);
   }
 }

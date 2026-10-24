@@ -2,6 +2,12 @@ import { and, asc, eq, gt, or } from "drizzle-orm";
 
 import { getConfigReadOnly } from "../../config/loader.js";
 import type { AssistantConfig } from "../../config/types.js";
+import { detectDocumentLanguages } from "../../search/language-detector.js";
+import {
+  resolveIndexLanguage,
+  searchLanguageCandidates,
+  upsertLanguageRows,
+} from "../../search/language-index.js";
 import { getLogger } from "../../util/logger.js";
 import {
   clearLexicalBackfillComplete,
@@ -236,7 +242,21 @@ export async function backfillLexicalIndexJob(
       await withQdrantBreaker(() => index.upsertMessagesBatch(points));
     }
     if (writesPostgres(store)) {
-      await upsertMessagesLexicalBatch(rows);
+      // Detect the batch in parallel (the addon runs it multithreaded) rather
+      // than one call per row: the backfill is the bulk path, and the same
+      // language routing rules apply as on the live path. The configured list
+      // is the detector's candidate set, so no row can land in a language the
+      // instance did not declare.
+      const detected = detectDocumentLanguages(
+        rows.map((row) => row.body),
+        searchLanguageCandidates(config),
+      );
+      const pgRows = rows.map((row, index) => ({
+        ...row,
+        language: resolveIndexLanguage(detected[index] ?? null, config),
+      }));
+      await upsertMessagesLexicalBatch(pgRows);
+      await upsertLanguageRows(pgRows);
     }
 
     const lastMessage = batch[batch.length - 1];

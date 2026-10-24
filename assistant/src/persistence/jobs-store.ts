@@ -58,6 +58,7 @@ export type MemoryJobType =
   | "purge_conversation_lexical"
   | "delete_message_lexical"
   | "backfill_lexical_index"
+  | "backfill_lexical_languages"
   | "skill_card_insert"
   | "skill_update_receipt"
   | "memory_retrospective"
@@ -90,6 +91,7 @@ export const MESSAGE_LEXICAL_JOB_TYPES: MemoryJobType[] = [
   "purge_conversation_lexical",
   "delete_message_lexical",
   "backfill_lexical_index",
+  "backfill_lexical_languages",
 ];
 
 export const SLOW_LLM_JOB_TYPES: MemoryJobType[] = [

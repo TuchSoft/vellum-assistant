@@ -35,6 +35,7 @@ import {
   purgeConversationLexicalJob,
 } from "../../../persistence/job-handlers/message-lexical.js";
 import { backfillLexicalIndexJob } from "../../../persistence/job-handlers/message-lexical-backfill.js";
+import { backfillLexicalLanguagesJob } from "../../../persistence/job-handlers/message-lexical-language-backfill.js";
 import { memoryJobHandlers } from "./job-handlers.js";
 import { registerJobHandler } from "./jobs-worker.js";
 
@@ -65,6 +66,9 @@ export function registerMemoryPluginJobHandlers(): void {
   );
   registerJobHandler("backfill_lexical_index", (job, config) =>
     backfillLexicalIndexJob(job, config),
+  );
+  registerJobHandler("backfill_lexical_languages", (job, config) =>
+    backfillLexicalLanguagesJob(job, config),
   );
   registerJobHandler("prune_old_llm_request_logs", (job, config) =>
     pruneOldLlmRequestLogsJob(job, config),

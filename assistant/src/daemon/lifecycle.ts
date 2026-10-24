@@ -22,6 +22,7 @@ import { seedOAuthProviders } from "../oauth/seed-providers.js";
 import { getMaxPersistedConversationSeq } from "../persistence/conversation-crud.js";
 import { startEmbeddingRuntimeManager } from "../persistence/embeddings/embedding-backend.js";
 import { maybeEnqueueLexicalBackfillOnUpgrade } from "../persistence/job-handlers/message-lexical-backfill.js";
+import { maybeEnqueueLanguageBackfillOnUpgrade } from "../persistence/job-handlers/message-lexical-language-backfill.js";
 import { clearLifecycleQuiesce } from "../persistence/lifecycle-quiesce.js";
 import { initializePostgresDb } from "../persistence/pg-migrations/pg-db-init.js";
 import { ensureProjectDirectoriesForExistingProjects } from "../persistence/project-store.js";
@@ -49,6 +50,7 @@ import { markCurrentProcessAsMainDaemon } from "../runtime/process-role.js";
 import { reconcilePluginSchedules } from "../schedule/plugin-schedule-reconciler.js";
 import { recoverStaleSchedules } from "../schedule/schedule-recovery.js";
 import { startScheduler } from "../schedule/scheduler.js";
+import { assertSearchLanguageConfiguration } from "../search/language-index.js";
 import { startSkillVersionDeclaration } from "../skills/grant-declaration.js";
 import { getSubagentManager } from "../subagent/index.js";
 import { startUsageTelemetryReporter } from "../telemetry/usage-telemetry-reporter.js";
@@ -533,6 +535,13 @@ export async function runDaemon(): Promise<void> {
   log.info("Daemon startup: loading config");
   const config = loadConfig();
 
+  // A declared search language the detector was not compiled with can never be
+  // detected, so it would silently disable the language lane for that
+  // language. Fail the boot instead of starting with a configuration the
+  // instance cannot honor. A missing detector is the one declared degradation
+  // and is logged there, not thrown.
+  assertSearchLanguageConfiguration(config);
+
   // Select conversations left mid-turn by the previous shutdown for auto-resume
   // when `conversations.resumeProcessingOnStartup` is enabled. Their
   // `processing_started_at` is still set even though the in-memory agent loop
@@ -728,6 +737,11 @@ export async function runDaemon(): Promise<void> {
   // function's docstring for the guards and the deliberate exception it makes
   // to the "no work at daemon startup" rule.
   await maybeEnqueueLexicalBackfillOnUpgrade();
+
+  // One-time, self-healing fill of `messages_lexical.language` for rows indexed
+  // before the language lane existed. Same enqueue-only, checkpoint-guarded
+  // shape as the backfill above; the detection runs in the job worker.
+  await maybeEnqueueLanguageBackfillOnUpgrade();
 
   // Spawn the resource monitor as a child of the daemon when enabled, off the
   // main event loop.

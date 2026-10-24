@@ -10,6 +10,14 @@ import {
 } from "drizzle-orm";
 
 import { getConfigReadOnly } from "../config/loader.js";
+import type { AssistantConfig } from "../config/types.js";
+import { detectQueryLanguage } from "../search/language-detector.js";
+import {
+  hasLanguageIndex,
+  languageIndexExists,
+  languageTableName,
+  normalizeLanguageCodes,
+} from "../search/language-index.js";
 import {
   parseExternalContentEnvelope,
   type UntrustedContentSource,
@@ -1108,6 +1116,73 @@ function bucketCandidatesByConversation(
 }
 
 /**
+ * Reciprocal-rank-fusion constant.
+ *
+ * The agnostic and the language lane score with DIFFERENT BM25 indexes, so
+ * their scores are not comparable and must never be summed. RRF fuses the two
+ * ranked lists by rank instead: each lane contributes `1 / (k + rank)` per
+ * conversation. 60 is the value from the original RRF paper and the one the
+ * design fixes.
+ */
+const RRF_K = 60;
+
+/** One backend lane's candidates, bucketed by conversation in score order. */
+interface LexicalLane {
+  byConversation: Map<string, string[]>;
+}
+
+/** Bucket a lane's candidates into conversations, keeping score order. */
+function bucketLane(
+  candidates: readonly LexicalCandidateWithConversation[],
+): LexicalLane {
+  return {
+    byConversation: bucketCandidatesByConversation(candidates).byConversation,
+  };
+}
+
+/**
+ * Fuse lanes with reciprocal rank fusion.
+ *
+ * `byConversation` is the union of the lanes' buckets (agnostic lane first), so
+ * every matching message is still available for the excerpt query.
+ * `scoreByConversation` is the fused RRF score, which
+ * {@link orderByLexicalRelevance} consumes exactly like a single-lane score:
+ * higher first, `updated_at` as tie-break.
+ */
+function fuseLanesRrf(lanes: readonly LexicalLane[]): {
+  byConversation: Map<string, string[]>;
+  scoreByConversation: Map<string, number>;
+} {
+  const scoreByConversation = new Map<string, number>();
+  for (const lane of lanes) {
+    let rank = 0;
+    for (const conversationId of lane.byConversation.keys()) {
+      rank += 1;
+      scoreByConversation.set(
+        conversationId,
+        (scoreByConversation.get(conversationId) ?? 0) + 1 / (RRF_K + rank),
+      );
+    }
+  }
+  const byConversation = new Map<string, string[]>();
+  for (const lane of lanes) {
+    for (const [conversationId, messageIds] of lane.byConversation) {
+      const existing = byConversation.get(conversationId);
+      if (!existing) {
+        byConversation.set(conversationId, [...messageIds]);
+        continue;
+      }
+      for (const messageId of messageIds) {
+        if (!existing.includes(messageId)) {
+          existing.push(messageId);
+        }
+      }
+    }
+  }
+  return { byConversation, scoreByConversation };
+}
+
+/**
  * Postgres lexical candidates, ranked by BM25 at message grain.
  *
  * Unlike the Qdrant backend, the visibility and archived predicates are part of
@@ -1115,14 +1190,24 @@ function bucketCandidatesByConversation(
  * statement, so invisible rows never consume the candidate pool. `match`
  * selects the conjunction behavior of the BM25 predicate
  * ({@link lexicalMatchPredicate}).
+ *
+ * `language` selects the language's own store (one table per language, see
+ * `search/language-index.ts`); `null` is the agnostic lane over
+ * `messages_lexical`. The caller validates the code before calling.
  */
 async function searchMessageCandidatesPostgres(
   query: string,
   limit: number,
   includeArchived: boolean,
   match: LexicalMatchMode,
+  language: string | null,
 ): Promise<LexicalCandidateWithConversation[]> {
   const db = requireMainDb();
+  const table =
+    language === null ? "messages_lexical" : languageTableName(language);
+  if (language !== null && !hasLanguageIndex(language)) {
+    throw new Error(`No language store for "${language}"`);
+  }
   const where = [
     lexicalMatchPredicate(query, match),
     standardListingVisibilitySql("c"),
@@ -1137,7 +1222,7 @@ async function searchMessageCandidatesPostgres(
   }>(
     `SELECT l."message_id" AS message_id, l."conversation_id" AS conversation_id,
             paradedb.score(l."message_id") AS score
-     FROM "messages_lexical" l
+     FROM "${table}" l
      JOIN "messages" m ON m."id" = l."message_id"
      JOIN "conversations" c ON c."id" = l."conversation_id"
      WHERE ${where.join(" AND ")}
@@ -1222,6 +1307,37 @@ function orderByLexicalRelevance<T extends { id: string; updated_at: number }>(
 }
 
 /**
+ * The language lane's code for a query, or `null` when only the agnostic lane
+ * should run.
+ *
+ * The configured `search.languages` list is the detector's candidate set, so a
+ * language outside it can never be detected; the membership check below is the
+ * defense for an addon without the candidate-set entry point. Four gates, all
+ * required: the detector must be available, the query's language must clear
+ * `search.queryMinRelativeDistance`, it must be inside the configured list (an
+ * empty list means no restriction), and its store must already exist (stores
+ * are created lazily by the write path).
+ */
+async function resolveQueryLanguage(
+  query: string,
+  searchConfig: AssistantConfig["search"],
+): Promise<string | null> {
+  const configured = normalizeLanguageCodes(searchConfig.languages);
+  const detected = detectQueryLanguage(
+    query,
+    searchConfig.queryMinRelativeDistance,
+    configured,
+  );
+  if (!detected || !hasLanguageIndex(detected)) {
+    return null;
+  }
+  if (configured.length > 0 && !configured.includes(detected)) {
+    return null;
+  }
+  return (await languageIndexExists(detected)) ? detected : null;
+}
+
+/**
  * Full-text search across message content.
  *
  * Message-content candidates come from the sparse `messages_lexical` index
@@ -1250,6 +1366,14 @@ function orderByLexicalRelevance<T extends { id: string; updated_at: number }>(
  * `opts.match` selects how a multi-token query is matched on the Postgres
  * backend (all tokens by default). The Qdrant backend predates the option and
  * ignores it; its sparse encoding has no conjunction mode.
+ *
+ * The Postgres backend also runs a LANGUAGE lane: when the query's language is
+ * detected confidently enough, is configured, and already has its partial BM25
+ * index, the same query runs a second time restricted to that language, where
+ * the stemmer collapses morphology (`fattura` finds `fatture`). The two lanes
+ * are fused with reciprocal rank fusion at conversation level: their scores
+ * come from different indexes and are not comparable, and the fused score
+ * feeds the same relevance ordering. The Qdrant backend ignores the language.
  */
 export async function searchConversations(
   query: string,
@@ -1327,28 +1451,67 @@ export async function searchConversations(
   if (hasTokens && contentSearchAvailable) {
     if (usePostgres) {
       try {
-        const candidates = await searchMessageCandidatesPostgres(
+        const agnostic = await searchMessageCandidatesPostgres(
           trimmed,
           QDRANT_SEARCH_CANDIDATE_LIMIT,
           opts?.includeArchived === true,
           match,
+          null,
         );
-        const bucketed = bucketCandidatesByConversation(candidates);
-        candidatesByConv = bucketed.byConversation;
-        // First occurrence per conversation is its best-scoring message.
-        pgScoreByConversation = new Map();
-        for (const candidate of candidates) {
-          if (
-            candidate.score !== undefined &&
-            !pgScoreByConversation.has(candidate.conversationId)
-          ) {
-            pgScoreByConversation.set(
-              candidate.conversationId,
-              candidate.score,
-            );
+        const lanes: LexicalLane[] = [bucketLane(agnostic)];
+
+        // The language lane runs only when the query's language was detected
+        // confidently enough, is one the instance cares about, and has an
+        // index. Any failure here degrades to the agnostic lane alone: a
+        // broken catalog lookup must not cost the content matches.
+        let queryLanguage: string | null = null;
+        try {
+          queryLanguage = await resolveQueryLanguage(trimmed, searchConfig);
+        } catch (err) {
+          log.warn(
+            { err, query: query.slice(0, 80) },
+            "searchConversations: query language resolution failed, agnostic lane only",
+          );
+        }
+        if (queryLanguage) {
+          const localized = await searchMessageCandidatesPostgres(
+            trimmed,
+            QDRANT_SEARCH_CANDIDATE_LIMIT,
+            opts?.includeArchived === true,
+            match,
+            queryLanguage,
+          );
+          if (localized.length > 0) {
+            lanes.push(bucketLane(localized));
           }
         }
-        for (const conversationId of bucketed.conversationIds) {
+
+        if (lanes.length === 1) {
+          // Single lane: keep the BM25 score ordering exactly as it was, ties
+          // broken by `updated_at`.
+          candidatesByConv = lanes[0]!.byConversation;
+          // First occurrence per conversation is its best-scoring message.
+          pgScoreByConversation = new Map();
+          for (const candidate of agnostic) {
+            if (
+              candidate.score !== undefined &&
+              !pgScoreByConversation.has(candidate.conversationId)
+            ) {
+              pgScoreByConversation.set(
+                candidate.conversationId,
+                candidate.score,
+              );
+            }
+          }
+        } else {
+          // Two lanes over two different BM25 indexes: fuse by rank, never by
+          // score.
+          const fused = fuseLanesRrf(lanes);
+          candidatesByConv = fused.byConversation;
+          pgScoreByConversation = fused.scoreByConversation;
+        }
+
+        for (const conversationId of candidatesByConv.keys()) {
           contentConvIds.add(conversationId);
         }
         if (candidatesByConv.size > 0) {

@@ -80,6 +80,7 @@ describePg("0005_messages_lexical", () => {
         conversationId: "conv-1",
         createdAt: 1,
         body: "prima versione",
+        language: null,
       },
     ]);
     await upsertMessagesLexicalBatch([
@@ -88,6 +89,7 @@ describePg("0005_messages_lexical", () => {
         conversationId: "conv-1",
         createdAt: 1,
         body: "seconda versione",
+        language: null,
       },
     ]);
     const rows = await db.all<{ body: string }>(

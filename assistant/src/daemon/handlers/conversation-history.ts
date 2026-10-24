@@ -1,5 +1,6 @@
 import { getMessageById } from "../../persistence/conversation-crud.js";
 import {
+  type LexicalMatchMode,
   listConversations,
   searchConversations,
 } from "../../persistence/conversation-queries.js";
@@ -20,6 +21,12 @@ export interface ConversationSearchParams {
    * archived chat is a filed chat rather than a hidden one.
    */
   includeArchived?: boolean;
+  /**
+   * How a multi-token query matches message content: every token (`"all"`,
+   * default) or any token (`"any"`). Honored by the Postgres lexical backend
+   * only.
+   */
+  match?: LexicalMatchMode;
 }
 
 /** Search conversations and return results (no transport dependency). */
@@ -43,6 +50,7 @@ export async function performConversationSearch(
     limit: params.limit,
     maxMessagesPerConversation: params.maxMessagesPerConversation,
     includeArchived: params.includeArchived,
+    match: params.match,
   });
 }
 

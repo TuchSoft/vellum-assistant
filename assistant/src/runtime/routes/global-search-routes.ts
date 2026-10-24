@@ -1,7 +1,7 @@
 /**
  * Route handler for the unified global search endpoint.
  *
- * GET /v1/search/global?q=<query>&limit=20&categories=conversations,memories,schedules,contacts[&deep=true]
+ * GET /v1/search/global?q=<query>&limit=20&categories=conversations,memories,schedules,contacts[&deep=true][&match=all|any]
  *
  * Federates search across conversations, memories, schedules, and contacts.
  * When `deep=true`, additionally runs Qdrant semantic search on memories
@@ -13,7 +13,10 @@ import { z } from "zod";
 import { getConfig } from "../../config/loader.js";
 import { isSidebarDoneEnabled } from "../../config/sidebar-done-gate.js";
 import { searchContacts } from "../../contacts/contact-store.js";
-import { searchConversations } from "../../persistence/conversation-queries.js";
+import {
+  parseLexicalMatchMode,
+  searchConversations,
+} from "../../persistence/conversation-queries.js";
 import { requireMainDb } from "../../persistence/db-facade.js";
 import {
   embedWithBackend,
@@ -310,6 +313,8 @@ async function handleGlobalSearch({
   const limit = Math.max(1, Math.min(Number(queryParams.limit ?? 20), 100));
   const categories = parseCategories(queryParams.categories);
   const deep = queryParams.deep === "true";
+  // Conjunction by default; `match=any` opts into the historical OR behavior.
+  const match = parseLexicalMatchMode(queryParams.match);
 
   const results: GlobalSearchResponse["results"] = {
     conversations: [],
@@ -323,6 +328,7 @@ async function handleGlobalSearch({
       limit,
       maxMessagesPerConversation: 1,
       includeArchived,
+      match,
     });
     results.conversations = convResults.map((c) => ({
       id: c.conversationId,
@@ -405,6 +411,11 @@ export const ROUTES: RouteDefinition[] = [
       {
         name: "deep",
         description: "Enable semantic search for memories (true/false)",
+      },
+      {
+        name: "match",
+        description:
+          'How multi-token conversation queries match message content: "all" (every token, default) or "any" (any token)',
       },
     ],
     responseBody: globalSearchResponseSchema,

@@ -12,7 +12,7 @@
  * The lexical index is mocked at the `conversation-search-lexical` seam so no
  * real Qdrant is required; a real Postgres test schema backs the visibility/archived SQL.
  */
-import { afterAll, beforeEach, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, mock, test } from "bun:test";
 
 import type { MessageLexicalSearchResult } from "../embeddings/messages-lexical-index.js";
 
@@ -53,6 +53,8 @@ import {
 import { createConversation } from "../conversation-crud.js";
 import { searchConversations } from "../conversation-queries.js";
 import { requireMainDb } from "../db-facade.js";
+import { PG_STEPS } from "../pg-migrations/pg-steps.js";
+import { runPgMigrations } from "../pg-migrations/run-pg-migrations.js";
 
 /**
  * Mark the messages lexical-index backfill complete. Content search is gated
@@ -104,6 +106,16 @@ async function archive(conversationId: string): Promise<void> {
   );
 }
 
+async function setUpdatedAt(
+  conversationId: string,
+  updatedAt: number,
+): Promise<void> {
+  await requireMainDb().run(
+    "UPDATE conversations SET updated_at = ? WHERE id = ?",
+    [updatedAt, conversationId],
+  );
+}
+
 /** Make the mocked lexical index return exactly these ids as candidates. */
 function lexicalReturns(ids: string[]): void {
   searchMessageIdsLexicalMock.mockImplementation(async () =>
@@ -116,6 +128,12 @@ afterAll(() => {
 });
 
 describePg("searchConversations · qdrant lexical index", () => {
+  beforeAll(async () => {
+    // The test bootstrap applies only the generated baseline; the ordered
+    // steps are what add columns the ORM writes (`0002_alias_model_columns`).
+    await runPgMigrations(requireMainDb(), PG_STEPS);
+  }, 180_000);
+
   beforeEach(async () => {
     await resetTables();
     memoryEnabled = true;
@@ -154,6 +172,24 @@ describePg("searchConversations · qdrant lexical index", () => {
     expect(results[0]!.matchingMessages.map((m) => m.messageId)).toEqual([
       "m-1",
     ]);
+  });
+
+  test("keeps updated_at ordering for content matches", async () => {
+    // The lexical backend ranks by score (the first candidate is the better
+    // one), but the Qdrant path's historical ordering is `updated_at`: the
+    // newer conversation wins even though its candidate scored lower.
+    const older = await createConversation("Old notes");
+    const newer = await createConversation("New notes");
+    await insertMessage("m-old", older.id, "shared token alpha", 1000);
+    await insertMessage("m-new", newer.id, "shared token beta", 1000);
+    await setUpdatedAt(older.id, 1_000);
+    await setUpdatedAt(newer.id, 2_000);
+
+    lexicalReturns(["m-old", "m-new"]);
+
+    const results = await searchConversations("shared token");
+
+    expect(results.map((r) => r.conversationId)).toEqual([newer.id, older.id]);
   });
 
   test("does not issue a second lexical round-trip for per-conversation messages", async () => {

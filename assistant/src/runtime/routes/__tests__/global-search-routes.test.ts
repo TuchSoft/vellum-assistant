@@ -136,6 +136,26 @@ describe("global-search q parser", () => {
     });
   });
 
+  test("match defaults to all", async () => {
+    await handler({
+      queryParams: { q: "fatture pagate", categories: "conversations" },
+    });
+
+    expect(searchConversationsCalls[0]?.opts).toMatchObject({ match: "all" });
+  });
+
+  test("match=any is forwarded to the search backend", async () => {
+    await handler({
+      queryParams: {
+        q: "fatture pagate",
+        categories: "conversations",
+        match: "any",
+      },
+    });
+
+    expect(searchConversationsCalls[0]?.opts).toMatchObject({ match: "any" });
+  });
+
   test("is:archived in q flips includeArchived: true and is stripped from the term", async () => {
     await handler({
       queryParams: {

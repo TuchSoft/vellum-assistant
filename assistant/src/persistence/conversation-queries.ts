@@ -56,8 +56,8 @@ const log = getLogger("conversation-store");
 
 /**
  * Max distinct visible conversations {@link searchConversations} collects from
- * content matches before merging with title matches and the final
- * `updated_at`-ordered `LIMIT`. Both backends cap on distinct conversations (not
+ * content matches before merging with title matches and applying the final
+ * `LIMIT` after ordering. Both backends cap on distinct conversations (not
  * matching messages) so one chatty conversation can't crowd others out; the FTS
  * path enforces this in SQL (`SELECT DISTINCT conversation_id … LIMIT`).
  */
@@ -102,6 +102,51 @@ const QDRANT_SEARCH_CANDIDATE_LIMIT = 5000;
  */
 export function hasLexicalTokens(text: string): boolean {
   return tokenize(text).some((token) => token.length >= 2);
+}
+
+/**
+ * How a multi-token content query matches against the lexical index.
+ *
+ * - `"all"` (default): every token must be present (`conjunction_mode`). A
+ *   user typing a phrase means the phrase, and requiring every token is what
+ *   keeps a conversation that happens to contain every common term from
+ *   ranking first on unrelated queries.
+ * - `"any"`: any token suffices (the historical OR behavior). Opt-in, e.g.
+ *   for recall-oriented callers that accept noisy results.
+ *
+ * A query that tokenizes to a single token matches identically under both
+ * modes: conjunction over one term is that term.
+ */
+export type LexicalMatchMode = "all" | "any";
+
+/**
+ * Parse a `match` query parameter / CLI flag into a {@link LexicalMatchMode}.
+ * Only an explicit `"any"` opts into OR; anything else (absent, blank, unknown)
+ * keeps the conjunction default.
+ */
+export function parseLexicalMatchMode(
+  raw: string | undefined,
+): LexicalMatchMode {
+  return raw?.trim().toLowerCase() === "any" ? "any" : "all";
+}
+
+/**
+ * BM25 predicate matching a message's extracted `body` against `query`.
+ *
+ * `paradedb.match` (rather than a bare `@@@ 'text'`) keeps the query as a
+ * value, so apostrophes and colons do not reach the Tantivy query parser.
+ * `conjunction_mode` makes every token required. A query that tokenizes to a
+ * single token (or to nothing) matches identically under both modes, so it
+ * keeps the plain form.
+ */
+export function lexicalMatchPredicate(
+  query: string,
+  match: LexicalMatchMode,
+): string {
+  const useConjunction = match === "all" && tokenize(query).length > 1;
+  return useConjunction
+    ? `l."body" @@@ paradedb.match('body', ?, conjunction_mode => true)`
+    : `l."body" @@@ paradedb.match('body', ?)`;
 }
 
 /**
@@ -1028,6 +1073,8 @@ function likeContainsPattern(query: string): string {
 interface LexicalCandidateWithConversation {
   messageId: string;
   conversationId: string;
+  /** BM25 score; present on the Postgres backend, absent on Qdrant. */
+  score?: number;
 }
 
 /**
@@ -1065,16 +1112,19 @@ function bucketCandidatesByConversation(
  *
  * Unlike the Qdrant backend, the visibility and archived predicates are part of
  * the same SELECT: the design replaces the fetch-then-filter chain with one
- * statement, so invisible rows never consume the candidate pool.
+ * statement, so invisible rows never consume the candidate pool. `match`
+ * selects the conjunction behavior of the BM25 predicate
+ * ({@link lexicalMatchPredicate}).
  */
 async function searchMessageCandidatesPostgres(
   query: string,
   limit: number,
   includeArchived: boolean,
+  match: LexicalMatchMode,
 ): Promise<LexicalCandidateWithConversation[]> {
   const db = requireMainDb();
   const where = [
-    `l."body" @@@ paradedb.match('body', ?)`,
+    lexicalMatchPredicate(query, match),
     standardListingVisibilitySql("c"),
   ];
   if (!includeArchived) {
@@ -1083,8 +1133,10 @@ async function searchMessageCandidatesPostgres(
   const rows = await db.all<{
     message_id: string;
     conversation_id: string;
+    score: number;
   }>(
-    `SELECT l."message_id" AS message_id, l."conversation_id" AS conversation_id
+    `SELECT l."message_id" AS message_id, l."conversation_id" AS conversation_id,
+            paradedb.score(l."message_id") AS score
      FROM "messages_lexical" l
      JOIN "messages" m ON m."id" = l."message_id"
      JOIN "conversations" c ON c."id" = l."conversation_id"
@@ -1096,6 +1148,7 @@ async function searchMessageCandidatesPostgres(
   return rows.map((row) => ({
     messageId: row.message_id,
     conversationId: row.conversation_id,
+    score: Number(row.score),
   }));
 }
 
@@ -1135,12 +1188,50 @@ async function fetchCandidateMessageRows(
 }
 
 /**
+ * Order matched conversations by lexical relevance and cap the result.
+ *
+ * `scoreByConversation` maps each conversation with a content match to its best
+ * BM25 score. Content matches come first, highest score first, with `updated_at`
+ * breaking ties; title-only matches have no score and follow, newest first. The
+ * cap applies after ordering so a recent weak match cannot crowd out a stronger
+ * one.
+ */
+function orderByLexicalRelevance<T extends { id: string; updated_at: number }>(
+  rows: T[],
+  scoreByConversation: ReadonlyMap<string, number>,
+  limit: number,
+): T[] {
+  return rows
+    .sort((a, b) => {
+      const scoreA = scoreByConversation.get(a.id);
+      const scoreB = scoreByConversation.get(b.id);
+      if (scoreA !== undefined && scoreB !== undefined) {
+        return scoreA === scoreB
+          ? b.updated_at - a.updated_at
+          : scoreB - scoreA;
+      }
+      if (scoreA !== undefined) {
+        return -1;
+      }
+      if (scoreB !== undefined) {
+        return 1;
+      }
+      return b.updated_at - a.updated_at;
+    })
+    .slice(0, limit);
+}
+
+/**
  * Full-text search across message content.
  *
- * Message-content candidates come from the sparse `messages_lexical` Qdrant
- * index (BM25-style), filtered by the visibility/archived SQL predicates and
- * merged with a `LIKE` match on conversation titles; matching conversations
- * return with their relevant messages, ordered by most recently updated.
+ * Message-content candidates come from the sparse `messages_lexical` index
+ * (BM25 on Postgres, BM25-style sparse vectors on Qdrant), filtered by the
+ * visibility/archived SQL predicates and merged with a `LIKE` match on
+ * conversation titles; matching conversations return with their relevant
+ * messages. The Postgres backend orders the list by lexical relevance: content
+ * matches by BM25 score with `updated_at` only as tie-break, then title-only
+ * matches by `updated_at`. The Qdrant backend keeps the historical
+ * `updated_at` order.
  *
  * Content matching is index-only: there is no `messages.content` scan
  * fallback and no other content source. Only the title arm can match while
@@ -1155,6 +1246,10 @@ async function fetchCandidateMessageRows(
  * ({@link QDRANT_SEARCH_CANDIDATE_LIMIT}) and dedupes to
  * {@link CONVERSATION_SEARCH_DISTINCT_LIMIT} distinct visible conversations
  * in score order (see the constants' docstrings).
+ *
+ * `opts.match` selects how a multi-token query is matched on the Postgres
+ * backend (all tokens by default). The Qdrant backend predates the option and
+ * ignores it; its sparse encoding has no conjunction mode.
  */
 export async function searchConversations(
   query: string,
@@ -1170,6 +1265,13 @@ export async function searchConversations(
      * background listing endpoints.
      */
     includeArchived?: boolean;
+    /**
+     * How a multi-token content query matches: every token (`"all"`, the
+     * default) or any token (`"any"`). Only the Postgres lexical backend
+     * honors it; the Qdrant backend keeps its historical OR behavior and
+     * ignores this option.
+     */
+    match?: LexicalMatchMode;
   },
 ): Promise<ConversationSearchResult[]> {
   if (!query.trim()) {
@@ -1182,6 +1284,7 @@ export async function searchConversations(
   const trimmed = query.trim();
   const limit = opts?.limit ?? 20;
   const maxMsgsPerConv = opts?.maxMessagesPerConversation ?? 3;
+  const match = opts?.match ?? "all";
 
   // `search.lexicalStore` selects the backend. `qdrant` is the shipped
   // behavior and stays the default; `dual` and `postgres` read the Postgres
@@ -1216,6 +1319,10 @@ export async function searchConversations(
   // fetched once (no per-conversation round trip).
   let pgMessageRowsByConv: Map<string, ConversationSearchMsgRow[]> | null =
     null;
+  // Postgres: conversation id -> best BM25 score, used to order the final
+  // list. `null` on the Qdrant path, or when the lookup failed and only title
+  // matches surfaced.
+  let pgScoreByConversation: Map<string, number> | null = null;
 
   if (hasTokens && contentSearchAvailable) {
     if (usePostgres) {
@@ -1224,9 +1331,23 @@ export async function searchConversations(
           trimmed,
           QDRANT_SEARCH_CANDIDATE_LIMIT,
           opts?.includeArchived === true,
+          match,
         );
         const bucketed = bucketCandidatesByConversation(candidates);
         candidatesByConv = bucketed.byConversation;
+        // First occurrence per conversation is its best-scoring message.
+        pgScoreByConversation = new Map();
+        for (const candidate of candidates) {
+          if (
+            candidate.score !== undefined &&
+            !pgScoreByConversation.has(candidate.conversationId)
+          ) {
+            pgScoreByConversation.set(
+              candidate.conversationId,
+              candidate.score,
+            );
+          }
+        }
         for (const conversationId of bucketed.conversationIds) {
           contentConvIds.add(conversationId);
         }
@@ -1360,7 +1481,11 @@ export async function searchConversations(
     return [];
   }
 
-  // Fetch the matching conversation rows, ordered by updatedAt, capped at limit.
+  // Fetch the matching conversation rows. The Postgres backend keeps the BM25
+  // order from the bucket walk (content matches by score, `updated_at` only as
+  // tie-break) and appends title-only matches by `updated_at`, capping after
+  // the ordering; the Qdrant backend keeps the historical `updated_at` order,
+  // applied in SQL.
   const convIds = [...contentConvIds];
   const placeholders = convIds.map(() => "?").join(",");
   interface ConvRow {
@@ -1368,13 +1493,24 @@ export async function searchConversations(
     title: string | null;
     updated_at: number;
   }
-  const matchingConversations = await db.all<ConvRow>(
-    `SELECT id, title, updated_at FROM conversations
-     WHERE id IN (${placeholders})
-     ORDER BY updated_at DESC
-     LIMIT ?`,
-    [...convIds, limit],
-  );
+  const matchingConversations =
+    pgScoreByConversation !== null
+      ? orderByLexicalRelevance(
+          await db.all<ConvRow>(
+            `SELECT id, title, updated_at FROM conversations
+             WHERE id IN (${placeholders})`,
+            [...convIds],
+          ),
+          pgScoreByConversation,
+          limit,
+        )
+      : await db.all<ConvRow>(
+          `SELECT id, title, updated_at FROM conversations
+           WHERE id IN (${placeholders})
+           ORDER BY updated_at DESC
+           LIMIT ?`,
+          [...convIds, limit],
+        );
 
   if (matchingConversations.length === 0) {
     return [];

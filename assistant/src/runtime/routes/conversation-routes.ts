@@ -143,7 +143,10 @@ import {
   recordStandardConversationCreated,
 } from "../../persistence/conversation-key-store.js";
 import { listConversationModeSessionsByIds } from "../../persistence/conversation-mode-sessions.js";
-import { searchConversations } from "../../persistence/conversation-queries.js";
+import {
+  parseLexicalMatchMode,
+  searchConversations,
+} from "../../persistence/conversation-queries.js";
 import {
   AUTO_ROUTED_PROFILE_METADATA_KEY,
   computerUseScreenshotAttachmentIdsFromMetadata,
@@ -3709,7 +3712,7 @@ export async function handleGetSuggestion(
 }
 
 /**
- * GET /search?q=<query>[&limit=<n>][&maxMessagesPerConversation=<n>]
+ * GET /search?q=<query>[&limit=<n>][&maxMessagesPerConversation=<n>][&match=all|any]
  *
  * Full-text search across all conversations (message content + titles).
  * Returns ranked results grouped by conversation, each with matching message excerpts.
@@ -3733,6 +3736,7 @@ async function handleSearchConversations({
     !isNaN(maxMessagesPerConversation)
       ? { maxMessagesPerConversation }
       : {}),
+    match: parseLexicalMatchMode(queryParams?.match),
   });
 
   return { query, results };

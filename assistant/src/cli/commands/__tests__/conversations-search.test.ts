@@ -176,6 +176,24 @@ describe("conversations search", () => {
     });
   });
 
+  test("defaults to every-word matching (no match param)", async () => {
+    mockIpcResult = { ok: true, result: { query: "flux", results: [] } };
+    const { code } = await runSearch(["search", "flux capacitor"]);
+    expect(code).toBe(0);
+    expect(lastIpcCall?.params).toEqual({
+      queryParams: { q: "flux capacitor" },
+    });
+  });
+
+  test("--any passes match=any", async () => {
+    mockIpcResult = { ok: true, result: { query: "flux", results: [] } };
+    const { code } = await runSearch(["search", "flux capacitor", "--any"]);
+    expect(code).toBe(0);
+    expect(lastIpcCall?.params).toEqual({
+      queryParams: { q: "flux capacitor", match: "any" },
+    });
+  });
+
   test("prints conversation rows and excerpts in human mode", async () => {
     mockIpcResult = {
       ok: true,
@@ -285,5 +303,6 @@ describe("conversations search", () => {
       'assistant conversations search "project planning"',
     );
     expect(stdout).toContain("--json");
+    expect(stdout).toContain("--any");
   });
 });

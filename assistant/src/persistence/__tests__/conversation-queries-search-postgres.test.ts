@@ -2,12 +2,14 @@
  * Read-path tests for {@link searchConversations} on the Postgres lexical
  * backend (`search.lexicalStore = "postgres"`).
  *
- * The response semantics must match the Qdrant path: content candidates are
- * capped on distinct visible conversations in score order, archived rows are
- * hidden unless `includeArchived`, title `LIKE` matches merge with content
- * matches, the final list is ordered by `updated_at` and limited, and excerpts
- * are built from the same extracted text the index carries. The excerpts come
- * from one batched query, not one per conversation.
+ * The response shape and filtering semantics match the Qdrant path: content
+ * candidates are capped on distinct visible conversations in score order,
+ * archived rows are hidden unless `includeArchived`, title `LIKE` matches merge
+ * with content matches, and excerpts are built from the same extracted text the
+ * index carries. Ordering is the Postgres-specific part: relevance first (BM25
+ * score, `updated_at` as tie-break, title-only matches last), where the Qdrant
+ * path keeps `updated_at`. The excerpts come from one batched query, not one
+ * per conversation.
  *
  * The Qdrant seam is mocked to return nothing, so a result can only come from
  * the Postgres table; the last test flips the flag back to `qdrant` and proves
@@ -211,10 +213,12 @@ describePg("searchConversations · postgres lexical index", () => {
     expect(results[0]!.matchingMessages).toEqual([]);
   }, 60_000);
 
-  test("orders by updated_at and applies the limit", async () => {
+  test("breaks score ties by updated_at and applies the limit after ordering", async () => {
     if (!available) {
       return;
     }
+    // Both bodies carry one `fatture` in a two-token message, so the BM25
+    // scores tie and `updated_at` decides.
     const older = await createConversation("Vecchia");
     const newer = await createConversation("Nuova");
     await insertMessage("m-1", older.id, "fatture pagate");
@@ -227,6 +231,77 @@ describePg("searchConversations · postgres lexical index", () => {
     const results = await searchConversations("fatture", { limit: 1 });
 
     expect(results.map((result) => result.conversationId)).toEqual([newer.id]);
+  }, 60_000);
+
+  test("a strong content match outranks a weak but more recent one", async () => {
+    if (!available) {
+      return;
+    }
+    // Strong: the term repeated in a short message. Weak: the term once inside
+    // a much longer message. The strong match is the older conversation, so a
+    // recency ordering would put it second.
+    const strongOld = await createConversation("Alfa");
+    const weakNew = await createConversation("Beta");
+    const strongBody = "fatture fatture fatture fatture fatture";
+    const weakBody = `fatture ${"riempimento ".repeat(60).trim()}`;
+    await insertMessage("m-strong", strongOld.id, strongBody);
+    await insertLexical("m-strong", strongOld.id, strongBody);
+    await insertMessage("m-weak", weakNew.id, weakBody);
+    await insertLexical("m-weak", weakNew.id, weakBody);
+    await setUpdatedAt(strongOld.id, 1_000);
+    await setUpdatedAt(weakNew.id, 5_000);
+
+    const results = await searchConversations("fatture");
+
+    expect(results.map((result) => result.conversationId)).toEqual([
+      strongOld.id,
+      weakNew.id,
+    ]);
+  }, 60_000);
+
+  test("places title-only matches after content matches regardless of recency", async () => {
+    if (!available) {
+      return;
+    }
+    const content = await createConversation("Varie");
+    const titleOnly = await createConversation("Fatture 2026");
+    await insertMessage("m-1", content.id, "fatture pagate");
+    await insertLexical("m-1", content.id, "fatture pagate");
+    await setUpdatedAt(content.id, 1_000);
+    await setUpdatedAt(titleOnly.id, 9_000);
+
+    const results = await searchConversations("fatture");
+
+    expect(results.map((result) => result.conversationId)).toEqual([
+      content.id,
+      titleOnly.id,
+    ]);
+    expect(results[1]!.matchingMessages).toEqual([]);
+  }, 60_000);
+
+  test("applies the limit after relevance ordering", async () => {
+    if (!available) {
+      return;
+    }
+    // Same shape as the strong-vs-weak case: the older conversation has the
+    // stronger match, so a `limit: 1` that cut before ordering would keep the
+    // newer, weaker one instead.
+    const strongOld = await createConversation("Alfa");
+    const weakNew = await createConversation("Beta");
+    const strongBody = "fatture fatture fatture fatture fatture";
+    const weakBody = `fatture ${"riempimento ".repeat(60).trim()}`;
+    await insertMessage("m-strong", strongOld.id, strongBody);
+    await insertLexical("m-strong", strongOld.id, strongBody);
+    await insertMessage("m-weak", weakNew.id, weakBody);
+    await insertLexical("m-weak", weakNew.id, weakBody);
+    await setUpdatedAt(strongOld.id, 1_000);
+    await setUpdatedAt(weakNew.id, 5_000);
+
+    const results = await searchConversations("fatture", { limit: 1 });
+
+    expect(results.map((result) => result.conversationId)).toEqual([
+      strongOld.id,
+    ]);
   }, 60_000);
 
   test("builds the excerpt from extracted text, not the stored JSON", async () => {
@@ -268,5 +343,87 @@ describePg("searchConversations · postgres lexical index", () => {
     // The Qdrant seam is mocked to return no candidates and the title does not
     // match, so an empty result proves the Postgres table was not consulted.
     expect(await searchConversations("fatture")).toEqual([]);
+  }, 60_000);
+
+  test("defaults to conjunction: every token must appear in a message", async () => {
+    if (!available) {
+      return;
+    }
+    const both = await createConversation("Alpha");
+    const onlyFirst = await createConversation("Beta");
+    const onlySecond = await createConversation("Gamma");
+    await insertMessage("m-1", both.id, "fatture non pagate");
+    await insertLexical("m-1", both.id, "fatture non pagate");
+    await insertMessage("m-2", onlyFirst.id, "fatture emesse");
+    await insertLexical("m-2", onlyFirst.id, "fatture emesse");
+    await insertMessage("m-3", onlySecond.id, "le tasse sono pagate");
+    await insertLexical("m-3", onlySecond.id, "le tasse sono pagate");
+
+    const results = await searchConversations("fatture pagate");
+
+    expect(results.map((result) => result.conversationId)).toEqual([both.id]);
+  }, 60_000);
+
+  test("match: all is the explicit form of the default", async () => {
+    if (!available) {
+      return;
+    }
+    const both = await createConversation("Alpha");
+    const onlyFirst = await createConversation("Beta");
+    await insertMessage("m-1", both.id, "fatture non pagate");
+    await insertLexical("m-1", both.id, "fatture non pagate");
+    await insertMessage("m-2", onlyFirst.id, "fatture emesse");
+    await insertLexical("m-2", onlyFirst.id, "fatture emesse");
+
+    const results = await searchConversations("fatture pagate", {
+      match: "all",
+    });
+
+    expect(results.map((result) => result.conversationId)).toEqual([both.id]);
+  }, 60_000);
+
+  test("match: any accepts messages carrying any token", async () => {
+    if (!available) {
+      return;
+    }
+    const both = await createConversation("Alpha");
+    const onlyFirst = await createConversation("Beta");
+    const onlySecond = await createConversation("Gamma");
+    await insertMessage("m-1", both.id, "fatture non pagate");
+    await insertLexical("m-1", both.id, "fatture non pagate");
+    await insertMessage("m-2", onlyFirst.id, "fatture emesse");
+    await insertLexical("m-2", onlyFirst.id, "fatture emesse");
+    await insertMessage("m-3", onlySecond.id, "le tasse sono pagate");
+    await insertLexical("m-3", onlySecond.id, "le tasse sono pagate");
+
+    const results = await searchConversations("fatture pagate", {
+      match: "any",
+    });
+
+    expect(results.map((result) => result.conversationId).sort()).toEqual(
+      [both.id, onlyFirst.id, onlySecond.id].sort(),
+    );
+  }, 60_000);
+
+  test("a single-token query returns the same set under both modes", async () => {
+    if (!available) {
+      return;
+    }
+    const first = await createConversation("Alpha");
+    const second = await createConversation("Beta");
+    await insertMessage("m-1", first.id, "fatture pagate");
+    await insertLexical("m-1", first.id, "fatture pagate");
+    await insertMessage("m-2", second.id, "fatture emesse");
+    await insertLexical("m-2", second.id, "fatture emesse");
+
+    const all = await searchConversations("fatture", { match: "all" });
+    const any = await searchConversations("fatture", { match: "any" });
+
+    expect(all.map((result) => result.conversationId).sort()).toEqual(
+      [first.id, second.id].sort(),
+    );
+    expect(any.map((result) => result.conversationId).sort()).toEqual(
+      all.map((result) => result.conversationId).sort(),
+    );
   }, 60_000);
 });

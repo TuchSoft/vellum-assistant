@@ -180,6 +180,11 @@ Examples:
           description: "Maximum number of conversations to return (default 20)",
         },
         {
+          flags: "--any",
+          description:
+            "Match any word instead of every word (default: every word must appear)",
+        },
+        {
           flags: "--json",
           description: "Output result as machine-readable JSON",
         },
@@ -191,6 +196,10 @@ Arguments:
          content (full-text). Archived conversations are excluded, matching
          'assistant conversations list'.
 
+A multi-word query requires every word to appear in a message. Pass --any to
+match messages containing any of the words instead. Titles always match by
+substring.
+
 Requires the assistant to be running. Communicates via IPC socket.
 
 Results are grouped by conversation, ordered by most recently updated, and
@@ -200,6 +209,7 @@ message excerpts. Use the ID with rename, export, or wake.
 
 Examples:
   $ assistant conversations search "project planning"
+  $ assistant conversations search "project planning" --any
   $ assistant conversations search flux --limit 5
   $ assistant conversations search "quarterly metrics" --json`,
     },

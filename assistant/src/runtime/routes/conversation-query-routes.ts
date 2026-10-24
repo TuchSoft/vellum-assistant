@@ -84,6 +84,7 @@ import {
   getMessageById,
 } from "../../persistence/conversation-crud.js";
 import { getConversationByKey } from "../../persistence/conversation-key-store.js";
+import { parseLexicalMatchMode } from "../../persistence/conversation-queries.js";
 import {
   type ConversationKind,
   resolveConversationKind,
@@ -1022,6 +1023,7 @@ async function handleSearchConversations({
     query: q,
     limit,
     maxMessagesPerConversation: maxMessages,
+    match: parseLexicalMatchMode(queryParams.match),
     // Under `sidebar-done` a done chat is filed rather than hidden, so the
     // agent's own history search reaches it the same way the user's does.
     includeArchived: isSidebarDoneEnabled(),
@@ -1456,6 +1458,12 @@ export const ROUTES: RouteDefinition[] = [
         name: "maxMessagesPerConversation",
         schema: { type: "integer" },
         description: "Max messages per conversation",
+      },
+      {
+        name: "match",
+        schema: { type: "string", enum: ["all", "any"] },
+        description:
+          'How multi-token queries match message content: "all" (every token, default) or "any" (any token)',
       },
     ],
     responseBody: z.object({

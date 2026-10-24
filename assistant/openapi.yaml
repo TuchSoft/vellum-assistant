@@ -10697,6 +10697,15 @@ paths:
           schema:
             type: integer
           description: Max messages per conversation
+        - name: match
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - all
+              - any
+          description: 'How multi-token queries match message content: "all" (every token, default) or "any" (any token)'
       responses:
         "200":
           description: Successful response
@@ -31700,6 +31709,14 @@ paths:
           schema:
             type: string
           description: Enable semantic search for memories (true/false)
+        - name: match
+          in: query
+          required: false
+          schema:
+            type: string
+          description:
+            'How multi-token conversation queries match message content: "all" (every token, default) or "any" (any
+            token)'
       responses:
         "200":
           description: Successful response

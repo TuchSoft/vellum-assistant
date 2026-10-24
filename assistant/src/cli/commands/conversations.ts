@@ -267,7 +267,11 @@ export function registerConversationsCommand(program: Command): void {
       // -------------------------------------------------------------------
 
       subcommand(conversations, "search").action(
-        async (term: string, opts: { limit?: string }, cmd: Command) => {
+        async (
+          term: string,
+          opts: { limit?: string; any?: boolean },
+          cmd: Command,
+        ) => {
           const trimmed = term.trim();
           if (!trimmed) {
             writeError(
@@ -288,6 +292,9 @@ export function registerConversationsCommand(program: Command): void {
           const queryParams: Record<string, string> = { q: trimmed };
           if (parsedLimit.value !== undefined) {
             queryParams.limit = String(parsedLimit.value);
+          }
+          if (opts.any) {
+            queryParams.match = "any";
           }
 
           const result = await cliIpcCall<ConversationSearchResponse>(

@@ -454,6 +454,7 @@ safely.
 Examples:
   $ assistant memory v3 rebuild-index
   $ assistant memory v3 backfill-sections
+  $ assistant memory v3 backfill-sections-pg
   $ assistant memory v3 reindex-projects
   $ assistant memory v3 gate-stats
   $ assistant memory v3 gate-stats --lookback-days 7 --json`,
@@ -494,6 +495,40 @@ configuration and advances the checkpoint the assistant reads.
 Examples:
   $ assistant memory v3 backfill-sections
   $ assistant memory v3 backfill-sections --json | jq '.sections'`,
+        },
+        {
+          name: "backfill-sections-pg",
+          description:
+            "One-time: fill the pgvector memory_sections table from the section corpus",
+          options: [
+            {
+              flags: "--restart",
+              description:
+                "Ignore the resume checkpoint and start from the first article",
+            },
+            {
+              flags: "--json",
+              description: "Emit raw JSON instead of a formatted summary",
+            },
+          ],
+          helpText: `
+Fills the \`memory_sections\` table — the pgvector counterpart of the
+\`memory_v3_sections\` collection — from the sections that already exist:
+the Qdrant point payloads supply the section identity and project scope, and
+the vectors come from the \`memory_embeddings\` cache. Nothing is re-embedded.
+
+Idempotent and resumable: rows are upserted on (article, ordinal), and a
+durable checkpoint holds the last page processed, so an interrupted pass
+continues where it stopped. A section whose vector is missing from the cache
+is skipped and counted, never embedded.
+
+Only needed before switching \`memory.v3.sectionsStore\` to \`dual\` or
+\`pgvector\`; the flag's default (\`qdrant\`) does not read this table.
+
+Examples:
+  $ assistant memory v3 backfill-sections-pg
+  $ assistant memory v3 backfill-sections-pg --restart
+  $ assistant memory v3 backfill-sections-pg --json | jq '.sections'`,
         },
         {
           name: "reindex-projects",

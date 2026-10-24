@@ -7,6 +7,7 @@ describe("MemoryV3ConfigSchema", () => {
     const parsed = MemoryV3ConfigSchema.parse({});
     expect(parsed).toEqual({
       live: false,
+      sectionsStore: "qdrant",
       prune: { maxResidentBytes: 393216, targetResidentBytes: 262144 },
       hotSet: { k: 40, halfLifeDays: 14 },
       freshSet: { k: 100 },

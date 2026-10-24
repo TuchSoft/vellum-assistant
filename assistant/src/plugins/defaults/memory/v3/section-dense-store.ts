@@ -49,12 +49,34 @@ import {
   type PageProjectScope,
   projectScopePayload,
 } from "../substrate/project-scope.js";
+import {
+  countSectionsForArticlePg,
+  deleteSectionsForArticlePg,
+  listSectionArticlesPg,
+  type PgSectionRow,
+  setSectionProjectScopePg,
+  upsertSectionsPg,
+} from "./section-pg-store.js";
 import type { Section } from "./types.js";
 
 const log = getLogger("memory-v3-section-dense-store");
 
 /** Name of the dedicated Qdrant collection holding section-grain embeddings. */
 export const SECTION_COLLECTION = "memory_v3_sections";
+
+/**
+ * The store `memory.v3.sectionsStore` selects. Defaults to `qdrant` when the
+ * flag is absent from a partial config, so a hand-built config (tests, plugins
+ * calling the store with a minimal object) keeps the shipped behavior.
+ */
+export function sectionStoreOf(
+  config: AssistantConfig,
+): AssistantConfig["memory"]["v3"]["sectionsStore"] {
+  const v3 = config.memory.v3 as
+    | { sectionsStore?: AssistantConfig["memory"]["v3"]["sectionsStore"] }
+    | undefined;
+  return v3?.sectionsStore ?? "qdrant";
+}
 
 /**
  * Durable checkpoint key holding the epoch-ms high-water of the last successful
@@ -671,38 +693,69 @@ export async function upsertSections(
     return;
   }
 
-  await ensureSectionCollection(config);
+  // `memory.v3.sectionsStore` selects the destination. `qdrant` is the shipped
+  // path and never touches Postgres; `dual` writes both; `pgvector` never
+  // touches the collection (so an instance that dropped Qdrant keeps working).
+  const store = sectionStoreOf(config);
+  if (store !== "pgvector") {
+    await ensureSectionCollection(config);
+  }
 
   const vectors = await embedSectionsCached(config, sections);
 
-  const points = sections.flatMap((section, i) => {
+  const points: Array<{
+    id: string;
+    vector: number[];
+    payload: {
+      article: string;
+      ordinal: number;
+      title: string;
+      projects: string[];
+      exclusive: boolean;
+    };
+  }> = [];
+  const rows: PgSectionRow[] = [];
+  for (const [i, section] of sections.entries()) {
     const vector = vectors[i];
     if (!vector) {
-      return [];
+      continue;
     }
     const scope = scopeByArticle?.get(section.article) ?? GLOBAL_PROJECT_SCOPE;
-    return [
-      {
+    const payload = {
+      article: section.article,
+      ordinal: section.ordinal,
+      title: section.title,
+      ...projectScopePayload(scope),
+    };
+    if (store !== "pgvector") {
+      points.push({
         id: pointIdForSection(section.article, section.ordinal),
         vector,
-        payload: {
-          article: section.article,
-          ordinal: section.ordinal,
-          title: section.title,
-          ...projectScopePayload(scope),
-        },
-      },
-    ];
-  });
-
-  if (points.length === 0) {
-    return;
+        payload,
+      });
+    }
+    if (store !== "qdrant") {
+      rows.push({
+        article: section.article,
+        ordinal: section.ordinal,
+        title: section.title,
+        projects: payload.projects,
+        exclusive: payload.exclusive,
+        embedding: vector,
+      });
+    }
   }
 
-  await getSectionDenseClient().upsert(SECTION_COLLECTION, {
-    wait: true,
-    points,
-  });
+  if (rows.length > 0) {
+    await upsertSectionsPg(config, rows);
+  }
+
+  if (points.length > 0) {
+    await getSectionDenseClient().upsert(SECTION_COLLECTION, {
+      wait: true,
+      points,
+    });
+  }
 }
 
 /**
@@ -859,6 +912,14 @@ export async function deleteSectionsForArticle(
   config: AssistantConfig,
   article: string,
 ): Promise<void> {
+  const store = sectionStoreOf(config);
+  if (store !== "qdrant") {
+    await deleteSectionsForArticlePg(article);
+  }
+  if (store === "pgvector") {
+    return;
+  }
+
   await ensureSectionCollection(config);
 
   await getSectionDenseClient().delete(SECTION_COLLECTION, {
@@ -876,9 +937,33 @@ export async function deleteSectionsForArticle(
  * after the page was deleted from the index — the change-delta selector never
  * names a slug that is gone, so a deleted page's stale points are only
  * observable by reading the collection back. An empty/absent collection yields
- * an empty list.
+ * an empty list. With `memory.v3.sectionsStore = "pgvector"` the table is read
+ * instead (no Qdrant round-trip); `dual` reads the union of both.
  */
 export async function listSectionArticles(
+  config: AssistantConfig,
+): Promise<string[]> {
+  const store = sectionStoreOf(config);
+  if (store === "pgvector") {
+    return listSectionArticlesPg();
+  }
+
+  const qdrantArticles = await listQdrantSectionArticles(config);
+  if (store === "dual") {
+    // The union: the maintain pass must prune articles that linger in either
+    // store, and a Qdrant-only article is exactly what a dual-write window
+    // leaves behind after the collection was populated first.
+    const articles = new Set(qdrantArticles);
+    for (const article of await listSectionArticlesPg()) {
+      articles.add(article);
+    }
+    return [...articles];
+  }
+  return qdrantArticles;
+}
+
+/** The Qdrant side of {@link listSectionArticles}. */
+async function listQdrantSectionArticles(
   config: AssistantConfig,
 ): Promise<string[]> {
   await ensureSectionCollection(config);
@@ -931,6 +1016,14 @@ export async function setSectionProjectScope(
   article: string,
   scope: PageProjectScope,
 ): Promise<void> {
+  const store = sectionStoreOf(config);
+  if (store !== "qdrant") {
+    await setSectionProjectScopePg(article, scope);
+  }
+  if (store === "pgvector") {
+    return;
+  }
+
   await ensureSectionCollection(config);
   await getSectionDenseClient().setPayload(SECTION_COLLECTION, {
     payload: projectScopePayload(scope),
@@ -967,7 +1060,7 @@ export async function reindexSectionProjectScopes(
     try {
       const scope = await resolveScope(article);
       await setSectionProjectScope(config, article, scope);
-      points += await countSectionsForArticle(article);
+      points += await countSectionsForArticle(config, article);
     } catch (err) {
       failures += 1;
       log.warn(
@@ -980,7 +1073,14 @@ export async function reindexSectionProjectScopes(
 }
 
 /** Count the section points belonging to one article. */
-async function countSectionsForArticle(article: string): Promise<number> {
+async function countSectionsForArticle(
+  config: AssistantConfig,
+  article: string,
+): Promise<number> {
+  const store = sectionStoreOf(config);
+  if (store === "pgvector") {
+    return countSectionsForArticlePg(article);
+  }
   const result = await getSectionDenseClient().count(SECTION_COLLECTION, {
     exact: true,
     filter: { must: [{ key: "article", match: { value: article } }] },

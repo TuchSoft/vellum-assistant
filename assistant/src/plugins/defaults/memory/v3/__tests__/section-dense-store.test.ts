@@ -395,9 +395,12 @@ describe("memory v3 section-dense-store — collection lifecycle", () => {
       distance: "Cosine",
       on_disk: true,
     });
-    // `article` payload index is created so delete-by-filter works in strict mode.
+    // `article` payload index is created so delete-by-filter works in strict mode,
+    // plus the project-scope indexes the dense lane filters on.
     expect(state.createIndexCalls).toEqual([
       { field_name: "article", field_schema: "keyword" },
+      { field_name: "projects", field_schema: "keyword" },
+      { field_name: "exclusive", field_schema: "bool" },
     ]);
   });
 
@@ -425,6 +428,8 @@ describe("memory v3 section-dense-store — collection lifecycle", () => {
     expect(state.createCollectionCalls).toBe(0);
     expect(state.createIndexCalls).toEqual([
       { field_name: "article", field_schema: "keyword" },
+      { field_name: "projects", field_schema: "keyword" },
+      { field_name: "exclusive", field_schema: "bool" },
     ]);
   });
 
@@ -523,6 +528,8 @@ describe("memory v3 section-dense-store — collection lifecycle", () => {
     expect(state.createCollectionCalls).toBe(1);
     expect(state.createIndexCalls).toEqual([
       { field_name: "article", field_schema: "keyword" },
+      { field_name: "projects", field_schema: "keyword" },
+      { field_name: "exclusive", field_schema: "bool" },
     ]);
   });
 });

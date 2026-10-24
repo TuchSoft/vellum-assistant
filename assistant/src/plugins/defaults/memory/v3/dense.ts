@@ -24,8 +24,10 @@ import {
   getSectionDenseClient,
   SECTION_COLLECTION,
   sectionDenseReadsHeld,
+  sectionStoreOf,
   settleSectionDenseReadHold,
 } from "./section-dense-store.js";
+import { searchSectionsPg } from "./section-pg-store.js";
 import type { Slug } from "./types.js";
 
 const log = getLogger("memory-v3-dense-lane");
@@ -79,8 +81,18 @@ export async function denseLaneScored(
   if (k <= 0) {
     return [];
   }
-  if ((await sectionDenseReadsHeld()) && (await settleSectionDenseReadHold())) {
-    return [];
+  // The chunker-version hold guards the ordinals stored in the Qdrant points.
+  // The pgvector table is written through the same upsert path, so a hold is
+  // equally valid there, but the check itself probes the collection: skip it
+  // when the configured store does not read Qdrant.
+  const store = sectionStoreOf(config);
+  if (store !== "pgvector") {
+    if (
+      (await sectionDenseReadsHeld()) &&
+      (await settleSectionDenseReadHold())
+    ) {
+      return [];
+    }
   }
 
   let points: Array<{ payload?: unknown; score?: number }>;
@@ -98,6 +110,19 @@ export async function denseLaneScored(
     const vector = vectors[0];
     if (!vector || vector.length === 0) {
       return [];
+    }
+
+    if (store === "pgvector" || store === "dual") {
+      // Postgres reads the same query vector; the project predicate is part of
+      // the SQL, so an exclusive section outside the visible projects never
+      // competes for the top-k.
+      const rows = await searchSectionsPg(
+        config,
+        vector,
+        k * OVERSAMPLE,
+        visibleProjects,
+      );
+      return dedupeToArticles(rows, k);
     }
 
     const result = await getSectionDenseClient().query(SECTION_COLLECTION, {
@@ -142,6 +167,31 @@ export async function denseLaneScored(
   }
 
   return hits;
+}
+
+/**
+ * Collapse section-grain hits to the top-`k` distinct articles, keeping each
+ * article's best (highest-scoring) section. Both stores return hits in
+ * descending score order, so the first hit an article appears in is its best
+ * one.
+ */
+function dedupeToArticles(
+  hits: ReadonlyArray<{ article: Slug; ordinal: number; score: number }>,
+  k: number,
+): DenseHitScored[] {
+  const seen = new Set<Slug>();
+  const out: DenseHitScored[] = [];
+  for (const hit of hits) {
+    if (seen.has(hit.article)) {
+      continue;
+    }
+    seen.add(hit.article);
+    out.push({ article: hit.article, section: hit.ordinal, score: hit.score });
+    if (out.length >= k) {
+      break;
+    }
+  }
+  return out;
 }
 
 /**

@@ -16,6 +16,10 @@
  *   - `reindex-projects` — one-time: rewrite the `projects`/`exclusive` payload
  *     on every existing section point from the page frontmatter (no
  *     re-embedding), for a corpus indexed before project scope existed.
+ *   - `backfill-sections-pg` — one-time: fill the pgvector `memory_sections`
+ *     table from the Qdrant section payloads and the vectors already cached in
+ *     `memory_embeddings` (no re-embedding), for the `memory.v3.sectionsStore`
+ *     cutover.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -29,6 +33,7 @@ import type {
 } from "../../../plugins/defaults/memory/src/memory-eval-routes.js";
 import type {
   GateStatsResponse,
+  MemoryV3BackfillSectionsPgResult,
   MemoryV3BackfillSectionsResult,
   MemoryV3RebuildIndexResult,
   MemoryV3ReindexProjectsResult,
@@ -179,6 +184,40 @@ export function registerMemoryV3Command(memory: Command): void {
       );
     },
   );
+
+  // ── backfill-sections-pg ──────────────────────────────────────────────
+
+  subcommand(v3, "backfill-sections-pg")
+    .option(
+      "--restart",
+      "Ignore the resume checkpoint and start from the first article",
+    )
+    .action(async (opts: { restart?: boolean; json?: boolean }) => {
+      const result = await cliIpcCall<MemoryV3BackfillSectionsPgResult>(
+        "memory_v3_backfill_sections_pg",
+        { body: { ...(opts.restart === true ? { restart: true } : {}) } },
+        { timeoutMs: BACKFILL_IPC_TIMEOUT_MS },
+      );
+      if (!result.ok) {
+        log.error(result.error ?? "Failed to backfill memory_sections");
+        process.exitCode = 1;
+        return;
+      }
+      const payload = result.result!;
+      if (opts.json === true) {
+        log.info(JSON.stringify(payload, null, 2));
+        return;
+      }
+      log.info(
+        `Wrote ${payload.sections} section row(s) across ${payload.articles} page(s)` +
+          (payload.skipped > 0
+            ? `; ${payload.skipped} section(s) had no cached vector and were skipped`
+            : "") +
+          (payload.failures > 0
+            ? ` (${payload.failures} page(s) failed — see assistant logs).`
+            : "."),
+      );
+    });
 
   // ── reindex-projects ──────────────────────────────────────────────────
 

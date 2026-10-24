@@ -413,4 +413,60 @@ export const PG_STEPS: readonly PgMigrationStep[] = [
       await db.exec(`DROP TABLE IF EXISTS "messages_lexical"`);
     },
   },
+  {
+    name: "0006_memory_sections",
+    up: async (db) => {
+      // `pgvector` is a server-side extension the coordinator installs as a
+      // superuser. Without it the column type does not exist, so fail loudly
+      // with the remediation instead of creating a table nothing can write.
+      const installed = await db.get<{ present: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM pg_extension WHERE extname = 'vector'
+         ) AS present`,
+      );
+      if (installed?.present !== true) {
+        throw new Error(
+          "memory_sections requires the pgvector extension: " +
+            "run CREATE EXTENSION vector as a superuser before applying this migration",
+        );
+      }
+
+      // Additive and idempotent: an interrupted apply leaves a table the re-run
+      // completes, and no statement depends on data.
+      await db.exec(
+        `CREATE TABLE IF NOT EXISTS "memory_sections" (
+          "article" text NOT NULL,
+          "ordinal" integer NOT NULL,
+          "title" text NOT NULL,
+          "projects" text[] NOT NULL,
+          "exclusive" boolean NOT NULL,
+          "embedding" vector(1024) NOT NULL,
+          "updated_at" bigint NOT NULL,
+          PRIMARY KEY ("article", "ordinal")
+        )`,
+      );
+      // Cosine distance, matching the Qdrant collection's `Cosine` metric so
+      // both stores rank by the same score. `m`/`ef_construction` mirror the
+      // collection's HNSW parameters; at this corpus size the index is mostly
+      // a cutover-planning detail, not a speed need.
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "memory_sections_embedding_hnsw"
+           ON "memory_sections" USING hnsw ("embedding" vector_cosine_ops)
+           WITH (m = 16, ef_construction = 100)`,
+      );
+      // The dense lane filters on the project scope in the same query as the
+      // vector search, so both columns need an index.
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "idx_memory_sections_projects"
+           ON "memory_sections" USING gin ("projects")`,
+      );
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "idx_memory_sections_exclusive"
+           ON "memory_sections" ("exclusive")`,
+      );
+    },
+    down: async (db) => {
+      await db.exec(`DROP TABLE IF EXISTS "memory_sections"`);
+    },
+  },
 ];

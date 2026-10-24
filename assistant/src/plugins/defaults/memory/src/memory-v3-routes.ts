@@ -31,6 +31,7 @@ import { readPageProjectScope } from "../substrate/page-store.js";
 import { backfillAllSections } from "../v3/maintain-job.js";
 import { MEMORY_V3_INJECTION_GATE_CHECK_NAME } from "../v3/orchestrate.js";
 import { reindexSectionProjectScopes } from "../v3/section-dense-store.js";
+import { backfillSectionsPg } from "../v3/section-pg-backfill.js";
 import { invalidateLanes } from "../v3/shadow-plugin.js";
 
 const log = getLogger("memory-v3-routes");
@@ -89,6 +90,43 @@ export async function handleMemoryV3BackfillSections(
 ): Promise<MemoryV3BackfillSectionsResult> {
   const outcome = await backfillAllSections(config);
   log.info(outcome, "memory-v3 section backfill complete (route)");
+  return outcome;
+}
+
+// ---------------------------------------------------------------------------
+// backfill-sections-pg
+// ---------------------------------------------------------------------------
+
+const MemoryV3BackfillSectionsPgResultSchema = z.object({
+  /** Articles whose sections were written this pass. */
+  articles: z.number(),
+  /** Section rows upserted into `memory_sections`. */
+  sections: z.number(),
+  /** Sections whose vector was absent from the embedding cache. */
+  skipped: z.number(),
+  /** Articles whose write failed (logged, non-fatal). */
+  failures: z.number(),
+  /** Article the pass resumed from, when a checkpoint was present. */
+  resumedFrom: z.string().nullable(),
+});
+export type MemoryV3BackfillSectionsPgResult = z.infer<
+  typeof MemoryV3BackfillSectionsPgResultSchema
+>;
+
+/**
+ * One-time backfill of the `memory_sections` table from the existing section
+ * corpus: the Qdrant point payloads plus the vectors already cached in
+ * `memory_embeddings`. No page is re-embedded.
+ *
+ * `restart` clears the resume checkpoint. `config` is injectable for tests;
+ * production resolves the live config.
+ */
+export async function handleMemoryV3BackfillSectionsPg(
+  config: AssistantConfig = getConfig(),
+  options: { restart?: boolean } = {},
+): Promise<MemoryV3BackfillSectionsPgResult> {
+  const outcome = await backfillSectionsPg(config, options);
+  log.info(outcome, "memory-v3 sections pg backfill complete (route)");
   return outcome;
 }
 
@@ -369,6 +407,17 @@ export const ROUTES: RouteDefinition[] = [
       "One-time: embed every page's sections (incl synthetic skill/CLI rows) into the dense store",
     tags: ["memory"],
     responseBody: MemoryV3BackfillSectionsResultSchema,
+  },
+  {
+    operationId: "memory_v3_backfill_sections_pg",
+    method: "POST",
+    policy: WRITE_POLICY,
+    endpoint: "memory/v3/backfill-sections-pg",
+    handler: () => handleMemoryV3BackfillSectionsPg(),
+    summary:
+      "One-time: fill the pgvector memory_sections table from the section corpus and the cached vectors",
+    tags: ["memory"],
+    responseBody: MemoryV3BackfillSectionsPgResultSchema,
   },
   {
     operationId: "memory_v3_reindex_projects",

@@ -1,6 +1,19 @@
 import { z } from "zod";
 
 /**
+ * Where the v3 section-grain dense index is written and read.
+ *
+ * - `qdrant` (default): the shipped behavior. The maintain pass and the dense
+ *   lane use the `memory_v3_sections` collection; Postgres is untouched.
+ * - `dual`: both stores are written; reads come from Postgres.
+ * - `pgvector`: both writes and reads use the `memory_sections` table.
+ *
+ * The flag exists for the cutover, not as a permanent second backend: the
+ * Qdrant branch is removed once the switch is complete.
+ */
+export const SECTION_STORES = ["qdrant", "dual", "pgvector"] as const;
+
+/**
  * Edge-lane tuning for the link-graph expansion that folds a turn's lexical and
  * dense seeds outward to their first-class neighbours.
  */
@@ -381,6 +394,14 @@ export const MemoryV3ConfigSchema = z
       .default(false)
       .describe(
         "Whether memory-v3 is the live injected memory source, suppressing v2 injection. Off by default; brand-new assistants are switched on at creation via a workspace migration, while existing assistants stay on v2 until explicitly enabled.",
+      ),
+    sectionsStore: z
+      .enum(SECTION_STORES, {
+        error: "memory.v3.sectionsStore must be one of: qdrant, dual, pgvector",
+      })
+      .default("qdrant")
+      .describe(
+        "Where the section-grain dense index is written and read. `qdrant` is the shipped behavior; `dual` writes both stores and reads Postgres; `pgvector` writes and reads the `memory_sections` table only.",
       ),
     prune: MemoryV3PruneSchema.default(MemoryV3PruneSchema.parse({})),
     hotSet: MemoryV3HotSetSchema.default(MemoryV3HotSetSchema.parse({})),

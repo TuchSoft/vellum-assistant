@@ -14,6 +14,12 @@ import { withQdrantBreaker } from "../embeddings/qdrant-circuit-breaker.js";
 import { resolveQdrantUrl } from "../embeddings/qdrant-client.js";
 import { asString } from "../job-utils.js";
 import { enqueueMemoryJob, type MemoryJob } from "../jobs-store.js";
+import {
+  clearMessagesLexicalRows,
+  deleteMessageLexicalRow,
+  purgeConversationLexicalRows,
+  upsertMessageLexical,
+} from "../message-lexical-store.js";
 import { indexableTextOfRow } from "../user-facing-content.js";
 
 const log = getLogger("messages-lexical-enqueue");
@@ -43,15 +49,42 @@ export function resolveLexicalIndex(
 }
 
 /**
+ * Whether a store value writes the Qdrant lexical collection.
+ *
+ * `qdrant` and `dual` write it; `postgres` does not, so a cut-over instance
+ * stops paying for Qdrant encoding on every message.
+ */
+export function writesQdrant(
+  store: AssistantConfig["search"]["lexicalStore"],
+): boolean {
+  return store === "qdrant" || store === "dual";
+}
+
+/** Whether a store value writes the Postgres lexical table. */
+export function writesPostgres(
+  store: AssistantConfig["search"]["lexicalStore"],
+): boolean {
+  return store === "dual" || store === "postgres";
+}
+
+/**
  * Encode `message.content` with the local sparse encoder and upsert it into the
- * messages lexical (Qdrant) index. The single shared indexing primitive — the
+ * messages lexical index. The single shared indexing primitive — the
  * `index_message_lexical` job and the backfill path both route through here so
  * the encode + upsert sequence lives in one place.
  *
- * The upsert is wrapped in the Qdrant circuit breaker so a transient Qdrant
- * outage trips the breaker and surfaces as a deferrable error rather than an
- * unhandled throw; the job worker's retry/defer logic then drains the backlog
- * once Qdrant recovers.
+ * `message.content` is already the extracted indexable text (the callers run
+ * `indexableTextOfRow`); the same text feeds both stores so a hit and its
+ * excerpt always agree.
+ *
+ * With `search.lexicalStore = "qdrant"` this is exactly the shipped behavior:
+ * one Qdrant upsert, no Postgres write. `dual` writes both, `postgres` writes
+ * only the Postgres table.
+ *
+ * The Qdrant upsert is wrapped in the Qdrant circuit breaker so a transient
+ * Qdrant outage trips the breaker and surfaces as a deferrable error rather
+ * than an unhandled throw; the job worker's retry/defer logic then drains the
+ * backlog once Qdrant recovers.
  */
 export async function indexMessageToLexical(
   message: {
@@ -62,14 +95,25 @@ export async function indexMessageToLexical(
   },
   config: AssistantConfig,
 ): Promise<void> {
-  const index = resolveLexicalIndex(config);
-  const sparse = generateSparseEmbedding(message.content);
-  await withQdrantBreaker(() =>
-    index.upsertMessage(message.id, sparse, {
+  const store = config.search.lexicalStore;
+  if (writesQdrant(store)) {
+    const index = resolveLexicalIndex(config);
+    const sparse = generateSparseEmbedding(message.content);
+    await withQdrantBreaker(() =>
+      index.upsertMessage(message.id, sparse, {
+        conversationId: message.conversationId,
+        createdAt: message.createdAt,
+      }),
+    );
+  }
+  if (writesPostgres(store)) {
+    await upsertMessageLexical({
+      messageId: message.id,
       conversationId: message.conversationId,
       createdAt: message.createdAt,
-    }),
-  );
+      body: message.content,
+    });
+  }
 }
 
 export async function indexMessageLexicalJob(
@@ -106,33 +150,50 @@ export async function indexMessageLexicalJob(
   // message rather than the model's working notes. Model-facing recall is
   // unaffected, since the memory segment index is written from the raw row.
   await indexMessageToLexical(
-    { ...row, content: indexableTextOfRow(row.content, row.metadata) },
+    {
+      ...row,
+      content: indexableTextOfRow(row.content, row.metadata, {
+        thinkingIndexMaxChars: config.search.thinkingIndexMaxChars,
+      }),
+    },
     config,
   );
 }
 
 /**
- * Delete a conversation's points from the lexical index (the
+ * Delete a conversation's rows from the lexical index (the
  * `purge_conversation_lexical` job body).
  */
 async function purgeConversationLexical(
   conversationId: string,
   config: AssistantConfig,
 ): Promise<void> {
-  const index = resolveLexicalIndex(config);
-  await withQdrantBreaker(() => index.deleteByConversation(conversationId));
+  const store = config.search.lexicalStore;
+  if (writesQdrant(store)) {
+    const index = resolveLexicalIndex(config);
+    await withQdrantBreaker(() => index.deleteByConversation(conversationId));
+  }
+  if (writesPostgres(store)) {
+    await purgeConversationLexicalRows(conversationId);
+  }
 }
 
 /**
- * Delete a single message's point from the lexical index (the
+ * Delete a single message's row from the lexical index (the
  * `delete_message_lexical` job body).
  */
 async function deleteMessageLexical(
   messageId: string,
   config: AssistantConfig,
 ): Promise<void> {
-  const index = resolveLexicalIndex(config);
-  await withQdrantBreaker(() => index.deleteByMessageId(messageId));
+  const store = config.search.lexicalStore;
+  if (writesQdrant(store)) {
+    const index = resolveLexicalIndex(config);
+    await withQdrantBreaker(() => index.deleteByMessageId(messageId));
+  }
+  if (writesPostgres(store)) {
+    await deleteMessageLexicalRow(messageId);
+  }
 }
 
 export async function purgeConversationLexicalJob(
@@ -249,9 +310,15 @@ export function enqueueDeleteMessageLexical(messageId: string): void {
 export async function clearMessagesLexicalIndex(
   config: AssistantConfig,
 ): Promise<void> {
+  const store = config.search.lexicalStore;
   try {
-    const index = resolveLexicalIndex(config);
-    await withQdrantBreaker(() => index.clear());
+    if (writesQdrant(store)) {
+      const index = resolveLexicalIndex(config);
+      await withQdrantBreaker(() => index.clear());
+    }
+    if (writesPostgres(store)) {
+      await clearMessagesLexicalRows();
+    }
   } catch (err) {
     log.warn({ err }, "Failed to clear messages lexical index (non-fatal)");
   }

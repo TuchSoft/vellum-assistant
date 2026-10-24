@@ -9,6 +9,7 @@ import {
   sql,
 } from "drizzle-orm";
 
+import { getConfigReadOnly } from "../config/loader.js";
 import {
   parseExternalContentEnvelope,
   type UntrustedContentSource,
@@ -17,7 +18,10 @@ import {
 } from "../security/untrusted-content.js";
 import { getLogger } from "../util/logger.js";
 import { safeStringSlice } from "../util/unicode.js";
-import { isLexicalBackfillComplete } from "./checkpoints.js";
+import {
+  isLexicalBackfillComplete,
+  isPgLexicalBackfillComplete,
+} from "./checkpoints.js";
 import { unseenAttentionStateConditions } from "./conversation-attention-store.js";
 import type { ConversationRow } from "./conversation-crud.js";
 import { parseConversation } from "./conversation-crud.js";
@@ -1020,6 +1024,116 @@ function likeContainsPattern(query: string): string {
     .replace(/_/g, "\\_")}%`;
 }
 
+/** A message candidate already resolved to its visible conversation. */
+interface LexicalCandidateWithConversation {
+  messageId: string;
+  conversationId: string;
+}
+
+/**
+ * Bucket message candidates (highest score first) under their conversation,
+ * stopping once {@link CONVERSATION_SEARCH_DISTINCT_LIMIT} distinct
+ * conversations are seen. Shared by both lexical backends so one chatty
+ * conversation cannot starve the others, and so the score-order walk is
+ * identical whichever store answered.
+ */
+function bucketCandidatesByConversation(
+  candidates: readonly LexicalCandidateWithConversation[],
+): {
+  byConversation: Map<string, string[]>;
+  conversationIds: Set<string>;
+} {
+  const byConversation = new Map<string, string[]>();
+  const conversationIds = new Set<string>();
+  for (const candidate of candidates) {
+    const bucket = byConversation.get(candidate.conversationId);
+    if (bucket) {
+      bucket.push(candidate.messageId);
+      continue;
+    }
+    if (byConversation.size >= CONVERSATION_SEARCH_DISTINCT_LIMIT) {
+      continue;
+    }
+    byConversation.set(candidate.conversationId, [candidate.messageId]);
+    conversationIds.add(candidate.conversationId);
+  }
+  return { byConversation, conversationIds };
+}
+
+/**
+ * Postgres lexical candidates, ranked by BM25 at message grain.
+ *
+ * Unlike the Qdrant backend, the visibility and archived predicates are part of
+ * the same SELECT: the design replaces the fetch-then-filter chain with one
+ * statement, so invisible rows never consume the candidate pool.
+ */
+async function searchMessageCandidatesPostgres(
+  query: string,
+  limit: number,
+  includeArchived: boolean,
+): Promise<LexicalCandidateWithConversation[]> {
+  const db = requireMainDb();
+  const where = [
+    `l."body" @@@ paradedb.match('body', ?)`,
+    standardListingVisibilitySql("c"),
+  ];
+  if (!includeArchived) {
+    where.push(`c."archived_at" IS NULL`);
+  }
+  const rows = await db.all<{
+    message_id: string;
+    conversation_id: string;
+  }>(
+    `SELECT l."message_id" AS message_id, l."conversation_id" AS conversation_id
+     FROM "messages_lexical" l
+     JOIN "messages" m ON m."id" = l."message_id"
+     JOIN "conversations" c ON c."id" = l."conversation_id"
+     WHERE ${where.join(" AND ")}
+     ORDER BY paradedb.score(l."message_id") DESC
+     LIMIT ?`,
+    [query, limit],
+  );
+  return rows.map((row) => ({
+    messageId: row.message_id,
+    conversationId: row.conversation_id,
+  }));
+}
+
+/**
+ * Fetch the candidate message rows for every matched conversation in ONE round
+ * trip, keeping the first `maxMessagesPerConversation` per conversation in
+ * `created_at` order. This is the same selection the Qdrant path makes with one
+ * query per conversation, without the N+1.
+ */
+async function fetchCandidateMessageRows(
+  candidateIds: readonly string[],
+  maxMessagesPerConversation: number,
+): Promise<Map<string, ConversationSearchMsgRow[]>> {
+  const byConversation = new Map<string, ConversationSearchMsgRow[]>();
+  if (candidateIds.length === 0) {
+    return byConversation;
+  }
+  const db = requireMainDb();
+  const placeholders = candidateIds.map(() => "?").join(",");
+  const rows = await db.all<
+    ConversationSearchMsgRow & { conversation_id: string }
+  >(
+    `SELECT id, conversation_id, role, content, created_at, metadata
+     FROM messages
+     WHERE id IN (${placeholders})
+     ORDER BY conversation_id ASC, created_at ASC`,
+    [...candidateIds],
+  );
+  for (const row of rows) {
+    const bucket = byConversation.get(row.conversation_id) ?? [];
+    if (bucket.length < maxMessagesPerConversation) {
+      bucket.push(row);
+      byConversation.set(row.conversation_id, bucket);
+    }
+  }
+  return byConversation;
+}
+
 /**
  * Full-text search across message content.
  *
@@ -1069,8 +1183,21 @@ export async function searchConversations(
   const limit = opts?.limit ?? 20;
   const maxMsgsPerConv = opts?.maxMessagesPerConversation ?? 3;
 
+  // `search.lexicalStore` selects the backend. `qdrant` is the shipped
+  // behavior and stays the default; `dual` and `postgres` read the Postgres
+  // table. Reading is gated on that store's own backfill sentinel, exactly as
+  // the Qdrant path is gated on its own: an index that is still filling returns
+  // fewer results rather than an error.
+  const searchConfig = getConfigReadOnly().search;
+  const usePostgres =
+    searchConfig.lexicalStore === "postgres" ||
+    searchConfig.lexicalStore === "dual";
+  const thinkingIndexMaxChars = searchConfig.thinkingIndexMaxChars;
+
   const hasTokens = hasLexicalTokens(trimmed);
-  const contentSearchAvailable = await isLexicalBackfillComplete();
+  const contentSearchAvailable = usePostgres
+    ? await isPgLexicalBackfillComplete()
+    : await isLexicalBackfillComplete();
 
   // LIKE pattern for title matching (message-content indexes don't cover titles).
   const titlePattern = likeContainsPattern(query);
@@ -1081,93 +1208,115 @@ export async function searchConversations(
   // single conversation with many matching messages from crowding out others.
   const contentConvIds = new Set<string>();
 
-  // When the Qdrant backend answers, `qdrantCandidatesByConv` maps each
-  // conversation to its candidate message ids so the per-conversation message
-  // fetch reuses the single lexical round-trip instead of issuing a second one.
-  // On a lexical-lookup failure it stays null, so the content arm contributes
-  // nothing and only title matches surface.
-  let qdrantCandidatesByConv: Map<string, string[]> | null = null;
+  // The selected backend's candidates, bucketed by conversation. `null` when
+  // the lookup failed or the backend is unavailable, so the content arm
+  // contributes nothing and only title matches surface.
+  let candidatesByConv: Map<string, string[]> | null = null;
+  // Postgres: the candidate message rows for every matched conversation,
+  // fetched once (no per-conversation round trip).
+  let pgMessageRowsByConv: Map<string, ConversationSearchMsgRow[]> | null =
+    null;
 
   if (hasTokens && contentSearchAvailable) {
-    // The lexical index is written asynchronously by the memory job queue, so
-    // for a brief window after an edit it can lag SQLite: a search for a term
-    // just removed from a message may still return that message id (or miss one
-    // just added). This is an accepted async-indexing tradeoff — transient, and
-    // results are re-sorted by `updated_at` — not re-verified against live
-    // content here.
-    let candidates: Awaited<ReturnType<typeof searchMessageIdsLexical>> = [];
-    try {
-      candidates = await searchMessageIdsLexical(
-        trimmed,
-        QDRANT_SEARCH_CANDIDATE_LIMIT,
-      );
-    } catch (err) {
-      log.warn(
-        { err, query: query.slice(0, 80) },
-        "searchConversations: Qdrant lexical query failed — returning title matches only",
-      );
-    }
-
-    if (candidates.length > 0) {
-      const candidateIds = candidates.map((c) => c.messageId);
-      // Filter the lexical candidates down to visible, non-archived
-      // conversations in SQL (Qdrant has no visibility filtering). No SQL
-      // LIMIT here: the row count is already bounded by the candidate pool
-      // (≤ QDRANT_SEARCH_CANDIDATE_LIMIT), and capping in SQL would cap on
-      // messages, not distinct conversations. The distinct-conversation cap is
-      // applied below in Qdrant score order.
-      interface CandidateRow {
-        id: string;
-        conversation_id: string;
-      }
-      const placeholders = candidateIds.map(() => "?").join(",");
-      const whereClauses = [
-        `m.id IN (${placeholders})`,
-        standardListingVisibilitySql("c"),
-      ];
-      if (!opts?.includeArchived) {
-        whereClauses.push(`c.archived_at IS NULL`);
-      }
-      // No completeness predicate: candidate ids come from the lexical
-      // index, which filters finalized = 1 at index time, so an unfinalized
-      // row cannot be a candidate. Do not copy this shape for id sets with
-      // different provenance.
-      const visibleRows = await db.all<CandidateRow>(
-        `
-        SELECT m.id, m.conversation_id
-        FROM messages m
-        JOIN conversations c ON c.id = m.conversation_id
-        WHERE ${whereClauses.join(" AND ")}
-      `,
-        candidateIds,
-      );
-      const visibleConvByMessageId = new Map<string, string>();
-      for (const row of visibleRows) {
-        visibleConvByMessageId.set(row.id, row.conversation_id);
-      }
-
-      // Walk candidates in Qdrant score order (highest first). Bucket each
-      // visible candidate's message id under its conversation and stop
-      // collecting NEW conversations once CONVERSATION_SEARCH_DISTINCT_LIMIT
-      // distinct visible conversations are seen — so one chatty conversation
-      // can't starve others, matching the FTS distinct-conversation cap.
-      qdrantCandidatesByConv = new Map();
-      for (const candidate of candidates) {
-        const convId = visibleConvByMessageId.get(candidate.messageId);
-        if (!convId) {
-          continue;
+    if (usePostgres) {
+      try {
+        const candidates = await searchMessageCandidatesPostgres(
+          trimmed,
+          QDRANT_SEARCH_CANDIDATE_LIMIT,
+          opts?.includeArchived === true,
+        );
+        const bucketed = bucketCandidatesByConversation(candidates);
+        candidatesByConv = bucketed.byConversation;
+        for (const conversationId of bucketed.conversationIds) {
+          contentConvIds.add(conversationId);
         }
-        const bucket = qdrantCandidatesByConv.get(convId);
-        if (bucket) {
-          bucket.push(candidate.messageId);
-        } else {
-          if (
-            qdrantCandidatesByConv.size >= CONVERSATION_SEARCH_DISTINCT_LIMIT
-          ) {
-            continue;
-          }
-          qdrantCandidatesByConv.set(convId, [candidate.messageId]);
-          contentConvIds.add(convId);
+        if (candidatesByConv.size > 0) {
+          pgMessageRowsByConv = await fetchCandidateMessageRows(
+            [...candidatesByConv.values()].flat(),
+            maxMsgsPerConv,
+          );
+        }
+      } catch (err) {
+        log.warn(
+          { err, query: query.slice(0, 80) },
+          "searchConversations: Postgres lexical query failed — returning title matches only",
+        );
+      }
+    } else {
+      // The Qdrant index is written asynchronously by the memory job queue, so
+      // for a brief window after an edit it can lag the database: a search for
+      // a term just removed from a message may still return that message id (or
+      // miss one just added). This is an accepted async-indexing tradeoff —
+      // transient, and results are re-sorted by `updated_at` — not re-verified
+      // against live content here.
+      let candidates: Awaited<ReturnType<typeof searchMessageIdsLexical>> = [];
+      try {
+        candidates = await searchMessageIdsLexical(
+          trimmed,
+          QDRANT_SEARCH_CANDIDATE_LIMIT,
+        );
+      } catch (err) {
+        log.warn(
+          { err, query: query.slice(0, 80) },
+          "searchConversations: Qdrant lexical query failed — returning title matches only",
+        );
+      }
+
+      if (candidates.length > 0) {
+        const candidateIds = candidates.map((c) => c.messageId);
+        // Filter the lexical candidates down to visible, non-archived
+        // conversations in SQL (Qdrant has no visibility filtering). No SQL
+        // LIMIT here: the row count is already bounded by the candidate pool
+        // (≤ QDRANT_SEARCH_CANDIDATE_LIMIT), and capping in SQL would cap on
+        // messages, not distinct conversations. The distinct-conversation cap
+        // is applied below in Qdrant score order.
+        interface CandidateRow {
+          id: string;
+          conversation_id: string;
+        }
+        const placeholders = candidateIds.map(() => "?").join(",");
+        const whereClauses = [
+          `m.id IN (${placeholders})`,
+          standardListingVisibilitySql("c"),
+        ];
+        if (!opts?.includeArchived) {
+          whereClauses.push(`c.archived_at IS NULL`);
+        }
+        // No completeness predicate: candidate ids come from the lexical
+        // index, which filters finalized = 1 at index time, so an unfinalized
+        // row cannot be a candidate. Do not copy this shape for id sets with
+        // different provenance.
+        const visibleRows = await db.all<CandidateRow>(
+          `
+          SELECT m.id, m.conversation_id
+          FROM messages m
+          JOIN conversations c ON c.id = m.conversation_id
+          WHERE ${whereClauses.join(" AND ")}
+        `,
+          candidateIds,
+        );
+        const visibleConvByMessageId = new Map<string, string>();
+        for (const row of visibleRows) {
+          visibleConvByMessageId.set(row.id, row.conversation_id);
+        }
+
+        // Walk candidates in score order (highest first) and bucket each
+        // visible candidate's message id under its conversation, stopping once
+        // CONVERSATION_SEARCH_DISTINCT_LIMIT distinct visible conversations are
+        // seen — so one chatty conversation can't starve others.
+        const bucketed = bucketCandidatesByConversation(
+          candidates.flatMap((candidate) => {
+            const conversationId = visibleConvByMessageId.get(
+              candidate.messageId,
+            );
+            return conversationId
+              ? [{ messageId: candidate.messageId, conversationId }]
+              : [];
+          }),
+        );
+        candidatesByConv = bucketed.byConversation;
+        for (const conversationId of bucketed.conversationIds) {
+          contentConvIds.add(conversationId);
         }
       }
     }
@@ -1236,26 +1385,31 @@ export async function searchConversations(
   for (const conv of matchingConversations) {
     // Conversations without content candidates — title-only matches, every
     // match on a no-token query, and all matches while content search is
-    // unavailable or the Qdrant lookup failed — carry no content excerpts:
+    // unavailable or the lookup failed — carry no content excerpts:
     // `matchingMsgs` stays empty.
     let matchingMsgs: ConversationSearchMsgRow[] = [];
     if (hasTokens && contentSearchAvailable) {
-      // Reuse the lexical candidates already fetched above — no second Qdrant
-      // round-trip. Select this conversation's candidate message rows by id,
-      // ordered oldest-first.
-      const candidateIds = qdrantCandidatesByConv?.get(conv.id) ?? [];
-      if (candidateIds.length > 0) {
-        const msgPlaceholders = candidateIds.map(() => "?").join(",");
-        matchingMsgs = await db.all<ConversationSearchMsgRow>(
-          `
-          SELECT id, role, content, created_at, metadata
-          FROM messages
-          WHERE conversation_id = ? AND id IN (${msgPlaceholders})
-          ORDER BY created_at ASC
-          LIMIT ?
-        `,
-          [conv.id, ...candidateIds, maxMsgsPerConv],
-        );
+      if (usePostgres) {
+        // Already fetched in one query above, keyed by conversation.
+        matchingMsgs = pgMessageRowsByConv?.get(conv.id) ?? [];
+      } else {
+        // Reuse the lexical candidates already fetched above — no second
+        // Qdrant round-trip. Select this conversation's candidate message rows
+        // by id, ordered oldest-first.
+        const candidateIds = candidatesByConv?.get(conv.id) ?? [];
+        if (candidateIds.length > 0) {
+          const msgPlaceholders = candidateIds.map(() => "?").join(",");
+          matchingMsgs = await db.all<ConversationSearchMsgRow>(
+            `
+            SELECT id, role, content, created_at, metadata
+            FROM messages
+            WHERE conversation_id = ? AND id IN (${msgPlaceholders})
+            ORDER BY created_at ASC
+            LIMIT ?
+          `,
+            [conv.id, ...candidateIds, maxMsgsPerConv],
+          );
+        }
       }
     }
 
@@ -1269,7 +1423,12 @@ export async function searchConversations(
         // The excerpt is shown to the user, so it quotes what the row's own
         // marker says the user saw: a `send_user_message` turn's plain text is
         // private working notes and never surfaces here.
-        excerpt: buildExcerpt(indexableTextOfRow(m.content, m.metadata), query),
+        excerpt: buildExcerpt(
+          indexableTextOfRow(m.content, m.metadata, {
+            thinkingIndexMaxChars,
+          }),
+          query,
+        ),
         createdAt: m.created_at,
       })),
     });

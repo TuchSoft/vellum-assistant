@@ -14,6 +14,7 @@ export * from "./infrastructure.js";
 export * from "./memory-core.js";
 export * from "./memory-graph.js";
 export * from "./memory-injection.js";
+export * from "./messages-lexical.js";
 export * from "./notifications.js";
 export * from "./oauth.js";
 export * from "./projects.js";

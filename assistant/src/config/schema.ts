@@ -53,6 +53,7 @@ import {
   UiConfigSchema,
 } from "./schemas/platform.js";
 import { PluginUpdatesConfigSchema } from "./schemas/plugin-updates.js";
+import { SearchConfigSchema } from "./schemas/search.js";
 import { SecretDetectionConfigSchema } from "./schemas/security.js";
 import { ServicesSchema } from "./schemas/services.js";
 import { SightConfigSchema } from "./schemas/sight.js";
@@ -119,6 +120,7 @@ export const AssistantConfigSchema = z.object({
   ),
   compaction: CompactionConfigSchema.default(CompactionConfigSchema.parse({})),
   compactionLogs: CompactionLogsConfigSchema,
+  search: SearchConfigSchema.default(SearchConfigSchema.parse({})),
   twilio: TwilioConfigSchema.default(TwilioConfigSchema.parse({})),
   calls: CallsConfigSchema.default(CallsConfigSchema.parse({})),
   liveVoice: LiveVoiceConfigSchema.default(LiveVoiceConfigSchema.parse({})),

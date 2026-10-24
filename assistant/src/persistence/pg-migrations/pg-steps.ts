@@ -369,4 +369,48 @@ export const PG_STEPS: readonly PgMigrationStep[] = [
       await db.exec(`DROP TABLE IF EXISTS "cron_job_projects"`);
     },
   },
+  {
+    name: "0005_messages_lexical",
+    up: async (db) => {
+      // The BM25 index needs the extension, and the extension needs superuser
+      // to install. Fail loudly instead of creating a table that silently
+      // cannot be searched: a missing extension here is a provisioning error
+      // (the coordinator runs `CREATE EXTENSION pg_search` as a superuser),
+      // never something to degrade around.
+      const installed = await db.get<{ present: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM pg_extension WHERE extname = 'pg_search'
+         ) AS present`,
+      );
+      if (installed?.present !== true) {
+        throw new Error(
+          "messages_lexical requires the pg_search extension: " +
+            "run CREATE EXTENSION pg_search as a superuser before applying this migration",
+        );
+      }
+
+      // Additive and idempotent: an interrupted apply leaves a table the re-run
+      // completes, and neither statement depends on data.
+      await db.exec(
+        `CREATE TABLE IF NOT EXISTS "messages_lexical" (
+          "message_id" text PRIMARY KEY,
+          "conversation_id" text NOT NULL,
+          "created_at" bigint NOT NULL,
+          "language" text,
+          "body" text NOT NULL
+        )`,
+      );
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "idx_messages_lexical_conversation_id" ON "messages_lexical" ("conversation_id")`,
+      );
+      // `pdb.icu` without a stemmer: the language-agnostic index. The language
+      // indexes are added by the language phase, which can only append.
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS "messages_lexical_bm25" ON "messages_lexical" USING bm25 ("message_id", ("body"::pdb.icu))`,
+      );
+    },
+    down: async (db) => {
+      await db.exec(`DROP TABLE IF EXISTS "messages_lexical"`);
+    },
+  },
 ];

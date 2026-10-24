@@ -115,3 +115,28 @@ export async function isLexicalBackfillComplete(): Promise<boolean> {
 export async function clearLexicalBackfillComplete(): Promise<void> {
   await deleteMemoryCheckpoint(LEXICAL_BACKFILL_COMPLETE_KEY);
 }
+
+/**
+ * Completion sentinel for the Postgres lexical backfill, kept distinct from
+ * {@link LEXICAL_BACKFILL_COMPLETE_KEY} so the Qdrant and Postgres indexes
+ * drain independently. Switching `search.lexicalStore` to `dual` or
+ * `postgres` starts a fresh Postgres backfill even though the Qdrant one has
+ * long been complete.
+ */
+export const PG_LEXICAL_BACKFILL_COMPLETE_KEY =
+  "lexical:pg:messages:backfill_complete";
+
+/**
+ * True once the Postgres lexical index has fully drained on this instance.
+ * Gates the Postgres read path: an index that is still filling returns fewer
+ * results (not an error), so switching reads before the marker is set would
+ * silently under-report matches.
+ */
+export async function isPgLexicalBackfillComplete(): Promise<boolean> {
+  return (await getMemoryCheckpoint(PG_LEXICAL_BACKFILL_COMPLETE_KEY)) === "1";
+}
+
+/** Clear the Postgres lexical-backfill sentinel so a `force` re-run drains again. */
+export async function clearPgLexicalBackfillComplete(): Promise<void> {
+  await deleteMemoryCheckpoint(PG_LEXICAL_BACKFILL_COMPLETE_KEY);
+}

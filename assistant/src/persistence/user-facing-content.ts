@@ -21,6 +21,7 @@
  * read-side projection moves the text.
  */
 
+import { DEFAULT_THINKING_INDEX_MAX_CHARS } from "../config/schemas/search.js";
 import { SEND_USER_MESSAGE_TOOL_NAME } from "../config/send-user-message-constants.js";
 import type { ContentBlock } from "../providers/types.js";
 import { joinDeliveredMessages } from "../util/text-spacing.js";
@@ -316,6 +317,16 @@ export function projectPersistedRowText(
   return typeof projected === "string" ? projected : JSON.stringify(projected);
 }
 
+export interface IndexableTextOptions {
+  /**
+   * Append a row's `thinking` blocks to its indexed text when the readable text
+   * is empty or shorter than this many characters. Defaults to the schema
+   * default so callers that do not care (unit tests, one-off probes) keep the
+   * shipped threshold.
+   */
+  thinkingIndexMaxChars?: number;
+}
+
 /**
  * The text a stored row contributes to the lexical (message-content) search
  * index and to the excerpts built from a content match.
@@ -329,16 +340,25 @@ export function projectPersistedRowText(
  *
  * A row the `send_user_message` gate marked private projects first, so the
  * index carries the delivered message instead of the model's working notes.
+ *
+ * Reasoning is appended only when the row has little or no readable text (see
+ * {@link IndexableTextOptions.thinkingIndexMaxChars}): a long answer does not
+ * need its scratchpad indexed, but a short one (or a tool-only row) is often
+ * only findable through what the model was thinking. Indexing and excerpt
+ * building share this function on purpose, so a hit and its excerpt show the
+ * same text.
  */
 export function indexableTextOfRow(
   stored: string | ContentBlock[],
   metadata: unknown,
+  options?: IndexableTextOptions,
 ): string {
   const projected = projectPersistedAssistantContent(stored, metadata);
+  const maxThinking = options?.thinkingIndexMaxChars;
   if (typeof projected === "string") {
-    return indexableTextOfStoredString(projected);
+    return indexableTextOfStoredString(projected, maxThinking);
   }
-  return indexableTextOfBlocks(projected);
+  return indexableTextOfBlocks(projected, maxThinking);
 }
 
 /** Shortest uninterrupted base64 run treated as an encoded payload. */
@@ -363,13 +383,19 @@ function withoutEncodedPayloads(text: string): string {
     .replace(ENCODED_RUN, " ");
 }
 
-function indexableTextOfStoredString(text: string): string {
+function indexableTextOfStoredString(
+  text: string,
+  thinkingIndexMaxChars: number | undefined,
+): string {
   const trimmed = text.trim();
   if (trimmed.startsWith("[")) {
     try {
       const parsed: unknown = JSON.parse(trimmed);
       if (Array.isArray(parsed)) {
-        return indexableTextOfBlocks(parsed as ContentBlock[]);
+        return indexableTextOfBlocks(
+          parsed as ContentBlock[],
+          thinkingIndexMaxChars,
+        );
       }
       if (typeof parsed === "string") {
         return withoutEncodedPayloads(parsed).trim();
@@ -381,8 +407,12 @@ function indexableTextOfStoredString(text: string): string {
   return withoutEncodedPayloads(trimmed).trim();
 }
 
-function indexableTextOfBlocks(blocks: ContentBlock[]): string {
+function indexableTextOfBlocks(
+  blocks: ContentBlock[],
+  thinkingIndexMaxChars: number | undefined,
+): string {
   const parts: string[] = [];
+  const thinkingParts: string[] = [];
   for (const block of blocks) {
     if (typeof block !== "object" || block === null) {
       continue;
@@ -419,11 +449,28 @@ function indexableTextOfBlocks(blocks: ContentBlock[]): string {
           parts.push(record["extracted_text"]);
         }
         break;
+      case "thinking":
+        if (typeof record["thinking"] === "string") {
+          thinkingParts.push(record["thinking"]);
+        }
+        break;
       default:
-        // tool_use inputs, thinking, images and surfaces are not readable
-        // message content: they are structure or private reasoning.
+        // tool_use inputs, images and surfaces are not readable message
+        // content: they are structure.
         break;
     }
   }
-  return withoutEncodedPayloads(parts.join("\n")).trim();
+  const body = withoutEncodedPayloads(parts.join("\n")).trim();
+  if (thinkingParts.length === 0) {
+    return body;
+  }
+  const max = thinkingIndexMaxChars ?? DEFAULT_THINKING_INDEX_MAX_CHARS;
+  if (body.length !== 0 && body.length >= max) {
+    return body;
+  }
+  const thinking = withoutEncodedPayloads(thinkingParts.join("\n")).trim();
+  if (thinking.length === 0) {
+    return body;
+  }
+  return body.length === 0 ? thinking : `${body}\n${thinking}`;
 }

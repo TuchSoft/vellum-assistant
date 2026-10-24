@@ -169,3 +169,53 @@ describe("indexableTextOfRow", () => {
     expect(projectPersistedRowText(stored, null)).toContain('"tool_use_id"');
   });
 });
+
+describe("indexableTextOfRow · thinking threshold", () => {
+  const thinking = { type: "thinking", thinking: "ragionamento interno" };
+
+  test("indexes thinking when the row has no readable text", () => {
+    expect(indexableTextOfRow(json([thinking]), null)).toBe(
+      "ragionamento interno",
+    );
+  });
+
+  test("indexes thinking when the readable text is short", () => {
+    const text = indexableTextOfRow(
+      json([{ type: "text", text: "breve" }, thinking]),
+      null,
+      { thinkingIndexMaxChars: 200 },
+    );
+    expect(text).toBe("breve\nragionamento interno");
+  });
+
+  test("excludes thinking once the readable text reaches the threshold", () => {
+    const long = "x".repeat(200);
+    const text = indexableTextOfRow(
+      json([{ type: "text", text: long }, thinking]),
+      null,
+      { thinkingIndexMaxChars: 200 },
+    );
+    expect(text).toBe(long);
+    expect(text).not.toContain("ragionamento");
+  });
+
+  test("threshold 0 indexes thinking only when there is no readable text", () => {
+    expect(
+      indexableTextOfRow(json([thinking]), null, { thinkingIndexMaxChars: 0 }),
+    ).toBe("ragionamento interno");
+    expect(
+      indexableTextOfRow(json([{ type: "text", text: "a" }, thinking]), null, {
+        thinkingIndexMaxChars: 0,
+      }),
+    ).toBe("a");
+  });
+
+  test("a private row drops thinking before the threshold applies", () => {
+    const metadata = { assistantTextVisibility: "private" };
+    const text = indexableTextOfRow(
+      json([thinking, { type: "text", text: "nota privata" }]),
+      metadata,
+    );
+    expect(text).toBe("");
+  });
+});
